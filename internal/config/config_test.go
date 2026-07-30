@@ -1833,6 +1833,26 @@ func TestDefaultStalenessObservability(t *testing.T) {
 	if !cfg.Observability.Staleness.Lanes[0].HumanGate {
 		t.Fatal("Human Review default is not marked as a human gate")
 	}
+	wantReasons := []string{
+		"already_running",
+		"blocked_by_dependency",
+		"github_rest_capacity_paused",
+		"github_rest_recovery",
+		"global_capacity_full",
+	}
+	if got := cfg.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, wantReasons) {
+		t.Fatalf("RepeatedDecisionBenignReasons = %#v, want %#v", got, wantReasons)
+	}
+
+	cfg.Observability.Staleness.RepeatedDecisionBenignReasons = []string{
+		" Planned_Maintenance ",
+		"planned_maintenance",
+		"",
+	}
+	cfg.Observability.Staleness.Normalize()
+	if got, want := cfg.Observability.Staleness.RepeatedDecisionBenignReasons, []string{"planned_maintenance"}; !slices.Equal(got, want) {
+		t.Fatalf("normalized RepeatedDecisionBenignReasons = %#v, want %#v", got, want)
+	}
 }
 
 func TestKanbanTransitionPolicyAllowsConfiguredOverridesWithoutStateLists(t *testing.T) {

@@ -17,12 +17,14 @@ const (
 )
 
 type Config struct {
-	Enabled                bool
-	Lanes                  []LaneThreshold
-	NoCompletionThreshold  time.Duration
-	NoMergeThreshold       time.Duration
-	RepeatedDecisionCount  int
-	RepeatedDecisionWindow time.Duration
+	Enabled                       bool
+	Lanes                         []LaneThreshold
+	NoCompletionThreshold         time.Duration
+	NoMergeThreshold              time.Duration
+	RepeatedDecisionCount         int
+	RepeatedDecisionWindow        time.Duration
+	RepeatedDecisionBenignReasons []string
+	TerminalStates                []string
 }
 
 type LaneThreshold struct {
@@ -57,11 +59,14 @@ type Completion struct {
 }
 
 type Decision struct {
-	IssueID    string
-	Identifier string
-	IssueURL   string
-	Reason     string
-	At         time.Time
+	IssueID      string
+	Identifier   string
+	IssueURL     string
+	CurrentState string
+	Closed       bool
+	Merged       bool
+	Reason       string
+	At           time.Time
 }
 
 type Warning struct {
@@ -218,11 +223,23 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 		last     time.Time
 	}
 	cutoff := now.Add(-cfg.RepeatedDecisionWindow)
+	benignReasons := normalizedSet(cfg.RepeatedDecisionBenignReasons)
+	terminalStates := normalizedSet(cfg.TerminalStates)
 	groups := make(map[string]group)
 	for _, decision := range input.Decisions {
 		identity := decisionIdentity(decision)
 		reason := strings.TrimSpace(decision.Reason)
-		if identity == "" || reason == "" || decision.At.IsZero() || decision.At.Before(cutoff) || decision.At.After(now) {
+		currentState := normalize(decision.CurrentState)
+		if identity == "" ||
+			reason == "" ||
+			currentState == "" ||
+			decision.Closed ||
+			decision.Merged ||
+			contains(terminalStates, currentState) ||
+			contains(benignReasons, normalize(reason)) ||
+			decision.At.IsZero() ||
+			decision.At.Before(cutoff) ||
+			decision.At.After(now) {
 			continue
 		}
 		key := identity + "\x00" + reason
@@ -261,6 +278,21 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 		})
 	}
 	return warnings
+}
+
+func normalizedSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value = normalize(value); value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	return set
+}
+
+func contains(values map[string]struct{}, value string) bool {
+	_, ok := values[value]
+	return ok
 }
 
 func laneWarningDetail(item Item, waitingOnHuman bool) string {

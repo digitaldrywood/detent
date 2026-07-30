@@ -33,7 +33,7 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 		Dispatchable: o.stalenessDispatchableItems(candidates, state, now),
 		MergeQueue:   o.stalenessMergeQueueItems(state),
 		Completions:  stalenessCompletions(state),
-		Decisions:    stalenessDecisions(state.SchedulerDecisions),
+		Decisions:    stalenessDecisions(state.SchedulerDecisions, stalenessDecisionIssueIndex(state, candidates)),
 	}, now)
 	previous := state.StalenessWarnings
 	next := make(map[string]StalenessWarning, len(evaluated))
@@ -170,18 +170,95 @@ func stalenessCompletions(state *State) []staleness.Completion {
 	return completions
 }
 
-func stalenessDecisions(decisions []telemetry.SchedulerDecision) []staleness.Decision {
+func stalenessDecisions(decisions []telemetry.SchedulerDecision, issues map[string]connector.Issue) []staleness.Decision {
 	out := make([]staleness.Decision, 0, len(decisions))
 	for _, decision := range decisions {
+		issue, _ := stalenessDecisionIssue(decision, issues)
 		out = append(out, staleness.Decision{
-			IssueID:    strings.TrimSpace(decision.IssueID),
-			Identifier: strings.TrimSpace(decision.Identifier),
-			IssueURL:   strings.TrimSpace(decision.IssueURL),
-			Reason:     strings.TrimSpace(decision.Reason),
-			At:         decision.DecisionAt.UTC(),
+			IssueID:      strings.TrimSpace(decision.IssueID),
+			Identifier:   strings.TrimSpace(decision.Identifier),
+			IssueURL:     strings.TrimSpace(decision.IssueURL),
+			CurrentState: strings.TrimSpace(issue.State),
+			Closed:       issue.Closed,
+			Merged:       pullRequestMerged(issue.PullRequest),
+			Reason:       strings.TrimSpace(decision.Reason),
+			At:           decision.DecisionAt.UTC(),
 		})
 	}
 	return out
+}
+
+func stalenessDecisionIssueIndex(state *State, candidates []connector.Issue) map[string]connector.Issue {
+	issues := make(map[string]connector.Issue)
+	if state == nil {
+		return issues
+	}
+	for _, completed := range state.Completed {
+		indexStalenessDecisionIssue(issues, completed.Issue)
+	}
+	for _, blocked := range state.Blocked {
+		indexStalenessDecisionIssue(issues, blocked.Issue)
+	}
+	for _, retry := range state.Retry {
+		indexStalenessDecisionIssue(issues, retry.Issue)
+	}
+	for _, running := range state.Running {
+		indexStalenessDecisionIssue(issues, running.Issue)
+	}
+	for _, issue := range state.Pipeline {
+		indexStalenessDecisionIssue(issues, issue)
+	}
+	for _, issue := range state.BoardIssues {
+		indexStalenessDecisionIssue(issues, issue)
+	}
+	for _, issue := range candidates {
+		indexStalenessDecisionIssue(issues, issue)
+	}
+	return issues
+}
+
+func indexStalenessDecisionIssue(issues map[string]connector.Issue, issue connector.Issue) {
+	for _, key := range []string{
+		stalenessDecisionIssueIDKey(issue.ID),
+		stalenessDecisionIdentifierKey(issue.Identifier),
+		stalenessDecisionURLKey(issue.URL),
+	} {
+		if key != "" {
+			issues[key] = issue
+		}
+	}
+}
+
+func stalenessDecisionIssue(decision telemetry.SchedulerDecision, issues map[string]connector.Issue) (connector.Issue, bool) {
+	for _, key := range []string{
+		stalenessDecisionIssueIDKey(decision.IssueID),
+		stalenessDecisionIdentifierKey(decision.Identifier),
+		stalenessDecisionURLKey(decision.IssueURL),
+	} {
+		if issue, ok := issues[key]; key != "" && ok {
+			return issue, true
+		}
+	}
+	return connector.Issue{}, false
+}
+
+func stalenessDecisionIssueIDKey(value string) string {
+	return stalenessDecisionIssueKey("id:", value)
+}
+
+func stalenessDecisionIdentifierKey(value string) string {
+	return stalenessDecisionIssueKey("identifier:", value)
+}
+
+func stalenessDecisionURLKey(value string) string {
+	return stalenessDecisionIssueKey("url:", value)
+}
+
+func stalenessDecisionIssueKey(prefix string, value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return prefix + value
+	}
+	return ""
 }
 
 func (o *Orchestrator) deliverStalenessWarnings(ctx context.Context, state *State, now time.Time) {

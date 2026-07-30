@@ -117,7 +117,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			SessionsMultiple: cfg.Observability.Efficiency.AnomalySessionsMultiple,
 			DwellMultiple:    cfg.Observability.Efficiency.AnomalyDwellMultiple,
 		},
-		Staleness: stalenessConfigFromWorkflow(cfg.Observability.Staleness),
+		Staleness: stalenessConfigFromWorkflow(cfg.Observability.Staleness, cfg.Tracker.TerminalStates),
 		StalenessDelivery: staleness.DeliveryConfig{
 			WebhookURL: cfg.Observability.Staleness.Webhook.URL,
 			Headers:    cloneStringMap(cfg.Observability.Staleness.Webhook.Headers),
@@ -126,7 +126,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 	}
 }
 
-func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability) staleness.Config {
+func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability, terminalStates []string) staleness.Config {
 	lanes := make([]staleness.LaneThreshold, 0, len(cfg.Lanes))
 	for _, lane := range cfg.Lanes {
 		lanes = append(lanes, staleness.LaneThreshold{
@@ -136,12 +136,14 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability) stal
 		})
 	}
 	return staleness.Config{
-		Enabled:                cfg.Enabled,
-		Lanes:                  lanes,
-		NoCompletionThreshold:  time.Duration(cfg.NoCompletionHours) * time.Hour,
-		NoMergeThreshold:       time.Duration(cfg.NoMergeHours) * time.Hour,
-		RepeatedDecisionCount:  cfg.RepeatedDecisionCount,
-		RepeatedDecisionWindow: time.Duration(cfg.RepeatedWindowHours) * time.Hour,
+		Enabled:                       cfg.Enabled,
+		Lanes:                         lanes,
+		NoCompletionThreshold:         time.Duration(cfg.NoCompletionHours) * time.Hour,
+		NoMergeThreshold:              time.Duration(cfg.NoMergeHours) * time.Hour,
+		RepeatedDecisionCount:         cfg.RepeatedDecisionCount,
+		RepeatedDecisionWindow:        time.Duration(cfg.RepeatedWindowHours) * time.Hour,
+		RepeatedDecisionBenignReasons: append([]string(nil), cfg.RepeatedDecisionBenignReasons...),
+		TerminalStates:                append([]string(nil), terminalStates...),
 	}
 }
 
