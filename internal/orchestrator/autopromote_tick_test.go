@@ -3429,8 +3429,9 @@ func TestTickFailsAndRetriesStaleMergingWithoutStartupTelemetry(t *testing.T) {
 	issue.State = "Merging"
 	issue.Identifier = "digitaldrywood/creswoodcorners-phone#63"
 	cfg := normalizeConfig(Config{
-		PollInterval:        time.Minute,
-		MaxConcurrentAgents: 1,
+		PollInterval:         time.Minute,
+		MaxConcurrentAgents:  1,
+		MergeFastPathEnabled: true,
 		MaxConcurrentAgentsByState: map[string]int{
 			"Merging": 1,
 		},
@@ -3492,6 +3493,67 @@ func TestTickFailsAndRetriesStaleMergingWithoutStartupTelemetry(t *testing.T) {
 	}
 }
 
+func TestFailStalledMergeWorkerStartsRequiresMergeRunMode(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 5, 0, 6, 0, time.UTC)
+	enteredMergingAt := now.Add(time.Minute + 2*time.Second)
+	tests := []struct {
+		name        string
+		mode        string
+		wantRunning bool
+	}{
+		{name: "implement", mode: runpkg.RunModeImplement, wantRunning: true},
+		{name: "plan", mode: runpkg.RunModePlan, wantRunning: true},
+		{name: "merge", mode: runpkg.RunModeMerge, wantRunning: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTickIssue("issue-"+tt.name+"-in-merging", []string{"bug"}, nil)
+			issue.State = "Merging"
+			issue.StageUpdatedAt = &enteredMergingAt
+			issue.Identifier = "getparable/parable#1946"
+			cfg := normalizeConfig(Config{PollInterval: time.Minute})
+			orch := &Orchestrator{
+				cfg:    cfg,
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			cancelled := false
+			state.Running[issue.ID] = Running{
+				Issue:     cloneIssue(issue),
+				Mode:      tt.mode,
+				StartedAt: now.Add(-33*time.Minute - 13*time.Second),
+				cancel: func() {
+					cancelled = true
+				},
+			}
+
+			orch.failStalledMergeWorkerStarts(context.Background(), &state, now)
+
+			_, running := state.Running[issue.ID]
+			if running != tt.wantRunning {
+				t.Fatalf("Running[%q] present = %v, want %v", issue.ID, running, tt.wantRunning)
+			}
+			wantCancelled := !tt.wantRunning
+			if cancelled != wantCancelled {
+				t.Fatalf("cancellation called = %v, want %v", cancelled, wantCancelled)
+			}
+			_, retrying := state.Retry[issue.ID]
+			wantRetry := !tt.wantRunning
+			if retrying != wantRetry {
+				t.Fatalf("Retry[%q] present = %v, want %v", issue.ID, retrying, wantRetry)
+			}
+			if timing := state.MergeTimings[issue.ID]; !timing.MergeFailedAt.IsZero() {
+				t.Fatalf("MergeTimings[%q].MergeFailedAt = %v, want zero", issue.ID, timing.MergeFailedAt)
+			}
+		})
+	}
+}
+
 func TestFailStalledMergeWorkerStartsBlocksAfterRetryCap(t *testing.T) {
 	t.Parallel()
 
@@ -3522,6 +3584,7 @@ func TestFailStalledMergeWorkerStartsBlocksAfterRetryCap(t *testing.T) {
 	state.Running[issue.ID] = Running{
 		Issue:     cloneIssue(issue),
 		Attempt:   maxMergeWorkerRunnerFailures,
+		Mode:      runpkg.RunModeMerge,
 		StartedAt: now.Add(-3 * time.Minute),
 	}
 

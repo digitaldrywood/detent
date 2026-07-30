@@ -1048,7 +1048,7 @@ func (o *Orchestrator) failStalledMergeWorkerStarts(ctx context.Context, state *
 	}
 	for _, issueID := range sortedKeys(state.Running) {
 		running := state.Running[issueID]
-		if !mergeWorkerIssue(running.Issue) || running.StartedAt.IsZero() || mergeWorkerStartupObserved(running) {
+		if strings.TrimSpace(running.Mode) != runpkg.RunModeMerge || running.StartedAt.IsZero() || mergeWorkerStartupObserved(running) {
 			continue
 		}
 		if now.Before(running.StartedAt.Add(timeout)) {
