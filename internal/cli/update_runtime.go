@@ -49,6 +49,7 @@ func newRuntimeUpdateScheduler(cfg BootConfig, logger *slog.Logger, reserveIdle 
 		CheckInterval:    interval,
 		ReserveIdle:      reserveIdle,
 		Logger:           logger,
+		StatePath:        runtimeUpdateStatePath(cfg),
 	}
 	executable, err := os.Executable()
 	if err != nil {

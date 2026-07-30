@@ -42,6 +42,7 @@ type SchedulerConfig struct {
 	CheckInterval      time.Duration
 	IdlePollInterval   time.Duration
 	LastAppliedVersion string
+	StatePath          string
 	Updater            Updater
 	ReserveIdle        func(context.Context) (func(), bool)
 	RequestRestart     func(string) bool
@@ -83,6 +84,14 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if cfg.IdlePollInterval <= 0 {
 		cfg.IdlePollInterval = defaultIdlePollInterval
 	}
+	loadedLastCheckAt, lastCheckFound, err := loadSchedulerState(cfg.StatePath)
+	if err != nil {
+		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
+	}
+	var lastCheckAt *time.Time
+	if lastCheckFound {
+		lastCheckAt = &loadedLastCheckAt
+	}
 	state := "disabled"
 	if cfg.Enabled {
 		state = "scheduled"
@@ -94,6 +103,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 			AutoApplyEnabled:   cfg.AutoApplyEnabled,
 			CheckInterval:      cfg.CheckInterval,
 			State:              state,
+			LastCheckAt:        lastCheckAt,
 			LastAppliedVersion: strings.TrimSpace(cfg.LastAppliedVersion),
 		},
 	}, nil
@@ -116,16 +126,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 			continue
 		}
-		delay := s.cfg.NextDelay(s.cfg.CheckInterval)
-		if delay <= 0 || delay > s.cfg.CheckInterval {
-			delay = s.cfg.CheckInterval
-		}
-		next := s.cfg.Now().Add(delay)
+		delay, next := s.nextCheck()
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "scheduled"
 			status.NextCheckAt = &next
 		})
-		if !s.cfg.Wait(ctx, delay) {
+		if delay > 0 && !s.cfg.Wait(ctx, delay) {
 			return
 		}
 		if _, err := s.CheckNow(ctx); err != nil && ctx.Err() == nil {
@@ -153,8 +159,15 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	checked, err := s.cfg.Updater.Check(ctx)
 	checkedAt := s.cfg.Now()
 	if err != nil {
-		s.recordFailure(checkedAt, err)
-		return checked, fmt.Errorf("check for Detent update: %w", err)
+		if ctx.Err() != nil {
+			s.updateStatus(func(status *AutoStatus) {
+				status.State = "failed"
+				status.LastError = err.Error()
+			})
+			return checked, fmt.Errorf("check for Detent update: %w", err)
+		}
+		persistErr := s.recordFailure(checkedAt, err)
+		return checked, fmt.Errorf("check for Detent update: %w", errors.Join(err, persistErr))
 	}
 	if !checked.UpdateAvailable {
 		s.updateStatus(func(status *AutoStatus) {
@@ -162,8 +175,9 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 			status.LastCheckAt = &checkedAt
 			status.AvailableVersion = ""
 		})
+		persistErr := s.persistLastCheck(checkedAt)
 		s.cfg.Logger.Info("automatic update check completed", "current_version", checked.CurrentVersion, "update_available", false)
-		return checked, nil
+		return checked, persistErr
 	}
 
 	s.updateStatus(func(status *AutoStatus) {
@@ -171,16 +185,17 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		status.LastCheckAt = &checkedAt
 		status.AvailableVersion = checked.LatestVersion
 	})
+	persistErr := s.persistLastCheck(checkedAt)
 	s.cfg.Logger.Info("Detent update available", "current_version", checked.CurrentVersion, "latest_version", checked.LatestVersion, "auto_apply_enabled", s.cfg.AutoApplyEnabled)
 	if !s.cfg.AutoApplyEnabled {
-		return checked, nil
+		return checked, persistErr
 	}
 	if checked.InstallSource != InstallSourceRelease {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "available_manual_apply"
 		})
 		s.cfg.Logger.Warn("automatic update apply skipped for non-release install", "install_source", checked.InstallSource, "latest_version", checked.LatestVersion)
-		return checked, nil
+		return checked, persistErr
 	}
 	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
 	if !idle {
@@ -191,10 +206,11 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 			status.State = "pending_idle"
 		})
 		s.cfg.Logger.Info("automatic update apply deferred until runtime is idle", "version", checked.LatestVersion)
-		return checked, nil
+		return checked, persistErr
 	}
 
-	return s.applyLocked(ctx, releaseIdle)
+	applied, applyErr := s.applyLocked(ctx, releaseIdle)
+	return applied, errors.Join(persistErr, applyErr)
 }
 
 func (s *Scheduler) ApplyPending(ctx context.Context) (Status, error) {
@@ -246,8 +262,8 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 		Stderr:    io.Discard,
 	})
 	if err != nil {
-		s.recordFailure(s.cfg.Now(), err)
-		return applied, fmt.Errorf("apply Detent update: %w", err)
+		persistErr := s.recordFailure(s.cfg.Now(), err)
+		return applied, fmt.Errorf("apply Detent update: %w", errors.Join(err, persistErr))
 	}
 	if applied.Action != ActionUpdated {
 		s.updateStatus(func(status *AutoStatus) {
@@ -294,12 +310,54 @@ func (s *Scheduler) Status() AutoStatus {
 	return cloneAutoStatus(s.status)
 }
 
-func (s *Scheduler) recordFailure(checkedAt time.Time, err error) {
+func (s *Scheduler) recordFailure(checkedAt time.Time, err error) error {
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "failed"
 		status.LastCheckAt = &checkedAt
 		status.LastError = err.Error()
 	})
+	persistErr := s.persistLastCheck(checkedAt)
+	if persistErr != nil {
+		s.updateStatus(func(status *AutoStatus) {
+			status.LastError = errors.Join(err, persistErr).Error()
+		})
+	}
+	return persistErr
+}
+
+func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
+	if err := saveSchedulerState(s.cfg.StatePath, checkedAt); err != nil {
+		wrapped := fmt.Errorf("persist automatic update state: %w", err)
+		s.updateStatus(func(status *AutoStatus) {
+			status.LastError = wrapped.Error()
+		})
+		return wrapped
+	}
+	return nil
+}
+
+func (s *Scheduler) nextCheck() (time.Duration, time.Time) {
+	jittered := s.cfg.NextDelay(s.cfg.CheckInterval)
+	if jittered <= 0 || jittered > s.cfg.CheckInterval {
+		jittered = s.cfg.CheckInterval
+	}
+	now := s.cfg.Now()
+	status := s.Status()
+	if status.LastCheckAt == nil {
+		if strings.TrimSpace(s.cfg.StatePath) != "" {
+			return 0, now
+		}
+		return jittered, now.Add(jittered)
+	}
+	next := status.LastCheckAt.Add(jittered)
+	remaining := next.Sub(now)
+	if remaining <= 0 {
+		return 0, now
+	}
+	if remaining > s.cfg.CheckInterval {
+		return s.cfg.CheckInterval, now.Add(s.cfg.CheckInterval)
+	}
+	return remaining, next
 }
 
 func (s *Scheduler) updateStatus(update func(*AutoStatus)) {

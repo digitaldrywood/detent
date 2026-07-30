@@ -344,6 +344,14 @@ projects:
 	}
 }
 
+func TestUpdateUsesSixHourDefaultInterval(t *testing.T) {
+	t.Parallel()
+
+	if got := (Update{}).NormalizedCheckIntervalHours(); got != 6 {
+		t.Fatalf("NormalizedCheckIntervalHours() = %d, want 6", got)
+	}
+}
+
 func TestReadAllowsRefBackedRelativeWorkflow(t *testing.T) {
 	t.Parallel()
 

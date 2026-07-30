@@ -802,6 +802,33 @@ func TestRuntimeBoardSnapshotPath(t *testing.T) {
 	}
 }
 
+func TestRuntimeUpdateStatePath(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	tests := []struct {
+		name     string
+		database string
+		want     string
+	}{
+		{name: "memory database", database: ":memory:", want: filepath.Join(home, "detent-update-state.json")},
+		{name: "file database", database: filepath.Join(home, "runtime.db"), want: filepath.Join(home, "runtime-update-state.json")},
+		{name: "file URI", database: "file:" + filepath.ToSlash(filepath.Join(home, "runtime.db")) + "?mode=rwc", want: filepath.Join(home, "runtime-update-state.json")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := BootConfig{
+				Global:        globalconfig.Config{Path: filepath.Join(home, "global.yaml")},
+				RuntimeDBPath: tt.database,
+			}
+			if got := runtimeUpdateStatePath(cfg); got != tt.want {
+				t.Fatalf("runtimeUpdateStatePath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAcquireRuntimeInstanceLockReportsLiveHolder(t *testing.T) {
 	t.Parallel()
 
