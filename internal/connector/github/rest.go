@@ -42,6 +42,11 @@ func restIssueCommentsListPath(ref issueRef) string {
 	return restIssueCommentsPath(ref) + "?per_page=100"
 }
 
+func restCollaboratorPermissionPath(ref issueRef, login string) string {
+	return "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Name) +
+		"/collaborators/" + url.PathEscape(login) + "/permission"
+}
+
 func restIssueTimelinePath(ref issueRef) string {
 	return restIssuePath(ref) + "/timeline?per_page=100"
 }

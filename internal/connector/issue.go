@@ -145,6 +145,7 @@ type IssueComment struct {
 	AuthorLogin       string     `json:"author_login,omitempty" yaml:"author_login,omitempty"`
 	AuthorKind        string     `json:"author_kind,omitempty" yaml:"author_kind,omitempty"`
 	AuthorDisplayName string     `json:"author_display_name,omitempty" yaml:"author_display_name,omitempty"`
+	AuthorAuthorized  bool       `json:"author_authorized,omitempty" yaml:"author_authorized,omitempty"`
 	CreatedAt         *time.Time `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 	UpdatedAt         *time.Time `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 	Local             bool       `json:"local,omitempty" yaml:"local,omitempty"`

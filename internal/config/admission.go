@@ -12,27 +12,30 @@ import (
 )
 
 const (
-	DefaultBacklogAdmissionSchedule            = "0 6 * * 1-5"
-	DefaultBacklogAdmissionMaxCandidatesPerRun = 50
-	DefaultBacklogAdmissionMaxProposalsPerRun  = 3
-	DefaultBacklogAdmissionMaxOpenProposals    = 10
-	DefaultBacklogAdmissionProposalExpiryDays  = 7
+	DefaultBacklogAdmissionSchedule               = "0 6 * * 1-5"
+	DefaultBacklogAdmissionMaxCandidatesPerRun    = 50
+	DefaultBacklogAdmissionMaxProposalsPerRun     = 3
+	DefaultBacklogAdmissionMaxOpenProposals       = 10
+	DefaultBacklogAdmissionProposalExpiryDays     = 7
+	DefaultBacklogAdmissionAutoAdmitMinConfidence = 0.9
 )
 
 var admissionDimensionPattern = regexp.MustCompile(`^\s*[-*+]\s+\*\*([^*]+)\*\*\s*(?:[—–:-]\s*)?(.+?)\s*$`)
 
 type BacklogAdmission struct {
-	Enabled             bool                    `yaml:"enabled"`
-	Schedule            string                  `yaml:"schedule"`
-	Sources             BacklogAdmissionSources `yaml:"sources"`
-	TargetState         string                  `yaml:"target_state"`
-	CriteriaSection     string                  `yaml:"criteria_section"`
-	ExcludeLabels       []string                `yaml:"exclude_labels,omitempty"`
-	Authors             BacklogAdmissionAuthors `yaml:"authors,omitempty"`
-	MaxCandidatesPerRun int                     `yaml:"max_candidates_per_run"`
-	MaxProposalsPerRun  int                     `yaml:"max_proposals_per_run"`
-	MaxOpenProposals    int                     `yaml:"max_open_proposals"`
-	ProposalExpiryDays  int                     `yaml:"proposal_expiry_days"`
+	Enabled                bool                    `yaml:"enabled"`
+	Schedule               string                  `yaml:"schedule"`
+	Sources                BacklogAdmissionSources `yaml:"sources"`
+	TargetState            string                  `yaml:"target_state"`
+	CriteriaSection        string                  `yaml:"criteria_section"`
+	ExcludeLabels          []string                `yaml:"exclude_labels,omitempty"`
+	Authors                BacklogAdmissionAuthors `yaml:"authors,omitempty"`
+	MaxCandidatesPerRun    int                     `yaml:"max_candidates_per_run"`
+	MaxProposalsPerRun     int                     `yaml:"max_proposals_per_run"`
+	MaxOpenProposals       int                     `yaml:"max_open_proposals"`
+	ProposalExpiryDays     int                     `yaml:"proposal_expiry_days"`
+	AutoAdmit              bool                    `yaml:"auto_admit"`
+	AutoAdmitMinConfidence float64                 `yaml:"auto_admit_min_confidence"`
 }
 
 type BacklogAdmissionSources struct {
@@ -110,6 +113,9 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	validatePositive(prefix+".max_proposals_per_run", a.MaxProposalsPerRun, &problems)
 	validatePositive(prefix+".max_open_proposals", a.MaxOpenProposals, &problems)
 	validatePositive(prefix+".proposal_expiry_days", a.ProposalExpiryDays, &problems)
+	if a.AutoAdmit && (a.AutoAdmitMinConfidence < 0 || a.AutoAdmitMinConfidence > 1) {
+		problems = append(problems, prefix+".auto_admit_min_confidence must be between 0 and 1")
+	}
 	capabilities := connector.CandidateCapabilitiesFor(connector.Backend(tracker.Kind), tracker.GitHubStatusSource)
 	if len(a.Sources.States) > 0 && !capabilities.Supports(connector.CandidateSelectorStates) {
 		gap := prefix + ".sources.states requires candidate selector states, but tracker.kind " + tracker.Kind

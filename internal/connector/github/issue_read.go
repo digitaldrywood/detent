@@ -1258,12 +1258,13 @@ func (c *Connector) fetchIssueComments(ctx context.Context, ref issueRef) ([]iss
 	comments := make([]issueComment, 0, len(response))
 	for _, comment := range response {
 		comments = append(comments, issueComment{
-			ID:        restCommentID(comment),
-			Body:      comment.Body,
-			URL:       comment.HTMLURL,
-			Author:    comment.User,
-			CreatedAt: restTimeString(comment.CreatedAt),
-			UpdatedAt: restTimeString(comment.UpdatedAt),
+			ID:                restCommentID(comment),
+			Body:              comment.Body,
+			URL:               comment.HTMLURL,
+			Author:            comment.User,
+			AuthorAssociation: comment.AuthorAssociation,
+			CreatedAt:         restTimeString(comment.CreatedAt),
+			UpdatedAt:         restTimeString(comment.UpdatedAt),
 		})
 	}
 	return comments, nil
@@ -1287,6 +1288,40 @@ func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issu
 		out = append(out, connectorIssueComment(comment, connector.IssueCommentTargetIssue))
 	}
 	return out, nil
+}
+
+func (c *Connector) IsIssueCommentAuthorAuthorized(
+	ctx context.Context,
+	issue connector.Issue,
+	comment connector.IssueComment,
+) (bool, error) {
+	ref, ok := issueRefFromIdentifier(issue.Identifier)
+	if !ok {
+		ref, ok = issueRefFromURL(issue.URL)
+	}
+	login := strings.TrimSpace(comment.AuthorLogin)
+	if !ok || login == "" {
+		return false, nil
+	}
+	var response restCollaboratorPermission
+	if err := c.client.REST(
+		ctx,
+		http.MethodGet,
+		restCollaboratorPermissionPath(ref, login),
+		nil,
+		&response,
+	); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read github issue comment author permission: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(response.Permission)) {
+	case "admin", "maintain", "write", "push":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func (c *Connector) FetchPullRequestComments(ctx context.Context, repository string, number int) ([]connector.IssueComment, error) {
@@ -1406,15 +1441,25 @@ func connectorIssueComments(comments []issueComment) []connector.IssueComment {
 
 func connectorIssueComment(comment issueComment, targetType string) connector.IssueComment {
 	return connector.IssueComment{
-		ID:          strings.TrimSpace(comment.ID),
-		Backend:     connector.BackendGitHub.String(),
-		Body:        comment.Body,
-		URL:         comment.URL,
-		AuthorLogin: actorLogin(comment.Author),
-		AuthorKind:  actorType(comment.Author),
-		CreatedAt:   parseGitHubTime(comment.CreatedAt),
-		UpdatedAt:   parseGitHubTime(comment.UpdatedAt),
-		TargetType:  targetType,
+		ID:               strings.TrimSpace(comment.ID),
+		Backend:          connector.BackendGitHub.String(),
+		Body:             comment.Body,
+		URL:              comment.URL,
+		AuthorLogin:      actorLogin(comment.Author),
+		AuthorKind:       actorType(comment.Author),
+		AuthorAuthorized: githubAuthorCanOperate(comment.AuthorAssociation),
+		CreatedAt:        parseGitHubTime(comment.CreatedAt),
+		UpdatedAt:        parseGitHubTime(comment.UpdatedAt),
+		TargetType:       targetType,
+	}
+}
+
+func githubAuthorCanOperate(association string) bool {
+	switch strings.ToUpper(strings.TrimSpace(association)) {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
 	}
 }
 

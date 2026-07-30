@@ -281,13 +281,14 @@ func (c *Connector) CreateComment(_ context.Context, issueID string, body string
 	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
 		createdAt := now.UTC()
 		issue.Comments = append(issue.Comments, connector.IssueComment{
-			ID:          memoryCommentID(*issue, len(issue.Comments)+1),
-			Backend:     connector.BackendMemory.String(),
-			Body:        body,
-			AuthorLogin: "memory",
-			CreatedAt:   &createdAt,
-			Local:       true,
-			TargetType:  connector.IssueCommentTargetIssue,
+			ID:               memoryCommentID(*issue, len(issue.Comments)+1),
+			Backend:          connector.BackendMemory.String(),
+			Body:             body,
+			AuthorLogin:      "memory",
+			AuthorAuthorized: true,
+			CreatedAt:        &createdAt,
+			Local:            true,
+			TargetType:       connector.IssueCommentTargetIssue,
 		})
 		issue.UpdatedAt = &now
 	})

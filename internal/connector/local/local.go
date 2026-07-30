@@ -315,6 +315,7 @@ order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment, ev
 				AuthorLogin:       "detent",
 				AuthorKind:        "Bot",
 				AuthorDisplayName: "Detent",
+				AuthorAuthorized:  true,
 				CreatedAt:         eventTime,
 				Local:             true,
 				CanEdit:           true,

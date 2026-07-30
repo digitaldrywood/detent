@@ -240,6 +240,8 @@ rendering and fails on drift.
 | `backlog_admission` | `object` | `see child fields` | No | None |
 | `backlog_admission.authors` | `object` | `see child fields` | No | None |
 | `backlog_admission.authors.allow` | `list<string>` | `[]` | No | None |
+| `backlog_admission.auto_admit` | `boolean` | `false` | No | None |
+| `backlog_admission.auto_admit_min_confidence` | `number` | `0.9` | No | None |
 | `backlog_admission.criteria_section` | `string` | `none` | Conditional | is required |
 | `backlog_admission.enabled` | `boolean` | `false` | No | None |
 | `backlog_admission.exclude_labels` | `list<string>` | `[]` | No | None |
@@ -455,6 +457,7 @@ rendering and fails on drift.
 | `tracker.issues[].closed` | `boolean` | `false when configured` | No | None |
 | `tracker.issues[].closed_reason` | `string` | `none` | No | None |
 | `tracker.issues[].comments` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].comments[].author_authorized` | `boolean` | `false when configured` | No | None |
 | `tracker.issues[].comments[].author_display_name` | `string` | `none` | No | None |
 | `tracker.issues[].comments[].author_kind` | `string` | `none` | No | None |
 | `tracker.issues[].comments[].author_login` | `string` | `none` | No | None |
