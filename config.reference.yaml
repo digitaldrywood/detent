@@ -968,10 +968,12 @@
 #   enabled: false
 #   # backlog_admission.schedule | type: string | default: "0 6 * * 1-5" | required: No | validation: must be a valid five-field cron expression
 #   schedule: "0 6 * * 1-5"
-#   # backlog_admission.sources | type: object | default: see child fields | required: No | validation: None
+#   # backlog_admission.sources | type: object | default: see child fields | required: No | validation: must configure at least one selector
 #   sources:
-#     # backlog_admission.sources.states | type: list<string> | default: [] | required: Conditional | validation: must contain at least one state; values must differ from target_state; values must name a configured workflow state
+#     # backlog_admission.sources.states | type: list<string> | default: [] | required: No | validation: values must differ from target_state; values must name a configured workflow state
 #     states: []
+#     # backlog_admission.sources.labels | type: list<string> | default: [] | required: No | validation: None
+#     labels: []
 #   # backlog_admission.target_state | type: string | default: none | required: Conditional | validation: is required; must name a configured workflow state
 #   target_state: null
 #   # backlog_admission.criteria_section | type: string | default: none | required: Conditional | validation: is required

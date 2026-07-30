@@ -18,6 +18,7 @@ backlog_admission:
   schedule: "15 4 * * 1"
   sources:
     states: [Backlog]
+    labels: [Sentry, sentry]
   target_state: Todo
   criteria_section: Admission criteria
   exclude_labels: [Skip, skip]
@@ -47,9 +48,10 @@ backlog_admission:
 		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 {
 		t.Fatalf("BacklogAdmission = %#v", got)
 	}
-	if len(got.ExcludeLabels) != 1 || got.ExcludeLabels[0] != "skip" ||
+	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
+		len(got.ExcludeLabels) != 1 || got.ExcludeLabels[0] != "skip" ||
 		len(got.Authors.Allow) != 1 || got.Authors.Allow[0] != "octocat" {
-		t.Fatalf("normalized filters = labels %#v authors %#v", got.ExcludeLabels, got.Authors.Allow)
+		t.Fatalf("normalized filters = sources %#v exclude %#v authors %#v", got.Sources.Labels, got.ExcludeLabels, got.Authors.Allow)
 	}
 }
 
@@ -96,7 +98,7 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}},
 		{name: "memory", tracker: Tracker{Kind: TrackerMemory}},
 		{name: "bad cron", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Schedule = "not cron" }, want: "valid five-field cron"},
-		{name: "empty sources", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = nil }, want: "must contain at least one state"},
+		{name: "empty sources", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = nil }, want: "must configure at least one selector"},
 		{name: "unknown source", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = []string{"Icebox"} }, want: "sources.states[0] must name"},
 		{name: "source equals target", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = []string{"Todo"} }, want: "must differ from target_state"},
 		{name: "unknown target", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.TargetState = "Ready" }, want: "target_state must name"},
@@ -122,6 +124,71 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 			}
 			if tt.want != "" && !strings.Contains(got, tt.want) {
 				t.Fatalf("Validate() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBacklogAdmissionLabelSelectorValidation(t *testing.T) {
+	t.Parallel()
+
+	valid := BacklogAdmission{
+		Enabled:             true,
+		Schedule:            "0 6 * * 1-5",
+		Sources:             BacklogAdmissionSources{Labels: []string{"sentry"}},
+		TargetState:         "Todo",
+		CriteriaSection:     "Admission criteria",
+		MaxCandidatesPerRun: 50,
+		MaxProposalsPerRun:  3,
+		MaxOpenProposals:    10,
+		ProposalExpiryDays:  7,
+	}
+	states := []string{"Backlog", "Todo", "Blocked", "Done"}
+	tests := []struct {
+		name    string
+		tracker Tracker
+		mutate  func(*BacklogAdmission)
+		want    string
+	}{
+		{name: "github label", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceLabel}},
+		{name: "github issue field", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceIssueField}},
+		{name: "github local", tracker: Tracker{Kind: TrackerGitHubLocal}},
+		{name: "local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}},
+		{name: "memory", tracker: Tracker{Kind: TrackerMemory}},
+		{name: "github project v2", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}, want: "does not declare complete label reads"},
+		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "does not declare complete label reads"},
+		{
+			name:    "configured status prefix",
+			tracker: Tracker{Kind: TrackerMemory, StatusLabelPrefix: "workflow/"},
+			mutate: func(cfg *BacklogAdmission) {
+				cfg.Sources.Labels = []string{"Workflow/Ready"}
+			},
+			want: `must not use status label prefix "workflow/"`,
+		},
+		{
+			name:    "project v2 excluded labels",
+			tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2},
+			mutate: func(cfg *BacklogAdmission) {
+				cfg.Sources.Labels = nil
+				cfg.Sources.States = []string{"Backlog"}
+				cfg.ExcludeLabels = []string{"skip"}
+			},
+			want: "fetches only the first 20 labels",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := valid
+			if test.mutate != nil {
+				test.mutate(&cfg)
+			}
+			got := strings.Join(cfg.Validate("backlog_admission", states, test.tracker), "; ")
+			if test.want == "" && got != "" {
+				t.Fatalf("Validate() = %q, want no problems", got)
+			}
+			if test.want != "" && !strings.Contains(got, test.want) {
+				t.Fatalf("Validate() = %q, want %q", got, test.want)
 			}
 		})
 	}
@@ -245,10 +312,6 @@ func TestBacklogAdmissionWarnings(t *testing.T) {
 	localWarnings := strings.Join(BacklogAdmissionWarnings(cfg, Tracker{Kind: TrackerLocalSQLite}), "; ")
 	if !strings.Contains(localWarnings, "does not discover authors") {
 		t.Fatalf("local warnings = %q", localWarnings)
-	}
-	projectWarnings := strings.Join(BacklogAdmissionWarnings(cfg, Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}), "; ")
-	if !strings.Contains(projectWarnings, "first 20 labels") {
-		t.Fatalf("project_v2 warnings = %q", projectWarnings)
 	}
 	memoryWarnings := strings.Join(BacklogAdmissionWarnings(cfg, Tracker{Kind: TrackerMemory}), "; ")
 	if !strings.Contains(memoryWarnings, "evaluation-only across restarts") {

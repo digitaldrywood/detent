@@ -27,13 +27,18 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 		incomplete bool
 		err        error
 	)
-	switch {
-	case c.usesLabelStatus():
-		issues, pagesRead, incomplete, err = c.readLabelCandidates(ctx, request)
-	case c.usesIssueFieldStatus():
-		issues, pagesRead, incomplete, err = c.readIssueFieldCandidates(ctx, request)
-	default:
-		issues, pagesRead, incomplete, err = c.readProjectCandidates(ctx, request)
+	switch request.Selector {
+	case connector.CandidateSelectorLabels:
+		issues, pagesRead, incomplete, err = c.readRepositoryLabelCandidates(ctx, request)
+	case connector.CandidateSelectorStates:
+		switch {
+		case c.usesLabelStatus():
+			issues, pagesRead, incomplete, err = c.readLabelCandidates(ctx, request)
+		case c.usesIssueFieldStatus():
+			issues, pagesRead, incomplete, err = c.readIssueFieldCandidates(ctx, request)
+		default:
+			issues, pagesRead, incomplete, err = c.readProjectCandidates(ctx, request)
+		}
 	}
 	if err != nil {
 		return connector.CandidateResult{}, err
@@ -44,6 +49,94 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 		return connector.CandidateResult{}, err
 	}
 	return result, nil
+}
+
+func (c *Connector) readRepositoryLabelCandidates(
+	ctx context.Context,
+	request connector.CandidateRequest,
+) ([]connector.Issue, int, bool, error) {
+	if !validPullRequestRepo(c.repository) {
+		return nil, 0, false, ErrMissingRepository
+	}
+	labelNames := normalizeStateList(request.Labels, nil)
+	scanLimit := request.ProbeLimit()
+	issues := []connector.Issue{}
+	seenIssues := map[string]struct{}{}
+	queriedLabels := map[string]struct{}{}
+	pagesRead := 0
+	pageSize := min(request.EffectivePageSize(), repositoryIssuesPageSize, scanLimit)
+	incomplete := false
+
+	for _, labelName := range labelNames {
+		labelKey := normalizeLabelName(labelName)
+		if _, ok := queriedLabels[labelKey]; ok {
+			continue
+		}
+		queriedLabels[labelKey] = struct{}{}
+		itemsRead := 0
+		for page := 1; ; page++ {
+			if itemsRead >= scanLimit {
+				incomplete = true
+				break
+			}
+			var response []restIssue
+			path := restRepositoryIssuesByLabelPagePath(c.repository, labelName, page, pageSize, true)
+			if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
+				return nil, 0, false, fmt.Errorf("fetch github label selector candidates: %w", err)
+			}
+			pagesRead++
+			pageItems := response
+			if remaining := scanLimit - itemsRead; len(pageItems) > remaining {
+				pageItems = pageItems[:remaining]
+			}
+			itemsRead += len(pageItems)
+			for _, item := range pageItems {
+				if item.PullRequest != nil {
+					continue
+				}
+				ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+				node := githubIssueNodeFromREST(ref, item)
+				if strings.TrimSpace(node.ID) == "" {
+					continue
+				}
+				if _, ok := seenIssues[node.ID]; ok {
+					continue
+				}
+				var (
+					issue connector.Issue
+					ok    bool
+					err   error
+				)
+				if c.usesIssueFieldStatus() {
+					issue, ok, err = c.fetchIssueFieldIssueFromREST(ctx, ref, item)
+				} else {
+					issue = c.buildLabelIssue(node, c.githubIssueStateToDetentState(node.State))
+					ok = true
+					c.cacheIssueRef(node)
+				}
+				if err != nil {
+					return nil, 0, false, err
+				}
+				if !ok {
+					continue
+				}
+				seenIssues[node.ID] = struct{}{}
+				issues = append(issues, issue)
+			}
+			if len(pageItems) < len(response) {
+				incomplete = true
+				break
+			}
+			if len(response) < pageSize {
+				break
+			}
+			if itemsRead >= scanLimit {
+				incomplete = true
+				break
+			}
+		}
+	}
+	return issues, pagesRead, incomplete, nil
 }
 
 func (c *Connector) readLabelCandidates(

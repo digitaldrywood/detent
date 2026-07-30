@@ -214,6 +214,74 @@ func TestConnectorReadLabelCandidatesSharesBoundAcrossStates(t *testing.T) {
 	}
 }
 
+func TestConnectorReadLabelSelectorCandidatesIndependentOfLabelStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		body: `[
+			{"node_id":"I_1","number":1,"title":"Labeled done issue","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1",
+				"labels":[{"name":"sentry"},{"name":"detent:done"}]}
+		]`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		TerminalStates:     []string{"Done"},
+	})
+
+	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+		Selector: connector.CandidateSelectorLabels,
+		Labels:   []string{"sentry"},
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("ReadCandidates() error = %v", err)
+	}
+	if len(got.Issues) != 1 || got.Issues[0].ID != "I_1" || got.Issues[0].State != "Done" {
+		t.Fatalf("result = %#v, want label match in terminal workflow state", got)
+	}
+	if path := server.requests()[0]["path"].(string); !strings.Contains(path, "labels=sentry") {
+		t.Fatalf("request path = %q, want sentry label filter", path)
+	}
+}
+
+func TestConnectorReadLabelSelectorCandidatesIndependentOfIssueFieldStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			body: `[
+				{"node_id":"I_1","number":1,"title":"Needs decision","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1",
+					"labels":[{"name":"needs-decision"}]}
+			]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+	})
+
+	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+		Selector: connector.CandidateSelectorLabels,
+		Labels:   []string{"needs-decision"},
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("ReadCandidates() error = %v", err)
+	}
+	if len(got.Issues) != 1 || got.Issues[0].ID != "I_1" || got.Issues[0].State != "Open" {
+		t.Fatalf("result = %#v, want label match with empty status field", got)
+	}
+}
+
 func TestConnectorReadIssueFieldCandidatesFiltersAndOrdersSearch(t *testing.T) {
 	t.Parallel()
 

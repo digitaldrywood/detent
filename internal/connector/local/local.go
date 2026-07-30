@@ -179,7 +179,14 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	if err := request.Validate(c.CandidateCapabilities()); err != nil {
 		return connector.CandidateResult{}, err
 	}
-	issues, err := c.fetchIssuesWithOrder(ctx, request.States, request.ProbeLimit(), true)
+	var states, labels []string
+	switch request.Selector {
+	case connector.CandidateSelectorStates:
+		states = request.States
+	case connector.CandidateSelectorLabels:
+		labels = request.Labels
+	}
+	issues, err := c.fetchIssuesWithOrder(ctx, states, labels, request.ProbeLimit(), true)
 	if err != nil {
 		return connector.CandidateResult{}, err
 	}
@@ -979,10 +986,16 @@ on conflict(project_id, id) do nothing`,
 }
 
 func (c *Connector) fetchIssues(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
-	return c.fetchIssuesWithOrder(ctx, states, limit, false)
+	return c.fetchIssuesWithOrder(ctx, states, nil, limit, false)
 }
 
-func (c *Connector) fetchIssuesWithOrder(ctx context.Context, states []string, limit int, candidateOrder bool) ([]connector.Issue, error) {
+func (c *Connector) fetchIssuesWithOrder(
+	ctx context.Context,
+	states []string,
+	labels []string,
+	limit int,
+	candidateOrder bool,
+) ([]connector.Issue, error) {
 	query := `select project_id, id, identifier, number, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
@@ -1006,6 +1019,18 @@ where project_id = ?`
 		// rows may hold the template's capitalized spellings; compare
 		// case-insensitively so items stay visible either way.
 		query += " and state collate nocase in (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- only generated question-mark placeholders are concatenated; values remain bound parameters.
+	}
+	if len(normalizedSet(labels)) > 0 {
+		placeholders := make([]string, 0, len(labels))
+		for _, label := range labels {
+			label = strings.TrimSpace(label)
+			if label == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, strings.ToLower(label))
+		}
+		query += " and exists (select 1 from json_each(labels_json) where lower(trim(cast(json_each.value as text))) in (" + strings.Join(placeholders, ",") + "))" // #nosec G202 -- only generated question-mark placeholders are concatenated; values remain bound parameters.
 	}
 	if candidateOrder {
 		query += " order by created_at is null asc, created_at asc, lower(identifier) asc, identifier asc, id asc"

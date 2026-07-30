@@ -17,7 +17,10 @@ var (
 
 type CandidateSelector string
 
-const CandidateSelectorStates CandidateSelector = "states"
+const (
+	CandidateSelectorStates CandidateSelector = "states"
+	CandidateSelectorLabels CandidateSelector = "labels"
+)
 
 type CandidateCapabilities struct {
 	Selectors []CandidateSelector `json:"selectors" yaml:"selectors"`
@@ -36,13 +39,15 @@ func CandidateCapabilitiesFor(backend Backend, statusSource string) CandidateCap
 	switch backend {
 	case BackendGitHub:
 		switch strings.ToLower(strings.TrimSpace(statusSource)) {
-		case "", "project_v2", "issue_field", "label":
+		case "", "project_v2":
 			return statesCandidateCapabilities()
+		case "issue_field", "label":
+			return statesAndLabelsCandidateCapabilities()
 		default:
 			return CandidateCapabilities{}
 		}
 	case BackendGitHubLocal, BackendLocalSQLite, BackendMemory:
-		return statesCandidateCapabilities()
+		return statesAndLabelsCandidateCapabilities()
 	default:
 		return CandidateCapabilities{}
 	}
@@ -51,6 +56,7 @@ func CandidateCapabilitiesFor(backend Backend, statusSource string) CandidateCap
 type CandidateRequest struct {
 	Selector CandidateSelector `json:"selector" yaml:"selector"`
 	States   []string          `json:"states,omitempty" yaml:"states,omitempty"`
+	Labels   []string          `json:"labels,omitempty" yaml:"labels,omitempty"`
 	Limit    int               `json:"limit" yaml:"limit"`
 	PageSize int               `json:"page_size,omitempty" yaml:"page_size,omitempty"`
 }
@@ -69,6 +75,10 @@ func (r CandidateRequest) Validate(capabilities CandidateCapabilities) error {
 	case CandidateSelectorStates:
 		if len(normalizedCandidateStates(r.States)) == 0 {
 			return fmt.Errorf("%w: states selector requires at least one state", ErrInvalidCandidateRequest)
+		}
+	case CandidateSelectorLabels:
+		if len(normalizedCandidateLabels(r.Labels)) == 0 {
+			return fmt.Errorf("%w: labels selector requires at least one label", ErrInvalidCandidateRequest)
 		}
 	default:
 		return fmt.Errorf("%w: %s", ErrCandidateSelectorUnsupported, r.Selector)
@@ -157,12 +167,24 @@ func statesCandidateCapabilities() CandidateCapabilities {
 	return CandidateCapabilities{Selectors: []CandidateSelector{CandidateSelectorStates}}
 }
 
+func statesAndLabelsCandidateCapabilities() CandidateCapabilities {
+	return CandidateCapabilities{Selectors: []CandidateSelector{CandidateSelectorStates, CandidateSelectorLabels}}
+}
+
 func normalizedCandidateStates(states []string) []string {
-	normalized := make([]string, 0, len(states))
-	seen := make(map[string]struct{}, len(states))
-	for _, state := range states {
-		state = strings.TrimSpace(state)
-		key := strings.ToLower(state)
+	return normalizedCandidateValues(states)
+}
+
+func normalizedCandidateLabels(labels []string) []string {
+	return normalizedCandidateValues(labels)
+}
+
+func normalizedCandidateValues(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
 		if key == "" {
 			continue
 		}
@@ -170,7 +192,7 @@ func normalizedCandidateStates(states []string) []string {
 			continue
 		}
 		seen[key] = struct{}{}
-		normalized = append(normalized, state)
+		normalized = append(normalized, value)
 	}
 	return normalized
 }

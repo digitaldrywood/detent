@@ -248,8 +248,9 @@ rendering and fails on drift.
 | `backlog_admission.max_proposals_per_run` | `integer` | `3` | No | must be greater than 0 |
 | `backlog_admission.proposal_expiry_days` | `integer` | `7` | No | must be greater than 0 |
 | `backlog_admission.schedule` | `string` | `"0 6 * * 1-5"` | No | must be a valid five-field cron expression |
-| `backlog_admission.sources` | `object` | `see child fields` | No | None |
-| `backlog_admission.sources.states` | `list<string>` | `[]` | Conditional | must contain at least one state<br>values must differ from target_state<br>values must name a configured workflow state |
+| `backlog_admission.sources` | `object` | `see child fields` | No | must configure at least one selector |
+| `backlog_admission.sources.labels` | `list<string>` | `[]` | No | None |
+| `backlog_admission.sources.states` | `list<string>` | `[]` | No | values must differ from target_state<br>values must name a configured workflow state |
 | `backlog_admission.target_state` | `string` | `none` | Conditional | is required<br>must name a configured workflow state |
 | `budget` | `object` | `see child fields` | No | None |
 | `budget.billing_mode` | `string` | `none` | No | must be one of metered, subscription |
