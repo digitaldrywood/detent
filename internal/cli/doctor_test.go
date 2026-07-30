@@ -5044,6 +5044,61 @@ func TestRunDoctorChecksRunsJobsInParallel(t *testing.T) {
 	}
 }
 
+func TestParallelDoctorValidationDoesNotMutateCachedWorkflow(t *testing.T) {
+	t.Parallel()
+
+	const laneCount = 10_000
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = ""
+	cfg.Observability.Staleness.Lanes = make([]workflowconfig.StalenessLaneThreshold, laneCount)
+	for index := range cfg.Observability.Staleness.Lanes {
+		cfg.Observability.Staleness.Lanes[index] = workflowconfig.StalenessLaneThreshold{
+			State:          " Lane " + strconv.Itoa(index) + " ",
+			ThresholdHours: 1,
+		}
+	}
+	wantLanes := slices.Clone(cfg.Observability.Staleness.Lanes)
+	workflow := workflowconfig.Workflow{Config: cfg}
+	project := globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md", Workdir: "/repo"}
+	global := globalconfig.Config{Projects: []globalconfig.Project{project}}
+	deps := doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflow, nil
+		},
+		workflowCache: newDoctorWorkflowCache(),
+	}
+	if _, err := loadDoctorProjectWorkflow(context.Background(), project, deps); err != nil {
+		t.Fatalf("loadDoctorProjectWorkflow() error = %v", err)
+	}
+
+	jobs := []doctorCheckJob{
+		{
+			Name: "Project detent checks",
+			Run: func(ctx context.Context) []doctorCheck {
+				return checkDoctorProject(ctx, project, deps, RuntimeSecret{}, false)
+			},
+		},
+		{
+			Name: doctorWorkflowOptimizationCheckName,
+			Run: func(ctx context.Context) []doctorCheck {
+				report, err := doctorWorkflowOptimization(ctx, nil, "", global, deps, "", doctorWorkflowOptimizationOptions{})
+				if err != nil {
+					return []doctorCheck{{Name: doctorWorkflowOptimizationCheckName, Status: doctorFail, Detail: err.Error()}}
+				}
+				return []doctorCheck{{Name: doctorWorkflowOptimizationCheckName, Status: doctorOK, WorkflowOptimization: report}}
+			},
+		},
+	}
+
+	results := runDoctorChecks(context.Background(), jobs, doctorTestSafetyTimeout, io.Discard)
+	if len(results) != len(jobs) {
+		t.Fatalf("results len = %d, want %d", len(results), len(jobs))
+	}
+	if !slices.Equal(cfg.Observability.Staleness.Lanes, wantLanes) {
+		t.Fatal("parallel doctor validation mutated cached workflow staleness lanes")
+	}
+}
+
 func TestDoctorReportKeepsStableOrderAfterParallelChecks(t *testing.T) {
 	t.Parallel()
 
