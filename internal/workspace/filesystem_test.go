@@ -49,6 +49,19 @@ func TestFilesystemWorkspaceCreatesArtifactWorkspaceAndOutputRoot(t *testing.T) 
 	if stat.Files != 1 {
 		t.Fatalf("DiffStat().Files = %d, want 1", stat.Files)
 	}
+	if stat.Fingerprint == "" {
+		t.Fatal("DiffStat().Fingerprint is empty")
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "artifacts", "manifest.json"), []byte("[]\n"), 0o600); err != nil {
+		t.Fatalf("update artifact: %v", err)
+	}
+	updated, err := backend.DiffStat(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("updated DiffStat() error = %v", err)
+	}
+	if updated.Files != stat.Files || updated.Fingerprint == stat.Fingerprint {
+		t.Fatalf("updated DiffStat() = %+v, want unchanged count and changed fingerprint from %+v", updated, stat)
+	}
 
 	result, err := backend.CleanupIssue(context.Background(), issue)
 	if err != nil {

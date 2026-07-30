@@ -49,15 +49,9 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 	snapshot.BaseFingerprint = strings.TrimSpace(recovery.BaseFingerprint)
 	snapshot.WorkspaceFiles = recovery.DiffStat.Files
 	snapshot.UnpushedCommits = recovery.UnpushedCommits
-	snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.DiffStat.Fingerprint)
+	snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)
 	if snapshot.WorkspaceFingerprint == "" {
-		snapshot.WorkspaceFingerprint = blockedRecoveryHash(fmt.Sprintf(
-			"files=%d;added=%d;removed=%d;unpushed=%d",
-			recovery.DiffStat.Files,
-			recovery.DiffStat.Added,
-			recovery.DiffStat.Removed,
-			recovery.UnpushedCommits,
-		))
+		snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.DiffStat.Fingerprint)
 	}
 	snapshot.WorkspaceStatus = "present"
 	return snapshot

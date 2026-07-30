@@ -224,6 +224,56 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	}
 }
 
+func TestLocalGitRecoveryStateDetectsAmendedCommit(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       filepath.Join(t.TempDir(), "workspaces"),
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	provider := backend.(RecoveryStateProvider)
+	issue := Issue{Identifier: "DD-RECOVERY-AMEND"}
+	info, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	path := filepath.Join(info.Path, "work.txt")
+	if err := os.WriteFile(path, []byte("first\n"), 0o600); err != nil {
+		t.Fatalf("write work file: %v", err)
+	}
+	runGit(t, info.Path, "add", "work.txt")
+	runGit(t, info.Path, "commit", "-m", "test: add work")
+	first, err := provider.RecoveryState(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("RecoveryState() error = %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("other\n"), 0o600); err != nil {
+		t.Fatalf("update work file: %v", err)
+	}
+	runGit(t, info.Path, "add", "work.txt")
+	runGit(t, info.Path, "commit", "--amend", "--no-edit")
+	amended, err := provider.RecoveryState(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("RecoveryState() after amend error = %v", err)
+	}
+	if first.UnpushedCommits != amended.UnpushedCommits || first.DiffStat != amended.DiffStat {
+		t.Fatalf("amended recovery counts = %+v, want unchanged from %+v", amended, first)
+	}
+	if first.WorkspaceFingerprint == "" || first.WorkspaceFingerprint == amended.WorkspaceFingerprint {
+		t.Fatalf("amended workspace fingerprint = %q, want change from %q", amended.WorkspaceFingerprint, first.WorkspaceFingerprint)
+	}
+}
+
 func TestLocalGitDiffIsBounded(t *testing.T) {
 	t.Parallel()
 

@@ -229,6 +229,21 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 	}
 }
 
+func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {
+	t.Parallel()
+
+	original := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:blocked"})}
+	reordered := blockedCauseSignals{Labels: blockedCauseLabels([]string{" DETENT:BLOCKED ", "Bug", "bug"})}
+	withOverride := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:blocked", "agent:max-tokens"})}
+
+	if blockedCauseFingerprint(original) != blockedCauseFingerprint(reordered) {
+		t.Fatal("equivalent labels changed the cause fingerprint")
+	}
+	if blockedCauseFingerprint(original) == blockedCauseFingerprint(withOverride) {
+		t.Fatal("recovery-affecting label did not change the cause fingerprint")
+	}
+}
+
 func blockedCauseTestOrchestrator(tracker *dependencyAutoUnblockConnector) *Orchestrator {
 	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
 	orch.cfg.BlockedRecovery.Enabled = false

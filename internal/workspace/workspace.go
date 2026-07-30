@@ -68,9 +68,10 @@ type IssueRecoveryStateProvider interface {
 }
 
 type RecoveryState struct {
-	DiffStat        DiffStat
-	BaseFingerprint string
-	UnpushedCommits int
+	DiffStat             DiffStat
+	BaseFingerprint      string
+	WorkspaceFingerprint string
+	UnpushedCommits      int
 }
 
 type MergePreparer interface {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,6 +38,7 @@ type blockedCauseSignals struct {
 	Health               string            `json:"health,omitempty"`
 	Description          string            `json:"description,omitempty"`
 	ModelOverride        string            `json:"model_override,omitempty"`
+	Labels               []string          `json:"labels,omitempty"`
 	Workpad              *workpad.Signal   `json:"workpad,omitempty"`
 	Fields               map[string]string `json:"fields,omitempty"`
 	PRNumber             int               `json:"pr_number,omitempty"`
@@ -117,6 +119,7 @@ func (o *Orchestrator) blockedCauseSignals(
 		Health:               strings.TrimSpace(snapshot.Health),
 		Description:          strings.TrimSpace(issue.Description),
 		ModelOverride:        strings.TrimSpace(issue.ModelOverride),
+		Labels:               blockedCauseLabels(issue.Labels),
 		Workpad:              blockedCauseWorkpadSignal(issue.WorkpadSignal),
 		Fields:               blockedCauseFields(issue.Fields),
 	}
@@ -147,6 +150,12 @@ func blockedCauseWorkpadSignal(signal *workpad.Signal) *workpad.Signal {
 		cloned.Invalid = &invalid
 	}
 	return &cloned
+}
+
+func blockedCauseLabels(labels []string) []string {
+	normalized := normalizeLabels(labels)
+	slices.Sort(normalized)
+	return normalized
 }
 
 func blockedCauseFields(fields map[string]string) map[string]string {
