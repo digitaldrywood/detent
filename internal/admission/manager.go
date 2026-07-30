@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
+	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
@@ -34,7 +36,9 @@ const (
 	admissionResolutionAutoAdmit           = "auto_admit"
 	admissionResolutionSourceStateChanged  = "source_state_changed_before_acceptance"
 	admissionResolutionAutoAdmitIneligible = "candidate_became_ineligible_before_auto_admit"
+	admissionResolutionEffortUnavailable   = "effort_recommendation_unavailable"
 	maxRationaleSize                       = 16 * 1024
+	maxEffortRationaleSize                 = 2 * 1024
 )
 
 var (
@@ -43,6 +47,7 @@ var (
 	ErrMissingRunner     = errors.New("backlog admission runner is required")
 	ErrInvalidProposal   = errors.New("backlog admission proposal is invalid")
 	ErrInvalidOutput     = errors.New("backlog admission agent output is invalid")
+	admissionEffortValue = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 type Store interface {
@@ -71,6 +76,7 @@ type Settings struct {
 	ProjectID          string
 	Config             config.BacklogAdmission
 	Criteria           config.AdmissionCriteria
+	EffortRubric       config.AdmissionEffortRubric
 	DispatchStates     []string
 	DispatchLabels     []string
 	PrioritizeBlockers bool
@@ -93,9 +99,11 @@ type Result struct {
 }
 
 type AgentProposal struct {
-	IssueID    string                   `json:"issue_id"`
-	Findings   []admissionmodel.Finding `json:"findings"`
-	Confidence *float64                 `json:"confidence"`
+	IssueID           string                   `json:"issue_id"`
+	Findings          []admissionmodel.Finding `json:"findings"`
+	Confidence        *float64                 `json:"confidence"`
+	RecommendedEffort string                   `json:"recommended_effort,omitempty"`
+	EffortRationale   string                   `json:"effort_rationale,omitempty"`
 }
 
 type Manager struct {
@@ -148,6 +156,14 @@ func (m *Manager) Update(settings Settings) error {
 		}
 		if strings.TrimSpace(settings.Criteria.Text) == "" || len(settings.Criteria.Dimensions) == 0 {
 			return errors.New("backlog admission criteria are unresolved")
+		}
+		if settings.Config.RequireEffort {
+			if strings.TrimSpace(settings.EffortRubric.Text) == "" || len(settings.EffortRubric.Efforts) == 0 {
+				return errors.New("backlog admission effort rubric is unresolved")
+			}
+			if _, ok := settings.Issues.(connector.IssueBodyUpdater); !ok {
+				return errors.New("backlog admission issue body updater is required")
+			}
 		}
 	}
 	m.mu.Lock()
@@ -381,7 +397,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		Mode:             runner.RunModeRoutine,
 		StartedAt:        startedAt,
 		Admission:        admissionRequest(settings, candidates),
-		AgentTools:       []runner.AgentTool{proposalTool()},
+		AgentTools:       []runner.AgentTool{proposalTool(settings.Config.RequireEffort)},
 		AgentToolHandler: collector.handle,
 	})
 	if err != nil {
@@ -722,6 +738,16 @@ func (m *Manager) executeProposals(
 			result.Skipped["invalid_agent_proposal"]++
 			continue
 		}
+		recommendedEffort, effortRationale, err := validateRecommendedEffort(
+			agentProposal.RecommendedEffort,
+			agentProposal.EffortRationale,
+			settings.EffortRubric,
+			settings.Config.RequireEffort,
+		)
+		if err != nil {
+			result.Skipped["invalid_agent_proposal"]++
+			continue
+		}
 		open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
 		if err != nil {
 			return result, err
@@ -731,20 +757,22 @@ func (m *Manager) executeProposals(
 			break
 		}
 		proposal := admissionmodel.Proposal{
-			ID:              proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
-			ProjectID:       settings.ProjectID,
-			IssueID:         current.ID,
-			IssueIdentifier: current.Identifier,
-			IssueURL:        current.URL,
-			TargetState:     settings.Config.TargetState,
-			Fingerprint:     issueFingerprint(current),
-			CriteriaSection: settings.Criteria.Section,
-			CriteriaText:    settings.Criteria.Text,
-			Findings:        findings,
-			Confidence:      *agentProposal.Confidence,
-			Status:          admissionmodel.ProposalOpen,
-			CreatedAt:       at,
-			ExpiresAt:       at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
+			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
+			ProjectID:         settings.ProjectID,
+			IssueID:           current.ID,
+			IssueIdentifier:   current.Identifier,
+			IssueURL:          current.URL,
+			TargetState:       settings.Config.TargetState,
+			Fingerprint:       issueFingerprint(current),
+			CriteriaSection:   settings.Criteria.Section,
+			CriteriaText:      settings.Criteria.Text,
+			Findings:          findings,
+			Confidence:        *agentProposal.Confidence,
+			RecommendedEffort: recommendedEffort,
+			EffortRationale:   effortRationale,
+			Status:            admissionmodel.ProposalOpen,
+			CreatedAt:         at,
+			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
 		}
 		created, err := m.store.CreateAdmissionProposal(ctx, proposal)
 		if err != nil {
@@ -825,6 +853,14 @@ func (m *Manager) admitProposal(
 		return nil
 	}
 	issue = current
+	if settings.Config.RequireEffort {
+		if err := m.writeRecommendedEffort(ctx, settings, issue, proposal, &decision); err != nil {
+			return err
+		}
+		if decision.Outcome == admissionmodel.ProposalSuperseded {
+			return nil
+		}
+	}
 	if err := settings.Issues.UpdateIssueState(ctx, proposal.IssueID, proposal.TargetState); err != nil {
 		return fmt.Errorf("admit backlog issue %s to %s: %w", proposal.IssueIdentifier, proposal.TargetState, err)
 	}
@@ -844,6 +880,42 @@ func (m *Manager) admitProposal(
 		"decision_actor", decision.ActorLogin,
 		"resolution_reason", decision.Reason,
 	)
+	return nil
+}
+
+func (m *Manager) writeRecommendedEffort(
+	ctx context.Context,
+	settings Settings,
+	issue connector.Issue,
+	proposal admissionmodel.Proposal,
+	decision *admissionmodel.Decision,
+) error {
+	_, found, parseErr := agentoverride.FromIssueBody(issue.Description)
+	if found || parseErr != nil {
+		return nil
+	}
+	effort, _, err := validateRecommendedEffort(
+		proposal.RecommendedEffort,
+		proposal.EffortRationale,
+		settings.EffortRubric,
+		true,
+	)
+	if err != nil {
+		decision.Outcome = admissionmodel.ProposalSuperseded
+		decision.Reason = admissionResolutionEffortUnavailable
+		if err := m.store.ResolveAdmissionProposal(ctx, *decision); err != nil {
+			return fmt.Errorf("resolve backlog proposal without required effort %s: %w", proposal.ID, err)
+		}
+		return nil
+	}
+	updater, ok := settings.Issues.(connector.IssueBodyUpdater)
+	if !ok {
+		return errors.New("backlog admission issue body updater is required")
+	}
+	body := appendRecommendedEffortBlock(issue.Description, effort)
+	if err := updater.UpdateIssueBody(ctx, proposal.IssueID, body); err != nil {
+		return fmt.Errorf("write recommended effort for backlog issue %s: %w", proposal.IssueIdentifier, err)
+	}
 	return nil
 }
 
@@ -1223,6 +1295,42 @@ func validateFindings(findings []admissionmodel.Finding, criteria config.Admissi
 	return out, nil
 }
 
+func validateRecommendedEffort(
+	effort string,
+	rationale string,
+	rubric config.AdmissionEffortRubric,
+	required bool,
+) (string, string, error) {
+	effort = strings.TrimSpace(effort)
+	rationale = strings.TrimSpace(rationale)
+	if effort == "" && rationale == "" && !required {
+		return "", "", nil
+	}
+	if effort == "" || rationale == "" || len(rationale) > maxEffortRationaleSize || !admissionEffortValue.MatchString(effort) {
+		return "", "", ErrInvalidProposal
+	}
+	if len(rubric.Efforts) == 0 {
+		if required {
+			return "", "", ErrInvalidProposal
+		}
+		return effort, rationale, nil
+	}
+	for _, allowed := range rubric.Efforts {
+		if strings.EqualFold(strings.TrimSpace(allowed), effort) {
+			return strings.TrimSpace(allowed), rationale, nil
+		}
+	}
+	return "", "", ErrInvalidProposal
+}
+
+func appendRecommendedEffortBlock(body string, effort string) string {
+	body = strings.TrimRight(body, " \t\r\n")
+	if body != "" {
+		body += "\n\n"
+	}
+	return body + "```detent-agent\nschema: 1\neffort: " + effort + "\n```\n"
+}
+
 func issueFingerprint(issue connector.Issue) string {
 	sum := sha256.Sum256([]byte(
 		strconv.Itoa(len(issue.Title)) + ":" + issue.Title +
@@ -1274,6 +1382,16 @@ func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool, untracked
 		b.WriteString(finding.CriterionQuote)
 		b.WriteString("”\n")
 	}
+	if proposal.RecommendedEffort != "" {
+		b.WriteString("\nRecommended effort: `")
+		b.WriteString(proposal.RecommendedEffort)
+		b.WriteString("`")
+		if proposal.EffortRationale != "" {
+			b.WriteString(" — ")
+			b.WriteString(proposal.EffortRationale)
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString("\nConfidence: ")
 	b.WriteString(strconv.FormatFloat(proposal.Confidence, 'f', 2, 64))
 	b.WriteString("\n\nExpires: ")
@@ -1307,6 +1425,9 @@ func admissionRequest(settings Settings, candidates []connector.Issue) *runner.A
 		CriteriaSection: settings.Criteria.Section,
 		CriteriaText:    settings.Criteria.Text,
 		Dimensions:      dimensions,
+		EffortSection:   settings.EffortRubric.Section,
+		EffortText:      settings.EffortRubric.Text,
+		AllowedEfforts:  append([]string(nil), settings.EffortRubric.Efforts...),
 		Candidates:      agentCandidates,
 	}
 }
@@ -1320,11 +1441,15 @@ func admissionIssue(projectID string) connector.Issue {
 	return issue
 }
 
-func proposalTool() runner.AgentTool {
+func proposalTool(requireEffort bool) runner.AgentTool {
+	required := `["issue_id","findings","confidence"]`
+	if requireEffort {
+		required = `["issue_id","findings","confidence","recommended_effort","effort_rationale"]`
+	}
 	return runner.AgentTool{
 		Name:        ProposalToolName,
 		Description: "Propose admission for one supplied candidate using only project-owned criteria.",
-		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["issue_id","findings","confidence"],"properties":{"issue_id":{"type":"string","minLength":1},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["dimension","criterion_quote","matched","rationale"],"properties":{"dimension":{"type":"string","minLength":1},"criterion_quote":{"type":"string","minLength":1},"matched":{"type":"boolean"},"rationale":{"type":"string","minLength":1}}}},"confidence":{"type":"number","minimum":0,"maximum":1}}}`),
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":` + required + `,"properties":{"issue_id":{"type":"string","minLength":1},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["dimension","criterion_quote","matched","rationale"],"properties":{"dimension":{"type":"string","minLength":1},"criterion_quote":{"type":"string","minLength":1},"matched":{"type":"boolean"},"rationale":{"type":"string","minLength":1}}}},"confidence":{"type":"number","minimum":0,"maximum":1},"recommended_effort":{"type":"string","minLength":1},"effort_rationale":{"type":"string","minLength":1}}}`),
 	}
 }
 
@@ -1438,6 +1563,7 @@ func cloneSettings(settings Settings) Settings {
 	settings.Config.Authors.Allow = append([]string(nil), settings.Config.Authors.Allow...)
 	settings.Config.Authors.AllowAssociation = append([]string(nil), settings.Config.Authors.AllowAssociation...)
 	settings.Criteria.Dimensions = append([]config.AdmissionDimension(nil), settings.Criteria.Dimensions...)
+	settings.EffortRubric.Efforts = append([]string(nil), settings.EffortRubric.Efforts...)
 	settings.DispatchStates = append([]string(nil), settings.DispatchStates...)
 	settings.DispatchLabels = append([]string(nil), settings.DispatchLabels...)
 	settings.TerminalStates = append([]string(nil), settings.TerminalStates...)

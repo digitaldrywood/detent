@@ -169,6 +169,8 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 	workflowCfg.BacklogAdmission.Sources.States = []string{"Backlog"}
 	workflowCfg.BacklogAdmission.TargetState = "Todo"
 	workflowCfg.BacklogAdmission.CriteriaSection = "Admission criteria"
+	workflowCfg.BacklogAdmission.RequireEffort = true
+	workflowCfg.BacklogAdmission.EffortSection = "Issue effort selection"
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{
@@ -178,6 +180,11 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 ## Admission criteria
 
 - **Evidence** — requires a reproducible signal.
+
+## Issue effort selection
+
+- **medium** — small and mechanical.
+- **high** — standard feature work.
 `,
 		},
 	}, project.Dependencies{

@@ -15,6 +15,7 @@ import (
 
 const (
 	EventKindComment            EventKind = "memory_tracker_comment"
+	EventKindBodyUpdate         EventKind = "memory_tracker_body_update"
 	EventKindIssueCreate        EventKind = "memory_tracker_issue_create"
 	EventKindPullRequestComment EventKind = "memory_tracker_pull_request_comment"
 	EventKindStateUpdate        EventKind = "memory_tracker_state_update"
@@ -65,6 +66,7 @@ var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
+var _ connector.IssueBodyUpdater = (*Connector)(nil)
 var _ connector.IssueCreator = (*Connector)(nil)
 var _ intake.IssueStore = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
@@ -439,6 +441,15 @@ func (c *Connector) UpdateIssueState(_ context.Context, issueID string, stateNam
 		issue.Fields["Status"] = stateName
 	})
 	c.send(Event{Kind: EventKindStateUpdate, IssueID: issueID, State: stateName})
+	return nil
+}
+
+func (c *Connector) UpdateIssueBody(_ context.Context, issueID string, body string) error {
+	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
+		issue.Description = body
+		issue.UpdatedAt = &now
+	})
+	c.send(Event{Kind: EventKindBodyUpdate, IssueID: issueID, Body: body})
 	return nil
 }
 

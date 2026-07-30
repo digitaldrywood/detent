@@ -85,6 +85,8 @@ type BacklogAdmissionProposal struct {
 	TransitionAt       sql.NullString `json:"transition_at"`
 	DecisionSeconds    sql.NullInt64  `json:"decision_seconds"`
 	ResolutionReason   sql.NullString `json:"resolution_reason"`
+	RecommendedEffort  sql.NullString `json:"recommended_effort"`
+	EffortRationale    sql.NullString `json:"effort_rationale"`
 }
 
 type BacklogAdmissionRun struct {

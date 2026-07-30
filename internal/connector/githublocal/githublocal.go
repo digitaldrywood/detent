@@ -48,6 +48,7 @@ type githubBackend interface {
 	connector.IssueCommentReader
 	connector.IssueFieldClearer
 	connector.IssueFieldSetter
+	connector.IssueBodyUpdater
 	connector.IssueParentResolver
 	connector.IssueReferenceResolver
 	connector.ProjectRemover
@@ -74,6 +75,7 @@ type localBackend interface {
 	connector.IssueCommentUpdater
 	connector.IssueFieldClearer
 	connector.IssueFieldSetter
+	connector.IssueBodyUpdater
 	connector.IssueReferenceResolver
 	connector.IssuesByStatesLimiter
 	connector.IssueStateProber
@@ -109,6 +111,7 @@ var _ connector.IssueCommentDeleter = (*Connector)(nil)
 var _ connector.IssueCommentAuthorizer = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueCommentUpdater = (*Connector)(nil)
+var _ connector.IssueBodyUpdater = (*Connector)(nil)
 var _ connector.IssueFieldClearer = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
@@ -457,6 +460,16 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		},
 		func() error {
 			return c.local.UpdateIssueState(ctx, issueID, stateName)
+		})
+}
+
+func (c *Connector) UpdateIssueBody(ctx context.Context, issueID string, body string) error {
+	return c.writeThroughIssue(ctx, issueID, "github body applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.UpdateIssueBody(ctx, githubID, body)
+		},
+		func() error {
+			return c.local.UpdateIssueBody(ctx, issueID, body)
 		})
 }
 

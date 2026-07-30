@@ -32,6 +32,27 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	return nil
 }
 
+func (c *Connector) UpdateIssueBody(ctx context.Context, issueID string, body string) error {
+	ref, ok, err := c.issueRefForID(ctx, strings.TrimSpace(issueID), graphQLQueryIssueLookup)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrStatusUpdateFailed
+	}
+	var response restIssue
+	if err := c.client.REST(ctx, http.MethodPatch, restIssuePath(ref), map[string]any{
+		"body": body,
+	}, &response); err != nil {
+		return fmt.Errorf("update github issue body: %w", err)
+	}
+	if strings.TrimSpace(response.NodeID) == "" {
+		return ErrStatusUpdateFailed
+	}
+	c.cacheIssueRef(githubIssueNodeFromREST(ref, response))
+	return nil
+}
+
 func (c *Connector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
 	if !validPullRequestRepo(c.repository) {
 		return connector.Issue{}, ErrMissingRepository

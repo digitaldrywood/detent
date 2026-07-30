@@ -1199,6 +1199,8 @@ backlog_admission:
     untracked: false
   target_state: Todo
   criteria_section: "Admission criteria"
+  require_effort: false
+  effort_section: "Issue effort selection"
   exclude_labels: []
   authors:
     allow: []
@@ -1273,6 +1275,12 @@ wholesale when another project needs different judgments.
 - **Readiness** — Is the problem actionable, with the acceptance conditions
   needed by the agent that will implement it?
 - **Size** — Is the work bounded enough for one agent to complete?
+
+## Issue effort selection
+
+- `medium` — Small, mechanical, and tightly specified.
+- `high` — Standard feature or fix with ambiguity or a cross-cutting surface.
+- `xhigh` — Tricky state, concurrency, restart, or recovery semantics.
 ```
 
 The agent receives only the resolved criteria and bounded candidate data in a
@@ -1282,6 +1290,15 @@ dimension, and persists valid records before posting comments. Repeated runs use
 a title/body fingerprint, so the proposal's own comment cannot create a
 duplicate. Unanswered proposals expire; an issue demoted after acceptance is
 not proposed again.
+
+`require_effort` is off by default, preserving admission behavior for existing
+projects. When enabled, `effort_section` must identify a separate project-owned
+rubric in the shared `WORKFLOW.md`. Effort names are taken from bold or
+code-formatted list items in that section rather than from a built-in Detent
+rubric. The read-only admission agent recommends one listed effort and explains
+why. If the issue has no `detent-agent` block, Detent appends the recommendation
+before moving it to the target state. Existing blocks remain authoritative and
+are never modified. A missing or invalid recommendation prevents admission.
 
 `auto_admit` is off by default. When enabled, Detent admits proposals whose
 confidence is at least `auto_admit_min_confidence`, after revalidating the source

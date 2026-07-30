@@ -26,6 +26,7 @@ const (
 	eventKindComment       = "comment"
 	eventKindCommentEdit   = "comment_edit"
 	eventKindCommentDelete = "comment_delete"
+	eventKindBodyUpdate    = "body_update"
 	eventKindStateUpdate   = "state_update"
 	eventKindFieldUpdate   = "field_update"
 	eventKindProjectRemove = "project_remove"
@@ -71,6 +72,7 @@ var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentDeleter = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueCommentUpdater = (*Connector)(nil)
+var _ connector.IssueBodyUpdater = (*Connector)(nil)
 var _ connector.IssueEventReader = (*Connector)(nil)
 var _ connector.IssueFieldClearer = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
@@ -450,6 +452,22 @@ where project_id = ? and id = ?`, stateName, formatTime(now), formatTime(now), c
 		return sql.ErrNoRows
 	}
 	return c.recordEvent(ctx, issueID, eventKindStateUpdate, stateName, "", nil)
+}
+
+func (c *Connector) UpdateIssueBody(ctx context.Context, issueID string, body string) error {
+	issueID = strings.TrimSpace(issueID)
+	now := c.now().UTC()
+	result, err := c.db.ExecContext(ctx, `
+update detent_work_items
+set description = ?, updated_at = ?
+where project_id = ? and id = ?`, body, formatTime(now), c.projectID, issueID)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return c.recordEvent(ctx, issueID, eventKindBodyUpdate, "", body, nil)
 }
 
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {

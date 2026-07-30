@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestManagerDisabledRegistersNoSchedule(t *testing.T) {
@@ -607,6 +608,194 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 				t.Fatalf("auto-admitted proposal = %#v", history[0])
 			}
 		})
+	}
+}
+
+func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name                string
+		requireEffort       bool
+		body                string
+		recommendedEffort   string
+		effortRationale     string
+		wantState           string
+		wantBody            string
+		wantBodyUpdates     int
+		wantInvalidProposal int
+	}{
+		{
+			name:      "disabled preserves admission behavior",
+			body:      "Actionable problem.",
+			wantState: "Todo",
+			wantBody:  "Actionable problem.",
+		},
+		{
+			name:                "required recommendation unavailable skips admission",
+			requireEffort:       true,
+			body:                "Actionable problem.",
+			wantState:           "Backlog",
+			wantBody:            "Actionable problem.",
+			wantInvalidProposal: 1,
+		},
+		{
+			name:              "required recommendation writes absent block",
+			requireEffort:     true,
+			body:              "Actionable problem.",
+			recommendedEffort: "high",
+			effortRationale:   "The change crosses admission and dispatch.",
+			wantState:         "Todo",
+			wantBody:          "Actionable problem.\n\n```detent-agent\nschema: 1\neffort: high\n```\n",
+			wantBodyUpdates:   1,
+		},
+		{
+			name:              "existing block remains authoritative",
+			requireEffort:     true,
+			body:              "Actionable problem.\n\n```detent-agent\nschema: 1\neffort: xhigh\n```\n",
+			recommendedEffort: "high",
+			effortRationale:   "The agent recommends the standard effort.",
+			wantState:         "Todo",
+			wantBody:          "Actionable problem.\n\n```detent-agent\nschema: 1\neffort: xhigh\n```\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			issue.Description = tt.body
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
+				proposals := proposeEveryCandidateAtConfidence(1)(request)
+				proposals[0].RecommendedEffort = tt.recommendedEffort
+				proposals[0].EffortRationale = tt.effortRationale
+				return proposals
+			}}
+			settings := admissionTestSettings(tracker, agent)
+			settings.Config.AutoAdmit = true
+			settings.Config.AutoAdmitMinConfidence = 0.9
+			settings.Config.RequireEffort = tt.requireEffort
+			settings.Config.EffortSection = "Issue effort selection"
+			settings.EffortRubric = admissionTestEffortRubric()
+			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+
+			result, err := manager.RunOnce(t.Context())
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+			if err != nil || len(issues) != 1 {
+				t.Fatalf("FetchIssueStatesByIDs() = %#v, %v", issues, err)
+			}
+			if issues[0].State != tt.wantState || issues[0].Description != tt.wantBody {
+				t.Fatalf("issue = %#v, want state %q body %q", issues[0], tt.wantState, tt.wantBody)
+			}
+			bodyUpdates := 0
+			for _, event := range tracker.Events() {
+				if event.Kind == memory.EventKindBodyUpdate {
+					bodyUpdates++
+				}
+			}
+			if bodyUpdates != tt.wantBodyUpdates ||
+				result.Skipped["invalid_agent_proposal"] != tt.wantInvalidProposal {
+				t.Fatalf("result = %#v, body updates = %d", result, bodyUpdates)
+			}
+		})
+	}
+}
+
+func TestManagerWritesEffortBeforeDispatchResolvesSession(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	settings := admissionTestSettings(
+		tracker,
+		&scriptedAdmissionRunner{propose: proposeEveryCandidateWithEffort("high")},
+	)
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	settings.Config.RequireEffort = true
+	settings.Config.EffortSection = "Issue effort selection"
+	settings.EffortRubric = admissionTestEffortRubric()
+	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := tracker.Events()
+	bodyIndex, stateIndex := -1, -1
+	for index, event := range events {
+		switch event.Kind {
+		case memory.EventKindBodyUpdate:
+			bodyIndex = index
+		case memory.EventKindStateUpdate:
+			stateIndex = index
+		}
+	}
+	if bodyIndex < 0 || stateIndex < 0 || bodyIndex >= stateIndex {
+		t.Fatalf("events = %#v, want body update before state transition", events)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() = %#v, %v", issues, err)
+	}
+	agentBackend := &effortRecordingAgentBackend{}
+	dispatchRunner, err := runner.NewRunner(runner.Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the admitted issue."},
+		Workspace:    &staticAdmissionDispatchWorkspace{path: t.TempDir()},
+		AgentBackend: agentBackend,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("runner.NewRunner() error = %v", err)
+	}
+	if _, err := dispatchRunner.Run(t.Context(), runner.RunRequest{
+		Issue:     issues[0],
+		Mode:      runner.RunModeImplement,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("dispatch Run() error = %v", err)
+	}
+	if agentBackend.request.ReasoningEffort != "high" {
+		t.Fatalf("dispatched effort = %q, want written high", agentBackend.request.ReasoningEffort)
+	}
+}
+
+func TestManagerRequiredEffortSupersedesOpenProposalWithoutRecommendation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-open", issue, now.Add(-time.Minute))
+	proposal.Confidence = 1
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	settings.Config.RequireEffort = true
+	settings.Config.EffortSection = "Issue effort selection"
+	settings.EffortRubric = admissionTestEffortRubric()
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+		t.Fatalf("issue = %#v, %v", issues, err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+	if err != nil || len(history) != 1 ||
+		history[0].Status != admissionmodel.ProposalSuperseded ||
+		history[0].ResolutionReason != admissionResolutionEffortUnavailable {
+		t.Fatalf("history = %#v, %v", history, err)
 	}
 }
 
@@ -1395,6 +1584,39 @@ func TestParseProposalsRequiresTypedEnvelope(t *testing.T) {
 	}
 }
 
+func TestProposalToolRequiresEffortFieldsOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		requireEffort bool
+		wantRequired  bool
+	}{
+		{name: "optional by default"},
+		{name: "required when configured", requireEffort: true, wantRequired: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var schema struct {
+				Required []string `json:"required"`
+			}
+			if err := json.Unmarshal(proposalTool(tt.requireEffort).InputSchema, &schema); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			required := map[string]struct{}{}
+			for _, field := range schema.Required {
+				required[field] = struct{}{}
+			}
+			_, effortRequired := required["recommended_effort"]
+			_, rationaleRequired := required["effort_rationale"]
+			if effortRequired != tt.wantRequired || rationaleRequired != tt.wantRequired {
+				t.Fatalf("required fields = %#v", schema.Required)
+			}
+		})
+	}
+}
+
 type scriptedAdmissionRunner struct {
 	propose      func(runner.RunRequest) []AgentProposal
 	calls        int
@@ -1551,6 +1773,17 @@ func proposeEveryCandidateAtConfidence(confidence float64) func(runner.RunReques
 	}
 }
 
+func proposeEveryCandidateWithEffort(effort string) func(runner.RunRequest) []AgentProposal {
+	return func(request runner.RunRequest) []AgentProposal {
+		proposals := proposeEveryCandidateAtConfidence(1)(request)
+		for index := range proposals {
+			proposals[index].RecommendedEffort = effort
+			proposals[index].EffortRationale = "The project rubric assigns this effort."
+		}
+		return proposals
+	}
+}
+
 func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings {
 	cfg := config.BacklogAdmission{
 		Enabled:             true,
@@ -1570,6 +1803,14 @@ func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings 
 		DispatchStates: []string{"Backlog"},
 		Runner:         backend,
 		Issues:         tracker,
+	}
+}
+
+func admissionTestEffortRubric() config.AdmissionEffortRubric {
+	return config.AdmissionEffortRubric{
+		Section: "Issue effort selection",
+		Text:    "- `medium` — small and mechanical.\n- `high` — standard feature work.\n- `xhigh` — tricky state semantics.",
+		Efforts: []string{"medium", "high", "xhigh"},
 	}
 }
 
@@ -1649,6 +1890,54 @@ func newAdmissionTestManager(t *testing.T, settings Settings, backend Store, now
 	return manager
 }
 
+type staticAdmissionDispatchWorkspace struct {
+	path string
+}
+
+func (w *staticAdmissionDispatchWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{Path: w.path, Key: "issue-1", Branch: "detent/issue-1"}, nil
+}
+
+func (*staticAdmissionDispatchWorkspace) Cleanup(context.Context, string) error {
+	return nil
+}
+
+func (*staticAdmissionDispatchWorkspace) BeforeRun(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
+
+func (*staticAdmissionDispatchWorkspace) AfterRun(context.Context, workspace.Info, workspace.Issue) {}
+
+func (*staticAdmissionDispatchWorkspace) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
+	return workspace.DiffStat{}, nil
+}
+
+type effortRecordingAgentBackend struct {
+	request runner.AgentTurnRequest
+}
+
+func (b *effortRecordingAgentBackend) RunTurn(
+	_ context.Context,
+	request runner.AgentTurnRequest,
+	_ runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
+	b.request = request
+	return runner.AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"}, nil
+}
+
+func (*effortRecordingAgentBackend) ListModels(context.Context) ([]runner.AgentModel, error) {
+	return []runner.AgentModel{{
+		ID:                        "gpt-default",
+		Model:                     "gpt-default",
+		Default:                   true,
+		SupportedReasoningEfforts: []string{"medium", "high", "xhigh"},
+	}}, nil
+}
+
+func (*effortRecordingAgentBackend) DefaultModel(context.Context, string) (string, error) {
+	return "gpt-default", nil
+}
+
 func TestIssueFingerprintIgnoresAuditCommentMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -1679,11 +1968,13 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 			CriterionQuote: "serves a stated current priority",
 			Rationale:      "Supports the release.",
 		}},
-		Confidence: 0.8,
-		ExpiresAt:  time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+		Confidence:        0.8,
+		RecommendedEffort: "high",
+		EffortRationale:   "The change crosses admission and dispatch.",
+		ExpiresAt:         time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
 	}
 	comment := proposalComment(proposal, false, false)
-	for _, want := range []string{"serves a stated current priority", "have Detent move the issue", "admission-1"} {
+	for _, want := range []string{"serves a stated current priority", "have Detent move the issue", "admission-1", "Recommended effort: `high`", "crosses admission and dispatch"} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("proposalComment() missing %q: %s", want, comment)
 		}

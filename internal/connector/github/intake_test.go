@@ -79,6 +79,26 @@ func TestConnectorUpdateIntakeIssuePatchesContentAndAddsLabels(t *testing.T) {
 	}
 }
 
+func TestConnectorUpdateIssueBodyPatchesOnlyBody(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPatch,
+		path:   "/repos/example/repo/issues/42",
+		body:   `{"node_id":"I_42","number":42,"title":"Existing title","body":"updated body","state":"open","html_url":"https://github.com/example/repo/issues/42"}`,
+	}})
+	connector := newGitHubTestConnector(t, server, Config{Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+	connector.projectCache.SetIssueRef("I_42", issueRef{Owner: "example", Name: "repo", Number: 42})
+
+	if err := connector.UpdateIssueBody(context.Background(), "I_42", "updated body"); err != nil {
+		t.Fatalf("UpdateIssueBody() error = %v", err)
+	}
+	body := server.requests()[0]["body"].(map[string]any)
+	if len(body) != 1 || body["body"] != "updated body" {
+		t.Fatalf("patch body = %#v, want only updated body", body)
+	}
+}
+
 func TestConnectorCreateIntakeIssueAddsProjectV2Item(t *testing.T) {
 	t.Parallel()
 
