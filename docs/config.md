@@ -173,6 +173,23 @@ define the allowed recommendations. Detent writes a recommended `detent-agent`
 block before the admission transition only when the issue has no existing
 block; the default remains disabled for compatibility.
 
+When enabled, admission defaults to `*/15 * * * *`, which limits normal
+candidate wait time to 15 minutes. An every-30-minute schedule implies up to 30
+minutes of latency, an hourly schedule up to one hour, and a daily schedule up
+to 24 hours. Restricting a daily schedule to weekdays creates a 72-hour weekend
+gap. A slow schedule is valid, but it can make admission look broken because
+issues accumulate in the source state while Detent is simply waiting for the
+next run.
+
+On the host used to establish the default, 20 admission runs and 18 admission
+agent sessions averaged about 25 seconds of wall time per run and 36,000 tokens
+per candidate-bearing run, with 655,368 tokens total. Runs with no eligible
+candidates are cheaper because they do not start an admission agent. At the
+15-minute default, there are at most 96 runs per day; use `detent doctor` to
+compare your schedule with recent candidate-bearing runs and the runtime and
+token cost observed on your own host. Choose a slower explicit schedule when
+that latency/cost tradeoff is intentional.
+
 ## Fleet staleness warnings
 
 `observability.staleness` detects work items that exceed lane-specific aging
@@ -343,7 +360,7 @@ rendering and fails on drift.
 | `backlog_admission.max_proposals_per_run` | `integer` | `3` | No | must be greater than 0 |
 | `backlog_admission.proposal_expiry_days` | `integer` | `7` | No | must be greater than 0 |
 | `backlog_admission.require_effort` | `boolean` | `false` | No | None |
-| `backlog_admission.schedule` | `string` | `"0 6 * * 1-5"` | No | must be a valid five-field cron expression |
+| `backlog_admission.schedule` | `string` | `"*/15 * * * *"` | No | must be a valid five-field cron expression |
 | `backlog_admission.sources` | `object` | `see child fields` | No | must configure at least one selector |
 | `backlog_admission.sources.labels` | `list<string>` | `[]` | No | None |
 | `backlog_admission.sources.states` | `list<string>` | `[]` | No | values must differ from target_state<br>values must name a configured workflow state |

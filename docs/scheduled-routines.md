@@ -125,7 +125,7 @@ Admission is disabled unless a project opts in:
 ```yaml
 backlog_admission:
   enabled: true
-  schedule: "0 6 * * 1-5"
+  schedule: "*/15 * * * *"
   sources:
     states: [Backlog]
     labels: []

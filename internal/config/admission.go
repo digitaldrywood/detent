@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	DefaultBacklogAdmissionSchedule               = "0 6 * * 1-5"
+	// DefaultBacklogAdmissionSchedule keeps proposal latency under 15 minutes.
+	// Observed admission runs cost about 25 seconds and 36,000 tokens each.
+	DefaultBacklogAdmissionSchedule               = "*/15 * * * *"
 	DefaultBacklogAdmissionMaxCandidatesPerRun    = 50
 	DefaultBacklogAdmissionMaxProposalsPerRun     = 3
 	DefaultBacklogAdmissionMaxOpenProposals       = 10

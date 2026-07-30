@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/robfig/cron/v3"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -14,33 +17,46 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
-const doctorAdmissionFailureThreshold = 3
+const (
+	doctorAdmissionFailureThreshold   = 3
+	doctorAdmissionRecentRunLimit     = 20
+	doctorAdmissionResponsiveCadence  = 30 * time.Minute
+	doctorAdmissionCadenceSampleCount = 512
+)
 
 type doctorAdmissionDiagnostic struct {
-	Schedule             string           `json:"schedule"`
-	CriteriaSection      string           `json:"criteria_section"`
-	Dimensions           []string         `json:"dimensions,omitempty"`
-	NeverRun             bool             `json:"never_run,omitempty"`
-	LastRun              string           `json:"last_run,omitempty"`
-	Outcome              string           `json:"outcome,omitempty"`
-	DeferredReason       string           `json:"deferred_reason,omitempty"`
-	CandidatesFound      int              `json:"candidates_found,omitempty"`
-	CandidatesEvaluated  int              `json:"candidates_evaluated,omitempty"`
-	Proposed             int              `json:"proposed,omitempty"`
-	Skipped              map[string]int   `json:"skipped,omitempty"`
-	Truncated            map[string]int   `json:"truncated,omitempty"`
-	IssueReferences      []string         `json:"issue_references,omitempty"`
-	ConsecutiveFailures  int              `json:"consecutive_failures,omitempty"`
-	LatestError          string           `json:"latest_error,omitempty"`
-	Warnings             []string         `json:"warnings,omitempty"`
-	Origins              map[string]int   `json:"origins,omitempty"`
-	ProposalOutcomes     map[string]int   `json:"proposal_outcomes,omitempty"`
-	DecisionSeconds      map[string]int64 `json:"average_decision_seconds,omitempty"`
-	AcceptedCompleted    int              `json:"accepted_completed,omitempty"`
-	ReworkCount          int              `json:"rework_count,omitempty"`
-	ReviewChurnCount     int              `json:"review_churn_count,omitempty"`
-	SpendUSD             float64          `json:"spend_usd,omitempty"`
-	RepositoryVisibility string           `json:"repository_visibility,omitempty"`
+	Schedule              string           `json:"schedule"`
+	MaximumGapSeconds     int64            `json:"maximum_gap_seconds,omitempty"`
+	CriteriaSection       string           `json:"criteria_section"`
+	Dimensions            []string         `json:"dimensions,omitempty"`
+	NeverRun              bool             `json:"never_run,omitempty"`
+	ObservedRuns          int              `json:"observed_runs,omitempty"`
+	CandidateBearingRuns  int              `json:"candidate_bearing_runs,omitempty"`
+	CandidatesObserved    int              `json:"candidates_observed,omitempty"`
+	AverageRunSeconds     int64            `json:"average_run_seconds,omitempty"`
+	AdmissionSessions     int              `json:"admission_sessions,omitempty"`
+	AverageSessionSeconds int64            `json:"average_session_seconds,omitempty"`
+	AverageSessionTokens  int64            `json:"average_session_tokens,omitempty"`
+	LastRun               string           `json:"last_run,omitempty"`
+	Outcome               string           `json:"outcome,omitempty"`
+	DeferredReason        string           `json:"deferred_reason,omitempty"`
+	CandidatesFound       int              `json:"candidates_found,omitempty"`
+	CandidatesEvaluated   int              `json:"candidates_evaluated,omitempty"`
+	Proposed              int              `json:"proposed,omitempty"`
+	Skipped               map[string]int   `json:"skipped,omitempty"`
+	Truncated             map[string]int   `json:"truncated,omitempty"`
+	IssueReferences       []string         `json:"issue_references,omitempty"`
+	ConsecutiveFailures   int              `json:"consecutive_failures,omitempty"`
+	LatestError           string           `json:"latest_error,omitempty"`
+	Warnings              []string         `json:"warnings,omitempty"`
+	Origins               map[string]int   `json:"origins,omitempty"`
+	ProposalOutcomes      map[string]int   `json:"proposal_outcomes,omitempty"`
+	DecisionSeconds       map[string]int64 `json:"average_decision_seconds,omitempty"`
+	AcceptedCompleted     int              `json:"accepted_completed,omitempty"`
+	ReworkCount           int              `json:"rework_count,omitempty"`
+	ReviewChurnCount      int              `json:"review_churn_count,omitempty"`
+	SpendUSD              float64          `json:"spend_usd,omitempty"`
+	RepositoryVisibility  string           `json:"repository_visibility,omitempty"`
 }
 
 func checkDoctorAdmission(
@@ -54,10 +70,11 @@ func checkDoctorAdmission(
 	name := "Project " + projectID + " backlog admission"
 	deps = deps.withDefaults()
 	diagnostic := doctorAdmissionDiagnostic{
-		Schedule:        cfg.Schedule,
-		CriteriaSection: cfg.CriteriaSection,
-		NeverRun:        true,
-		Warnings:        workflowconfig.BacklogAdmissionWarnings(cfg, workflow.Config.Tracker),
+		Schedule:          cfg.Schedule,
+		MaximumGapSeconds: int64(doctorAdmissionMaximumGap(cfg.Schedule) / time.Second),
+		CriteriaSection:   cfg.CriteriaSection,
+		NeverRun:          true,
+		Warnings:          workflowconfig.BacklogAdmissionWarnings(cfg, workflow.Config.Tracker),
 	}
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		repository := strings.TrimSpace(workflow.Config.Tracker.Repository)
@@ -144,13 +161,13 @@ func readDoctorAdmissionDiagnostic(
 	diagnostic doctorAdmissionDiagnostic,
 ) (_ doctorAdmissionDiagnostic, resultErr error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT completed_at, outcome, COALESCE(deferred_reason, ''), candidates_found_count,
+SELECT started_at, completed_at, outcome, COALESCE(deferred_reason, ''), candidates_found_count,
        candidates_count, proposed_count, skipped_json, truncated_json, issues_json,
        COALESCE(error, '')
 FROM backlog_admission_runs
 WHERE project_id = ?
 ORDER BY completed_at DESC, id DESC
-LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionFailureThreshold)
+LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionRecentRunLimit)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no such table: backlog_admission_runs") {
 			return diagnostic, nil
@@ -161,7 +178,10 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionFailureThreshold)
 		resultErr = errors.Join(resultErr, rows.Close())
 	}()
 	index := 0
+	failureStreak := true
+	var totalRunSeconds int64
 	for rows.Next() {
+		var startedAt string
 		var completedAt string
 		var outcome string
 		var deferredReason string
@@ -173,6 +193,7 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionFailureThreshold)
 		var issuesRaw string
 		var runError string
 		if err := rows.Scan(
+			&startedAt,
 			&completedAt,
 			&outcome,
 			&deferredReason,
@@ -185,6 +206,20 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionFailureThreshold)
 			&runError,
 		); err != nil {
 			return diagnostic, err
+		}
+		started, err := time.Parse(time.RFC3339Nano, startedAt)
+		if err != nil {
+			return diagnostic, fmt.Errorf("parse backlog admission started_at: %w", err)
+		}
+		completed, err := time.Parse(time.RFC3339Nano, completedAt)
+		if err != nil {
+			return diagnostic, fmt.Errorf("parse backlog admission completed_at: %w", err)
+		}
+		diagnostic.ObservedRuns++
+		totalRunSeconds += max(int64(completed.Sub(started)/time.Second), 0)
+		if candidatesFound > 0 {
+			diagnostic.CandidateBearingRuns++
+			diagnostic.CandidatesObserved += candidatesFound
 		}
 		if index == 0 {
 			diagnostic.NeverRun = false
@@ -215,10 +250,13 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionFailureThreshold)
 			}
 			diagnostic.LatestError = strings.TrimSpace(runError)
 		}
-		if strings.TrimSpace(runError) == "" {
-			break
+		if failureStreak {
+			if strings.TrimSpace(runError) == "" {
+				failureStreak = false
+			} else {
+				diagnostic.ConsecutiveFailures++
+			}
 		}
-		diagnostic.ConsecutiveFailures++
 		index++
 	}
 	if err := rows.Err(); err != nil {
@@ -226,6 +264,9 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionFailureThreshold)
 	}
 	if err := rows.Close(); err != nil {
 		return diagnostic, err
+	}
+	if diagnostic.ObservedRuns > 0 {
+		diagnostic.AverageRunSeconds = totalRunSeconds / int64(diagnostic.ObservedRuns)
 	}
 	return readDoctorAdmissionEvidence(ctx, db, projectID, diagnostic)
 }
@@ -236,6 +277,9 @@ func readDoctorAdmissionEvidence(
 	projectID string,
 	diagnostic doctorAdmissionDiagnostic,
 ) (doctorAdmissionDiagnostic, error) {
+	if err := readDoctorAdmissionSessionCost(ctx, db, projectID, &diagnostic); err != nil {
+		return diagnostic, err
+	}
 	diagnostic.ProposalOutcomes = map[string]int{}
 	diagnostic.DecisionSeconds = map[string]int64{}
 	rows, err := db.QueryContext(ctx, `
@@ -308,11 +352,46 @@ ORDER BY id`, strings.TrimSpace(projectID))
 	return diagnostic, originRows.Err()
 }
 
+func readDoctorAdmissionSessionCost(
+	ctx context.Context,
+	db doctorTelemetryStore,
+	projectID string,
+	diagnostic *doctorAdmissionDiagnostic,
+) error {
+	err := db.QueryRowContext(ctx, `
+SELECT COUNT(*),
+       CAST(COALESCE(AVG(runtime_seconds), 0) AS INTEGER),
+       CAST(COALESCE(AVG(total_tokens), 0) AS INTEGER)
+FROM codex_sessions
+WHERE project_id = ? AND identifier = ? AND completed_at IS NOT NULL`,
+		strings.TrimSpace(projectID),
+		strings.TrimSpace(projectID)+"/admission",
+	).Scan(
+		&diagnostic.AdmissionSessions,
+		&diagnostic.AverageSessionSeconds,
+		&diagnostic.AverageSessionTokens,
+	)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table: codex_sessions") {
+		return nil
+	}
+	return err
+}
+
 func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, unavailable string) doctorCheck {
+	if warning := doctorAdmissionCadenceWarning(diagnostic); warning != "" {
+		diagnostic.Warnings = append(diagnostic.Warnings, warning)
+	}
 	check := doctorCheck{Name: name, Status: doctorOK, BacklogAdmission: &diagnostic}
 	details := []string{
+		"schedule " + strconvQuote(diagnostic.Schedule),
 		"criteria section " + strconvQuote(diagnostic.CriteriaSection),
 		fmt.Sprintf("%d project-defined dimensions", len(diagnostic.Dimensions)),
+	}
+	if diagnostic.MaximumGapSeconds > 0 {
+		details = append(details, "maximum cadence gap "+(time.Duration(diagnostic.MaximumGapSeconds)*time.Second).String())
+	}
+	if cost := doctorAdmissionObservedCost(diagnostic); cost != "" {
+		details = append(details, "observed cost "+cost)
 	}
 	if !diagnostic.NeverRun {
 		details = append(details, fmt.Sprintf(
@@ -375,6 +454,64 @@ func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, una
 	}
 	check.Detail = strings.Join(details, "; ")
 	return check
+}
+
+func doctorAdmissionCadenceWarning(diagnostic doctorAdmissionDiagnostic) string {
+	maximumGap := time.Duration(diagnostic.MaximumGapSeconds) * time.Second
+	if maximumGap <= doctorAdmissionResponsiveCadence || diagnostic.CandidateBearingRuns == 0 {
+		return ""
+	}
+	guidance := fmt.Sprintf(
+		"backlog admission cadence guidance: %d of %d recent runs found %d candidates after waits up to %s; candidates are accumulating between runs; consider a schedule no slower than every %s",
+		diagnostic.CandidateBearingRuns,
+		diagnostic.ObservedRuns,
+		diagnostic.CandidatesObserved,
+		maximumGap,
+		doctorAdmissionResponsiveCadence,
+	)
+	if cost := doctorAdmissionObservedCost(diagnostic); cost != "" {
+		guidance += "; observed cost " + cost
+	}
+	return guidance
+}
+
+func doctorAdmissionObservedCost(diagnostic doctorAdmissionDiagnostic) string {
+	costs := []string{}
+	if diagnostic.ObservedRuns > 0 {
+		costs = append(costs, fmt.Sprintf(
+			"%s/run across %d recent runs",
+			(time.Duration(diagnostic.AverageRunSeconds)*time.Second).String(),
+			diagnostic.ObservedRuns,
+		))
+	}
+	if diagnostic.AdmissionSessions > 0 {
+		costs = append(costs, fmt.Sprintf(
+			"%s and %d tokens/candidate-bearing run across %d admission agent sessions",
+			(time.Duration(diagnostic.AverageSessionSeconds)*time.Second).String(),
+			diagnostic.AverageSessionTokens,
+			diagnostic.AdmissionSessions,
+		))
+	}
+	return strings.Join(costs, ", ")
+}
+
+func doctorAdmissionMaximumGap(scheduleExpression string) time.Duration {
+	schedule, err := cron.ParseStandard("CRON_TZ=UTC " + strings.TrimSpace(scheduleExpression))
+	if err != nil {
+		return 0
+	}
+	origin := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+	previous := schedule.Next(origin)
+	var maximumGap time.Duration
+	for range doctorAdmissionCadenceSampleCount {
+		next := schedule.Next(previous)
+		if !next.After(previous) {
+			return maximumGap
+		}
+		maximumGap = max(maximumGap, next.Sub(previous))
+		previous = next
+	}
+	return maximumGap
 }
 
 func doctorAdmissionDurations(durations map[string]int64) string {
