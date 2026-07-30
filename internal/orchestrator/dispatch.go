@@ -462,9 +462,37 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
 	runCtx, stop := context.WithCancelCause(runCtx)
-	cancel := func() {
-		stop(nil)
+	var startupTimer mergeWorkerStartupTimer
+	cancelRun := func(cause error) {
+		stop(cause)
 		cancelDurationLimit()
+	}
+	if runMode == runpkg.RunModeMerge {
+		timerFactory := o.mergeWorkerStartupTimer
+		if timerFactory == nil {
+			timerFactory = newMergeWorkerStartupTimer
+		}
+		startupTimer = timerFactory(o.cfg.MergeWorkerStartupTimeout, func() {
+			if o.logger != nil {
+				o.logger.Warn(
+					"merge worker startup deadline expired",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"attempt", attempt,
+					"configured_timeout", o.cfg.MergeWorkerStartupTimeout,
+				)
+			}
+			cancelRun(runpkg.ErrMergeWorkerStartupTimeout)
+		})
+	}
+	cancelCause := func(cause error) {
+		if startupTimer != nil {
+			startupTimer.Stop()
+		}
+		cancelRun(cause)
+	}
+	cancel := func() {
+		cancelCause(nil)
 	}
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
 	dispatchWorkpadHash, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(runCtx, issue)
@@ -485,7 +513,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		StopPriorityOptions: stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
 		globalSlot:          globalSlot,
 		cancel:              cancel,
-		stop:                stop,
+		stop:                cancelCause,
 	}
 	o.setGlobalDispatchPreempt(globalSlot, cancel)
 	state.Claimed[issue.ID] = claim
@@ -506,7 +534,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		StartedAt:           now,
 		WorkerHost:          workerHost,
 		SelectorContext:     o.selectorContext(),
-		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID),
+		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID, startupTimer),
 		OnActivityUpdate:    o.activityUpdateHandler(runCtx, issue),
 		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
 		ProgressProbe:       o.sessionProgressProbe(issue),
@@ -762,12 +790,19 @@ func (o *Orchestrator) selectorContext() selector.Context {
 	return ctx
 }
 
-func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) runpkg.UsageUpdateHandler {
+func (o *Orchestrator) usageUpdateHandler(
+	ctx context.Context,
+	issueID string,
+	startupTimer mergeWorkerStartupTimer,
+) runpkg.UsageUpdateHandler {
 	return func(update runpkg.UsageUpdate) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+		if startupTimer != nil {
+			startupTimer.Stop()
 		}
 
 		select {

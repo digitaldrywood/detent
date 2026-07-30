@@ -42,6 +42,7 @@ var (
 	ErrSessionDurationExceeded     = errors.New("agent session duration exceeded")
 	ErrOperatorStopped             = errors.New("operator stopped run")
 	ErrMergeRevoked                = errors.New("merge eligibility revoked")
+	ErrMergeWorkerStartupTimeout   = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded = errors.New("merge worker duration exceeded")
 	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
 	ErrAgentResumeUnsupported      = errors.New("agent backend does not support resume verification")

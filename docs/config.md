@@ -196,6 +196,7 @@ rendering and fails on drift.
 | `agent.merge_fast_path` | `object` | `see child fields` | No | None |
 | `agent.merge_fast_path.enabled` | `boolean` | `true` | No | None |
 | `agent.merge_worker_max_duration_ms` | `integer` | `21600000` | No | must be greater than 0 |
+| `agent.merge_worker_startup_timeout_ms` | `integer` | `240000` | No | must be greater than 0 |
 | `agent.no_progress_spend_limit_usd` | `number` | `3` | No | must be greater than or equal to 0 |
 | `agent.no_progress_timeout_ms` | `integer` | `5400000` | No | must be greater than or equal to 0 |
 | `agent.output_truncation` | `object` | `see child fields` | No | None |

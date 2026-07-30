@@ -150,6 +150,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
 		return
 	}
+	if o.handleMergeWorkerStartupTimeout(ctx, state, event, running) {
+		return
+	}
 	if o.handleMergeWorkerDurationExceeded(ctx, state, event, running) {
 		return
 	}

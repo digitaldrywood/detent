@@ -30,6 +30,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		PrioritizeUnblockers:       cfg.Agent.PrioritizeUnblockers,
 		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
 		MergeMethod:                cfg.Deliverable.EffectiveMergeMethod(),
+		MergeWorkerStartupTimeout:  durationFromMillis(cfg.Agent.MergeWorkerStartupTimeoutMS),
 		MergeWorkerMaxDuration:     durationFromMillis(cfg.Agent.MergeWorkerMaxDurationMS),
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		StopRunTargetState:         cfg.Agent.StopRun.TargetState,
@@ -159,6 +160,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.OverloadRetryDelay <= 0 {
 		cfg.OverloadRetryDelay = defaultOverloadRetryDelay
+	}
+	if cfg.MergeWorkerStartupTimeout <= 0 {
+		cfg.MergeWorkerStartupTimeout = durationFromMillis(workflowconfig.DefaultMergeWorkerStartupTimeoutMS)
 	}
 	if cfg.MergeWorkerMaxDuration <= 0 {
 		cfg.MergeWorkerMaxDuration = durationFromMillis(workflowconfig.DefaultMergeWorkerMaxDurationMS)

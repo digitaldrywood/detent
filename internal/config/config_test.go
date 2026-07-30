@@ -676,6 +676,7 @@ agent:
   max_turn_duration_ms: 900000
   max_session_duration_ms: 3600000
   no_progress_timeout_ms: 1800000
+  merge_worker_startup_timeout_ms: 180000
   merge_worker_max_duration_ms: 7200000
   max_session_tokens: 10000000
   max_session_context_multiplier: 3.5
@@ -930,6 +931,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.NoProgressTimeoutMS != 1800000 {
 		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want 1800000", cfg.Agent.NoProgressTimeoutMS)
+	}
+	if cfg.Agent.MergeWorkerStartupTimeoutMS != 180000 {
+		t.Fatalf("Agent.MergeWorkerStartupTimeoutMS = %d, want 180000", cfg.Agent.MergeWorkerStartupTimeoutMS)
 	}
 	if cfg.Agent.MergeWorkerMaxDurationMS != 7200000 {
 		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want 7200000", cfg.Agent.MergeWorkerMaxDurationMS)
@@ -1310,6 +1314,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MaxConcurrentAgents != 10 {
 		t.Fatalf("Agent.MaxConcurrentAgents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
+	}
+	if cfg.Agent.MergeWorkerStartupTimeoutMS != DefaultMergeWorkerStartupTimeoutMS {
+		t.Fatalf("Agent.MergeWorkerStartupTimeoutMS = %d, want %d", cfg.Agent.MergeWorkerStartupTimeoutMS, DefaultMergeWorkerStartupTimeoutMS)
 	}
 	if cfg.Agent.MergeWorkerMaxDurationMS != DefaultMergeWorkerMaxDurationMS {
 		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want %d", cfg.Agent.MergeWorkerMaxDurationMS, DefaultMergeWorkerMaxDurationMS)
@@ -2947,6 +2954,7 @@ agent:
   max_turn_duration_ms: -1
   max_session_duration_ms: -1
   no_progress_timeout_ms: -1
+  merge_worker_startup_timeout_ms: -1
   merge_worker_max_duration_ms: -1
   max_session_tokens: -1
   max_session_context_multiplier: -0.5
@@ -2988,6 +2996,7 @@ Prompt
 				"agent.max_turn_duration_ms must be greater than or equal to 0",
 				"agent.max_session_duration_ms must be greater than or equal to 0",
 				"agent.no_progress_timeout_ms must be greater than or equal to 0",
+				"agent.merge_worker_startup_timeout_ms must be greater than 0",
 				"agent.merge_worker_max_duration_ms must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
 				"agent.max_session_context_multiplier must be greater than or equal to 0",

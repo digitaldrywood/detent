@@ -243,6 +243,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.GateWaitTimeoutSeconds = 900
 	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.OverloadRetryDelayMS = 60000
+	cfg.Agent.MergeWorkerStartupTimeoutMS = 180000
 	cfg.Agent.MergeWorkerMaxDurationMS = 7200000
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
@@ -280,6 +281,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.OverloadRetryDelay != time.Minute {
 		t.Fatalf("OverloadRetryDelay = %s, want 1m", got.OverloadRetryDelay)
+	}
+	if got.MergeWorkerStartupTimeout != 3*time.Minute {
+		t.Fatalf("MergeWorkerStartupTimeout = %s, want 3m", got.MergeWorkerStartupTimeout)
 	}
 	if got.MergeWorkerMaxDuration != 2*time.Hour {
 		t.Fatalf("MergeWorkerMaxDuration = %s, want 2h", got.MergeWorkerMaxDuration)

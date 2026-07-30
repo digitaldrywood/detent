@@ -109,6 +109,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	sessionStore := &fakeSessionStore{sessionID: 42}
 	now := newFakeClock(
 		startedAt,
+		startedAt,
 		startedAt.Add(time.Second),
 		startedAt.Add(2*time.Second),
 		startedAt.Add(3*time.Second),
@@ -190,9 +191,13 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.Tokens.ModelContextWindow == nil || *result.Tokens.ModelContextWindow != modelContextWindow {
 		t.Fatalf("RunResult ModelContextWindow = %#v, want %d", result.Tokens.ModelContextWindow, modelContextWindow)
 	}
-	if len(usageUpdates) != 4 {
-		t.Fatalf("usage updates len = %d, want 4", len(usageUpdates))
+	if len(usageUpdates) != 5 {
+		t.Fatalf("usage updates len = %d, want workspace start plus 4 agent updates", len(usageUpdates))
 	}
+	if usageUpdates[0].LastEvent != "workspace_create_started" || !usageUpdates[0].LastEventAt.Equal(startedAt) {
+		t.Fatalf("workspace usage update = %#v, want startup progress", usageUpdates[0])
+	}
+	usageUpdates = usageUpdates[1:]
 	if usageUpdates[0].DetentSessionID != 42 || usageUpdates[0].LastEvent != string(AgentUpdateRuntimeIdentity) {
 		t.Fatalf("initial usage update = %#v, want configured route identity", usageUpdates[0])
 	}
@@ -1701,6 +1706,7 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	sessionStore := &fakeSessionStore{sessionID: 853}
 	clock := newFakeClock(
 		startedAt,
+		startedAt,
 		startedAt.Add(time.Second),
 		startedAt.Add(2*time.Second),
 		startedAt.Add(3*time.Second),
@@ -1766,8 +1772,8 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
 		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
 	}
-	if len(usageUpdates) != 3 {
-		t.Fatalf("usage update count = %d, want configured identity plus 2 token updates", len(usageUpdates))
+	if len(usageUpdates) != 4 {
+		t.Fatalf("usage update count = %d, want workspace start, configured identity, and 2 token updates", len(usageUpdates))
 	}
 	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
 		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
@@ -2068,6 +2074,85 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 				t.Fatalf("mergeFastPathCheckedHead() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunnerMergeCheckedHeadSkipsWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeMergeWorkspaceBackend{}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: &fakeCodexClient{},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-checked-head",
+			Identifier: "digitaldrywood/detent#1534",
+			BranchName: "detent/checked-head",
+			PullRequest: &connector.PullRequest{
+				State:          "open",
+				MergeableState: "behind",
+				CIStatus:       "success",
+				HeadSHA:        "checked-head",
+			},
+		},
+		Mode: RunModeMerge,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.FinalState != FinalStateCompleted || result.Output != RunOutputMergeFastPathCheckedHead {
+		t.Fatalf("Run() result = %#v, want checked-head completion", result)
+	}
+	if workspaceBackend.created || workspaceBackend.beforeRun || workspaceBackend.afterRun ||
+		workspaceBackend.prepareCalled {
+		t.Fatalf("workspace calls = %#v, want none", workspaceBackend)
+	}
+}
+
+func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
+	t.Parallel()
+
+	createErr := errors.New("stop after workspace progress")
+	workspaceBackend := &fakeWorkspaceBackend{createErr: createErr}
+	now := time.Date(2026, 7, 30, 18, 0, 0, 0, time.UTC)
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: &fakeCodexClient{},
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	var update UsageUpdate
+	_, err = runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{ID: "issue-bootstrap", Identifier: "digitaldrywood/detent#1534"},
+		OnUsageUpdate: func(got UsageUpdate) error {
+			if workspaceBackend.created {
+				t.Fatal("workspace creation started before progress publication")
+			}
+			update = got
+			return nil
+		},
+	})
+	if !errors.Is(err, createErr) {
+		t.Fatalf("Run() error = %v, want %v", err, createErr)
+	}
+	if update.LastEvent != "workspace_create_started" || !update.LastEventAt.Equal(now) {
+		t.Fatalf("workspace progress update = %#v, want start event at %v", update, now)
+	}
+	if len(update.RecentEvents) != 1 ||
+		update.RecentEvents[0].Event != "workspace_create_started" ||
+		update.RecentEvents[0].Message != "workspace creation started" {
+		t.Fatalf("workspace progress events = %#v, want one creation event", update.RecentEvents)
 	}
 }
 
@@ -3992,6 +4077,7 @@ type fakeWorkspaceBackend struct {
 	diffStat       workspace.DiffStat
 	diffStats      []workspace.DiffStat
 	diffErr        error
+	createErr      error
 	created        bool
 	beforeRun      bool
 	afterRun       bool
@@ -4026,7 +4112,7 @@ func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) 
 	b.created = true
 	b.createIssue = issue
 	b.info.Branch = issue.BranchName
-	return b.info, nil
+	return b.info, b.createErr
 }
 
 func (b *fakeWorkspaceBackend) Cleanup(context.Context, string) error {

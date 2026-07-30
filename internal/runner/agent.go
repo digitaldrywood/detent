@@ -544,16 +544,6 @@ func (r *Runner) prepareMergeFastPath(
 	info workspace.Info,
 	issue workspace.Issue,
 ) (RunResult, workspace.MergePrepareResult, bool, error) {
-	if mergeFastPathCheckedHead(req.Issue) {
-		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
-			"workspace_path", info.Path,
-			"workspace_branch", info.Branch,
-		)
-		return RunResult{
-			FinalState: FinalStateCompleted,
-			Output:     RunOutputMergeFastPathCheckedHead,
-		}, workspace.MergePrepareResult{}, true, nil
-	}
 	preparer, ok := r.workspace.(workspace.MergePreparer)
 	if !ok {
 		return RunResult{}, workspace.MergePrepareResult{}, false, nil
@@ -611,6 +601,23 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	default:
 		return false
 	}
+}
+
+func (r *Runner) publishWorkspaceCreateStarted(req RunRequest) error {
+	if req.OnUsageUpdate == nil {
+		return nil
+	}
+	at := r.now().UTC()
+	event := telemetry.ActivityEvent{
+		At:      at,
+		Event:   "workspace_create_started",
+		Message: "workspace creation started",
+	}
+	return req.OnUsageUpdate(UsageUpdate{
+		LastEventAt:  at,
+		LastEvent:    event.Event,
+		RecentEvents: []telemetry.ActivityEvent{event},
+	})
 }
 
 type agentTurnExecution struct {
@@ -956,6 +963,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
+	mode := normalizeRunMode(req.Mode)
+	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) {
+		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
+			"workspace_branch", strings.TrimSpace(req.Issue.BranchName),
+		)
+		return RunResult{
+			FinalState: FinalStateCompleted,
+			Output:     RunOutputMergeFastPathCheckedHead,
+		}, nil
+	}
 
 	runWorkspace := r.workspace
 	if req.Admission != nil {
@@ -963,6 +980,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	r.logWorkerEvent(req.Issue, "worker_workspace_create_started")
+	if err := r.publishWorkspaceCreateStarted(req); err != nil {
+		return RunResult{}, err
+	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create workspace: %w", err)
@@ -986,7 +1006,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}()
 
-	mode := normalizeRunMode(req.Mode)
 	mergePrecheck := workspace.MergePrepareResult{}
 	mergeFallback := false
 	if mode == RunModeMerge {
