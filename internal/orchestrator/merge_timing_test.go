@@ -51,6 +51,47 @@ func TestRecordMergeQueueEnteredResetsTerminalAttempt(t *testing.T) {
 	}
 }
 
+func TestRecordMergeFailedRejectsFailureBeforeMergeEntry(t *testing.T) {
+	t.Parallel()
+
+	enteredMergingAt := time.Date(2026, 7, 29, 5, 1, 8, 0, time.UTC)
+	failedAt := enteredMergingAt.Add(-time.Minute - 2*time.Second)
+	issue := connector.Issue{
+		ID:             "issue-invalid-merge-timing",
+		Identifier:     "getparable/parable#1946",
+		State:          "Merging",
+		StageUpdatedAt: &enteredMergingAt,
+	}
+	original := MergeTiming{EnteredMergingAt: enteredMergingAt}
+	state := newState(normalizeConfig(Config{}))
+	state.MergeTimings[issue.ID] = original
+	var logs strings.Builder
+	orch := &Orchestrator{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+
+	got := orch.recordMergeFailed(&state, issue, failedAt, "runner_startup_timeout", nil)
+
+	if got != original {
+		t.Fatalf("recordMergeFailed() = %#v, want unchanged %#v", got, original)
+	}
+	if timing := state.MergeTimings[issue.ID]; timing != original {
+		t.Fatalf("MergeTimings[%q] = %#v, want unchanged %#v", issue.ID, timing, original)
+	}
+	for _, fragment := range []string{
+		"level=ERROR",
+		"msg=merge_failed_rejected",
+		"reason=runner_startup_timeout",
+		"entered_merging_at=2026-07-29T05:01:08Z",
+		"merge_failed_at=2026-07-29T05:00:06Z",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	if strings.Contains(logs.String(), "msg=merge_failed ") {
+		t.Fatalf("logs %q contain merge_failed record", logs.String())
+	}
+}
+
 func TestObserveMergeSlotConcentrationWarnsOncePerWindow(t *testing.T) {
 	t.Parallel()
 

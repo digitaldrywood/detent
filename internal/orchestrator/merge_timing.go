@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -165,7 +166,35 @@ func (o *Orchestrator) recordMergeFailed(state *State, issue connector.Issue, at
 	if !mergeWorkerIssue(issue) {
 		return MergeTiming{}
 	}
-	timing := o.completeMergeTiming(state, issue, at, reason, false)
+	timing := MergeTiming{}
+	if state != nil {
+		timing = state.MergeTimings[strings.TrimSpace(issue.ID)]
+	}
+	enteredMergingAt := timing.EnteredMergingAt
+	if enteredMergingAt.IsZero() {
+		enteredMergingAt = mergeQueueEnteredAt(issue, at)
+	}
+	mergeFailedAt := at.UTC()
+	if mergeFailedAt.Before(enteredMergingAt) {
+		timingErr := fmt.Errorf(
+			"merge_failed_at %s precedes entered_merging_at %s",
+			mergeFailedAt.Format(time.RFC3339),
+			enteredMergingAt.Format(time.RFC3339),
+		)
+		if o.logger != nil {
+			o.logger.Error(
+				"merge_failed_rejected",
+				mergeWorkerLogAttrs(issue,
+					"reason", strings.TrimSpace(reason),
+					"entered_merging_at", enteredMergingAt.Format(time.RFC3339),
+					"merge_failed_at", mergeFailedAt.Format(time.RFC3339),
+					"error", timingErr,
+				)...,
+			)
+		}
+		return timing
+	}
+	timing = o.completeMergeTiming(state, issue, at, reason, false)
 	attrs := []any{"reason", strings.TrimSpace(reason)}
 	if err != nil {
 		attrs = append(attrs, "error", err)
