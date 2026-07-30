@@ -111,7 +111,7 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		`schedule "0 6 * * 1-5"`,
 		"maximum cadence gap 72h0m0s",
 		"observed cost 20s/run across 3 recent runs, 30s and 38000 tokens/candidate-bearing run across 2 admission agent sessions",
-		"3 of 3 recent runs found 30 candidates",
+		"3 of 3 recent runs found 12 eligible candidates after filters (30 source candidate observations)",
 		"candidates are accumulating between runs",
 		`"Admission criteria"`,
 		"2 project-defined dimensions",
@@ -130,7 +130,8 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 	}
 	if diagnostic.NeverRun || diagnostic.CandidatesFound != 12 || diagnostic.CandidatesEvaluated != 4 || diagnostic.Proposed != 1 ||
 		diagnostic.ObservedRuns != 3 || diagnostic.CandidateBearingRuns != 3 ||
-		diagnostic.CandidatesObserved != 30 || diagnostic.AverageRunSeconds != 20 ||
+		diagnostic.CandidatesObserved != 30 || diagnostic.EligibleCandidates != 12 ||
+		diagnostic.AverageRunSeconds != 20 ||
 		diagnostic.AdmissionSessions != 2 || diagnostic.AverageSessionSeconds != 30 ||
 		diagnostic.AverageSessionTokens != 38000 {
 		t.Fatalf("diagnostic = %#v", diagnostic)
@@ -153,21 +154,23 @@ func TestDoctorAdmissionCadenceGuidance(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		schedule   string
-		observed   int
-		withIssues int
-		candidates int
-		wantStatus doctorStatus
-		wantText   string
+		name               string
+		schedule           string
+		observed           int
+		withEligible       int
+		sourceCandidates   int
+		eligibleCandidates int
+		wantStatus         doctorStatus
+		wantText           string
 	}{
 		{
-			name:       "responsive cadence with candidates",
-			schedule:   "*/15 * * * *",
-			observed:   4,
-			withIssues: 2,
-			candidates: 3,
-			wantStatus: doctorOK,
+			name:               "responsive cadence with candidates",
+			schedule:           "*/15 * * * *",
+			observed:           4,
+			withEligible:       2,
+			sourceCandidates:   3,
+			eligibleCandidates: 2,
+			wantStatus:         doctorOK,
 		},
 		{
 			name:       "slow cadence without candidates",
@@ -176,13 +179,21 @@ func TestDoctorAdmissionCadenceGuidance(t *testing.T) {
 			wantStatus: doctorOK,
 		},
 		{
-			name:       "slow cadence with accumulating candidates",
-			schedule:   "0 6 * * 1-5",
-			observed:   4,
-			withIssues: 2,
-			candidates: 7,
-			wantStatus: doctorWarn,
-			wantText:   "candidates are accumulating between runs",
+			name:             "slow cadence with only filtered candidates",
+			schedule:         "0 6 * * 1-5",
+			observed:         4,
+			sourceCandidates: 7,
+			wantStatus:       doctorOK,
+		},
+		{
+			name:               "slow cadence with accumulating candidates",
+			schedule:           "0 6 * * 1-5",
+			observed:           4,
+			withEligible:       2,
+			sourceCandidates:   7,
+			eligibleCandidates: 5,
+			wantStatus:         doctorWarn,
+			wantText:           "candidates are accumulating between runs",
 		},
 	}
 	for _, tt := range tests {
@@ -195,8 +206,9 @@ func TestDoctorAdmissionCadenceGuidance(t *testing.T) {
 				CriteriaSection:       "Admission criteria",
 				Dimensions:            []string{"Alignment"},
 				ObservedRuns:          tt.observed,
-				CandidateBearingRuns:  tt.withIssues,
-				CandidatesObserved:    tt.candidates,
+				CandidateBearingRuns:  tt.withEligible,
+				CandidatesObserved:    tt.sourceCandidates,
+				EligibleCandidates:    tt.eligibleCandidates,
 				AverageRunSeconds:     25,
 				AdmissionSessions:     3,
 				AverageSessionSeconds: 24,
@@ -236,6 +248,7 @@ func TestDoctorAdmissionMaximumGap(t *testing.T) {
 		{name: "quarter hourly", schedule: "*/15 * * * *", want: 15 * time.Minute},
 		{name: "hourly", schedule: "0 * * * *", want: time.Hour},
 		{name: "weekdays", schedule: "0 6 * * 1-5", want: 72 * time.Hour},
+		{name: "configured timezone", schedule: "CRON_TZ=America/New_York 0 6 * * 1-5", want: 73 * time.Hour},
 		{name: "invalid", schedule: "not cron", want: 0},
 	}
 	for _, tt := range tests {

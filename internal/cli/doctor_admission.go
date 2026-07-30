@@ -33,6 +33,7 @@ type doctorAdmissionDiagnostic struct {
 	ObservedRuns          int              `json:"observed_runs,omitempty"`
 	CandidateBearingRuns  int              `json:"candidate_bearing_runs,omitempty"`
 	CandidatesObserved    int              `json:"candidates_observed,omitempty"`
+	EligibleCandidates    int              `json:"eligible_candidates_observed,omitempty"`
 	AverageRunSeconds     int64            `json:"average_run_seconds,omitempty"`
 	AdmissionSessions     int              `json:"admission_sessions,omitempty"`
 	AverageSessionSeconds int64            `json:"average_session_seconds,omitempty"`
@@ -217,9 +218,10 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionRecentRunLimit)
 		}
 		diagnostic.ObservedRuns++
 		totalRunSeconds += max(int64(completed.Sub(started)/time.Second), 0)
-		if candidatesFound > 0 {
+		diagnostic.CandidatesObserved += candidatesFound
+		if candidates > 0 {
 			diagnostic.CandidateBearingRuns++
-			diagnostic.CandidatesObserved += candidatesFound
+			diagnostic.EligibleCandidates += candidates
 		}
 		if index == 0 {
 			diagnostic.NeverRun = false
@@ -462,9 +464,10 @@ func doctorAdmissionCadenceWarning(diagnostic doctorAdmissionDiagnostic) string 
 		return ""
 	}
 	guidance := fmt.Sprintf(
-		"backlog admission cadence guidance: %d of %d recent runs found %d candidates after waits up to %s; candidates are accumulating between runs; consider a schedule no slower than every %s",
+		"backlog admission cadence guidance: %d of %d recent runs found %d eligible candidates after filters (%d source candidate observations) after waits up to %s; candidates are accumulating between runs; consider a schedule no slower than every %s",
 		diagnostic.CandidateBearingRuns,
 		diagnostic.ObservedRuns,
+		diagnostic.EligibleCandidates,
 		diagnostic.CandidatesObserved,
 		maximumGap,
 		doctorAdmissionResponsiveCadence,
@@ -496,7 +499,11 @@ func doctorAdmissionObservedCost(diagnostic doctorAdmissionDiagnostic) string {
 }
 
 func doctorAdmissionMaximumGap(scheduleExpression string) time.Duration {
-	schedule, err := cron.ParseStandard("CRON_TZ=UTC " + strings.TrimSpace(scheduleExpression))
+	scheduleExpression = strings.TrimSpace(scheduleExpression)
+	if !strings.HasPrefix(scheduleExpression, "TZ=") && !strings.HasPrefix(scheduleExpression, "CRON_TZ=") {
+		scheduleExpression = "CRON_TZ=UTC " + scheduleExpression
+	}
+	schedule, err := cron.ParseStandard(scheduleExpression)
 	if err != nil {
 		return 0
 	}
