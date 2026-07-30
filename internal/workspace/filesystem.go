@@ -187,6 +187,11 @@ func (f *Filesystem) DiffStat(ctx context.Context, info Info, issue Issue) (Diff
 	if !exists || !isDir {
 		return DiffStat{}, ErrMissingWorkspace
 	}
+	root, err := os.OpenRoot(normalized.Path)
+	if err != nil {
+		return DiffStat{}, fmt.Errorf("open filesystem recovery root: %w", err)
+	}
+	defer f.closeRoot("recovery", root)
 	filesChanged := 0
 	hash := sha256.New()
 	err = filepath.WalkDir(normalized.Path, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -211,14 +216,14 @@ func (f *Filesystem) DiffStat(ctx context.Context, info Info, issue Issue) (Diff
 			return err
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
+			target, err := root.Readlink(relativePath)
 			if err != nil {
 				return err
 			}
 			_, err = io.WriteString(hash, "symlink\x00"+target+"\x00")
 			return err
 		}
-		file, err := os.Open(path)
+		file, err := root.Open(relativePath)
 		if err != nil {
 			return err
 		}
