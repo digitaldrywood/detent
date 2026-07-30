@@ -5380,12 +5380,13 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	tests := []struct {
 		name            string
 		current         string
+		lastCompleted   string
 		blockOverlay    bool
 		blockDependency bool
 	}{
-		{name: "GitHub readiness", current: "GitHub readiness"},
-		{name: "local workflow overlay", current: "local workflow overlay", blockOverlay: true},
-		{name: "dependency auto-unblock", current: "dependency auto-unblock", blockDependency: true},
+		{name: "GitHub readiness", current: "GitHub readiness", lastCompleted: "Project alpha skills"},
+		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha workflow", blockOverlay: true},
+		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha repository merge policy", blockDependency: true},
 	}
 
 	for _, tt := range tests {
@@ -5479,15 +5480,12 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 			if len(checks) < 2 {
 				t.Fatalf("checks = %#v, want completed checks followed by timeout", checks)
 			}
-			var foundWorkflow bool
-			for _, check := range checks[:len(checks)-1] {
-				if check.Name == "Project alpha workflow" {
-					foundWorkflow = true
-					break
-				}
+			completedChecks := checks[:len(checks)-1]
+			if got := completedChecks[0].Name; got != "Project alpha workflow" {
+				t.Fatalf("first completed check = %q, want Project alpha workflow", got)
 			}
-			if !foundWorkflow {
-				t.Fatalf("checks = %#v, want completed workflow check", checks)
+			if got := completedChecks[len(completedChecks)-1].Name; got != tt.lastCompleted {
+				t.Fatalf("last completed check = %q, want %q", got, tt.lastCompleted)
 			}
 			timeoutCheck := checks[len(checks)-1]
 			for _, want := range []string{"Project alpha checks", "timed out after 20ms", "while running Project alpha " + tt.current} {
