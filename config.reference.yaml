@@ -1015,6 +1015,10 @@
 #   target_state: null
 #   # backlog_admission.criteria_section | type: string | default: none | required: Conditional | validation: is required
 #   criteria_section: null
+#   # backlog_admission.require_effort | type: boolean | default: false | required: No | validation: None
+#   require_effort: false
+#   # backlog_admission.effort_section | type: string | default: none | required: Conditional | validation: is required when require_effort is true
+#   effort_section: null
 #   # backlog_admission.exclude_labels | type: list<string> | default: [] | required: No | validation: None
 #   exclude_labels: []
 #   # backlog_admission.authors | type: object | default: see child fields | required: No | validation: None

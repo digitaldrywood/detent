@@ -49,6 +49,26 @@ func TestConnectorFetchesConfiguredIssues(t *testing.T) {
 	}
 }
 
+func TestConnectorUpdateIssueBody(t *testing.T) {
+	t.Parallel()
+
+	connector := New(Config{
+		Issues:   []connector.Issue{{ID: "issue-1", Description: "original"}},
+		Stateful: true,
+	})
+	if err := connector.UpdateIssueBody(context.Background(), "issue-1", "updated"); err != nil {
+		t.Fatalf("UpdateIssueBody() error = %v", err)
+	}
+	issues, err := connector.FetchIssueStatesByIDs(context.Background(), []string{"issue-1"})
+	if err != nil || len(issues) != 1 || issues[0].Description != "updated" {
+		t.Fatalf("FetchIssueStatesByIDs() = %#v, %v", issues, err)
+	}
+	events := connector.Events()
+	if len(events) != 1 || events[0].Kind != EventKindBodyUpdate || events[0].Body != "updated" {
+		t.Fatalf("Events() = %#v", events)
+	}
+}
+
 func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 	t.Parallel()
 

@@ -307,6 +307,37 @@ func TestConnectorFetchIssueEventsReturnsCompleteHistory(t *testing.T) {
 	}
 }
 
+func TestConnectorUpdateIssueBody(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	issue := connector.NewIssue()
+	issue.ID = "body-1"
+	issue.Identifier = "LOCAL-1"
+	issue.Description = "original"
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "body.db"),
+		ProjectID: "detent",
+		Issues:    []connector.Issue{issue},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if err := store.UpdateIssueBody(ctx, issue.ID, "updated"); err != nil {
+		t.Fatalf("UpdateIssueBody() error = %v", err)
+	}
+	issues, err := store.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].Description != "updated" {
+		t.Fatalf("FetchIssueStatesByIDs() = %#v, %v", issues, err)
+	}
+}
+
 func TestConnectorUpdatesAndDeletesLocalIssueCommentsWithAuditEvents(t *testing.T) {
 	t.Parallel()
 

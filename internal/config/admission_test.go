@@ -25,6 +25,8 @@ backlog_admission:
     untracked: false
   target_state: Todo
   criteria_section: Admission criteria
+  require_effort: true
+  effort_section: Issue effort selection
   exclude_labels: [Skip, skip]
   authors:
     allow: ["@octocat"]
@@ -39,6 +41,11 @@ backlog_admission:
 ## Admission criteria
 
 - **Risk** — requires a bounded recovery path.
+
+## Issue effort selection
+
+- **medium** — small and mechanical.
+- **high** — standard feature work.
 `))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
@@ -53,7 +60,8 @@ backlog_admission:
 	if !got.Enabled || got.Schedule != "15 4 * * 1" || got.TargetState != "Todo" ||
 		got.MaxCandidatesPerRun != 20 || got.MaxProposalsPerRun != 2 ||
 		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 ||
-		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 || got.Sources.Untracked {
+		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 || got.Sources.Untracked ||
+		!got.RequireEffort || got.EffortSection != "Issue effort selection" {
 		t.Fatalf("BacklogAdmission = %#v", got)
 	}
 	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
@@ -114,6 +122,9 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "source equals target", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = []string{"Todo"} }, want: "must differ from target_state"},
 		{name: "unknown target", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.TargetState = "Ready" }, want: "target_state must name"},
 		{name: "missing criteria section", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.CriteriaSection = "" }, want: "criteria_section is required"},
+		{name: "missing effort section", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.RequireEffort = true
+		}, want: "effort_section is required"},
 		{name: "zero candidate cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxCandidatesPerRun = 0 }, want: "max_candidates_per_run must be greater than 0"},
 		{name: "negative proposal cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxProposalsPerRun = -1 }, want: "max_proposals_per_run must be greater than 0"},
 		{name: "zero open cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxOpenProposals = 0 }, want: "max_open_proposals must be greater than 0"},
@@ -228,6 +239,9 @@ func TestBacklogAdmissionAutoAdmitDefaultsOff(t *testing.T) {
 	cfg := Default().BacklogAdmission
 	if cfg.AutoAdmit {
 		t.Fatal("BacklogAdmission.AutoAdmit = true, want false")
+	}
+	if cfg.RequireEffort || cfg.EffortSection != "" {
+		t.Fatalf("effort defaults = require:%t section:%q, want disabled", cfg.RequireEffort, cfg.EffortSection)
 	}
 	if cfg.AutoAdmitMinConfidence != DefaultBacklogAdmissionAutoAdmitMinConfidence {
 		t.Fatalf(
@@ -427,6 +441,72 @@ func TestResolveAdmissionCriteriaFailsClosed(t *testing.T) {
 			_, err := ResolveAdmissionCriteria(tt.prompt, "Admission criteria")
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ResolveAdmissionCriteria() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveAdmissionEffortRubric(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		prompt  string
+		section string
+		want    []string
+		wantErr string
+	}{
+		{
+			name:    "reads code and bold list items",
+			prompt:  "## Issue effort selection\n\n- `medium` — small and mechanical.\n- **high** — standard feature work.\n- `xhigh`: tricky state semantics.\n\n## Later\n\nIgnored.",
+			section: "issue effort selection",
+			want:    []string{"medium", "high", "xhigh"},
+		},
+		{
+			name:    "ignores fenced examples",
+			prompt:  "## Effort\n\n```markdown\n- `low` — ignored.\n```\n\n- `high` — selected.",
+			section: "Effort",
+			want:    []string{"high"},
+		},
+		{
+			name:    "rejects duplicate values",
+			prompt:  "## Effort\n\n- `high` — standard.\n- **HIGH** — duplicate.",
+			section: "Effort",
+			wantErr: "duplicated",
+		},
+		{
+			name:    "requires formatted values",
+			prompt:  "## Effort\n\nChoose a suitable effort.",
+			section: "Effort",
+			wantErr: "must define at least one effort",
+		},
+		{
+			name:    "rejects unsupported value characters",
+			prompt:  "## Effort\n\n- `very high` — not safe for an override block.",
+			section: "Effort",
+			wantErr: "contains unsupported characters",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ResolveAdmissionEffortRubric(tt.prompt, tt.section)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ResolveAdmissionEffortRubric() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveAdmissionEffortRubric() error = %v", err)
+			}
+			if strings.Contains(got.Text, "Ignored.") || len(got.Efforts) != len(tt.want) {
+				t.Fatalf("rubric = %#v, want efforts %#v", got, tt.want)
+			}
+			for index, want := range tt.want {
+				if got.Efforts[index] != want {
+					t.Fatalf("Efforts[%d] = %q, want %q", index, got.Efforts[index], want)
+				}
 			}
 		})
 	}

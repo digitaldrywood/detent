@@ -24,6 +24,8 @@ type Proposal struct {
 	CriteriaText       string
 	Findings           []Finding
 	Confidence         float64
+	RecommendedEffort  string
+	EffortRationale    string
 	Status             ProposalStatus
 	CreatedAt          time.Time
 	ExpiresAt          time.Time

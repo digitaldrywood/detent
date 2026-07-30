@@ -18,6 +18,8 @@ func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
 	backend := openAdmissionTestStore(t, ctx)
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	first := admissionTestProposal("proposal-1", "fingerprint-1", now)
+	first.RecommendedEffort = "high"
+	first.EffortRationale = "The change crosses admission and dispatch."
 	created, err := backend.CreateAdmissionProposal(ctx, first)
 	if err != nil || !created {
 		t.Fatalf("CreateAdmissionProposal() = %t, %v, want created", created, err)
@@ -63,7 +65,10 @@ func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdmissionProposalHistory() error = %v", err)
 	}
-	if len(history) != 2 || history[0].Status != admissionmodel.ProposalAccepted || history[1].Status != admissionmodel.ProposalSuperseded {
+	if len(history) != 2 || history[0].Status != admissionmodel.ProposalAccepted ||
+		history[1].Status != admissionmodel.ProposalSuperseded ||
+		history[1].RecommendedEffort != "high" ||
+		history[1].EffortRationale != "The change crosses admission and dispatch." {
 		t.Fatalf("history = %#v", history)
 	}
 	count, err := backend.CountOpenAdmissionProposals(ctx, "detent")

@@ -97,7 +97,11 @@ configured source states against a named criteria section in `WORKFLOW.md`,
 then proposes a bounded number for a target state. Its five-field cron,
 source-state membership, distinct target state, tracker support, and positive
 run limits are enforced by the same validators that feed the generated table
-below.
+below. When `require_effort` is enabled, `effort_section` names a separate
+project-owned `WORKFLOW.md` rubric whose bold or code-formatted list items
+define the allowed recommendations. Detent writes a recommended `detent-agent`
+block before the admission transition only when the issue has no existing
+block; the default remains disabled for compatibility.
 
 ## Fleet staleness warnings
 
@@ -259,12 +263,14 @@ rendering and fails on drift.
 | `backlog_admission.auto_admit` | `boolean` | `false` | No | None |
 | `backlog_admission.auto_admit_min_confidence` | `number` | `0.9` | No | None |
 | `backlog_admission.criteria_section` | `string` | `none` | Conditional | is required |
+| `backlog_admission.effort_section` | `string` | `none` | Conditional | is required when require_effort is true |
 | `backlog_admission.enabled` | `boolean` | `false` | No | None |
 | `backlog_admission.exclude_labels` | `list<string>` | `[]` | No | None |
 | `backlog_admission.max_candidates_per_run` | `integer` | `50` | No | must be greater than 0 |
 | `backlog_admission.max_open_proposals` | `integer` | `10` | No | must be greater than 0 |
 | `backlog_admission.max_proposals_per_run` | `integer` | `3` | No | must be greater than 0 |
 | `backlog_admission.proposal_expiry_days` | `integer` | `7` | No | must be greater than 0 |
+| `backlog_admission.require_effort` | `boolean` | `false` | No | None |
 | `backlog_admission.schedule` | `string` | `"0 6 * * 1-5"` | No | must be a valid five-field cron expression |
 | `backlog_admission.sources` | `object` | `see child fields` | No | must configure at least one selector |
 | `backlog_admission.sources.labels` | `list<string>` | `[]` | No | None |

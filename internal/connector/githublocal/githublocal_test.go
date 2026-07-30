@@ -577,6 +577,15 @@ type writeThroughOperation struct {
 func writeThroughOperations() []writeThroughOperation {
 	return []writeThroughOperation{
 		{
+			name:         "UpdateIssueBody",
+			githubMethod: "UpdateIssueBody",
+			githubCall:   call("github.UpdateIssueBody", githubWriteThroughIssueID, "updated body"),
+			localCall:    call("local.UpdateIssueBody", localWriteThroughIssueID, "updated body"),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.UpdateIssueBody(ctx, localWriteThroughIssueID, "updated body")
+			},
+		},
+		{
 			name:         "UpdateIssueState",
 			githubMethod: "UpdateIssueState",
 			githubCall:   call("github.UpdateIssueState", githubWriteThroughIssueID, "In Progress"),
@@ -786,6 +795,11 @@ func (b *recordingGitHubBackend) UpdateIssueState(_ context.Context, issueID str
 	return b.err("UpdateIssueState")
 }
 
+func (b *recordingGitHubBackend) UpdateIssueBody(_ context.Context, issueID string, body string) error {
+	b.calls.add("github.UpdateIssueBody", issueID, body)
+	return b.err("UpdateIssueBody")
+}
+
 func (b *recordingGitHubBackend) SetAssignee(_ context.Context, issueID string, login string) error {
 	b.calls.add("github.SetAssignee", issueID, login)
 	return b.err("SetAssignee")
@@ -898,6 +912,11 @@ func (b *recordingLocalBackend) UpsertIssues(context.Context, []connector.Issue)
 func (b *recordingLocalBackend) UpdateIssueState(_ context.Context, issueID string, stateName string) error {
 	b.calls.add("local.UpdateIssueState", issueID, stateName)
 	return b.err("UpdateIssueState")
+}
+
+func (b *recordingLocalBackend) UpdateIssueBody(_ context.Context, issueID string, body string) error {
+	b.calls.add("local.UpdateIssueBody", issueID, body)
+	return b.err("UpdateIssueBody")
 }
 
 func (b *recordingLocalBackend) SetAssignee(_ context.Context, issueID string, login string) error {

@@ -1109,6 +1109,9 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 				Name: "Evidence",
 				Text: "Require reproducible evidence.",
 			}},
+			EffortSection:  "Issue effort selection",
+			EffortText:     "- `medium` — small and mechanical.\n- `high` — standard feature work.",
+			AllowedEfforts: []string{"medium", "high"},
 			Candidates: []AdmissionCandidate{{
 				ID:          "issue-1535",
 				Identifier:  "digitaldrywood/detent#1535",
@@ -1152,7 +1155,14 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	if agentBackend.request.ToolInstructions != admissionToolInstructions {
 		t.Fatalf("AgentTurnRequest.ToolInstructions = %q, want admission instructions", agentBackend.request.ToolInstructions)
 	}
-	for _, want := range []string{"propose_backlog_admission", "Require reproducible evidence.", "digitaldrywood/detent#1535"} {
+	for _, want := range []string{
+		"propose_backlog_admission",
+		"Require reproducible evidence.",
+		"digitaldrywood/detent#1535",
+		"Issue effort selection",
+		"recommended_effort",
+		"standard feature work",
+	} {
 		if !strings.Contains(agentBackend.request.Prompt, want) {
 			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
 		}

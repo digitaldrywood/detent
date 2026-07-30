@@ -253,6 +253,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, errors.Join(fmt.Errorf("create project routine: %w", err), closeConnector(retroProductConnector))
 	}
 	admissionCriteria := workflowconfig.AdmissionCriteria{}
+	admissionEffortRubric := workflowconfig.AdmissionEffortRubric{}
 	if workflow.Config.BacklogAdmission.Enabled {
 		admissionCriteria, err = workflowconfig.ResolveAdmissionCriteria(
 			workflow.SharedPrompt,
@@ -261,11 +262,21 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
 		}
+		if workflow.Config.BacklogAdmission.RequireEffort {
+			admissionEffortRubric, err = workflowconfig.ResolveAdmissionEffortRubric(
+				workflow.SharedPrompt,
+				workflow.Config.BacklogAdmission.EffortSection,
+			)
+			if err != nil {
+				return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
+			}
+		}
 	}
 	projectAdmission, err := admission.New(admission.Settings{
 		ProjectID:          string(id),
 		Config:             workflow.Config.BacklogAdmission,
 		Criteria:           admissionCriteria,
+		EffortRubric:       admissionEffortRubric,
 		DispatchStates:     workflow.Config.Agent.DispatchPriorityByState,
 		DispatchLabels:     workflow.Config.Agent.DispatchPriorityByLabel,
 		PrioritizeBlockers: workflow.Config.Agent.PrioritizeUnblockers,
@@ -1200,6 +1211,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return p.workflowReloadError("workflow reload validation failed", update.Path, err)
 	}
 	admissionCriteria := workflowconfig.AdmissionCriteria{}
+	admissionEffortRubric := workflowconfig.AdmissionEffortRubric{}
 	if workflow.Config.BacklogAdmission.Enabled {
 		resolvedCriteria, criteriaErr := workflowconfig.ResolveAdmissionCriteria(
 			workflow.SharedPrompt,
@@ -1209,6 +1221,16 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			return p.workflowReloadError("workflow reload backlog admission criteria failed", update.Path, criteriaErr)
 		}
 		admissionCriteria = resolvedCriteria
+		if workflow.Config.BacklogAdmission.RequireEffort {
+			resolvedRubric, rubricErr := workflowconfig.ResolveAdmissionEffortRubric(
+				workflow.SharedPrompt,
+				workflow.Config.BacklogAdmission.EffortSection,
+			)
+			if rubricErr != nil {
+				return p.workflowReloadError("workflow reload backlog admission effort rubric failed", update.Path, rubricErr)
+			}
+			admissionEffortRubric = resolvedRubric
+		}
 	}
 
 	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
@@ -1300,6 +1322,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ProjectID:          string(p.id),
 			Config:             workflow.Config.BacklogAdmission,
 			Criteria:           admissionCriteria,
+			EffortRubric:       admissionEffortRubric,
 			DispatchStates:     workflow.Config.Agent.DispatchPriorityByState,
 			DispatchLabels:     workflow.Config.Agent.DispatchPriorityByLabel,
 			PrioritizeBlockers: workflow.Config.Agent.PrioritizeUnblockers,

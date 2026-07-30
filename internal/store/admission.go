@@ -72,8 +72,9 @@ WHERE project_id = ? AND issue_id = ? AND target_state = ? AND status = 'open'`,
 	if _, err = tx.ExecContext(ctx, `
 INSERT INTO backlog_admission_proposals (
   id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,
-  criteria_section, criteria_text, findings_json, confidence, status, created_at, expires_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+  criteria_section, criteria_text, findings_json, confidence, recommended_effort,
+  effort_rationale, status, created_at, expires_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
 		strings.TrimSpace(proposal.ID),
 		strings.TrimSpace(proposal.ProjectID),
 		strings.TrimSpace(proposal.IssueID),
@@ -85,6 +86,8 @@ INSERT INTO backlog_admission_proposals (
 		proposal.CriteriaText,
 		string(findingsJSON),
 		proposal.Confidence,
+		strings.TrimSpace(proposal.RecommendedEffort),
+		strings.TrimSpace(proposal.EffortRationale),
 		createdAt,
 		expiresAt,
 	); err != nil {
@@ -100,7 +103,9 @@ INSERT INTO backlog_admission_proposals (
 func (s *sqliteStore) OpenAdmissionProposals(ctx context.Context, projectID string, limit int) ([]admissionmodel.Proposal, error) {
 	query := `
 SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,
-       criteria_section, criteria_text, findings_json, confidence, status, created_at,
+       criteria_section, criteria_text, findings_json, confidence,
+       COALESCE(recommended_effort, ''), COALESCE(effort_rationale, ''),
+       status, created_at,
        expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
        COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
        COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
@@ -124,7 +129,9 @@ ORDER BY created_at, id`
 func (s *sqliteStore) AdmissionProposalHistory(ctx context.Context, projectID string, issueID string) ([]admissionmodel.Proposal, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,
-       criteria_section, criteria_text, findings_json, confidence, status, created_at,
+       criteria_section, criteria_text, findings_json, confidence,
+       COALESCE(recommended_effort, ''), COALESCE(effort_rationale, ''),
+       status, created_at,
        expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
        COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
        COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
@@ -900,6 +907,8 @@ func scanAdmissionProposal(scan admissionScan) (admissionmodel.Proposal, error) 
 		&proposal.CriteriaText,
 		&findingsJSON,
 		&proposal.Confidence,
+		&proposal.RecommendedEffort,
+		&proposal.EffortRationale,
 		&status,
 		&createdAt,
 		&expiresAt,

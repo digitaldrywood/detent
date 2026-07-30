@@ -333,6 +333,9 @@ type AdmissionRequest struct {
 	CriteriaSection string
 	CriteriaText    string
 	Dimensions      []AdmissionDimension
+	EffortSection   string
+	EffortText      string
+	AllowedEfforts  []string
 	Candidates      []AdmissionCandidate
 }
 

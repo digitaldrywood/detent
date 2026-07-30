@@ -20,7 +20,11 @@ const (
 	DefaultBacklogAdmissionAutoAdmitMinConfidence = 0.9
 )
 
-var admissionDimensionPattern = regexp.MustCompile(`^\s*[-*+]\s+\*\*([^*]+)\*\*\s*(?:[—–:-]\s*)?(.+?)\s*$`)
+var (
+	admissionDimensionPattern = regexp.MustCompile(`^\s*[-*+]\s+\*\*([^*]+)\*\*\s*(?:[—–:-]\s*)?(.+?)\s*$`)
+	admissionEffortPattern    = regexp.MustCompile(`^\s*[-*+]\s+(?:\*\*([^*]+)\*\*|` + "`([^`]+)`" + `)\s*(?:[—–:-]\s*)?(.+?)\s*$`)
+	admissionEffortValue      = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
 
 type BacklogAdmission struct {
 	Enabled                bool                    `yaml:"enabled"`
@@ -28,6 +32,8 @@ type BacklogAdmission struct {
 	Sources                BacklogAdmissionSources `yaml:"sources"`
 	TargetState            string                  `yaml:"target_state"`
 	CriteriaSection        string                  `yaml:"criteria_section"`
+	RequireEffort          bool                    `yaml:"require_effort"`
+	EffortSection          string                  `yaml:"effort_section,omitempty"`
 	ExcludeLabels          []string                `yaml:"exclude_labels,omitempty"`
 	Authors                BacklogAdmissionAuthors `yaml:"authors,omitempty"`
 	MaxCandidatesPerRun    int                     `yaml:"max_candidates_per_run"`
@@ -60,6 +66,16 @@ type AdmissionDimension struct {
 	Text string
 }
 
+type AdmissionEffortRubric struct {
+	Section string
+	Text    string
+	Efforts []string
+}
+
+func ValidAdmissionEffortValue(value string) bool {
+	return admissionEffortValue.MatchString(strings.TrimSpace(value))
+}
+
 func (a *BacklogAdmission) Normalize() {
 	if a == nil {
 		return
@@ -72,6 +88,7 @@ func (a *BacklogAdmission) Normalize() {
 	a.Sources.Labels = normalizeAdmissionSourceLabels(a.Sources.Labels)
 	a.TargetState = strings.TrimSpace(a.TargetState)
 	a.CriteriaSection = strings.TrimSpace(a.CriteriaSection)
+	a.EffortSection = strings.TrimSpace(a.EffortSection)
 	a.ExcludeLabels = normalizeLabels(a.ExcludeLabels)
 	a.Authors.Allow = normalizeAdmissionAuthors(a.Authors.Allow)
 	a.Authors.AllowAssociation = normalizeAdmissionAssociations(a.Authors.AllowAssociation)
@@ -111,6 +128,9 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	}
 	if a.CriteriaSection == "" {
 		problems = append(problems, prefix+".criteria_section is required")
+	}
+	if a.RequireEffort && a.EffortSection == "" {
+		problems = append(problems, prefix+".effort_section is required when require_effort is true")
 	}
 	validatePositive(prefix+".max_candidates_per_run", a.MaxCandidatesPerRun, &problems)
 	validatePositive(prefix+".max_proposals_per_run", a.MaxProposalsPerRun, &problems)
@@ -253,6 +273,40 @@ func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria,
 	if section == "" {
 		return AdmissionCriteria{}, errors.New("backlog admission criteria section is required")
 	}
+	match, text, err := resolveAdmissionSection(prompt, section, "criteria")
+	if err != nil {
+		return AdmissionCriteria{}, err
+	}
+	dimensions, err := admissionDimensions(text, match.Level)
+	if err != nil {
+		return AdmissionCriteria{}, err
+	}
+	if len(dimensions) == 0 {
+		return AdmissionCriteria{}, fmt.Errorf("backlog admission criteria section %q must define at least one dimension using a bold list item or nested heading", section)
+	}
+	return AdmissionCriteria{Section: match.Title, Text: text, Dimensions: dimensions}, nil
+}
+
+func ResolveAdmissionEffortRubric(prompt string, section string) (AdmissionEffortRubric, error) {
+	section = strings.TrimSpace(section)
+	if section == "" {
+		return AdmissionEffortRubric{}, errors.New("backlog admission effort section is required")
+	}
+	match, text, err := resolveAdmissionSection(prompt, section, "effort")
+	if err != nil {
+		return AdmissionEffortRubric{}, err
+	}
+	efforts, err := admissionEfforts(text)
+	if err != nil {
+		return AdmissionEffortRubric{}, err
+	}
+	if len(efforts) == 0 {
+		return AdmissionEffortRubric{}, fmt.Errorf("backlog admission effort section %q must define at least one effort using a bold or code-formatted list item", section)
+	}
+	return AdmissionEffortRubric{Section: match.Title, Text: text, Efforts: efforts}, nil
+}
+
+func resolveAdmissionSection(prompt string, section string, kind string) (markdownHeading, string, error) {
 	headings := markdownHeadings(prompt)
 	matches := make([]markdownHeading, 0, 1)
 	for _, heading := range headings {
@@ -261,10 +315,10 @@ func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria,
 		}
 	}
 	if len(matches) == 0 {
-		return AdmissionCriteria{}, fmt.Errorf("backlog admission criteria section %q was not found in shared WORKFLOW.md", section)
+		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q was not found in shared WORKFLOW.md", kind, section)
 	}
 	if len(matches) > 1 {
-		return AdmissionCriteria{}, fmt.Errorf("backlog admission criteria section %q is duplicated in shared WORKFLOW.md", section)
+		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q is duplicated in shared WORKFLOW.md", kind, section)
 	}
 	match := matches[0]
 	end := len(prompt)
@@ -277,23 +331,22 @@ func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria,
 	}
 	text := strings.TrimSpace(prompt[match.End:end])
 	if text == "" {
-		return AdmissionCriteria{}, fmt.Errorf("backlog admission criteria section %q is empty in shared WORKFLOW.md", section)
+		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q is empty in shared WORKFLOW.md", kind, section)
 	}
-	dimensions, err := admissionDimensions(text, match.Level)
-	if err != nil {
-		return AdmissionCriteria{}, err
-	}
-	if len(dimensions) == 0 {
-		return AdmissionCriteria{}, fmt.Errorf("backlog admission criteria section %q must define at least one dimension using a bold list item or nested heading", section)
-	}
-	return AdmissionCriteria{Section: match.Title, Text: text, Dimensions: dimensions}, nil
+	return match, text, nil
 }
 
 func ValidateWorkflowAdmission(workflow Workflow) error {
 	if !workflow.Config.BacklogAdmission.Enabled {
 		return nil
 	}
-	_, err := ResolveAdmissionCriteria(workflow.SharedPrompt, workflow.Config.BacklogAdmission.CriteriaSection)
+	if _, err := ResolveAdmissionCriteria(workflow.SharedPrompt, workflow.Config.BacklogAdmission.CriteriaSection); err != nil {
+		return err
+	}
+	if !workflow.Config.BacklogAdmission.RequireEffort {
+		return nil
+	}
+	_, err := ResolveAdmissionEffortRubric(workflow.SharedPrompt, workflow.Config.BacklogAdmission.EffortSection)
 	return err
 }
 
@@ -451,6 +504,39 @@ func admissionDimensions(text string, sectionLevel int) ([]AdmissionDimension, e
 		out = append(out, dimension)
 	}
 	return out, nil
+}
+
+func admissionEfforts(text string) ([]string, error) {
+	lines := markdownLines(text)
+	codeFenceLines := markdownCodeFenceLines(lines)
+	efforts := []string{}
+	seen := map[string]struct{}{}
+	for index, line := range lines {
+		if codeFenceLines[index] {
+			continue
+		}
+		match := admissionEffortPattern.FindStringSubmatch(line.Text)
+		if len(match) == 0 {
+			continue
+		}
+		effort := strings.TrimSpace(match[1])
+		if effort == "" {
+			effort = strings.TrimSpace(match[2])
+		}
+		key := strings.ToLower(effort)
+		if key == "" {
+			continue
+		}
+		if !ValidAdmissionEffortValue(effort) {
+			return nil, fmt.Errorf("backlog admission effort %q contains unsupported characters", effort)
+		}
+		if _, ok := seen[key]; ok {
+			return nil, fmt.Errorf("backlog admission effort %q is duplicated", effort)
+		}
+		seen[key] = struct{}{}
+		efforts = append(efforts, effort)
+	}
+	return efforts, nil
 }
 
 func markdownCodeFenceLines(lines []markdownLine) []bool {

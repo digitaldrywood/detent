@@ -192,6 +192,10 @@ type IssueCommentUpdater interface {
 	UpdateIssueComment(context.Context, string, string, string) error
 }
 
+type IssueBodyUpdater interface {
+	UpdateIssueBody(context.Context, string, string) error
+}
+
 type IssueCommentDeleter interface {
 	DeleteIssueComment(context.Context, string, string) error
 }
