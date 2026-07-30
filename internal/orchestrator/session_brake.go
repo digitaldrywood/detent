@@ -60,13 +60,7 @@ func (o *Orchestrator) handleSessionBrake(
 		running.WorkProductPushed ||
 		terminalAttemptHasWorkProduct(running.Issue, running.WorkProductPushed) ||
 		sessionBrakeDiffResumable(running.DiffStats)
-	targetState := terminalAttemptTodoState(o.cfg.ActiveStates)
-	if resumable {
-		targetState = autoPromoteReworkState
-	}
-	if targetState == "" {
-		targetState = "Todo"
-	}
+	targetState := sessionBrakeTargetState(o.cfg, resumable)
 
 	if o.logger != nil {
 		o.logger.Warn(
@@ -197,6 +191,35 @@ func sessionBrakeDiffResumable(diff DiffStats) bool {
 		diff.FilesChanged > 0 ||
 		diff.AddedLines > 0 ||
 		diff.RemovedLines > 0
+}
+
+func sessionBrakeTargetState(cfg Config, resumable bool) string {
+	reworkState := sessionBrakeActiveState(cfg.ActiveStates, cfg.AutoPromote.ReworkState)
+	if resumable && reworkState != "" {
+		return reworkState
+	}
+	if todoState := terminalAttemptTodoState(cfg.ActiveStates); todoState != "" {
+		return todoState
+	}
+	if reworkState != "" {
+		return reworkState
+	}
+	for _, state := range cfg.ActiveStates {
+		if state = displayStateName(state); state != "" {
+			return state
+		}
+	}
+	return ""
+}
+
+func sessionBrakeActiveState(activeStates []string, preferred string) string {
+	preferred = normalizeState(preferred)
+	for _, state := range activeStates {
+		if normalizeState(state) == preferred {
+			return displayStateName(state)
+		}
+	}
+	return ""
 }
 
 func sessionBrakeMetadata(brake *runpkg.SessionBrakeError, targetState string, resumable bool) map[string]any {

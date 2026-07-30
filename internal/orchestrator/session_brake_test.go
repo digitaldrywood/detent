@@ -19,11 +19,13 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		resumable  bool
-		diff       DiffStats
-		wantState  string
-		finalState string
+		name         string
+		resumable    bool
+		diff         DiffStats
+		activeStates []string
+		reworkState  string
+		wantState    string
+		finalState   string
 	}{
 		{
 			name:       "no work product returns to todo",
@@ -42,6 +44,21 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			},
 			wantState:  "Rework",
 			finalState: runpkg.FinalStateNoProgress,
+		},
+		{
+			name:         "workspace progress uses configured rework state",
+			resumable:    true,
+			activeStates: []string{"Todo", "In Progress", "Production Rework"},
+			reworkState:  "Production Rework",
+			wantState:    "production rework",
+			finalState:   runpkg.FinalStateNoProgress,
+		},
+		{
+			name:         "workspace progress falls back to todo when rework is inactive",
+			resumable:    true,
+			activeStates: []string{"Todo", "In Progress"},
+			wantState:    "Todo",
+			finalState:   runpkg.FinalStateNoProgress,
 		},
 	}
 
@@ -93,12 +110,19 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			}
 			project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
 			dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			activeStates := tt.activeStates
+			if len(activeStates) == 0 {
+				activeStates = []string{"Todo", "In Progress", "Rework"}
+			}
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents: 1,
 				Project:             project,
-				ActiveStates:        []string{"Todo", "In Progress", "Rework"},
+				ActiveStates:        activeStates,
 				ObservedStates:      []string{"Blocked"},
 				TerminalStates:      []string{"Done", "Cancelled"},
+				AutoPromote: AutoPromoteConfig{
+					ReworkState: tt.reworkState,
+				},
 			})
 			supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 				Now: func() time.Time { return completedAt },
@@ -187,6 +211,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			if !strings.Contains(comment, "cause_fingerprint: "+brake.CauseFingerprint) ||
 				!strings.Contains(comment, "parked_state: "+tt.wantState) {
 				t.Fatalf("session brake comment = %q, want fingerprint and parked state", comment)
+			}
+			if strings.Contains(logs.String(), "session brake state transition failed") {
+				t.Fatalf("logs = %q, want configured parking state transition", logs.String())
 			}
 			for _, want := range []string{
 				"level=WARN",
