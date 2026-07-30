@@ -1034,10 +1034,12 @@ func (s *Server) health(c echo.Context) error {
 	sessionsRemaining := 0
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
+	stalenessWarnings := []telemetry.StalenessWarning{}
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
+			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
 			if snapshot.Shutdown.Draining {
 				status = "draining"
 				sessionsRemaining = snapshot.Shutdown.SessionsRemaining
@@ -1073,6 +1075,7 @@ func (s *Server) health(c echo.Context) error {
 		Budgets:           budgets,
 		Workflows:         workflows,
 		BackendOutages:    backendOutages,
+		StalenessWarnings: stalenessWarnings,
 		Projects:          projectHealth,
 	})
 }
@@ -1309,18 +1312,19 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
-	Status            string                    `json:"status"`
-	ProjectStatus     string                    `json:"project_status"`
-	Mode              string                    `json:"mode"`
-	Connector         string                    `json:"connector"`
-	SessionsRemaining int                       `json:"sessions_remaining,omitempty"`
-	Update            telemetry.Update          `json:"update,omitzero"`
-	Checks            map[string]string         `json:"checks"`
-	Environment       healthEnvironment         `json:"environment"`
-	Budgets           []healthBudget            `json:"budgets,omitempty"`
-	Workflows         []healthWorkflowSource    `json:"workflows,omitempty"`
-	BackendOutages    []telemetry.BackendOutage `json:"backend_outages,omitempty"`
-	Projects          []healthProject           `json:"projects,omitempty"`
+	Status            string                       `json:"status"`
+	ProjectStatus     string                       `json:"project_status"`
+	Mode              string                       `json:"mode"`
+	Connector         string                       `json:"connector"`
+	SessionsRemaining int                          `json:"sessions_remaining,omitempty"`
+	Update            telemetry.Update             `json:"update,omitzero"`
+	Checks            map[string]string            `json:"checks"`
+	Environment       healthEnvironment            `json:"environment"`
+	Budgets           []healthBudget               `json:"budgets,omitempty"`
+	Workflows         []healthWorkflowSource       `json:"workflows,omitempty"`
+	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
+	Projects          []healthProject              `json:"projects,omitempty"`
 }
 
 type healthEnvironment struct {

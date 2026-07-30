@@ -43,6 +43,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		Footnote:  "GitHub quota bars turn amber at 90%; project budget bars warn at 80% and turn red at the cap.",
 		Rows:      append(healthRows(snapshot), healthBudgetRows(data)...),
 	}
+	if len(snapshot.StalenessWarnings) > 0 {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Fleet work is stale."
+		view.Detail = stalenessHealthDetail(snapshot.StalenessWarnings)
+		return view
+	}
 	outages := backendCapacityOutages(snapshot.BackendOutages)
 	if len(outages) > 0 {
 		view.Kind = primitives.KindWarn
@@ -145,6 +151,9 @@ func healthBudgetRows(data DashboardData) []healthRow {
 
 func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows := make([]healthRow, 0, 4)
+	for _, warning := range snapshot.StalenessWarnings {
+		rows = append(rows, healthStalenessRow(warning))
+	}
 	if snapshot.RateLimits != nil {
 		if bucket := snapshot.RateLimits.GitHubREST; bucket != nil {
 			row := healthBucketRow("health-github-rest", "GitHub REST", bucket)
@@ -172,6 +181,45 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthStalenessRow(warning telemetry.StalenessWarning) healthRow {
+	component := "Fleet staleness"
+	if projectID := strings.TrimSpace(warning.ProjectID); projectID != "" {
+		component += " · " + projectID
+	}
+	detail := doctorStyleStalenessTarget(warning) + " · " + strings.TrimSpace(warning.Detail)
+	if warning.AgeSeconds > 0 {
+		detail += " · " + formatDuration(float64(warning.AgeSeconds))
+	}
+	status := "Stale"
+	if warning.WaitingOnHuman {
+		status = "Reminder due"
+	}
+	return healthRow{
+		ID:        "health-staleness-" + boardCardSlug(warning.ID),
+		Component: component,
+		Kind:      primitives.KindWarn,
+		Status:    status,
+		Detail:    detail,
+		Resets:    "on progress",
+	}
+}
+
+func stalenessHealthDetail(warnings []telemetry.StalenessWarning) string {
+	if len(warnings) == 1 {
+		return doctorStyleStalenessTarget(warnings[0]) + " needs operator attention."
+	}
+	return formatCount(len(warnings)) + " warnings need operator attention."
+}
+
+func doctorStyleStalenessTarget(warning telemetry.StalenessWarning) string {
+	for _, value := range []string{warning.Identifier, warning.IssueID, warning.ProjectID} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "fleet"
 }
 
 func healthUpdateRow(update telemetry.Update) healthRow {

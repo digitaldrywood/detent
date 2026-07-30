@@ -62,6 +62,7 @@ type doctorCheck struct {
 	BacklogAdmission          *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
 	OverloadRetriesLastHour   int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
+	StalenessWarnings         []telemetry.StalenessWarning               `json:"staleness_warnings,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
 	ProjectDefinition         *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
@@ -507,6 +508,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, boot, cfg.ProjectID, deps, time.Now())}
+			},
+		},
+		doctorCheckJob{
+			Name: "Fleet staleness",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorFleetStaleness(jobCtx, boot, cfg.ProjectID, deps)}
 			},
 		},
 		doctorCheckJob{

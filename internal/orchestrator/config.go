@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/staleness"
 )
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
@@ -114,6 +115,31 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			SessionsMultiple: cfg.Observability.Efficiency.AnomalySessionsMultiple,
 			DwellMultiple:    cfg.Observability.Efficiency.AnomalyDwellMultiple,
 		},
+		Staleness: stalenessConfigFromWorkflow(cfg.Observability.Staleness),
+		StalenessDelivery: staleness.DeliveryConfig{
+			WebhookURL: cfg.Observability.Staleness.Webhook.URL,
+			Headers:    cloneStringMap(cfg.Observability.Staleness.Webhook.Headers),
+			Timeout:    durationFromMillis(cfg.Observability.Staleness.Webhook.TimeoutMS),
+		},
+	}
+}
+
+func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability) staleness.Config {
+	lanes := make([]staleness.LaneThreshold, 0, len(cfg.Lanes))
+	for _, lane := range cfg.Lanes {
+		lanes = append(lanes, staleness.LaneThreshold{
+			State:     lane.State,
+			Threshold: time.Duration(lane.ThresholdHours) * time.Hour,
+			HumanGate: lane.HumanGate,
+		})
+	}
+	return staleness.Config{
+		Enabled:                cfg.Enabled,
+		Lanes:                  lanes,
+		NoCompletionThreshold:  time.Duration(cfg.NoCompletionHours) * time.Hour,
+		NoMergeThreshold:       time.Duration(cfg.NoMergeHours) * time.Hour,
+		RepeatedDecisionCount:  cfg.RepeatedDecisionCount,
+		RepeatedDecisionWindow: time.Duration(cfg.RepeatedWindowHours) * time.Hour,
 	}
 }
 
@@ -207,6 +233,9 @@ func normalizeConfig(cfg Config) Config {
 	cfg.SelectorContext.Persona = strings.TrimSpace(cfg.SelectorContext.Persona)
 	cfg.WorkerHosts = normalizeWorkerHosts(cfg.WorkerHosts)
 	cfg.SelectorPersona = strings.TrimSpace(cfg.SelectorPersona)
+	cfg.Staleness.Lanes = append([]staleness.LaneThreshold(nil), cfg.Staleness.Lanes...)
+	cfg.StalenessDelivery.WebhookURL = strings.TrimSpace(cfg.StalenessDelivery.WebhookURL)
+	cfg.StalenessDelivery.Headers = cloneStringMap(cfg.StalenessDelivery.Headers)
 	if cfg.MaxConcurrentAgentsPerHost < 0 {
 		cfg.MaxConcurrentAgentsPerHost = 0
 	}

@@ -19,6 +19,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
@@ -685,12 +686,13 @@ type doctorHealthProbe struct {
 }
 
 type doctorHealthResponse struct {
-	Status      string                  `json:"status"`
-	Mode        string                  `json:"mode"`
-	Checks      map[string]string       `json:"checks"`
-	Environment doctorHealthEnvironment `json:"environment"`
-	Budgets     []doctorHealthBudget    `json:"budgets"`
-	Workflows   []doctorHealthWorkflow  `json:"workflows"`
+	Status            string                       `json:"status"`
+	Mode              string                       `json:"mode"`
+	Checks            map[string]string            `json:"checks"`
+	Environment       doctorHealthEnvironment      `json:"environment"`
+	Budgets           []doctorHealthBudget         `json:"budgets"`
+	Workflows         []doctorHealthWorkflow       `json:"workflows"`
+	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings"`
 }
 
 type doctorHealthEnvironment struct {

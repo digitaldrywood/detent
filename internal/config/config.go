@@ -75,6 +75,12 @@ const (
 	MinPollingIntervalMS                  = 60000
 	DefaultShutdownDrainTimeoutMS         = 75000
 	DefaultBoardSnapshotStaleAfterSeconds = 15 * 60
+	DefaultStalenessNoCompletionHours     = 24
+	DefaultStalenessNoMergeHours          = 12
+	DefaultStalenessRepeatedCount         = 20
+	DefaultStalenessRepeatedWindowHours   = 24
+	DefaultStalenessWebhookTimeoutMS      = 5000
+	MaxStalenessRepeatedCount             = 500
 
 	defaultCodexProtocol                      = "app-server"
 	defaultClaudeCodeProtocol                 = "headless"
@@ -702,6 +708,7 @@ type Observability struct {
 	RenderIntervalMS int                     `yaml:"render_interval_ms"`
 	Efficiency       EfficiencyObservability `yaml:"efficiency,omitempty"`
 	OTLP             OTLPObservability       `yaml:"otlp,omitempty"`
+	Staleness        StalenessObservability  `yaml:"staleness,omitempty"`
 }
 
 type EfficiencyObservability struct {
@@ -715,6 +722,28 @@ type OTLPObservability struct {
 	Headers     map[string]string `yaml:"headers,omitempty"`
 	ServiceName string            `yaml:"service_name,omitempty"`
 	TimeoutMS   int               `yaml:"timeout_ms,omitempty"`
+}
+
+type StalenessObservability struct {
+	Enabled               bool                     `yaml:"enabled"`
+	Lanes                 []StalenessLaneThreshold `yaml:"lanes,omitempty"`
+	NoCompletionHours     int                      `yaml:"no_completion_hours"`
+	NoMergeHours          int                      `yaml:"no_merge_hours"`
+	RepeatedDecisionCount int                      `yaml:"repeated_decision_count"`
+	RepeatedWindowHours   int                      `yaml:"repeated_window_hours"`
+	Webhook               StalenessWebhook         `yaml:"webhook,omitempty"`
+}
+
+type StalenessLaneThreshold struct {
+	State          string `yaml:"state"`
+	ThresholdHours int    `yaml:"threshold_hours"`
+	HumanGate      bool   `yaml:"human_gate,omitempty"`
+}
+
+type StalenessWebhook struct {
+	URL       string            `yaml:"url,omitempty"`
+	Headers   map[string]string `yaml:"headers,omitempty"`
+	TimeoutMS int               `yaml:"timeout_ms"`
 }
 
 type Release struct {
@@ -1323,6 +1352,19 @@ func Default() Config {
 				AnomalyDwellMultiple:    3,
 			},
 			OTLP: OTLPObservability{TimeoutMS: 5000, ServiceName: "detent"},
+			Staleness: StalenessObservability{
+				Enabled:               true,
+				NoCompletionHours:     DefaultStalenessNoCompletionHours,
+				NoMergeHours:          DefaultStalenessNoMergeHours,
+				RepeatedDecisionCount: DefaultStalenessRepeatedCount,
+				RepeatedWindowHours:   DefaultStalenessRepeatedWindowHours,
+				Lanes: []StalenessLaneThreshold{
+					{State: "Human Review", ThresholdHours: 72, HumanGate: true},
+					{State: "Blocked", ThresholdHours: 48},
+					{State: "Merging", ThresholdHours: 2},
+				},
+				Webhook: StalenessWebhook{TimeoutMS: DefaultStalenessWebhookTimeoutMS},
+			},
 		},
 		Release: Release{
 			MinMergedIssues: 5,
@@ -1604,6 +1646,7 @@ func (c *Config) normalize() {
 		c.Tracker.ObservedStates = appendStateUnique(c.Tracker.ObservedStates, c.Plan.Stop)
 	}
 	c.Server.Normalize()
+	c.Observability.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 	c.Intake.Normalize()
 	c.Retro.Normalize()
@@ -2490,6 +2533,7 @@ func (o *Observability) validate(problems *[]string) {
 	validatePositiveFloat("observability.efficiency.anomaly_dwell_multiple", o.Efficiency.AnomalyDwellMultiple, problems)
 	o.OTLP.Endpoint = strings.TrimSpace(o.OTLP.Endpoint)
 	o.OTLP.ServiceName = strings.TrimSpace(o.OTLP.ServiceName)
+	o.Staleness.validate(problems)
 	if o.OTLP.Endpoint == "" {
 		return
 	}
@@ -2501,6 +2545,69 @@ func (o *Observability) validate(problems *[]string) {
 	if o.OTLP.ServiceName == "" {
 		*problems = append(*problems, "observability.otlp.service_name is required when OTLP export is enabled")
 	}
+}
+
+func (o *Observability) Normalize() {
+	if o == nil {
+		return
+	}
+	o.OTLP.Endpoint = strings.TrimSpace(o.OTLP.Endpoint)
+	o.OTLP.ServiceName = strings.TrimSpace(o.OTLP.ServiceName)
+	o.Staleness.Normalize()
+}
+
+func (s *StalenessObservability) Normalize() {
+	if s == nil {
+		return
+	}
+	for index := range s.Lanes {
+		s.Lanes[index].State = strings.TrimSpace(s.Lanes[index].State)
+	}
+	s.Webhook.URL = strings.TrimSpace(s.Webhook.URL)
+	headers := make(map[string]string, len(s.Webhook.Headers))
+	for name, value := range s.Webhook.Headers {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		headers[name] = strings.TrimSpace(value)
+	}
+	s.Webhook.Headers = headers
+}
+
+func (s *StalenessObservability) validate(problems *[]string) {
+	s.Normalize()
+	if !s.Enabled {
+		return
+	}
+	validatePositive("observability.staleness.no_completion_hours", s.NoCompletionHours, problems)
+	validatePositive("observability.staleness.no_merge_hours", s.NoMergeHours, problems)
+	validatePositive("observability.staleness.repeated_decision_count", s.RepeatedDecisionCount, problems)
+	if s.RepeatedDecisionCount > MaxStalenessRepeatedCount {
+		*problems = append(*problems, "observability.staleness.repeated_decision_count must be less than or equal to 500")
+	}
+	validatePositive("observability.staleness.repeated_window_hours", s.RepeatedWindowHours, problems)
+	seen := make(map[string]struct{}, len(s.Lanes))
+	for index, lane := range s.Lanes {
+		prefix := fmt.Sprintf("observability.staleness.lanes[%d]", index)
+		if lane.State == "" {
+			*problems = append(*problems, prefix+".state is required")
+		}
+		key := strings.ToLower(lane.State)
+		if _, ok := seen[key]; key != "" && ok {
+			*problems = append(*problems, prefix+".state must be unique")
+		}
+		seen[key] = struct{}{}
+		validatePositive(prefix+".threshold_hours", lane.ThresholdHours, problems)
+	}
+	if s.Webhook.URL == "" {
+		return
+	}
+	parsed, err := url.Parse(s.Webhook.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		*problems = append(*problems, "observability.staleness.webhook.url must be an absolute http or https URL")
+	}
+	validatePositive("observability.staleness.webhook.timeout_ms", s.Webhook.TimeoutMS, problems)
 }
 
 func (h *Hooks) validate(problems *[]string) {

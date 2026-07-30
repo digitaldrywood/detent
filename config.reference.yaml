@@ -856,6 +856,35 @@
 #     service_name: "detent"
 #     # observability.otlp.timeout_ms | type: integer | default: 5000 | required: No | validation: None
 #     timeout_ms: 5000
+#   # observability.staleness | type: object | default: see child fields | required: No | validation: None
+#   staleness:
+#     # observability.staleness.enabled | type: boolean | default: true | required: No | validation: None
+#     enabled: true
+#     # observability.staleness.lanes | type: list<object> | default: [{"State":"Human Review","ThresholdHours":72,"HumanGate":true},{"State":"Blocked","ThresholdHours":48,"HumanGate":false},{"State":"Merging","ThresholdHours":2,"HumanGate":false}] | required: No | validation: None
+#     lanes:
+#       -
+#         # observability.staleness.lanes[].state | type: string | default: "Human Review" | required: Conditional | validation: is required
+#         state: "Human Review"
+#         # observability.staleness.lanes[].threshold_hours | type: integer | default: 72 | required: No | validation: must be greater than 0
+#         threshold_hours: 72
+#         # observability.staleness.lanes[].human_gate | type: boolean | default: true | required: No | validation: None
+#         human_gate: true
+#     # observability.staleness.no_completion_hours | type: integer | default: 24 | required: No | validation: must be greater than 0
+#     no_completion_hours: 24
+#     # observability.staleness.no_merge_hours | type: integer | default: 12 | required: No | validation: must be greater than 0
+#     no_merge_hours: 12
+#     # observability.staleness.repeated_decision_count | type: integer | default: 20 | required: No | validation: must be greater than 0
+#     repeated_decision_count: 20
+#     # observability.staleness.repeated_window_hours | type: integer | default: 24 | required: No | validation: must be greater than 0
+#     repeated_window_hours: 24
+#     # observability.staleness.webhook | type: object | default: see child fields | required: No | validation: None
+#     webhook:
+#       # observability.staleness.webhook.url | type: string | default: none | required: No | validation: must be an absolute http or https URL
+#       url: null
+#       # observability.staleness.webhook.headers | type: mapping<string, string> | default: {} | required: No | validation: None
+#       headers: {}
+#       # observability.staleness.webhook.timeout_ms | type: integer | default: 5000 | required: No | validation: None
+#       timeout_ms: 5000
 # # budget | type: object | default: see child fields | required: No | validation: None
 # budget:
 #   # budget.billing_mode | type: string | default: none | required: No | validation: must be one of metered, subscription

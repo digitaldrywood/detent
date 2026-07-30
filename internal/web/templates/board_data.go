@@ -676,8 +676,9 @@ func boardFiguresFromDashboard(data DashboardData) []primitives.Figure {
 // Kanban), so the Review sheet may offer inline Move/Remove; the Fleet and
 // Overview pages pass false so their Review sheets stay read-only.
 func boardExceptions(data DashboardData, boardActions bool) []primitives.Exception {
+	exceptions := stalenessExceptions(data.Snapshot)
 	if boardActions && !data.Kanban.ShowBlockedAlerts {
-		return nil
+		return exceptions
 	}
 
 	retryRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
@@ -693,9 +694,8 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 		reviewRows = append(reviewRows, row)
 	}
 	if len(retryRows) == 0 && len(reviewRows) == 0 {
-		return nil
+		return exceptions
 	}
-	exceptions := make([]primitives.Exception, 0, len(retryRows)+1)
 	for _, row := range retryRows {
 		exceptions = append(exceptions, boardOperatorStopException(data, row))
 	}
@@ -703,6 +703,51 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 		exceptions = append(exceptions, boardBlockedExceptionSummary(data, reviewRows, boardActions))
 	}
 	return exceptions
+}
+
+func stalenessExceptions(snapshot telemetry.Snapshot) []primitives.Exception {
+	exceptions := make([]primitives.Exception, 0, len(snapshot.StalenessWarnings))
+	for _, warning := range snapshot.StalenessWarnings {
+		repo, ref := splitIssueIdentifier(strings.TrimSpace(warning.Identifier))
+		if repo == "" {
+			repo = strings.TrimSpace(warning.ProjectID)
+		}
+		rest := strings.TrimSpace(warning.Detail)
+		if warning.AgeSeconds > 0 {
+			rest += " · " + formatDuration(float64(warning.AgeSeconds))
+		}
+		exception := primitives.Exception{
+			ID:     "exception-staleness-" + boardCardSlug(warning.ID),
+			Kind:   primitives.KindWarn,
+			Title:  stalenessExceptionTitle(warning),
+			Repo:   repo,
+			Ref:    ref,
+			RefURL: strings.TrimSpace(warning.IssueURL),
+			Rest:   rest,
+		}
+		if exception.RefURL != "" {
+			exception.ActionLabel = "Open"
+			exception.ActionHref = exception.RefURL
+		}
+		exceptions = append(exceptions, exception)
+	}
+	return exceptions
+}
+
+func stalenessExceptionTitle(warning telemetry.StalenessWarning) string {
+	switch warning.Kind {
+	case "project_liveness":
+		return "Project is not advancing"
+	case "merge_liveness":
+		return "Merge queue is not advancing"
+	case "repeated_decision":
+		return "Scheduler decision is repeating"
+	default:
+		if warning.WaitingOnHuman {
+			return "Human gate needs a reminder"
+		}
+		return "Work item is stale"
+	}
 }
 
 func boardOperatorStopException(data DashboardData, row telemetry.Blocked) primitives.Exception {

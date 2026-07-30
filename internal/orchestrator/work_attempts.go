@@ -20,7 +20,7 @@ import (
 const (
 	defaultWorkAttemptLeaseTTL      = 10 * time.Minute
 	maxRecentWorkAttemptSnapshots   = 50
-	maxRecentSchedulerDecisions     = 100
+	maxRecentSchedulerDecisions     = 500
 	workAttemptErrorRunner          = "runner_error"
 	workAttemptErrorStartTransition = "start_state_transition_failed"
 	workAttemptErrorMergeIncomplete = "merge_worker_terminal_state_missing"
@@ -82,6 +82,19 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	} else {
 		for index := len(recent) - 1; index >= 0; index-- {
 			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
+		}
+	}
+	decisions, err := o.workAttempts.ListRecentSchedulerDecisions(ctx, store.SchedulerDecisionQuery{
+		ProjectID: projectID,
+		Limit:     maxRecentSchedulerDecisions,
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("scheduler decision history recovery failed", "project_id", projectID, "error", err)
+		}
+	} else {
+		for _, decision := range slices.Backward(decisions) {
+			appendSchedulerDecisionSnapshot(state, telemetrySchedulerDecision(decision))
 		}
 	}
 	o.recoverOrphanedAgentSessions(ctx, state, orphanedSessions, now)
