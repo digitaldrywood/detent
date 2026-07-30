@@ -704,6 +704,7 @@ agent:
   max_turn_duration_ms: 0
   max_session_duration_ms: 7200000
   no_progress_timeout_ms: 5400000
+  merge_worker_startup_timeout_ms: 240000
   merge_worker_max_duration_ms: 21600000
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000
@@ -2952,6 +2953,13 @@ no-progress breaches cancel the worker through Detent's normal owned process
 context, so process-tree reaping, scratch cleanup, session completion, and slot
 release still run. Detent records a cause fingerprint and parks resumable work
 in `Rework`, or returns an empty attempt to `Todo`.
+
+`agent.merge_worker_startup_timeout_ms` independently bounds how long a
+dispatched merge runner may take to report its first startup progress. It
+defaults to four minutes (`240000` ms) and is enforced by the worker context,
+independent of `polling.interval_ms` and project refresh duration. Workspace
+creation publishes startup progress before checkout and bootstrap begin, so
+healthy workspace setup stops this timer.
 
 `agent.merge_worker_max_duration_ms` is a separate hard wall-clock ceiling for
 the full lifetime of a worker dispatched in `Merging`, starting when Detent

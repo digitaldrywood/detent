@@ -73,6 +73,7 @@ type Config struct {
 	PrioritizeUnblockers          bool
 	MergeFastPathEnabled          bool
 	MergeMethod                   string
+	MergeWorkerStartupTimeout     time.Duration
 	MergeWorkerMaxDuration        time.Duration
 	ResumeOrphanedSessions        bool
 	StopRunTargetState            string
@@ -174,6 +175,12 @@ type Retrospector interface {
 
 type runDurationLimitFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
+type mergeWorkerStartupTimer interface {
+	Stop() bool
+}
+
+type mergeWorkerStartupTimerFactory func(time.Duration, func()) mergeWorkerStartupTimer
+
 type WorkspaceReapResult = runpkg.WorkspaceReapResult
 
 type WorkspaceReaper = runpkg.WorkspaceReaper
@@ -222,6 +229,7 @@ type Orchestrator struct {
 	workerReapGrace         time.Duration
 	newStalenessNotifier    func(staleness.DeliveryConfig) (staleness.Notifier, error)
 	mergeWorkerLimit        runDurationLimitFactory
+	mergeWorkerStartupTimer mergeWorkerStartupTimerFactory
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool

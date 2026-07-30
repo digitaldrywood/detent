@@ -69,6 +69,7 @@ const (
 	DefaultFailureBreakerCooldownSeconds     = 3600
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 	DefaultOverloadRetryDelayMS              = 45000
+	DefaultMergeWorkerStartupTimeoutMS       = 4 * 60 * 1000
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
@@ -277,6 +278,7 @@ type Agent struct {
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
 	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"`
+	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
@@ -1286,16 +1288,17 @@ func Default() Config {
 			SSHHosts: []string{},
 		},
 		Agent: Agent{
-			MaxConcurrentAgents:      10,
-			MaxTurns:                 20,
-			MaxSessionDurationMS:     DefaultMaxSessionDurationMS,
-			NoProgressTimeoutMS:      DefaultNoProgressTimeoutMS,
-			MergeWorkerMaxDurationMS: DefaultMergeWorkerMaxDurationMS,
-			MaxRetryBackoffMS:        300000,
-			OverloadRetryDelayMS:     DefaultOverloadRetryDelayMS,
-			NoProgressSpendLimitUSD:  DefaultNoProgressSpendLimitUSD,
-			StopRun:                  StopRun{TargetState: "Blocked"},
-			MergeFastPath:            MergeFastPath{Enabled: true},
+			MaxConcurrentAgents:         10,
+			MaxTurns:                    20,
+			MaxSessionDurationMS:        DefaultMaxSessionDurationMS,
+			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
+			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
+			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
+			MaxRetryBackoffMS:           300000,
+			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
+			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
+			StopRun:                     StopRun{TargetState: "Blocked"},
+			MergeFastPath:               MergeFastPath{Enabled: true},
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
@@ -1601,6 +1604,9 @@ func (c *Config) normalize() {
 	}
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
+	if c.Agent.MergeWorkerStartupTimeoutMS == 0 {
+		c.Agent.MergeWorkerStartupTimeoutMS = DefaultMergeWorkerStartupTimeoutMS
+	}
 	if c.Agent.MergeWorkerMaxDurationMS == 0 {
 		c.Agent.MergeWorkerMaxDurationMS = DefaultMergeWorkerMaxDurationMS
 	}
@@ -1980,6 +1986,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.NoProgressTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".no_progress_timeout_ms must be greater than or equal to 0")
 	}
+	validatePositive(prefix+".merge_worker_startup_timeout_ms", a.MergeWorkerStartupTimeoutMS, problems)
 	validatePositive(prefix+".merge_worker_max_duration_ms", a.MergeWorkerMaxDurationMS, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
 	validatePositive(prefix+".overload_retry_delay_ms", a.OverloadRetryDelayMS, problems)

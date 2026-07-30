@@ -97,11 +97,14 @@ func TestMergingFastPathBehindCheckedHeadMergesWithoutRebaseOrAgentDispatch(t *t
 	}
 	orch.handleRunResult(context.Background(), &state, completion)
 
+	if got := workspaceBackend.createCalls.Load(); got != 0 {
+		t.Fatalf("Create() calls = %d, want 0", got)
+	}
 	if got := workspaceBackend.prepareCalls.Load(); got != 0 {
 		t.Fatalf("PrepareMerge() calls = %d, want 0", got)
 	}
-	if got := workspaceBackend.afterRunCalls.Load(); got != 1 {
-		t.Fatalf("AfterRun() calls = %d, want 1", got)
+	if got := workspaceBackend.afterRunCalls.Load(); got != 0 {
+		t.Fatalf("AfterRun() calls = %d, want 0", got)
 	}
 	if got := agentBackend.calls.Load(); got != 0 {
 		t.Fatalf("AgentBackend.RunTurn() calls = %d, want 0", got)
@@ -882,11 +885,13 @@ func receiveMergeFastPathCompletion(t *testing.T, completions <-chan runpkg.Comp
 type mergeFastPathWorkspace struct {
 	info          workspace.Info
 	result        workspace.MergePrepareResult
+	createCalls   atomic.Int64
 	prepareCalls  atomic.Int64
 	afterRunCalls atomic.Int64
 }
 
 func (w *mergeFastPathWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
+	w.createCalls.Add(1)
 	return w.info, nil
 }
 

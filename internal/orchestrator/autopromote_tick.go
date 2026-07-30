@@ -28,7 +28,6 @@ const (
 	autoPromoteGateWaitTimeoutMerge       = "merge"
 	autoPromoteGateWaitTimeoutHumanReview = "human_review"
 	defaultAutoPromoteGateWaitTimeout     = time.Hour
-	defaultMergeWorkerStartupTimeout      = 2 * time.Minute
 	mergeWorkerProjectStateFull           = "project_state_capacity_full"
 )
 
@@ -1036,66 +1035,6 @@ func mergeWorkerSlotDecisionAttrs(
 		"running_projects", decision.RunningProjects,
 	)
 	return attrs
-}
-
-func (o *Orchestrator) failStalledMergeWorkerStarts(ctx context.Context, state *State, now time.Time) {
-	if state == nil || state.Draining {
-		return
-	}
-	timeout := o.mergeWorkerStartupTimeout()
-	if timeout <= 0 {
-		return
-	}
-	for _, issueID := range sortedKeys(state.Running) {
-		running := state.Running[issueID]
-		if strings.TrimSpace(running.Mode) != runpkg.RunModeMerge || running.StartedAt.IsZero() || mergeWorkerStartupObserved(running) {
-			continue
-		}
-		if now.Before(running.StartedAt.Add(timeout)) {
-			continue
-		}
-		err := fmt.Errorf("merge worker did not report process or session startup within %s", timeout)
-		o.logMergeWorkerFailure(running.Issue, "runner_startup_timeout", err)
-		o.recordMergeFailed(state, running.Issue, now, "runner_startup_timeout", err)
-		o.recordProjectAttemptOutcome(state, issueID, now, store.WorkAttemptTerminalFailure, err, "runner_startup_timeout", err.Error())
-		o.completeDurableWorkAttempt(ctx, state, running, now, store.WorkAttemptTerminalFailure, "runner_startup_timeout", err.Error(), "starting", "merge worker startup timed out")
-		o.releaseGlobalDispatchSlot(running.globalSlot)
-		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, now)
-		if running.cancel != nil {
-			running.cancel()
-		}
-		o.heartbeats.remove(issueID)
-		delete(state.Running, issueID)
-		attempt := nextAttempt(running.Attempt)
-		if attempt > maxMergeWorkerRunnerFailures && o.blockExhaustedMergeWorker(ctx, state, running, now, attempt, err) {
-			continue
-		}
-		o.scheduleRetry(state, running.Issue, attempt, now, err.Error(), false, running.WorkerHost)
-		recordStateEvent(state, telemetry.ActivityEvent{
-			At:      now,
-			Event:   "merge_worker_startup_timeout",
-			Message: "merge worker startup timed out for " + issueLabel(running.Issue) + ": " + err.Error(),
-		})
-	}
-}
-
-func (o *Orchestrator) mergeWorkerStartupTimeout() time.Duration {
-	timeout := defaultMergeWorkerStartupTimeout
-	if o != nil && o.cfg.PollInterval > 0 && o.cfg.PollInterval*2 > timeout {
-		timeout = o.cfg.PollInterval * 2
-	}
-	return timeout
-}
-
-func mergeWorkerStartupObserved(running Running) bool {
-	return strings.TrimSpace(running.ProcessIdentity) != "" ||
-		strings.TrimSpace(running.WorkspacePath) != "" ||
-		strings.TrimSpace(running.SessionID) != "" ||
-		strings.TrimSpace(running.LastEvent) != "" ||
-		!running.LastEventAt.IsZero() ||
-		running.TurnCount > 0 ||
-		len(running.RecentEvents) > 0 ||
-		diffStatsPresent(running.DiffStats)
 }
 
 func mergeWorkerIssue(issue connector.Issue) bool {

@@ -18,7 +18,7 @@ func TestUsageUpdateHandlerDoesNotBlockWhenBufferIsFull(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- orch.usageUpdateHandler(context.Background(), "issue-1")(runpkg.UsageUpdate{
+		done <- orch.usageUpdateHandler(context.Background(), "issue-1", nil)(runpkg.UsageUpdate{
 			TurnCount: 1,
 			Tokens: runpkg.TokenTotals{
 				InputTokens:  10,
@@ -48,7 +48,7 @@ func TestUsageUpdateHandlerReturnsCanceledContext(t *testing.T) {
 		runUpdates: make(chan runUpdate, 1),
 	}
 
-	err := orch.usageUpdateHandler(ctx, "issue-1")(runpkg.UsageUpdate{})
+	err := orch.usageUpdateHandler(ctx, "issue-1", nil)(runpkg.UsageUpdate{})
 	if err == nil {
 		t.Fatal("usage update error = nil, want context canceled")
 	}
