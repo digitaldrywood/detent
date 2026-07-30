@@ -1093,7 +1093,7 @@ func TestRunRefreshHydratesRunningIssueComments(t *testing.T) {
 	issue := testIssue("issue-workpad", "digitaldrywood/detent#646", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
-	orch := newTestOrchestrator(t, tracker, runner)
+	orch := newTestOrchestratorWithPollInterval(t, tracker, runner, time.Hour)
 	stop := runOrchestrator(t, orch)
 	defer stop()
 

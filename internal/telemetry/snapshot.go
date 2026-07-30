@@ -41,6 +41,7 @@ type Snapshot struct {
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
+	StalenessWarnings       []StalenessWarning  `json:"staleness_warnings,omitempty"`
 	OverloadRetriesLastHour int                 `json:"overload_retries_last_hour,omitempty"`
 	Tokens                  Tokens              `json:"tokens"`
 	Throughput              TokenThroughput     `json:"throughput"`
@@ -74,6 +75,31 @@ type DispatchRecovery struct {
 	MaxConcurrent int       `json:"max_concurrent"`
 	Admitted      int       `json:"admitted"`
 	Progressed    int       `json:"progressed"`
+}
+
+type StalenessWarning struct {
+	ID                    string     `json:"id"`
+	ProjectID             string     `json:"project_id,omitempty"`
+	Kind                  string     `json:"kind"`
+	IssueID               string     `json:"issue_id,omitempty"`
+	Identifier            string     `json:"identifier,omitempty"`
+	IssueURL              string     `json:"issue_url,omitempty"`
+	Title                 string     `json:"title,omitempty"`
+	Lane                  string     `json:"lane,omitempty"`
+	Reason                string     `json:"reason"`
+	Detail                string     `json:"detail"`
+	Since                 time.Time  `json:"since"`
+	DetectedAt            time.Time  `json:"detected_at"`
+	LastObservedAt        time.Time  `json:"last_observed_at"`
+	AgeSeconds            int64      `json:"age_seconds"`
+	ThresholdSeconds      int64      `json:"threshold_seconds"`
+	Count                 int        `json:"count,omitempty"`
+	WaitingOnHuman        bool       `json:"waiting_on_human,omitempty"`
+	HasRecoveryPredicate  bool       `json:"has_recovery_predicate,omitempty"`
+	DeliveredAt           *time.Time `json:"delivered_at,omitempty"`
+	DeliveryAttempts      int        `json:"delivery_attempts,omitempty"`
+	LastDeliveryAttemptAt *time.Time `json:"last_delivery_attempt_at,omitempty"`
+	DeliveryError         string     `json:"delivery_error,omitempty"`
 }
 
 type Update struct {

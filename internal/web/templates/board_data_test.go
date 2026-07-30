@@ -52,6 +52,31 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 	}
 }
 
+func TestBoardExceptionsIncludeFleetStalenessWarning(t *testing.T) {
+	t.Parallel()
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			StalenessWarnings: []telemetry.StalenessWarning{{
+				ID:             "warning-1",
+				ProjectID:      "detent",
+				Kind:           "lane_aging",
+				Identifier:     "digitaldrywood/detent#1574",
+				IssueURL:       "https://github.com/digitaldrywood/detent/issues/1574",
+				Detail:         "the item has remained in Merging",
+				AgeSeconds:     3 * 60 * 60,
+				WaitingOnHuman: false,
+			}},
+		},
+	}
+	exceptions := boardExceptions(data, false)
+	if len(exceptions) != 1 {
+		t.Fatalf("boardExceptions() = %#v, want one", exceptions)
+	}
+	if exceptions[0].Title != "Work item is stale" || exceptions[0].Ref != "#1574" || exceptions[0].ActionLabel != "Open" {
+		t.Fatalf("exception = %#v", exceptions[0])
+	}
+}
+
 func TestBoardCardAndDetailSheetRenderOrigin(t *testing.T) {
 	t.Parallel()
 

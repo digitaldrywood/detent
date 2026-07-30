@@ -18,6 +18,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -109,6 +110,8 @@ type Config struct {
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
 	Lessons                       LessonCaptureConfig
+	Staleness                     staleness.Config
+	StalenessDelivery             staleness.DeliveryConfig
 }
 
 type LessonCaptureConfig struct {
@@ -135,26 +138,27 @@ type ClaimingConfig struct {
 }
 
 type Dependencies struct {
-	Connector          connector.Connector
-	Runner             Runner
-	WorkspaceReaper    WorkspaceReaper
-	WorkflowMetrics    WorkflowMetricsRecorder
-	Efficiency         efficiency.Recorder
-	LifecycleExporter  efficiency.LifecycleExporter
-	WorkAttempts       store.WorkAttemptStore
-	ProgressSpend      store.ProgressSpendStore
-	AgentResume        store.AgentResumeStore
-	OrphanSessions     store.OrphanSessionStore
-	ValidatorMemo      store.ValidatorMemoStore
-	Activity           *activity.Broker
-	Release            releasepkg.Coordinator
-	GlobalDispatchGate scheduler.ProjectDispatchGate
-	Now                func() time.Time
-	Logger             *slog.Logger
-	Retrospector       Retrospector
-	WorkerProcesses    WorkerProcessStore
-	ReapWorkerProcess  WorkerProcessReapFunc
-	WorkerReapGrace    time.Duration
+	Connector            connector.Connector
+	Runner               Runner
+	WorkspaceReaper      WorkspaceReaper
+	WorkflowMetrics      WorkflowMetricsRecorder
+	Efficiency           efficiency.Recorder
+	LifecycleExporter    efficiency.LifecycleExporter
+	WorkAttempts         store.WorkAttemptStore
+	ProgressSpend        store.ProgressSpendStore
+	AgentResume          store.AgentResumeStore
+	OrphanSessions       store.OrphanSessionStore
+	ValidatorMemo        store.ValidatorMemoStore
+	Activity             *activity.Broker
+	Release              releasepkg.Coordinator
+	GlobalDispatchGate   scheduler.ProjectDispatchGate
+	Now                  func() time.Time
+	Logger               *slog.Logger
+	Retrospector         Retrospector
+	WorkerProcesses      WorkerProcessStore
+	ReapWorkerProcess    WorkerProcessReapFunc
+	WorkerReapGrace      time.Duration
+	NewStalenessNotifier func(staleness.DeliveryConfig) (staleness.Notifier, error)
 }
 
 type WorkerProcessStore interface {
@@ -216,6 +220,7 @@ type Orchestrator struct {
 	workerProcesses         WorkerProcessStore
 	reapWorkerProcess       WorkerProcessReapFunc
 	workerReapGrace         time.Duration
+	newStalenessNotifier    func(staleness.DeliveryConfig) (staleness.Notifier, error)
 	mergeWorkerLimit        runDurationLimitFactory
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
@@ -417,6 +422,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if workerReapGrace <= 0 {
 		workerReapGrace = procgroup.DefaultTerminationGrace
 	}
+	newStalenessNotifier := deps.NewStalenessNotifier
+	if newStalenessNotifier == nil {
+		newStalenessNotifier = staleness.NewNotifier
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
@@ -455,6 +464,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		workerProcesses:         workerProcesses,
 		reapWorkerProcess:       reapWorkerProcess,
 		workerReapGrace:         workerReapGrace,
+		newStalenessNotifier:    newStalenessNotifier,
 		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
 		capacityStatus:          capacityStatus,

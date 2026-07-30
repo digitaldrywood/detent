@@ -99,6 +99,20 @@ source-state membership, distinct target state, tracker support, and positive
 run limits are enforced by the same validators that feed the generated table
 below.
 
+## Fleet staleness warnings
+
+`observability.staleness` detects work items that exceed lane-specific aging
+thresholds, non-empty dispatch or merge queues that stop advancing, and
+repeated identical scheduler decisions. Human-gate lanes remain warnings rather
+than failures, so they provide a single durable reminder without treating a
+deliberate review wait as an unattended stall.
+
+Warnings appear in the dashboard, `/health`, and `detent doctor`. Configure
+`observability.staleness.webhook.url` to push each newly active warning as a
+`detent.staleness.warning` JSON event. The payload includes a stable warning ID,
+the affected project or item, the reason, and age and threshold values in
+seconds. A delivered warning is not sent again on every scheduler tick.
+
 ## Generated field reference
 
 The generated block reflects the YAML-tagged Go structs reachable from the
@@ -346,6 +360,20 @@ rendering and fails on drift.
 | `observability.otlp.timeout_ms` | `integer` | `5000` | No | None |
 | `observability.refresh_ms` | `integer` | `1000` | No | must be greater than 0 |
 | `observability.render_interval_ms` | `integer` | `16` | No | must be greater than 0 |
+| `observability.staleness` | `object` | `see child fields` | No | None |
+| `observability.staleness.enabled` | `boolean` | `true` | No | None |
+| `observability.staleness.lanes` | `list<object>` | `[{"State":"Human Review","ThresholdHours":72,"HumanGate":true},{"State":"Blocked","ThresholdHours":48,"HumanGate":false},{"State":"Merging","ThresholdHours":2,"HumanGate":false}]` | No | None |
+| `observability.staleness.lanes[].human_gate` | `boolean` | `true` | No | None |
+| `observability.staleness.lanes[].state` | `string` | `"Human Review"` | Conditional | is required |
+| `observability.staleness.lanes[].threshold_hours` | `integer` | `72` | No | must be greater than 0 |
+| `observability.staleness.no_completion_hours` | `integer` | `24` | No | must be greater than 0 |
+| `observability.staleness.no_merge_hours` | `integer` | `12` | No | must be greater than 0 |
+| `observability.staleness.repeated_decision_count` | `integer` | `20` | No | must be greater than 0 |
+| `observability.staleness.repeated_window_hours` | `integer` | `24` | No | must be greater than 0 |
+| `observability.staleness.webhook` | `object` | `see child fields` | No | None |
+| `observability.staleness.webhook.headers` | `mapping<string, string>` | `{}` | No | None |
+| `observability.staleness.webhook.timeout_ms` | `integer` | `5000` | No | None |
+| `observability.staleness.webhook.url` | `string` | `none` | No | must be an absolute http or https URL |
 | `plan` | `object` | `see child fields` | No | agents.backends.options.permission_mode must not be plan for unattended workers |
 | `plan.approval_label` | `string` | `"plan-approved"` | No | None |
 | `plan.enabled` | `boolean` | `false` | No | None |

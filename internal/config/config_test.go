@@ -1763,6 +1763,23 @@ Prompt
 	}
 }
 
+func TestDefaultStalenessObservability(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	if !cfg.Observability.Staleness.Enabled {
+		t.Fatal("Observability.Staleness.Enabled = false, want true")
+	}
+	if cfg.Observability.Staleness.NoCompletionHours != DefaultStalenessNoCompletionHours {
+		t.Fatalf("NoCompletionHours = %d, want %d", cfg.Observability.Staleness.NoCompletionHours, DefaultStalenessNoCompletionHours)
+	}
+	if len(cfg.Observability.Staleness.Lanes) != 3 {
+		t.Fatalf("Staleness.Lanes = %#v, want three defaults", cfg.Observability.Staleness.Lanes)
+	}
+	if !cfg.Observability.Staleness.Lanes[0].HumanGate {
+		t.Fatal("Human Review default is not marked as a human gate")
+	}
+}
+
 func TestKanbanTransitionPolicyAllowsConfiguredOverridesWithoutStateLists(t *testing.T) {
 	t.Parallel()
 

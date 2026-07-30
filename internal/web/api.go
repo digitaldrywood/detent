@@ -469,6 +469,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		BackendOutages:     append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
 		FailureBreakers:    append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
 		DispatchRecoveries: append([]telemetry.DispatchRecovery(nil), snapshot.DispatchRecoveries...),
+		StalenessWarnings:  append([]telemetry.StalenessWarning(nil), snapshot.StalenessWarnings...),
 		Budget:             budgetResponse(snapshot.Budget),
 	}
 }
@@ -1386,6 +1387,7 @@ type stateAPIResponse struct {
 	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
 	DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries,omitempty"`
+	StalenessWarnings  []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
 	Budget             budgetAPIResponse            `json:"budget"`
 }
 

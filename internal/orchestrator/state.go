@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -74,6 +75,7 @@ type State struct {
 	RepeatedFailures         map[string]RepeatedFailure
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
+	StalenessWarnings        map[string]StalenessWarning
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
 	DiffStats                map[string]DiffStats
@@ -86,6 +88,16 @@ type State struct {
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
 	tickTransitions          *issueStateSnapshotTransitions
+}
+
+type StalenessWarning struct {
+	Warning               staleness.Warning
+	DetectedAt            time.Time
+	LastObservedAt        time.Time
+	DeliveredAt           time.Time
+	DeliveryAttempts      int
+	LastDeliveryAttemptAt time.Time
+	DeliveryError         string
 }
 
 type Running struct {
@@ -282,6 +294,7 @@ func newState(cfg Config) State {
 		RepeatedFailures:         map[string]RepeatedFailure{},
 		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		DispatchRecoveries:       map[string]DispatchRecovery{},
+		StalenessWarnings:        map[string]StalenessWarning{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -347,6 +360,7 @@ func (s State) clone() State {
 		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
+		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
