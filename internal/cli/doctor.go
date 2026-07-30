@@ -54,6 +54,7 @@ type doctorCheck struct {
 	WorkflowSkillSuggestions  []doctorWorkflowSkillSuggestion            `json:"workflow_skill_suggestions,omitempty"`
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
+	BlockedWithoutRecovery    []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_without_recovery,omitempty"`
 	BackendCapacity           []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
 	ArtifactGateConvergence   []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
 	ValidatorFailures         []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`

@@ -156,7 +156,7 @@ func TestDoctorBlockedRecoveryReportsCapacityParkedIssues(t *testing.T) {
 		Codex: workflowconfig.Codex{ModelProvider: "openai"},
 	}
 
-	check := checkDoctorBlockedRecoveryLive(t.Context(), "Project detent blocked recovery", reader, cfg, now)
+	check := checkDoctorBlockedRecoveryLive(t.Context(), "Project detent blocked recovery", reader, cfg, now, nil)
 	if check.Status != doctorWarn || len(check.BackendCapacity) != 1 {
 		t.Fatalf("check = %#v, want capacity warning", check)
 	}

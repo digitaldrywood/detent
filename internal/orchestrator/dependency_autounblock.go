@@ -838,15 +838,26 @@ func dependencyRefLabels(refs []connector.BlockedRef) []string {
 func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) bool {
 	issueID := strings.TrimSpace(issue.ID)
 	if state != nil && issueID != "" {
-		if blocked, ok := state.Blocked[issueID]; ok && stickyBlockReason(blocked.Reason) {
+		if blocked, ok := state.Blocked[issueID]; ok &&
+			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) &&
+			stickyBlockReason(blocked.Reason) {
 			return true
 		}
 	}
-	if stickyBlockReason(issue.BlockerReason) {
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok {
+		return stickyBlockReason(issue.BlockerReason)
+	}
+	return normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
+		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
+		(stickyBlockReason(entry.Event.Reason) || stickyBlockReason(issue.BlockerReason))
+}
+
+func blockedEntryMatchesCurrent(issue connector.Issue, enteredAt time.Time) bool {
+	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || enteredAt.IsZero() {
 		return true
 	}
-	reason, ok := o.latestWorkflowLaneReason(ctx, issue, blockedStatusState)
-	return ok && stickyBlockReason(reason)
+	return !enteredAt.Before(issue.StageUpdatedAt.Add(-reworkBreakerStageUpdateSkew))
 }
 
 func stickyBlockReason(reason string) bool {

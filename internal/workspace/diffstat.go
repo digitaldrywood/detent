@@ -66,7 +66,16 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	return RecoveryState{DiffStat: stat, UnpushedCommits: unpushedCommits}, nil
+	head, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return RecoveryState{}, fmt.Errorf("git resolve recovery head: %w", err)
+	}
+	return RecoveryState{
+		DiffStat:             stat,
+		BaseFingerprint:      gitRecoveryBaseFingerprint(ctx, normalized.Path, issue.BaseRef),
+		WorkspaceFingerprint: workspaceRecoveryFingerprint(strings.TrimSpace(head), stat.Fingerprint),
+		UnpushedCommits:      unpushedCommits,
+	}, nil
 }
 
 func (l *LocalGit) Diff(ctx context.Context, info Info, issue Issue, maxBytes int) (Diff, error) {
@@ -191,6 +200,32 @@ func gitUnpushedCommitCount(ctx context.Context, workspacePath string) (int, err
 		return 0, fmt.Errorf("parse unpushed commit count: %w", err)
 	}
 	return count, nil
+}
+
+func gitRecoveryBaseFingerprint(ctx context.Context, workspacePath string, baseRef string) string {
+	if baseRef = strings.TrimSpace(baseRef); baseRef != "" {
+		return baseRef
+	}
+	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--verify", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(output)
+}
+
+func workspaceRecoveryFingerprint(parts ...string) string {
+	framed := make([]string, 0, len(parts)*2)
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		framed = append(framed, strconv.Itoa(len(part))+":", part)
+	}
+	if len(framed) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(framed, "")))
+	return hex.EncodeToString(sum[:])
 }
 
 func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string, diffBase string) (DiffStat, error) {

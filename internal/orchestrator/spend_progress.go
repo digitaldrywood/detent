@@ -373,7 +373,16 @@ func (o *Orchestrator) blockSpendProgress(
 	if issueID == "" {
 		return false
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, blockedStatusState, blockedAt, spendProgressReason); err != nil {
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		RunModeImplement,
+		spendProgressReason,
+		blockedRecoveryPredicateFingerprintChange,
+		autoPromoteReworkState,
+		DiffStats{},
+	)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, spendProgressReason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("spend progress circuit breaker state transition failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
 		}
@@ -411,6 +420,7 @@ func (o *Orchestrator) blockSpendProgress(
 		RecoveryTarget: "Rework",
 		BlockedAt:      blockedAt,
 		Source:         BlockedSourceProjectStatus,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      blockedAt,

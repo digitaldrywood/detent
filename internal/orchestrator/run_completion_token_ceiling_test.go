@@ -20,6 +20,8 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
 	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
 	state := newState(cfg)
 	issue := connector.Issue{
 		ID:         "issue-token-ceiling",
@@ -65,8 +67,26 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 	if blocked.Issue.State != blockedStatusState {
 		t.Fatalf("Blocked[%q].Issue.State = %q, want %q", issue.ID, blocked.Issue.State, blockedStatusState)
 	}
-	if blocked.RecoveryReason != "human_blocker" || blocked.RecoveryTarget != "Rework" {
-		t.Fatalf("Blocked[%q] recovery = %q to %q, want human_blocker to Rework", issue.ID, blocked.RecoveryReason, blocked.RecoveryTarget)
+	if blocked.RecoveryReason != blockedRecoveryPredicateFingerprintChange || blocked.RecoveryTarget != "Rework" {
+		t.Fatalf("Blocked[%q] recovery = %q to %q, want fingerprint recovery to Rework", issue.ID, blocked.RecoveryReason, blocked.RecoveryTarget)
+	}
+	if blocked.Recovery == nil ||
+		blocked.Recovery.Owner != blockedRecoveryOwnerOrchestrator ||
+		blocked.Recovery.Cause != "token_ceiling_circuit_breaker" ||
+		blocked.Recovery.Predicate != blockedRecoveryPredicateFingerprintChange ||
+		blocked.Recovery.CauseFingerprint == "" {
+		t.Fatalf("Blocked[%q].Recovery = %#v, want durable token-ceiling predicate", issue.ID, blocked.Recovery)
+	}
+	events := metrics.snapshot()
+	if len(events) != 2 || events[1].PhaseName != blockedStatusState {
+		t.Fatalf("workflow events = %#v, want Blocked lane entry", events)
+	}
+	laneMetadata, ok := workflowLaneMetadataFromJSON(events[1].MetadataJSON)
+	if !ok || laneMetadata.BlockedRecovery == nil ||
+		laneMetadata.BlockedRecovery.Cause != "token_ceiling_circuit_breaker" ||
+		laneMetadata.BlockedRecovery.Predicate != blockedRecoveryPredicateFingerprintChange ||
+		laneMetadata.BlockedRecovery.CauseFingerprint == "" {
+		t.Fatalf("workflow recovery metadata = %#v, want durable token-ceiling predicate", laneMetadata.BlockedRecovery)
 	}
 	for _, want := range []string{"token ceiling", "16100000", "16000000", "max_session_tokens"} {
 		if !strings.Contains(blocked.Reason, want) {
@@ -74,7 +94,7 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 		}
 	}
 	if !stickyBlockReason(blocked.Reason) {
-		t.Fatalf("stickyBlockReason(%q) = false, want token ceiling park to require human recovery", blocked.Reason)
+		t.Fatalf("stickyBlockReason(%q) = false, want current token ceiling park to suppress dependency recovery", blocked.Reason)
 	}
 	orch.setBlockedStatusIssue(&state, connector.Issue{
 		ID:         issue.ID,

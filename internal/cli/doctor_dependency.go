@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 var (
@@ -25,7 +27,6 @@ var (
 
 const (
 	doctorDependencyAutoUnblockSampleLimit = 5
-	doctorBlockedRecoverySampleLimit       = 5
 )
 
 type doctorBlockedRecoveryCandidateDiagnostic struct {
@@ -60,15 +61,8 @@ type doctorDependencyDiagnostic struct {
 	References []string
 }
 
-func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, storePath string, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " blocked recovery"
-	if !cfg.Tracker.BlockedRecovery.Enabled {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorOK,
-			Detail: "tracker.blocked_recovery.enabled=false",
-		}
-	}
 	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
 			Name:   name,
@@ -77,9 +71,7 @@ func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconf
 		}
 	}
 
-	if deps.autoPromoteConnector == nil {
-		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
-	}
+	deps = deps.withDefaults()
 	projectConnector, err := deps.autoPromoteConnector(cfg)
 	if err != nil {
 		return doctorCheck{
@@ -98,7 +90,25 @@ func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconf
 		}
 	}
 
-	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector, cfg, time.Now())
+	var timelineStore doctorTelemetryStore
+	timelineDetail := ""
+	if strings.TrimSpace(storePath) != "" {
+		timelineStore, err = deps.openSQLiteReadOnly(ctx, storePath)
+		if err != nil {
+			timelineDetail = "durable recovery metadata unavailable: " + err.Error()
+		}
+	}
+
+	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector, cfg, time.Now(), timelineStore)
+	if timelineDetail != "" {
+		check.Detail += "; " + timelineDetail
+	}
+	if timelineStore != nil {
+		if err := timelineStore.Close(); err != nil && check.Status != doctorFail {
+			check.Status = doctorWarn
+			check.Detail += "; recovery metadata store close failed: " + err.Error()
+		}
+	}
 	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
 		check.Status = doctorWarn
 		check.Detail = check.Detail + "; connector close failed: " + err.Error()
@@ -113,6 +123,7 @@ func checkDoctorBlockedRecoveryLive(
 	projectConnector doctorAutoPromoteConnector,
 	cfg workflowconfig.Config,
 	now time.Time,
+	timelineStore doctorTelemetryStore,
 ) doctorCheck {
 	recoveryConfig := orchestrator.BlockedRecoveryConfig{
 		Enabled:      cfg.Tracker.BlockedRecovery.Enabled,
@@ -123,6 +134,9 @@ func checkDoctorBlockedRecoveryLive(
 	sourceStates := recoveryConfig.SourceStates
 	if len(sourceStates) == 0 {
 		sourceStates = []string{"Blocked"}
+	}
+	if !doctorStateInList("Blocked", sourceStates) {
+		sourceStates = append([]string{"Blocked"}, sourceStates...)
 	}
 	targetState := strings.TrimSpace(recoveryConfig.TargetState)
 	if targetState == "" {
@@ -159,9 +173,24 @@ func checkDoctorBlockedRecoveryLive(
 		candidates = append(candidates, doctorBlockedRecoveryCandidateDiagnosticFromIssue(issue, decision))
 	}
 	capacity := doctorBlockedCapacityDiagnostics(ctx, projectConnector, cfg, issues, now)
+	capacityIssues := doctorParkedCapacityIssueSet(capacity)
+	withoutRecovery := []doctorBlockedRecoveryCandidateDiagnostic{}
+	for _, issue := range issues {
+		if !strings.EqualFold(strings.TrimSpace(issue.State), "Blocked") ||
+			doctorBlockedIssueHasRecoveryPredicate(ctx, issue, recoveryConfig, timelineStore, capacityIssues) {
+			continue
+		}
+		withoutRecovery = append(withoutRecovery, doctorBlockedRecoveryCandidateDiagnostic{
+			IssueID:         strings.TrimSpace(issue.ID),
+			IssueIdentifier: strings.TrimSpace(issue.Identifier),
+			IssueURL:        strings.TrimSpace(issue.URL),
+			Reason:          "no_recovery_predicate",
+			Detail:          "Blocked issue has no dependency relation, human owner, or durable recovery predicate",
+		})
+	}
 
-	detail := fmt.Sprintf("sampled %d blocked-recovery source candidate(s)", len(issues))
-	if len(candidates) == 0 && len(capacity) == 0 {
+	detail := fmt.Sprintf("scanned %d blocked-recovery source candidate(s)", len(issues))
+	if len(candidates) == 0 && len(capacity) == 0 && len(withoutRecovery) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
@@ -178,12 +207,24 @@ func checkDoctorBlockedRecoveryLive(
 			strings.Join(doctorParkedCapacityIssueLabels(capacity), ", "),
 		)
 	}
+	if len(withoutRecovery) > 0 {
+		detail += fmt.Sprintf(
+			"; %d relation-less Blocked issue(s) have no recovery predicate: %s",
+			len(withoutRecovery),
+			strings.Join(doctorBlockedRecoveryIssueLabels(withoutRecovery), ", "),
+		)
+	}
+	hint := fmt.Sprintf("PR-condition matches are diagnostic only; runtime still requires the latest durable source-lane entry reason before recovery to %s. Detent separately recovers quota-parked issues after provider capacity returns.", targetState)
+	if len(withoutRecovery) > 0 {
+		hint += " Add a native dependency, structured human_action, or durable owner and recovery predicate before parking the issue in Blocked."
+	}
 	return doctorCheck{
 		Name:                      name,
 		Status:                    doctorWarn,
 		Detail:                    detail,
-		Hint:                      fmt.Sprintf("PR-condition matches are diagnostic only; runtime still requires the latest durable source-lane entry reason before recovery to %s. Detent separately recovers quota-parked issues after provider capacity returns.", targetState),
+		Hint:                      hint,
 		BlockedRecoveryCandidates: candidates,
+		BlockedWithoutRecovery:    withoutRecovery,
 		BackendCapacity:           capacity,
 	}
 }
@@ -196,6 +237,118 @@ func doctorParkedCapacityIssueLabels(diagnostics []doctorBackendCapacityDiagnost
 				labels = append(labels, issue)
 			}
 		}
+	}
+	return labels
+}
+
+func doctorParkedCapacityIssueSet(diagnostics []doctorBackendCapacityDiagnostic) map[string]struct{} {
+	labels := doctorParkedCapacityIssueLabels(diagnostics)
+	set := make(map[string]struct{}, len(labels))
+	for _, label := range labels {
+		set[label] = struct{}{}
+	}
+	return set
+}
+
+func doctorBlockedIssueHasRecoveryPredicate(
+	ctx context.Context,
+	issue connector.Issue,
+	cfg orchestrator.BlockedRecoveryConfig,
+	timelineStore doctorTelemetryStore,
+	capacityIssues map[string]struct{},
+) bool {
+	decision := orchestrator.EvaluateBlockedRecovery(issue)
+	if decision.Reason == orchestrator.BlockedRecoveryReasonHumanBlocker ||
+		decision.Reason == orchestrator.BlockedRecoveryReasonDependencyBlocker {
+		return true
+	}
+	if signal := issue.WorkpadSignal; signal != nil {
+		if strings.TrimSpace(signal.HumanAction) != "" {
+			return true
+		}
+		if signal.Invalid == nil && signal.Source == workpad.SourceStructured && len(signal.Blockers) > 0 {
+			return true
+		}
+		if cfg.Enabled &&
+			signal.Invalid == nil &&
+			signal.Source == workpad.SourceStructured &&
+			strings.EqualFold(strings.TrimSpace(signal.Status), workpad.StatusBlocked) &&
+			doctorBlockedRecoveryReasonAllowed(signal.ReasonCode, cfg.ReasonCodes) {
+			return true
+		}
+	}
+	if _, ok := capacityIssues[doctorIssueLabel(issue)]; ok {
+		return true
+	}
+	return doctorBlockedRecoveryTimelinePredicate(ctx, timelineStore, issue)
+}
+
+func doctorBlockedRecoveryReasonAllowed(reason string, allowed []string) bool {
+	normalize := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.NewReplacer("-", "_", " ", "_").Replace(value)
+		if value == "merge_conflicts" {
+			return "merge_conflict"
+		}
+		return value
+	}
+	reason = normalize(reason)
+	if reason == "" {
+		return false
+	}
+	if len(allowed) == 0 {
+		allowed = []string{"merge_conflict", "stale_base", "missing_current_head_ci"}
+	}
+	for _, candidate := range allowed {
+		if normalize(candidate) == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorBlockedRecoveryTimelinePredicate(
+	ctx context.Context,
+	timelineStore doctorTelemetryStore,
+	issue connector.Issue,
+) bool {
+	if timelineStore == nil {
+		return false
+	}
+	var phaseName string
+	var enteredAtRaw string
+	var metadataJSON string
+	err := timelineStore.QueryRowContext(ctx, `
+SELECT phase_name, started_at, metadata_json
+FROM workflow_phase_events
+WHERE (issue_id = ? OR identifier = ? OR issue_url = ?)
+  AND phase_type = 'lane'
+  AND status = 'entered'
+ORDER BY started_at DESC, id DESC
+LIMIT 1`,
+		doctorBlockedRecoveryIdentity(issue.ID),
+		doctorBlockedRecoveryIdentity(issue.Identifier),
+		doctorBlockedRecoveryIdentity(issue.URL),
+	).Scan(&phaseName, &enteredAtRaw, &metadataJSON)
+	if err != nil {
+		return false
+	}
+	enteredAt, err := time.Parse(time.RFC3339Nano, enteredAtRaw)
+	if err != nil {
+		return false
+	}
+	return orchestrator.BlockedIssueHasCurrentRecoveryPredicate(issue, phaseName, enteredAt, metadataJSON)
+}
+
+func doctorBlockedRecoveryIdentity(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	return sql.NullString{String: value, Valid: value != ""}
+}
+
+func doctorBlockedRecoveryIssueLabels(diagnostics []doctorBlockedRecoveryCandidateDiagnostic) []string {
+	labels := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		labels = append(labels, doctorBlockedRecoveryIssueLabel(diagnostic))
 	}
 	return labels
 }
@@ -297,17 +450,7 @@ func fetchDoctorBlockedRecoveryIssues(
 	projectConnector doctorAutoPromoteConnector,
 	sourceStates []string,
 ) ([]connector.Issue, error) {
-	if limited, ok := projectConnector.(doctorAutoPromoteLimitedConnector); ok {
-		return limited.FetchIssuesByStatesLimit(ctx, sourceStates, doctorBlockedRecoverySampleLimit)
-	}
-	issues, err := projectConnector.FetchIssuesByStates(ctx, sourceStates)
-	if err != nil {
-		return nil, err
-	}
-	if len(issues) > doctorBlockedRecoverySampleLimit {
-		issues = issues[:doctorBlockedRecoverySampleLimit]
-	}
-	return issues, nil
+	return projectConnector.FetchIssuesByStates(ctx, sourceStates)
 }
 
 func doctorBlockedRecoveryCandidateDiagnosticFromIssue(

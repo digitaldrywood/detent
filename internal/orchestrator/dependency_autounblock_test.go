@@ -159,6 +159,55 @@ func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
 	}
 }
 
+func TestTickAutoUnblocksDependencyParkNewerThanStickyHistory(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-current-dependency-park", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{
+		Identifier: "digitaldrywood/video-studio#59",
+		Source:     connector.BlockedRefSourceNative,
+	}}
+	waiting.BlockerReason = noProgressLimitReason
+	parkedAt := time.Date(2026, 7, 29, 17, 0, 0, 0, time.UTC)
+	waiting.StageUpdatedAt = &parkedAt
+	blocker := dependencyAutoUnblockIssue("issue-closed-blocker", "Done")
+	blocker.Identifier = "digitaldrywood/video-studio#59"
+	blocker.Closed = true
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      waiting.ID,
+		Identifier:   waiting.Identifier,
+		IssueURL:     waiting.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    "Blocked",
+		Reason:       noProgressLimitReason,
+		Status:       "entered",
+		StartedAt:    parkedAt.Add(-time.Hour),
+		MetadataJSON: "{}",
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, parkedAt.Add(time.Minute))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
+		t.Fatalf("updates = %#v, want newer dependency park moved to Todo", got)
+	}
+}
+
 func TestTickAutoUnblocksLightweightDependencyWaitingIssue(t *testing.T) {
 	t.Parallel()
 

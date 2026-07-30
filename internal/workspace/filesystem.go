@@ -3,6 +3,8 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -173,7 +175,7 @@ func (f *Filesystem) AfterRun(ctx context.Context, info Info, issue Issue) {
 	}
 }
 
-func (f *Filesystem) DiffStat(_ context.Context, info Info, issue Issue) (DiffStat, error) {
+func (f *Filesystem) DiffStat(ctx context.Context, info Info, issue Issue) (DiffStat, error) {
 	normalized, err := f.normalizeInfo(info, issue)
 	if err != nil {
 		return DiffStat{}, err
@@ -185,10 +187,19 @@ func (f *Filesystem) DiffStat(_ context.Context, info Info, issue Issue) (DiffSt
 	if !exists || !isDir {
 		return DiffStat{}, ErrMissingWorkspace
 	}
+	root, err := os.OpenRoot(normalized.Path)
+	if err != nil {
+		return DiffStat{}, fmt.Errorf("open filesystem recovery root: %w", err)
+	}
+	defer f.closeRoot("recovery", root)
 	filesChanged := 0
+	hash := sha256.New()
 	err = filepath.WalkDir(normalized.Path, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if entry.IsDir() && entry.Name() == ".detent" {
 			return filepath.SkipDir
@@ -197,12 +208,43 @@ func (f *Filesystem) DiffStat(_ context.Context, info Info, issue Issue) (DiffSt
 			return nil
 		}
 		filesChanged++
-		return nil
+		relativePath, err := filepath.Rel(normalized.Path, path)
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(hash, filepath.ToSlash(relativePath)+"\x00"); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := root.Readlink(relativePath)
+			if err != nil {
+				return err
+			}
+			_, err = io.WriteString(hash, "symlink\x00"+target+"\x00")
+			return err
+		}
+		file, err := root.Open(relativePath)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		_, err = io.WriteString(hash, "\x00")
+		return err
 	})
 	if err != nil {
 		return DiffStat{}, err
 	}
-	return DiffStat{Files: filesChanged}, nil
+	if filesChanged == 0 {
+		return DiffStat{}, nil
+	}
+	return DiffStat{Files: filesChanged, Fingerprint: hex.EncodeToString(hash.Sum(nil))}, nil
 }
 
 func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
@@ -214,6 +256,21 @@ func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
 	return Info{
 		Path: path,
 		Key:  key,
+	}, nil
+}
+
+func (f *Filesystem) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
+	info, err := f.infoForIssue(issue)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	diffStat, err := f.DiffStat(ctx, info, issue)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	return RecoveryState{
+		DiffStat:             diffStat,
+		WorkspaceFingerprint: diffStat.Fingerprint,
 	}, nil
 }
 

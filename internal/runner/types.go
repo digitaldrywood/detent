@@ -51,6 +51,22 @@ type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
 }
 
+type BlockedRecoveryInspector interface {
+	BlockedRecoverySnapshot(context.Context, RunRequest) BlockedRecoverySnapshot
+}
+
+type BlockedRecoverySnapshot struct {
+	ConfigFingerprint    string
+	ToolingFingerprint   string
+	BaseFingerprint      string
+	WorkspaceFingerprint string
+	WorkspaceStatus      string
+	WorkspacePresent     bool
+	WorkspaceFiles       int
+	UnpushedCommits      int
+	Health               string
+}
+
 type Validator interface {
 	Validate(context.Context, ValidatorRequest) (gate.ValidatorResult, error)
 }

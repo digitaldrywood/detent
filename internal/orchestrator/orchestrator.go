@@ -208,6 +208,7 @@ type Orchestrator struct {
 	capacityController      runpkg.CapacityController
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
+	recoveryInspector       runpkg.BlockedRecoveryInspector
 	dailyBudgetStatus       runpkg.DailyBudgetStatusProvider
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
 	now                     func() time.Time
@@ -328,6 +329,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	var validatorCapacity runpkg.ValidatorCapacityController
 	if candidate, ok := runner.(runpkg.ValidatorCapacityController); ok {
 		validatorCapacity = candidate
+	}
+	var blockedRecoveryInspector runpkg.BlockedRecoveryInspector
+	if candidate, ok := runner.(runpkg.BlockedRecoveryInspector); ok {
+		blockedRecoveryInspector = candidate
 	}
 	var capacityStatus runpkg.CapacityStatusController
 	if candidate, ok := runner.(runpkg.CapacityStatusController); ok {
@@ -454,6 +459,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		capacityController:      capacityController,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
+		recoveryInspector:       blockedRecoveryInspector,
 		dailyBudgetStatus:       dailyBudgetStatus,
 		issueBudgetStatus:       issueBudgetStatus,
 		now:                     now,

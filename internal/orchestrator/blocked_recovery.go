@@ -188,6 +188,11 @@ func (o *Orchestrator) recoverBlockedIssues(
 		if issueID == "" {
 			continue
 		}
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
+			o.recoverCauseBlockedIssue(ctx, state, issue, now) {
+			transitioned[issueID] = struct{}{}
+			continue
+		}
 		if park, ok := o.latestReworkBreakerPark(ctx, issue); normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled && ok {
 			if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
 				!reworkBreakerAutoUnparkReady(issue, park) ||

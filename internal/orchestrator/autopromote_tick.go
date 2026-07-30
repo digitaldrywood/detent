@@ -2518,6 +2518,16 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 			transitionReason = "rework_limit"
 			body = autoPromoteReworkLimitComment(summary, decision, displayStateName(issue.State), limit)
 			metadata.ReworkBreaker = &workflowLaneReworkBreakerMetadata{Reason: string(decision.Reason)}
+			recovery := o.newBlockedRecoveryMetadata(
+				ctx,
+				issue,
+				RunModeImplement,
+				"rework_limit",
+				blockedRecoveryPredicateManaged,
+				autoPromoteReworkState,
+				DiffStats{},
+			)
+			metadata.BlockedRecovery = recovery.BlockedRecovery
 		}
 	}
 

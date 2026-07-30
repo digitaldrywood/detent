@@ -6,6 +6,8 @@ import (
 
 const FinalStateCompleted = runner.FinalStateCompleted
 
+const RunModeImplement = runner.RunModeImplement
+
 const RunModePlan = runner.RunModePlan
 
 const RunModeMerge = runner.RunModeMerge

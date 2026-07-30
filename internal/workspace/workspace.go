@@ -63,9 +63,15 @@ type RecoveryStateProvider interface {
 	RecoveryState(context.Context, Info, Issue) (RecoveryState, error)
 }
 
+type IssueRecoveryStateProvider interface {
+	IssueRecoveryState(context.Context, Issue) (RecoveryState, error)
+}
+
 type RecoveryState struct {
-	DiffStat        DiffStat
-	UnpushedCommits int
+	DiffStat             DiffStat
+	BaseFingerprint      string
+	WorkspaceFingerprint string
+	UnpushedCommits      int
 }
 
 type MergePreparer interface {
@@ -496,6 +502,14 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 		Key:    key,
 		Branch: l.branchName(issue, key),
 	}, nil
+}
+
+func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
+	info, err := l.infoForIssue(issue)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	return l.RecoveryState(ctx, info, issue)
 }
 
 func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {

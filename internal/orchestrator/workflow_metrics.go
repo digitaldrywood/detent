@@ -34,6 +34,7 @@ type workflowLaneMetadata struct {
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
 	ReworkBreaker         *workflowLaneReworkBreakerMetadata         `json:"rework_breaker,omitempty"`
+	BlockedRecovery       *workflowLaneBlockedRecoveryMetadata       `json:"blocked_recovery,omitempty"`
 	ActionSignatures      []workflowLaneActionSignatureMetadata      `json:"action_signatures,omitempty"`
 	Provenance            provenance.Attribution                     `json:"provenance"`
 	Admission             *provenance.Admission                      `json:"admission,omitempty"`
@@ -52,6 +53,16 @@ type workflowLaneDependencyAutoUnblockMetadata struct {
 
 type workflowLaneReworkBreakerMetadata struct {
 	Reason string `json:"reason,omitempty"`
+}
+
+type workflowLaneBlockedRecoveryMetadata struct {
+	Owner            string `json:"owner,omitempty"`
+	Cause            string `json:"cause,omitempty"`
+	Predicate        string `json:"predicate,omitempty"`
+	CauseFingerprint string `json:"cause_fingerprint,omitempty"`
+	TargetState      string `json:"target_state,omitempty"`
+	RunMode          string `json:"run_mode,omitempty"`
+	Resumable        bool   `json:"resumable,omitempty"`
 }
 
 type workflowLaneActionSignatureMetadata struct {
@@ -640,6 +651,24 @@ func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {
 		return workflowLaneMetadata{}, false
 	}
 	return metadata, true
+}
+
+func BlockedIssueHasCurrentRecoveryPredicate(
+	issue connector.Issue,
+	phaseName string,
+	enteredAt time.Time,
+	metadataJSON string,
+) bool {
+	if normalizeState(issue.State) != normalizeState(blockedStatusState) ||
+		normalizeState(phaseName) != normalizeState(blockedStatusState) ||
+		!blockedEntryMatchesCurrent(issue, enteredAt) {
+		return false
+	}
+	metadata, ok := workflowLaneMetadataFromJSON(metadataJSON)
+	return ok &&
+		metadata.BlockedRecovery != nil &&
+		strings.TrimSpace(metadata.BlockedRecovery.Owner) != "" &&
+		strings.TrimSpace(metadata.BlockedRecovery.Predicate) != ""
 }
 
 func workflowLaneMetadataWithActionSignature(metadata workflowLaneMetadata, action string, signature string) workflowLaneMetadata {
