@@ -331,15 +331,24 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		runErr = errors.Join(runErr, release())
 	}()
 
-	candidates, readerTruncations, err := readAdmissionCandidates(ctx, settings.Issues, settings.Config)
+	candidates, readerTruncations, readerFiltered, err := readAdmissionCandidates(ctx, settings.Issues, settings.Config)
 	if err != nil {
 		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
 	}
 	if readerTruncations > 0 {
 		result.Truncated["candidate_reader"] += readerTruncations
 	}
+	for reason, count := range readerFiltered {
+		result.Skipped[reason] += count
+	}
 	result.CandidatesFound = len(candidates)
-	candidates = filterCandidates(candidates, settings.Config, settings.TerminalStates, result.Skipped)
+	candidates = filterCandidates(
+		candidates,
+		settings.Config,
+		settings.TerminalStates,
+		result.Skipped,
+		readerFiltered["author"] > 0,
+	)
 	sortCandidates(candidates, settings)
 	candidates, err = m.unproposedCandidates(ctx, settings, candidates, result.Skipped)
 	if err != nil {
@@ -420,7 +429,7 @@ func readAdmissionCandidates(
 	ctx context.Context,
 	issues IssueStore,
 	cfg config.BacklogAdmission,
-) ([]connector.Issue, int, error) {
+) ([]connector.Issue, int, map[string]int, error) {
 	requests := make([]connector.CandidateRequest, 0, 3)
 	if len(cfg.Sources.States) > 0 {
 		requests = append(requests, connector.CandidateRequest{
@@ -444,15 +453,24 @@ func readAdmissionCandidates(
 	candidates := []connector.Issue{}
 	seen := map[string]struct{}{}
 	truncations := 0
+	filtered := map[string]int{}
 	for _, request := range requests {
 		request.Limit = limit
 		request.PageSize = connector.DefaultCandidatePageSize
+		if request.Selector == connector.CandidateSelectorStates &&
+			len(cfg.Authors.AllowAssociation) == 0 &&
+			issues.CandidateCapabilities().SupportsPushdown(connector.CandidateFilterAuthorHandle) {
+			request.Authors = append([]string(nil), cfg.Authors.Allow...)
+		}
 		result, err := issues.ReadCandidates(ctx, request)
 		if err != nil {
-			return nil, 0, fmt.Errorf("read %s selector: %w", request.Selector, err)
+			return nil, 0, nil, fmt.Errorf("read %s selector: %w", request.Selector, err)
 		}
 		if result.Truncated {
 			truncations++
+		}
+		for reason, count := range result.Filtered {
+			filtered[reason] += count
 		}
 		for _, issue := range result.Issues {
 			key := admissionCandidateKey(issue)
@@ -463,7 +481,7 @@ func readAdmissionCandidates(
 			candidates = append(candidates, issue)
 		}
 	}
-	return candidates, truncations, nil
+	return candidates, truncations, filtered, nil
 }
 
 func (m *Manager) reconcileOpenProposals(
@@ -1043,6 +1061,7 @@ func filterCandidates(
 	cfg config.BacklogAdmission,
 	terminalStates []string,
 	skipped map[string]int,
+	hasPushedAuthorRejections bool,
 ) []connector.Issue {
 	out := make([]connector.Issue, 0, len(issues))
 	for _, issue := range issues {
@@ -1057,8 +1076,10 @@ func filterCandidates(
 			skipped["label_terminal_state"]++
 		case excludedByLabel(issue, cfg.ExcludeLabels):
 			skipped["excluded_label"]++
-		case !allowedAuthor(issue.AuthorID, cfg.Authors.Allow):
-			skipped["author"]++
+		case !allowedAuthor(issue, cfg.Authors):
+			if !hasPushedAuthorRejections || !containsFold(cfg.Sources.States, issue.State) {
+				skipped["author"]++
+			}
 		default:
 			out = append(out, issue)
 		}
@@ -1102,7 +1123,7 @@ func labelCandidateStateTerminal(issue connector.Issue, cfg config.BacklogAdmiss
 }
 
 func excludedCandidate(issue connector.Issue, cfg config.BacklogAdmission) bool {
-	return excludedByLabel(issue, cfg.ExcludeLabels) || !allowedAuthor(issue.AuthorID, cfg.Authors.Allow)
+	return excludedByLabel(issue, cfg.ExcludeLabels) || !allowedAuthor(issue, cfg.Authors)
 }
 
 func matchesAnyLabel(issueLabels []string, labels []string) bool {
@@ -1123,11 +1144,14 @@ func excludedByLabel(issue connector.Issue, labels []string) bool {
 	return false
 }
 
-func allowedAuthor(author string, allow []string) bool {
-	if len(allow) == 0 {
+func allowedAuthor(issue connector.Issue, authors config.BacklogAdmissionAuthors) bool {
+	if len(authors.Allow) == 0 && len(authors.AllowAssociation) == 0 {
 		return true
 	}
-	return containsFold(allow, strings.TrimPrefix(strings.TrimSpace(author), "@"))
+	if containsFold(authors.Allow, strings.TrimPrefix(strings.TrimSpace(issue.AuthorID), "@")) {
+		return true
+	}
+	return containsFold(authors.AllowAssociation, string(connector.NormalizeAuthorAssociation(string(issue.AuthorAssociation))))
 }
 
 func sortCandidates(issues []connector.Issue, settings Settings) {
@@ -1412,6 +1436,7 @@ func cloneSettings(settings Settings) Settings {
 	settings.Config.Sources.Labels = append([]string(nil), settings.Config.Sources.Labels...)
 	settings.Config.ExcludeLabels = append([]string(nil), settings.Config.ExcludeLabels...)
 	settings.Config.Authors.Allow = append([]string(nil), settings.Config.Authors.Allow...)
+	settings.Config.Authors.AllowAssociation = append([]string(nil), settings.Config.Authors.AllowAssociation...)
 	settings.Criteria.Dimensions = append([]config.AdmissionDimension(nil), settings.Criteria.Dimensions...)
 	settings.DispatchStates = append([]string(nil), settings.DispatchStates...)
 	settings.DispatchLabels = append([]string(nil), settings.DispatchLabels...)

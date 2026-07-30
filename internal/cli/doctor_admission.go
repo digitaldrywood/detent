@@ -10,35 +10,37 @@ import (
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
 const doctorAdmissionFailureThreshold = 3
 
 type doctorAdmissionDiagnostic struct {
-	Schedule            string           `json:"schedule"`
-	CriteriaSection     string           `json:"criteria_section"`
-	Dimensions          []string         `json:"dimensions,omitempty"`
-	NeverRun            bool             `json:"never_run,omitempty"`
-	LastRun             string           `json:"last_run,omitempty"`
-	Outcome             string           `json:"outcome,omitempty"`
-	DeferredReason      string           `json:"deferred_reason,omitempty"`
-	CandidatesFound     int              `json:"candidates_found,omitempty"`
-	CandidatesEvaluated int              `json:"candidates_evaluated,omitempty"`
-	Proposed            int              `json:"proposed,omitempty"`
-	Skipped             map[string]int   `json:"skipped,omitempty"`
-	Truncated           map[string]int   `json:"truncated,omitempty"`
-	IssueReferences     []string         `json:"issue_references,omitempty"`
-	ConsecutiveFailures int              `json:"consecutive_failures,omitempty"`
-	LatestError         string           `json:"latest_error,omitempty"`
-	Warnings            []string         `json:"warnings,omitempty"`
-	Origins             map[string]int   `json:"origins,omitempty"`
-	ProposalOutcomes    map[string]int   `json:"proposal_outcomes,omitempty"`
-	DecisionSeconds     map[string]int64 `json:"average_decision_seconds,omitempty"`
-	AcceptedCompleted   int              `json:"accepted_completed,omitempty"`
-	ReworkCount         int              `json:"rework_count,omitempty"`
-	ReviewChurnCount    int              `json:"review_churn_count,omitempty"`
-	SpendUSD            float64          `json:"spend_usd,omitempty"`
+	Schedule             string           `json:"schedule"`
+	CriteriaSection      string           `json:"criteria_section"`
+	Dimensions           []string         `json:"dimensions,omitempty"`
+	NeverRun             bool             `json:"never_run,omitempty"`
+	LastRun              string           `json:"last_run,omitempty"`
+	Outcome              string           `json:"outcome,omitempty"`
+	DeferredReason       string           `json:"deferred_reason,omitempty"`
+	CandidatesFound      int              `json:"candidates_found,omitempty"`
+	CandidatesEvaluated  int              `json:"candidates_evaluated,omitempty"`
+	Proposed             int              `json:"proposed,omitempty"`
+	Skipped              map[string]int   `json:"skipped,omitempty"`
+	Truncated            map[string]int   `json:"truncated,omitempty"`
+	IssueReferences      []string         `json:"issue_references,omitempty"`
+	ConsecutiveFailures  int              `json:"consecutive_failures,omitempty"`
+	LatestError          string           `json:"latest_error,omitempty"`
+	Warnings             []string         `json:"warnings,omitempty"`
+	Origins              map[string]int   `json:"origins,omitempty"`
+	ProposalOutcomes     map[string]int   `json:"proposal_outcomes,omitempty"`
+	DecisionSeconds      map[string]int64 `json:"average_decision_seconds,omitempty"`
+	AcceptedCompleted    int              `json:"accepted_completed,omitempty"`
+	ReworkCount          int              `json:"rework_count,omitempty"`
+	ReviewChurnCount     int              `json:"review_churn_count,omitempty"`
+	SpendUSD             float64          `json:"spend_usd,omitempty"`
+	RepositoryVisibility string           `json:"repository_visibility,omitempty"`
 }
 
 func checkDoctorAdmission(
@@ -50,11 +52,26 @@ func checkDoctorAdmission(
 ) doctorCheck {
 	cfg := workflow.Config.BacklogAdmission
 	name := "Project " + projectID + " backlog admission"
+	deps = deps.withDefaults()
 	diagnostic := doctorAdmissionDiagnostic{
 		Schedule:        cfg.Schedule,
 		CriteriaSection: cfg.CriteriaSection,
 		NeverRun:        true,
 		Warnings:        workflowconfig.BacklogAdmissionWarnings(cfg, workflow.Config.Tracker),
+	}
+	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
+		repository := strings.TrimSpace(workflow.Config.Tracker.Repository)
+		if repository != "" {
+			info, err := deps.githubRepositoryInfo(ctx, workflow.Config, repository)
+			if err != nil {
+				diagnostic.Warnings = append(diagnostic.Warnings, "backlog_admission repository visibility could not be determined: "+err.Error())
+			} else {
+				diagnostic.RepositoryVisibility = info.Visibility
+				if warning := workflowconfig.BacklogAdmissionPublicExposureWarning(cfg, info.Visibility); warning != "" {
+					diagnostic.Warnings = append(diagnostic.Warnings, warning)
+				}
+			}
+		}
 	}
 	criteria, err := workflowconfig.ResolveAdmissionCriteria(workflow.SharedPrompt, cfg.CriteriaSection)
 	if err != nil {
@@ -72,7 +89,6 @@ func checkDoctorAdmission(
 	if strings.TrimSpace(storePath) == "" {
 		return doctorAdmissionCheck(name, diagnostic, "runtime store is not configured")
 	}
-	deps = deps.withDefaults()
 	db, err := deps.openSQLiteReadOnly(ctx, storePath)
 	if err != nil {
 		if errors.Is(err, errDoctorTelemetryStoreUnavailable) {
@@ -104,6 +120,21 @@ func checkDoctorAdmission(
 		}
 	}
 	return doctorAdmissionCheck(name, diagnostic, "")
+}
+
+func defaultDoctorGitHubRepositoryInfo(
+	ctx context.Context,
+	cfg workflowconfig.Config,
+	repository string,
+) (_ ghconnector.RepositoryInfo, resultErr error) {
+	conn, err := ghconnector.NewConnector(doctorGitHubConnectorConfig(cfg))
+	if err != nil {
+		return ghconnector.RepositoryInfo{}, err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, conn.Close())
+	}()
+	return conn.FetchRepositoryInfo(ctx, repository)
 }
 
 func readDoctorAdmissionDiagnostic(

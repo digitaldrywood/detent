@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -8,41 +9,71 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+type AuthorAssociation string
+
+const (
+	AuthorAssociationOwner                AuthorAssociation = "OWNER"
+	AuthorAssociationMember               AuthorAssociation = "MEMBER"
+	AuthorAssociationCollaborator         AuthorAssociation = "COLLABORATOR"
+	AuthorAssociationContributor          AuthorAssociation = "CONTRIBUTOR"
+	AuthorAssociationFirstTimeContributor AuthorAssociation = "FIRST_TIME_CONTRIBUTOR"
+	AuthorAssociationNone                 AuthorAssociation = "NONE"
+)
+
+func NormalizeAuthorAssociation(value string) AuthorAssociation {
+	return AuthorAssociation(strings.ToUpper(strings.TrimSpace(value)))
+}
+
+func (a AuthorAssociation) Valid() bool {
+	switch a {
+	case AuthorAssociationOwner,
+		AuthorAssociationMember,
+		AuthorAssociationCollaborator,
+		AuthorAssociationContributor,
+		AuthorAssociationFirstTimeContributor,
+		AuthorAssociationNone:
+		return true
+	default:
+		return false
+	}
+}
+
 type Issue struct {
-	ID               string               `json:"id,omitempty" yaml:"id,omitempty"`
-	Identifier       string               `json:"identifier,omitempty" yaml:"identifier,omitempty"`
-	Number           int                  `json:"number,omitempty" yaml:"number,omitempty"`
-	Title            string               `json:"title,omitempty" yaml:"title,omitempty"`
-	Description      string               `json:"description,omitempty" yaml:"description,omitempty"`
-	Priority         *int                 `json:"priority,omitempty" yaml:"priority,omitempty"`
-	PriorityName     string               `json:"priority_name,omitempty" yaml:"priority_name,omitempty"`
-	UnblockerCount   int                  `json:"unblocker_count,omitempty" yaml:"unblocker_count,omitempty"`
-	State            string               `json:"state,omitempty" yaml:"state,omitempty"`
-	BranchName       string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
-	URL              string               `json:"url,omitempty" yaml:"url,omitempty"`
-	Closed           bool                 `json:"closed,omitempty" yaml:"closed,omitempty"`
-	ClosedReason     string               `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
-	PRNumber         *int                 `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
-	PRRepository     string               `json:"pr_repository,omitempty" yaml:"pr_repository,omitempty"`
-	PullRequest      *PullRequest         `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
-	AuthorID         string               `json:"author_id,omitempty" yaml:"author_id,omitempty"`
-	AssigneeID       string               `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
-	Assignees        []string             `json:"assignees,omitempty" yaml:"assignees,omitempty"`
-	BlockedBy        []BlockedRef         `json:"blocked_by" yaml:"blocked_by"`
-	ChildIssues      []BlockedRef         `json:"child_issues,omitempty" yaml:"child_issues,omitempty"`
-	BlockerReason    string               `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
-	WorkpadSignal    *workpad.Signal      `json:"workpad_signal,omitempty" yaml:"workpad_signal,omitempty"`
-	Labels           []string             `json:"labels" yaml:"labels"`
-	Comments         []IssueComment       `json:"comments,omitempty" yaml:"comments,omitempty"`
-	Fields           map[string]string    `json:"fields,omitempty" yaml:"fields,omitempty"`
-	FieldUpdatedAt   map[string]time.Time `json:"field_updated_at,omitempty" yaml:"field_updated_at,omitempty"`
-	Metadata         map[string]string    `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-	Deliverable      *Deliverable         `json:"deliverable,omitempty" yaml:"deliverable,omitempty"`
-	AssignedToWorker bool                 `json:"assigned_to_worker" yaml:"assigned_to_worker"`
-	CreatedAt        *time.Time           `json:"created_at,omitempty" yaml:"created_at,omitempty"`
-	UpdatedAt        *time.Time           `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
-	StageUpdatedAt   *time.Time           `json:"stage_updated_at,omitempty" yaml:"stage_updated_at,omitempty"`
-	ModelOverride    string               `json:"model_override" yaml:"model_override"`
+	ID                string               `json:"id,omitempty" yaml:"id,omitempty"`
+	Identifier        string               `json:"identifier,omitempty" yaml:"identifier,omitempty"`
+	Number            int                  `json:"number,omitempty" yaml:"number,omitempty"`
+	Title             string               `json:"title,omitempty" yaml:"title,omitempty"`
+	Description       string               `json:"description,omitempty" yaml:"description,omitempty"`
+	Priority          *int                 `json:"priority,omitempty" yaml:"priority,omitempty"`
+	PriorityName      string               `json:"priority_name,omitempty" yaml:"priority_name,omitempty"`
+	UnblockerCount    int                  `json:"unblocker_count,omitempty" yaml:"unblocker_count,omitempty"`
+	State             string               `json:"state,omitempty" yaml:"state,omitempty"`
+	BranchName        string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
+	URL               string               `json:"url,omitempty" yaml:"url,omitempty"`
+	Closed            bool                 `json:"closed,omitempty" yaml:"closed,omitempty"`
+	ClosedReason      string               `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
+	PRNumber          *int                 `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
+	PRRepository      string               `json:"pr_repository,omitempty" yaml:"pr_repository,omitempty"`
+	PullRequest       *PullRequest         `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	AuthorID          string               `json:"author_id,omitempty" yaml:"author_id,omitempty"`
+	AuthorAssociation AuthorAssociation    `json:"author_association,omitempty" yaml:"author_association,omitempty"`
+	AssigneeID        string               `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
+	Assignees         []string             `json:"assignees,omitempty" yaml:"assignees,omitempty"`
+	BlockedBy         []BlockedRef         `json:"blocked_by" yaml:"blocked_by"`
+	ChildIssues       []BlockedRef         `json:"child_issues,omitempty" yaml:"child_issues,omitempty"`
+	BlockerReason     string               `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
+	WorkpadSignal     *workpad.Signal      `json:"workpad_signal,omitempty" yaml:"workpad_signal,omitempty"`
+	Labels            []string             `json:"labels" yaml:"labels"`
+	Comments          []IssueComment       `json:"comments,omitempty" yaml:"comments,omitempty"`
+	Fields            map[string]string    `json:"fields,omitempty" yaml:"fields,omitempty"`
+	FieldUpdatedAt    map[string]time.Time `json:"field_updated_at,omitempty" yaml:"field_updated_at,omitempty"`
+	Metadata          map[string]string    `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Deliverable       *Deliverable         `json:"deliverable,omitempty" yaml:"deliverable,omitempty"`
+	AssignedToWorker  bool                 `json:"assigned_to_worker" yaml:"assigned_to_worker"`
+	CreatedAt         *time.Time           `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt         *time.Time           `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	StageUpdatedAt    *time.Time           `json:"stage_updated_at,omitempty" yaml:"stage_updated_at,omitempty"`
+	ModelOverride     string               `json:"model_override" yaml:"model_override"`
 }
 
 type BlockedRef struct {

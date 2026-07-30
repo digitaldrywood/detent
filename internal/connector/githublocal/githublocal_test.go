@@ -57,6 +57,9 @@ func TestConnectorImportPersistsAndDetectsClosedUpstreamDivergence(t *testing.T)
 	if imported[0].ID != "github:123:779" {
 		t.Fatalf("imported ID = %q, want local surrogate", imported[0].ID)
 	}
+	if imported[0].AuthorAssociation != connector.AuthorAssociationMember {
+		t.Fatalf("imported AuthorAssociation = %q, want MEMBER", imported[0].AuthorAssociation)
+	}
 	if imported[0].Metadata[MetadataDivergence] != DivergenceClosedUpstreamLocalActive {
 		t.Fatalf("divergence = %q, want %q", imported[0].Metadata[MetadataDivergence], DivergenceClosedUpstreamLocalActive)
 	}
@@ -85,6 +88,9 @@ func TestConnectorImportPersistsAndDetectsClosedUpstreamDivergence(t *testing.T)
 	}
 	if issues[0].Title != "Closed upstream issue" {
 		t.Fatalf("Title = %q, want GitHub title", issues[0].Title)
+	}
+	if issues[0].AuthorAssociation != connector.AuthorAssociationMember {
+		t.Fatalf("hydrated AuthorAssociation = %q, want MEMBER", issues[0].AuthorAssociation)
 	}
 	if issues[0].Metadata[local.MetadataGitHubRepositoryID] != "123" || issues[0].Metadata[local.MetadataGitHubIssueNumber] != "779" {
 		t.Fatalf("GitHub identity metadata = %#v", issues[0].Metadata)
@@ -969,18 +975,19 @@ func (s *githubLocalTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/digitaldrywood/detent/issues/779":
 		body := "Depends on: #1"
 		writeGitHubLocalJSON(s.t, w, map[string]any{
-			"node_id":      "I_kwDOtest779",
-			"number":       779,
-			"title":        "Closed upstream issue",
-			"body":         body,
-			"state":        "closed",
-			"state_reason": "completed",
-			"html_url":     "https://github.com/digitaldrywood/detent/issues/779",
-			"created_at":   "2026-07-01T12:00:00Z",
-			"updated_at":   "2026-07-02T12:00:00Z",
-			"user":         map[string]any{"login": "octocat"},
-			"assignees":    []map[string]any{{"node_id": "U_1", "login": "detent-bot"}},
-			"labels":       []map[string]string{{"name": "enhancement"}},
+			"node_id":            "I_kwDOtest779",
+			"number":             779,
+			"title":              "Closed upstream issue",
+			"body":               body,
+			"state":              "closed",
+			"state_reason":       "completed",
+			"html_url":           "https://github.com/digitaldrywood/detent/issues/779",
+			"created_at":         "2026-07-01T12:00:00Z",
+			"updated_at":         "2026-07-02T12:00:00Z",
+			"user":               map[string]any{"login": "octocat"},
+			"author_association": "MEMBER",
+			"assignees":          []map[string]any{{"node_id": "U_1", "login": "detent-bot"}},
+			"labels":             []map[string]string{{"name": "enhancement"}},
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/digitaldrywood/detent/issues/779/comments":
 		writeGitHubLocalJSON(s.t, w, []map[string]any{

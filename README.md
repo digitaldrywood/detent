@@ -1202,6 +1202,7 @@ backlog_admission:
   exclude_labels: []
   authors:
     allow: []
+    allow_association: []
   max_candidates_per_run: 50
   max_proposals_per_run: 3
   max_open_proposals: 10
@@ -1231,13 +1232,29 @@ and terminal or blocked issues reached only through `sources.labels`, are
 skipped and counted because label selection does not override the workflow
 state machine. `exclude_labels` is applied after the union.
 
-Admission keeps a finite over-read window of at least 100 issues so its existing
-priority ordering, author filter, excluded-label filter, and
-`max_candidates_per_run` cap still apply after the connector read. A reader
-truncation is recorded as `candidate_reader` in the run ledger instead of making
-the bounded result look complete. A run defers instead of queueing when project
-or fleet capacity is unavailable or its agent would exceed the configured daily
-budget.
+`authors.allow` accepts GitHub handles without requiring `@`.
+`authors.allow_association` accepts `OWNER`, `MEMBER`, `COLLABORATOR`,
+`CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, and `NONE`. The two lists are an
+allowlist union: an issue is eligible when either its handle or association
+matches. Both lists default to empty, which intentionally leaves admission
+unrestricted on every tracker. A GitHub-only restrictive default would silently
+empty candidate sets on trackers that do not have GitHub association data and
+would add no protection on private repositories.
+
+GitHub `issue_field` reads push a handle-only allowlist into the search query.
+Other GitHub status sources filter handles locally. When associations and
+handles are both configured, Detent preserves the union by filtering locally;
+pushing only the handles would incorrectly discard issues admitted by
+association. Query-side author rejections are counted in aggregate just like
+local rejections. They are recorded as `author` in the run ledger and never
+produce comments on rejected issues.
+
+Admission keeps a finite over-read window of at least 100 issues so priority
+ordering, author and label filters, and `max_candidates_per_run` still apply
+after connector reads. A reader truncation is recorded as `candidate_reader` in
+the run ledger instead of making the bounded result look complete. A run defers
+instead of queueing when project or fleet capacity is unavailable or its agent
+would exceed the configured daily budget.
 
 Criteria live in one named section of the shared `WORKFLOW.md`, never
 `WORKFLOW.local.md`. Heading matching is case-insensitive, accepts ATX headings
@@ -1285,26 +1302,45 @@ the work for dispatch.
 
 Capability is declared per tracker and per GitHub status source:
 
-| Tracker | Status source | `sources.states` | `sources.labels` | `sources.untracked` |
-| --- | --- | --- | --- | --- |
-| `github` | `project_v2` | Supported | Unsupported | Unsupported |
-| `github` | `issue_field` | Supported | Supported | Unsupported |
-| `github` | `label` | Supported | Supported | Supported |
-| `github_local` | local SQLite status | Supported | Supported | Unsupported |
-| `local_sqlite` | local SQLite status | Supported | Supported | Unsupported |
-| `memory` | process-local status | Supported | Supported | Unsupported |
-| `linear` | Linear workflow state | Unsupported | Unsupported | Unsupported |
+| Tracker | Status source | `sources.states` | `sources.labels` | `sources.untracked` | `authors.allow` | `authors.allow_association` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `github` | `project_v2` | Supported | Unsupported | Unsupported | Local filter | Supported |
+| `github` | `issue_field` | Supported | Supported | Unsupported | States query pushdown when no association union is configured; local filter otherwise | Supported |
+| `github` | `label` | Supported | Supported | Supported | Local filter | Supported |
+| `github_local` | local SQLite status | Supported | Supported | Unsupported | Local filter after GitHub hydration | Supported through GitHub hydration |
+| `local_sqlite` | local SQLite status | Supported | Supported | Unsupported | Stored values only; discovery warning | Unsupported |
+| `memory` | process-local status | Supported | Supported | Unsupported | Seeded values only; discovery warning | Unsupported |
+| `linear` | Linear workflow state | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 
 An enabled admission configuration fails validation when its tracker/status
 source does not declare every enabled selector, so unsupported combinations
 never validate cleanly and then degrade to an empty first scheduled read.
 ProjectV2 label selection is unsupported because its issue query fetches only
 the first 20 labels; configuring either `sources.labels` or `exclude_labels`
-with ProjectV2 fails validation rather than risking a silent miss.
+with ProjectV2 fails validation rather than risking a silent miss. Configuring
+`authors.allow_association` on a tracker that cannot supply GitHub association
+data also fails validation. `github_local` supports association explicitly by
+hydrating each locally selected issue from GitHub before admission filters it.
 `authors.allow` on `local_sqlite` or `memory` produces a doctor warning because
 those trackers do not discover authors. The memory tracker is evaluation-only
-across restarts: durable proposal records can
-survive while its process-local comments and mutations do not.
+across restarts: durable proposal records can survive while its process-local
+comments and mutations do not.
+
+Repository visibility is part of the GitHub repository diagnostic. On a public
+repository, doctor warns whenever the configured author rules still let
+untrusted associations reach the candidate set, including the states-only
+configuration above. The warning is based on author reachability, not whether a
+state, label, or untracked source found the issue. `OWNER`, `MEMBER`, and
+`COLLABORATOR` are treated as trusted association scopes; allowing
+`CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` keeps the public-exposure
+warning active.
+
+Integration accounts do not reliably receive a trusted association. Dependabot,
+Sentry, and similar bot accounts commonly appear as `CONTRIBUTOR` or `NONE`.
+When association scoping is used to protect an untracked or automation-fed
+candidate source, list every intended bot explicitly in `authors.allow` by
+handle. Otherwise the same association rule that excludes strangers also
+excludes the automation the source was meant to catch.
 
 Every lane-entry event records how the issue reached the state:
 
