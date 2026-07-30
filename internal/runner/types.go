@@ -467,6 +467,8 @@ type PriorAttempt struct {
 	Reason                  string
 	ExplainBeforeRetry      bool
 	MissingSignal           string
+	ObservedTokens          int64
+	NoProgressTokenLimit    int64
 	ObservedSpendUSD        float64
 	NoProgressSpendLimitUSD float64
 	Validator               gate.ValidatorResult

@@ -585,6 +585,7 @@ ORDER BY finished_at, id;
 -- name: IssueSpendSince :one
 SELECT
   CAST(COALESCE(SUM(cost_usd), 0) AS REAL) AS cost_usd,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions,
   CAST(COALESCE(MIN(finished_at), '') AS TEXT) AS first_session_at,
   CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at

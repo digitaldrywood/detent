@@ -269,7 +269,7 @@ func TestParseWorkflowBillingMode(t *testing.T) {
 		configured bool
 		wantErr    string
 	}{
-		{name: "omitted assumes metered", want: BillingModeMetered},
+		{name: "omitted defaults to subscription", want: BillingModeSubscription},
 		{name: "metered", value: "metered", want: BillingModeMetered, configured: true},
 		{name: "subscription", value: "subscription", want: BillingModeSubscription, configured: true},
 		{name: "normalizes case and whitespace", value: " Subscription ", want: BillingModeSubscription, configured: true},
@@ -416,6 +416,43 @@ func TestNoProgressSpendLimitConfiguration(t *testing.T) {
 			}
 			if workflow.Config.Agent.NoProgressSpendLimitUSD != tt.want {
 				t.Fatalf("NoProgressSpendLimitUSD = %g, want %g", workflow.Config.Agent.NoProgressSpendLimitUSD, tt.want)
+			}
+		})
+	}
+}
+
+func TestNoProgressTokenLimitConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    int64
+		wantErr string
+	}{
+		{name: "default enabled", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultNoProgressTokenLimit},
+		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: 0\n---\nPrompt\n"},
+		{name: "custom threshold", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: 40000000\n---\nPrompt\n", want: 40_000_000},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: -1\n---\nPrompt\n", wantErr: "agent.no_progress_token_limit must be greater than or equal to 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.raw))
+			if tt.wantErr != "" {
+				if err == nil {
+					err = workflow.Config.Validate()
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Agent.NoProgressTokenLimit != tt.want {
+				t.Fatalf("NoProgressTokenLimit = %d, want %d", workflow.Config.Agent.NoProgressTokenLimit, tt.want)
 			}
 		})
 	}

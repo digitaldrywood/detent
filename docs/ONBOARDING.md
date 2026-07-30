@@ -2294,7 +2294,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an
    additional token-consumption backstop because cached context is counted
    again on every Codex turn. A small multiplier can terminate otherwise
-   healthy sessions after only a few full-context turns.
+   healthy sessions after only a few full-context turns. Keep
+   `agent.no_progress_token_limit` positive as the cross-session brake,
+   especially when `budget.billing_mode: subscription` makes USD controls
+   inert.
 
    Dependency auto-unblock default:
 

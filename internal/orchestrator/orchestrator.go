@@ -81,6 +81,7 @@ type Config struct {
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	OverloadRetryDelay            time.Duration
+	NoProgressTokenLimit          int64
 	NoProgressSpendLimitUSD       float64
 	BillingMode                   string
 	FailureBreaker                FailureBreakerConfig

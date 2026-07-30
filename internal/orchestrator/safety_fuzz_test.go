@@ -84,6 +84,10 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		if got := spendProgressPRAdvance(leftFingerprint, rightFingerprint); got != wantAdvance {
 			t.Fatalf("spendProgressPRAdvance(%#v, %#v) = %q, want %q", leftFingerprint, rightFingerprint, got, wantAdvance)
 		}
+		wantTokenLimitReached := rightNumber > 0 && leftNumber >= rightNumber
+		if got := spendProgressTokenLimitReached(leftNumber, rightNumber); got != wantTokenLimitReached {
+			t.Fatalf("spendProgressTokenLimitReached(%d, %d) = %t, want %t", leftNumber, rightNumber, got, wantTokenLimitReached)
+		}
 
 		resetSeconds %= 1_000_000_000
 		nowSeconds %= 1_000_000_000

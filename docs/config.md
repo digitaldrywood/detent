@@ -269,6 +269,7 @@ rendering and fails on drift.
 | `agent.merge_worker_startup_timeout_ms` | `integer` | `240000` | No | must be greater than 0 |
 | `agent.no_progress_spend_limit_usd` | `number` | `3` | No | must be greater than or equal to 0 |
 | `agent.no_progress_timeout_ms` | `integer` | `5400000` | No | must be greater than or equal to 0 |
+| `agent.no_progress_token_limit` | `integer` | `25000000` | No | must be greater than or equal to 0 |
 | `agent.output_truncation` | `object` | `see child fields` | No | None |
 | `agent.output_truncation.max_bytes` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.overload_retry_delay_ms` | `integer` | `45000` | No | must be greater than 0 |

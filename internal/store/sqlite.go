@@ -846,8 +846,9 @@ func (s *sqliteStore) IssueSpendSince(ctx context.Context, query IssueSpendSince
 		return IssueSpendSince{}, fmt.Errorf("reading issue spend since accepted progress: %w", err)
 	}
 	spend := IssueSpendSince{
-		CostUSD:  nonNegativeFloat(row.CostUsd),
-		Sessions: nonNegative(row.Sessions),
+		CostUSD:     nonNegativeFloat(row.CostUsd),
+		TotalTokens: nonNegative(row.TotalTokens),
+		Sessions:    nonNegative(row.Sessions),
 	}
 	if row.FirstSessionAt != "" {
 		spend.FirstSessionAt, err = parseTimestamp("first_session_at", row.FirstSessionAt)

@@ -63,6 +63,7 @@ const (
 	DefaultKnowledgeMaxBytes                 = 64 * 1024
 	DefaultReworkLimit                       = 3
 	DefaultNoProgressLimit                   = 3
+	DefaultNoProgressTokenLimit              = 25_000_000
 	DefaultNoProgressSpendLimitUSD           = 3.0
 	DefaultFailureBreakerSameClassLimit      = 5
 	DefaultFailureBreakerWindowSeconds       = 3600
@@ -282,6 +283,7 @@ type Agent struct {
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
+	NoProgressTokenLimit         int64                        `yaml:"no_progress_token_limit"`
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
 	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
@@ -477,10 +479,10 @@ type Budget struct {
 }
 
 func (b Budget) EffectiveBillingMode() string {
-	if strings.EqualFold(strings.TrimSpace(b.BillingMode), BillingModeSubscription) {
-		return BillingModeSubscription
+	if strings.EqualFold(strings.TrimSpace(b.BillingMode), BillingModeMetered) {
+		return BillingModeMetered
 	}
-	return BillingModeMetered
+	return BillingModeSubscription
 }
 
 func (b Budget) BillingModeConfigured() bool {
@@ -1296,6 +1298,7 @@ func Default() Config {
 			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
 			MaxRetryBackoffMS:           300000,
 			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
+			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
 			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
 			StopRun:                     StopRun{TargetState: "Blocked"},
 			MergeFastPath:               MergeFastPath{Enabled: true},
@@ -1995,6 +1998,9 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.MaxSessionContextMultiplier < 0 {
 		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
+	}
+	if a.NoProgressTokenLimit < 0 {
+		*problems = append(*problems, prefix+".no_progress_token_limit must be greater than or equal to 0")
 	}
 	if a.NoProgressSpendLimitUSD < 0 {
 		*problems = append(*problems, prefix+".no_progress_spend_limit_usd must be greater than or equal to 0")

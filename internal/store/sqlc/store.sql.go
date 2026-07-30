@@ -1970,6 +1970,7 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 const issueSpendSince = `-- name: IssueSpendSince :one
 SELECT
   CAST(COALESCE(SUM(cost_usd), 0) AS REAL) AS cost_usd,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions,
   CAST(COALESCE(MIN(finished_at), '') AS TEXT) AS first_session_at,
   CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at
@@ -1991,6 +1992,7 @@ type IssueSpendSinceParams struct {
 
 type IssueSpendSinceRow struct {
 	CostUsd        float64 `json:"cost_usd"`
+	TotalTokens    int64   `json:"total_tokens"`
 	Sessions       int64   `json:"sessions"`
 	FirstSessionAt string  `json:"first_session_at"`
 	LastSessionAt  string  `json:"last_session_at"`
@@ -2006,6 +2008,7 @@ func (q *Queries) IssueSpendSince(ctx context.Context, arg IssueSpendSinceParams
 	var i IssueSpendSinceRow
 	err := row.Scan(
 		&i.CostUsd,
+		&i.TotalTokens,
 		&i.Sessions,
 		&i.FirstSessionAt,
 		&i.LastSessionAt,

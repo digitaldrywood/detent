@@ -79,39 +79,44 @@ thread-resume behavior is preserving useful context without repeatedly filling
 the window.
 
 `budget.billing_mode` accepts `metered` or `subscription`. Metered mode
-enforces configured USD caps and the spend-progress breaker. Subscription mode
+enforces configured USD caps and the USD progress breaker. Subscription mode
 keeps notional spend telemetry but never refuses dispatch or parks work based
 on USD; Detent instead scales dispatch concurrency with the lowest reported
-primary or secondary provider rate-window percentage. An omitted mode preserves
-legacy metered enforcement when `budget.enabled=true`, and `detent doctor` warns
-until the mode is declared.
+primary or secondary provider rate-window percentage. An omitted mode defaults
+to `subscription`, so USD controls are inert unless metered billing is declared
+explicitly.
+
+`agent.no_progress_token_limit` defaults to `25000000` tokens and is enforced
+in both billing modes. Detent sums persisted `total_tokens` for the issue across
+attempts after its latest accepted lane or PR advancement. Reaching the limit
+parks the issue even when USD is only notional subscription telemetry. Set the
+value to `0` to disable the token breaker.
 
 `agent.no_progress_spend_limit_usd` defaults to a base limit of `3`, below the
-default per-issue budget backstop. The effective limit scales with the session's
-reasoning effort: unknown/low `1x`, medium `1.5x`, high `3x`, xhigh `6x`, and
-max/ultracode `8x`. These multipliers assume one retry at the observed cost
-profile should fit before the breaker fires; `detent doctor` warns when an
-effort tier's effective limit is below its observed p50 per-session cost and
-recommends a base limit with `1.5x` retry-cost headroom.
+default per-issue budget backstop, and is enforced only when
+`billing_mode: metered`. The effective limit scales with the session's reasoning
+effort: unknown/low `1x`, medium `1.5x`, high `3x`, xhigh `6x`, and max/ultracode
+`8x`. These multipliers assume one retry at the observed cost profile should fit
+before the breaker fires; `detent doctor` warns when an effort tier's effective
+limit is below its observed p50 per-session cost and recommends a base limit
+with `1.5x` retry-cost headroom.
 
 Duration limits stop a single overlong turn or session regardless of message
-volume. The no-progress spend limit is a separate runaway control that can stop
-repeated or expensive work even when each individual session stays below its
-duration cap; it is enforced in metered billing mode and advisory in
-subscription mode.
+volume. The cross-session progress breakers can stop repeated or expensive work
+even when each individual session stays below its duration cap. The token
+breaker remains blocking on subscription fleets; the USD breaker is
+metered-only.
 
-Detent sums persisted session cost for each issue after its latest accepted
-lane or PR advancement. PR creation, a new head commit, a dirty-to-clean
-mergeability transition, and a failing-to-passing CI transition each reset the
-spend window. Spend accumulates only while the PR fingerprint remains static.
-In metered mode, when spend exceeds the effective limit, Detent parks the issue
-in `Blocked` and identifies whether no PR evidence was produced or a linked PR
-remained static. The latter points operators toward merge-train capacity and
-serialization tuning; the former recommends narrowing or splitting the task.
-The next worker must explain the missing progress signal in its first Workpad
-update before using tools. Set the value to `0` to disable the breaker and its
-history/spend lookups. In subscription mode, the same calculation is advisory
-telemetry and never parks the issue.
+PR creation, a new head commit, a dirty-to-clean mergeability transition, and a
+failing-to-passing CI transition each reset the shared token and USD window.
+Usage accumulates only while the PR fingerprint remains static. When an
+effective limit trips, Detent parks the issue in `Blocked` and identifies
+whether no PR evidence was produced or a linked PR remained static. The latter
+points operators toward merge-train capacity and serialization tuning; the
+former recommends narrowing or splitting the task. The next worker must explain
+the missing progress signal in its first Workpad update before using tools.
+`detent doctor` reports both effective brakes for every project and warns when
+neither is active.
 
 `agent.failure_breaker` pauses new project dispatches when the same failure
 class reaches `same_class_limit` attempts inside `window_seconds`. The default

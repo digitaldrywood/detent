@@ -69,7 +69,7 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 			{ID: 3, Identifier: "issue-after-capacity", StartedAt: resetAt.Add(10 * time.Minute), CompletedAt: resetAt.Add(11 * time.Minute), TerminalState: "success"},
 			{ID: 4, Identifier: "issue-gate", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", ErrorClass: "gate_wait_timeout"},
 			{ID: 5, Identifier: "issue-gate-2", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", WaitReason: "gate wait timeout"},
-			{ID: 6, Identifier: "issue-spend", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "no_progress", ErrorClass: "spend_since_progress_circuit_breaker", ErrorMessage: "spent $6.75; configured limit $5.00"},
+			{ID: 6, Identifier: "issue-spend", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "no_progress", ErrorClass: "spend_since_progress_circuit_breaker", ErrorMessage: "consumed 25000000 tokens; configured limit 25000000"},
 		},
 		Sessions: []Session{
 			{ID: 1, Identifier: "issue-orphan-a", StartedAt: base, CompletedAt: base.Add(time.Minute), OrphanRecoveryOutcome: "fresh"},
@@ -97,6 +97,9 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 	spend := findingByPattern(t, Detect(snapshot, DetectorOptions{}), PatternSpendSinceProgressTrip)
 	if spend.Scope != ScopeProduct || spend.Severity != SeverityCritical || spend.TokenDelta != 125000 || !Qualifies(spend, 2, SeverityCritical) {
 		t.Fatalf("spend finding = %#v, want qualifying critical trip", spend)
+	}
+	if spend.Proposal == nil || spend.Proposal.Path != "agent.no_progress_token_limit" {
+		t.Fatalf("spend proposal = %#v, want token-limit review", spend.Proposal)
 	}
 	orphan := findingByPattern(t, Detect(snapshot, DetectorOptions{}), PatternFallbackOrphanRecovery)
 	if len(orphan.Occurrences) != 3 || !Qualifies(orphan, 2, SeverityCritical) {

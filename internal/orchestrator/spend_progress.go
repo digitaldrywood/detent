@@ -25,35 +25,46 @@ const (
 )
 
 type spendProgressDecision struct {
-	Enabled             bool
-	AcceptedStateChange bool
-	AcceptedReason      string
-	Since               time.Time
-	Spend               store.IssueSpendSince
-	ConfiguredLimitUSD  float64
-	LimitUSD            float64
-	Effort              string
-	PRFingerprint       *spendProgressPRFingerprint
-	Case                string
-	Block               bool
-	Warning             string
+	Enabled              bool
+	TokenEnabled         bool
+	USDEnabled           bool
+	AcceptedStateChange  bool
+	AcceptedReason       string
+	Since                time.Time
+	Spend                store.IssueSpendSince
+	ConfiguredTokenLimit int64
+	TokenLimit           int64
+	ConfiguredLimitUSD   float64
+	LimitUSD             float64
+	BillingMode          string
+	Effort               string
+	PRFingerprint        *spendProgressPRFingerprint
+	Case                 string
+	BlockedBy            string
+	Block                bool
+	Warning              string
 }
 
 type spendProgressRecord struct {
-	AcceptedStateChange bool                        `json:"accepted_state_change,omitempty"`
-	AcceptedReason      string                      `json:"accepted_reason,omitempty"`
-	Since               string                      `json:"since,omitempty"`
-	SpendUSD            float64                     `json:"spend_usd,omitempty"`
-	Sessions            int64                       `json:"sessions,omitempty"`
-	FirstSessionAt      string                      `json:"first_session_at,omitempty"`
-	LastSessionAt       string                      `json:"last_session_at,omitempty"`
-	ConfiguredLimitUSD  float64                     `json:"configured_limit_usd,omitempty"`
-	LimitUSD            float64                     `json:"limit_usd,omitempty"`
-	Effort              string                      `json:"effort,omitempty"`
-	PRFingerprint       *spendProgressPRFingerprint `json:"pr_fingerprint,omitempty"`
-	Case                string                      `json:"case,omitempty"`
-	BlockReason         string                      `json:"block_reason,omitempty"`
-	Warning             string                      `json:"warning,omitempty"`
+	AcceptedStateChange  bool                        `json:"accepted_state_change,omitempty"`
+	AcceptedReason       string                      `json:"accepted_reason,omitempty"`
+	Since                string                      `json:"since,omitempty"`
+	TotalTokens          int64                       `json:"total_tokens,omitempty"`
+	SpendUSD             float64                     `json:"spend_usd,omitempty"`
+	Sessions             int64                       `json:"sessions,omitempty"`
+	FirstSessionAt       string                      `json:"first_session_at,omitempty"`
+	LastSessionAt        string                      `json:"last_session_at,omitempty"`
+	ConfiguredTokenLimit int64                       `json:"configured_token_limit,omitempty"`
+	TokenLimit           int64                       `json:"token_limit,omitempty"`
+	ConfiguredLimitUSD   float64                     `json:"configured_limit_usd,omitempty"`
+	LimitUSD             float64                     `json:"limit_usd,omitempty"`
+	BillingMode          string                      `json:"billing_mode,omitempty"`
+	Effort               string                      `json:"effort,omitempty"`
+	PRFingerprint        *spendProgressPRFingerprint `json:"pr_fingerprint,omitempty"`
+	Case                 string                      `json:"case,omitempty"`
+	BlockedBy            string                      `json:"blocked_by,omitempty"`
+	BlockReason          string                      `json:"block_reason,omitempty"`
+	Warning              string                      `json:"warning,omitempty"`
 }
 
 type spendProgressPRFingerprint struct {
@@ -70,14 +81,22 @@ func (o *Orchestrator) evaluateSpendProgress(
 	accepted bool,
 	acceptedReason string,
 ) spendProgressDecision {
-	decision := spendProgressDecision{
-		Enabled:             o != nil && o.cfg.NoProgressSpendLimitUSD > 0,
-		AcceptedStateChange: accepted,
-		AcceptedReason:      strings.TrimSpace(acceptedReason),
+	decision := spendProgressDecision{AcceptedStateChange: accepted, AcceptedReason: strings.TrimSpace(acceptedReason)}
+	if o == nil {
+		return decision
 	}
+	decision.BillingMode = workflowconfig.BillingModeMetered
+	if o.cfg.subscriptionBilling() {
+		decision.BillingMode = workflowconfig.BillingModeSubscription
+	}
+	decision.TokenEnabled = o.cfg.NoProgressTokenLimit > 0
+	decision.USDEnabled = !o.cfg.subscriptionBilling() && o.cfg.NoProgressSpendLimitUSD > 0
+	decision.Enabled = decision.TokenEnabled || decision.USDEnabled
 	if !decision.Enabled {
 		return decision
 	}
+	decision.ConfiguredTokenLimit = o.cfg.NoProgressTokenLimit
+	decision.TokenLimit = decision.ConfiguredTokenLimit
 	decision.ConfiguredLimitUSD = o.cfg.NoProgressSpendLimitUSD
 	decision.Effort = spendProgressEffort(running)
 	decision.LimitUSD = workflowconfig.EffectiveNoProgressSpendLimitUSD(decision.ConfiguredLimitUSD, decision.Effort)
@@ -87,7 +106,7 @@ func (o *Orchestrator) evaluateSpendProgress(
 		return decision
 	}
 	if o.progressSpend == nil {
-		decision.Warning = "progress spend store unavailable"
+		decision.Warning = "progress usage store unavailable"
 		o.warnSpendProgress(running.Issue, decision.Warning, nil)
 		return decision
 	}
@@ -123,7 +142,7 @@ func (o *Orchestrator) evaluateSpendProgress(
 	})
 	if err != nil {
 		decision.Warning = err.Error()
-		o.warnSpendProgress(running.Issue, "spend lookup failed", err)
+		o.warnSpendProgress(running.Issue, "usage lookup failed", err)
 		return decision
 	}
 	decision.Spend = spend
@@ -131,8 +150,18 @@ func (o *Orchestrator) evaluateSpendProgress(
 	if decision.PRFingerprint != nil {
 		decision.Case = spendProgressCaseStatic
 	}
-	decision.Block = !o.cfg.subscriptionBilling() && spend.CostUSD > decision.LimitUSD
+	if spendProgressTokenLimitReached(spend.TotalTokens, decision.TokenLimit) {
+		decision.BlockedBy = "tokens"
+		decision.Block = true
+	} else if decision.USDEnabled && spend.CostUSD > decision.LimitUSD {
+		decision.BlockedBy = "usd"
+		decision.Block = true
+	}
 	return decision
+}
+
+func spendProgressTokenLimitReached(totalTokens int64, tokenLimit int64) bool {
+	return tokenLimit > 0 && totalTokens >= tokenLimit
 }
 
 func spendProgressEffort(running Running) string {
@@ -290,7 +319,7 @@ func spendProgressRecordFromAttempt(attempt store.WorkAttempt) (spendProgressRec
 		return spendProgressRecord{}, false
 	}
 	record := root.SpendProgress
-	if !record.AcceptedStateChange && record.LimitUSD <= 0 && strings.TrimSpace(record.BlockReason) == "" {
+	if !record.AcceptedStateChange && record.TokenLimit <= 0 && record.LimitUSD <= 0 && strings.TrimSpace(record.BlockReason) == "" {
 		return spendProgressRecord{}, false
 	}
 	return record, true
@@ -301,16 +330,21 @@ func spendProgressMetadata(decision spendProgressDecision) map[string]any {
 		return nil
 	}
 	record := spendProgressRecord{
-		AcceptedStateChange: decision.AcceptedStateChange,
-		AcceptedReason:      decision.AcceptedReason,
-		SpendUSD:            decision.Spend.CostUSD,
-		Sessions:            decision.Spend.Sessions,
-		ConfiguredLimitUSD:  decision.ConfiguredLimitUSD,
-		LimitUSD:            decision.LimitUSD,
-		Effort:              decision.Effort,
-		PRFingerprint:       decision.PRFingerprint,
-		Case:                decision.Case,
-		Warning:             strings.TrimSpace(decision.Warning),
+		AcceptedStateChange:  decision.AcceptedStateChange,
+		AcceptedReason:       decision.AcceptedReason,
+		TotalTokens:          decision.Spend.TotalTokens,
+		SpendUSD:             decision.Spend.CostUSD,
+		Sessions:             decision.Spend.Sessions,
+		ConfiguredTokenLimit: decision.ConfiguredTokenLimit,
+		TokenLimit:           decision.TokenLimit,
+		ConfiguredLimitUSD:   decision.ConfiguredLimitUSD,
+		LimitUSD:             decision.LimitUSD,
+		BillingMode:          decision.BillingMode,
+		Effort:               decision.Effort,
+		PRFingerprint:        decision.PRFingerprint,
+		Case:                 decision.Case,
+		BlockedBy:            decision.BlockedBy,
+		Warning:              strings.TrimSpace(decision.Warning),
 	}
 	if !decision.Since.IsZero() {
 		record.Since = decision.Since.UTC().Format(time.RFC3339Nano)
@@ -425,15 +459,19 @@ func (o *Orchestrator) blockSpendProgress(
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      blockedAt,
 		Event:   "spend_since_progress_circuit_breaker_tripped",
-		Message: fmt.Sprintf("parked %s after %s: %s", issueLabel(issue), budget.FormatUSD(decision.Spend.CostUSD), spendProgressCaseSummary(decision.Case)),
+		Message: fmt.Sprintf("parked %s after %s: %s", issueLabel(issue), spendProgressUsageSummary(decision), spendProgressCaseSummary(decision.Case)),
 	})
 	if o.logger != nil {
-		o.logger.Error("spend since progress circuit breaker tripped",
+		o.logger.Error("no-progress circuit breaker tripped",
 			"event", "spend_since_progress_circuit_breaker_tripped",
 			"issue_id", issueID,
 			"issue_identifier", issue.Identifier,
+			"blocked_by", decision.BlockedBy,
+			"total_tokens", decision.Spend.TotalTokens,
+			"token_limit", decision.TokenLimit,
 			"spend_usd", decision.Spend.CostUSD,
 			"limit_usd", decision.LimitUSD,
+			"billing_mode", decision.BillingMode,
 			"sessions", decision.Spend.Sessions,
 			"since", decision.Since,
 			"case", decision.Case,
@@ -454,11 +492,29 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 	b.WriteString(decision.Case)
 	b.WriteString("\n- issue: ")
 	b.WriteString(issueLabel(issue))
-	b.WriteString("\n- spend_since_last_accepted_progress: ")
-	b.WriteString(budget.FormatUSD(decision.Spend.CostUSD))
-	b.WriteString("\n- no_progress_spend_limit_usd: ")
-	b.WriteString(budget.FormatUSD(decision.LimitUSD))
-	if decision.Effort != "" {
+	b.WriteString("\n- billing_mode: ")
+	b.WriteString(decision.BillingMode)
+	b.WriteString("\n- blocked_by: ")
+	b.WriteString(decision.BlockedBy)
+	b.WriteString("\n- tokens_since_last_accepted_progress: ")
+	b.WriteString(strconv.FormatInt(decision.Spend.TotalTokens, 10))
+	if decision.TokenLimit > 0 {
+		b.WriteString("\n- no_progress_token_limit: ")
+		b.WriteString(strconv.FormatInt(decision.TokenLimit, 10))
+	}
+	if decision.ConfiguredLimitUSD > 0 {
+		b.WriteString("\n- notional_spend_since_last_accepted_progress: ")
+		b.WriteString(budget.FormatUSD(decision.Spend.CostUSD))
+		b.WriteString("\n- usd_breaker: ")
+		if decision.USDEnabled {
+			b.WriteString("active")
+		} else {
+			b.WriteString("inert")
+		}
+		b.WriteString("\n- no_progress_spend_limit_usd: ")
+		b.WriteString(budget.FormatUSD(decision.LimitUSD))
+	}
+	if decision.USDEnabled && decision.Effort != "" {
 		b.WriteString("\n- effective_effort: ")
 		b.WriteString(decision.Effort)
 		b.WriteString("\n- configured_base_limit_usd: ")
@@ -500,9 +556,31 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 
 func spendProgressCaseSummary(progressCase string) string {
 	if progressCase == spendProgressCaseStatic {
-		return "spend continued while a linked PR existed but could not merge"
+		return "resource consumption continued while a linked PR existed but could not merge"
 	}
-	return "spend continued without any PR evidence"
+	return "resource consumption continued without any PR evidence"
+}
+
+func spendProgressBlockMessage(decision spendProgressDecision) string {
+	if decision.BlockedBy == "tokens" {
+		return fmt.Sprintf(
+			"consumed %d tokens since the last accepted state change; configured limit %d",
+			decision.Spend.TotalTokens,
+			decision.TokenLimit,
+		)
+	}
+	return fmt.Sprintf(
+		"spent %s since the last accepted state change; configured limit %s",
+		budget.FormatUSD(decision.Spend.CostUSD),
+		budget.FormatUSD(decision.LimitUSD),
+	)
+}
+
+func spendProgressUsageSummary(decision spendProgressDecision) string {
+	if decision.BlockedBy == "tokens" {
+		return fmt.Sprintf("%d tokens", decision.Spend.TotalTokens)
+	}
+	return budget.FormatUSD(decision.Spend.CostUSD)
 }
 
 func spendProgressRecoveryReason(decision spendProgressDecision) string {
@@ -517,18 +595,24 @@ func spendProgressRetryHandoff(decision spendProgressDecision) runpkg.PriorAttem
 	if decision.Case == spendProgressCaseStatic {
 		missingSignal = "new PR head commit, dirty-to-clean mergeability, failing-to-passing CI, or merge-train capacity that lets the linked PR advance"
 	}
-	return runpkg.PriorAttempt{
-		Source:                  spendProgressReason,
-		Reason:                  spendProgressCaseSummary(decision.Case),
-		ExplainBeforeRetry:      true,
-		MissingSignal:           missingSignal,
-		ObservedSpendUSD:        decision.Spend.CostUSD,
-		NoProgressSpendLimitUSD: decision.LimitUSD,
+	prior := runpkg.PriorAttempt{
+		Source:               spendProgressReason,
+		Reason:               spendProgressCaseSummary(decision.Case),
+		ExplainBeforeRetry:   true,
+		MissingSignal:        missingSignal,
+		ObservedTokens:       decision.Spend.TotalTokens,
+		NoProgressTokenLimit: decision.TokenLimit,
 	}
+	if decision.BillingMode == workflowconfig.BillingModeMetered {
+		prior.ObservedSpendUSD = decision.Spend.CostUSD
+		prior.NoProgressSpendLimitUSD = decision.LimitUSD
+	}
+	return prior
 }
 
 func (o *Orchestrator) spendProgressPriorAttempt(ctx context.Context, issue connector.Issue) (runpkg.PriorAttempt, bool) {
-	if o == nil || o.cfg.subscriptionBilling() || o.cfg.NoProgressSpendLimitUSD <= 0 || o.workAttempts == nil {
+	if o == nil || o.workAttempts == nil ||
+		(o.cfg.NoProgressTokenLimit <= 0 && (o.cfg.subscriptionBilling() || o.cfg.NoProgressSpendLimitUSD <= 0)) {
 		return runpkg.PriorAttempt{}, false
 	}
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
@@ -546,12 +630,16 @@ func (o *Orchestrator) spendProgressPriorAttempt(ctx context.Context, issue conn
 		return runpkg.PriorAttempt{}, false
 	}
 	return spendProgressRetryHandoff(spendProgressDecision{
-		Spend:              store.IssueSpendSince{CostUSD: record.SpendUSD, Sessions: record.Sessions},
-		ConfiguredLimitUSD: record.ConfiguredLimitUSD,
-		LimitUSD:           record.LimitUSD,
-		Effort:             record.Effort,
-		PRFingerprint:      record.PRFingerprint,
-		Case:               record.Case,
+		Spend:                store.IssueSpendSince{CostUSD: record.SpendUSD, TotalTokens: record.TotalTokens, Sessions: record.Sessions},
+		ConfiguredTokenLimit: record.ConfiguredTokenLimit,
+		TokenLimit:           record.TokenLimit,
+		ConfiguredLimitUSD:   record.ConfiguredLimitUSD,
+		LimitUSD:             record.LimitUSD,
+		BillingMode:          record.BillingMode,
+		Effort:               record.Effort,
+		PRFingerprint:        record.PRFingerprint,
+		Case:                 record.Case,
+		BlockedBy:            record.BlockedBy,
 	}), true
 }
 
@@ -563,7 +651,7 @@ func (o *Orchestrator) warnSpendProgress(issue connector.Issue, message string, 
 	if err != nil {
 		attrs = append(attrs, "error", err)
 	}
-	o.logger.Warn("spend since progress breaker failed open", attrs...)
+	o.logger.Warn("progress usage breaker failed open", attrs...)
 }
 
 func priorAttemptPresent(prior runpkg.PriorAttempt) bool {

@@ -749,7 +749,7 @@ func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
 	sessionStore := &fakeSessionStore{sessionID: 855}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
-			Config: config.Config{},
+			Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}},
 			Prompt: "Work on {{ issue.identifier }}",
 		},
 		Workspace:         workspaceBackend,
@@ -895,6 +895,7 @@ func TestRunnerRunLogsBudgetRefusalWithDerivedRole(t *testing.T) {
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
 			Config: config.Config{
+				Budget: config.Budget{BillingMode: config.BillingModeMetered},
 				Agents: config.Agents{
 					Backends: []config.AgentBackend{{
 						ID:       "codex-rework",
@@ -2794,6 +2795,7 @@ func TestRunnerRunUsesStageDefaultModelForReworkFallback(t *testing.T) {
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
 			Config: config.Config{
+				Budget: config.Budget{BillingMode: config.BillingModeMetered},
 				Agents: config.Agents{
 					Backends: []config.AgentBackend{
 						{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
@@ -3349,6 +3351,7 @@ func TestRunnerUpdateWorkflowRefreshesBudgetGuards(t *testing.T) {
 
 	enabled := config.Config{}
 	enabled.Budget.Enabled = true
+	enabled.Budget.BillingMode = config.BillingModeMetered
 	runner.UpdateWorkflow(config.Workflow{
 		Config: enabled,
 		Prompt: "reloaded {{ issue.identifier }}",

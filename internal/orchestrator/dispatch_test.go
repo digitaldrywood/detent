@@ -288,6 +288,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	if got.MergeWorkerMaxDuration != 2*time.Hour {
 		t.Fatalf("MergeWorkerMaxDuration = %s, want 2h", got.MergeWorkerMaxDuration)
 	}
+	if got.NoProgressTokenLimit != workflowconfig.DefaultNoProgressTokenLimit {
+		t.Fatalf("NoProgressTokenLimit = %d, want %d", got.NoProgressTokenLimit, workflowconfig.DefaultNoProgressTokenLimit)
+	}
 	if len(got.WorkerHosts) != 2 || got.WorkerHosts[0] != "worker-a" || got.WorkerHosts[1] != "worker-b" {
 		t.Fatalf("WorkerHosts = %#v, want worker-a and worker-b", got.WorkerHosts)
 	}
@@ -446,6 +449,7 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 	now := time.Now()
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:    2,
+		BillingMode:            workflowconfig.BillingModeMetered,
 		ActiveStates:           []string{"Todo", "In Progress"},
 		TerminalStates:         []string{"Done", "Cancelled"},
 		BudgetRefusalCooldown:  time.Hour,
@@ -694,7 +698,7 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := normalizeConfig(Config{BudgetRefusalCooldown: time.Hour})
+			cfg := normalizeConfig(Config{BillingMode: workflowconfig.BillingModeMetered, BudgetRefusalCooldown: time.Hour})
 			state := newState(cfg)
 			issue := dispatchTestIssue("issue", "Todo")
 			tt.refusal.Issue = issue
@@ -1024,6 +1028,7 @@ func TestHandleRunResultRecordsBudgetRefusalAndComment(t *testing.T) {
 	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:    1,
+		BillingMode:            workflowconfig.BillingModeMetered,
 		ActiveStates:           []string{"Todo"},
 		TerminalStates:         []string{"Done"},
 		BudgetRefusalCooldown:  time.Hour,
@@ -1084,6 +1089,7 @@ func TestHandleRunResultCreatesPerIssueHardHoldWithoutRetry(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:    1,
+		BillingMode:            workflowconfig.BillingModeMetered,
 		ActiveStates:           []string{"Todo"},
 		TerminalStates:         []string{"Done"},
 		BudgetRefusalCooldown:  time.Hour,

@@ -601,6 +601,8 @@ func TestBuildPromptRequiresExplanationBeforeBreakerRetry(t *testing.T) {
 		Reason:                  "spend exceeded the configured limit without an accepted state change",
 		ExplainBeforeRetry:      true,
 		MissingSignal:           "lane transition or pull request signature change",
+		ObservedTokens:          25_000_000,
+		NoProgressTokenLimit:    20_000_000,
 		ObservedSpendUSD:        6.75,
 		NoProgressSpendLimitUSD: 5,
 	}})
@@ -612,6 +614,8 @@ func TestBuildPromptRequiresExplanationBeforeBreakerRetry(t *testing.T) {
 		"first tool action must update the Workpad",
 		"Do not use any other tools",
 		"lane transition or pull request signature change",
+		"tokens since last accepted state change: 25000000",
+		"configured token limit: 20000000",
 		"spend since last accepted state change: $6.75",
 		"configured limit: $5.00",
 	} {
