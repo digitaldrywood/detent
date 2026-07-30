@@ -49,8 +49,15 @@ blockers: []
 human_action: null
 ```
 
-Use `complete` only when the pull request is open, references the issue,
-validation is green, and no actionable review comments remain:
+Use `complete` only when the pull request is open, marked ready for review,
+is not a draft, references the issue, validation is green, and no actionable
+review comments remain. If the pull request is a draft, mark it ready and
+verify the resulting state before declaring completion:
+
+```sh
+gh pr ready <number>
+gh pr view <number> --json isDraft --jq '.isDraft' # must be false
+```
 
 ```detent-status
 schema: 1
