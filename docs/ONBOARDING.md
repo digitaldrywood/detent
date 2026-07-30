@@ -1308,8 +1308,11 @@ probes.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-   Use `MAX_SESSION_TOKENS` as the per-session runaway brake. Codex re-counts
-   cached context on every turn, so do not emit
+   Use `MAX_TURNS`, `MAX_SESSION_DURATION_MS`, and `NO_PROGRESS_TIMEOUT_MS`
+   as the independent per-session catastrophe bounds. Their defaults allow 20
+   turns, two hours of wall-clock time, and 90 minutes without a workspace or
+   Workpad change. Keep `MAX_SESSION_TOKENS` as an additional token-consumption
+   backstop. Codex re-counts cached context on every turn, so do not emit
    `MAX_SESSION_CONTEXT_MULTIPLIER` by default and do not recommend small
    values such as `4`. The multiplier is a coarse, advanced opt-in that caps
    roughly how many full-context turns fit; record it only when the operator
@@ -2286,10 +2289,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    reviews for a project configured to expect them.
 
    Keep `agent.max_session_context_multiplier` absent unless the operator
-   explicitly requested the coarse ceiling. Use `agent.max_session_tokens` as
-   the default runaway brake because cached context is counted again on every
-   Codex turn; a small multiplier can terminate otherwise healthy sessions
-   after only a few full-context turns.
+   explicitly requested the coarse ceiling. The primary catastrophe bounds are
+   `agent.max_turns`, `agent.max_session_duration_ms`, and
+   `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an
+   additional token-consumption backstop because cached context is counted
+   again on every Codex turn. A small multiplier can terminate otherwise
+   healthy sessions after only a few full-context turns.
 
    Dependency auto-unblock default:
 
@@ -3140,7 +3145,7 @@ the card instead of auto-resolving it.
 | Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `detent.yaml`. |
 | Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `detent.yaml`. |
-| Session runaway brake | `agent.max_session_tokens`; `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
+| Session catastrophe bounds | `agent.max_turns`, `agent.max_session_duration_ms`, and `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |

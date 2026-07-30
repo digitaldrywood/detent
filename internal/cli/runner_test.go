@@ -266,6 +266,7 @@ Prompt {{ issue.identifier }}
 	wantPrefix := []string{
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "fable",
+		"--max-turns", "20",
 		"--effort", "high",
 		"--permission-mode", "acceptEdits",
 		"--allowedTools", "Bash", "Edit",

@@ -133,6 +133,9 @@ func (b *AgentBackend) RunTurn(
 	}
 
 	finalErr := finalTurnError(ctx, state, waitErr, stderr.String())
+	if finalErr != nil && strings.EqualFold(strings.TrimSpace(state.resultSubtype), "error_max_turns") {
+		finalErr = errors.Join(runner.ErrSessionTurnLimitExceeded, finalErr)
+	}
 	status := runner.FinalStateCompleted
 	if finalErr != nil {
 		status = runner.FinalStateFailed
@@ -178,6 +181,9 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if model := strings.TrimSpace(req.Model); model != "" {
 		args = append(args, "--model", model)
+	}
+	if req.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(req.MaxTurns))
 	}
 	effort := strings.TrimSpace(req.ReasoningEffort)
 	if effort == "" {

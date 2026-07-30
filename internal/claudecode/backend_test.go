@@ -200,9 +200,13 @@ func TestAgentBackendRunTurnErrorResult(t *testing.T) {
 		Workspace: t.TempDir(),
 		Prompt:    "hit max turns",
 		Model:     "fable",
+		MaxTurns:  20,
 	}, appendUpdate(&updates))
 	if !errors.Is(err, ErrTurnFailed) {
 		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
+	}
+	if !errors.Is(err, runner.ErrSessionTurnLimitExceeded) {
+		t.Fatalf("RunTurn() error = %v, want ErrSessionTurnLimitExceeded", err)
 	}
 	for _, want := range []string{"error_max_turns", "claude stderr tail"} {
 		if !strings.Contains(err.Error(), want) {
@@ -398,6 +402,7 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 		TempDir:            filepath.Join(workspace, ".detent", "tmp"),
 		Prompt:             "prompt from stdin",
 		Model:              "fable",
+		MaxTurns:           20,
 		ExtraWritableRoots: []string{"/tmp/root-a", " ", "/tmp/root-b"},
 		Environment: procgroup.Environment{
 			Variables:    map[string]string{"GOCACHE": "/shared/go-build", "GOMODCACHE": "/shared/go-mod"},
@@ -420,6 +425,7 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 	wantArgs := []string{
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "fable",
+		"--max-turns", "20",
 		"--effort", "high",
 		"--permission-mode", "plan",
 		"--allowedTools", "Bash(git *)", "Edit",

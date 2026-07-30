@@ -675,6 +675,7 @@ agent:
   max_concurrent_agents: 5
   max_turn_duration_ms: 900000
   max_session_duration_ms: 3600000
+  no_progress_timeout_ms: 1800000
   merge_worker_max_duration_ms: 7200000
   max_session_tokens: 10000000
   max_session_context_multiplier: 3.5
@@ -926,6 +927,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.MaxSessionDurationMS != 3600000 {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want 3600000", cfg.Agent.MaxSessionDurationMS)
+	}
+	if cfg.Agent.NoProgressTimeoutMS != 1800000 {
+		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want 1800000", cfg.Agent.NoProgressTimeoutMS)
 	}
 	if cfg.Agent.MergeWorkerMaxDurationMS != 7200000 {
 		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want 7200000", cfg.Agent.MergeWorkerMaxDurationMS)
@@ -1309,6 +1313,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MergeWorkerMaxDurationMS != DefaultMergeWorkerMaxDurationMS {
 		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want %d", cfg.Agent.MergeWorkerMaxDurationMS, DefaultMergeWorkerMaxDurationMS)
+	}
+	if cfg.Agent.MaxSessionDurationMS != DefaultMaxSessionDurationMS {
+		t.Fatalf("Agent.MaxSessionDurationMS = %d, want %d", cfg.Agent.MaxSessionDurationMS, DefaultMaxSessionDurationMS)
+	}
+	if cfg.Agent.NoProgressTimeoutMS != DefaultNoProgressTimeoutMS {
+		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 0 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
@@ -2936,6 +2946,7 @@ agent:
   max_concurrent_agents: 0
   max_turn_duration_ms: -1
   max_session_duration_ms: -1
+  no_progress_timeout_ms: -1
   merge_worker_max_duration_ms: -1
   max_session_tokens: -1
   max_session_context_multiplier: -0.5
@@ -2976,6 +2987,7 @@ Prompt
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_turn_duration_ms must be greater than or equal to 0",
 				"agent.max_session_duration_ms must be greater than or equal to 0",
+				"agent.no_progress_timeout_ms must be greater than or equal to 0",
 				"agent.merge_worker_max_duration_ms must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
 				"agent.max_session_context_multiplier must be greater than or equal to 0",

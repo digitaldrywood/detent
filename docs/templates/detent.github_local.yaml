@@ -76,6 +76,8 @@ agent:
   # effort:
   #   merge: high
   max_turns: 20
+  max_session_duration_ms: 7200000
+  no_progress_timeout_ms: 5400000
   merge_worker_max_duration_ms: 21600000
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000
@@ -84,7 +86,7 @@ agent:
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
   # cache-created + cache-read tokens, accumulated across every turn of the
   # session, so cached context is re-counted each turn. Use max_session_tokens
-  # as the runaway brake. max_session_context_multiplier is an opt-in, coarse
+  # as an additional token-consumption backstop. max_session_context_multiplier is an opt-in, coarse
   # cap on roughly how many full-context turns fit; leave it unset by default.
   max_session_tokens: 25000000
   max_session_token_override_label: allow-large-session

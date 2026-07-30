@@ -1330,8 +1330,8 @@ func doctorWorkflowOptimizationFindings(
 			})
 		}
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleNoSessionTokenBrake,
-			"Session runaway brake is disabled",
-			"neither agent.max_session_tokens nor agent.max_session_context_multiplier is configured; any generated cap assumes "+doctorWorkflowCapRetryCostAssumption,
+			"Session token brake is disabled",
+			"neither agent.max_session_tokens nor agent.max_session_context_multiplier is configured; wall-clock, turn, and no-progress brakes do not cap token consumption, and any generated token cap assumes "+doctorWorkflowCapRetryCostAssumption,
 			0,
 			map[string]any{
 				"max_session_tokens":             cfg.Agent.MaxSessionTokens,
