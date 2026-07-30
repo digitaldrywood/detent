@@ -1226,12 +1226,17 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			Resolved    string `json:"resolvedModel"`
 			ResolvedAlt string `json:"resolved_model"`
 			TokenUsage  struct {
-				Total              tokenUsageBreakdown `json:"total"`
-				ModelContextWindow *int64              `json:"modelContextWindow"`
+				Total              tokenUsageBreakdown  `json:"total"`
+				Last               *tokenUsageBreakdown `json:"last"`
+				ModelContextWindow *int64               `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return Update{}, false, fmt.Errorf("%w: decode token usage: %w", ErrInvalidResponse, err)
+		}
+		usage := params.TokenUsage.Total
+		if params.TokenUsage.Last != nil {
+			usage = *params.TokenUsage.Last
 		}
 		return Update{
 			Type:     UpdateTokenUsage,
@@ -1240,11 +1245,11 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			TurnID:   params.TurnID,
 			Model:    firstNonBlank(params.Model, params.Resolved, params.ResolvedAlt, params.ModelID, params.ModelIDAlt),
 			Tokens: TokenUsage{
-				InputTokens:           params.TokenUsage.Total.InputTokens,
-				CachedInputTokens:     params.TokenUsage.Total.CachedInputTokens,
-				OutputTokens:          params.TokenUsage.Total.OutputTokens,
-				ReasoningOutputTokens: params.TokenUsage.Total.ReasoningOutputTokens,
-				TotalTokens:           params.TokenUsage.Total.TotalTokens,
+				InputTokens:           usage.InputTokens,
+				CachedInputTokens:     usage.CachedInputTokens,
+				OutputTokens:          usage.OutputTokens,
+				ReasoningOutputTokens: usage.ReasoningOutputTokens,
+				TotalTokens:           usage.TotalTokens,
 				ModelContextWindow:    params.TokenUsage.ModelContextWindow,
 			},
 			Payload: rawPayload(msg),

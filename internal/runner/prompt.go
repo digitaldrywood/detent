@@ -864,6 +864,14 @@ func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
 			b.WriteString("\n\n- missing accepted signal: ")
 			b.WriteString(signal)
 		}
+		if prior.ObservedTokens > 0 {
+			b.WriteString("\n- tokens since last accepted state change: ")
+			b.WriteString(strconv.FormatInt(prior.ObservedTokens, 10))
+		}
+		if prior.NoProgressTokenLimit > 0 {
+			b.WriteString("\n- configured token limit: ")
+			b.WriteString(strconv.FormatInt(prior.NoProgressTokenLimit, 10))
+		}
 		if prior.ObservedSpendUSD > 0 {
 			b.WriteString("\n- spend since last accepted state change: $")
 			b.WriteString(strconv.FormatFloat(prior.ObservedSpendUSD, 'f', 2, 64))

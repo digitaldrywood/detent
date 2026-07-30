@@ -310,6 +310,8 @@ func checkDoctorProjectWithProgress(
 	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
 		checks = append(checks, billingCheck)
 	}
+	setDoctorCurrentCheck("Project " + id + " progress brake")
+	checks = append(checks, checkDoctorProgressBrake(id, workflow.Config))
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
 	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
 	if len(workflow.Config.Routines) > 0 {
@@ -737,16 +739,10 @@ func doctorLocalDefinitionPaths(workflow workflowconfig.Workflow) []string {
 
 func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
 	mode := cfg.Budget.EffectiveBillingMode()
+	modeDetail := "billing_mode=" + mode
 	if !cfg.Budget.BillingModeConfigured() {
-		if !cfg.Budget.Enabled && cfg.Agent.NoProgressSpendLimitUSD <= 0 {
-			return doctorCheck{}, false
-		}
-		return doctorCheck{
-			Name:   "Project " + id + " billing mode",
-			Status: doctorWarn,
-			Detail: "budget.billing_mode is undeclared; metered billing and USD enforcement are assumed for compatibility",
-			Hint:   "Declare budget.billing_mode: metered or budget.billing_mode: subscription in WORKFLOW.md.",
-		}, true
+		mode = workflowconfig.BillingModeSubscription
+		modeDetail = "budget.billing_mode is undeclared; subscription billing is the default"
 	}
 	if mode != workflowconfig.BillingModeSubscription {
 		return doctorCheck{}, false
@@ -765,9 +761,37 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, 
 	return doctorCheck{
 		Name:   "Project " + id + " billing mode",
 		Status: doctorWarn,
-		Detail: "billing_mode=subscription makes USD enforcement advisory; Detent will not refuse or park work from: " + strings.Join(controls, ", "),
+		Detail: modeDetail + " and USD enforcement is inert; Detent will not refuse or park work from: " + strings.Join(controls, ", "),
 		Hint:   "Use provider rate-window pacing and token or outcome-based brakes for subscription auth; set billing_mode=metered only for marginal API billing.",
 	}, true
+}
+
+func checkDoctorProgressBrake(id string, cfg workflowconfig.Config) doctorCheck {
+	mode := cfg.Budget.EffectiveBillingMode()
+	controls := make([]string, 0, 2)
+	if cfg.Agent.NoProgressTokenLimit > 0 {
+		controls = append(controls, fmt.Sprintf("tokens=%d", cfg.Agent.NoProgressTokenLimit))
+	}
+	if mode == workflowconfig.BillingModeMetered && cfg.Agent.NoProgressSpendLimitUSD > 0 {
+		controls = append(controls, fmt.Sprintf("USD=%g", cfg.Agent.NoProgressSpendLimitUSD))
+	}
+	if len(controls) == 0 {
+		return doctorCheck{
+			Name:   "Project " + id + " progress brake",
+			Status: doctorWarn,
+			Detail: "no effective cross-session progress brake is configured",
+			Hint:   "Set agent.no_progress_token_limit to a positive token budget, or use agent.no_progress_spend_limit_usd with budget.billing_mode: metered.",
+		}
+	}
+	detail := "effective cross-session progress brake: " + strings.Join(controls, ", ")
+	if mode == workflowconfig.BillingModeSubscription && cfg.Agent.NoProgressSpendLimitUSD > 0 {
+		detail += fmt.Sprintf("; USD=%g is inert in subscription mode", cfg.Agent.NoProgressSpendLimitUSD)
+	}
+	return doctorCheck{
+		Name:   "Project " + id + " progress brake",
+		Status: doctorOK,
+		Detail: detail,
+	}
 }
 
 func checkDoctorDisabledBudgetCaps(id string, cfg workflowconfig.Budget) (doctorCheck, bool) {
@@ -1434,11 +1458,18 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 }
 
 func doctorWorkflowSpendBreakerDetail(cfg workflowconfig.Config) string {
-	limit := "disabled"
-	if cfg.Agent.NoProgressSpendLimitUSD > 0 {
-		limit = strconv.FormatFloat(cfg.Agent.NoProgressSpendLimitUSD, 'f', 2, 64)
+	tokenLimit := "disabled"
+	if cfg.Agent.NoProgressTokenLimit > 0 {
+		tokenLimit = strconv.FormatInt(cfg.Agent.NoProgressTokenLimit, 10)
 	}
-	return "spend-breaker=no_progress_spend_limit_usd=" + limit
+	usdLimit := "disabled"
+	if cfg.Agent.NoProgressSpendLimitUSD > 0 {
+		usdLimit = strconv.FormatFloat(cfg.Agent.NoProgressSpendLimitUSD, 'f', 2, 64)
+		if cfg.Budget.EffectiveBillingMode() == workflowconfig.BillingModeSubscription {
+			usdLimit += " (inert)"
+		}
+	}
+	return "progress-breaker=no_progress_token_limit=" + tokenLimit + ", no_progress_spend_limit_usd=" + usdLimit
 }
 
 func doctorWorkflowFindingDetails(findings []doctorWorkflowOptimizationFinding) string {

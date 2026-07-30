@@ -150,6 +150,7 @@ func TestSoakHardPerIssueCostCeilingInvariant(t *testing.T) {
 	cfg := Config{
 		PollInterval:                  time.Minute,
 		MaxConcurrentAgents:           1,
+		BillingMode:                   "metered",
 		NoProgressSpendLimitUSD:       noProgressSpendLimit,
 		Project:                       scheduler.ProjectCandidate{ID: "soak"},
 		AutoPromote:                   AutoPromoteConfig{NoProgressLimit: 0},

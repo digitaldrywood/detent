@@ -948,7 +948,9 @@ func doctorWorkflowSpendProgressLimitFinding(
 	medianCostByEffort map[string]float64,
 ) (doctorWorkflowOptimizationFinding, bool) {
 	configuredLimit := cfg.Agent.NoProgressSpendLimitUSD
-	if configuredLimit <= 0 || len(medianCostByEffort) == 0 {
+	if cfg.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered ||
+		configuredLimit <= 0 ||
+		len(medianCostByEffort) == 0 {
 		return doctorWorkflowOptimizationFinding{}, false
 	}
 	efforts := make([]string, 0, len(medianCostByEffort))

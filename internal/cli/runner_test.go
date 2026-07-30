@@ -337,6 +337,7 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 
 	enabled := disabled
 	enabled.Enabled = true
+	enabled.BillingMode = workflowconfig.BillingModeMetered
 	_, _, err = buildBudgetDispatchGuards("alpha", enabled, &runnerSessionStore{}, nil)
 	if !errors.Is(err, budget.ErrMissingSpendStore) {
 		t.Fatalf("buildBudgetDispatchGuards(missing spend store) error = %v, want ErrMissingSpendStore", err)
@@ -411,6 +412,7 @@ func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
 
 	cfg := workflowconfig.Default().Budget
 	cfg.Enabled = true
+	cfg.BillingMode = workflowconfig.BillingModeMetered
 	cfg.PerDayMaxUSD = 100
 	pricing := budget.PricingTable{"gpt-test": {USDPerInputToken: 1}}
 	for _, tt := range []struct {

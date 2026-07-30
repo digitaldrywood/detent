@@ -504,6 +504,8 @@
 #   max_retry_backoff_ms: 300000
 #   # agent.overload_retry_delay_ms | type: integer | default: 45000 | required: No | validation: must be greater than 0
 #   overload_retry_delay_ms: 45000
+#   # agent.no_progress_token_limit | type: integer | default: 25000000 | required: No | validation: must be greater than or equal to 0
+#   no_progress_token_limit: 25000000
 #   # agent.no_progress_spend_limit_usd | type: number | default: 3 | required: No | validation: must be greater than or equal to 0
 #   no_progress_spend_limit_usd: 3
 #   # agent.failure_breaker | type: object | default: see child fields | required: No | validation: None

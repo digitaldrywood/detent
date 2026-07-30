@@ -956,6 +956,7 @@ type IssueSpendSinceQuery struct {
 
 type IssueSpendSince struct {
 	CostUSD        float64
+	TotalTokens    int64
 	Sessions       int64
 	FirstSessionAt time.Time
 	LastSessionAt  time.Time

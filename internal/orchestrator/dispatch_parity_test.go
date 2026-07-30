@@ -27,6 +27,7 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 			now := mustParseParityTime(t, tt.Now)
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents:        tt.Config.MaxConcurrentAgents,
+				BillingMode:                "metered",
 				MaxConcurrentAgentsByState: tt.Config.MaxConcurrentAgentsByState,
 				DispatchPriorityByState:    tt.Config.DispatchPriorityByState,
 				DispatchPriorityByLabel:    tt.Config.DispatchPriorityByLabel,

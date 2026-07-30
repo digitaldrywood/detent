@@ -36,6 +36,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 	tests := []struct {
 		name             string
 		billingMode      string
+		tokenLimit       int64
 		limit            float64
 		spend            store.IssueSpendSince
 		history          []store.WorkAttempt
@@ -44,6 +45,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		accepted         bool
 		acceptedReason   string
 		wantBlock        bool
+		wantBlockedBy    string
 		wantAccepted     bool
 		wantReason       string
 		wantLimit        float64
@@ -55,9 +57,11 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		{name: "normal three retry sessions stay below default", limit: 3, spend: store.IssueSpendSince{CostUSD: 2.7, Sessions: 3}, wantLimit: 3, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "below threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 4.99, Sessions: 3}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "at threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 5, Sessions: 4}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "metered blocks above threshold", billingMode: "metered", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantBlock: true, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "subscription keeps above-threshold spend advisory", billingMode: "subscription", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "July telemetry replay", limit: 5, spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 5}, wantBlock: true, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "metered blocks above threshold", billingMode: "metered", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantBlock: true, wantBlockedBy: "usd", wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "subscription leaves USD breaker inert", billingMode: "subscription", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}},
+		{name: "subscription token breaker blocks at threshold", billingMode: "subscription", tokenLimit: 25_000_000, limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, TotalTokens: 25_000_000, Sessions: 4}, wantBlock: true, wantBlockedBy: "tokens", wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "subscription token breaker stays below threshold", billingMode: "subscription", tokenLimit: 25_000_000, spend: store.IssueSpendSince{TotalTokens: 24_999_999, Sessions: 3}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "July telemetry replay", limit: 5, spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 5}, wantBlock: true, wantBlockedBy: "usd", wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "old sessions reset after accepted change", limit: 5, spend: store.IssueSpendSince{CostUSD: 1.25, Sessions: 1}, history: []store.WorkAttempt{acceptedAttempt}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: acceptedAt},
 		{name: "current accepted change resets without spend lookup", limit: 5, spend: store.IssueSpendSince{CostUSD: 100}, accepted: true, acceptedReason: "signature_changed", wantAccepted: true, wantReason: "signature_changed", wantLimit: 5, wantSpendCalls: 0, wantHistoryCalls: 0, wantSince: base},
 		{
@@ -135,6 +139,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 				}),
 			}},
 			wantBlock:        true,
+			wantBlockedBy:    "usd",
 			wantLimit:        5,
 			wantSpendCalls:   1,
 			wantHistoryCalls: 1,
@@ -149,10 +154,15 @@ func TestEvaluateSpendProgress(t *testing.T) {
 
 			spend := &spendProgressStore{result: tt.spend}
 			attempts := &implementProgressAttemptStore{history: tt.history}
+			billingMode := tt.billingMode
+			if billingMode == "" {
+				billingMode = "metered"
+			}
 			orch := &Orchestrator{
 				cfg: Config{
 					Project:                 scheduler.ProjectCandidate{ID: "detent"},
-					BillingMode:             tt.billingMode,
+					BillingMode:             billingMode,
+					NoProgressTokenLimit:    tt.tokenLimit,
 					NoProgressSpendLimitUSD: tt.limit,
 				},
 				progressSpend: spend,
@@ -168,6 +178,9 @@ func TestEvaluateSpendProgress(t *testing.T) {
 
 			if decision.Block != tt.wantBlock {
 				t.Fatalf("Block = %t, want %t", decision.Block, tt.wantBlock)
+			}
+			if decision.BlockedBy != tt.wantBlockedBy {
+				t.Fatalf("BlockedBy = %q, want %q", decision.BlockedBy, tt.wantBlockedBy)
 			}
 			if decision.AcceptedStateChange != tt.wantAccepted {
 				t.Fatalf("AcceptedStateChange = %t, want %t", decision.AcceptedStateChange, tt.wantAccepted)
@@ -218,11 +231,12 @@ func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
 		{
 			name: "without PR evidence",
 			decision: spendProgressDecision{
-				Spend:    store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
-				LimitUSD: 5,
-				Case:     spendProgressCaseNoPR,
+				Spend:     store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+				LimitUSD:  5,
+				Case:      spendProgressCaseNoPR,
+				BlockedBy: "usd",
 			},
-			wantContains: []string{"spend continued without any PR evidence", "case: spend_without_pr_evidence", "Shrink the task"},
+			wantContains: []string{"resource consumption continued without any PR evidence", "case: spend_without_pr_evidence", "Shrink the task"},
 		},
 		{
 			name: "static PR evidence",
@@ -230,9 +244,10 @@ func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
 				Spend:         store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
 				LimitUSD:      5,
 				Case:          spendProgressCaseStatic,
+				BlockedBy:     "usd",
 				PRFingerprint: &spendProgressPRFingerprint{Number: 214, HeadSHA: "same-head", MergeableState: "dirty", CIStatus: "failure"},
 			},
-			wantContains: []string{"spend continued while a linked PR existed but could not merge", "case: spend_with_static_pr_evidence", "merge-train capacity", "pr_head_sha: same-head"},
+			wantContains: []string{"resource consumption continued while a linked PR existed but could not merge", "case: spend_with_static_pr_evidence", "merge-train capacity", "pr_head_sha: same-head"},
 		},
 	}
 	for _, tt := range tests {
@@ -360,7 +375,7 @@ func TestDispatchAcceptedStateChange(t *testing.T) {
 	}
 }
 
-func TestHandleRunResultTripsSpendProgressIndependentlyOfContentDetector(t *testing.T) {
+func TestHandleRunResultTripsTokenProgressBreakerOnSubscription(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
@@ -371,6 +386,8 @@ func TestHandleRunResultTripsSpendProgressIndependentlyOfContentDetector(t *test
 	attempts := &implementProgressAttemptStore{}
 	cfg := normalizeConfig(Config{
 		Project:                 scheduler.ProjectCandidate{ID: "gopher-ai"},
+		BillingMode:             "subscription",
+		NoProgressTokenLimit:    25_000_000,
 		NoProgressSpendLimitUSD: 5,
 		AutoPromote:             AutoPromoteConfig{NoProgressLimit: 0},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework"},
@@ -383,6 +400,7 @@ func TestHandleRunResultTripsSpendProgressIndependentlyOfContentDetector(t *test
 		workAttempts: attempts,
 		progressSpend: &spendProgressStore{result: store.IssueSpendSince{
 			CostUSD:        6.75,
+			TotalTokens:    25_000_000,
 			Sessions:       5,
 			FirstSessionAt: base.Add(-14 * time.Minute),
 			LastSessionAt:  base,
@@ -417,7 +435,7 @@ func TestHandleRunResultTripsSpendProgressIndependentlyOfContentDetector(t *test
 	if len(tracker.comments) != 1 {
 		t.Fatalf("comments = %#v, want one", tracker.comments)
 	}
-	for _, want := range []string{"$6.75", "$5.00", "Shrink the task", "first tool action"} {
+	for _, want := range []string{"blocked_by: tokens", "25000000", "usd_breaker: inert", "Shrink the task", "first tool action"} {
 		if !strings.Contains(tracker.comments[0].body, want) {
 			t.Fatalf("comment missing %q:\n%s", want, tracker.comments[0].body)
 		}
@@ -430,7 +448,7 @@ func TestHandleRunResultTripsSpendProgressIndependentlyOfContentDetector(t *test
 		t.Fatalf("completion = %#v, want spend no-progress terminal", completion)
 	}
 	record, ok := spendProgressRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: completion.WorkerMetadataJSON})
-	if !ok || record.BlockReason != spendProgressReason || math.Abs(record.SpendUSD-6.75) > 0.000001 {
+	if !ok || record.BlockReason != spendProgressReason || record.BlockedBy != "tokens" || record.TotalTokens != 25_000_000 {
 		t.Fatalf("spend metadata = %#v, ok=%t", record, ok)
 	}
 	if !state.PriorAttempts[issue.ID].ExplainBeforeRetry {
@@ -462,6 +480,7 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 	}}}
 	cfg := normalizeConfig(Config{
 		Project:                 scheduler.ProjectCandidate{ID: "detent"},
+		BillingMode:             "metered",
 		NoProgressSpendLimitUSD: 5,
 		ActiveStates:            []string{"In Progress"},
 		ObservedStates:          []string{"Blocked"},
@@ -511,18 +530,21 @@ func TestSpendProgressPriorAttemptRestoresExplainBeforeRetry(t *testing.T) {
 
 	attempt := store.WorkAttempt{WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
 		spendProgressMetadataKey: spendProgressRecord{
+			TotalTokens: 25_000_000,
 			SpendUSD:    7.25,
 			Sessions:    6,
+			TokenLimit:  25_000_000,
 			LimitUSD:    5,
+			BlockedBy:   "tokens",
 			BlockReason: spendProgressReason,
 		},
 	})}
 	orch := &Orchestrator{
-		cfg:          Config{Project: scheduler.ProjectCandidate{ID: "detent"}, NoProgressSpendLimitUSD: 5},
+		cfg:          Config{Project: scheduler.ProjectCandidate{ID: "detent"}, BillingMode: "subscription", NoProgressTokenLimit: 25_000_000, NoProgressSpendLimitUSD: 5},
 		workAttempts: &implementProgressAttemptStore{history: []store.WorkAttempt{attempt}},
 	}
 	prior, ok := orch.spendProgressPriorAttempt(context.Background(), connector.Issue{ID: "issue-1"})
-	if !ok || !prior.ExplainBeforeRetry || prior.ObservedSpendUSD != 7.25 || prior.NoProgressSpendLimitUSD != 5 {
+	if !ok || !prior.ExplainBeforeRetry || prior.ObservedTokens != 25_000_000 || prior.NoProgressTokenLimit != 25_000_000 {
 		t.Fatalf("prior = %#v, ok=%t", prior, ok)
 	}
 }
@@ -539,7 +561,7 @@ func TestEvaluateSpendProgressFailsOpen(t *testing.T) {
 		missing  bool
 		want     string
 	}{
-		{name: "missing spend store", attempts: &implementProgressAttemptStore{}, missing: true, want: "progress spend store unavailable"},
+		{name: "missing spend store", attempts: &implementProgressAttemptStore{}, missing: true, want: "progress usage store unavailable"},
 		{name: "history lookup failure", attempts: &implementProgressAttemptStore{historyErr: errors.New("history unavailable")}, spend: &spendProgressStore{}, want: "history unavailable"},
 		{name: "spend lookup failure", attempts: &implementProgressAttemptStore{}, spend: &spendProgressStore{err: errors.New("spend unavailable")}, want: "spend unavailable"},
 	}
@@ -548,7 +570,7 @@ func TestEvaluateSpendProgressFailsOpen(t *testing.T) {
 			t.Parallel()
 			var logs bytes.Buffer
 			orch := &Orchestrator{
-				cfg:          Config{NoProgressSpendLimitUSD: 5},
+				cfg:          Config{NoProgressTokenLimit: 25_000_000},
 				workAttempts: tt.attempts,
 				logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 			}

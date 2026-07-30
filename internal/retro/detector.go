@@ -162,12 +162,15 @@ func detectSpendSinceProgressTrips(attempts []Attempt, sessions []Session) (Find
 	}
 	occurrences := []Occurrence{}
 	var tokenDelta int64
+	tokenLimitTrip := false
 	for _, attempt := range attempts {
 		if !strings.EqualFold(strings.TrimSpace(attempt.ErrorClass), "spend_since_progress_circuit_breaker") {
 			continue
 		}
 		tokens := sessionTokens[attempt.ID]
 		tokenDelta += tokens
+		tokenLimitTrip = tokenLimitTrip || strings.Contains(strings.ToLower(attempt.ErrorMessage), "consumed") &&
+			strings.Contains(strings.ToLower(attempt.ErrorMessage), "tokens")
 		occurrences = append(occurrences, Occurrence{
 			Issue:  attemptIssue(attempt),
 			At:     attempt.CompletedAt,
@@ -175,16 +178,20 @@ func detectSpendSinceProgressTrips(attempts []Attempt, sessions []Session) (Find
 			Detail: strings.TrimSpace(attempt.ErrorMessage),
 		})
 	}
+	proposalPath := "agent.no_progress_spend_limit_usd"
+	if tokenLimitTrip {
+		proposalPath = "agent.no_progress_token_limit"
+	}
 	return Finding{
 		Pattern:     PatternSpendSinceProgressTrip,
 		Scope:       ScopeProduct,
 		Severity:    SeverityCritical,
-		Title:       "Shrink tasks that spend without accepted progress",
-		Detail:      "Agent spend exceeded the configured limit without a lane, pull request, or recognized content-signature change.",
+		Title:       "Shrink tasks that consume resources without accepted progress",
+		Detail:      "Agent resource consumption exceeded the configured limit without a lane, pull request, or recognized content-signature change.",
 		TokenDelta:  tokenDelta,
 		Occurrences: occurrences,
 		Proposal: &Proposal{
-			Path:   "agent.no_progress_spend_limit_usd",
+			Path:   proposalPath,
 			Change: "Review the limit and narrow the cited task scopes before retrying them.",
 		},
 	}, len(occurrences) > 0

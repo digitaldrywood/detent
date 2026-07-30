@@ -38,6 +38,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
+		NoProgressTokenLimit:       cfg.Agent.NoProgressTokenLimit,
 		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
 		BillingMode:                cfg.Budget.EffectiveBillingMode(),
 		FailureBreaker: FailureBreakerConfig{
@@ -147,7 +148,7 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability) stal
 func normalizeConfig(cfg Config) Config {
 	cfg.BillingMode = strings.ToLower(strings.TrimSpace(cfg.BillingMode))
 	if cfg.BillingMode == "" {
-		cfg.BillingMode = workflowconfig.BillingModeMetered
+		cfg.BillingMode = workflowconfig.BillingModeSubscription
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
@@ -280,7 +281,7 @@ func cloneStopRunPriorityNames(values map[int]string) map[int]string {
 }
 
 func (cfg Config) subscriptionBilling() bool {
-	return cfg.BillingMode == workflowconfig.BillingModeSubscription
+	return !strings.EqualFold(strings.TrimSpace(cfg.BillingMode), workflowconfig.BillingModeMetered)
 }
 
 func normalizeClaimingConfig(cfg ClaimingConfig) ClaimingConfig {

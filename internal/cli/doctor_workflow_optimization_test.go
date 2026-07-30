@@ -1079,20 +1079,23 @@ func TestDoctorWorkflowOptimizationWarnsWhenSpendProgressLimitIsBelowMedianCost(
 
 	tests := []struct {
 		name        string
+		billingMode string
 		baseLimit   float64
 		medians     map[string]float64
 		wantFinding bool
 		wantPatch   float64
 	}{
-		{name: "xhigh effective limit below median", baseLimit: 3, medians: map[string]float64{"xhigh": 20}, wantFinding: true, wantPatch: 5},
-		{name: "xhigh effective limit above median", baseLimit: 3, medians: map[string]float64{"xhigh": 17}},
-		{name: "custom base covers median", baseLimit: 4, medians: map[string]float64{"high": 11}},
-		{name: "disabled breaker does not warn", baseLimit: 0, medians: map[string]float64{"xhigh": 20}},
+		{name: "xhigh effective limit below median", billingMode: workflowconfig.BillingModeMetered, baseLimit: 3, medians: map[string]float64{"xhigh": 20}, wantFinding: true, wantPatch: 5},
+		{name: "xhigh effective limit above median", billingMode: workflowconfig.BillingModeMetered, baseLimit: 3, medians: map[string]float64{"xhigh": 17}},
+		{name: "custom base covers median", billingMode: workflowconfig.BillingModeMetered, baseLimit: 4, medians: map[string]float64{"high": 11}},
+		{name: "disabled breaker does not warn", billingMode: workflowconfig.BillingModeMetered, baseLimit: 0, medians: map[string]float64{"xhigh": 20}},
+		{name: "subscription USD breaker is inert", billingMode: workflowconfig.BillingModeSubscription, baseLimit: 3, medians: map[string]float64{"xhigh": 20}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := workflowconfig.Default()
+			cfg.Budget.BillingMode = tt.billingMode
 			cfg.Agent.NoProgressSpendLimitUSD = tt.baseLimit
 			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, doctorWorkflowOptimizationMetrics{
 				MedianSessionCostUSDByEffort: tt.medians,

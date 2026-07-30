@@ -28,6 +28,7 @@ deliverable:
     review_url: http://127.0.0.1:8080/review
 agent:
     resume_orphaned_sessions: true
+    no_progress_token_limit: 25000000
     no_progress_spend_limit_usd: 3
     max_turns: 20
     max_session_duration_ms: 7200000

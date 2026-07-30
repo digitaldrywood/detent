@@ -232,9 +232,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if spendProgress.Block && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = spendProgressReason
-			errorMessage = fmt.Sprintf("spent %s since the last accepted state change; configured limit %s", budget.FormatUSD(spendProgress.Spend.CostUSD), budget.FormatUSD(spendProgress.LimitUSD))
+			errorMessage = spendProgressBlockMessage(spendProgress)
 			phase = "no_progress"
-			statusMessage = "spend-since-progress circuit breaker tripped"
+			statusMessage = "no-progress circuit breaker tripped"
 		}
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, spendProgressMetadata(spendProgress))
@@ -381,9 +381,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		terminalState = store.WorkAttemptTerminalNoProgress
 		progress.Outcome = store.WorkAttemptTerminalNoProgress
 		errorClass = spendProgressReason
-		errorMessage = fmt.Sprintf("spent %s since the last accepted state change; configured limit %s", budget.FormatUSD(spendProgress.Spend.CostUSD), budget.FormatUSD(spendProgress.LimitUSD))
+		errorMessage = spendProgressBlockMessage(spendProgress)
 		phase = "no_progress"
-		statusMessage = "spend-since-progress circuit breaker tripped"
+		statusMessage = "no-progress circuit breaker tripped"
 	}
 	if artifactConvergence.Tripped {
 		phase = "blocked"
