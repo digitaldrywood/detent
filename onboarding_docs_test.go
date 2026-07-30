@@ -641,6 +641,33 @@ func TestWorkflowTemplatesDocumentStatusEnumAndReviewFlow(t *testing.T) {
 	}
 }
 
+func TestRenderedGitHubWorkflowTemplatesRequireReadyNonDraftPR(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+		"docs/templates/WORKFLOW.github_local.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			content := readRepositoryTextFile(t, path)
+			for _, want := range []string{
+				"Use `complete` only when the pull request is open, marked ready for review, is not a draft",
+				"gh pr ready <number>",
+				"gh pr view <number> --json isDraft --jq '.isDraft' # must be false",
+			} {
+				assertContainsWords(t, content, want)
+			}
+
+			assertOrder(t, content, "gh pr ready <number>", "status: complete")
+			assertOrder(t, content, "gh pr view <number> --json isDraft", "status: complete")
+		})
+	}
+}
+
 func TestOnboardingDocumentsWorkerModelAndSessionGuardChoices(t *testing.T) {
 	t.Parallel()
 

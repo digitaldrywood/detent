@@ -1878,6 +1878,14 @@ repo is a real, working instance of this setup to copy from.
    A runnable local example with seeded work items, artifact metadata, API
    payloads, and artifact-gate transitions lives in
    [`docs/examples/non-code-artifact`](docs/examples/non-code-artifact).
+   Existing GitHub-backed `WORKFLOW.md` copies must be migrated manually:
+   require an open pull request that is marked ready for review and is not a
+   draft before declaring `status: complete`, use `gh pr ready <number>` as the
+   remedy, and verify `gh pr view <number> --json isDraft --jq '.isDraft'`
+   returns `false`. Known deployed copies requiring this audit include
+   `digitaldrywood/video-studio` (tracked by
+   [video-studio#57](https://github.com/digitaldrywood/video-studio/issues/57)),
+   `digitaldrywood/ghostreel`, and the `hostlet.click` workflow.
    They set `server.kanban.mode: integration` for trusted project boards;
    change that to `read_only` only for an observer or shared dashboard,
    explicit no-writes choice, or failed post-authorization write probes. They
