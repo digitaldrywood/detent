@@ -265,6 +265,84 @@ func TestServiceCommandResolvesConfigAndRuntime(t *testing.T) {
 	}
 }
 
+func TestServiceCommandsLoadLegacyWorkflowPort(t *testing.T) {
+	t.Setenv("PORT", "")
+
+	root := t.TempDir()
+	path := filepath.Join(root, "global.yaml")
+	workflowPath := filepath.Join(root, "WORKFLOW.md")
+	writeRuntimeWorkflow(t, workflowPath, 4109)
+
+	cfg, err := globalconfig.DefaultAt(path)
+	if err != nil {
+		t.Fatalf("DefaultAt() error = %v", err)
+	}
+	cfg.Projects = []globalconfig.Project{{
+		ID:       "legacy",
+		Workflow: workflowPath,
+		Workdir:  root,
+		Weight:   1,
+	}}
+	if err := globalconfig.Write(path, cfg); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		args        []string
+		startResult servicepkg.StartResult
+		wantRestart bool
+	}{
+		{
+			name: "status",
+			args: []string{"--format", "json", "--config", path, "status"},
+		},
+		{
+			name: "start with restart",
+			args: []string{"--format", "json", "--config", path, "start", "--restart"},
+			startResult: servicepkg.StartResult{
+				Action:  servicepkg.ActionAlreadyActive,
+				Manager: servicepkg.ManagerInfo{Name: servicepkg.ManagerManual, Unit: string(servicepkg.ManagerManual)},
+				State:   servicepkg.StateRunning,
+			},
+			wantRestart: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured servicepkg.Config
+			runner := &serviceRunnerStub{
+				startResults: []servicepkg.StartResult{tt.startResult},
+				status: servicepkg.Status{
+					ServiceManager: servicepkg.ManagerManual,
+					Service:        string(servicepkg.ManagerManual),
+					State:          servicepkg.StateStopped,
+				},
+			}
+			cmd := NewRootCommand(t.Context(), WithServiceFactory(func(cfg servicepkg.Config) (ServiceRunner, error) {
+				captured = cfg
+				return runner, nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if captured.DashboardURL != "http://localhost:4109" {
+				t.Fatalf("DashboardURL = %q, want workflow port", captured.DashboardURL)
+			}
+			if tt.wantRestart {
+				if len(runner.startOptions) != 1 || !runner.startOptions[0].Restart {
+					t.Fatalf("start options = %#v, want restart", runner.startOptions)
+				}
+			}
+		})
+	}
+}
+
 func TestStatusCommandResolvesDashboardPort(t *testing.T) {
 	t.Setenv("PORT", "4200")
 

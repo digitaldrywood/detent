@@ -562,7 +562,7 @@ func runtimeDepsFromOptions(opts options) runtimeDeps {
 	return runtimeDeps{
 		lookupEnv:   opts.lookupEnv,
 		ghAuthToken: opts.ghAuthToken,
-	}
+	}.withDefaults()
 }
 
 func defaultGHAuthToken(ctx context.Context) (string, error) {
