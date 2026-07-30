@@ -2539,7 +2539,7 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	cfg := validDoctorDependencyWorkflow(true)
 	cfg.Tracker.BlockedRecovery.Enabled = true
 
-	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, "", doctorDeps{
 		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 			return fake, nil
 		},
@@ -2558,10 +2558,13 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
 		}
 	}
-	for _, excluded := range []string{"issue-human", "issue-manual"} {
+	for _, excluded := range []string{"issue-human"} {
 		if strings.Contains(got.Detail, excluded) {
 			t.Fatalf("Detail = %q, want %q omitted from condition diagnostics", got.Detail, excluded)
 		}
+	}
+	if !strings.Contains(got.Detail, "issue-manual") || len(got.BlockedWithoutRecovery) != 1 {
+		t.Fatalf("relation-less diagnostics = %#v; detail = %q", got.BlockedWithoutRecovery, got.Detail)
 	}
 	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
 		t.Fatalf("VerifyStatusOptions states = %#v, want Blocked and Rework", fake.verifyStates)
@@ -2594,7 +2597,7 @@ func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
 	cfg.Tracker.BlockedRecovery.SourceStates = []string{"Parked"}
 	cfg.Tracker.BlockedRecovery.TargetState = "Repair"
 
-	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, "", doctorDeps{
 		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 			return fake, nil
 		},
@@ -2610,6 +2613,104 @@ func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
 	}
 	if !stringSliceContains(fake.verifyStates, "Parked") || !stringSliceContains(fake.verifyStates, "Repair") {
 		t.Fatalf("VerifyStatusOptions states = %#v, want Parked and Repair", fake.verifyStates)
+	}
+}
+
+func TestCheckDoctorBlockedRecoveryWarnsOnlyWithoutCurrentPredicate(t *testing.T) {
+	t.Parallel()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if _, err := db.Exec(`
+CREATE TABLE workflow_phase_events (
+  id INTEGER PRIMARY KEY,
+  issue_id TEXT,
+  identifier TEXT,
+  issue_url TEXT,
+  phase_type TEXT,
+  phase_name TEXT,
+  status TEXT,
+  started_at TEXT,
+  metadata_json TEXT
+)`); err != nil {
+		t.Fatalf("CREATE TABLE error = %v", err)
+	}
+
+	currentAt := time.Date(2026, 7, 29, 19, 0, 0, 0, time.UTC)
+	current := doctorDependencyIssue("issue-current-predicate", nil)
+	current.StageUpdatedAt = &currentAt
+	stale := doctorDependencyIssue("issue-stale-predicate", nil)
+	staleAt := currentAt.Add(time.Hour)
+	stale.StageUpdatedAt = &staleAt
+	metadata := `{"blocked_recovery":{"owner":"orchestrator","cause":"no_progress_limit","predicate":"fingerprint_changed","cause_fingerprint":"fingerprint"}}`
+	for _, row := range []struct {
+		issue connector.Issue
+		at    time.Time
+	}{
+		{issue: current, at: currentAt},
+		{issue: stale, at: currentAt},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO workflow_phase_events (issue_id, identifier, issue_url, phase_type, phase_name, status, started_at, metadata_json) VALUES (?, ?, ?, 'lane', 'Blocked', 'entered', ?, ?)`,
+			row.issue.ID,
+			row.issue.Identifier,
+			row.issue.URL,
+			row.at.Format(time.RFC3339Nano),
+			metadata,
+		); err != nil {
+			t.Fatalf("INSERT error = %v", err)
+		}
+	}
+
+	cfg := validDoctorDependencyWorkflow(true)
+	cfg.Tracker.BlockedRecovery.Enabled = false
+	check := checkDoctorBlockedRecoveryLive(
+		t.Context(),
+		"Project alpha blocked recovery",
+		&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{current, stale}},
+		cfg,
+		currentAt.Add(2*time.Hour),
+		db,
+	)
+
+	if check.Status != doctorWarn || len(check.BlockedWithoutRecovery) != 1 {
+		t.Fatalf("check = %#v, want one stale-predicate warning", check)
+	}
+	if check.BlockedWithoutRecovery[0].IssueID != stale.ID {
+		t.Fatalf("BlockedWithoutRecovery = %#v, want %q", check.BlockedWithoutRecovery, stale.ID)
+	}
+}
+
+func TestCheckDoctorBlockedRecoveryScansEveryBlockedIssue(t *testing.T) {
+	t.Parallel()
+
+	issues := make([]connector.Issue, 0, 7)
+	for index := range 7 {
+		issues = append(issues, doctorDependencyIssue("issue-full-scan-"+strconv.Itoa(index), nil))
+	}
+	tracker := &fakeDoctorAutoPromoteConnector{issues: issues}
+	cfg := validDoctorDependencyWorkflow(true)
+
+	check := checkDoctorBlockedRecoveryLive(
+		t.Context(),
+		"Project alpha blocked recovery",
+		tracker,
+		cfg,
+		time.Date(2026, 7, 29, 19, 0, 0, 0, time.UTC),
+		nil,
+	)
+
+	if check.Status != doctorWarn || len(check.BlockedWithoutRecovery) != len(issues) {
+		t.Fatalf("check = %#v, want all relation-less issues reported", check)
+	}
+	if tracker.limit != 0 {
+		t.Fatalf("FetchIssuesByStatesLimit limit = %d, want full scan", tracker.limit)
 	}
 }
 

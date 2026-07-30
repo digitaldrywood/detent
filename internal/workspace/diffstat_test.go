@@ -421,6 +421,14 @@ func TestLocalGitDiffUsesBaseRefForCleanBranch(t *testing.T) {
 	}
 }
 
+func TestGitRecoveryBaseFingerprintUsesConfiguredBase(t *testing.T) {
+	t.Parallel()
+
+	if got := gitRecoveryBaseFingerprint(t.Context(), "", "base-sha"); got != "base-sha" {
+		t.Fatalf("gitRecoveryBaseFingerprint() = %q, want base-sha", got)
+	}
+}
+
 func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 	t.Parallel()
 

@@ -156,6 +156,7 @@ type Blocked struct {
 	Priority        int
 	PriorityName    string
 	StopReason      string
+	Recovery        *workflowLaneBlockedRecoveryMetadata
 }
 
 type Completed struct {

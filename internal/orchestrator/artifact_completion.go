@@ -313,7 +313,16 @@ func (o *Orchestrator) parkArtifactGateConvergence(
 		return
 	}
 	issue = cloneIssue(issue)
-	if err := o.updateIssueState(ctx, state, issue, blockedStatusState, completedAt, artifactGateConvergenceReason); err != nil {
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		RunModeImplement,
+		artifactGateConvergenceReason,
+		blockedRecoveryPredicateFingerprintChange,
+		autoPromoteReworkState,
+		DiffStats{},
+	)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, completedAt, artifactGateConvergenceReason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.WarnContext(ctx, "artifact gate convergence breaker state transition failed",
 				"issue_id", issue.ID,
@@ -349,6 +358,7 @@ func (o *Orchestrator) parkArtifactGateConvergence(
 		RecoveryTarget: autoPromoteReworkState,
 		BlockedAt:      completedAt,
 		Source:         BlockedSourceProjectStatus,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,

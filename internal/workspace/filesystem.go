@@ -217,6 +217,18 @@ func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
 	}, nil
 }
 
+func (f *Filesystem) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
+	info, err := f.infoForIssue(issue)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	diffStat, err := f.DiffStat(ctx, info, issue)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	return RecoveryState{DiffStat: diffStat}, nil
+}
+
 func (f *Filesystem) normalizeInfo(info Info, issue Issue) (Info, error) {
 	key := info.Key
 	if key == "" {

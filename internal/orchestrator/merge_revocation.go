@@ -341,6 +341,16 @@ func (o *Orchestrator) parkRepeatedMergeRevocations(
 	}
 
 	decision := autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonMergeRevocationLimit)
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		RunModeMerge,
+		string(AutoPromoteReasonMergeRevocationLimit),
+		blockedRecoveryPredicateManaged,
+		autoPromoteReworkState,
+		DiffStats{},
+	)
+	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,
@@ -349,7 +359,7 @@ func (o *Orchestrator) parkRepeatedMergeRevocations(
 		blockedStatusState,
 		now,
 		string(AutoPromoteReasonMergeRevocationLimit),
-		workflowLaneMetadata{},
+		metadata,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(

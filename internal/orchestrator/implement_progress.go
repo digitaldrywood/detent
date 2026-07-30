@@ -612,7 +612,26 @@ func (o *Orchestrator) blockImplementProgress(
 	if blockReason == "" {
 		blockReason = noProgressLimitReason
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason); err != nil {
+	predicate := blockedRecoveryPredicateFingerprintChange
+	if blockReason == strandedUnpushedWorkReason {
+		predicate = blockedRecoveryPredicateOncePerFingerprint
+	}
+	if strings.TrimSpace(decision.HumanAction) != "" || blockReason == workpadBlockedUnactionedReason {
+		predicate = blockedRecoveryPredicateManaged
+	}
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		RunModeImplement,
+		blockReason,
+		predicate,
+		autoPromoteReworkState,
+		decision.WorkspaceDiffStats,
+	)
+	if predicate == blockedRecoveryPredicateManaged {
+		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
+	}
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"no progress limit state transition failed",
@@ -653,6 +672,7 @@ func (o *Orchestrator) blockImplementProgress(
 		RecoveryTarget: "Rework",
 		BlockedAt:      blockedAt,
 		Source:         BlockedSourceProjectStatus,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      blockedAt,

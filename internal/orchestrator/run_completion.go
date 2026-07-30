@@ -610,8 +610,17 @@ func (o *Orchestrator) parkInstantFailure(
 ) {
 	targetState := o.instantFailureParkState()
 	issue := cloneIssue(running.Issue)
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		running.Mode,
+		"instant_failure_circuit_breaker",
+		blockedRecoveryPredicateFingerprintChange,
+		"Todo",
+		running.DiffStats,
+	)
 	if targetState != "" {
-		if err := o.updateIssueState(ctx, state, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker"); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker", metadata); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"instant fail circuit breaker state transition failed",
@@ -644,10 +653,11 @@ func (o *Orchestrator) parkInstantFailure(
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          issue,
 		Reason:         instantFailureBlockedReasonPrefix + failure.Error,
-		RecoveryReason: "fix the pinned agent model or backend configuration, then move the issue back to Todo or Rework",
+		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
 		RecoveryTarget: "Todo",
 		BlockedAt:      event.CompletedAt,
 		Source:         BlockedSourceProjectStatus,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
@@ -697,8 +707,17 @@ func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
 	failure := o.recordRepeatedFailure(state, event, running)
 	targetState := o.instantFailureParkState()
 	issue := cloneIssue(running.Issue)
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		running.Mode,
+		"token_ceiling_circuit_breaker",
+		blockedRecoveryPredicateFingerprintChange,
+		autoPromoteReworkState,
+		running.DiffStats,
+	)
 	if targetState != "" {
-		if err := o.updateIssueState(ctx, state, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker"); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker", metadata); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"token ceiling circuit breaker state transition failed",
@@ -734,10 +753,11 @@ func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          issue,
 		Reason:         reason,
-		RecoveryReason: string(BlockedRecoveryReasonHumanBlocker),
+		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
 		RecoveryTarget: "Rework",
 		BlockedAt:      event.CompletedAt,
 		Source:         BlockedSourceProjectStatus,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
@@ -789,7 +809,7 @@ func tokenCeilingFailureComment(
 	if targetState = strings.TrimSpace(targetState); targetState != "" {
 		b.WriteString("\n\nIssue parked in `")
 		b.WriteString(targetState)
-		b.WriteString("` for a human decision.")
+		b.WriteString("` until its recovery fingerprint changes.")
 	}
 	b.WriteString("\n\n- issue: ")
 	b.WriteString(issueLabel(issue))
@@ -803,7 +823,7 @@ func tokenCeilingFailureComment(
 	b.WriteString(strconv.FormatInt(ceilingErr.CeilingTokens, 10))
 	b.WriteString("\n- ceiling_source: ")
 	b.WriteString(strings.TrimSpace(ceilingErr.Source))
-	b.WriteString("\n\nChoose one recovery before moving the issue to Rework: split the issue into narrower work, apply the label configured by `agent.max_session_token_override_label` for a deliberate per-issue bypass, or raise `agent.max_session_tokens` (and `agent.max_session_context_multiplier` when it is the active guard).")
+	b.WriteString("\n\nChoose one recovery: split the issue into narrower work, apply the label configured by `agent.max_session_token_override_label` for a deliberate per-issue bypass, or raise `agent.max_session_tokens` (and `agent.max_session_context_multiplier` when it is the active guard). Detent requeues the issue once the responsible model, backend, issue, or configuration fingerprint changes.")
 	return b.String()
 }
 
@@ -858,8 +878,17 @@ func (o *Orchestrator) parkRepeatedFailure(
 ) {
 	targetState := o.instantFailureParkState()
 	issue := cloneIssue(running.Issue)
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		running.Mode,
+		"repeated_failure_circuit_breaker",
+		blockedRecoveryPredicateFingerprintChange,
+		"Todo",
+		running.DiffStats,
+	)
 	if targetState != "" {
-		if err := o.updateIssueState(ctx, state, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker"); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker", metadata); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"repeated failure circuit breaker state transition failed",
@@ -893,10 +922,11 @@ func (o *Orchestrator) parkRepeatedFailure(
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          issue,
 		Reason:         repeatedFailureBlockedReasonPrefix + failure.Error,
-		RecoveryReason: "fix the workflow or agent configuration causing every attempt to fail, then move the issue back to Todo or Rework",
+		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
 		RecoveryTarget: "Todo",
 		BlockedAt:      event.CompletedAt,
 		Source:         BlockedSourceProjectStatus,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
@@ -936,7 +966,7 @@ func repeatedFailureComment(issue connector.Issue, err error, failure RepeatedFa
 	b.WriteString("\n- last error:\n\n```text\n")
 	b.WriteString(runtimeoutput.Truncate(strings.TrimSpace(err.Error()), maxBytes).Value)
 	b.WriteString("\n```")
-	b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail, then move the issue back to Todo or Rework.")
+	b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail. Detent requeues the issue when the cause fingerprint changes.")
 	return b.String()
 }
 
@@ -965,7 +995,7 @@ func instantFailureComment(issue connector.Issue, err error, failure InstantFail
 		b.WriteString(body)
 		b.WriteString("\n```")
 	}
-	b.WriteString("\n\nFix the pinned agent model or backend configuration, then move the issue back to Todo or Rework.")
+	b.WriteString("\n\nFix the pinned agent model or backend configuration. Detent requeues the issue when the cause fingerprint changes.")
 	return b.String()
 }
 
@@ -1736,7 +1766,16 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	if issueID == "" || o.connector == nil {
 		return false
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, mergeWorkerRetryExhaustedReason); err != nil {
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		running.Issue,
+		RunModeMerge,
+		mergeWorkerRetryExhaustedReason,
+		blockedRecoveryPredicateFingerprintChange,
+		autoPromoteReworkState,
+		running.DiffStats,
+	)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, mergeWorkerRetryExhaustedReason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_block_failed",
@@ -1781,6 +1820,7 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 		Reason:    mergeWorkerRetryExhaustedReason,
 		BlockedAt: completedAt,
 		Source:    BlockedSourceProjectStatus,
+		Recovery:  metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,

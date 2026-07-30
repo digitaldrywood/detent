@@ -85,6 +85,16 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 ) {
 	issueID := strings.TrimSpace(running.Issue.ID)
 	issue := cloneIssue(running.Issue)
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		RunModeMerge,
+		mergeWorkerDurationExceededReason,
+		blockedRecoveryPredicateManaged,
+		autoPromoteMergingState,
+		running.DiffStats,
+	)
+	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	transitionErr := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,
@@ -93,7 +103,7 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 		blockedStatusState,
 		completedAt,
 		mergeWorkerDurationExceededReason,
-		workflowLaneMetadata{},
+		metadata,
 	)
 	if transitionErr != nil && o.logger != nil {
 		o.logger.Error(
@@ -146,6 +156,7 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 		RecoveryTarget: autoPromoteMergingState,
 		BlockedAt:      completedAt,
 		Source:         source,
+		Recovery:       metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,
@@ -199,7 +210,7 @@ func (o *Orchestrator) reconcileMergeDurationHolds(
 			blockedStatusState,
 			now,
 			mergeWorkerDurationExceededReason,
-			workflowLaneMetadata{},
+			workflowLaneMetadata{BlockedRecovery: blocked.Recovery},
 		); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(

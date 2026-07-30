@@ -348,7 +348,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " dependency auto-unblock")
 		checks = append(checks, checkDoctorDependencyAutoUnblock(ctx, id, workflow.Config, deps))
 		setDoctorCurrentCheck("Project " + id + " blocked recovery")
-		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, deps))
+		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, storePath, deps))
 	}
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")

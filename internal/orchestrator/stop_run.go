@@ -376,7 +376,20 @@ func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *
 			return o.failOperatorStopTransition(ctx, state, issue, result, fmt.Errorf("set priority to %s: %w", result.PriorityName, err))
 		}
 	}
-	err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, result.Destination, result.CompletedAt, string(store.WorkAttemptTerminalOperatorStopped), workflowLaneMetadata{})
+	metadata := workflowLaneMetadata{}
+	if normalizeState(result.Destination) == normalizeState(blockedStatusState) {
+		metadata = o.newBlockedRecoveryMetadata(
+			ctx,
+			issue,
+			RunModeImplement,
+			string(store.WorkAttemptTerminalOperatorStopped),
+			blockedRecoveryPredicateManaged,
+			result.Destination,
+			DiffStats{},
+		)
+		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerOperator
+	}
+	err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, result.Destination, result.CompletedAt, string(store.WorkAttemptTerminalOperatorStopped), metadata)
 	if err != nil {
 		return o.failOperatorStopTransition(ctx, state, issue, result, err)
 	}
