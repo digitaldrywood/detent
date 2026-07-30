@@ -76,10 +76,10 @@ func TestEvaluate(t *testing.T) {
 			input: Input{
 				ProjectID: "detent",
 				Decisions: []Decision{
-					{IssueID: "3", Reason: "merge_slot_revoked", At: now.Add(-3 * time.Hour)},
-					{IssueID: "3", Reason: "merge_slot_revoked", At: now.Add(-2 * time.Hour)},
-					{IssueID: "3", Reason: "merge_slot_revoked", At: now.Add(-time.Hour)},
-					{IssueID: "3", Reason: "other", At: now.Add(-time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Reason: "merge_slot_revoked", At: now.Add(-3 * time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Reason: "merge_slot_revoked", At: now.Add(-2 * time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Reason: "merge_slot_revoked", At: now.Add(-time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Reason: "other", At: now.Add(-time.Hour)},
 				},
 			},
 			wantKinds: []string{KindRepeatedDecision},
@@ -104,6 +104,126 @@ func TestEvaluate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEvaluateRepeatedDecisions(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
+	baseConfig := Config{
+		Enabled:                true,
+		RepeatedDecisionCount:  20,
+		RepeatedDecisionWindow: 24 * time.Hour,
+		RepeatedDecisionBenignReasons: []string{
+			"already_running",
+			"blocked_by_dependency",
+			"github_rest_capacity_paused",
+			"github_rest_recovery",
+			"global_capacity_full",
+		},
+		TerminalStates: []string{"Done", "Cancelled", "Canceled"},
+	}
+
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		decisions []Decision
+		want      int
+	}{
+		{
+			name:      "60 minute healthy run stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 31, 2*time.Minute, "already_running", "In Progress"),
+		},
+		{
+			name:      "dependency wait stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "blocked_by_dependency", "Blocked"),
+		},
+		{
+			name:      "global capacity wait stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "global_capacity_full", "Todo"),
+		},
+		{
+			name:      "REST capacity pause stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "github_rest_capacity_paused", "Todo"),
+		},
+		{
+			name:      "REST recovery stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "github_rest_recovery", "Todo"),
+		},
+		{
+			name: "operator configured reason stays quiet",
+			configure: func(cfg *Config) {
+				cfg.RepeatedDecisionBenignReasons = append(cfg.RepeatedDecisionBenignReasons, "planned_maintenance")
+			},
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "planned_maintenance", "Todo"),
+		},
+		{
+			name: "closed issue stays quiet",
+			decisions: mutateDecisions(
+				repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "merge_slot_revoked", "Merging"),
+				func(decision *Decision) { decision.Closed = true },
+			),
+		},
+		{
+			name: "merged issue stays quiet",
+			decisions: mutateDecisions(
+				repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "merge_slot_revoked", "Merging"),
+				func(decision *Decision) { decision.Merged = true },
+			),
+		},
+		{
+			name:      "cancelled issue stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "merge_slot_revoked", "Cancelled"),
+		},
+		{
+			name:      "historical issue absent from current items stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "merge_slot_revoked", ""),
+		},
+		{
+			name:      "genuine stall warns",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "merge_slot_revoked", "Merging"),
+			want:      1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := baseConfig
+			cfg.RepeatedDecisionBenignReasons = append([]string(nil), baseConfig.RepeatedDecisionBenignReasons...)
+			if tt.configure != nil {
+				tt.configure(&cfg)
+			}
+			got := Evaluate(cfg, Input{ProjectID: "detent", Decisions: tt.decisions}, now)
+			if len(got) != tt.want {
+				t.Fatalf("Evaluate() warnings = %#v, want %d", got, tt.want)
+			}
+			if tt.want == 1 && (got[0].Kind != KindRepeatedDecision || got[0].Count != 20) {
+				t.Fatalf("Evaluate()[0] = %#v, want repeated decision warning with count 20", got[0])
+			}
+		})
+	}
+}
+
+func repeatedDecisions(start time.Time, count int, interval time.Duration, reason string, state string) []Decision {
+	decisions := make([]Decision, 0, count)
+	for index := range count {
+		decisions = append(decisions, Decision{
+			IssueID:      "issue-1",
+			Identifier:   "digitaldrywood/detent#1",
+			CurrentState: state,
+			Reason:       reason,
+			At:           start.Add(time.Duration(index) * interval),
+		})
+	}
+	return decisions
+}
+
+func mutateDecisions(decisions []Decision, mutate func(*Decision)) []Decision {
+	for index := range decisions {
+		mutate(&decisions[index])
+	}
+	return decisions
 }
 
 func TestNewNotifierDeliversWebhook(t *testing.T) {

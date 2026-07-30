@@ -2,12 +2,15 @@ package orchestrator
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/staleness"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestRefreshStalenessWarningsEmitsAndDeliversOncePerActiveCondition(t *testing.T) {
@@ -139,6 +142,72 @@ func TestStalenessDispatchableItemsUsesDispatchPlannerEligibility(t *testing.T) 
 	items := orch.stalenessDispatchableItems([]connector.Issue{unauthorized, authorized}, &state, now)
 	if len(items) != 1 || items[0].ID != authorized.ID {
 		t.Fatalf("dispatchable staleness items = %#v, want only authorized issue", items)
+	}
+}
+
+func TestConfigFromWorkflowIncludesStalenessDecisionPolicy(t *testing.T) {
+	t.Parallel()
+	workflow := workflowconfig.Default()
+	workflow.Observability.Staleness.RepeatedDecisionBenignReasons = []string{"planned_maintenance"}
+	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+
+	got := ConfigFromWorkflow(workflow).Staleness
+	if !slices.Equal(got.RepeatedDecisionBenignReasons, []string{"planned_maintenance"}) {
+		t.Fatalf("RepeatedDecisionBenignReasons = %#v, want configured reason", got.RepeatedDecisionBenignReasons)
+	}
+	if !slices.Equal(got.TerminalStates, workflow.Tracker.TerminalStates) {
+		t.Fatalf("TerminalStates = %#v, want %#v", got.TerminalStates, workflow.Tracker.TerminalStates)
+	}
+}
+
+func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
+	state := State{
+		BoardIssues: []connector.Issue{
+			{
+				ID:     "issue-closed",
+				State:  "Done",
+				Closed: true,
+			},
+			{
+				ID:    "issue-merged",
+				State: "Merging",
+				PullRequest: &connector.PullRequest{
+					State: "MERGED",
+				},
+			},
+		},
+		Completed: map[string]Completed{
+			"issue-stale-completed": {
+				Issue: connector.Issue{
+					ID:    "issue-stale-completed",
+					State: "Human Review",
+				},
+			},
+		},
+	}
+	decisions := []telemetry.SchedulerDecision{
+		{IssueID: "issue-closed", Reason: "merge_slot_revoked", DecisionAt: now},
+		{IssueID: "issue-merged", Reason: "merge_slot_revoked", DecisionAt: now},
+		{IssueID: "issue-stale-completed", Reason: "merge_slot_revoked", DecisionAt: now},
+		{IssueID: "issue-gone", Reason: "merge_slot_revoked", DecisionAt: now},
+	}
+
+	got := stalenessDecisions(decisions, stalenessDecisionIssueIndex(&state, nil))
+	if len(got) != len(decisions) {
+		t.Fatalf("stalenessDecisions() = %#v, want %d decisions", got, len(decisions))
+	}
+	if got[0].CurrentState != "Done" || !got[0].Closed {
+		t.Fatalf("closed decision = %#v, want current Done and closed", got[0])
+	}
+	if got[1].CurrentState != "Merging" || !got[1].Merged {
+		t.Fatalf("merged decision = %#v, want current Merging and merged", got[1])
+	}
+	for _, index := range []int{2, 3} {
+		if got[index].CurrentState != "" || got[index].Closed || got[index].Merged {
+			t.Fatalf("historical decision = %#v, want no current item state", got[index])
+		}
 	}
 }
 

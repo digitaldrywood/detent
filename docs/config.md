@@ -181,6 +181,20 @@ repeated identical scheduler decisions. Human-gate lanes remain warnings rather
 than failures, so they provide a single durable reminder without treating a
 deliberate review wait as an unattended stall.
 
+The repeated-decision detector considers only current, non-terminal items.
+Closed and merged items and items in a configured terminal state are excluded.
+`observability.staleness.repeated_decision_benign_reasons` lists scheduler
+reasons that represent healthy waits rather than operator-actionable stalls.
+Its defaults cover active workers, dependency waits, global-capacity waits, and
+GitHub REST pacing. Set the list explicitly to replace those defaults for a
+project.
+
+The detector evaluates decisions inside
+`observability.staleness.repeated_window_hours`, but the orchestrator retains
+only the 500 most recent scheduler decisions. Its effective history is
+therefore whichever is smaller: the configured time window or the retained
+500-decision sample.
+
 Warnings appear in the dashboard, `/health`, and `detent doctor`. Configure
 `observability.staleness.webhook.url` to push each newly active warning as a
 `detent.staleness.warning` JSON event. The payload includes a stable warning ID,
@@ -447,6 +461,7 @@ rendering and fails on drift.
 | `observability.staleness.lanes[].threshold_hours` | `integer` | `72` | No | must be greater than 0 |
 | `observability.staleness.no_completion_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.no_merge_hours` | `integer` | `12` | No | must be greater than 0 |
+| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full"]` | No | None |
 | `observability.staleness.repeated_decision_count` | `integer` | `20` | No | must be greater than 0 |
 | `observability.staleness.repeated_window_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.webhook` | `object` | `see child fields` | No | None |

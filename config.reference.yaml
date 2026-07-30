@@ -881,6 +881,8 @@
 #     no_merge_hours: 12
 #     # observability.staleness.repeated_decision_count | type: integer | default: 20 | required: No | validation: must be greater than 0
 #     repeated_decision_count: 20
+#     # observability.staleness.repeated_decision_benign_reasons | type: list<string> | default: ["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full"] | required: No | validation: None
+#     repeated_decision_benign_reasons: ["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full"]
 #     # observability.staleness.repeated_window_hours | type: integer | default: 24 | required: No | validation: must be greater than 0
 #     repeated_window_hours: 24
 #     # observability.staleness.webhook | type: object | default: see child fields | required: No | validation: None

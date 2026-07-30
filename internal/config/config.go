@@ -732,13 +732,14 @@ type OTLPObservability struct {
 }
 
 type StalenessObservability struct {
-	Enabled               bool                     `yaml:"enabled"`
-	Lanes                 []StalenessLaneThreshold `yaml:"lanes,omitempty"`
-	NoCompletionHours     int                      `yaml:"no_completion_hours"`
-	NoMergeHours          int                      `yaml:"no_merge_hours"`
-	RepeatedDecisionCount int                      `yaml:"repeated_decision_count"`
-	RepeatedWindowHours   int                      `yaml:"repeated_window_hours"`
-	Webhook               StalenessWebhook         `yaml:"webhook,omitempty"`
+	Enabled                       bool                     `yaml:"enabled"`
+	Lanes                         []StalenessLaneThreshold `yaml:"lanes,omitempty"`
+	NoCompletionHours             int                      `yaml:"no_completion_hours"`
+	NoMergeHours                  int                      `yaml:"no_merge_hours"`
+	RepeatedDecisionCount         int                      `yaml:"repeated_decision_count"`
+	RepeatedDecisionBenignReasons []string                 `yaml:"repeated_decision_benign_reasons"`
+	RepeatedWindowHours           int                      `yaml:"repeated_window_hours"`
+	Webhook                       StalenessWebhook         `yaml:"webhook,omitempty"`
 }
 
 type StalenessLaneThreshold struct {
@@ -1364,11 +1365,12 @@ func Default() Config {
 			},
 			OTLP: OTLPObservability{TimeoutMS: 5000, ServiceName: "detent"},
 			Staleness: StalenessObservability{
-				Enabled:               true,
-				NoCompletionHours:     DefaultStalenessNoCompletionHours,
-				NoMergeHours:          DefaultStalenessNoMergeHours,
-				RepeatedDecisionCount: DefaultStalenessRepeatedCount,
-				RepeatedWindowHours:   DefaultStalenessRepeatedWindowHours,
+				Enabled:                       true,
+				NoCompletionHours:             DefaultStalenessNoCompletionHours,
+				NoMergeHours:                  DefaultStalenessNoMergeHours,
+				RepeatedDecisionCount:         DefaultStalenessRepeatedCount,
+				RepeatedDecisionBenignReasons: defaultStalenessRepeatedDecisionBenignReasons(),
+				RepeatedWindowHours:           DefaultStalenessRepeatedWindowHours,
 				Lanes: []StalenessLaneThreshold{
 					{State: "Human Review", ThresholdHours: 72, HumanGate: true},
 					{State: "Blocked", ThresholdHours: 48},
@@ -2581,6 +2583,7 @@ func (s *StalenessObservability) Normalize() {
 	if s == nil {
 		return
 	}
+	s.RepeatedDecisionBenignReasons = normalizeReasonList(s.RepeatedDecisionBenignReasons)
 	for index := range s.Lanes {
 		s.Lanes[index].State = strings.TrimSpace(s.Lanes[index].State)
 	}
@@ -2594,6 +2597,33 @@ func (s *StalenessObservability) Normalize() {
 		headers[name] = strings.TrimSpace(value)
 	}
 	s.Webhook.Headers = headers
+}
+
+func defaultStalenessRepeatedDecisionBenignReasons() []string {
+	return []string{
+		"already_running",
+		"blocked_by_dependency",
+		"github_rest_capacity_paused",
+		"github_rest_recovery",
+		"global_capacity_full",
+	}
+}
+
+func normalizeReasonList(reasons []string) []string {
+	normalized := make([]string, 0, len(reasons))
+	seen := make(map[string]struct{}, len(reasons))
+	for _, reason := range reasons {
+		reason = strings.ToLower(strings.TrimSpace(reason))
+		if reason == "" {
+			continue
+		}
+		if _, ok := seen[reason]; ok {
+			continue
+		}
+		seen[reason] = struct{}{}
+		normalized = append(normalized, reason)
+	}
+	return normalized
 }
 
 func (s *StalenessObservability) validate(problems *[]string) {
