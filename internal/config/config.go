@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -933,6 +934,7 @@ func (b *BlockedRecovery) Normalize() {
 }
 
 func (b BlockedRecovery) Validate(prefix string) []string {
+	b.ReasonCodes = slices.Clone(b.ReasonCodes)
 	b.Normalize()
 
 	var problems []string

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -2796,6 +2797,48 @@ func TestObservabilityValidation(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestBlockedRecoveryValidateConcurrentSharedStorage(t *testing.T) {
+	t.Parallel()
+
+	const validatorCount = 2
+	config := BlockedRecovery{
+		Enabled:      true,
+		SourceStates: []string{" Blocked "},
+		TargetState:  " Rework ",
+		ReasonCodes:  []string{" Merge Conflicts ", " Stale Base ", " Missing Current Head CI "},
+	}
+	wantReasonCodes := slices.Clone(config.ReasonCodes)
+	start := make(chan struct{})
+	results := make(chan []string, validatorCount)
+	var wait sync.WaitGroup
+	wait.Add(validatorCount)
+
+	for range validatorCount {
+		configCopy := config
+		go func() {
+			defer wait.Done()
+			<-start
+			for range 1000 {
+				if problems := configCopy.Validate("tracker.blocked_recovery"); len(problems) > 0 {
+					results <- problems
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wait.Wait()
+	close(results)
+
+	for problems := range results {
+		t.Errorf("Validate() problems = %v, want none", problems)
+	}
+	if !slices.Equal(config.ReasonCodes, wantReasonCodes) {
+		t.Fatalf("Validate() changed ReasonCodes to %q, want %q", config.ReasonCodes, wantReasonCodes)
 	}
 }
 
