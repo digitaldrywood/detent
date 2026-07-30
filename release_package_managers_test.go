@@ -39,11 +39,15 @@ func TestGoReleaserWindowsPackageManagerConfig(t *testing.T) {
 func TestWindowsPackageManagerDocs(t *testing.T) {
 	t.Parallel()
 
-	raw, err := os.ReadFile("README.md")
+	readme, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatalf("ReadFile(README.md) error = %v", err)
 	}
-	readme := string(raw)
+	release, err := os.ReadFile("docs/release.md")
+	if err != nil {
+		t.Fatalf("ReadFile(docs/release.md) error = %v", err)
+	}
+	documentation := string(readme) + "\n" + string(release)
 
 	for _, want := range []string{
 		"winget install --id DigitalDrywood.Detent --source winget",
@@ -58,8 +62,8 @@ func TestWindowsPackageManagerDocs(t *testing.T) {
 		"SCOOP_BUCKET_GITHUB_TOKEN",
 		"WINGET_GITHUB_TOKEN",
 	} {
-		if !strings.Contains(readme, want) {
-			t.Fatalf("README.md missing %q", want)
+		if !strings.Contains(documentation, want) {
+			t.Fatalf("install and release documentation missing %q", want)
 		}
 	}
 }

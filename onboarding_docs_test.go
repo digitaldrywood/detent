@@ -48,7 +48,7 @@ func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
+	concepts := readRepositoryTextFile(t, "docs/concepts.md")
 	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.github_local.md")
 
 	for _, want := range []string{
@@ -66,7 +66,7 @@ func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 		"detent github-local import",
 		"GitHub closes or transfers an imported issue while local state is still active",
 	} {
-		assertContainsWords(t, readme, want)
+		assertContainsWords(t, concepts, want)
 	}
 	for _, want := range []string{
 		"kind: github_local",
@@ -86,7 +86,8 @@ func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
+	labelProbeDocs := readRepositoryTextFile(t, "docs/retrospection.md") + "\n" +
+		readRepositoryTextFile(t, "docs/concepts.md")
 	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.label.md")
 
 	for _, want := range []string{
@@ -101,7 +102,7 @@ func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
 		"proving the token has the repository Issues write permission class",
 		"remove any Detent status label from old scratch issues or close them",
 	} {
-		assertContainsWords(t, readme, want)
+		assertContainsWords(t, labelProbeDocs, want)
 	}
 	if strings.Contains(template, "write_probe_issue:") {
 		t.Fatalf("WORKFLOW.label.md contains write_probe_issue default:\n%s", template)
@@ -304,7 +305,8 @@ func TestOnboardingDocsDefaultProjectKanbanIntegrationForOperatorOwnedAddProject
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
+	kanbanDocs := readRepositoryTextFile(t, "docs/getting-started.md") + "\n" +
+		readRepositoryTextFile(t, "docs/concepts.md")
 
 	for _, want := range []string{
 		"Keep fleet `/kanban` read-only",
@@ -327,7 +329,7 @@ func TestOnboardingDocsDefaultProjectKanbanIntegrationForOperatorOwnedAddProject
 		"observer or shared dashboard",
 		"server.kanban.mode: integration",
 	} {
-		assertContainsWords(t, readme, want)
+		assertContainsWords(t, kanbanDocs, want)
 	}
 
 	for _, path := range []string{
@@ -401,9 +403,9 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
+	bootstrap := readRepositoryTextFile(t, "docs/bootstrap.md")
 	staleCanonicalURL := "https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md"
-	if strings.Contains(onboarding, staleCanonicalURL) || strings.Contains(readme, staleCanonicalURL) {
+	if strings.Contains(onboarding, staleCanonicalURL) || strings.Contains(bootstrap, staleCanonicalURL) {
 		t.Fatalf("docs still reference stale canonical template URL %q", staleCanonicalURL)
 	}
 
@@ -413,7 +415,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		"docs/templates/WORKFLOW.label.md",
 	} {
 		assertContains(t, onboarding, path)
-		assertContains(t, readme, path)
+		assertContains(t, bootstrap, strings.TrimPrefix(path, "docs/"))
 	}
 
 	tests := []struct {
@@ -731,7 +733,7 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
+	bootstrap := readRepositoryTextFile(t, "docs/bootstrap.md")
 
 	for _, want := range []string{
 		"`## Required Execution Flow`",
@@ -761,7 +763,7 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 		"`Merging` with a concrete external blocker recorded",
 		"Current Detent status: {{ issue.state }}",
 	} {
-		assertContainsWords(t, readme, want)
+		assertContainsWords(t, bootstrap, want)
 	}
 
 	for _, path := range []string{

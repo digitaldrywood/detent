@@ -152,7 +152,7 @@ Phase 0.5.
 Classify the work into one of these modes:
 
 - `new-install`: Detent is not installed or the human wants a fresh host. Follow
-  [Bootstrap On A New Machine](../README.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
+  [Bootstrap On A New Machine](bootstrap.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
   through tool installation and authentication, then continue with this runbook.
 - `existing-install`: Detent is already installed or a service/dashboard appears
   to be running. Verify the binary, config path, registered projects, service
@@ -227,7 +227,7 @@ the operator explicitly accepts that setting for this customer/project.
 ## Phase 0 — Preconditions
 
 1. **Confirm Detent is installed or intentionally new.** For `new-install`,
-   follow [Bootstrap On A New Machine steps 1-3](../README.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
+   follow [Bootstrap On A New Machine steps 1-3](bootstrap.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
    before project onboarding. For `existing-install` and `add-project`, verify
    the detected binary and config path before changing anything. Verify:
 
