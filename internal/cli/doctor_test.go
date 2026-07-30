@@ -2369,10 +2369,10 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			},
 			want: doctorWarn,
 			wantDetails: []string{
-				"dependency_ready_but_still_blocked",
+				"dependency_terminal_but_still_blocked",
 				"issue-ready",
 				readyRef,
-				"tracker.dependency_auto_unblock",
+				"consumed-signature latch",
 			},
 		},
 		{
@@ -2395,7 +2395,7 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			},
 			want: doctorWarn,
 			wantDetails: []string{
-				"dependency_ready_but_still_blocked",
+				"dependency_terminal_but_still_blocked",
 				"issue-416",
 				"digitaldrywood/detent#414",
 				"digitaldrywood/detent#415",
