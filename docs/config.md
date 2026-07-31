@@ -43,7 +43,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
 | Automatic update checks | | | `update.auto_check_enabled` | `false` |
-| Update check interval | | | `update.check_interval_hours` | `24` |
+| Update check interval | | | `update.check_interval_hours` | `6` |
 | Automatic update apply when idle | | | `update.auto_apply_enabled` | `false` |
 
 The web host resolves from `--host`, then the first registered workflow's
@@ -66,17 +66,21 @@ single-project fallback mode without `global.yaml`, workflow top-level
 single line, and are capped at 40 characters in the web UI.
 
 Automatic update checks are host-specific and disabled by default. When
-enabled, Detent checks on a jittered in-process schedule and reports the last
-check, available or applied version, and next check on `/health` and the Health
-dashboard. `detent doctor` reports whether the host is opted in and suggests
-enabling checks when it is not. Automatic apply remains off unless explicitly
-enabled and only replaces release-installer binaries; other install sources
-remain notification-only. When work attempts are active, Detent shows the
-pending version in the web and terminal dashboards and waits for the next
-fleet-wide idle window before applying it. An operator can instead confirm
-immediate apply from the web notification. A successful apply uses the normal
-graceful drain path, then re-executes the replaced binary on POSIX systems or
-exits cleanly for an external supervisor to restart it on other platforms.
+enabled, Detent persists the last check and schedules the next jittered check
+from that timestamp, so restarts preserve the remaining delay and overdue
+checks run promptly. The six-hour default keeps release uptake within the same
+day while using about four GitHub requests per host per day. Detent reports the
+last check, available or applied version, and next check on `/health` and the
+Health dashboard. `detent doctor` surfaces the last and next check times,
+reports whether the host is opted in, and suggests enabling checks when it is
+not. Automatic apply remains off unless explicitly enabled and only replaces
+release-installer binaries; other install sources remain notification-only.
+When work attempts are active, Detent shows the pending version in the web and
+terminal dashboards and waits for the next fleet-wide idle window before
+applying it. An operator can instead confirm immediate apply from the web
+notification. A successful apply uses the normal graceful drain path, then
+re-executes the replaced binary on POSIX systems or exits cleanly for an
+external supervisor to restart it on other platforms.
 
 `detent doctor` prints the resolved runtime values and their sources, with the
 GitHub token redacted.

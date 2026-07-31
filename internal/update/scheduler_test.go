@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -368,6 +369,9 @@ func TestSchedulerRunPollsPendingUpdateUntilIdle(t *testing.T) {
 		},
 		RequestRestart: func(string) bool { return true },
 		NextDelay:      func(interval time.Duration) time.Duration { return interval },
+		Now: func() time.Time {
+			return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+		},
 		Wait: func(_ context.Context, delay time.Duration) bool {
 			delays = append(delays, delay)
 			switch len(delays) {
@@ -439,6 +443,156 @@ func TestSchedulerRunUsesPeriodicWaitAndStopsWithContext(t *testing.T) {
 	}
 }
 
+func TestSchedulerRestartMidIntervalPreservesRemainingDelay(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "update-state.json")
+	lastCheckAt := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	seedSchedulerLastCheck(t, statePath, lastCheckAt)
+
+	now := lastCheckAt.Add(time.Hour)
+	var delays []time.Duration
+	updater := &schedulerUpdaterStub{}
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       updater,
+		Now:           func() time.Time { return now },
+		NextDelay:     func(time.Duration) time.Duration { return 3 * time.Hour },
+		Wait: func(_ context.Context, delay time.Duration) bool {
+			delays = append(delays, delay)
+			return false
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	scheduler.Run(context.Background())
+	if updater.checkCalls != 0 {
+		t.Fatalf("Check() calls = %d, want 0 before persisted interval elapses", updater.checkCalls)
+	}
+	if len(delays) != 1 || delays[0] != 2*time.Hour {
+		t.Fatalf("wait delays = %v, want [2h]", delays)
+	}
+	status := scheduler.Status()
+	if status.LastCheckAt == nil || !status.LastCheckAt.Equal(lastCheckAt) {
+		t.Fatalf("LastCheckAt = %v, want %v", status.LastCheckAt, lastCheckAt)
+	}
+	wantNext := lastCheckAt.Add(3 * time.Hour)
+	if status.NextCheckAt == nil || !status.NextCheckAt.Equal(wantNext) {
+		t.Fatalf("NextCheckAt = %v, want %v", status.NextCheckAt, wantNext)
+	}
+}
+
+func TestSchedulerRestartAfterIntervalChecksBeforeWaiting(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "update-state.json")
+	lastCheckAt := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	seedSchedulerLastCheck(t, statePath, lastCheckAt)
+
+	now := lastCheckAt.Add(4 * time.Hour)
+	updater := &schedulerUpdaterStub{}
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       updater,
+		Now:           func() time.Time { return now },
+		NextDelay:     func(time.Duration) time.Duration { return 3 * time.Hour },
+		Wait: func(_ context.Context, delay time.Duration) bool {
+			if updater.checkCalls != 1 {
+				t.Fatalf("Check() calls before first wait = %d, want 1", updater.checkCalls)
+			}
+			if delay != 3*time.Hour {
+				t.Fatalf("wait delay after prompt check = %v, want 3h", delay)
+			}
+			return false
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	scheduler.Run(context.Background())
+	if updater.checkCalls != 1 {
+		t.Fatalf("Check() calls = %d, want 1", updater.checkCalls)
+	}
+
+	restarted, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       &schedulerUpdaterStub{},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() reload error = %v", err)
+	}
+	if got := restarted.Status().LastCheckAt; got == nil || !got.Equal(now) {
+		t.Fatalf("reloaded LastCheckAt = %v, want %v", got, now)
+	}
+}
+
+func TestSchedulerRepeatedRapidRestartsCannotStarveCheck(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "update-state.json")
+	lastCheckAt := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	seedSchedulerLastCheck(t, statePath, lastCheckAt)
+
+	for restart, wantDelay := range []time.Duration{2 * time.Hour, time.Hour} {
+		now := lastCheckAt.Add(time.Duration(restart+1) * time.Hour)
+		updater := &schedulerUpdaterStub{}
+		scheduler, err := NewScheduler(SchedulerConfig{
+			Enabled:       true,
+			CheckInterval: 4 * time.Hour,
+			StatePath:     statePath,
+			Updater:       updater,
+			Now:           func() time.Time { return now },
+			NextDelay:     func(time.Duration) time.Duration { return 3 * time.Hour },
+			Wait: func(_ context.Context, delay time.Duration) bool {
+				if delay != wantDelay {
+					t.Fatalf("restart %d delay = %v, want %v", restart+1, delay, wantDelay)
+				}
+				return false
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewScheduler() restart %d error = %v", restart+1, err)
+		}
+		scheduler.Run(context.Background())
+		if updater.checkCalls != 0 {
+			t.Fatalf("restart %d Check() calls = %d, want 0", restart+1, updater.checkCalls)
+		}
+	}
+
+	now := lastCheckAt.Add(3 * time.Hour)
+	updater := &schedulerUpdaterStub{}
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       updater,
+		Now:           func() time.Time { return now },
+		NextDelay:     func(time.Duration) time.Duration { return 3 * time.Hour },
+		Wait: func(_ context.Context, delay time.Duration) bool {
+			if updater.checkCalls != 1 {
+				t.Fatalf("Check() calls before wait = %d, want 1", updater.checkCalls)
+			}
+			return false
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() due restart error = %v", err)
+	}
+	scheduler.Run(context.Background())
+	if updater.checkCalls != 1 {
+		t.Fatalf("due restart Check() calls = %d, want 1", updater.checkCalls)
+	}
+}
+
 func TestSchedulerRecordsCheckFailure(t *testing.T) {
 	t.Parallel()
 
@@ -457,6 +611,72 @@ func TestSchedulerRecordsCheckFailure(t *testing.T) {
 	}
 	if got := scheduler.Status(); got.State != "failed" || got.LastError != wantErr.Error() || got.LastCheckAt == nil {
 		t.Fatalf("Status() = %#v, want recorded failure", got)
+	}
+}
+
+func TestSchedulerCanceledCheckPreservesLastCheck(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "update-state.json")
+	lastCheckAt := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	seedSchedulerLastCheck(t, statePath, lastCheckAt)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       &schedulerUpdaterStub{checkErr: context.Canceled},
+		Now:           func() time.Time { return lastCheckAt.Add(5 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	if _, err := scheduler.CheckNow(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckNow() error = %v, want context cancellation", err)
+	}
+	if got := scheduler.Status().LastCheckAt; got == nil || !got.Equal(lastCheckAt) {
+		t.Fatalf("LastCheckAt = %v, want preserved %v", got, lastCheckAt)
+	}
+
+	restarted, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       &schedulerUpdaterStub{},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() reload error = %v", err)
+	}
+	if got := restarted.Status().LastCheckAt; got == nil || !got.Equal(lastCheckAt) {
+		t.Fatalf("reloaded LastCheckAt = %v, want preserved %v", got, lastCheckAt)
+	}
+}
+
+func TestSchedulerReportsStatePersistenceFailure(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "update-state.json")
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: time.Hour,
+		StatePath:     statePath,
+		Updater:       &schedulerUpdaterStub{},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	if _, err := scheduler.CheckNow(context.Background()); err == nil || !strings.Contains(err.Error(), "persist automatic update state") {
+		t.Fatalf("CheckNow() error = %v, want persistence failure", err)
+	}
+	if got := scheduler.Status(); !strings.Contains(got.LastError, "persist automatic update state") {
+		t.Fatalf("LastError = %q, want persistence failure", got.LastError)
 	}
 }
 
@@ -485,6 +705,30 @@ func TestSchedulerDisabledPreservesManualOnlyBehavior(t *testing.T) {
 	}
 	if got := scheduler.Status(); got.State != "disabled" || got.Enabled || got.LastAppliedVersion != "1.2.2" {
 		t.Fatalf("Status() = %#v, want disabled", got)
+	}
+}
+
+func seedSchedulerLastCheck(t *testing.T, statePath string, checkedAt time.Time) {
+	t.Helper()
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:       true,
+		CheckInterval: 4 * time.Hour,
+		StatePath:     statePath,
+		Updater:       &schedulerUpdaterStub{},
+		Now:           func() time.Time { return checkedAt },
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() seed error = %v", err)
+	}
+	if _, err := scheduler.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow() seed error = %v", err)
+	}
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("Stat() scheduler state error = %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("scheduler state mode = %o, want 600", info.Mode().Perm())
 	}
 }
 

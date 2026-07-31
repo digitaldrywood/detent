@@ -22,7 +22,7 @@ import (
 const (
 	APIVersion                      = "detent/v1"
 	Kind                            = "GlobalConfig"
-	DefaultUpdateCheckIntervalHours = 24
+	DefaultUpdateCheckIntervalHours = 6
 
 	SchedulingWeighted              = "weighted"
 	SchedulingStrict                = "strict"

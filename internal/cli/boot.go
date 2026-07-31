@@ -1411,6 +1411,25 @@ func runtimeBoardSnapshotPath(cfg BootConfig) string {
 	return base + "-board-snapshot.json"
 }
 
+func runtimeUpdateStatePath(cfg BootConfig) string {
+	databasePath := runtimeStorePath(cfg)
+	if runtimeStoreIsMemory(databasePath) {
+		root := filepath.Dir(strings.TrimSpace(cfg.Global.Path))
+		if root == "." || root == "" {
+			root = filepath.Join(mustGetwd(), ".detent")
+		}
+		return filepath.Join(root, "detent-update-state.json")
+	}
+	if uri, ok := runtimeStoreURI(databasePath); ok {
+		if uriPath, pathOK := runtimeStoreURIPath(uri); pathOK {
+			databasePath = uriPath
+		}
+	}
+	extension := filepath.Ext(databasePath)
+	base := strings.TrimSuffix(databasePath, extension)
+	return base + "-update-state.json"
+}
+
 func runtimeLogPath(cfg BootConfig) string {
 	if path := strings.TrimSpace(cfg.RuntimeLogPath); path != "" {
 		return path
