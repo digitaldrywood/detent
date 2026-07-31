@@ -117,6 +117,9 @@ func TestStampSnapshotProjectIDPreservesDegradedFreshness(t *testing.T) {
 	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
 	snapshot := stampSnapshotProjectID(telemetry.Snapshot{
 		Project: telemetry.Project{ID: "docs"},
+		StrandedActiveIssues: []telemetry.StrandedIssue{{
+			Identifier: "digitaldrywood/docs#1",
+		}},
 		Refresh: telemetry.Refresh{
 			Status:      telemetry.RefreshStatusDegraded,
 			LastError:   "project runtime unavailable",
@@ -136,6 +139,9 @@ func TestStampSnapshotProjectIDPreservesDegradedFreshness(t *testing.T) {
 	}
 	if !snapshot.Refresh.Stale(now) {
 		t.Fatal("Refresh.Stale() = false, want true")
+	}
+	if len(snapshot.StrandedActiveIssues) != 1 || snapshot.StrandedActiveIssues[0].ProjectID != "docs" {
+		t.Fatalf("StrandedActiveIssues = %#v, want docs project ID", snapshot.StrandedActiveIssues)
 	}
 }
 

@@ -71,6 +71,17 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantKind:    primitives.KindWarn,
 			wantVerdict: "Dispatch is waiting on capacity.",
 		},
+		{
+			name: "stranded active issue warns",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StrandedActiveIssues: []telemetry.StrandedIssue{{
+					ProjectID: "detent", Identifier: "digitaldrywood/detent#1606", DurationSeconds: 900,
+				}},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Active work has no live worker.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,6 +96,31 @@ func TestHealthViewVerdicts(t *testing.T) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
 			}
 		})
+	}
+}
+
+func TestHealthStrandedActiveRowsGroupByProject(t *testing.T) {
+	t.Parallel()
+
+	rows := healthStrandedActiveRows([]telemetry.StrandedIssue{
+		{ProjectID: "pyroapex", Identifier: "digitaldrywood/pyroapex#10", DurationSeconds: 1200},
+		{ProjectID: "detent", Identifier: "digitaldrywood/detent#1607", DurationSeconds: 720, LastRefusalReason: "budget cooldown"},
+		{ProjectID: "detent", Identifier: "digitaldrywood/detent#1606", DurationSeconds: 900, LastRefusalReason: "priority reservation"},
+	})
+
+	if len(rows) != 2 {
+		t.Fatalf("healthStrandedActiveRows() = %#v, want two project rows", rows)
+	}
+	if rows[0].Component != "Active work · detent" || rows[0].Status != "No live worker" {
+		t.Fatalf("detent row = %#v", rows[0])
+	}
+	for _, want := range []string{"digitaldrywood/detent#1606", "15m", "priority reservation", "digitaldrywood/detent#1607", "12m", "budget cooldown"} {
+		if !strings.Contains(rows[0].Detail, want) {
+			t.Fatalf("detent detail = %q, want %q", rows[0].Detail, want)
+		}
+	}
+	if rows[1].Component != "Active work · pyroapex" || !strings.Contains(rows[1].Detail, "none recorded") {
+		t.Fatalf("pyroapex row = %#v", rows[1])
 	}
 }
 

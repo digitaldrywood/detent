@@ -245,6 +245,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.OverloadRetryDelayMS = 60000
 	cfg.Agent.MergeWorkerStartupTimeoutMS = 180000
 	cfg.Agent.MergeWorkerMaxDurationMS = 7200000
+	cfg.Observability.StrandedActiveThresholdSeconds = 42
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Identity.Name = "release-captain"
@@ -287,6 +288,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.MergeWorkerMaxDuration != 2*time.Hour {
 		t.Fatalf("MergeWorkerMaxDuration = %s, want 2h", got.MergeWorkerMaxDuration)
+	}
+	if got.StrandedActiveThreshold != 42*time.Second {
+		t.Fatalf("StrandedActiveThreshold = %s, want 42s", got.StrandedActiveThreshold)
 	}
 	if got.NoProgressTokenLimit != workflowconfig.DefaultNoProgressTokenLimit {
 		t.Fatalf("NoProgressTokenLimit = %d, want %d", got.NoProgressTokenLimit, workflowconfig.DefaultNoProgressTokenLimit)

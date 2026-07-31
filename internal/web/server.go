@@ -1035,11 +1035,13 @@ func (s *Server) health(c echo.Context) error {
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
 	stalenessWarnings := []telemetry.StalenessWarning{}
+	strandedActiveIssues := []telemetry.StrandedIssue{}
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
+			strandedActiveIssues = append(strandedActiveIssues, snapshot.StrandedActiveIssues...)
 			if snapshot.Shutdown.Draining {
 				status = "draining"
 				sessionsRemaining = snapshot.Shutdown.SessionsRemaining
@@ -1076,6 +1078,7 @@ func (s *Server) health(c echo.Context) error {
 		Workflows:         workflows,
 		BackendOutages:    backendOutages,
 		StalenessWarnings: stalenessWarnings,
+		StrandedIssues:    strandedActiveIssues,
 		Projects:          projectHealth,
 	})
 }
@@ -1324,6 +1327,7 @@ type healthResponse struct {
 	Workflows         []healthWorkflowSource       `json:"workflows,omitempty"`
 	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
+	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`
 	Projects          []healthProject              `json:"projects,omitempty"`
 }
 

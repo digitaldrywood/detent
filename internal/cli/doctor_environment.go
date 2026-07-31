@@ -693,6 +693,7 @@ type doctorHealthResponse struct {
 	Budgets           []doctorHealthBudget         `json:"budgets"`
 	Workflows         []doctorHealthWorkflow       `json:"workflows"`
 	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings"`
+	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues"`
 }
 
 type doctorHealthEnvironment struct {

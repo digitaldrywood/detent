@@ -75,6 +75,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{ProjectID: "detent", Kind: "github_rest", Status: "ramping"},
 			{ProjectID: "pyroapex", Kind: "backend_capacity", Status: "waiting"},
 		},
+		StrandedActiveIssues: []telemetry.StrandedIssue{
+			{ProjectID: "detent", IssueID: "detent-stranded"},
+			{ProjectID: "pyroapex", IssueID: "pyro-stranded"},
+		},
 	}, "detent")
 
 	if !ok {
@@ -124,6 +128,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.DispatchRecoveries) != 1 || got.DispatchRecoveries[0].Kind != "github_rest" {
 		t.Fatalf("DispatchRecoveries = %#v, want only detent row", got.DispatchRecoveries)
+	}
+	if len(got.StrandedActiveIssues) != 1 || got.StrandedActiveIssues[0].IssueID != "detent-stranded" {
+		t.Fatalf("StrandedActiveIssues = %#v, want only detent row", got.StrandedActiveIssues)
 	}
 }
 

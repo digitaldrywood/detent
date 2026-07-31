@@ -844,6 +844,8 @@
 #   refresh_ms: 1000
 #   # observability.render_interval_ms | type: integer | default: 16 | required: No | validation: must be greater than 0
 #   render_interval_ms: 16
+#   # observability.stranded_active_threshold_seconds | type: integer | default: 600 | required: No | validation: must be greater than 0
+#   stranded_active_threshold_seconds: 600
 #   # observability.efficiency | type: object | default: see child fields | required: No | validation: None
 #   efficiency:
 #     # observability.efficiency.anomaly_tokens_multiple | type: number | default: 3 | required: No | validation: must be greater than 0

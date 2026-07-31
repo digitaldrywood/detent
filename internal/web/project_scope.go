@@ -74,6 +74,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.FailureBreakers = scopedFailureBreakers(snapshot.FailureBreakers, selectedProjectID, fallbackProjectID)
 	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
 	out.StalenessWarnings = scopedStalenessWarnings(snapshot.StalenessWarnings, selectedProjectID, fallbackProjectID)
+	out.StrandedActiveIssues = scopedStrandedActiveIssues(snapshot.StrandedActiveIssues, selectedProjectID, fallbackProjectID)
 	if hasSourceProject {
 		out.Counts = sourceProject.Counts
 		out.Tokens = sourceProject.Tokens
@@ -96,6 +97,20 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.TokenTrend = nil
 	}
 	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
+	return out
+}
+
+func scopedStrandedActiveIssues(issues []telemetry.StrandedIssue, selectedProjectID string, fallbackProjectID string) []telemetry.StrandedIssue {
+	out := make([]telemetry.StrandedIssue, 0, len(issues))
+	for _, issue := range issues {
+		projectID := strings.TrimSpace(issue.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
+		if projectID == selectedProjectID {
+			out = append(out, issue)
+		}
+	}
 	return out
 }
 
