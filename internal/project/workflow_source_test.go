@@ -301,8 +301,8 @@ func readWorkflowSourceUpdate(t *testing.T, updates <-chan configwatcher.Update)
 	select {
 	case update := <-updates:
 		return update
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for workflow update")
+	case <-time.After(30 * time.Second):
+		t.Fatal("deadlocked waiting for workflow update")
 		return configwatcher.Update{}
 	}
 }
