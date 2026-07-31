@@ -470,7 +470,7 @@ func (g *GlobalDispatchGate) Release(slot Slot) error {
 	if !ok {
 		return nil
 	}
-	if err := g.global.ReleaseSlot(slot); err != nil {
+	if err := g.global.ReleaseSlot(slot); err != nil && !errors.Is(err, ErrSlotNotHeld) {
 		return err
 	}
 	delete(g.running, slot.token)
