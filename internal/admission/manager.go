@@ -683,6 +683,34 @@ func (m *Manager) resolveProposalFromIssueState(
 	proposal admissionmodel.Proposal,
 	at time.Time,
 ) (bool, error) {
+	transitions, err := m.store.AdmissionTargetTransitions(ctx, admissionmodel.TargetTransitionQuery{
+		ProjectID:   proposal.ProjectID,
+		IssueID:     proposal.IssueID,
+		TargetState: proposal.TargetState,
+		NotBefore:   proposal.CreatedAt,
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(transitions) > 0 {
+		transition := transitions[0]
+		decision := admissionmodel.Decision{
+			ProposalID:        proposal.ID,
+			Outcome:           admissionmodel.ProposalAccepted,
+			DecidedAt:         transition.EnteredAt.UTC(),
+			ActorLogin:        transition.ActorLogin,
+			ActorKind:         transition.ActorKind,
+			TransitionAt:      transition.EnteredAt.UTC(),
+			TransitionEventID: transition.EventID,
+			Reason:            admissionResolutionImplicitAccept,
+			Implicit:          true,
+		}
+		if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
 	var reason string
 	outcome := admissionmodel.ProposalSuperseded
 	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(proposal.TargetState)) {
