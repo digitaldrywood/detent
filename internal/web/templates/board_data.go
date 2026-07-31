@@ -124,14 +124,18 @@ func boardAdmissionProposalAlert(snapshot telemetry.Snapshot) (boardAlert, bool)
 			Detail:  admissionProposalTiming(proposal, snapshot.GeneratedAt),
 		})
 	}
+	total := len(rows)
+	rows, overflow := capBoardAlertRows(rows)
 	return boardAlert{
 		ID:            "board-alert-admission-proposals",
 		Kind:          boardAlertKindAdmissionProposal,
 		Severity:      boardAlertSeverityAdmissionProposal,
 		Tone:          primitives.KindWarn,
-		TerseSummary:  boardCountLabel(len(rows), "admission proposal awaiting decision", "admission proposals awaiting decision"),
+		TerseSummary:  boardCountLabel(total, "admission proposal awaiting decision", "admission proposals awaiting decision"),
 		DetailSummary: "Human admission decisions are required.",
 		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
 	}, true
 }
 
