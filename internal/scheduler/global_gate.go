@@ -20,7 +20,7 @@ const (
 
 type ProjectDispatchGate interface {
 	MarkReady(ProjectCandidate)
-	MarkIdle(string)
+	MarkIdle(ProjectCandidate)
 	TryAcquire(context.Context, ProjectCandidate, SlotRequest, time.Time) (Slot, bool, error)
 	SetPreempt(Slot, func())
 	Release(Slot) error
@@ -271,11 +271,11 @@ func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
 	}
 }
 
-func (g *GlobalDispatchGate) MarkIdle(projectID string) {
+func (g *GlobalDispatchGate) MarkIdle(project ProjectCandidate) {
 	if g == nil {
 		return
 	}
-	projectID = normalizeProjectID(projectID)
+	projectID := normalizeProjectID(project.ID)
 	if projectID == "" {
 		return
 	}

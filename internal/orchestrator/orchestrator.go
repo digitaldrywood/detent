@@ -789,7 +789,7 @@ func (o *Orchestrator) BeginDrain() {
 		gate.PauseDispatch()
 	}
 	if o.globalDispatchGate != nil {
-		o.globalDispatchGate.MarkIdle(o.projectID)
+		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
 	}
 }
 

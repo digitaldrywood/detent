@@ -252,7 +252,7 @@ func TestPoolRegistryElasticStrictPreemptionDoesNotCrossPools(t *testing.T) {
 		},
 		projects,
 	)
-	registry.MarkIdle("code-urgent")
+	registry.MarkIdle(scheduler.ProjectCandidate{ID: "code-urgent"})
 	videoSlots := acquirePoolSlots(t, registry, time.Time{}, projects[1], projects[2])
 	videoPreemptions := 0
 	for _, slot := range videoSlots {
@@ -370,7 +370,7 @@ func TestPoolRegistryStrictPreemptionDoesNotCrossPools(t *testing.T) {
 			{ID: "video-low", Pool: "video", Priority: 4},
 		},
 	)
-	registry.MarkIdle("code-urgent")
+	registry.MarkIdle(scheduler.ProjectCandidate{ID: "code-urgent"})
 	codeSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-low", Priority: 4})[0]
 	videoSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "video-low", Priority: 4})[0]
 	codePreemptions := 0
@@ -622,7 +622,7 @@ func TestProjectPoolGateRoutesLifecycleToCurrentPool(t *testing.T) {
 	if err := gate.Release(slot); err != nil {
 		t.Fatalf("second Release() error = %v", err)
 	}
-	gate.MarkIdle("")
+	gate.MarkIdle(scheduler.ProjectCandidate{})
 
 	registry.SetProjects([]scheduler.ProjectCandidate{{ID: project.ID}})
 	if snapshot := snapshotter.PoolSnapshot(); snapshot.Name != scheduler.DefaultPoolName {

@@ -1144,48 +1144,69 @@ func TestManagerDefersForCapacityAndBudget(t *testing.T) {
 func TestAcquireCapacityReleaseClearsDerivedAdmissionReservation(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
-	higher := scheduler.ProjectCandidate{ID: "detent", Priority: 0}
-	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Priority: 3}
-	gate := scheduler.NewGlobalDispatchGate(
-		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
-		higher,
-		lower,
-	)
-	gate.BeginProjectCycle(higher)
-	gate.EndProjectCycle(higher.ID)
-	settings := Settings{
-		GlobalDispatchGate: gate,
-		ProjectCandidate:   higher,
-	}
+	for _, tt := range []struct {
+		name string
+		pool string
+	}{
+		{name: "default pool", pool: scheduler.DefaultPoolName},
+		{name: "non-default pool", pool: "video"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	for run := 1; run <= 2; run++ {
-		release, acquired, reason, err := acquireCapacity(t.Context(), settings, now.Add(time.Duration(run)*time.Minute))
-		if err != nil {
-			t.Fatalf("admission run %d acquireCapacity() error = %v", run, err)
-		}
-		if !acquired || reason != "" {
-			t.Fatalf("admission run %d acquireCapacity() = %t, %q, want true, empty reason", run, acquired, reason)
-		}
-		if err := release(); err != nil {
-			t.Fatalf("admission run %d release() error = %v", run, err)
-		}
+			now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
+			higher := scheduler.ProjectCandidate{ID: "detent", Pool: tt.pool, Priority: 0}
+			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Pool: tt.pool, Priority: 3}
+			pools := []scheduler.PoolConfig{{
+				Name:      scheduler.DefaultPoolName,
+				Scheduler: scheduler.Config{Kind: "strict", Capacity: 1},
+			}}
+			if tt.pool != scheduler.DefaultPoolName {
+				pools = append(pools, scheduler.PoolConfig{
+					Name:      tt.pool,
+					Scheduler: scheduler.Config{Kind: "strict", Capacity: 1},
+				})
+			}
+			gate, err := scheduler.NewPoolRegistry(pools, []scheduler.ProjectCandidate{higher, lower})
+			if err != nil {
+				t.Fatalf("NewPoolRegistry() error = %v", err)
+			}
+			gate.BeginProjectCycle(higher)
+			gate.EndProjectCycle(higher.ID)
+			settings := Settings{
+				GlobalDispatchGate: gate,
+				ProjectCandidate:   higher,
+			}
 
-		slot, granted, decision, err := gate.TryAcquireWithDecision(
-			t.Context(),
-			lower,
-			scheduler.SlotRequest{State: "Todo"},
-			now.Add(time.Duration(run)*time.Minute+time.Second),
-		)
-		if err != nil {
-			t.Fatalf("lower run %d TryAcquireWithDecision() error = %v", run, err)
-		}
-		if !granted {
-			t.Fatalf("lower run %d TryAcquireWithDecision() decision = %#v, want granted", run, decision)
-		}
-		if err := gate.Release(slot); err != nil {
-			t.Fatalf("lower run %d Release() error = %v", run, err)
-		}
+			for run := 1; run <= 2; run++ {
+				release, acquired, reason, err := acquireCapacity(t.Context(), settings, now.Add(time.Duration(run)*time.Minute))
+				if err != nil {
+					t.Fatalf("admission run %d acquireCapacity() error = %v", run, err)
+				}
+				if !acquired || reason != "" {
+					t.Fatalf("admission run %d acquireCapacity() = %t, %q, want true, empty reason", run, acquired, reason)
+				}
+				if err := release(); err != nil {
+					t.Fatalf("admission run %d release() error = %v", run, err)
+				}
+
+				slot, granted, decision, err := gate.TryAcquireWithDecision(
+					t.Context(),
+					lower,
+					scheduler.SlotRequest{State: "Todo"},
+					now.Add(time.Duration(run)*time.Minute+time.Second),
+				)
+				if err != nil {
+					t.Fatalf("lower run %d TryAcquireWithDecision() error = %v", run, err)
+				}
+				if !granted {
+					t.Fatalf("lower run %d TryAcquireWithDecision() decision = %#v, want granted", run, decision)
+				}
+				if err := gate.Release(slot); err != nil {
+					t.Fatalf("lower run %d Release() error = %v", run, err)
+				}
+			}
+		})
 	}
 }
 
@@ -1193,13 +1214,18 @@ func TestAcquireCapacityFailedAcquireClearsDerivedAdmissionReservation(t *testin
 	t.Parallel()
 
 	now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
-	higher := scheduler.ProjectCandidate{ID: "detent", Priority: 0}
-	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Priority: 3}
-	gate := scheduler.NewGlobalDispatchGate(
-		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
-		higher,
-		lower,
+	higher := scheduler.ProjectCandidate{ID: "detent", Pool: "video", Priority: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Pool: "video", Priority: 3}
+	gate, err := scheduler.NewPoolRegistry(
+		[]scheduler.PoolConfig{
+			{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "strict", Capacity: 1}},
+			{Name: "video", Scheduler: scheduler.Config{Kind: "strict", Capacity: 1}},
+		},
+		[]scheduler.ProjectCandidate{higher, lower},
 	)
+	if err != nil {
+		t.Fatalf("NewPoolRegistry() error = %v", err)
+	}
 	gate.BeginProjectCycle(higher)
 	gate.EndProjectCycle(higher.ID)
 	resumeDispatch := gate.PauseDispatch()

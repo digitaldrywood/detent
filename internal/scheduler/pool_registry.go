@@ -265,13 +265,13 @@ func (r *PoolRegistry) MarkReady(project ProjectCandidate) {
 	}
 }
 
-func (r *PoolRegistry) MarkIdle(projectID string) {
+func (r *PoolRegistry) MarkIdle(project ProjectCandidate) {
 	r.reconfigureMu.Lock()
 	defer r.reconfigureMu.Unlock()
 
-	runtime := r.runtimeForProject(projectID)
+	runtime := r.runtimeForCandidate(project)
 	if runtime != nil {
-		runtime.gate.MarkIdle(projectID)
+		runtime.gate.MarkIdle(project)
 		if !runtime.gate.hasReadyProjects() {
 			r.elastic.remove(runtime.generation)
 		}
@@ -505,8 +505,9 @@ func (g *projectPoolGate) MarkReady(project ProjectCandidate) {
 	g.registry.MarkReady(project)
 }
 
-func (g *projectPoolGate) MarkIdle(string) {
-	g.registry.MarkIdle(g.projectID)
+func (g *projectPoolGate) MarkIdle(project ProjectCandidate) {
+	project.ID = g.projectID
+	g.registry.MarkIdle(project)
 }
 
 func (g *projectPoolGate) BeginProjectCycle(project ProjectCandidate) {
