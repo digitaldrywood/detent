@@ -1,9 +1,11 @@
 # Package exceptions and exact-file coverage ratchets. Floors only move up.
 github.com/digitaldrywood/detent/internal/config/cmd/configdoc 0 # Config documentation command wiring delegates to the tested generator package.
+github.com/digitaldrywood/detent/internal/admission/manager.go 90 # Safety-critical admission capacity gate and cleanup.
 github.com/digitaldrywood/detent/internal/orchestrator/backend_capacity.go 90 # Safety-critical backend capacity brake.
 github.com/digitaldrywood/detent/internal/orchestrator/implement_progress.go 90 # Safety-critical no-progress brake.
 github.com/digitaldrywood/detent/internal/orchestrator/ranking.go 90 # Safety-critical dispatch ranking.
 github.com/digitaldrywood/detent/internal/orchestrator/spend_progress.go 90 # Safety-critical spend progress brake.
+github.com/digitaldrywood/detent/internal/scheduler/global_gate.go 90 # Safety-critical fleet-wide dispatch gate.
 github.com/digitaldrywood/detent/internal/scheduler/pool_registry.go 90 # Safety-critical agent-pool dispatch control.
 github.com/digitaldrywood/detent/internal/web/ui/components/icon 0 # TemplUI icon glue has no direct behavior tests yet; raise or remove after component tests cover it.
 github.com/digitaldrywood/detent/internal/web/ui/primitives 0 # UI primitive wrappers are currently untested glue; raise or remove after behavior-focused tests cover them.

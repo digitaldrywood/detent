@@ -869,3 +869,53 @@ func TestGlobalDispatchGateNonStrictModesDoNotReserveForProjectPriority(t *testi
 		})
 	}
 }
+
+func TestGlobalDispatchGateDefensiveBoundaries(t *testing.T) {
+	t.Parallel()
+
+	var nilGate *scheduler.GlobalDispatchGate
+	if snapshot := nilGate.PoolSnapshot(); snapshot.Name != scheduler.DefaultPoolName {
+		t.Fatalf("nil PoolSnapshot() = %#v", snapshot)
+	}
+	nilGate.SetProjects(nil)
+	nilGate.PauseDispatch()()
+	if err := nilGate.Reconfigure(scheduler.Config{}); err != nil {
+		t.Fatalf("nil Reconfigure() error = %v", err)
+	}
+	nilGate.BeginProjectCycle(scheduler.ProjectCandidate{ID: "alpha"})
+	nilGate.MarkReady(scheduler.ProjectCandidate{ID: "alpha"})
+	nilGate.MarkIdle(scheduler.ProjectCandidate{ID: "alpha"})
+	nilGate.SetPreempt(scheduler.Slot{}, func() {})
+	if err := nilGate.Release(scheduler.Slot{}); err != nil {
+		t.Fatalf("nil Release() error = %v", err)
+	}
+	if _, granted, err := nilGate.TryAcquire(context.Background(), scheduler.ProjectCandidate{ID: "alpha"}, scheduler.SlotRequest{}, time.Time{}); err != nil || !granted {
+		t.Fatalf("nil TryAcquire() granted = %t error = %v", granted, err)
+	}
+
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	gate.BeginProjectCycle(scheduler.ProjectCandidate{})
+	gate.EndProjectCycle(" ")
+	gate.MarkReady(scheduler.ProjectCandidate{})
+	gate.MarkIdle(scheduler.ProjectCandidate{})
+	gate.SetPreempt(scheduler.Slot{}, func() {})
+	if err := gate.Release(scheduler.Slot{}); err != nil {
+		t.Fatalf("zero Release() error = %v", err)
+	}
+	if _, _, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{}, scheduler.SlotRequest{}, time.Time{}); !errors.Is(err, scheduler.ErrNoCandidates) {
+		t.Fatalf("empty candidate error = %v", err)
+	}
+	if _, _, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "alpha"}, scheduler.SlotRequest{Weight: -1}, time.Time{}); !errors.Is(err, scheduler.ErrInvalidWeight) {
+		t.Fatalf("invalid request error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, _, err := gate.TryAcquireWithDecision(ctx, scheduler.ProjectCandidate{ID: "alpha"}, scheduler.SlotRequest{}, time.Time{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled request error = %v", err)
+	}
+	gate.SetProjects([]scheduler.ProjectCandidate{{ID: "alpha"}})
+	gate.SetProjects(nil)
+	if err := gate.Reconfigure(scheduler.Config{Kind: "invalid"}); err == nil {
+		t.Fatal("invalid Reconfigure() error = nil")
+	}
+}
