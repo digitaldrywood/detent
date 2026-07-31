@@ -665,6 +665,99 @@ func TestGlobalDispatchGateStrictProjectPriorityUsesLeftoverCapacity(t *testing.
 	}
 }
 
+func TestGlobalDispatchGateStrictProjectReservationTracksDemand(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		arrange     func(*testing.T, *scheduler.GlobalDispatchGate, scheduler.ProjectCandidate, scheduler.ProjectCandidate)
+		wantGranted bool
+		wantReason  string
+	}{
+		{
+			name: "idle higher priority project stays idle after capacity release",
+			arrange: func(t *testing.T, gate *scheduler.GlobalDispatchGate, higher, lower scheduler.ProjectCandidate) {
+				t.Helper()
+				gate.BeginProjectCycle(higher)
+				gate.EndProjectCycle(higher.ID)
+				slot, ok, decision, err := gate.TryAcquireWithDecision(
+					t.Context(),
+					lower,
+					scheduler.SlotRequest{State: "Todo"},
+					time.Date(2026, 7, 30, 9, 0, 0, 0, time.Local),
+				)
+				if err != nil {
+					t.Fatalf("initial lower TryAcquireWithDecision() error = %v", err)
+				}
+				if !ok {
+					t.Fatalf("initial lower TryAcquireWithDecision() decision = %#v, want granted", decision)
+				}
+				if err := gate.Release(slot); err != nil {
+					t.Fatalf("initial lower Release() error = %v", err)
+				}
+			},
+			wantGranted: true,
+			wantReason:  scheduler.DispatchGateReasonGranted,
+		},
+		{
+			name: "pending higher priority project reserves capacity",
+			arrange: func(_ *testing.T, gate *scheduler.GlobalDispatchGate, higher, _ scheduler.ProjectCandidate) {
+				gate.MarkReady(higher)
+			},
+			wantReason: scheduler.DispatchGateReasonReservedForHigherPriorityProject,
+		},
+		{
+			name: "idle to ready higher priority project reclaims reservation",
+			arrange: func(_ *testing.T, gate *scheduler.GlobalDispatchGate, higher, _ scheduler.ProjectCandidate) {
+				gate.BeginProjectCycle(higher)
+				gate.EndProjectCycle(higher.ID)
+				gate.MarkReady(higher)
+			},
+			wantReason: scheduler.DispatchGateReasonReservedForHigherPriorityProject,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
+			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Weight: 1, Priority: 3}
+			gate := scheduler.NewGlobalDispatchGate(
+				scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
+				higher,
+				lower,
+			)
+			tt.arrange(t, gate, higher, lower)
+
+			gate.BeginProjectCycle(lower)
+			slot, granted, decision, err := gate.TryAcquireWithDecision(
+				t.Context(),
+				lower,
+				scheduler.SlotRequest{State: "Todo"},
+				time.Date(2026, 7, 30, 9, 1, 0, 0, time.Local),
+			)
+			gate.EndProjectCycle(lower.ID)
+			if err != nil {
+				t.Fatalf("lower TryAcquireWithDecision() error = %v", err)
+			}
+			if granted != tt.wantGranted || decision.Reason != tt.wantReason {
+				t.Fatalf(
+					"lower TryAcquireWithDecision() granted = %t reason = %q, want granted = %t reason = %q; decision = %#v",
+					granted,
+					decision.Reason,
+					tt.wantGranted,
+					tt.wantReason,
+					decision,
+				)
+			}
+			if granted {
+				if err := gate.Release(slot); err != nil {
+					t.Fatalf("lower Release() error = %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestGlobalDispatchGateNonStrictModesDoNotReserveForProjectPriority(t *testing.T) {
 	t.Parallel()
 
