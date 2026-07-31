@@ -1141,6 +1141,100 @@ func TestManagerDefersForCapacityAndBudget(t *testing.T) {
 	}
 }
 
+func TestAcquireCapacityReleaseClearsDerivedAdmissionReservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
+	higher := scheduler.ProjectCandidate{ID: "detent", Priority: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Priority: 3}
+	gate := scheduler.NewGlobalDispatchGate(
+		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
+		higher,
+		lower,
+	)
+	gate.BeginProjectCycle(higher)
+	gate.EndProjectCycle(higher.ID)
+	settings := Settings{
+		GlobalDispatchGate: gate,
+		ProjectCandidate:   higher,
+	}
+
+	for run := 1; run <= 2; run++ {
+		release, acquired, reason, err := acquireCapacity(t.Context(), settings, now.Add(time.Duration(run)*time.Minute))
+		if err != nil {
+			t.Fatalf("admission run %d acquireCapacity() error = %v", run, err)
+		}
+		if !acquired || reason != "" {
+			t.Fatalf("admission run %d acquireCapacity() = %t, %q, want true, empty reason", run, acquired, reason)
+		}
+		if err := release(); err != nil {
+			t.Fatalf("admission run %d release() error = %v", run, err)
+		}
+
+		slot, granted, decision, err := gate.TryAcquireWithDecision(
+			t.Context(),
+			lower,
+			scheduler.SlotRequest{State: "Todo"},
+			now.Add(time.Duration(run)*time.Minute+time.Second),
+		)
+		if err != nil {
+			t.Fatalf("lower run %d TryAcquireWithDecision() error = %v", run, err)
+		}
+		if !granted {
+			t.Fatalf("lower run %d TryAcquireWithDecision() decision = %#v, want granted", run, decision)
+		}
+		if err := gate.Release(slot); err != nil {
+			t.Fatalf("lower run %d Release() error = %v", run, err)
+		}
+	}
+}
+
+func TestAcquireCapacityFailedAcquireClearsDerivedAdmissionReservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
+	higher := scheduler.ProjectCandidate{ID: "detent", Priority: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Priority: 3}
+	gate := scheduler.NewGlobalDispatchGate(
+		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
+		higher,
+		lower,
+	)
+	gate.BeginProjectCycle(higher)
+	gate.EndProjectCycle(higher.ID)
+	resumeDispatch := gate.PauseDispatch()
+	release, acquired, reason, err := acquireCapacity(t.Context(), Settings{
+		GlobalDispatchGate: gate,
+		ProjectCandidate:   higher,
+	}, now)
+	resumeDispatch()
+	if err != nil {
+		t.Fatalf("acquireCapacity() error = %v", err)
+	}
+	if acquired || reason != "fleet_capacity" {
+		t.Fatalf("acquireCapacity() = %t, %q, want false, fleet_capacity", acquired, reason)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release() error = %v", err)
+	}
+
+	slot, granted, decision, err := gate.TryAcquireWithDecision(
+		t.Context(),
+		lower,
+		scheduler.SlotRequest{State: "Todo"},
+		now.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("lower TryAcquireWithDecision() error = %v", err)
+	}
+	if !granted {
+		t.Fatalf("lower TryAcquireWithDecision() decision = %#v, want granted", decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("lower Release() error = %v", err)
+	}
+}
+
 func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 	t.Parallel()
 
