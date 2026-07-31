@@ -106,7 +106,7 @@ func TestOnboardingValidateAnswersCommandRejectsGitHubModeBeforeIdentity(t *test
 func TestOnboardingValidateAnswersCommandRejectsWrongTargetRemote(t *testing.T) {
 	t.Parallel()
 
-	sourceRoot := initOnboardingGitRepository(t, "https://github.com/example/other.git")
+	sourceRoot := t.TempDir()
 	answersPath := writeOnboardingAnswers(t, strings.Join([]string{
 		"CUSTOMER_ID=digitaldrywood",
 		"DETENT_PROJECT_ID=detent",
@@ -117,7 +117,11 @@ func TestOnboardingValidateAnswersCommandRejectsWrongTargetRemote(t *testing.T) 
 		"IDENTITY_CONFIRMED=true",
 		"",
 	}, "\n"))
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return true }),
+		cli.WithCommandRunner(onboardingValidationGitRunner(t, sourceRoot, "https://github.com/example/other.git", nil)),
+	)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"onboarding", "validate-answers", "--answers", answersPath, "--phase", "identity"})
@@ -128,6 +132,64 @@ func TestOnboardingValidateAnswersCommandRejectsWrongTargetRemote(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "TARGET_SOURCE_ROOT origin remote must match TARGET_REPOSITORY digitaldrywood/detent") {
 		t.Fatalf("Execute() error missing remote mismatch validation:\n%s", err.Error())
+	}
+}
+
+func TestOnboardingValidateAnswersCommandReportsTargetRemoteLookupTimeout(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := t.TempDir()
+	answersPath := writeOnboardingAnswers(t, strings.Join([]string{
+		"CUSTOMER_ID=digitaldrywood",
+		"DETENT_PROJECT_ID=detent",
+		"TARGET_REPOSITORY=digitaldrywood/detent",
+		"TARGET_SOURCE_ROOT=" + sourceRoot,
+		"REFERENCE_REPOSITORIES=",
+		"DETENT_ONBOARDING_MODE=add-project",
+		"IDENTITY_CONFIRMED=true",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return true }),
+		cli.WithCommandRunner(onboardingValidationGitRunner(t, sourceRoot, "", context.DeadlineExceeded)),
+	)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"onboarding", "validate-answers", "--answers", answersPath, "--phase", "identity"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "TARGET_SOURCE_ROOT origin remote lookup timed out: context deadline exceeded") {
+		t.Fatalf("Execute() error missing remote timeout validation:\n%s", err.Error())
+	}
+	if strings.Contains(err.Error(), "must have an origin remote") {
+		t.Fatalf("Execute() error misclassified timeout as missing origin remote:\n%s", err.Error())
+	}
+}
+
+func onboardingValidationGitRunner(t *testing.T, sourceRoot string, remote string, remoteErr error) cli.CommandRunner {
+	t.Helper()
+
+	return func(ctx context.Context, name string, args ...string) (string, error) {
+		if name != "git" {
+			t.Fatalf("command name = %q, want git", name)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("git command context has no deadline")
+		}
+		command := strings.Join(args, "\x00")
+		switch command {
+		case strings.Join([]string{"-C", sourceRoot, "rev-parse", "--is-inside-work-tree"}, "\x00"):
+			return "true\n", nil
+		case strings.Join([]string{"-C", sourceRoot, "remote", "get-url", "origin"}, "\x00"):
+			return remote, remoteErr
+		default:
+			t.Fatalf("git args = %#v, want onboarding validation command", args)
+			return "", nil
+		}
 	}
 }
 
