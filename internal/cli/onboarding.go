@@ -162,8 +162,8 @@ func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 		Example: `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env"`,
 	}
 	cmd.AddCommand(
-		newOnboardingValidateAnswersCommand(),
-		newOnboardingExplainAnswersCommand(),
+		newOnboardingValidateAnswersCommand(opts),
+		newOnboardingExplainAnswersCommand(opts),
 		newOnboardingNormalizeAnswersCommand(),
 		newOnboardingDraftAnswersCommand(configPath, opts),
 		newOnboardingBuildWorkflowCommand(),
@@ -234,7 +234,7 @@ func newOnboardingDraftAnswersCommand(configPath *string, opts options) *cobra.C
 	return cmd
 }
 
-func newOnboardingExplainAnswersCommand() *cobra.Command {
+func newOnboardingExplainAnswersCommand(opts options) *cobra.Command {
 	var answersPath string
 	var phase string
 	cmd := &cobra.Command{
@@ -248,7 +248,7 @@ func newOnboardingExplainAnswersCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := validateOnboardingAnswersFile(answersPath, phase)
+			result, err := validateOnboardingAnswersFile(cmd.Context(), opts, answersPath, phase)
 			if err != nil {
 				return err
 			}
@@ -269,7 +269,7 @@ func newOnboardingExplainAnswersCommand() *cobra.Command {
 	return cmd
 }
 
-func newOnboardingValidateAnswersCommand() *cobra.Command {
+func newOnboardingValidateAnswersCommand(opts options) *cobra.Command {
 	var answersPath string
 	var phase string
 	cmd := &cobra.Command{
@@ -283,7 +283,7 @@ func newOnboardingValidateAnswersCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := validateOnboardingAnswersFile(answersPath, phase)
+			result, err := validateOnboardingAnswersFile(cmd.Context(), opts, answersPath, phase)
 			if err != nil {
 				return err
 			}
@@ -1149,7 +1149,7 @@ func onboardingAnswerLineKey(line string) (string, bool) {
 	return key, ok && validOnboardingAnswerKey(key)
 }
 
-func validateOnboardingAnswersFile(path string, phase string) (onboardingAnswersValidationResult, error) {
+func validateOnboardingAnswersFile(ctx context.Context, opts options, path string, phase string) (onboardingAnswersValidationResult, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return onboardingAnswersValidationResult{}, NewValidationError(
@@ -1179,7 +1179,7 @@ func validateOnboardingAnswersFile(path string, phase string) (onboardingAnswers
 		Path:   path,
 		Phase:  normalizedPhase,
 	}
-	problems := validateOnboardingAnswers(answers, normalizedPhase, &result)
+	problems := validateOnboardingAnswers(ctx, opts, answers, normalizedPhase, &result)
 	if len(problems) > 0 {
 		return onboardingAnswersValidationResult{}, NewValidationError(
 			strings.Join(problems, "; "),
@@ -1383,9 +1383,9 @@ func trimOnboardingAnswerValue(value string) string {
 	return value
 }
 
-func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *onboardingAnswersValidationResult) []string {
+func validateOnboardingAnswers(ctx context.Context, opts options, answers onboardingAnswers, phase string, result *onboardingAnswersValidationResult) []string {
 	problems := append([]string(nil), answers.Problems...)
-	identityProblems := validateOnboardingIdentityAnswers(answers, result)
+	identityProblems := validateOnboardingIdentityAnswers(ctx, opts, answers, result)
 	problems = append(problems, identityProblems...)
 	if len(identityProblems) > 0 && strings.TrimSpace(answers.Values["GITHUB_MODE"]) != "" {
 		problems = append(problems, "GITHUB_MODE cannot be set before identity answers are valid")
@@ -1457,11 +1457,7 @@ func analyzeOnboardingDeliveryProfileAnswers(answers onboardingAnswers) onboardi
 	return analysis
 }
 
-func validateOnboardingIdentityAnswers(answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
-	return validateOnboardingIdentityAnswersWithContext(context.Background(), answers, result)
-}
-
-func validateOnboardingIdentityAnswersWithContext(ctx context.Context, answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
+func validateOnboardingIdentityAnswers(ctx context.Context, opts options, answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
 	var problems []string
 
 	customerID := strings.TrimSpace(answers.Values["CUSTOMER_ID"])
@@ -1498,7 +1494,7 @@ func validateOnboardingIdentityAnswersWithContext(ctx context.Context, answers o
 	result.ReferenceRepositories = referenceRepositories
 
 	targetSourceRoot := strings.TrimSpace(answers.Values["TARGET_SOURCE_ROOT"])
-	sourceProblems := validateOnboardingTargetSourceRootWithContext(ctx, targetSourceRoot, targetRepository, targetRepositoryValid)
+	sourceProblems := validateOnboardingTargetSourceRoot(ctx, opts, targetSourceRoot, targetRepository, targetRepositoryValid)
 	problems = append(problems, sourceProblems...)
 	if len(sourceProblems) == 0 {
 		result.TargetSourceRoot = targetSourceRoot
@@ -1520,6 +1516,10 @@ func validateOnboardingIdentityAnswersWithContext(ctx context.Context, answers o
 	}
 
 	return problems
+}
+
+func validateOnboardingIdentityAnswersWithContext(ctx context.Context, answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
+	return validateOnboardingIdentityAnswers(ctx, defaultOptions(), answers, result)
 }
 
 func validateOnboardingReferenceRepositories(answers onboardingAnswers, targetRepository string) ([]string, []string) {
@@ -1548,7 +1548,7 @@ func validateOnboardingReferenceRepositories(answers onboardingAnswers, targetRe
 	return repositories, problems
 }
 
-func validateOnboardingTargetSourceRootWithContext(ctx context.Context, path string, targetRepository string, targetRepositoryValid bool) []string {
+func validateOnboardingTargetSourceRoot(ctx context.Context, opts options, path string, targetRepository string, targetRepositoryValid bool) []string {
 	if path == "" {
 		return []string{"TARGET_SOURCE_ROOT is required"}
 	}
@@ -1557,11 +1557,14 @@ func validateOnboardingTargetSourceRootWithContext(ctx context.Context, path str
 	}
 
 	var problems []string
-	if err := defaultGitWorkTree(ctx, path); err != nil {
+	if err := onboardingGitWorkTree(ctx, opts, path); err != nil {
 		return []string{"TARGET_SOURCE_ROOT must be a git checkout: " + err.Error()}
 	}
-	remote, err := defaultGitRemoteURL(ctx, path)
+	remote, err := onboardingGitRemoteURL(ctx, opts, path)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return []string{"TARGET_SOURCE_ROOT origin remote lookup timed out: " + err.Error()}
+		}
 		return []string{"TARGET_SOURCE_ROOT must have an origin remote: " + err.Error()}
 	}
 	if targetRepositoryValid {
@@ -1571,6 +1574,29 @@ func validateOnboardingTargetSourceRootWithContext(ctx context.Context, path str
 		}
 	}
 	return problems
+}
+
+func onboardingGitWorkTree(ctx context.Context, opts options, path string) error {
+	output, err := onboardingRunCommand(ctx, opts, "git", "-C", path, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(output) != "true" {
+		return errors.New("not inside a git worktree")
+	}
+	return nil
+}
+
+func onboardingGitRemoteURL(ctx context.Context, opts options, path string) (string, error) {
+	output, err := onboardingRunCommand(ctx, opts, "git", "-C", path, "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
+	remote := strings.TrimSpace(output)
+	if remote == "" {
+		return "", errors.New("origin remote URL is blank")
+	}
+	return remote, nil
 }
 
 func gitHubRepositoryFromRemote(remote string) (string, bool) {
