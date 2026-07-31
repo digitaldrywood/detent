@@ -239,10 +239,13 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = server.RunTurn(runCtx, RunTurnRequest{
 		Workspace: t.TempDir(),
 		Prompt:    "fail mid stream",
-	}, nil)
+	}, waitForLocalTransportReceiveBackpressure(t, capturingFactory))
 	if !errors.Is(err, ErrTurnFailed) {
 		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
 	}
@@ -267,10 +270,13 @@ func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) 
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	result, err := server.RunTurn(context.Background(), RunTurnRequest{
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := server.RunTurn(runCtx, RunTurnRequest{
 		Workspace: t.TempDir(),
 		Prompt:    "complete then drain",
-	}, nil)
+	}, waitForLocalTransportReceiveBackpressure(t, capturingFactory))
 	if err != nil {
 		assertLocalTransportClosed(t, capturingFactory.transport, "successful turn backpressure after RunTurn error")
 		t.Fatalf("RunTurn() error = %v", err)
@@ -316,6 +322,86 @@ func TestLocalTransportPublishReceivedStopsDuringBackpressure(t *testing.T) {
 		t.Fatalf("received unexpected result after read stop: %#v", result)
 	default:
 	}
+}
+
+func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
+	t.Parallel()
+
+	params, err := json.Marshal(strings.Repeat("x", 2*MaxScanTokenSize))
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "blocked-write-publish")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	local, ok := transport.(*localTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *localTransport", transport)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = transport.Close(closeCtx)
+	})
+
+	writeObserver := newWriteObserver(local.stdin)
+	local.codec.writer = bufio.NewWriter(writeObserver)
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- transport.Send(context.Background(), Message{
+			ID:     json.RawMessage(`1`),
+			Method: "large",
+			Params: params,
+		})
+	}()
+
+	select {
+	case <-writeObserver.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Send() did not start writing")
+	}
+	waitForReceivedBufferFull(t, local, "blocked write and publish")
+	select {
+	case err := <-sendDone:
+		t.Fatalf("Send() returned before close with full receive buffer: %v", err)
+	default:
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelClose()
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- transport.Close(closeCtx)
+	}()
+
+	select {
+	case err := <-sendDone:
+		if err == nil {
+			t.Fatal("Send() error = nil, want blocked write interrupted by close")
+		}
+	case <-closeCtx.Done():
+		t.Fatalf("Send() stayed blocked after Close(): %v", closeCtx.Err())
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-closeCtx.Done():
+		t.Fatalf("Close() did not complete: %v", closeCtx.Err())
+	}
+	assertLocalTransportClosed(t, local, "blocked write and publish")
 }
 
 func TestLocalTransportSendWrapsCloseErrorAfterContextCancellation(t *testing.T) {
@@ -480,6 +566,8 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`), true)
 	case "turn-complete-backpressure":
 		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`), false)
+	case "blocked-write-publish":
+		helperFloodOutput(NewCodec(os.Stdin, os.Stdout), false)
 	default:
 		os.Exit(2)
 	}
@@ -521,6 +609,10 @@ func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood boo
 	}); err != nil {
 		helperBackpressureExit("write turn/completed", err)
 	}
+	helperFloodOutput(codec, blockAfterFlood)
+}
+
+func helperFloodOutput(codec *Codec, blockAfterFlood bool) {
 	for i := range 1024 {
 		msg := Message{
 			JSONRPC: JSONRPCVersion,
@@ -642,6 +734,26 @@ func (noopWriteCloser) Close() error {
 	return nil
 }
 
+type writeObserver struct {
+	writer  io.Writer
+	started chan struct{}
+	once    sync.Once
+}
+
+func newWriteObserver(writer io.Writer) *writeObserver {
+	return &writeObserver{
+		writer:  writer,
+		started: make(chan struct{}),
+	}
+}
+
+func (w *writeObserver) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.started)
+	})
+	return w.writer.Write(p)
+}
+
 type capturingLocalTransportFactory struct {
 	factory   *LocalTransportFactory
 	transport *localTransport
@@ -675,6 +787,38 @@ func assertLocalTransportClosed(t *testing.T, transport *localTransport, scenari
 	}
 	if transport.cmd.ProcessState == nil {
 		t.Fatalf("%s: ProcessState is nil, want reaped process", scenario)
+	}
+}
+
+func waitForLocalTransportReceiveBackpressure(t *testing.T, factory *capturingLocalTransportFactory) UpdateHandler {
+	t.Helper()
+
+	return func(update Update) error {
+		if update.Type != UpdateTurnCompleted {
+			return nil
+		}
+		if factory.transport == nil {
+			t.Fatal("captured transport is nil while waiting for receive backpressure")
+		}
+		waitForReceivedBufferFull(t, factory.transport, "turn completed")
+		return nil
+	}
+}
+
+func waitForReceivedBufferFull(t *testing.T, transport *localTransport, scenario string) {
+	t.Helper()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	for len(transport.received) < cap(transport.received) {
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("%s: receive buffer did not fill", scenario)
+		}
 	}
 }
 
