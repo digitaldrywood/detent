@@ -6,14 +6,15 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
-	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true)
-	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false)
-	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
-	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
+	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true, uint8(0))
+	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false, uint8(1))
+	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(2))
+	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(3))
 
 	f.Fuzz(func(
 		t *testing.T,
@@ -35,6 +36,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		stageSeconds int64,
 		acceptedSeconds int64,
 		accepted bool,
+		gateScenario uint8,
 	) {
 		diffStats := DiffStats{
 			FilesChanged: filesChanged,
@@ -149,5 +151,111 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		if !equalStrings(rankingIssueIDs(forward), rankingIssueIDs(reverse)) {
 			t.Fatalf("ranking depends on input order: forward=%#v reverse=%#v", rankingIssueIDs(forward), rankingIssueIDs(reverse))
 		}
+
+		assertDemandDrivenPriorityReservation(t, gateScenario%3, now)
 	})
+}
+
+func assertDemandDrivenPriorityReservation(t *testing.T, scenario uint8, now time.Time) {
+	t.Helper()
+
+	higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Weight: 1, Priority: 3}
+	gate := scheduler.NewGlobalDispatchGate(
+		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
+		higher,
+		lower,
+	)
+
+	switch scenario {
+	case 0:
+		gate.BeginProjectCycle(higher)
+		gate.EndProjectCycle(higher.ID)
+		candidate := scheduler.ProjectCandidate{ID: higher.ID + "/admission", Weight: 1, Priority: higher.Priority}
+		slot := requireSafetyGateGranted(t, gate, candidate, now)
+		if err := gate.Release(slot); err != nil {
+			t.Fatalf("release dynamic candidate: %v", err)
+		}
+		gate.MarkIdle(candidate)
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(time.Second))
+	case 1:
+		gate.BeginProjectCycle(higher)
+		gate.EndProjectCycle(higher.ID)
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now)
+	case 2:
+		gate.BeginProjectCycle(higher)
+		requireSafetyGateReserved(t, gate, lower, now)
+		gate.EndProjectCycle(higher.ID)
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(time.Second))
+
+		gate.MarkReady(higher)
+		requireSafetyGateReserved(t, gate, lower, now.Add(2*time.Second))
+		gate.MarkIdle(higher)
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(3*time.Second))
+
+		gate.BeginProjectCycle(higher)
+		slot := requireSafetyGateGranted(t, gate, higher, now.Add(4*time.Second))
+		gate.EndProjectCycle(higher.ID)
+		if err := gate.Release(slot); err != nil {
+			t.Fatalf("release higher-priority candidate: %v", err)
+		}
+		requireSafetyGateReserved(t, gate, lower, now.Add(5*time.Second))
+	}
+}
+
+func requireSafetyGateGrantedAndReleased(
+	t *testing.T,
+	gate *scheduler.GlobalDispatchGate,
+	project scheduler.ProjectCandidate,
+	now time.Time,
+) {
+	t.Helper()
+	slot := requireSafetyGateGranted(t, gate, project, now)
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("release %s: %v", project.ID, err)
+	}
+	gate.MarkIdle(project)
+}
+
+func requireSafetyGateGranted(
+	t *testing.T,
+	gate *scheduler.GlobalDispatchGate,
+	project scheduler.ProjectCandidate,
+	now time.Time,
+) scheduler.Slot {
+	t.Helper()
+	slot, granted, decision, err := gate.TryAcquireWithDecision(
+		t.Context(),
+		project,
+		scheduler.SlotRequest{State: "Todo"},
+		now,
+	)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision(%s): %v", project.ID, err)
+	}
+	if !granted || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("TryAcquireWithDecision(%s) decision = %#v, want granted", project.ID, decision)
+	}
+	return slot
+}
+
+func requireSafetyGateReserved(
+	t *testing.T,
+	gate *scheduler.GlobalDispatchGate,
+	project scheduler.ProjectCandidate,
+	now time.Time,
+) {
+	t.Helper()
+	_, granted, decision, err := gate.TryAcquireWithDecision(
+		t.Context(),
+		project,
+		scheduler.SlotRequest{State: "Todo"},
+		now,
+	)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision(%s): %v", project.ID, err)
+	}
+	if granted || decision.Reason != scheduler.DispatchGateReasonReservedForHigherPriorityProject {
+		t.Fatalf("TryAcquireWithDecision(%s) decision = %#v, want priority reservation", project.ID, decision)
+	}
 }

@@ -1261,6 +1261,505 @@ func TestAcquireCapacityFailedAcquireClearsDerivedAdmissionReservation(t *testin
 	}
 }
 
+func TestAcquireCapacitySafetyBoundaries(t *testing.T) {
+	t.Parallel()
+
+	errRequest := errors.New("request failed")
+	errLocalRelease := errors.New("local release failed")
+	errGate := errors.New("gate failed")
+	errGateRelease := errors.New("gate release failed")
+
+	tests := []struct {
+		name             string
+		settings         Settings
+		wantAcquired     bool
+		wantReason       string
+		wantAcquireErrs  []error
+		wantReleaseErrs  []error
+		wantMarkedIdle   int
+		wantLocalRelease int
+		wantGateRelease  int
+	}{
+		{
+			name:       "local capacity full",
+			settings:   Settings{Scheduler: &capacityScheduler{requestErr: scheduler.ErrNoSlots}},
+			wantReason: "fleet_capacity",
+		},
+		{
+			name:            "local request error",
+			settings:        Settings{Scheduler: &capacityScheduler{requestErr: errRequest}},
+			wantAcquireErrs: []error{errRequest},
+		},
+		{
+			name:             "local capacity only",
+			settings:         Settings{Scheduler: &capacityScheduler{}},
+			wantAcquired:     true,
+			wantLocalRelease: 1,
+		},
+		{
+			name: "missing project candidate releases local capacity",
+			settings: Settings{
+				Scheduler:          &capacityScheduler{releaseErr: errLocalRelease},
+				GlobalDispatchGate: &capacityGate{},
+			},
+			wantAcquireErrs:  []error{errLocalRelease},
+			wantLocalRelease: 1,
+		},
+		{
+			name: "gate request error releases local capacity",
+			settings: Settings{
+				Scheduler:          &capacityScheduler{releaseErr: errLocalRelease},
+				GlobalDispatchGate: &capacityGate{tryErr: errGate},
+				ProjectCandidate:   scheduler.ProjectCandidate{ID: "detent"},
+			},
+			wantAcquireErrs:  []error{errGate, errLocalRelease},
+			wantLocalRelease: 1,
+		},
+		{
+			name: "gate refusal marks candidate idle",
+			settings: Settings{
+				Scheduler:          &capacityScheduler{},
+				GlobalDispatchGate: &capacityGate{},
+				ProjectCandidate:   scheduler.ProjectCandidate{ID: "detent"},
+			},
+			wantReason:       "fleet_capacity",
+			wantMarkedIdle:   1,
+			wantLocalRelease: 1,
+		},
+		{
+			name: "gate release error preserves demand",
+			settings: Settings{
+				Scheduler:          &capacityScheduler{releaseErr: errLocalRelease},
+				GlobalDispatchGate: &capacityGate{acquired: true, releaseErr: errGateRelease},
+				ProjectCandidate:   scheduler.ProjectCandidate{ID: "detent"},
+			},
+			wantAcquired:     true,
+			wantReleaseErrs:  []error{errGateRelease, errLocalRelease},
+			wantLocalRelease: 1,
+			wantGateRelease:  1,
+		},
+		{
+			name: "successful cleanup marks candidate idle",
+			settings: Settings{
+				Scheduler:          &capacityScheduler{},
+				GlobalDispatchGate: &capacityGate{acquired: true},
+				ProjectCandidate:   scheduler.ProjectCandidate{ID: " detent "},
+			},
+			wantAcquired:     true,
+			wantMarkedIdle:   1,
+			wantLocalRelease: 1,
+			wantGateRelease:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			release, acquired, reason, acquireErr := acquireCapacity(t.Context(), tt.settings, time.Now())
+			if acquired != tt.wantAcquired || reason != tt.wantReason {
+				t.Fatalf("acquireCapacity() = %t, %q, %v", acquired, reason, acquireErr)
+			}
+			if len(tt.wantAcquireErrs) == 0 && acquireErr != nil {
+				t.Fatalf("acquireCapacity() error = %v", acquireErr)
+			}
+			for _, wantErr := range tt.wantAcquireErrs {
+				if !errors.Is(acquireErr, wantErr) {
+					t.Fatalf("acquireCapacity() error = %v, want %v", acquireErr, wantErr)
+				}
+			}
+			if acquired {
+				releaseErr := release()
+				if len(tt.wantReleaseErrs) == 0 && releaseErr != nil {
+					t.Fatalf("release() error = %v", releaseErr)
+				}
+				for _, wantErr := range tt.wantReleaseErrs {
+					if !errors.Is(releaseErr, wantErr) {
+						t.Fatalf("release() error = %v, want %v", releaseErr, wantErr)
+					}
+				}
+			}
+			if local, ok := tt.settings.Scheduler.(*capacityScheduler); ok && local.releases != tt.wantLocalRelease {
+				t.Fatalf("local releases = %d, want %d", local.releases, tt.wantLocalRelease)
+			}
+			if gate, ok := tt.settings.GlobalDispatchGate.(*capacityGate); ok {
+				if len(gate.markedIdle) != tt.wantMarkedIdle || gate.releases != tt.wantGateRelease {
+					t.Fatalf("gate marked idle = %d releases = %d", len(gate.markedIdle), gate.releases)
+				}
+				for _, candidate := range gate.markedIdle {
+					if candidate.ID != "detent/admission" {
+						t.Fatalf("idle candidate = %#v", candidate)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestManagerCoverageFloorBoundaries(t *testing.T) {
+	t.Parallel()
+
+	var nilManager *Manager
+	if err := nilManager.Update(Settings{}); !errors.Is(err, ErrMissingStore) {
+		t.Fatalf("nil Update() error = %v", err)
+	}
+	if nilManager.Enabled() {
+		t.Fatal("nil Enabled() = true")
+	}
+
+	now := time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)
+	tracker := memory.New(memory.Config{Stateful: true})
+	backend := openManagerTestStore(t)
+	runBackend := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	valid := admissionTestSettings(tracker, runBackend)
+
+	if _, err := New(valid, nil, nil, nil); !errors.Is(err, ErrMissingStore) {
+		t.Fatalf("New() missing store error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		settings func() Settings
+		store    Store
+		want     string
+	}{
+		{
+			name: "missing runner",
+			settings: func() Settings {
+				settings := valid
+				settings.Runner = nil
+				return settings
+			},
+			store: backend,
+			want:  ErrMissingRunner.Error(),
+		},
+		{
+			name: "missing issue store",
+			settings: func() Settings {
+				settings := valid
+				settings.Issues = nil
+				return settings
+			},
+			store: backend,
+			want:  ErrMissingIssueStore.Error(),
+		},
+		{
+			name: "missing criteria",
+			settings: func() Settings {
+				settings := valid
+				settings.Criteria = config.AdmissionCriteria{}
+				return settings
+			},
+			store: backend,
+			want:  "criteria are unresolved",
+		},
+		{
+			name: "missing effort rubric",
+			settings: func() Settings {
+				settings := valid
+				settings.Config.RequireEffort = true
+				return settings
+			},
+			store: backend,
+			want:  "effort rubric is unresolved",
+		},
+		{
+			name: "missing issue body updater",
+			settings: func() Settings {
+				settings := valid
+				settings.Config.RequireEffort = true
+				settings.EffortRubric = admissionTestEffortRubric()
+				settings.Issues = &selectorAdmissionIssueStore{IssueStore: tracker}
+				return settings
+			},
+			store: backend,
+			want:  "issue body updater is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			manager := &Manager{store: tt.store, now: func() time.Time { return now }, updates: make(chan struct{}, 1)}
+			if err := manager.Update(tt.settings()); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Update() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	disabled, err := New(Settings{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New(disabled) error = %v", err)
+	}
+	if _, err := disabled.RunOnce(context.Background()); err != nil {
+		t.Fatalf("disabled RunOnce() error = %v", err)
+	}
+	disabled.runAndLog(t.Context(), now)
+
+	manager := newAdmissionTestManager(t, valid, backend, func() time.Time { return now })
+	manager.settings.Config.Schedule = "invalid"
+	if _, err := manager.run(t.Context(), now, true); err == nil {
+		t.Fatal("run(invalid schedule) error = nil")
+	}
+	manager.runAndLog(t.Context(), now)
+	manager.settings.Config.Schedule = valid.Config.Schedule
+	if result, err := manager.run(t.Context(), time.Time{}, true); err != nil || result.Candidates != 0 {
+		t.Fatalf("run(stale schedule) = %#v, %v", result, err)
+	}
+
+	faults := &faultAdmissionStore{Store: backend, latestErr: errors.New("latest failed")}
+	errorManager := newAdmissionTestManager(t, valid, faults, func() time.Time { return now })
+	if _, _, err := errorManager.nextScheduled(t.Context()); !errors.Is(err, faults.latestErr) {
+		t.Fatalf("nextScheduled() error = %v", err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := errorManager.Run(canceled); err != nil {
+		t.Fatalf("Run(latest error) error = %v", err)
+	}
+
+	faults.latestErr = nil
+	faults.latestOK = true
+	faults.latest = admissionmodel.RunRecord{CompletedAt: now.Add(time.Hour)}
+	next, scheduled, err := errorManager.nextScheduled(t.Context())
+	if err != nil || !scheduled || !next.After(faults.latest.CompletedAt) {
+		t.Fatalf("nextScheduled() = %s, %t, %v", next, scheduled, err)
+	}
+	errorManager.settings.Config.Schedule = "invalid"
+	if _, _, err := errorManager.nextScheduled(t.Context()); err == nil {
+		t.Fatal("nextScheduled(invalid schedule) error = nil")
+	}
+
+	timerStore := &faultAdmissionStore{
+		Store:    backend,
+		latestOK: true,
+		latest:   admissionmodel.RunRecord{CompletedAt: now},
+	}
+	timerManager := newAdmissionTestManager(t, valid, timerStore, func() time.Time { return now })
+	select {
+	case <-timerManager.updates:
+	default:
+		t.Fatal("new manager did not signal an update")
+	}
+	if err := timerManager.Run(canceled); err != nil {
+		t.Fatalf("Run(canceled scheduled) error = %v", err)
+	}
+	stopTimer(nil)
+	stopTimer(time.NewTimer(time.Hour))
+}
+
+func TestManagerRunOnceBoundaryErrors(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 31, 16, 0, 0, 0, time.UTC)
+	baseTracker := memory.New(memory.Config{Stateful: true})
+	baseBackend := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	errBoundary := errors.New("boundary failed")
+
+	tests := []struct {
+		name     string
+		prepare  func(*testing.T, Settings, Store) (Settings, Store)
+		wantText string
+	}{
+		{
+			name: "expire proposals",
+			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
+				return settings, &faultAdmissionStore{Store: backend, expireErr: errBoundary}
+			},
+		},
+		{
+			name: "refresh outcomes",
+			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
+				return settings, &faultAdmissionStore{Store: backend, refreshErr: errBoundary}
+			},
+		},
+		{
+			name: "budget lookup",
+			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
+				settings.Runner = &boundaryBudgetRunner{Backend: settings.Runner, err: errBoundary}
+				return settings, backend
+			},
+			wantText: "read backlog admission budget status",
+		},
+		{
+			name: "capacity request",
+			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
+				settings.Scheduler = &capacityScheduler{requestErr: errBoundary}
+				return settings, backend
+			},
+		},
+		{
+			name: "candidate read",
+			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
+				settings.Issues = &failingCandidateIssueStore{IssueStore: settings.Issues, err: errBoundary}
+				return settings, backend
+			},
+			wantText: "fetch backlog admission candidates",
+		},
+		{
+			name: "record run",
+			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
+				return settings, &faultAdmissionStore{Store: backend, recordErr: errBoundary}
+			},
+			wantText: "record backlog admission run",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := openManagerTestStore(t)
+			settings := admissionTestSettings(baseTracker, baseBackend)
+			settings, wrapped := tt.prepare(t, settings, backend)
+			manager := newAdmissionTestManager(t, settings, wrapped, func() time.Time { return now })
+			_, err := manager.RunOnce(t.Context())
+			if !errors.Is(err, errBoundary) || tt.wantText != "" && !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("RunOnce() error = %v, want %q", err, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
+	t.Parallel()
+
+	priorityOne, priorityTwo := 1, 2
+	earlier := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
+	later := earlier.Add(time.Hour)
+	settings := Settings{DispatchStates: []string{"Todo", "Backlog"}, DispatchLabels: []string{"urgent", "normal"}, PrioritizeBlockers: true}
+	tests := []struct {
+		name  string
+		left  connector.Issue
+		right connector.Issue
+	}{
+		{name: "state", left: connector.Issue{Identifier: "left", State: "Todo"}, right: connector.Issue{Identifier: "right", State: "Backlog"}},
+		{name: "priority", left: connector.Issue{Identifier: "left", State: "Todo", Priority: &priorityOne}, right: connector.Issue{Identifier: "right", State: "Todo", Priority: &priorityTwo}},
+		{name: "labeled", left: connector.Issue{Identifier: "left", State: "Todo", Labels: []string{"urgent"}}, right: connector.Issue{Identifier: "right", State: "Todo"}},
+		{name: "label rank", left: connector.Issue{Identifier: "left", State: "Todo", Labels: []string{"urgent"}}, right: connector.Issue{Identifier: "right", State: "Todo", Labels: []string{"normal"}}},
+		{name: "blockers", left: connector.Issue{Identifier: "left", State: "Todo", UnblockerCount: 2}, right: connector.Issue{Identifier: "right", State: "Todo", UnblockerCount: 1}},
+		{name: "created", left: connector.Issue{Identifier: "left", State: "Todo", CreatedAt: &earlier}, right: connector.Issue{Identifier: "right", State: "Todo", CreatedAt: &later}},
+		{name: "left created", left: connector.Issue{Identifier: "left", State: "Todo", CreatedAt: &earlier}, right: connector.Issue{Identifier: "right", State: "Todo"}},
+		{name: "identifier", left: connector.Issue{Identifier: "left", State: "Todo"}, right: connector.Issue{Identifier: "right", State: "Todo"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issues := []connector.Issue{tt.right, tt.left}
+			sortCandidates(issues, settings)
+			if issues[0].Identifier != "left" {
+				t.Fatalf("sortCandidates() = %#v", issues)
+			}
+		})
+	}
+	issues := []connector.Issue{{Identifier: "right", State: "Todo", CreatedAt: &later}, {Identifier: "left", State: "Todo"}}
+	sortCandidates(issues, settings)
+	if issues[0].Identifier != "right" {
+		t.Fatalf("sortCandidates(nil left date) = %#v", issues)
+	}
+
+	if proposals, err := parseProposals("  "); err != nil || proposals != nil {
+		t.Fatalf("parseProposals(empty) = %#v, %v", proposals, err)
+	}
+	for _, raw := range []string{`{"proposals":[]}{}`, `{"unknown":true}`} {
+		if _, err := parseProposals(raw); err == nil {
+			t.Fatalf("parseProposals(%q) error = nil", raw)
+		}
+	}
+	collector := &proposalCollector{}
+	if result, err := collector.handle(t.Context(), runner.AgentToolCall{Name: "other"}); err != nil || result.Success {
+		t.Fatalf("collector unsupported = %#v, %v", result, err)
+	}
+	if result, err := collector.handle(t.Context(), runner.AgentToolCall{Name: ProposalToolName, Arguments: []byte("{")}); err != nil || result.Success {
+		t.Fatalf("collector invalid = %#v, %v", result, err)
+	}
+	if _, err := collector.result(); err == nil {
+		t.Fatal("collector result error = nil")
+	}
+
+	for _, issue := range []connector.Issue{
+		{Identifier: " DD-1 "},
+		{URL: " HTTPS://EXAMPLE.COM/1 "},
+		{Title: "fallback"},
+	} {
+		if admissionCandidateKey(issue) == "" {
+			t.Fatalf("admissionCandidateKey(%#v) is empty", issue)
+		}
+	}
+	if got := normalizeStrings([]string{"", " Todo ", "todo", "Backlog"}); !reflect.DeepEqual(got, []string{"Todo", "Backlog"}) {
+		t.Fatalf("normalizeStrings() = %#v", got)
+	}
+
+	criteria := admissionTestCriteria()
+	if _, err := validateFindings(nil, criteria); !errors.Is(err, ErrInvalidProposal) {
+		t.Fatalf("validateFindings(nil) error = %v", err)
+	}
+	duplicate := admissionmodel.Finding{Dimension: "Alignment", CriterionQuote: "serves a stated current priority", Matched: true, Rationale: "valid"}
+	if _, err := validateFindings([]admissionmodel.Finding{duplicate, duplicate}, criteria); !errors.Is(err, ErrInvalidProposal) {
+		t.Fatalf("validateFindings(duplicate) error = %v", err)
+	}
+	unmatched := duplicate
+	unmatched.Matched = false
+	if _, err := validateFindings([]admissionmodel.Finding{unmatched}, criteria); !errors.Is(err, ErrInvalidProposal) {
+		t.Fatalf("validateFindings(unmatched) error = %v", err)
+	}
+	if _, _, err := validateRecommendedEffort("high", "valid", config.AdmissionEffortRubric{}, true); !errors.Is(err, ErrInvalidProposal) {
+		t.Fatalf("validateRecommendedEffort(required without rubric) error = %v", err)
+	}
+	if effort, rationale, err := validateRecommendedEffort("high", "valid", config.AdmissionEffortRubric{}, false); err != nil || effort != "high" || rationale != "valid" {
+		t.Fatalf("validateRecommendedEffort(optional) = %q, %q, %v", effort, rationale, err)
+	}
+	if _, _, err := validateRecommendedEffort("high", "valid", config.AdmissionEffortRubric{Efforts: []string{"medium"}}, false); !errors.Is(err, ErrInvalidProposal) {
+		t.Fatalf("validateRecommendedEffort(unsupported) error = %v", err)
+	}
+
+	budgetRunner := &budgetAdmissionRunner{scriptedAdmissionRunner: &scriptedAdmissionRunner{}, status: runner.DailyBudgetStatus{}}
+	if deferred, reason, err := admissionBudgetDeferred(t.Context(), budgetRunner, earlier); err != nil || deferred || reason != "" {
+		t.Fatalf("admissionBudgetDeferred() = %t, %q, %v", deferred, reason, err)
+	}
+
+	cfg := config.BacklogAdmission{TargetState: "Todo"}
+	skipped := map[string]int{}
+	if filtered := filterCandidates([]connector.Issue{{Closed: true}}, cfg, nil, skipped, false); len(filtered) != 0 || skipped["closed"] != 1 {
+		t.Fatalf("filterCandidates(closed) = %#v, skipped = %#v", filtered, skipped)
+	}
+	if eligibleCandidate(connector.Issue{Closed: true}, cfg, nil) {
+		t.Fatal("eligibleCandidate(closed) = true")
+	}
+	if eligibleCandidate(connector.Issue{State: "Todo"}, cfg, nil) {
+		t.Fatal("eligibleCandidate(target state) = true")
+	}
+
+	tracker := memory.New(memory.Config{Stateful: true})
+	plainTracker := &failingCandidateIssueStore{IssueStore: tracker}
+	if transition, found, err := admissionIssueTransition(t.Context(), plainTracker, connector.Issue{}); err != nil || found || !transition.EnteredAt.IsZero() {
+		t.Fatalf("admissionIssueTransition() = %#v, %t, %v", transition, found, err)
+	}
+	identified := &identifiedAdmissionIssueStore{IssueStore: tracker, login: "detent-bot"}
+	if decision := automaticAdmissionDecision(identified, admissionmodel.Proposal{ID: "proposal"}, earlier); decision.ActorLogin != "detent-bot" {
+		t.Fatalf("automaticAdmissionDecision() actor = %q", decision.ActorLogin)
+	}
+
+	proposal := admissionmodel.Proposal{ID: "proposal", CreatedAt: earlier, CommentedAt: earlier.Add(time.Minute)}
+	before := earlier
+	laterDecision := earlier.Add(3 * time.Minute)
+	earlierDecision := earlier.Add(2 * time.Minute)
+	decision, found, err := proposalDecision(t.Context(), tracker, connector.Issue{}, proposal, []connector.IssueComment{
+		{Body: admissionRejectCommand(proposal.ID), CreatedAt: &before, AuthorAuthorized: true},
+		{Body: admissionRejectCommand(proposal.ID), CreatedAt: &laterDecision, AuthorAuthorized: true},
+		{Body: admissionRejectCommand(proposal.ID), CreatedAt: &earlierDecision, AuthorAuthorized: true},
+	})
+	if err != nil || !found || decision.Outcome != admissionmodel.ProposalRejected || !decision.DecidedAt.Equal(laterDecision) {
+		t.Fatalf("proposalDecision() = %#v, %t, %v", decision, found, err)
+	}
+
+	comment := proposalComment(admissionmodel.Proposal{TargetState: "Todo"}, true, true)
+	if !strings.Contains(comment, "Automatic admission is a two-part change") {
+		t.Fatalf("proposalComment(auto admit) = %q", comment)
+	}
+	var decoded map[string]any
+	if err := decodeStrictJSON([]byte(`{} invalid`), &decoded); err == nil {
+		t.Fatal("decodeStrictJSON(trailing invalid data) error = nil")
+	}
+}
+
 func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 	t.Parallel()
 
@@ -1760,6 +2259,120 @@ type scriptedAdmissionRunner struct {
 	propose      func(runner.RunRequest) []AgentProposal
 	calls        int
 	candidateIDs [][]string
+}
+
+type capacityScheduler struct {
+	requestErr error
+	releaseErr error
+	releases   int
+}
+
+func (s *capacityScheduler) RequestSlot(context.Context, scheduler.SlotRequest) (scheduler.Slot, error) {
+	return scheduler.Slot{}, s.requestErr
+}
+
+func (s *capacityScheduler) ReleaseSlot(scheduler.Slot) error {
+	s.releases++
+	return s.releaseErr
+}
+
+func (*capacityScheduler) Mode() scheduler.Mode {
+	return scheduler.ModeCountingSemaphore
+}
+
+type capacityGate struct {
+	acquired   bool
+	tryErr     error
+	releaseErr error
+	markedIdle []scheduler.ProjectCandidate
+	releases   int
+}
+
+func (*capacityGate) MarkReady(scheduler.ProjectCandidate) {}
+
+func (g *capacityGate) MarkIdle(candidate scheduler.ProjectCandidate) {
+	g.markedIdle = append(g.markedIdle, candidate)
+}
+
+func (g *capacityGate) TryAcquire(
+	context.Context,
+	scheduler.ProjectCandidate,
+	scheduler.SlotRequest,
+	time.Time,
+) (scheduler.Slot, bool, error) {
+	return scheduler.Slot{}, g.acquired, g.tryErr
+}
+
+func (*capacityGate) SetPreempt(scheduler.Slot, func()) {}
+
+func (g *capacityGate) Release(scheduler.Slot) error {
+	g.releases++
+	return g.releaseErr
+}
+
+type faultAdmissionStore struct {
+	Store
+	expireErr  error
+	refreshErr error
+	recordErr  error
+	latestErr  error
+	latest     admissionmodel.RunRecord
+	latestOK   bool
+}
+
+func (s *faultAdmissionStore) ExpireAdmissionProposals(context.Context, string, time.Time) (int, error) {
+	if s.expireErr != nil {
+		return 0, s.expireErr
+	}
+	return s.Store.ExpireAdmissionProposals(context.Background(), "detent", time.Now())
+}
+
+func (s *faultAdmissionStore) RefreshAdmissionOutcomes(ctx context.Context, refresh admissionmodel.OutcomeRefresh) error {
+	if s.refreshErr != nil {
+		return s.refreshErr
+	}
+	return s.Store.RefreshAdmissionOutcomes(ctx, refresh)
+}
+
+func (s *faultAdmissionStore) RecordAdmissionRun(ctx context.Context, record admissionmodel.RunRecord) error {
+	if s.recordErr != nil {
+		return s.recordErr
+	}
+	return s.Store.RecordAdmissionRun(ctx, record)
+}
+
+func (s *faultAdmissionStore) LatestAdmissionRun(ctx context.Context, projectID string) (admissionmodel.RunRecord, bool, error) {
+	if s.latestErr != nil || s.latestOK {
+		return s.latest, s.latestOK, s.latestErr
+	}
+	return s.Store.LatestAdmissionRun(ctx, projectID)
+}
+
+type boundaryBudgetRunner struct {
+	runner.Backend
+	err error
+}
+
+func (r *boundaryBudgetRunner) DailyBudgetStatus(context.Context, time.Time) (runner.DailyBudgetStatus, bool, error) {
+	return runner.DailyBudgetStatus{}, false, r.err
+}
+
+type failingCandidateIssueStore struct {
+	IssueStore
+	err error
+}
+
+func (s *failingCandidateIssueStore) ReadCandidates(context.Context, connector.CandidateRequest) (connector.CandidateResult, error) {
+	return connector.CandidateResult{}, s.err
+}
+
+type identifiedAdmissionIssueStore struct {
+	IssueStore
+	login string
+}
+
+func (s *identifiedAdmissionIssueStore) InstanceLogin() string {
+	return s.login
 }
 
 type selectorAdmissionIssueStore struct {
