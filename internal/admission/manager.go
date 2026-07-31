@@ -1119,7 +1119,9 @@ func acquireCapacity(ctx context.Context, settings Settings, now time.Time) (fun
 	}
 	return func() error {
 		releaseGlobal := settings.GlobalDispatchGate.Release(slot)
-		settings.GlobalDispatchGate.MarkIdle(candidate)
+		if releaseGlobal == nil {
+			settings.GlobalDispatchGate.MarkIdle(candidate)
+		}
 		return errors.Join(releaseGlobal, releaseLocal())
 	}, true, "", nil
 }

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+type releaseErrorSafetyScheduler struct {
+	scheduler.GlobalScheduler
+	err error
+}
+
+func (s *releaseErrorSafetyScheduler) ReleaseSlot(slot scheduler.Slot) error {
+	if err := s.GlobalScheduler.ReleaseSlot(slot); err != nil {
+		return err
+	}
+	return s.err
+}
 
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true, uint8(0))
@@ -152,7 +165,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			t.Fatalf("ranking depends on input order: forward=%#v reverse=%#v", rankingIssueIDs(forward), rankingIssueIDs(reverse))
 		}
 
-		assertDemandDrivenPriorityReservation(t, gateScenario%3, now)
+		assertDemandDrivenPriorityReservation(t, gateScenario%4, now)
 	})
 }
 
@@ -200,6 +213,21 @@ func assertDemandDrivenPriorityReservation(t *testing.T, scenario uint8, now tim
 			t.Fatalf("release higher-priority candidate: %v", err)
 		}
 		requireSafetyGateReserved(t, gate, lower, now.Add(5*time.Second))
+	case 3:
+		releaseErr := errors.New("release failed")
+		global := &releaseErrorSafetyScheduler{
+			GlobalScheduler: scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
+			err:             releaseErr,
+		}
+		gate = scheduler.NewGlobalDispatchGate(global, higher, lower)
+		gate.BeginProjectCycle(higher)
+		gate.EndProjectCycle(higher.ID)
+		candidate := scheduler.ProjectCandidate{ID: higher.ID + "/admission", Weight: 1, Priority: higher.Priority}
+		slot := requireSafetyGateGranted(t, gate, candidate, now)
+		if err := gate.Release(slot); !errors.Is(err, releaseErr) {
+			t.Fatalf("release dynamic candidate: %v, want %v", err, releaseErr)
+		}
+		requireSafetyGateReserved(t, gate, lower, now.Add(time.Second))
 	}
 }
 
