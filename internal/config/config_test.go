@@ -1439,6 +1439,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if !cfg.Observability.DashboardEnabled {
 		t.Fatal("Observability.DashboardEnabled = false, want true")
 	}
+	if cfg.Observability.StrandedActiveThresholdSeconds != DefaultStrandedActiveThresholdSeconds {
+		t.Fatalf("Observability.StrandedActiveThresholdSeconds = %d, want %d", cfg.Observability.StrandedActiveThresholdSeconds, DefaultStrandedActiveThresholdSeconds)
+	}
 	if cfg.Observability.Efficiency.AnomalyTokensMultiple != 3 || cfg.Observability.Efficiency.AnomalySessionsMultiple != 3 || cfg.Observability.Efficiency.AnomalyDwellMultiple != 3 {
 		t.Fatalf("Observability.Efficiency = %#v, want 3x defaults", cfg.Observability.Efficiency)
 	}
@@ -2877,6 +2880,13 @@ func TestObservabilityValidation(t *testing.T) {
 				cfg.Observability.Efficiency.AnomalyTokensMultiple = 0
 			},
 			wantErr: "observability.efficiency.anomaly_tokens_multiple must be greater than 0",
+		},
+		{
+			name: "nonpositive stranded active threshold",
+			mutate: func(cfg *Config) {
+				cfg.Observability.StrandedActiveThresholdSeconds = 0
+			},
+			wantErr: "observability.stranded_active_threshold_seconds must be greater than 0",
 		},
 	}
 	for _, tt := range tests {

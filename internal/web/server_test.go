@@ -6601,6 +6601,33 @@ func TestHealthReportsDraining(t *testing.T) {
 	}
 }
 
+func TestHealthReportsStrandedActiveIssues(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		StrandedActiveIssues: []telemetry.StrandedIssue{{
+			ProjectID: "detent", Identifier: "digitaldrywood/detent#1606", DurationSeconds: 900, LastRefusalReason: "priority reservation",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	issues, ok := payload["stranded_active_issues"].([]any)
+	if !ok || len(issues) != 1 {
+		t.Fatalf("stranded_active_issues = %#v, want one issue", payload["stranded_active_issues"])
+	}
+	issue, ok := issues[0].(map[string]any)
+	if !ok || issue["identifier"] != "digitaldrywood/detent#1606" || issue["last_refusal_reason"] != "priority reservation" {
+		t.Fatalf("stranded_active_issues[0] = %#v", issues[0])
+	}
+}
+
 func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *testing.T) {
 	t.Parallel()
 

@@ -123,6 +123,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			Headers:    cloneStringMap(cfg.Observability.Staleness.Webhook.Headers),
 			Timeout:    durationFromMillis(cfg.Observability.Staleness.Webhook.TimeoutMS),
 		},
+		StrandedActiveThreshold: durationFromSeconds(cfg.Observability.StrandedActiveThresholdSeconds),
 	}
 }
 
@@ -163,6 +164,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.OverloadRetryDelay <= 0 {
 		cfg.OverloadRetryDelay = defaultOverloadRetryDelay
+	}
+	if cfg.StrandedActiveThreshold <= 0 {
+		cfg.StrandedActiveThreshold = durationFromSeconds(workflowconfig.DefaultStrandedActiveThresholdSeconds)
 	}
 	if cfg.MergeWorkerStartupTimeout <= 0 {
 		cfg.MergeWorkerStartupTimeout = durationFromMillis(workflowconfig.DefaultMergeWorkerStartupTimeoutMS)

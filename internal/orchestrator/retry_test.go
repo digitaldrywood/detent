@@ -74,12 +74,13 @@ func TestApplyRuntimeUpdateRefreshesSupervisorRetryConfig(t *testing.T) {
 
 	orch.applyRuntimeUpdate(&state, RuntimeUpdate{
 		Config: Config{
-			PollInterval:          time.Hour,
-			MaxConcurrentAgents:   1,
-			MaxRetryBackoff:       2 * time.Second,
-			FailureRetryBaseDelay: time.Second,
-			ActiveStates:          []string{"Todo"},
-			TerminalStates:        []string{"Done"},
+			PollInterval:            time.Hour,
+			MaxConcurrentAgents:     1,
+			MaxRetryBackoff:         2 * time.Second,
+			FailureRetryBaseDelay:   time.Second,
+			StrandedActiveThreshold: 42 * time.Second,
+			ActiveStates:            []string{"Todo"},
+			TerminalStates:          []string{"Done"},
 		},
 	}, ticker)
 
@@ -88,6 +89,9 @@ func TestApplyRuntimeUpdateRefreshesSupervisorRetryConfig(t *testing.T) {
 	}
 	if state.PrioritizeUnblockers {
 		t.Fatal("State.PrioritizeUnblockers = true, want reloaded false")
+	}
+	if state.StrandedActiveThreshold != 42*time.Second {
+		t.Fatalf("State.StrandedActiveThreshold = %s, want reloaded 42s", state.StrandedActiveThreshold)
 	}
 }
 

@@ -79,6 +79,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
 	s.applyArtifactGateWaitDispatchSnapshots(boardIssueSnapshots, boardIssues)
+	strandedActiveIssues := strandedActiveIssueSnapshots(s, boardIssueSnapshots, now)
 	pipelineIssueSnapshots := pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now, s.laneEntries)
 	applyIssueRuntimeIdentities(pipelineIssueSnapshots, s.Running, s.WorkAttempts)
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
@@ -105,6 +106,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		FailureBreakers:         projectFailureBreakerSnapshots(s.FailureBreaker),
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
+		StrandedActiveIssues:    strandedActiveIssues,
 		OverloadRetriesLastHour: overloadRetriesLastHour(s.WorkAttempts, now),
 		Tokens:                  tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{

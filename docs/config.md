@@ -155,6 +155,11 @@ optional OTLP export. `budget` is the project-wide spend policy;
 `agent.budget` can further constrain agent sessions. `release` enables
 release-readiness automation after merged work accumulates.
 
+`observability.stranded_active_threshold_seconds` controls when Health and
+`detent doctor` report an issue that remains in `In Progress` without a live
+worker while project capacity is available. The default is 600 seconds, which
+tolerates normal gaps between a completed session and prompt re-dispatch.
+
 `hooks` run lifecycle commands around worktree creation, agent execution, and
 cleanup. Treat them as trusted code: they run with the Detent process
 permissions and should be short, deterministic, and safe to retry.
@@ -489,6 +494,7 @@ rendering and fails on drift.
 | `observability.staleness.webhook.headers` | `mapping<string, string>` | `{}` | No | None |
 | `observability.staleness.webhook.timeout_ms` | `integer` | `5000` | No | None |
 | `observability.staleness.webhook.url` | `string` | `none` | No | must be an absolute http or https URL |
+| `observability.stranded_active_threshold_seconds` | `integer` | `600` | No | must be greater than 0 |
 | `plan` | `object` | `see child fields` | No | agents.backends.options.permission_mode must not be plan for unattended workers |
 | `plan.approval_label` | `string` | `"plan-approved"` | No | None |
 | `plan.enabled` | `boolean` | `false` | No | None |

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Kind = primitives.KindWarn
 		view.Verdict = "Fleet work is stale."
 		view.Detail = stalenessHealthDetail(snapshot.StalenessWarnings)
+		return view
+	}
+	if len(snapshot.StrandedActiveIssues) > 0 {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Active work has no live worker."
+		view.Detail = strandedActiveHealthDetail(snapshot.StrandedActiveIssues)
 		return view
 	}
 	outages := backendCapacityOutages(snapshot.BackendOutages)
@@ -154,6 +161,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	for _, warning := range snapshot.StalenessWarnings {
 		rows = append(rows, healthStalenessRow(warning))
 	}
+	rows = append(rows, healthStrandedActiveRows(snapshot.StrandedActiveIssues)...)
 	if snapshot.RateLimits != nil {
 		if bucket := snapshot.RateLimits.GitHubREST; bucket != nil {
 			row := healthBucketRow("health-github-rest", "GitHub REST", bucket)
@@ -181,6 +189,68 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthStrandedActiveRows(issues []telemetry.StrandedIssue) []healthRow {
+	byProject := make(map[string][]telemetry.StrandedIssue)
+	for _, issue := range issues {
+		projectID := strings.TrimSpace(issue.ProjectID)
+		if projectID == "" {
+			projectID = "project"
+		}
+		byProject[projectID] = append(byProject[projectID], issue)
+	}
+	projects := make([]string, 0, len(byProject))
+	for projectID := range byProject {
+		projects = append(projects, projectID)
+	}
+	sort.Strings(projects)
+
+	rows := make([]healthRow, 0, len(projects))
+	for _, projectID := range projects {
+		projectIssues := byProject[projectID]
+		sort.Slice(projectIssues, func(i, j int) bool {
+			return strandedActiveHealthTarget(projectIssues[i]) < strandedActiveHealthTarget(projectIssues[j])
+		})
+		details := make([]string, 0, len(projectIssues))
+		for _, issue := range projectIssues {
+			details = append(details, strandedActiveHealthIssueDetail(issue))
+		}
+		rows = append(rows, healthRow{
+			ID:        "health-stranded-active-" + boardCardSlug(projectID),
+			Component: "Active work · " + projectID,
+			Kind:      primitives.KindWarn,
+			Status:    "No live worker",
+			Detail:    strings.Join(details, "; "),
+			Resets:    "on dispatch",
+		})
+	}
+	return rows
+}
+
+func strandedActiveHealthDetail(issues []telemetry.StrandedIssue) string {
+	if len(issues) == 1 {
+		return strandedActiveHealthIssueDetail(issues[0]) + "."
+	}
+	return formatCount(len(issues)) + " active issues have no live worker."
+}
+
+func strandedActiveHealthIssueDetail(issue telemetry.StrandedIssue) string {
+	detail := strandedActiveHealthTarget(issue) + " · " + formatDuration(float64(issue.DurationSeconds))
+	reason := strings.TrimSpace(issue.LastRefusalReason)
+	if reason == "" {
+		reason = "none recorded"
+	}
+	return detail + " · last refusal: " + reason
+}
+
+func strandedActiveHealthTarget(issue telemetry.StrandedIssue) string {
+	for _, value := range []string{issue.Identifier, issue.IssueID, issue.IssueURL} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "issue"
 }
 
 func healthStalenessRow(warning telemetry.StalenessWarning) healthRow {

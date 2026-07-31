@@ -114,6 +114,7 @@ type Config struct {
 	Lessons                       LessonCaptureConfig
 	Staleness                     staleness.Config
 	StalenessDelivery             staleness.DeliveryConfig
+	StrandedActiveThreshold       time.Duration
 }
 
 type LessonCaptureConfig struct {
@@ -707,6 +708,8 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		pool := o.dispatchPoolSnapshot()
 		state.PoolName = pool.Name
 		state.PoolCapacity = pool.Capacity
+		state.PoolAvailable = pool.Available
+		state.PoolDraining = pool.Draining
 		return state, nil
 	}
 }
@@ -868,6 +871,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	})
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

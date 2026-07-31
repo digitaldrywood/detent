@@ -25,8 +25,12 @@ import (
 type State struct {
 	PollInterval             time.Duration
 	MaxConcurrentAgents      int
+	MaxAgentsByState         map[string]int
 	PoolName                 string
 	PoolCapacity             int
+	PoolAvailable            int
+	PoolDraining             bool
+	StrandedActiveThreshold  time.Duration
 	AutoPromoteQuietDuration time.Duration
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
@@ -265,6 +269,8 @@ func newState(cfg Config) State {
 	return State{
 		PollInterval:             cfg.PollInterval,
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
+		MaxAgentsByState:         cloneStateLimits(cfg.MaxConcurrentAgentsByState),
+		StrandedActiveThreshold:  cfg.StrandedActiveThreshold,
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
@@ -310,8 +316,12 @@ func (s State) clone() State {
 	cloned := State{
 		PollInterval:             s.PollInterval,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
+		MaxAgentsByState:         cloneStateLimits(s.MaxAgentsByState),
 		PoolName:                 s.PoolName,
 		PoolCapacity:             s.PoolCapacity,
+		PoolAvailable:            s.PoolAvailable,
+		PoolDraining:             s.PoolDraining,
+		StrandedActiveThreshold:  s.StrandedActiveThreshold,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),
