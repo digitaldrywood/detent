@@ -79,6 +79,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{ProjectID: "detent", IssueID: "detent-stranded"},
 			{ProjectID: "pyroapex", IssueID: "pyro-stranded"},
 		},
+		AdmissionProposals: []telemetry.AdmissionProposal{
+			{ID: "detent-proposal", ProjectID: "detent"},
+			{ID: "pyro-proposal", ProjectID: "pyroapex"},
+		},
 	}, "detent")
 
 	if !ok {
@@ -122,6 +126,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.Completed) != 1 || got.Completed[0].ID != "detent-completed" {
 		t.Fatalf("Completed = %#v, want only detent row", got.Completed)
+	}
+	if len(got.AdmissionProposals) != 1 || got.AdmissionProposals[0].ID != "detent-proposal" {
+		t.Fatalf("AdmissionProposals = %#v, want only detent proposal", got.AdmissionProposals)
 	}
 	if len(got.FailureBreakers) != 1 || got.FailureBreakers[0].Class != "session_token_ceiling" {
 		t.Fatalf("FailureBreakers = %#v, want only detent row", got.FailureBreakers)

@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -9408,6 +9409,85 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 	}
 	if !strings.Contains(html, `id="fig-running"`) {
 		t.Fatalf("fleet page missing running figure:\n%s", html)
+	}
+}
+
+func TestAdmissionProposalsRefreshAcrossBoardAndHealth(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	backend := openWebTestStore(t)
+	proposal := admissionmodel.Proposal{
+		ID:              "proposal-open",
+		ProjectID:       "detent",
+		IssueID:         "issue-1623",
+		IssueIdentifier: "digitaldrywood/detent#1623",
+		IssueURL:        "https://github.com/digitaldrywood/detent/issues/1623",
+		TargetState:     "Todo",
+		Fingerprint:     "fingerprint-open",
+		CriteriaSection: "Admission Criteria",
+		CriteriaText:    "Admit operator-visible defects.",
+		Findings: []admissionmodel.Finding{{
+			Dimension:      "Alignment",
+			CriterionQuote: "Fleet-visible defects.",
+			Matched:        true,
+			Rationale:      "The operator saw the failure.",
+		}},
+		Confidence: 0.88,
+		Status:     admissionmodel.ProposalOpen,
+		CreatedAt:  now.Add(-time.Hour),
+		ExpiresAt:  now.Add(23 * time.Hour),
+	}
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	expired := proposal
+	expired.ID = "proposal-expired"
+	expired.IssueID = "issue-expired"
+	expired.IssueIdentifier = "digitaldrywood/detent#1600"
+	expired.Fingerprint = "fingerprint-expired"
+	expired.CreatedAt = now.Add(-48 * time.Hour)
+	expired.ExpiresAt = now
+	if created, err := backend.CreateAdmissionProposal(ctx, expired); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal(expired) = %t, %v", created, err)
+	}
+
+	deps := testDeps(t)
+	deps.Store = backend
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	health := requestHTML(t, server.Handler(), http.MethodGet, "/health/ui", http.StatusOK)
+	for _, want := range []string{"Admission · detent", "digitaldrywood/detent#1623", "88% confidence", "age 1h 0m", "expires in 23h 0m"} {
+		if !strings.Contains(health, want) {
+			t.Fatalf("Health missing %q:\n%s", want, health)
+		}
+	}
+	if strings.Contains(health, "digitaldrywood/detent#1600") {
+		t.Fatalf("Health rendered wall-clock-expired proposal:\n%s", health)
+	}
+	board := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	for _, want := range []string{`data-board-alert="admission-proposal"`, "1 admission proposal awaiting decision", proposal.IssueURL} {
+		if !strings.Contains(board, want) {
+			t.Fatalf("Board missing %q:\n%s", want, board)
+		}
+	}
+
+	if err := backend.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalAccepted, now.Add(time.Minute)); err != nil {
+		t.Fatalf("TransitionAdmissionProposal() error = %v", err)
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(refresh) error = %v", err)
+	}
+	health = requestHTML(t, server.Handler(), http.MethodGet, "/health/ui", http.StatusOK)
+	if strings.Contains(health, "health-admission-proposals") || strings.Contains(health, proposal.IssueIdentifier) {
+		t.Fatalf("resolved proposal remained after one refresh:\n%s", health)
 	}
 }
 

@@ -75,6 +75,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
 	out.StalenessWarnings = scopedStalenessWarnings(snapshot.StalenessWarnings, selectedProjectID, fallbackProjectID)
 	out.StrandedActiveIssues = scopedStrandedActiveIssues(snapshot.StrandedActiveIssues, selectedProjectID, fallbackProjectID)
+	out.AdmissionProposals = scopedAdmissionProposals(snapshot.AdmissionProposals, selectedProjectID)
 	if hasSourceProject {
 		out.Counts = sourceProject.Counts
 		out.Tokens = sourceProject.Tokens
@@ -97,6 +98,16 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.TokenTrend = nil
 	}
 	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
+	return out
+}
+
+func scopedAdmissionProposals(proposals []telemetry.AdmissionProposal, selectedProjectID string) []telemetry.AdmissionProposal {
+	out := make([]telemetry.AdmissionProposal, 0, len(proposals))
+	for _, proposal := range proposals {
+		if strings.TrimSpace(proposal.ProjectID) == selectedProjectID {
+			out = append(out, proposal)
+		}
+	}
 	return out
 }
 

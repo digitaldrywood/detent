@@ -2053,6 +2053,87 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	}
 }
 
+func TestBoardAdmissionProposalIndicator(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	proposal := func(index int) telemetry.AdmissionProposal {
+		return telemetry.AdmissionProposal{
+			ID:              "proposal-" + strconv.Itoa(index),
+			ProjectID:       "detent",
+			IssueID:         "issue-" + strconv.Itoa(index),
+			IssueIdentifier: "digitaldrywood/detent#" + strconv.Itoa(1600+index),
+			IssueURL:        "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(1600+index),
+			Confidence:      0.88,
+			CreatedAt:       now.Add(-time.Duration(index) * time.Hour),
+			ExpiresAt:       now.Add(time.Duration(24-index) * time.Hour),
+		}
+	}
+	tests := []struct {
+		name         string
+		proposals    []telemetry.AdmissionProposal
+		wantText     string
+		wantRows     int
+		wantOverflow int
+	}{
+		{name: "zero"},
+		{name: "one", proposals: []telemetry.AdmissionProposal{proposal(1)}, wantText: "1 admission proposal awaiting decision", wantRows: 1},
+		{name: "several", proposals: []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3)}, wantText: "3 admission proposals awaiting decision", wantRows: 3},
+		{
+			name:         "overflow",
+			proposals:    []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3), proposal(4), proposal(5), proposal(6), proposal(7)},
+			wantText:     "7 admission proposals awaiting decision",
+			wantRows:     boardAlertDetailLimit,
+			wantOverflow: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := boardTestData()
+			data.Snapshot.GeneratedAt = now
+			data.Snapshot.AdmissionProposals = tt.proposals
+			html := renderBoardComponent(t, BoardSnapshot(data))
+			if len(tt.proposals) == 0 {
+				if strings.Contains(html, `data-board-alert="admission-proposal"`) {
+					t.Fatalf("zero proposals rendered an admission indicator:\n%s", html)
+				}
+				return
+			}
+			alert, ok := boardAdmissionProposalAlert(data.Snapshot)
+			if !ok {
+				t.Fatal("boardAdmissionProposalAlert() did not return an alert")
+			}
+			if len(alert.DetailRows) != tt.wantRows || alert.Overflow != tt.wantOverflow {
+				t.Fatalf("admission rows = %d with overflow %d, want %d with overflow %d", len(alert.DetailRows), alert.Overflow, tt.wantRows, tt.wantOverflow)
+			}
+			if alert.DeepLink != "/health/ui" {
+				t.Fatalf("admission deep link = %q, want /health/ui", alert.DeepLink)
+			}
+			for _, want := range []string{
+				`data-board-alert="admission-proposal"`,
+				`id="board-alert-admission-proposals"`,
+				tt.wantText,
+				"88% confidence",
+				`href="https://github.com/digitaldrywood/detent/issues/1601"`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("admission indicator missing %q:\n%s", want, html)
+				}
+			}
+			if tt.wantOverflow > 0 {
+				for _, want := range []string{`href="/health/ui"`, `+2 more · Health`} {
+					if !strings.Contains(html, want) {
+						t.Fatalf("admission overflow missing %q:\n%s", want, html)
+					}
+				}
+			}
+			if strings.Contains(html, `id="admission-proposal-banner"`) {
+				t.Fatalf("admission proposals rendered a stacked banner:\n%s", html)
+			}
+		})
+	}
+}
+
 func boardAlertsHeavyTestSnapshot() telemetry.Snapshot {
 	now := time.Date(2026, 7, 28, 16, 0, 0, 0, time.UTC)
 	lastSuccess := now.Add(-4*time.Minute - 28*time.Second)

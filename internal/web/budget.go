@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -98,6 +99,7 @@ func (c *snapshotEnrichmentCache) enrich(ctx context.Context, snapshot telemetry
 }
 
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot.AdmissionProposals = s.snapshotAdmissionProposals(ctx, snapshot.GeneratedAt)
 	if cycleTime, ok := s.snapshotCycleTime(ctx); ok {
 		snapshot.CycleTime = cycleTime
 	}
@@ -116,6 +118,42 @@ func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot
 	budget.Refusals = append([]telemetry.BudgetRefusal(nil), snapshot.Budget.Refusals...)
 	snapshot.Budget = budget
 	return snapshot
+}
+
+func (s *Server) snapshotAdmissionProposals(ctx context.Context, observedAt time.Time) []telemetry.AdmissionProposal {
+	if s.store == nil {
+		return nil
+	}
+	reader, ok := s.store.(store.AdmissionProposalDecisionReader)
+	if !ok {
+		return nil
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	proposals, err := reader.AdmissionProposalsAwaitingDecision(ctx, "", observedAt)
+	if err != nil {
+		s.logger.WarnContext(ctx, "admission proposals awaiting decision query failed", slog.Any("error", err))
+		return nil
+	}
+	out := make([]telemetry.AdmissionProposal, 0, len(proposals))
+	for _, proposal := range proposals {
+		out = append(out, admissionProposalTelemetry(proposal))
+	}
+	return out
+}
+
+func admissionProposalTelemetry(proposal admissionmodel.Proposal) telemetry.AdmissionProposal {
+	return telemetry.AdmissionProposal{
+		ID:              proposal.ID,
+		ProjectID:       proposal.ProjectID,
+		IssueID:         proposal.IssueID,
+		IssueIdentifier: proposal.IssueIdentifier,
+		IssueURL:        proposal.IssueURL,
+		Confidence:      proposal.Confidence,
+		CreatedAt:       proposal.CreatedAt,
+		ExpiresAt:       proposal.ExpiresAt,
+	}
 }
 
 func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.Budget, bool) {

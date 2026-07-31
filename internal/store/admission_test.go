@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -132,6 +133,66 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 	runs, err := backend.RecentAdmissionRuns(ctx, "detent", 3)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+	}
+}
+
+func TestAdmissionProposalsAwaitingDecision(t *testing.T) {
+	ctx := context.Background()
+	backend := openAdmissionTestStore(t, ctx)
+	reader := backend.(AdmissionProposalDecisionReader)
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+
+	proposals := []admissionmodel.Proposal{
+		admissionTestProposal("detent-open", "detent-open", now.Add(-2*time.Hour)),
+		admissionTestProposal("detent-expiring", "detent-expiring", now.Add(-time.Hour)),
+		admissionTestProposal("docs-open", "docs-open", now.Add(-30*time.Minute)),
+		admissionTestProposal("detent-resolved", "detent-resolved", now.Add(-3*time.Hour)),
+	}
+	proposals[0].IssueID, proposals[0].IssueIdentifier = "issue-open", "DETENT-1"
+	proposals[1].IssueID, proposals[1].IssueIdentifier = "issue-expiring", "DETENT-2"
+	proposals[1].ExpiresAt = now
+	proposals[2].ProjectID, proposals[2].IssueID, proposals[2].IssueIdentifier = "docs", "issue-docs", "DOCS-1"
+	proposals[3].IssueID, proposals[3].IssueIdentifier = "issue-resolved", "DETENT-3"
+	for _, proposal := range proposals {
+		if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+			t.Fatalf("CreateAdmissionProposal(%q) = %t, %v", proposal.ID, created, err)
+		}
+	}
+	if err := backend.TransitionAdmissionProposal(
+		ctx,
+		"detent-resolved",
+		admissionmodel.ProposalOpen,
+		admissionmodel.ProposalAccepted,
+		now.Add(-time.Minute),
+	); err != nil {
+		t.Fatalf("TransitionAdmissionProposal() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		projectID string
+		at        time.Time
+		wantIDs   []string
+	}{
+		{name: "fleet excludes resolved and expired", at: now, wantIDs: []string{"detent-open", "docs-open"}},
+		{name: "project scope", projectID: "detent", at: now, wantIDs: []string{"detent-open"}},
+		{name: "before exact expiry", projectID: "detent", at: now.Add(-time.Second), wantIDs: []string{"detent-open", "detent-expiring"}},
+		{name: "unknown project", projectID: "missing", at: now, wantIDs: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := reader.AdmissionProposalsAwaitingDecision(ctx, tt.projectID, tt.at)
+			if err != nil {
+				t.Fatalf("AdmissionProposalsAwaitingDecision() error = %v", err)
+			}
+			gotIDs := make([]string, 0, len(got))
+			for _, proposal := range got {
+				gotIDs = append(gotIDs, proposal.ID)
+			}
+			if !reflect.DeepEqual(gotIDs, tt.wantIDs) {
+				t.Fatalf("AdmissionProposalsAwaitingDecision() IDs = %#v, want %#v", gotIDs, tt.wantIDs)
+			}
+		})
 	}
 }
 

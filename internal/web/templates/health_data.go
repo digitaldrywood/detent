@@ -97,6 +97,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = strings.Join(details, "; ") + "."
 		return view
 	}
+	if len(snapshot.AdmissionProposals) > 0 {
+		view.Kind = primitives.KindWarn
+		view.Verdict = boardCountLabel(len(snapshot.AdmissionProposals), "Admission proposal awaits human decision", "Admission proposals await human decision") + "."
+		view.Detail = "Review the affected issues before the proposals expire."
+		return view
+	}
 	switch api.State {
 	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
 		view.Kind = primitives.KindOK
@@ -181,12 +187,50 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		}
 	}
 	rows = append(rows, healthRefreshRows(snapshot)...)
+	rows = append(rows, healthAdmissionProposalRows(snapshot.AdmissionProposals, snapshot.GeneratedAt)...)
 	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRow(snapshot.Update), healthBackoffRow(snapshot))
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))
 	}
 	for _, outage := range backendCapacityOutages(snapshot.BackendOutages) {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
+	}
+	return rows
+}
+
+func healthAdmissionProposalRows(proposals []telemetry.AdmissionProposal, observedAt time.Time) []healthRow {
+	byProject := make(map[string][]telemetry.AdmissionProposal)
+	for _, proposal := range proposals {
+		projectID := strings.TrimSpace(proposal.ProjectID)
+		if projectID == "" {
+			projectID = "project"
+		}
+		byProject[projectID] = append(byProject[projectID], proposal)
+	}
+	projects := make([]string, 0, len(byProject))
+	for projectID := range byProject {
+		projects = append(projects, projectID)
+	}
+	sort.Strings(projects)
+
+	rows := make([]healthRow, 0, len(projects))
+	for _, projectID := range projects {
+		projectProposals := byProject[projectID]
+		sort.Slice(projectProposals, func(i, j int) bool {
+			return admissionProposalTarget(projectProposals[i]) < admissionProposalTarget(projectProposals[j])
+		})
+		details := make([]string, 0, len(projectProposals))
+		for _, proposal := range projectProposals {
+			details = append(details, admissionProposalTarget(proposal)+" · "+admissionProposalTiming(proposal, observedAt))
+		}
+		rows = append(rows, healthRow{
+			ID:        "health-admission-proposals-" + boardCardSlug(projectID),
+			Component: "Admission · " + projectID,
+			Kind:      primitives.KindWarn,
+			Status:    boardCountLabel(len(projectProposals), "awaiting decision", "awaiting decisions"),
+			Detail:    strings.Join(details, "; "),
+			Resets:    "on decision",
+		})
 	}
 	return rows
 }

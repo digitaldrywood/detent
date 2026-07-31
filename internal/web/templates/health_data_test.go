@@ -124,6 +124,43 @@ func TestHealthStrandedActiveRowsGroupByProject(t *testing.T) {
 	}
 }
 
+func TestHealthAdmissionProposalRowsGroupByProject(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	rows := healthAdmissionProposalRows([]telemetry.AdmissionProposal{
+		{ProjectID: "docs", IssueIdentifier: "digitaldrywood/docs#20", Confidence: 0.91, CreatedAt: now.Add(-30 * time.Minute), ExpiresAt: now.Add(90 * time.Minute)},
+		{ProjectID: "detent", IssueIdentifier: "digitaldrywood/detent#1587", Confidence: 0.76, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(22 * time.Hour)},
+		{ProjectID: "detent", IssueIdentifier: "digitaldrywood/detent#1586", Confidence: 0.88, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(23 * time.Hour)},
+	}, now)
+
+	if len(rows) != 2 {
+		t.Fatalf("healthAdmissionProposalRows() = %#v, want two project rows", rows)
+	}
+	if rows[0].Component != "Admission · detent" || rows[0].Status != "2 awaiting decisions" || rows[0].Resets != "on decision" {
+		t.Fatalf("detent row = %#v", rows[0])
+	}
+	for _, want := range []string{
+		"digitaldrywood/detent#1586 · 88% confidence · age 1h 0m · expires in 23h 0m",
+		"digitaldrywood/detent#1587 · 76% confidence · age 2h 0m · expires in 22h 0m",
+	} {
+		if !strings.Contains(rows[0].Detail, want) {
+			t.Fatalf("detent detail = %q, want %q", rows[0].Detail, want)
+		}
+	}
+	if rows[1].Component != "Admission · docs" || rows[1].Status != "1 awaiting decision" {
+		t.Fatalf("docs row = %#v", rows[1])
+	}
+
+	view := healthViewFromDashboard(DashboardData{Snapshot: telemetry.Snapshot{
+		GeneratedAt:        now,
+		AdmissionProposals: []telemetry.AdmissionProposal{{ProjectID: "detent"}},
+	}})
+	if view.Kind != primitives.KindWarn || view.Verdict != "1 Admission proposal awaits human decision." {
+		t.Fatalf("health verdict = (%q, %q)", view.Kind, view.Verdict)
+	}
+}
+
 func TestBackendCapacityProjectDetailDoesNotInflateVerdict(t *testing.T) {
 	t.Parallel()
 

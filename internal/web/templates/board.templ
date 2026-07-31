@@ -193,7 +193,11 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 							for _, row := range alert.DetailRows {
 								<div id={ row.ID } class="min-w-0 border-l border-line pl-3 text-xs">
 									<p class="flex min-w-0 flex-wrap items-baseline gap-x-2 text-text">
-										<span class="font-mono font-medium">{ row.Label }</span>
+										if row.Link != "" {
+											<a class="font-mono font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(row.Link) }>{ row.Label }</a>
+										} else {
+											<span class="font-mono font-medium">{ row.Label }</span>
+										}
 										if row.Summary != "" {
 											<span class="text-sec">{ row.Summary }</span>
 										}

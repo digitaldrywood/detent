@@ -25,39 +25,48 @@ const (
 )
 
 type doctorAdmissionDiagnostic struct {
-	Schedule              string           `json:"schedule"`
-	MaximumGapSeconds     int64            `json:"maximum_gap_seconds,omitempty"`
-	CriteriaSection       string           `json:"criteria_section"`
-	Dimensions            []string         `json:"dimensions,omitempty"`
-	NeverRun              bool             `json:"never_run,omitempty"`
-	ObservedRuns          int              `json:"observed_runs,omitempty"`
-	CandidateBearingRuns  int              `json:"candidate_bearing_runs,omitempty"`
-	CandidatesObserved    int              `json:"candidates_observed,omitempty"`
-	EligibleCandidates    int              `json:"eligible_candidates_observed,omitempty"`
-	AverageRunSeconds     int64            `json:"average_run_seconds,omitempty"`
-	AdmissionSessions     int              `json:"admission_sessions,omitempty"`
-	AverageSessionSeconds int64            `json:"average_session_seconds,omitempty"`
-	AverageSessionTokens  int64            `json:"average_session_tokens,omitempty"`
-	LastRun               string           `json:"last_run,omitempty"`
-	Outcome               string           `json:"outcome,omitempty"`
-	DeferredReason        string           `json:"deferred_reason,omitempty"`
-	CandidatesFound       int              `json:"candidates_found,omitempty"`
-	CandidatesEvaluated   int              `json:"candidates_evaluated,omitempty"`
-	Proposed              int              `json:"proposed,omitempty"`
-	Skipped               map[string]int   `json:"skipped,omitempty"`
-	Truncated             map[string]int   `json:"truncated,omitempty"`
-	IssueReferences       []string         `json:"issue_references,omitempty"`
-	ConsecutiveFailures   int              `json:"consecutive_failures,omitempty"`
-	LatestError           string           `json:"latest_error,omitempty"`
-	Warnings              []string         `json:"warnings,omitempty"`
-	Origins               map[string]int   `json:"origins,omitempty"`
-	ProposalOutcomes      map[string]int   `json:"proposal_outcomes,omitempty"`
-	DecisionSeconds       map[string]int64 `json:"average_decision_seconds,omitempty"`
-	AcceptedCompleted     int              `json:"accepted_completed,omitempty"`
-	ReworkCount           int              `json:"rework_count,omitempty"`
-	ReviewChurnCount      int              `json:"review_churn_count,omitempty"`
-	SpendUSD              float64          `json:"spend_usd,omitempty"`
-	RepositoryVisibility  string           `json:"repository_visibility,omitempty"`
+	Schedule              string                    `json:"schedule"`
+	MaximumGapSeconds     int64                     `json:"maximum_gap_seconds,omitempty"`
+	CriteriaSection       string                    `json:"criteria_section"`
+	Dimensions            []string                  `json:"dimensions,omitempty"`
+	NeverRun              bool                      `json:"never_run,omitempty"`
+	ObservedRuns          int                       `json:"observed_runs,omitempty"`
+	CandidateBearingRuns  int                       `json:"candidate_bearing_runs,omitempty"`
+	CandidatesObserved    int                       `json:"candidates_observed,omitempty"`
+	EligibleCandidates    int                       `json:"eligible_candidates_observed,omitempty"`
+	AverageRunSeconds     int64                     `json:"average_run_seconds,omitempty"`
+	AdmissionSessions     int                       `json:"admission_sessions,omitempty"`
+	AverageSessionSeconds int64                     `json:"average_session_seconds,omitempty"`
+	AverageSessionTokens  int64                     `json:"average_session_tokens,omitempty"`
+	LastRun               string                    `json:"last_run,omitempty"`
+	Outcome               string                    `json:"outcome,omitempty"`
+	DeferredReason        string                    `json:"deferred_reason,omitempty"`
+	CandidatesFound       int                       `json:"candidates_found,omitempty"`
+	CandidatesEvaluated   int                       `json:"candidates_evaluated,omitempty"`
+	Proposed              int                       `json:"proposed,omitempty"`
+	Skipped               map[string]int            `json:"skipped,omitempty"`
+	Truncated             map[string]int            `json:"truncated,omitempty"`
+	IssueReferences       []string                  `json:"issue_references,omitempty"`
+	ConsecutiveFailures   int                       `json:"consecutive_failures,omitempty"`
+	LatestError           string                    `json:"latest_error,omitempty"`
+	Warnings              []string                  `json:"warnings,omitempty"`
+	Origins               map[string]int            `json:"origins,omitempty"`
+	ProposalOutcomes      map[string]int            `json:"proposal_outcomes,omitempty"`
+	DecisionSeconds       map[string]int64          `json:"average_decision_seconds,omitempty"`
+	AcceptedCompleted     int                       `json:"accepted_completed,omitempty"`
+	ReworkCount           int                       `json:"rework_count,omitempty"`
+	ReviewChurnCount      int                       `json:"review_churn_count,omitempty"`
+	SpendUSD              float64                   `json:"spend_usd,omitempty"`
+	RepositoryVisibility  string                    `json:"repository_visibility,omitempty"`
+	OpenProposals         []doctorAdmissionProposal `json:"open_proposals_awaiting_decision,omitempty"`
+}
+
+type doctorAdmissionProposal struct {
+	Identifier       string  `json:"identifier"`
+	URL              string  `json:"url,omitempty"`
+	Confidence       float64 `json:"confidence"`
+	AgeSeconds       int64   `json:"age_seconds"`
+	ExpiresInSeconds int64   `json:"expires_in_seconds"`
 }
 
 func checkDoctorAdmission(
@@ -119,7 +128,7 @@ func checkDoctorAdmission(
 			BacklogAdmission: &diagnostic,
 		}
 	}
-	diagnostic, queryErr := readDoctorAdmissionDiagnostic(ctx, db, projectID, diagnostic)
+	diagnostic, queryErr := readDoctorAdmissionDiagnostic(ctx, db, projectID, diagnostic, deps.now().UTC())
 	closeErr := db.Close()
 	if queryErr != nil {
 		return doctorCheck{
@@ -160,6 +169,7 @@ func readDoctorAdmissionDiagnostic(
 	db doctorTelemetryStore,
 	projectID string,
 	diagnostic doctorAdmissionDiagnostic,
+	observedAt time.Time,
 ) (_ doctorAdmissionDiagnostic, resultErr error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT started_at, completed_at, outcome, COALESCE(deferred_reason, ''), candidates_found_count,
@@ -270,7 +280,7 @@ LIMIT ?`, strings.TrimSpace(projectID), doctorAdmissionRecentRunLimit)
 	if diagnostic.ObservedRuns > 0 {
 		diagnostic.AverageRunSeconds = totalRunSeconds / int64(diagnostic.ObservedRuns)
 	}
-	return readDoctorAdmissionEvidence(ctx, db, projectID, diagnostic)
+	return readDoctorAdmissionEvidence(ctx, db, projectID, diagnostic, observedAt)
 }
 
 func readDoctorAdmissionEvidence(
@@ -278,8 +288,12 @@ func readDoctorAdmissionEvidence(
 	db doctorTelemetryStore,
 	projectID string,
 	diagnostic doctorAdmissionDiagnostic,
+	observedAt time.Time,
 ) (doctorAdmissionDiagnostic, error) {
 	if err := readDoctorAdmissionSessionCost(ctx, db, projectID, &diagnostic); err != nil {
+		return diagnostic, err
+	}
+	if err := readDoctorOpenAdmissionProposals(ctx, db, projectID, observedAt, &diagnostic); err != nil {
 		return diagnostic, err
 	}
 	diagnostic.ProposalOutcomes = map[string]int{}
@@ -352,6 +366,54 @@ ORDER BY id`, strings.TrimSpace(projectID))
 		diagnostic.Origins[string(metadata.Provenance.Origin)]++
 	}
 	return diagnostic, originRows.Err()
+}
+
+func readDoctorOpenAdmissionProposals(
+	ctx context.Context,
+	db doctorTelemetryStore,
+	projectID string,
+	observedAt time.Time,
+	diagnostic *doctorAdmissionDiagnostic,
+) error {
+	rows, err := db.QueryContext(ctx, `
+SELECT COALESCE(issue_identifier, ''), COALESCE(issue_id, ''), COALESCE(issue_url, ''),
+       confidence, created_at, expires_at
+FROM backlog_admission_proposals
+WHERE project_id = ? AND status = 'open' AND expires_at > ?
+ORDER BY created_at, id`, strings.TrimSpace(projectID), observedAt.UTC().Truncate(time.Second).Format(time.RFC3339))
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table: backlog_admission_proposals") {
+			return nil
+		}
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var identifier string
+		var issueID string
+		var proposal doctorAdmissionProposal
+		var createdAt string
+		var expiresAt string
+		if err := rows.Scan(&identifier, &issueID, &proposal.URL, &proposal.Confidence, &createdAt, &expiresAt); err != nil {
+			return err
+		}
+		if identifier = strings.TrimSpace(identifier); identifier == "" {
+			identifier = strings.TrimSpace(issueID)
+		}
+		proposal.Identifier = identifier
+		created, err := time.Parse(time.RFC3339, createdAt)
+		if err != nil {
+			return fmt.Errorf("parse backlog admission proposal created_at: %w", err)
+		}
+		expires, err := time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return fmt.Errorf("parse backlog admission proposal expires_at: %w", err)
+		}
+		proposal.AgeSeconds = max(int64(observedAt.Sub(created)/time.Second), 0)
+		proposal.ExpiresInSeconds = max(int64(expires.Sub(observedAt)/time.Second), 0)
+		diagnostic.OpenProposals = append(diagnostic.OpenProposals, proposal)
+	}
+	return rows.Err()
 }
 
 func readDoctorAdmissionSessionCost(
@@ -431,6 +493,10 @@ func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, una
 	if len(diagnostic.IssueReferences) > 0 {
 		details = append(details, "issues="+strings.Join(diagnostic.IssueReferences, ","))
 	}
+	if len(diagnostic.OpenProposals) > 0 {
+		check.Status = doctorWarn
+		details = append(details, "awaiting_decision="+doctorAdmissionOpenProposals(diagnostic.OpenProposals))
+	}
 	if counts := doctorAdmissionCounts(diagnostic.Origins); counts != "" {
 		details = append(details, "origins="+counts)
 	}
@@ -456,6 +522,24 @@ func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, una
 	}
 	check.Detail = strings.Join(details, "; ")
 	return check
+}
+
+func doctorAdmissionOpenProposals(proposals []doctorAdmissionProposal) string {
+	values := make([]string, 0, len(proposals))
+	for _, proposal := range proposals {
+		values = append(values, fmt.Sprintf(
+			"%s(confidence=%s,age=%s,expires_in=%s)",
+			proposal.Identifier,
+			formatDoctorConfidence(proposal.Confidence),
+			(time.Duration(proposal.AgeSeconds)*time.Second).String(),
+			(time.Duration(proposal.ExpiresInSeconds)*time.Second).String(),
+		))
+	}
+	return strings.Join(values, ",")
+}
+
+func formatDoctorConfidence(confidence float64) string {
+	return fmt.Sprintf("%.0f%%", confidence*100)
 }
 
 func doctorAdmissionCadenceWarning(diagnostic doctorAdmissionDiagnostic) string {
