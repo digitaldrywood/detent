@@ -466,13 +466,17 @@ func (g *GlobalDispatchGate) Release(slot Slot) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if _, ok := g.running[slot.token]; !ok {
+	running, ok := g.running[slot.token]
+	if !ok {
 		return nil
 	}
 	if err := g.global.ReleaseSlot(slot); err != nil {
 		return err
 	}
 	delete(g.running, slot.token)
+	if cycle, ok := g.projectCycles[running.ProjectID]; ok && cycle.idle {
+		g.projectCycles[running.ProjectID] = projectCycleState{}
+	}
 	return nil
 }
 

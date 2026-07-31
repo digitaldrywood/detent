@@ -700,6 +700,30 @@ func TestGlobalDispatchGateStrictProjectReservationTracksDemand(t *testing.T) {
 			wantReason:  scheduler.DispatchGateReasonGranted,
 		},
 		{
+			name: "higher priority project release invalidates its own idle state",
+			arrange: func(t *testing.T, gate *scheduler.GlobalDispatchGate, higher, _ scheduler.ProjectCandidate) {
+				t.Helper()
+				gate.BeginProjectCycle(higher)
+				slot, ok, decision, err := gate.TryAcquireWithDecision(
+					t.Context(),
+					higher,
+					scheduler.SlotRequest{State: "Todo"},
+					time.Date(2026, 7, 30, 9, 0, 0, 0, time.Local),
+				)
+				if err != nil {
+					t.Fatalf("higher TryAcquireWithDecision() error = %v", err)
+				}
+				if !ok {
+					t.Fatalf("higher TryAcquireWithDecision() decision = %#v, want granted", decision)
+				}
+				gate.EndProjectCycle(higher.ID)
+				if err := gate.Release(slot); err != nil {
+					t.Fatalf("higher Release() error = %v", err)
+				}
+			},
+			wantReason: scheduler.DispatchGateReasonReservedForHigherPriorityProject,
+		},
+		{
 			name: "pending higher priority project reserves capacity",
 			arrange: func(_ *testing.T, gate *scheduler.GlobalDispatchGate, higher, _ scheduler.ProjectCandidate) {
 				gate.MarkReady(higher)
