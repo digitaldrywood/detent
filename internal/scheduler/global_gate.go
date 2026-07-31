@@ -170,6 +170,11 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 		delete(g.selected, projectID)
 		delete(g.projectCycles, projectID)
 	}
+	for projectID := range g.projectCycles {
+		if _, ok := next[projectID]; !ok {
+			delete(g.projectCycles, projectID)
+		}
+	}
 	g.projects = next
 }
 
