@@ -188,7 +188,7 @@ func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
 		},
 	}
 	decisions := []telemetry.SchedulerDecision{
-		{IssueID: "issue-closed", Reason: "merge_slot_revoked", DecisionAt: now},
+		{IssueID: "issue-closed", Result: "skipped", Reason: "merge_slot_revoked", DecisionAt: now},
 		{IssueID: "issue-merged", Reason: "merge_slot_revoked", DecisionAt: now},
 		{IssueID: "issue-stale-completed", Reason: "merge_slot_revoked", DecisionAt: now},
 		{IssueID: "issue-gone", Reason: "merge_slot_revoked", DecisionAt: now},
@@ -200,6 +200,9 @@ func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
 	}
 	if got[0].CurrentState != "Done" || !got[0].Closed {
 		t.Fatalf("closed decision = %#v, want current Done and closed", got[0])
+	}
+	if got[0].Result != "skipped" {
+		t.Fatalf("closed decision result = %q, want skipped", got[0].Result)
 	}
 	if got[1].CurrentState != "Merging" || !got[1].Merged {
 		t.Fatalf("merged decision = %#v, want current Merging and merged", got[1])
