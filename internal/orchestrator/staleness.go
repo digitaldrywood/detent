@@ -181,6 +181,7 @@ func stalenessDecisions(decisions []telemetry.SchedulerDecision, issues map[stri
 			CurrentState: strings.TrimSpace(issue.State),
 			Closed:       issue.Closed,
 			Merged:       pullRequestMerged(issue.PullRequest),
+			Result:       strings.TrimSpace(decision.Result),
 			Reason:       strings.TrimSpace(decision.Reason),
 			At:           decision.DecisionAt.UTC(),
 		})

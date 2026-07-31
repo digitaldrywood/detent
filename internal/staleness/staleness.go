@@ -65,6 +65,7 @@ type Decision struct {
 	CurrentState string
 	Closed       bool
 	Merged       bool
+	Result       string
 	Reason       string
 	At           time.Time
 }
@@ -228,9 +229,11 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 	groups := make(map[string]group)
 	for _, decision := range input.Decisions {
 		identity := decisionIdentity(decision)
+		result := normalize(decision.Result)
 		reason := strings.TrimSpace(decision.Reason)
 		currentState := normalize(decision.CurrentState)
 		if identity == "" ||
+			result != "skipped" ||
 			reason == "" ||
 			currentState == "" ||
 			decision.Closed ||

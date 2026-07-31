@@ -2606,6 +2606,7 @@ func defaultStalenessRepeatedDecisionBenignReasons() []string {
 		"github_rest_capacity_paused",
 		"github_rest_recovery",
 		"global_capacity_full",
+		"reserved_for_higher_priority_project",
 	}
 }
 

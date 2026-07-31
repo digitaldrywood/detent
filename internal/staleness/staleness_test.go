@@ -76,10 +76,10 @@ func TestEvaluate(t *testing.T) {
 			input: Input{
 				ProjectID: "detent",
 				Decisions: []Decision{
-					{IssueID: "3", CurrentState: "Merging", Reason: "merge_slot_revoked", At: now.Add(-3 * time.Hour)},
-					{IssueID: "3", CurrentState: "Merging", Reason: "merge_slot_revoked", At: now.Add(-2 * time.Hour)},
-					{IssueID: "3", CurrentState: "Merging", Reason: "merge_slot_revoked", At: now.Add(-time.Hour)},
-					{IssueID: "3", CurrentState: "Merging", Reason: "other", At: now.Add(-time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Result: "skipped", Reason: "merge_slot_revoked", At: now.Add(-3 * time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Result: "skipped", Reason: "merge_slot_revoked", At: now.Add(-2 * time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Result: "skipped", Reason: "merge_slot_revoked", At: now.Add(-time.Hour)},
+					{IssueID: "3", CurrentState: "Merging", Result: "skipped", Reason: "other", At: now.Add(-time.Hour)},
 				},
 			},
 			wantKinds: []string{KindRepeatedDecision},
@@ -119,6 +119,7 @@ func TestEvaluateRepeatedDecisions(t *testing.T) {
 			"github_rest_capacity_paused",
 			"github_rest_recovery",
 			"global_capacity_full",
+			"reserved_for_higher_priority_project",
 		},
 		TerminalStates: []string{"Done", "Cancelled", "Canceled"},
 	}
@@ -148,6 +149,17 @@ func TestEvaluateRepeatedDecisions(t *testing.T) {
 		{
 			name:      "REST recovery stays quiet",
 			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "github_rest_recovery", "Todo"),
+		},
+		{
+			name:      "priority reservation stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "reserved_for_higher_priority_project", "Todo"),
+		},
+		{
+			name: "successful selections stay quiet regardless of count",
+			decisions: mutateDecisions(
+				repeatedDecisions(now.Add(-4*time.Hour), 104, 2*time.Minute, "selected", "Todo"),
+				func(decision *Decision) { decision.Result = "selected" },
+			),
 		},
 		{
 			name: "operator configured reason stays quiet",
@@ -212,6 +224,7 @@ func repeatedDecisions(start time.Time, count int, interval time.Duration, reaso
 			IssueID:      "issue-1",
 			Identifier:   "digitaldrywood/detent#1",
 			CurrentState: state,
+			Result:       "skipped",
 			Reason:       reason,
 			At:           start.Add(time.Duration(index) * interval),
 		})
