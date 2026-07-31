@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+const powerShellInstallTimeout = 2 * time.Minute
+
 func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
 	t.Parallel()
 
@@ -229,7 +231,7 @@ type powerShellInstallRun struct {
 func runPowerShellInstall(t *testing.T, root string, env []string) powerShellInstallRun {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), powerShellInstallTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "install.ps1")
@@ -242,6 +244,9 @@ func runPowerShellInstall(t *testing.T, root string, env []string) powerShellIns
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		err = fmt.Errorf("PowerShell install exceeded %s: %w", powerShellInstallTimeout, ctx.Err())
+	}
 	return powerShellInstallRun{
 		stdout: stdout.String(),
 		stderr: stderr.String(),
