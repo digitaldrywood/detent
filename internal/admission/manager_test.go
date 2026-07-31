@@ -23,6 +23,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+type releaseErrorGlobalScheduler struct {
+	scheduler.GlobalScheduler
+	err error
+}
+
+func (s *releaseErrorGlobalScheduler) ReleaseSlot(slot scheduler.Slot) error {
+	if err := s.GlobalScheduler.ReleaseSlot(slot); err != nil {
+		return err
+	}
+	err := s.err
+	s.err = nil
+	return err
+}
+
 func TestManagerDisabledRegistersNoSchedule(t *testing.T) {
 	t.Parallel()
 
@@ -1205,6 +1219,64 @@ func TestAcquireCapacityReleaseClearsDerivedAdmissionReservation(t *testing.T) {
 				if err := gate.Release(slot); err != nil {
 					t.Fatalf("lower run %d Release() error = %v", run, err)
 				}
+			}
+		})
+	}
+}
+
+func TestAcquireCapacityReleaseErrorClearsDerivedAdmissionReservation(t *testing.T) {
+	t.Parallel()
+
+	releaseErr := errors.New("release slot")
+	for _, tt := range []struct {
+		name       string
+		releaseErr error
+	}{
+		{name: "release succeeds"},
+		{name: "release fails", releaseErr: releaseErr},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
+			higher := scheduler.ProjectCandidate{ID: "detent", Priority: 0}
+			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Priority: 3}
+			global := &releaseErrorGlobalScheduler{
+				GlobalScheduler: scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
+				err:             tt.releaseErr,
+			}
+			gate := scheduler.NewGlobalDispatchGate(global, higher, lower)
+			gate.BeginProjectCycle(higher)
+			gate.EndProjectCycle(higher.ID)
+
+			release, acquired, reason, err := acquireCapacity(t.Context(), Settings{
+				GlobalDispatchGate: gate,
+				ProjectCandidate:   higher,
+			}, now)
+			if err != nil {
+				t.Fatalf("acquireCapacity() error = %v", err)
+			}
+			if !acquired || reason != "" {
+				t.Fatalf("acquireCapacity() = %t, %q, want true, empty reason", acquired, reason)
+			}
+			if err := release(); !errors.Is(err, tt.releaseErr) {
+				t.Fatalf("release() error = %v, want %v", err, tt.releaseErr)
+			}
+
+			slot, granted, decision, err := gate.TryAcquireWithDecision(
+				t.Context(),
+				lower,
+				scheduler.SlotRequest{State: "Todo"},
+				now.Add(time.Second),
+			)
+			if err != nil {
+				t.Fatalf("lower TryAcquireWithDecision() error = %v", err)
+			}
+			if !granted {
+				t.Fatalf("lower TryAcquireWithDecision() decision = %#v, want granted", decision)
+			}
+			if err := gate.Release(slot); err != nil {
+				t.Fatalf("lower Release() error = %v", err)
 			}
 		})
 	}

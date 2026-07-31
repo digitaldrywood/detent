@@ -49,6 +49,53 @@ func TestGlobalDispatchGateUsesConfiguredProjectSelection(t *testing.T) {
 	}
 }
 
+func TestGlobalDispatchGateReleaseIsIdempotentWhenSlotIsNotHeld(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name             string
+		releaseOutOfBand bool
+	}{
+		{name: "held slot"},
+		{name: "slot released out of band", releaseOutOfBand: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
+			gate := scheduler.NewGlobalDispatchGate(global)
+			project := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+			slot, acquired, err := gate.TryAcquire(
+				t.Context(),
+				project,
+				scheduler.SlotRequest{State: "Todo"},
+				time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC),
+			)
+			if err != nil {
+				t.Fatalf("TryAcquire() error = %v", err)
+			}
+			if !acquired {
+				t.Fatal("TryAcquire() acquired = false, want true")
+			}
+			if tt.releaseOutOfBand {
+				if err := global.ReleaseSlot(slot); err != nil {
+					t.Fatalf("out-of-band ReleaseSlot() error = %v", err)
+				}
+			}
+
+			if err := gate.Release(slot); err != nil {
+				t.Fatalf("Release() error = %v, want nil", err)
+			}
+			if snapshot := gate.PoolSnapshot(); snapshot.Used != 0 || len(snapshot.Holders) != 0 {
+				t.Fatalf("PoolSnapshot() = %#v, want no usage or holders", snapshot)
+			}
+			if err := gate.Release(slot); err != nil {
+				t.Fatalf("duplicate Release() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestGlobalDispatchGatePauseBlocksNewSlotsUntilEveryReservationReleases(t *testing.T) {
 	t.Parallel()
 
