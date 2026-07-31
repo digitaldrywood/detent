@@ -2626,7 +2626,8 @@ func normalizeReasonList(reasons []string) []string {
 	return normalized
 }
 
-func (s *StalenessObservability) validate(problems *[]string) {
+func (s StalenessObservability) validate(problems *[]string) {
+	s.Lanes = slices.Clone(s.Lanes)
 	s.Normalize()
 	if !s.Enabled {
 		return
