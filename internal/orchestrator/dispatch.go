@@ -631,7 +631,7 @@ func (o *Orchestrator) markGlobalProjectIdle() {
 	if o.globalDispatchGate == nil {
 		return
 	}
-	o.globalDispatchGate.MarkIdle(o.cfg.Project.ID)
+	o.globalDispatchGate.MarkIdle(o.cfg.Project)
 }
 
 type projectCycleDispatchGate interface {

@@ -600,7 +600,7 @@ func syncGlobalDispatchProjects(
 		if ok && runtimeProject.Running() {
 			continue
 		}
-		gate.MarkIdle(candidate.ID)
+		gate.MarkIdle(candidate)
 	}
 }
 

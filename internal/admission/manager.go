@@ -1114,11 +1114,15 @@ func acquireCapacity(ctx context.Context, settings Settings, now time.Time) (fun
 		return func() error { return nil }, false, "", errors.Join(err, releaseLocal())
 	}
 	if !acquired {
-		settings.GlobalDispatchGate.MarkIdle(candidate.ID)
+		settings.GlobalDispatchGate.MarkIdle(candidate)
 		return func() error { return nil }, false, "fleet_capacity", releaseLocal()
 	}
 	return func() error {
-		return errors.Join(settings.GlobalDispatchGate.Release(slot), releaseLocal())
+		releaseGlobal := settings.GlobalDispatchGate.Release(slot)
+		if releaseGlobal == nil {
+			settings.GlobalDispatchGate.MarkIdle(candidate)
+		}
+		return errors.Join(releaseGlobal, releaseLocal())
 	}, true, "", nil
 }
 

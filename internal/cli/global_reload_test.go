@@ -290,8 +290,8 @@ func TestGlobalConfigReloaderHotAppliesSchedulerCapacityWithoutInterruptingWorke
 	if err != nil {
 		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
 	}
-	gate.MarkIdle(bravo.ID)
-	gate.MarkIdle(charlie.ID)
+	gate.MarkIdle(bravo)
+	gate.MarkIdle(charlie)
 	alphaSlot, ok, err := gate.TryAcquire(ctx, alpha, scheduler.SlotRequest{State: "Todo"}, time.Time{})
 	if err != nil || !ok {
 		t.Fatalf("alpha TryAcquire() = ok %t error %v, want granted", ok, err)
