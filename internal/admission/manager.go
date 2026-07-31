@@ -32,6 +32,9 @@ const (
 	admissionState                         = "Admission"
 	admissionResolutionExplicitAccept      = "explicit_accept"
 	admissionResolutionExplicitReject      = "explicit_reject"
+	admissionResolutionImplicitAccept      = "implicit_accept"
+	admissionResolutionIssueClosed         = "issue_closed"
+	admissionResolutionTerminalState       = "terminal_state_reached"
 	admissionResolutionAutoAdmit           = "auto_admit"
 	admissionResolutionSourceStateChanged  = "source_state_changed_before_acceptance"
 	admissionResolutionAutoAdmitIneligible = "candidate_became_ineligible_before_auto_admit"
@@ -550,6 +553,24 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			continue
 		}
+		if !decided && autoAdmitProposal(settings.Config, proposal) {
+			recovered, err := m.recoverAutomaticAdmission(ctx, settings, issue, proposal)
+			if err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			if recovered {
+				continue
+			}
+		}
+		if !decided {
+			resolved, err := m.resolveProposalFromIssueState(ctx, settings, issue, proposal, at)
+			if err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			if resolved {
+				continue
+			}
+		}
 		if decided && decision.Outcome == admissionmodel.ProposalAccepted {
 			decision.Reason = admissionResolutionExplicitAccept
 			transitions, err := m.store.AdmissionTargetTransitions(ctx, admissionmodel.TargetTransitionQuery{
@@ -590,6 +611,14 @@ func (m *Manager) reconcileOpenProposals(
 			}
 		}
 		if decided && decision.Outcome == admissionmodel.ProposalAccepted {
+			if reason := inactiveProposalResolution(issue, settings.TerminalStates); reason != "" {
+				decision.Outcome = admissionmodel.ProposalSuperseded
+				decision.Reason = reason
+				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+					return commentsRemaining, autoAdmitsRemaining, err
+				}
+				continue
+			}
 			if !admissionSourceEligible(issue, settings.Config) {
 				decision.Outcome = admissionmodel.ProposalSuperseded
 				decision.Reason = admissionResolutionSourceStateChanged
@@ -604,13 +633,6 @@ func (m *Manager) reconcileOpenProposals(
 			continue
 		}
 		if !decided && autoAdmitProposal(settings.Config, proposal) {
-			recovered, err := m.recoverAutomaticAdmission(ctx, settings, issue, proposal)
-			if err != nil {
-				return commentsRemaining, autoAdmitsRemaining, err
-			}
-			if recovered {
-				continue
-			}
 			if !autoAdmitCandidateEligible(issue, settings.Config) {
 				decision := automaticAdmissionDecision(settings.Issues, proposal, at)
 				decision.Outcome = admissionmodel.ProposalSuperseded
@@ -652,6 +674,88 @@ func (m *Manager) reconcileOpenProposals(
 		}
 	}
 	return commentsRemaining, autoAdmitsRemaining, nil
+}
+
+func (m *Manager) resolveProposalFromIssueState(
+	ctx context.Context,
+	settings Settings,
+	issue connector.Issue,
+	proposal admissionmodel.Proposal,
+	at time.Time,
+) (bool, error) {
+	transitions, err := m.store.AdmissionTargetTransitions(ctx, admissionmodel.TargetTransitionQuery{
+		ProjectID:   proposal.ProjectID,
+		IssueID:     proposal.IssueID,
+		TargetState: proposal.TargetState,
+		NotBefore:   proposal.CreatedAt,
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(transitions) > 0 {
+		transition := transitions[0]
+		decision := admissionmodel.Decision{
+			ProposalID:        proposal.ID,
+			Outcome:           admissionmodel.ProposalAccepted,
+			DecidedAt:         transition.EnteredAt.UTC(),
+			ActorLogin:        transition.ActorLogin,
+			ActorKind:         transition.ActorKind,
+			TransitionAt:      transition.EnteredAt.UTC(),
+			TransitionEventID: transition.EventID,
+			Reason:            admissionResolutionImplicitAccept,
+			Implicit:          true,
+		}
+		if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	var reason string
+	outcome := admissionmodel.ProposalSuperseded
+	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(proposal.TargetState)) {
+		reason = admissionResolutionImplicitAccept
+		outcome = admissionmodel.ProposalAccepted
+	} else {
+		reason = inactiveProposalResolution(issue, settings.TerminalStates)
+	}
+	if reason == "" {
+		return false, nil
+	}
+
+	decision := admissionmodel.Decision{
+		ProposalID: proposal.ID,
+		Outcome:    outcome,
+		DecidedAt:  at.UTC(),
+		Reason:     reason,
+		Implicit:   true,
+	}
+	if outcome == admissionmodel.ProposalAccepted {
+		transition, found, err := admissionIssueTransition(ctx, settings.Issues, issue)
+		if err != nil {
+			return false, err
+		}
+		if found && !transition.EnteredAt.IsZero() && !transition.EnteredAt.Before(proposal.CreatedAt) {
+			decision.DecidedAt = transition.EnteredAt.UTC()
+			decision.ActorLogin = transition.Actor.Login
+			decision.ActorKind = transition.Actor.Kind
+		}
+		decision.TransitionAt = decision.DecidedAt
+	}
+	if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func inactiveProposalResolution(issue connector.Issue, terminalStates []string) string {
+	if issue.Closed {
+		return admissionResolutionIssueClosed
+	}
+	if containsFold(terminalStates, issue.State) {
+		return admissionResolutionTerminalState
+	}
+	return ""
 }
 
 func (m *Manager) unproposedCandidates(

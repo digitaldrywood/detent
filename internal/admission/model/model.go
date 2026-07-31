@@ -80,6 +80,7 @@ type Decision struct {
 	TransitionEventID int64
 	Reason            string
 	Automatic         bool
+	Implicit          bool
 }
 
 type TargetTransitionQuery struct {

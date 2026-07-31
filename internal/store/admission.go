@@ -280,7 +280,7 @@ func (s *sqliteStore) ResolveAdmissionProposal(ctx context.Context, decision adm
 	if decision.DecidedAt.IsZero() {
 		return errors.New("backlog admission decision time is required")
 	}
-	if strings.TrimSpace(decision.CommentID) == "" && !decision.Automatic {
+	if strings.TrimSpace(decision.CommentID) == "" && !decision.Automatic && !decision.Implicit {
 		return errors.New("backlog admission decision comment is required")
 	}
 	if decision.Outcome == admissionmodel.ProposalAccepted && decision.TransitionAt.IsZero() {

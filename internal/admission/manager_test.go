@@ -341,36 +341,150 @@ func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
 	}
 }
 
-func TestManagerTargetTransitionWithoutDecisionRemainsOpen(t *testing.T) {
+func TestManagerReconcilesOpenProposalFromIssueState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	transitionAt := now.Add(time.Minute)
+	tests := []struct {
+		name           string
+		state          string
+		closed         bool
+		transition     bool
+		recordedTarget bool
+		wantStatus     admissionmodel.ProposalStatus
+		wantReason     string
+		wantActorLogin string
+		wantActorKind  string
+	}{
+		{
+			name:           "target state implicitly accepts",
+			state:          "Todo",
+			transition:     true,
+			wantStatus:     admissionmodel.ProposalAccepted,
+			wantReason:     admissionResolutionImplicitAccept,
+			wantActorLogin: "ada",
+			wantActorKind:  "User",
+		},
+		{
+			name:           "recorded target transition accepts after issue moves onward",
+			state:          "In Progress",
+			recordedTarget: true,
+			wantStatus:     admissionmodel.ProposalAccepted,
+			wantReason:     admissionResolutionImplicitAccept,
+			wantActorLogin: "grace",
+			wantActorKind:  "User",
+		},
+		{
+			name:       "closed issue supersedes",
+			state:      "Backlog",
+			closed:     true,
+			transition: true,
+			wantStatus: admissionmodel.ProposalSuperseded,
+			wantReason: admissionResolutionIssueClosed,
+		},
+		{
+			name:       "terminal issue supersedes",
+			state:      "Done",
+			transition: true,
+			wantStatus: admissionmodel.ProposalSuperseded,
+			wantReason: admissionResolutionTerminalState,
+		},
+		{
+			name:       "unactioned proposal stays open",
+			state:      "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+			issue.State = tt.state
+			issue.Closed = tt.closed
+			issue.StageUpdatedAt = &transitionAt
+			tracker := &transitionAdmissionIssueStore{
+				Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+				transition: connector.IssueStateTransition{
+					EnteredAt: transitionAt,
+					Actor:     connector.IssueActor{Login: "ada", Kind: "User"},
+				},
+				found: tt.transition,
+			}
+			backend := openManagerTestStore(t)
+			if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+				t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+			}
+			if tt.recordedTarget {
+				if _, err := backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID:  proposal.ProjectID,
+					IssueID:    proposal.IssueID,
+					Identifier: proposal.IssueIdentifier,
+					IssueURL:   proposal.IssueURL,
+					PhaseType:  store.WorkflowPhaseTypeLane,
+					PhaseName:  proposal.TargetState,
+					Reason:     "tracker_state_observed",
+					Status:     "entered",
+					StartedAt:  transitionAt,
+					MetadataJSON: provenance.Apply("{}", provenance.Attribution{
+						Origin: provenance.OriginUnknown,
+						Actor: &provenance.Actor{
+							Login: "grace",
+							Kind:  "User",
+						},
+					}, nil),
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+				}
+			}
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+			settings.TerminalStates = []string{"Done"}
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
+
+			if _, err := manager.RunOnce(t.Context()); err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			history, err := backend.AdmissionProposalHistory(t.Context(), proposal.ProjectID, proposal.IssueID)
+			if err != nil || len(history) != 1 {
+				t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+			}
+			got := history[0]
+			if got.Status != tt.wantStatus || got.ResolutionReason != tt.wantReason {
+				t.Fatalf("resolved proposal = %#v", got)
+			}
+			if tt.wantStatus == admissionmodel.ProposalAccepted &&
+				(got.DecisionActorLogin != tt.wantActorLogin || got.DecisionActorKind != tt.wantActorKind ||
+					!got.TransitionAt.Equal(transitionAt) || got.DecisionCommentID != "") {
+				t.Fatalf("implicit acceptance evidence = %#v", got)
+			}
+		})
+	}
+}
+
+func TestManagerReturnsImplicitTransitionLookupError(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	issue.State = "Todo"
-	transitionAt := now.Add(time.Minute)
-	issue.StageUpdatedAt = &transitionAt
 	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
-	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
 		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
 	}
+	wantErr := errors.New("target transition lookup failed")
+	store := &faultAdmissionStore{Store: backend, targetTransitionErr: wantErr}
 	manager := newAdmissionTestManager(
 		t,
 		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
-		backend,
-		func() time.Time { return transitionAt },
+		store,
+		func() time.Time { return now },
 	)
-	if _, err := manager.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
-	}
-	open, err := backend.OpenAdmissionProposals(context.Background(), "detent", 0)
-	if err != nil || len(open) != 1 || open[0].ID != proposal.ID {
-		t.Fatalf("OpenAdmissionProposals() = %#v, %v, want proposal open", open, err)
-	}
-	outcomes, err := backend.AdmissionDownstreamOutcomes(context.Background(), "detent")
-	if err != nil || len(outcomes) != 0 {
-		t.Fatalf("AdmissionDownstreamOutcomes() = %#v, %v, want none", outcomes, err)
+
+	if _, err := manager.RunOnce(t.Context()); !errors.Is(err, wantErr) {
+		t.Fatalf("RunOnce() error = %v, want %v", err, wantErr)
 	}
 }
 
@@ -969,6 +1083,46 @@ func TestManagerAutoAdmissionRespectsOpenProposalCap(t *testing.T) {
 	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{first.ID, second.ID})
 	if err != nil || len(issues) != 2 || issues[0].State != "Backlog" || issues[1].State != "Backlog" {
 		t.Fatalf("issues = %#v, %v", issues, err)
+	}
+}
+
+func TestManagerImplicitAcceptanceReleasesOpenProposalCapacity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	proposal := admissionTestProposalForIssue("proposal-open", first, now)
+	transitionAt := now.Add(time.Minute)
+	first.State = proposal.TargetState
+	first.StageUpdatedAt = &transitionAt
+	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
+	tracker := &transitionAdmissionIssueStore{
+		Connector: memory.New(memory.Config{Issues: []connector.Issue{first, second}, Stateful: true}),
+		transition: connector.IssueStateTransition{
+			EnteredAt: transitionAt,
+			Actor:     connector.IssueActor{Login: "ada", Kind: "User"},
+		},
+		found: true,
+	}
+	backend := openManagerTestStore(t)
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.MaxOpenProposals = 1
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if agent.calls != 1 || len(result.Proposals) != 1 || result.Proposals[0].IssueID != second.ID {
+		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+	}
+	open, err := backend.OpenAdmissionProposals(t.Context(), proposal.ProjectID, 0)
+	if err != nil || len(open) != 1 || open[0].IssueID != second.ID {
+		t.Fatalf("OpenAdmissionProposals() = %#v, %v", open, err)
 	}
 }
 
@@ -2369,12 +2523,13 @@ func (g *capacityGate) Release(scheduler.Slot) error {
 
 type faultAdmissionStore struct {
 	Store
-	expireErr  error
-	refreshErr error
-	recordErr  error
-	latestErr  error
-	latest     admissionmodel.RunRecord
-	latestOK   bool
+	expireErr           error
+	refreshErr          error
+	recordErr           error
+	latestErr           error
+	targetTransitionErr error
+	latest              admissionmodel.RunRecord
+	latestOK            bool
 }
 
 func (s *faultAdmissionStore) ExpireAdmissionProposals(context.Context, string, time.Time) (int, error) {
@@ -2403,6 +2558,16 @@ func (s *faultAdmissionStore) LatestAdmissionRun(ctx context.Context, projectID 
 		return s.latest, s.latestOK, s.latestErr
 	}
 	return s.Store.LatestAdmissionRun(ctx, projectID)
+}
+
+func (s *faultAdmissionStore) AdmissionTargetTransitions(
+	ctx context.Context,
+	query admissionmodel.TargetTransitionQuery,
+) ([]admissionmodel.TargetTransition, error) {
+	if s.targetTransitionErr != nil {
+		return nil, s.targetTransitionErr
+	}
+	return s.Store.AdmissionTargetTransitions(ctx, query)
 }
 
 type boundaryBudgetRunner struct {
@@ -2487,6 +2652,19 @@ type stateChangingAdmissionStore struct {
 	fetches int
 	issueID string
 	state   string
+}
+
+type transitionAdmissionIssueStore struct {
+	*memory.Connector
+	transition connector.IssueStateTransition
+	found      bool
+}
+
+func (s *transitionAdmissionIssueStore) IssueStateTransition(
+	context.Context,
+	connector.Issue,
+) (connector.IssueStateTransition, bool, error) {
+	return s.transition, s.found, nil
 }
 
 type authorizingAdmissionIssueStore struct {
