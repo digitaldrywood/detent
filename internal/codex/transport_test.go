@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -507,40 +508,18 @@ func environmentValue(environment []string, name string) string {
 }
 
 func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood bool) {
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetEscapeHTML(false)
+	codec := NewCodec(os.Stdin, os.Stdout)
+	helperBackpressureRespond(codec, initializeRequestID, "initialize", json.RawMessage(`{"userAgent":"codex-cli/test"}`))
+	helperBackpressureExpect(codec, 0, "initialized")
+	helperBackpressureRespond(codec, threadStartRequestID, "thread/start", json.RawMessage(`{"thread":{"id":"thread-1"}}`))
+	helperBackpressureRespond(codec, configReadRequestID, "config/read", json.RawMessage(`{"config":{"model":"gpt-5.6"}}`))
+	helperBackpressureRespond(codec, turnStartRequestID, "turn/start", json.RawMessage(`{"turn":{"id":"turn-1"}}`))
 
-	messages := []Message{
-		{
-			JSONRPC: JSONRPCVersion,
-			ID:      json.RawMessage(`1`),
-			Result:  json.RawMessage(`{"userAgent":"codex-cli/test"}`),
-		},
-		{
-			JSONRPC: JSONRPCVersion,
-			ID:      json.RawMessage(`2`),
-			Result:  json.RawMessage(`{"thread":{"id":"thread-1"}}`),
-		},
-		{
-			JSONRPC: JSONRPCVersion,
-			ID:      json.RawMessage(`5`),
-			Result:  json.RawMessage(`{"config":{"model":"gpt-5.6"}}`),
-		},
-		{
-			JSONRPC: JSONRPCVersion,
-			ID:      json.RawMessage(`3`),
-			Result:  json.RawMessage(`{"turn":{"id":"turn-1"}}`),
-		},
-		{
-			JSONRPC: JSONRPCVersion,
-			Method:  "turn/completed",
-			Params:  completedParams,
-		},
-	}
-	for _, msg := range messages {
-		if err := encoder.Encode(msg); err != nil {
-			os.Exit(7)
-		}
+	if err := codec.WriteMessage(Message{
+		Method: "turn/completed",
+		Params: completedParams,
+	}); err != nil {
+		helperBackpressureExit("write turn/completed", err)
 	}
 	for i := range 1024 {
 		msg := Message{
@@ -548,13 +527,44 @@ func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood boo
 			Method:  "item/agentMessage/delta",
 			Params:  json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"still streaming"}`),
 		}
-		if err := encoder.Encode(msg); err != nil {
-			os.Exit(8)
+		if err := codec.WriteMessage(msg); err != nil {
+			helperBackpressureExit("write output flood", err)
 		}
 		if blockAfterFlood && i == 1023 {
 			time.Sleep(time.Hour)
 		}
 	}
+}
+
+func helperBackpressureRespond(codec *Codec, id int, method string, result json.RawMessage) {
+	helperBackpressureExpect(codec, id, method)
+	if err := codec.WriteMessage(Message{
+		ID:     json.RawMessage(strconv.Itoa(id)),
+		Result: result,
+	}); err != nil {
+		helperBackpressureExit("write "+method+" response", err)
+	}
+}
+
+func helperBackpressureExpect(codec *Codec, id int, method string) {
+	msg, err := codec.ReadMessage()
+	if err != nil {
+		helperBackpressureExit("read "+method, err)
+	}
+	if msg.Method != method {
+		helperBackpressureExit("read "+method, fmt.Errorf("method = %q", msg.Method))
+	}
+	if id == 0 && len(msg.ID) != 0 {
+		helperBackpressureExit("read "+method, fmt.Errorf("id = %s, want notification", msg.ID))
+	}
+	if id != 0 && !requestIDMatches(msg.ID, id) {
+		helperBackpressureExit("read "+method, fmt.Errorf("id = %s, want %d", msg.ID, id))
+	}
+}
+
+func helperBackpressureExit(stage string, err error) {
+	fmt.Fprintf(os.Stderr, "backpressure helper %s: %v\n", stage, err)
+	os.Exit(7)
 }
 
 func helperRoundTrip() {
