@@ -32,21 +32,23 @@ type boardView struct {
 type boardAlertKind string
 
 const (
-	boardAlertKindLastKnown            boardAlertKind = "board-last-known"
-	boardAlertKindFailureBreaker       boardAlertKind = "project-failure-breaker"
-	boardAlertKindStaleness            boardAlertKind = "staleness-warning"
-	boardAlertKindTrackerStale         boardAlertKind = "board-stale-data"
-	boardAlertKindBackendCapacity      boardAlertKind = "backend-capacity-outage"
-	boardAlertKindDispatchRecovery     boardAlertKind = "dispatch-recovery-status"
-	boardAlertKindUpdatePending        boardAlertKind = "update-pending"
-	boardAlertDetailLimit                             = 5
-	boardAlertSeverityUpdatePending                   = 100
-	boardAlertSeverityDispatchRecovery                = 200
-	boardAlertSeverityBackendCapacity                 = 300
-	boardAlertSeverityTrackerStale                    = 400
-	boardAlertSeverityStaleness                       = 450
-	boardAlertSeverityFailureBreaker                  = 500
-	boardAlertSeverityLastKnown                       = 600
+	boardAlertKindLastKnown             boardAlertKind = "board-last-known"
+	boardAlertKindFailureBreaker        boardAlertKind = "project-failure-breaker"
+	boardAlertKindStaleness             boardAlertKind = "staleness-warning"
+	boardAlertKindTrackerStale          boardAlertKind = "board-stale-data"
+	boardAlertKindAdmissionProposal     boardAlertKind = "admission-proposal"
+	boardAlertKindBackendCapacity       boardAlertKind = "backend-capacity-outage"
+	boardAlertKindDispatchRecovery      boardAlertKind = "dispatch-recovery-status"
+	boardAlertKindUpdatePending         boardAlertKind = "update-pending"
+	boardAlertDetailLimit                              = 5
+	boardAlertSeverityUpdatePending                    = 100
+	boardAlertSeverityDispatchRecovery                 = 200
+	boardAlertSeverityBackendCapacity                  = 300
+	boardAlertSeverityAdmissionProposal                = 425
+	boardAlertSeverityTrackerStale                     = 400
+	boardAlertSeverityStaleness                        = 450
+	boardAlertSeverityFailureBreaker                   = 500
+	boardAlertSeverityLastKnown                        = 600
 )
 
 type boardAlert struct {
@@ -66,6 +68,7 @@ type boardAlert struct {
 type boardAlertDetailRow struct {
 	ID      string
 	Label   string
+	Link    string
 	Summary string
 	Detail  string
 }
@@ -89,6 +92,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 	if alert, ok := boardTrackerStaleAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
+	if alert, ok := boardAdmissionProposalAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
 	if alert, ok := boardBackendCapacityAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
@@ -102,6 +108,47 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		return alerts[i].Severity > alerts[j].Severity
 	})
 	return alerts
+}
+
+func boardAdmissionProposalAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if len(snapshot.AdmissionProposals) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.AdmissionProposals))
+	for index, proposal := range snapshot.AdmissionProposals {
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-admission-" + boardAlertRowSlug(proposal.ID, index),
+			Label:   admissionProposalTarget(proposal),
+			Link:    strings.TrimSpace(proposal.IssueURL),
+			Summary: strings.TrimSpace(proposal.ProjectID),
+			Detail:  admissionProposalTiming(proposal, snapshot.GeneratedAt),
+		})
+	}
+	return boardAlert{
+		ID:            "board-alert-admission-proposals",
+		Kind:          boardAlertKindAdmissionProposal,
+		Severity:      boardAlertSeverityAdmissionProposal,
+		Tone:          primitives.KindWarn,
+		TerseSummary:  boardCountLabel(len(rows), "admission proposal awaiting decision", "admission proposals awaiting decision"),
+		DetailSummary: "Human admission decisions are required.",
+		DetailRows:    rows,
+	}, true
+}
+
+func admissionProposalTarget(proposal telemetry.AdmissionProposal) string {
+	for _, value := range []string{proposal.IssueIdentifier, proposal.IssueID} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "issue"
+}
+
+func admissionProposalTiming(proposal telemetry.AdmissionProposal, observedAt time.Time) string {
+	age := max(observedAt.Sub(proposal.CreatedAt), 0)
+	timeToExpiry := max(proposal.ExpiresAt.Sub(observedAt), 0)
+	return formatContextPercent(proposal.Confidence*100) + " confidence · age " +
+		formatDuration(age.Seconds()) + " · expires in " + formatDuration(timeToExpiry.Seconds())
 }
 
 func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {

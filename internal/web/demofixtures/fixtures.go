@@ -94,6 +94,10 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
 	case "board-alerts-heavy":
 		snapshot = demoBoardAlertsHeavySnapshot()
+	case "admission-proposals-one":
+		snapshot.AdmissionProposals = demoAdmissionProposals(1)
+	case "admission-proposals-several":
+		snapshot.AdmissionProposals = demoAdmissionProposals(3)
 	case "board-staleness-one":
 		snapshot = demoBoardStalenessWarningsSnapshot(1)
 	case "board-staleness-twenty":
@@ -115,6 +119,42 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot.Projects = demoProjectSnapshots(ProjectsForVariant("project-empty"))
 	}
 	return snapshot
+}
+
+func demoAdmissionProposals(count int) []telemetry.AdmissionProposal {
+	proposals := []telemetry.AdmissionProposal{
+		{
+			ID:              "admission-1586",
+			ProjectID:       demoPrimaryProjectID,
+			IssueID:         "1586",
+			IssueIdentifier: "digitaldrywood/detent#1586",
+			IssueURL:        "https://github.com/digitaldrywood/detent/issues/1586",
+			Confidence:      0.88,
+			CreatedAt:       demoBaseTime.Add(-26 * time.Hour),
+			ExpiresAt:       demoBaseTime.Add(46 * time.Hour),
+		},
+		{
+			ID:              "admission-241",
+			ProjectID:       "docs-site",
+			IssueID:         "241",
+			IssueIdentifier: "digitaldrywood/docs-site#241",
+			IssueURL:        "https://github.com/digitaldrywood/docs-site/issues/241",
+			Confidence:      0.82,
+			CreatedAt:       demoBaseTime.Add(-3 * time.Hour),
+			ExpiresAt:       demoBaseTime.Add(69 * time.Hour),
+		},
+		{
+			ID:              "admission-1594",
+			ProjectID:       demoPrimaryProjectID,
+			IssueID:         "1594",
+			IssueIdentifier: "digitaldrywood/detent#1594",
+			IssueURL:        "https://github.com/digitaldrywood/detent/issues/1594",
+			Confidence:      0.79,
+			CreatedAt:       demoBaseTime.Add(-90 * time.Minute),
+			ExpiresAt:       demoBaseTime.Add(70*time.Hour + 30*time.Minute),
+		},
+	}
+	return append([]telemetry.AdmissionProposal(nil), proposals[:min(count, len(proposals))]...)
 }
 
 func demoHealthySnapshot() telemetry.Snapshot {

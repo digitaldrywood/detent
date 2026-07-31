@@ -2053,6 +2053,61 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	}
 }
 
+func TestBoardAdmissionProposalIndicator(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	proposal := func(index int) telemetry.AdmissionProposal {
+		return telemetry.AdmissionProposal{
+			ID:              "proposal-" + strconv.Itoa(index),
+			ProjectID:       "detent",
+			IssueID:         "issue-" + strconv.Itoa(index),
+			IssueIdentifier: "digitaldrywood/detent#" + strconv.Itoa(1600+index),
+			IssueURL:        "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(1600+index),
+			Confidence:      0.88,
+			CreatedAt:       now.Add(-time.Duration(index) * time.Hour),
+			ExpiresAt:       now.Add(time.Duration(24-index) * time.Hour),
+		}
+	}
+	tests := []struct {
+		name      string
+		proposals []telemetry.AdmissionProposal
+		wantText  string
+	}{
+		{name: "zero"},
+		{name: "one", proposals: []telemetry.AdmissionProposal{proposal(1)}, wantText: "1 admission proposal awaiting decision"},
+		{name: "several", proposals: []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3)}, wantText: "3 admission proposals awaiting decision"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := boardTestData()
+			data.Snapshot.GeneratedAt = now
+			data.Snapshot.AdmissionProposals = tt.proposals
+			html := renderBoardComponent(t, BoardSnapshot(data))
+			if len(tt.proposals) == 0 {
+				if strings.Contains(html, `data-board-alert="admission-proposal"`) {
+					t.Fatalf("zero proposals rendered an admission indicator:\n%s", html)
+				}
+				return
+			}
+			for _, want := range []string{
+				`data-board-alert="admission-proposal"`,
+				`id="board-alert-admission-proposals"`,
+				tt.wantText,
+				"88% confidence",
+				`href="https://github.com/digitaldrywood/detent/issues/1601"`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("admission indicator missing %q:\n%s", want, html)
+				}
+			}
+			if strings.Contains(html, `id="admission-proposal-banner"`) {
+				t.Fatalf("admission proposals rendered a stacked banner:\n%s", html)
+			}
+		})
+	}
+}
+
 func boardAlertsHeavyTestSnapshot() telemetry.Snapshot {
 	now := time.Date(2026, 7, 28, 16, 0, 0, 0, time.UTC)
 	lastSuccess := now.Add(-4*time.Minute - 28*time.Second)

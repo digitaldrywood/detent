@@ -206,6 +206,10 @@ type AdmissionStore interface {
 	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
 }
 
+type AdmissionProposalDecisionReader interface {
+	AdmissionProposalsAwaitingDecision(context.Context, string, time.Time) ([]admissionmodel.Proposal, error)
+}
+
 type APIKeyStore interface {
 	CreateAPIKey(context.Context, APIKeyCreate) (APIKey, error)
 	APIKey(context.Context, string) (APIKey, error)

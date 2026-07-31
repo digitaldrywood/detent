@@ -60,13 +60,25 @@ INSERT INTO codex_sessions (
   ('detent', 'detent/admission', '2026-07-29T10:01:55Z', 35, 40000),
   ('detent', 'digitaldrywood/detent#1535', '2026-07-29T11:00:00Z', 900, 2000000);
 CREATE TABLE backlog_admission_proposals (
+  id TEXT NOT NULL,
   project_id TEXT NOT NULL,
+  issue_id TEXT NOT NULL,
+  issue_identifier TEXT,
+  issue_url TEXT,
+  confidence REAL NOT NULL,
   status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
   decision_seconds INTEGER
 );
-INSERT INTO backlog_admission_proposals (project_id, status, decision_seconds) VALUES
-  ('detent', 'accepted', 60),
-  ('detent', 'expired', 604800);
+INSERT INTO backlog_admission_proposals (
+  id, project_id, issue_id, issue_identifier, issue_url, confidence, status,
+  created_at, expires_at, decision_seconds
+) VALUES
+  ('accepted', 'detent', 'issue-accepted', 'digitaldrywood/detent#1500', '', 0.95, 'accepted', '2026-07-28T10:00:00Z', '2026-08-04T10:00:00Z', 60),
+  ('expired', 'detent', 'issue-expired', 'digitaldrywood/detent#1501', '', 0.80, 'expired', '2026-07-20T10:00:00Z', '2026-07-27T10:00:00Z', 604800),
+  ('open', 'detent', 'issue-open', 'digitaldrywood/detent#1586', 'https://github.com/digitaldrywood/detent/issues/1586', 0.88, 'open', '2026-07-29T10:00:00Z', '2026-08-05T10:00:00Z', NULL),
+  ('stale-open', 'detent', 'issue-stale', 'digitaldrywood/detent#1502', '', 0.70, 'open', '2026-07-20T10:00:00Z', '2026-07-27T10:00:00Z', NULL);
 CREATE TABLE backlog_admission_downstream_outcomes (
   project_id TEXT NOT NULL,
   completed_at TEXT,
@@ -92,13 +104,14 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		t.Fatalf("seed backlog_admission_runs error = %v", err)
 	}
 
+	observedAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	diagnostic, err := readDoctorAdmissionDiagnostic(ctx, db, "detent", doctorAdmissionDiagnostic{
 		Schedule:          "0 6 * * 1-5",
 		MaximumGapSeconds: int64(doctorAdmissionMaximumGap("0 6 * * 1-5") / time.Second),
 		CriteriaSection:   "Admission criteria",
 		Dimensions:        []string{"Alignment", "Risk"},
 		NeverRun:          true,
-	})
+	}, observedAt)
 	if err != nil {
 		t.Fatalf("readDoctorAdmissionDiagnostic() error = %v", err)
 	}
@@ -119,6 +132,7 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		"skipped=excluded_label:2",
 		"truncated=candidate_cap:8",
 		"issues=digitaldrywood/detent#1535",
+		"awaiting_decision=digitaldrywood/detent#1586(confidence=88%,age=2h0m0s,expires_in=166h0m0s)",
 		"origins=admission:1,routine:1,unknown:1",
 		"proposal_outcomes=accepted:1,expired:1",
 		"average_decision_seconds=accepted:60,expired:604800",
@@ -147,6 +161,10 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		diagnostic.ReviewChurnCount != 3 ||
 		diagnostic.SpendUSD != 4.5 {
 		t.Fatalf("evidence diagnostic = %#v", diagnostic)
+	}
+	if len(diagnostic.OpenProposals) != 1 || diagnostic.OpenProposals[0].Identifier != "digitaldrywood/detent#1586" ||
+		diagnostic.OpenProposals[0].AgeSeconds != 7200 {
+		t.Fatalf("open proposals = %#v", diagnostic.OpenProposals)
 	}
 }
 

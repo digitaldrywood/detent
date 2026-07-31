@@ -126,6 +126,40 @@ ORDER BY created_at, id`
 	return scanAdmissionProposals(rows)
 }
 
+func (s *sqliteStore) AdmissionProposalsAwaitingDecision(
+	ctx context.Context,
+	projectID string,
+	at time.Time,
+) ([]admissionmodel.Proposal, error) {
+	observedAt, err := requiredTimestamp("observed_at", at)
+	if err != nil {
+		return nil, err
+	}
+	query := `
+SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,
+       criteria_section, criteria_text, findings_json, confidence,
+       COALESCE(recommended_effort, ''), COALESCE(effort_rationale, ''),
+       status, created_at,
+       expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
+       COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
+       COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
+       COALESCE(decision_seconds, 0), COALESCE(resolution_reason, '')
+FROM backlog_admission_proposals
+WHERE status = 'open' AND expires_at > ?`
+	args := []any{observedAt}
+	if projectID = strings.TrimSpace(projectID); projectID != "" {
+		query += " AND project_id = ?"
+		args = append(args, projectID)
+	}
+	query += "\nORDER BY project_id, created_at, id"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read backlog admission proposals awaiting decision: %w", err)
+	}
+	defer rows.Close()
+	return scanAdmissionProposals(rows)
+}
+
 func (s *sqliteStore) AdmissionProposalHistory(ctx context.Context, projectID string, issueID string) ([]admissionmodel.Proposal, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,

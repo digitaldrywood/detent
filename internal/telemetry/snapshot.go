@@ -43,6 +43,7 @@ type Snapshot struct {
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
 	StalenessWarnings       []StalenessWarning  `json:"staleness_warnings,omitempty"`
 	StrandedActiveIssues    []StrandedIssue     `json:"stranded_active_issues,omitempty"`
+	AdmissionProposals      []AdmissionProposal `json:"admission_proposals_awaiting_decision,omitempty"`
 	OverloadRetriesLastHour int                 `json:"overload_retries_last_hour,omitempty"`
 	Tokens                  Tokens              `json:"tokens"`
 	Throughput              TokenThroughput     `json:"throughput"`
@@ -50,6 +51,17 @@ type Snapshot struct {
 	CycleTime               CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics         WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
+}
+
+type AdmissionProposal struct {
+	ID              string    `json:"id"`
+	ProjectID       string    `json:"project_id"`
+	IssueID         string    `json:"issue_id"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	IssueURL        string    `json:"issue_url,omitempty"`
+	Confidence      float64   `json:"confidence"`
+	CreatedAt       time.Time `json:"created_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
 }
 
 type FailureBreaker struct {
