@@ -97,7 +97,7 @@ Structured command objects:
 
 | Command | JSON object |
 | --- | --- |
-| `detent version` | `{"version":"v0.1.0","commit":"abc1234","build_date":"2026-06-13T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
+| `detent version` | `{"version":"v0.55.0","commit":"abc1234","build_date":"2026-08-01T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
 | `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
 | `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
