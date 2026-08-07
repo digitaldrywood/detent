@@ -262,7 +262,7 @@ func TestRunAutoPromoteBlocksAfterPersistedReworkLimitSurvivesRestart(t *testing
 				}
 			}
 		case <-deadline:
-			timeline, timelineErr := restartedStore.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: issue.ID})
+			timeline, timelineErr := restartedStore.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "detent", IssueID: issue.ID})
 			t.Fatalf(
 				"timed out waiting for Blocked auto-promote events; state_update=%v comment=%v tracker_events=%#v workflow_timeline=%#v workflow_timeline_error=%v",
 				gotStateUpdate,

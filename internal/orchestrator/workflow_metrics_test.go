@@ -281,7 +281,7 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 	orch := &Orchestrator{cfg: normalizeConfig(Config{}), workflowMetrics: backend}
 	orch.refreshCurrentLaneEntries(ctx, &state, enteredAt)
 
-	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: "issue-1162"})
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: "issue-1162"})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}
@@ -353,7 +353,7 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 	if got := first.BoardIssues[0].Origin; got != string(provenance.OriginHuman) {
 		t.Fatalf("first Origin = %q, want %q", got, provenance.OriginHuman)
 	}
-	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: "issue-1162"})
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: "issue-1162"})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}
@@ -423,13 +423,14 @@ func TestRefreshCurrentLaneEntriesSurvivesStoreRestart(t *testing.T) {
 			t.Fatalf("store.Open(restart %d) error = %v", index+1, err)
 		}
 
-		state := newState(normalizeConfig(Config{}))
+		cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+		state := newState(cfg)
 		state.BoardIssues = []connector.Issue{{
 			ID:        "issue-1130",
 			State:     "In Progress",
 			UpdatedAt: &updatedAt,
 		}}
-		orch := &Orchestrator{workflowMetrics: backend}
+		orch := &Orchestrator{cfg: cfg, workflowMetrics: backend}
 		orch.refreshCurrentLaneEntries(ctx, &state, updatedAt)
 		snapshot := state.Snapshot(updatedAt.Add(time.Minute))
 		if snapshot.BoardIssues[0].CurrentLaneEnteredAt == nil || !snapshot.BoardIssues[0].CurrentLaneEnteredAt.Equal(enteredAt) {

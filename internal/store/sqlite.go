@@ -449,11 +449,15 @@ func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs
 
 func (s *sqliteStore) LatestIssueAgentResumeState(ctx context.Context, identity IssueIdentity) (AgentResumeState, error) {
 	identity = normalizeIssueIdentity(identity)
+	if identity.ProjectID == "" {
+		return AgentResumeState{}, ErrProjectRequired
+	}
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return AgentResumeState{}, ErrNotFound
 	}
 
 	row, err := s.queries.GetLatestIssueAgentResumeState(ctx, sqlc.GetLatestIssueAgentResumeStateParams{
+		ProjectID:  nullString(identity.ProjectID),
 		IssueID:    identity.IssueID,
 		Identifier: identity.Identifier,
 		IssueURL:   identity.IssueURL,
@@ -984,11 +988,15 @@ func (s *sqliteStore) BackfillSessionProjectIDs(ctx context.Context, attribution
 
 func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentity) (TokenSpend, error) {
 	identity = normalizeIssueIdentity(identity)
+	if identity.ProjectID == "" {
+		return TokenSpend{}, ErrProjectRequired
+	}
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return TokenSpend{ByModel: []ModelTokenSpend{}}, nil
 	}
 
 	rows, err := s.queries.IssueTokenSpend(ctx, sqlc.IssueTokenSpendParams{
+		ProjectID:  nullString(identity.ProjectID),
 		IssueID:    nullString(identity.IssueID),
 		Identifier: nullString(identity.Identifier),
 		IssueURL:   nullString(identity.IssueURL),
@@ -1136,6 +1144,7 @@ func (s *sqliteStore) RecordFairShareDispatch(ctx context.Context, attrs FairSha
 
 func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
 	return IssueIdentity{
+		ProjectID:  strings.TrimSpace(identity.ProjectID),
 		IssueID:    strings.TrimSpace(identity.IssueID),
 		Identifier: strings.TrimSpace(identity.Identifier),
 		IssueURL:   strings.TrimSpace(identity.IssueURL),

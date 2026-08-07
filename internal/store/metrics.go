@@ -132,11 +132,15 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 
 func (s *sqliteStore) IssueWorkflowTimeline(ctx context.Context, identity IssueIdentity) (WorkflowTimeline, error) {
 	identity = normalizeIssueIdentity(identity)
+	if identity.ProjectID == "" {
+		return WorkflowTimeline{}, ErrProjectRequired
+	}
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return WorkflowTimeline{Events: []WorkflowPhaseEvent{}}, nil
 	}
 
 	rows, err := s.queries.IssueWorkflowTimelineRows(ctx, sqlc.IssueWorkflowTimelineRowsParams{
+		ProjectID:  identity.ProjectID,
 		IssueID:    nullString(identity.IssueID),
 		Identifier: nullString(identity.Identifier),
 		IssueURL:   nullString(identity.IssueURL),

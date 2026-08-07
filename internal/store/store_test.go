@@ -909,6 +909,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 
 			sessionID, err := backend.StartSession(ctx, SessionStart{
 				RunID:      runID,
+				ProjectID:  "detent",
 				IssueID:    "I_kwDOSskuwc8AAAABD42c3Q",
 				Identifier: "digitaldrywood/detent#6",
 				IssueURL:   "https://github.com/digitaldrywood/detent/issues/6",
@@ -1004,7 +1005,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("DailyTokenSpend().ByModel = %#v", spend.ByModel)
 			}
 
-			issueSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueID: "I_kwDOSskuwc8AAAABD42c3Q"})
+			issueSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{ProjectID: "detent", IssueID: "I_kwDOSskuwc8AAAABD42c3Q"})
 			if err != nil {
 				t.Fatalf("IssueTokenSpend() error = %v", err)
 			}
@@ -1015,7 +1016,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("IssueTokenSpend().ByModel = %#v", issueSpend.ByModel)
 			}
 
-			identifierSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{Identifier: "digitaldrywood/detent#6"})
+			identifierSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{ProjectID: "detent", Identifier: "digitaldrywood/detent#6"})
 			if err != nil {
 				t.Fatalf("IssueTokenSpend(identifier) error = %v", err)
 			}
@@ -1023,7 +1024,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("IssueTokenSpend(identifier).TotalTokens = %d, want 125", identifierSpend.TotalTokens)
 			}
 
-			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueURL: "https://github.com/digitaldrywood/detent/issues/6"})
+			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{ProjectID: "detent", IssueURL: "https://github.com/digitaldrywood/detent/issues/6"})
 			if err != nil {
 				t.Fatalf("IssueTokenSpend(url) error = %v", err)
 			}
@@ -1229,6 +1230,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	backend := openTestStore(t, ctx)
 	startedAt := time.Date(2026, 7, 2, 17, 0, 0, 0, time.UTC)
 	failedID, err := backend.StartSession(ctx, SessionStart{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
 		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
@@ -1253,6 +1255,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 
 	firstID, err := backend.StartSession(ctx, SessionStart{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
 		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
@@ -1277,6 +1280,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 
 	secondID, err := backend.StartSession(ctx, SessionStart{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
 		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
@@ -1302,6 +1306,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 
 	validatorID, err := backend.StartSession(ctx, SessionStart{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
 		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
@@ -1344,6 +1349,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		t.Fatalf("resume models = %#v, want requested and resolved model", got)
 	}
 	latestForIssue, err := backend.LatestIssueAgentResumeState(ctx, IssueIdentity{
+		ProjectID:  "detent",
 		Identifier: "digitaldrywood/detent#859",
 	})
 	if err != nil {
@@ -1994,7 +2000,7 @@ func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
 		t.Fatalf("subphase metric = %#v, want 480s agent_active", subphase)
 	}
 
-	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{Identifier: "digitaldrywood/detent#722"})
+	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", Identifier: "digitaldrywood/detent#722"})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}

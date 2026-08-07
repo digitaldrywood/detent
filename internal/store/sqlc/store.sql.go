@@ -1719,6 +1719,7 @@ func (q *Queries) GetLatestCompletedAgentResumeState(ctx context.Context, arg Ge
 const getLatestIssueAgentResumeState = `-- name: GetLatestIssueAgentResumeState :one
 SELECT
   id,
+  CAST(COALESCE(project_id, '') AS TEXT) AS project_id,
   CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
   CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
   CAST(COALESCE(requested_model, '') AS TEXT) AS requested_model,
@@ -1730,24 +1731,27 @@ SELECT
 FROM codex_sessions
 WHERE completed_at IS NOT NULL
   AND lower(trim(COALESCE(final_state, ''))) = 'completed'
+  AND COALESCE(project_id, '') = ?1
   AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
   AND (
-    (?1 != '' AND COALESCE(issue_id, '') = ?1)
-    OR (?2 != '' AND COALESCE(identifier, '') = ?2)
-    OR (?3 != '' AND COALESCE(issue_url, '') = ?3)
+    (?2 != '' AND COALESCE(issue_id, '') = ?2)
+    OR (?3 != '' AND COALESCE(identifier, '') = ?3)
+    OR (?4 != '' AND COALESCE(issue_url, '') = ?4)
   )
 ORDER BY completed_at DESC, id DESC
 LIMIT 1
 `
 
 type GetLatestIssueAgentResumeStateParams struct {
-	IssueID    interface{} `json:"issue_id"`
-	Identifier interface{} `json:"identifier"`
-	IssueURL   interface{} `json:"issue_url"`
+	ProjectID  sql.NullString `json:"project_id"`
+	IssueID    interface{}    `json:"issue_id"`
+	Identifier interface{}    `json:"identifier"`
+	IssueURL   interface{}    `json:"issue_url"`
 }
 
 type GetLatestIssueAgentResumeStateRow struct {
 	ID                int64  `json:"id"`
+	ProjectID         string `json:"project_id"`
 	ProviderThreadID  string `json:"provider_thread_id"`
 	ProviderSessionID string `json:"provider_session_id"`
 	RequestedModel    string `json:"requested_model"`
@@ -1759,10 +1763,16 @@ type GetLatestIssueAgentResumeStateRow struct {
 }
 
 func (q *Queries) GetLatestIssueAgentResumeState(ctx context.Context, arg GetLatestIssueAgentResumeStateParams) (GetLatestIssueAgentResumeStateRow, error) {
-	row := q.db.QueryRowContext(ctx, getLatestIssueAgentResumeState, arg.IssueID, arg.Identifier, arg.IssueURL)
+	row := q.db.QueryRowContext(ctx, getLatestIssueAgentResumeState,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
 	var i GetLatestIssueAgentResumeStateRow
 	err := row.Scan(
 		&i.ID,
+		&i.ProjectID,
 		&i.ProviderThreadID,
 		&i.ProviderSessionID,
 		&i.RequestedModel,
@@ -1778,30 +1788,34 @@ func (q *Queries) GetLatestIssueAgentResumeState(ctx context.Context, arg GetLat
 const getLatestIssueAgentSession = `-- name: GetLatestIssueAgentSession :one
 SELECT
   id,
+  CAST(COALESCE(project_id, '') AS TEXT) AS project_id,
   CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
   CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
   CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
   CAST(completed_at AS TEXT) AS completed_at
 FROM codex_sessions
 WHERE completed_at IS NOT NULL
+  AND COALESCE(project_id, '') = ?1
   AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
   AND (
-    (?1 != '' AND COALESCE(issue_id, '') = ?1)
-    OR (?2 != '' AND COALESCE(identifier, '') = ?2)
-    OR (?3 != '' AND COALESCE(issue_url, '') = ?3)
+    (?2 != '' AND COALESCE(issue_id, '') = ?2)
+    OR (?3 != '' AND COALESCE(identifier, '') = ?3)
+    OR (?4 != '' AND COALESCE(issue_url, '') = ?4)
   )
 ORDER BY completed_at DESC, id DESC
 LIMIT 1
 `
 
 type GetLatestIssueAgentSessionParams struct {
-	IssueID    interface{} `json:"issue_id"`
-	Identifier interface{} `json:"identifier"`
-	IssueURL   interface{} `json:"issue_url"`
+	ProjectID  sql.NullString `json:"project_id"`
+	IssueID    interface{}    `json:"issue_id"`
+	Identifier interface{}    `json:"identifier"`
+	IssueURL   interface{}    `json:"issue_url"`
 }
 
 type GetLatestIssueAgentSessionRow struct {
 	ID                int64  `json:"id"`
+	ProjectID         string `json:"project_id"`
 	ProviderThreadID  string `json:"provider_thread_id"`
 	ProviderSessionID string `json:"provider_session_id"`
 	AgentBackendKind  string `json:"agent_backend_kind"`
@@ -1809,10 +1823,16 @@ type GetLatestIssueAgentSessionRow struct {
 }
 
 func (q *Queries) GetLatestIssueAgentSession(ctx context.Context, arg GetLatestIssueAgentSessionParams) (GetLatestIssueAgentSessionRow, error) {
-	row := q.db.QueryRowContext(ctx, getLatestIssueAgentSession, arg.IssueID, arg.Identifier, arg.IssueURL)
+	row := q.db.QueryRowContext(ctx, getLatestIssueAgentSession,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
 	var i GetLatestIssueAgentSessionRow
 	err := row.Scan(
 		&i.ID,
+		&i.ProjectID,
 		&i.ProviderThreadID,
 		&i.ProviderSessionID,
 		&i.AgentBackendKind,
@@ -2026,14 +2046,18 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE issue_id = ?1
-   OR identifier = ?2
-   OR issue_url = ?3
+WHERE COALESCE(project_id, '') = ?1
+  AND (
+    issue_id = ?2
+    OR identifier = ?3
+    OR issue_url = ?4
+  )
 GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 `
 
 type IssueTokenSpendParams struct {
+	ProjectID  sql.NullString `json:"project_id"`
 	IssueID    sql.NullString `json:"issue_id"`
 	Identifier sql.NullString `json:"identifier"`
 	IssueURL   sql.NullString `json:"issue_url"`
@@ -2050,7 +2074,12 @@ type IssueTokenSpendRow struct {
 }
 
 func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams) ([]IssueTokenSpendRow, error) {
-	rows, err := q.db.QueryContext(ctx, issueTokenSpend, arg.IssueID, arg.Identifier, arg.IssueURL)
+	rows, err := q.db.QueryContext(ctx, issueTokenSpend,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2083,20 +2112,29 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 const issueWorkflowTimelineRows = `-- name: IssueWorkflowTimelineRows :many
 SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM workflow_phase_events
-WHERE issue_id = ?1
-   OR identifier = ?2
-   OR issue_url = ?3
+WHERE project_id = ?1
+  AND (
+    issue_id = ?2
+    OR identifier = ?3
+    OR issue_url = ?4
+  )
 ORDER BY started_at, id
 `
 
 type IssueWorkflowTimelineRowsParams struct {
+	ProjectID  string         `json:"project_id"`
 	IssueID    sql.NullString `json:"issue_id"`
 	Identifier sql.NullString `json:"identifier"`
 	IssueURL   sql.NullString `json:"issue_url"`
 }
 
 func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkflowTimelineRowsParams) ([]WorkflowPhaseEvent, error) {
-	rows, err := q.db.QueryContext(ctx, issueWorkflowTimelineRows, arg.IssueID, arg.Identifier, arg.IssueURL)
+	rows, err := q.db.QueryContext(ctx, issueWorkflowTimelineRows,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2740,6 +2778,77 @@ func (q *Queries) ListIssueActivityEvents(ctx context.Context, arg ListIssueActi
 			&i.Turns,
 			&i.TotalTokens,
 			&i.Verbose,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueSchedulerDecisions = `-- name: ListIssueSchedulerDecisions :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json
+FROM scheduler_decisions
+WHERE project_id = ?1
+  AND (
+    (?2 != '' AND issue_id = ?2)
+    OR (?3 != '' AND identifier = ?3)
+    OR (?4 != '' AND issue_url = ?4)
+  )
+ORDER BY decision_at DESC, id DESC
+LIMIT ?5
+`
+
+type ListIssueSchedulerDecisionsParams struct {
+	ProjectID  string      `json:"project_id"`
+	IssueID    interface{} `json:"issue_id"`
+	Identifier interface{} `json:"identifier"`
+	IssueURL   interface{} `json:"issue_url"`
+	Limit      int64       `json:"limit"`
+}
+
+func (q *Queries) ListIssueSchedulerDecisions(ctx context.Context, arg ListIssueSchedulerDecisionsParams) ([]SchedulerDecision, error) {
+	rows, err := q.db.QueryContext(ctx, listIssueSchedulerDecisions,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SchedulerDecision{}
+	for rows.Next() {
+		var i SchedulerDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.Lane,
+			&i.QueuePosition,
+			&i.Result,
+			&i.Reason,
+			&i.Selected,
+			&i.Retry,
+			&i.AttemptNumber,
+			&i.WorkerHost,
+			&i.DecisionAt,
+			&i.WaitReason,
+			&i.CapacitySnapshotJson,
+			&i.GithubRateSnapshotJson,
+			&i.MetadataJson,
 		); err != nil {
 			return nil, err
 		}

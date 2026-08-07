@@ -2538,6 +2538,7 @@ func (o *Orchestrator) autoPromoteReworkLimit(
 	}
 
 	timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{
+		ProjectID:  o.workflowMetricsProjectID(),
 		IssueID:    issue.ID,
 		Identifier: issue.Identifier,
 		IssueURL:   issue.URL,

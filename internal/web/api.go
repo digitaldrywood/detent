@@ -399,9 +399,13 @@ func (s *Server) apiUsage(c echo.Context) error {
 
 func (s *Server) apiWorkflowTimeline(c echo.Context) error {
 	identity := store.IssueIdentity{
+		ProjectID:  strings.TrimSpace(c.QueryParam("project_id")),
 		IssueID:    strings.TrimSpace(c.QueryParam("issue_id")),
 		Identifier: strings.TrimSpace(c.QueryParam("identifier")),
 		IssueURL:   strings.TrimSpace(c.QueryParam("issue_url")),
+	}
+	if identity.ProjectID == "" {
+		return c.JSON(http.StatusBadRequest, errorResponse("missing_project_id", "project_id is required"))
 	}
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return c.JSON(http.StatusBadRequest, errorResponse("missing_issue_identity", "issue_id, identifier, or issue_url is required"))

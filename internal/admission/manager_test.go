@@ -334,7 +334,7 @@ func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
 	if history[0].Status != admissionmodel.ProposalAccepted || !history[0].TransitionAt.Equal(targetAt) {
 		t.Fatalf("accepted proposal = %#v", history[0])
 	}
-	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: proposal.IssueID})
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: proposal.ProjectID, IssueID: proposal.IssueID})
 	if err != nil || len(timeline.Events) != 1 ||
 		timeline.Events[0].Reason != "admission_proposal_accepted" {
 		t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
@@ -563,7 +563,7 @@ func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
 			if tt.wantStatus != admissionmodel.ProposalAccepted {
 				return
 			}
-			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{IssueID: issue.ID})
+			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: proposal.ProjectID, IssueID: issue.ID})
 			if err != nil || len(timeline.Events) != 1 {
 				t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
 			}

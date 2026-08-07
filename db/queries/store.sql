@@ -235,6 +235,7 @@ LIMIT 1;
 -- name: GetLatestIssueAgentResumeState :one
 SELECT
   id,
+  CAST(COALESCE(project_id, '') AS TEXT) AS project_id,
   CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
   CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
   CAST(COALESCE(requested_model, '') AS TEXT) AS requested_model,
@@ -246,6 +247,7 @@ SELECT
 FROM codex_sessions
 WHERE completed_at IS NOT NULL
   AND lower(trim(COALESCE(final_state, ''))) = 'completed'
+  AND COALESCE(project_id, '') = sqlc.arg(project_id)
   AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
   AND (
     (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
@@ -258,12 +260,14 @@ LIMIT 1;
 -- name: GetLatestIssueAgentSession :one
 SELECT
   id,
+  CAST(COALESCE(project_id, '') AS TEXT) AS project_id,
   CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
   CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
   CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
   CAST(completed_at AS TEXT) AS completed_at
 FROM codex_sessions
 WHERE completed_at IS NOT NULL
+  AND COALESCE(project_id, '') = sqlc.arg(project_id)
   AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
   AND (
     (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
@@ -450,9 +454,12 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE issue_id = sqlc.arg(issue_id)
-   OR identifier = sqlc.arg(identifier)
-   OR issue_url = sqlc.arg(issue_url)
+WHERE COALESCE(project_id, '') = sqlc.arg(project_id)
+  AND (
+    issue_id = sqlc.arg(issue_id)
+    OR identifier = sqlc.arg(identifier)
+    OR issue_url = sqlc.arg(issue_url)
+  )
 GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
 
@@ -692,9 +699,12 @@ ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at
 -- name: IssueWorkflowTimelineRows :many
 SELECT *
 FROM workflow_phase_events
-WHERE issue_id = sqlc.arg(issue_id)
-   OR identifier = sqlc.arg(identifier)
-   OR issue_url = sqlc.arg(issue_url)
+WHERE project_id = sqlc.arg(project_id)
+  AND (
+    issue_id = sqlc.arg(issue_id)
+    OR identifier = sqlc.arg(identifier)
+    OR issue_url = sqlc.arg(issue_url)
+  )
 ORDER BY started_at, id;
 
 -- name: CreateWorkAttempt :one
@@ -902,6 +912,18 @@ RETURNING *;
 SELECT *
 FROM scheduler_decisions
 WHERE sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id)
+ORDER BY decision_at DESC, id DESC
+LIMIT sqlc.arg(limit);
+
+-- name: ListIssueSchedulerDecisions :many
+SELECT *
+FROM scheduler_decisions
+WHERE project_id = sqlc.arg(project_id)
+  AND (
+    (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+    OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+  )
 ORDER BY decision_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 

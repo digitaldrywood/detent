@@ -70,11 +70,15 @@ func (s *sqliteStore) ListIssueActivity(ctx context.Context, query IssueActivity
 
 func (s *sqliteStore) LatestIssueAgentSession(ctx context.Context, identity IssueIdentity) (IssueAgentSession, error) {
 	identity = normalizeIssueIdentity(identity)
+	if identity.ProjectID == "" {
+		return IssueAgentSession{}, ErrProjectRequired
+	}
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return IssueAgentSession{}, ErrNotFound
 	}
 
 	row, err := s.queries.GetLatestIssueAgentSession(ctx, sqlc.GetLatestIssueAgentSessionParams{
+		ProjectID:  nullString(identity.ProjectID),
 		IssueID:    identity.IssueID,
 		Identifier: identity.Identifier,
 		IssueURL:   identity.IssueURL,
@@ -90,6 +94,7 @@ func (s *sqliteStore) LatestIssueAgentSession(ctx context.Context, identity Issu
 		return IssueAgentSession{}, err
 	}
 	return IssueAgentSession{
+		ProjectID:         strings.TrimSpace(row.ProjectID),
 		DetentSessionID:   row.ID,
 		ProviderThreadID:  strings.TrimSpace(row.ProviderThreadID),
 		ProviderSessionID: strings.TrimSpace(row.ProviderSessionID),
