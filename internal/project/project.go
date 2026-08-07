@@ -137,6 +137,7 @@ type Project struct {
 	id                        ID
 	cfg                       globalconfig.Project
 	workflow                  workflowconfig.Workflow
+	workflowActiveHours       activehours.Config
 	githubToken               string
 	connector                 connector.Connector
 	connectorFactory          ConnectorFactory
@@ -158,6 +159,7 @@ type Project struct {
 	workflowReconcileInterval time.Duration
 
 	mu              sync.Mutex
+	configMu        sync.Mutex
 	cancel          context.CancelFunc
 	done            chan struct{}
 	runErr          error
@@ -184,6 +186,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
+	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, deps.GitHubToken)
 	if err := workflow.Config.Validate(); err != nil {
@@ -346,6 +349,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		id:                        id,
 		cfg:                       cfg.Project,
 		workflow:                  workflow,
+		workflowActiveHours:       workflowActiveHours,
 		githubToken:               strings.TrimSpace(deps.GitHubToken),
 		connector:                 projectConnector,
 		connectorFactory:          connectorFactory,
@@ -414,6 +418,39 @@ func (p *Project) DispatchCandidate() scheduler.ProjectCandidate {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.orchConfig.Project
+}
+
+func (p *Project) updateActiveHours(ctx context.Context, cfg globalconfig.Project) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
+
+	p.mu.Lock()
+	workflow := p.workflow
+	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
+	runtimeConfig := projectOrchestratorConfig(cfg, workflow.Config)
+	projectOrchestrator := p.orchestrator
+	running := p.done != nil
+	projectAdmission := p.admission
+	p.mu.Unlock()
+
+	if projectOrchestrator != nil && running {
+		if err := projectOrchestrator.UpdateConfig(ctx, runtimeConfig); err != nil {
+			return fmt.Errorf("update project active hours: %w", err)
+		}
+	}
+	if projectAdmission != nil {
+		projectAdmission.UpdateProjectCandidate(runtimeConfig.Project)
+	}
+
+	p.mu.Lock()
+	p.cfg = cfg
+	p.workflow = workflow
+	p.orchConfig = runtimeConfig
+	p.mu.Unlock()
+	return nil
 }
 
 func (p *Project) WorkflowSourceStatus() WorkflowSourceStatus {
@@ -1203,6 +1240,9 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 }
 
 func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
+
 	if update.Err != nil {
 		return p.workflowReloadError("workflow reload failed", update.Path, update.Err)
 	}
@@ -1222,6 +1262,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
+	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 	if err := workflow.Config.Validate(); err != nil {
@@ -1361,6 +1402,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.mu.Lock()
 	previousRetroProduct := p.retroProduct
 	p.workflow = workflow
+	p.workflowActiveHours = workflowActiveHours
 	p.workflowSource.Hash = workflow.SourceHash
 	p.workflowSource.Revision = workflow.Definition.Revision
 	p.workflowSource.Layout = workflow.Definition.Layout

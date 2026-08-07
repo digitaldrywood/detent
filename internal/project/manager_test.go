@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1427,6 +1428,84 @@ func TestManagerReconcileChangesProjectsWhenRuntimeCredentialVersionChanges(t *t
 	})
 }
 
+func TestManagerReconcileUpdatesActiveHoursWithoutRestartingProjects(t *testing.T) {
+	t.Parallel()
+
+	oldDefault := activehours.Config{Timezone: "America/Chicago", Windows: []string{"Mon-Fri 22:00-06:00"}}
+	newDefault := activehours.Config{Timezone: "America/Chicago", Windows: []string{"Mon-Fri 21:00-07:00"}}
+	projectOverride := activehours.Config{Timezone: "America/New_York", Windows: []string{"Sat-Sun 00:00-24:00"}}
+	checkedIn := activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Sun 01:00-02:00"}}
+	initial := []globalconfig.Project{
+		{ID: "alpha", Weight: 1, GlobalActiveHours: &oldDefault},
+		{ID: "bravo", Weight: 1, ActiveHours: &projectOverride, GlobalActiveHours: &oldDefault},
+	}
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	created := 0
+	manager, err := project.NewManager(project.ManagerConfig{Projects: initial}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			created++
+			workflowCfg := workflowConfig("memory")
+			workflowCfg.ActiveHours = checkedIn
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowCfg},
+			}, project.Dependencies{
+				Events: events,
+				Runner: blockingRunner{},
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), len(initial))
+	t.Cleanup(func() {
+		for _, item := range manager.Registry().List() {
+			if err := item.Close(); err != nil {
+				t.Errorf("Close(%s) error = %v", item.ID(), err)
+			}
+		}
+	})
+
+	alpha, _ := manager.Registry().Get("alpha")
+	bravo, _ := manager.Registry().Get("bravo")
+	changedDefault := []globalconfig.Project{
+		{ID: "alpha", Weight: 1, GlobalActiveHours: &newDefault},
+		{ID: "bravo", Weight: 1, ActiveHours: &projectOverride, GlobalActiveHours: &newDefault},
+	}
+	result, err := manager.Reconcile(context.Background(), project.ManagerConfig{Projects: changedDefault})
+	if err != nil {
+		t.Fatalf("Reconcile(changed default) error = %v", err)
+	}
+	if want := (project.ReconcileResult{Changed: []project.ID{"alpha", "bravo"}}); !reflect.DeepEqual(result, want) {
+		t.Fatalf("Reconcile(changed default) = %#v, want %#v", result, want)
+	}
+	assertActiveHoursProjectsUnchanged(t, manager, alpha, bravo, newDefault, projectOverride, created)
+	assertNoProjectEvent(t, sub.C())
+
+	removedDefault := []globalconfig.Project{
+		{ID: "alpha", Weight: 1},
+		{ID: "bravo", Weight: 1, ActiveHours: &projectOverride},
+	}
+	result, err = manager.Reconcile(context.Background(), project.ManagerConfig{Projects: removedDefault})
+	if err != nil {
+		t.Fatalf("Reconcile(removed default) error = %v", err)
+	}
+	if want := (project.ReconcileResult{Changed: []project.ID{"alpha", "bravo"}}); !reflect.DeepEqual(result, want) {
+		t.Fatalf("Reconcile(removed default) = %#v, want %#v", result, want)
+	}
+	assertActiveHoursProjectsUnchanged(t, manager, alpha, bravo, checkedIn, projectOverride, created)
+	assertNoProjectEvent(t, sub.C())
+}
+
 func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T) {
 	t.Parallel()
 
@@ -2205,6 +2284,36 @@ func newStoppedManagerTestProject(t *testing.T, cfg globalconfig.Project) (*proj
 		t.Fatalf("replacement Stop() error = %v", err)
 	}
 	return got, nil
+}
+
+func assertActiveHoursProjectsUnchanged(
+	t *testing.T,
+	manager *project.Manager,
+	alpha *project.Project,
+	bravo *project.Project,
+	wantAlpha activehours.Config,
+	wantBravo activehours.Config,
+	created int,
+) {
+	t.Helper()
+
+	gotAlpha, alphaOK := manager.Registry().Get("alpha")
+	gotBravo, bravoOK := manager.Registry().Get("bravo")
+	if !alphaOK || gotAlpha != alpha || !gotAlpha.Running() {
+		t.Fatalf("Registry().Get(alpha) = %p, %t, running %t; want original running project %p", gotAlpha, alphaOK, gotAlpha != nil && gotAlpha.Running(), alpha)
+	}
+	if !bravoOK || gotBravo != bravo || !gotBravo.Running() {
+		t.Fatalf("Registry().Get(bravo) = %p, %t, running %t; want original running project %p", gotBravo, bravoOK, gotBravo != nil && gotBravo.Running(), bravo)
+	}
+	if created != 2 {
+		t.Fatalf("project factory calls = %d, want 2", created)
+	}
+	if got := gotAlpha.DispatchCandidate().ActiveHours; !reflect.DeepEqual(got, wantAlpha.Normalize()) {
+		t.Fatalf("alpha active hours = %#v, want %#v", got, wantAlpha.Normalize())
+	}
+	if got := gotBravo.DispatchCandidate().ActiveHours; !reflect.DeepEqual(got, wantBravo.Normalize()) {
+		t.Fatalf("bravo active hours = %#v, want %#v", got, wantBravo.Normalize())
+	}
 }
 
 func startedProjectCount(configs []globalconfig.Project) int {

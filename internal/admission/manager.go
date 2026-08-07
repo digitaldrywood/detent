@@ -175,6 +175,21 @@ func (m *Manager) Update(settings Settings) error {
 	return nil
 }
 
+func (m *Manager) UpdateProjectCandidate(candidate scheduler.ProjectCandidate) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	candidate.ID = strings.TrimSpace(candidate.ID)
+	if candidate.ID == "" {
+		candidate.ID = m.settings.ProjectID
+	}
+	candidate.ActiveHours = candidate.ActiveHours.Normalize()
+	m.settings.ProjectCandidate = candidate
+	m.mu.Unlock()
+	m.signalUpdate()
+}
+
 func (m *Manager) Enabled() bool {
 	if m == nil {
 		return false
@@ -1684,6 +1699,7 @@ func cloneSettings(settings Settings) Settings {
 	settings.DispatchStates = append([]string(nil), settings.DispatchStates...)
 	settings.DispatchLabels = append([]string(nil), settings.DispatchLabels...)
 	settings.TerminalStates = append([]string(nil), settings.TerminalStates...)
+	settings.ProjectCandidate.ActiveHours = settings.ProjectCandidate.ActiveHours.Normalize()
 	return settings
 }
 
