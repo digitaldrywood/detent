@@ -260,6 +260,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if previous.GitHubToken != next.GitHubToken {
 		fields = append(fields, globalConfigChange{Field: "github_token", Old: "<redacted>", New: "<redacted>"})
 	}
+	if previous.TrustLoopbackPeerRead != next.TrustLoopbackPeerRead {
+		fields = append(fields, globalConfigChange{Field: "trust_loopback_peer_read", Old: previous.TrustLoopbackPeerRead, New: next.TrustLoopbackPeerRead})
+	}
 	if previous.DashboardAccess.Mode != next.DashboardAccess.Mode {
 		fields = append(fields, globalConfigChange{Field: "dashboard_access.mode", Old: previous.DashboardAccess.Mode, New: next.DashboardAccess.Mode})
 	}

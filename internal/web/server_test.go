@@ -398,8 +398,197 @@ func TestAPIFailsClosedWithoutTokenOnNonLoopbackBind(t *testing.T) {
 
 	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusForbidden)
 	requestJSON(t, server, http.MethodPost, "/api/v1/refresh", http.StatusForbidden)
+	loopback := performJSONWithRemote(t, server.Handler(), http.MethodGet, "/api/v1/state", "", "127.0.0.1:49152", nil)
+	if loopback.Code != http.StatusForbidden {
+		t.Fatalf("loopback peer status = %d, want %d; body = %s", loopback.Code, http.StatusForbidden, loopback.Body.String())
+	}
 	if !strings.Contains(logs.String(), "api_token") {
 		t.Fatalf("startup warning missing api_token detail:\n%s", logs.String())
+	}
+}
+
+func TestLoopbackPeerReadTrustRestrictsRoutesAndPeers(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		ServerAddress: "0.0.0.0:0",
+		GlobalConfig:  globalconfig.Config{TrustLoopbackPeerRead: true},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	forwarded := map[string]string{
+		"Forwarded":       "for=127.0.0.1",
+		"X-Forwarded-For": "127.0.0.1",
+		"X-Real-IP":       "127.0.0.1",
+	}
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		remoteAddr string
+		headers    map[string]string
+		want       int
+	}{
+		{name: "IPv4 read", method: http.MethodGet, path: "/api/v1/state", remoteAddr: "127.0.0.1:49152", want: http.StatusOK},
+		{name: "IPv6 read", method: http.MethodGet, path: "/api/v1/state", remoteAddr: "[::1]:49152", want: http.StatusOK},
+		{name: "IPv4-mapped IPv6 read", method: http.MethodGet, path: "/api/v1/state", remoteAddr: "[::ffff:127.0.0.1]:49152", want: http.StatusOK},
+		{name: "forwarded loopback ignored", method: http.MethodGet, path: "/api/v1/state", remoteAddr: "192.0.2.10:49152", headers: forwarded, want: http.StatusForbidden},
+		{name: "malformed peer", method: http.MethodGet, path: "/api/v1/state", remoteAddr: "127.0.0.1", want: http.StatusForbidden},
+		{name: "admin GET", method: http.MethodGet, path: "/api/v1/keys", remoteAddr: "127.0.0.1:49152", want: http.StatusForbidden},
+		{name: "POST", method: http.MethodPost, path: "/api/v1/refresh", remoteAddr: "127.0.0.1:49152", want: http.StatusForbidden},
+		{name: "DELETE", method: http.MethodDelete, path: "/api/v1/projects/detent/budget/override", remoteAddr: "127.0.0.1:49152", want: http.StatusForbidden},
+		{name: "PUT", method: http.MethodPut, path: "/api/v1/state", remoteAddr: "127.0.0.1:49152", want: http.StatusMethodNotAllowed},
+		{name: "PATCH", method: http.MethodPatch, path: "/api/v1/state", remoteAddr: "127.0.0.1:49152", want: http.StatusMethodNotAllowed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := performJSONWithRemote(t, server.Handler(), tt.method, tt.path, "", tt.remoteAddr, tt.headers)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLoopbackPeerReadTrustPreservesLoopbackBindAccess(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.Store = openWebTestStore(t)
+	deps.Refresher = &refreshProbe{}
+	server, err := web.NewServer(web.Config{
+		ServerAddress: "127.0.0.1:0",
+		GlobalConfig:  globalconfig.Config{TrustLoopbackPeerRead: true},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		want   int
+	}{
+		{name: "read route", method: http.MethodGet, path: "/api/v1/state", want: http.StatusOK},
+		{name: "admin GET", method: http.MethodGet, path: "/api/v1/keys", want: http.StatusOK},
+		{name: "mutation", method: http.MethodPost, path: "/api/v1/refresh", want: http.StatusAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := performJSONWithRemote(t, server.Handler(), test.method, test.path, "", "127.0.0.1:49152", nil)
+			if rec.Code != test.want {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, test.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLoopbackPeerReadTrustLiveReload(t *testing.T) {
+	cfg := globalconfig.Config{}
+	server, err := web.NewServer(web.Config{
+		ServerAddress:      "0.0.0.0:0",
+		GlobalConfig:       cfg,
+		GlobalConfigSource: func() globalconfig.Config { return cfg },
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	for _, step := range []struct {
+		name    string
+		enabled bool
+		want    int
+	}{
+		{name: "disabled initially", want: http.StatusForbidden},
+		{name: "enabled after reload", enabled: true, want: http.StatusOK},
+		{name: "disabled after reload", want: http.StatusForbidden},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			cfg.TrustLoopbackPeerRead = step.enabled
+			rec := performJSONWithRemote(t, server.Handler(), http.MethodGet, "/api/v1/state", "", "127.0.0.1:49152", nil)
+			if rec.Code != step.want {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, step.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLoopbackPeerReadTrustHonorsStaticTokenAndRejectsSuppliedFailures(t *testing.T) {
+	t.Parallel()
+
+	backend := openWebTestStore(t)
+	deps := testDeps(t)
+	deps.Store = backend
+	server, err := web.NewServer(web.Config{
+		ServerAddress: "0.0.0.0:0",
+		GlobalConfig: globalconfig.Config{
+			APIToken:              "detent_admin_token",
+			TrustLoopbackPeerRead: true,
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tokenless := performJSONWithRemote(t, server.Handler(), http.MethodGet, "/api/v1/state", "", "127.0.0.1:49152", nil)
+	if tokenless.Code != http.StatusOK {
+		t.Fatalf("tokenless status = %d, want %d; body = %s", tokenless.Code, http.StatusOK, tokenless.Body.String())
+	}
+	for name, headers := range map[string]map[string]string{
+		"empty bearer":  {"Authorization": "Bearer "},
+		"empty API key": {"X-API-Key": " "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := performJSONWithRemote(t, server.Handler(), http.MethodGet, "/api/v1/state", "", "127.0.0.1:49152", headers)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+			}
+		})
+	}
+
+	revokedToken, revokedID := createAPIKeyThroughHTTP(t, server, `{
+		"name": "Revoked loopback client",
+		"scopes": ["read"],
+		"expires_in": "90d"
+	}`)
+	revoke := performJSON(t, server.Handler(), http.MethodDelete, "/api/v1/keys/"+revokedID, "", map[string]string{
+		"Authorization": "Bearer detent_admin_token",
+	})
+	if revoke.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d, want %d; body = %s", revoke.Code, http.StatusNoContent, revoke.Body.String())
+	}
+	expiredToken := createExpiredAPIKey(t, backend)
+
+	tests := []struct {
+		name  string
+		token string
+		code  string
+	}{
+		{name: "invalid", token: "invalid", code: "invalid_token"},
+		{name: "expired", token: expiredToken, code: "token_expired"},
+		{name: "revoked", token: revokedToken, code: "token_revoked"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := performJSONWithRemote(t, server.Handler(), http.MethodGet, "/api/v1/state", "", "127.0.0.1:49152", map[string]string{
+				"Authorization": "Bearer " + tt.token,
+			})
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("Unmarshal() error = %v; body = %s", err, rec.Body.String())
+			}
+			if got := nestedString(t, payload, "error", "code"); got != tt.code {
+				t.Fatalf("error code = %q, want %q", got, tt.code)
+			}
+		})
 	}
 }
 
@@ -11109,6 +11298,20 @@ func performJSON(t *testing.T, handler http.Handler, method string, path string,
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func performJSONWithRemote(t *testing.T, handler http.Handler, method string, path string, body string, remoteAddr string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
 	req.Header.Set("Content-Type", "application/json")
 	for key, value := range headers {
 		req.Header.Set(key, value)

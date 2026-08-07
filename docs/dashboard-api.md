@@ -347,6 +347,18 @@ API routes fail closed and mutating routes return `403` until a token is
 configured. With no token on loopback, read-only API routes remain open for
 local development.
 
+For a non-loopback bind that still needs tokenless same-host reads, opt in with
+`trust_loopback_peer_read: true` in `global.yaml`. Detent then grants a
+read-only credential to `GET` requests whose raw TCP peer address is loopback,
+even when `api_token` is configured. A supplied invalid, expired, or revoked
+token still fails authentication. `X-Forwarded-For`, `Forwarded`,
+`X-Real-IP`, and other forwarded-client metadata never affect this decision.
+The setting hot-reloads.
+
+Do not enable `trust_loopback_peer_read` behind a reverse proxy on the same
+host. Every remote request relayed by that proxy appears to Detent to have a
+loopback direct peer and would receive read access.
+
 ### Private Dashboard URL Access
 
 For a personal deployment that needs remote dashboard access without a VPN,

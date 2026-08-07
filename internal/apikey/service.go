@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	DefaultExpiresIn = "90d"
-	DefaultMaxKeys   = 25
-	StaticKeyID      = "static"
+	DefaultExpiresIn      = "90d"
+	DefaultMaxKeys        = 25
+	StaticKeyID           = "static"
+	LoopbackPeerReadKeyID = "loopback-peer-read"
 )
 
 var (
@@ -199,6 +200,16 @@ func StaticCredential() Credential {
 		Name:        "Static API token",
 		PrefixLast4: StaticKeyID,
 		Scopes:      []string{string(ScopeAdmin)},
+		Static:      true,
+	}
+}
+
+func LoopbackPeerReadCredential() Credential {
+	return Credential{
+		ID:          LoopbackPeerReadKeyID,
+		Name:        "Loopback peer read trust",
+		PrefixLast4: LoopbackPeerReadKeyID,
+		Scopes:      []string{string(ScopeRead)},
 		Static:      true,
 	}
 }

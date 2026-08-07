@@ -62,22 +62,23 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path            string          `yaml:"-"`
-	APIVersion      string          `yaml:"apiVersion"`
-	Kind            string          `yaml:"kind"`
-	Env             string          `yaml:"env,omitempty"`
-	LogLevel        string          `yaml:"log_level,omitempty"`
-	LogMaxSizeBytes *int            `yaml:"log_max_size_bytes,omitempty"`
-	LogMaxBackups   *int            `yaml:"log_max_backups,omitempty"`
-	GitHubToken     string          `yaml:"github_token,omitempty"`
-	APIToken        string          `yaml:"api_token,omitempty"`
-	DashboardAccess DashboardAccess `yaml:"dashboard_access,omitempty"`
-	Port            *int            `yaml:"port,omitempty"`
-	InstanceName    string          `yaml:"instance_name,omitempty"`
-	Update          Update          `yaml:"update,omitempty"`
-	Auth            Auth            `yaml:"auth,omitempty"`
-	Global          Settings        `yaml:"global"`
-	Projects        []Project       `yaml:"projects"`
+	Path                  string          `yaml:"-"`
+	APIVersion            string          `yaml:"apiVersion"`
+	Kind                  string          `yaml:"kind"`
+	Env                   string          `yaml:"env,omitempty"`
+	LogLevel              string          `yaml:"log_level,omitempty"`
+	LogMaxSizeBytes       *int            `yaml:"log_max_size_bytes,omitempty"`
+	LogMaxBackups         *int            `yaml:"log_max_backups,omitempty"`
+	GitHubToken           string          `yaml:"github_token,omitempty"`
+	APIToken              string          `yaml:"api_token,omitempty"`
+	TrustLoopbackPeerRead bool            `yaml:"trust_loopback_peer_read,omitempty"`
+	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
+	Port                  *int            `yaml:"port,omitempty"`
+	InstanceName          string          `yaml:"instance_name,omitempty"`
+	Update                Update          `yaml:"update,omitempty"`
+	Auth                  Auth            `yaml:"auth,omitempty"`
+	Global                Settings        `yaml:"global"`
+	Projects              []Project       `yaml:"projects"`
 }
 
 type DashboardAccess struct {
@@ -941,6 +942,9 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, optionalStringTypeError(attrs, "github_token")...)
 	problems = append(problems, optionalStringTypeError(attrs, "api_token")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "api_token")...)
+	if _, err := optionalBool(attrs["trust_loopback_peer_read"], "trust_loopback_peer_read"); err != nil {
+		problems = append(problems, err.Error())
+	}
 	problems = append(problems, dashboardAccessRawErrors(attrs["dashboard_access"])...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
@@ -1716,6 +1720,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	trustLoopbackPeerRead, err := optionalBool(attrs["trust_loopback_peer_read"], "trust_loopback_peer_read")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	dashboardAccess, err := buildDashboardAccess(attrs["dashboard_access"])
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1746,22 +1754,23 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	}
 
 	return Config{
-		Path:            path,
-		APIVersion:      apiVersion,
-		Kind:            kind,
-		Env:             env,
-		LogLevel:        logLevel,
-		LogMaxSizeBytes: logMaxSizeBytes,
-		LogMaxBackups:   logMaxBackups,
-		GitHubToken:     githubToken,
-		APIToken:        apiToken,
-		DashboardAccess: dashboardAccess,
-		Port:            port,
-		InstanceName:    instanceName,
-		Update:          update,
-		Auth:            auth,
-		Global:          settings,
-		Projects:        builtProjects,
+		Path:                  path,
+		APIVersion:            apiVersion,
+		Kind:                  kind,
+		Env:                   env,
+		LogLevel:              logLevel,
+		LogMaxSizeBytes:       logMaxSizeBytes,
+		LogMaxBackups:         logMaxBackups,
+		GitHubToken:           githubToken,
+		APIToken:              apiToken,
+		TrustLoopbackPeerRead: trustLoopbackPeerRead,
+		DashboardAccess:       dashboardAccess,
+		Port:                  port,
+		InstanceName:          instanceName,
+		Update:                update,
+		Auth:                  auth,
+		Global:                settings,
+		Projects:              builtProjects,
 	}, nil
 }
 

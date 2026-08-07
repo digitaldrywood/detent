@@ -3023,7 +3023,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    | Field | Reload behavior |
    | --- | --- |
    | Project list and project settings | Live reload |
-   | Credentials: `github_token` and project credentials | Live reload |
+   | Credentials: `github_token`, `trust_loopback_peer_read`, and project credentials | Live reload |
    | `global.startup` | Live reload |
    | `instance_name` | Live reload |
    | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
