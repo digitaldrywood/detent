@@ -3028,7 +3028,7 @@ func (r *Runner) logAgentUpdate(req RunRequest, detentSessionID int64, update Ag
 		correlation := []any{
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, detentSessionID,
-			telemetry.ProviderSessionIDKey, update.ProviderSessionID,
+			telemetry.ProviderSessionIDKey, agentUpdateProviderSessionID(update),
 		}
 		correlation = append(correlation, attrs...)
 		r.logWorkerEventLevel(level, req.Issue, lifecycleEvent, correlation...)
@@ -3085,6 +3085,21 @@ func (r *Runner) logAgentUpdate(req RunRequest, detentSessionID int64, update Ag
 			)
 		}
 	}
+}
+
+func agentUpdateProviderSessionID(update AgentUpdate) string {
+	if providerSessionID := strings.TrimSpace(update.ProviderSessionID); providerSessionID != "" {
+		return providerSessionID
+	}
+	threadID := strings.TrimSpace(update.ThreadID)
+	turnID := strings.TrimSpace(update.TurnID)
+	if threadID == "" || turnID == "" {
+		return ""
+	}
+	if threadID == turnID {
+		return threadID
+	}
+	return threadID + "-" + turnID
 }
 
 func workerLifecycleClass(event string) telemetry.LifecycleClass {
