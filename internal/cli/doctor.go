@@ -245,6 +245,7 @@ type doctorDeps struct {
 	gitWorkTree          func(context.Context, string) error
 	gitRemoteURL         func(context.Context, string) (string, error)
 	gitTracked           func(context.Context, string) (bool, error)
+	workflowSourcePolicy doctorWorkflowSourcePolicyFunc
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
@@ -1121,6 +1122,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.gitTracked == nil {
 		d.gitTracked = defaults.gitTracked
 	}
+	if d.workflowSourcePolicy == nil {
+		d.workflowSourcePolicy = defaults.workflowSourcePolicy
+	}
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
@@ -1165,6 +1169,7 @@ func defaultDoctorDeps() doctorDeps {
 		gitWorkTree:          defaultGitWorkTree,
 		gitRemoteURL:         defaultGitRemoteURL,
 		gitTracked:           defaultGitTracked,
+		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,

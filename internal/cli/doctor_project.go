@@ -405,6 +405,12 @@ func checkDoctorProjectWithProgress(
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
+	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) && workflow.Config.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
+		setDoctorCurrentCheck("Project " + id + " workflow source policy")
+		if sourcePolicyCheck, ok := checkDoctorWorkflowSourcePolicy(ctx, id, project, workflow.Config, expandedSourceRoot, deps); ok {
+			checks = append(checks, sourcePolicyCheck)
+		}
+	}
 	setDoctorCurrentCheck("Project " + id + " issue effort guidance")
 	checks = append(checks, checkDoctorIssueEffortGuidance(id, expandedSourceRoot))
 	setDoctorCurrentCheck("Project " + id + " skills")
