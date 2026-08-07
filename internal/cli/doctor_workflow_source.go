@@ -215,7 +215,7 @@ func checkDoctorMutableWorkflowSource(
 	if err != nil {
 		status = doctorFail
 		details = append(details, fmt.Sprintf("read detent.yaml from %s: %v", comparisonRef, err))
-	} else if !bytes.Equal(workingConfig, []byte(defaultConfig)) {
+	} else if !bytes.Equal(doctorNormalizedWorkflowPolicy(workingConfig), doctorNormalizedWorkflowPolicy([]byte(defaultConfig))) {
 		status = doctorFail
 		details = append(details, "effective detent.yaml differs from "+comparisonRef)
 	} else {
@@ -228,6 +228,10 @@ func checkDoctorMutableWorkflowSource(
 		Detail: strings.Join(details, "; "),
 		Hint:   fmt.Sprintf("Set projects[].workflow_ref to origin/%s after fetching that ref, then rerun detent doctor.", defaultBranch),
 	}
+}
+
+func doctorNormalizedWorkflowPolicy(raw []byte) []byte {
+	return bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
 }
 
 func doctorWorkflowConfigPaths(project globalconfig.Project, sourceRoot string) (string, string, error) {

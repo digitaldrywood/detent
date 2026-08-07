@@ -38,6 +38,14 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 			wantDetail: []string{"project alpha", "omits workflow_ref", "branch main matches default branch main", "effective detent.yaml matches origin/main"},
 		},
 		{
+			name: "line ending difference is not drift",
+			mutate: func(t *testing.T, repo string, _ string, _ *globalconfig.Project) {
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\r\ntracker:\r\n  kind: memory\r\n")
+			},
+			wantStatus: doctorWarn,
+			wantDetail: []string{"project alpha", "effective detent.yaml matches origin/main"},
+		},
+		{
 			name: "workflow ref skips working tree",
 			mutate: func(t *testing.T, repo string, _ string, project *globalconfig.Project) {
 				project.WorkflowRef = "origin/main"
@@ -136,10 +144,11 @@ func TestCheckDoctorWorkflowSourcePolicyUsesGitHubDefaultBranch(t *testing.T) {
 	var gotRepository string
 	var gotDefaultBranch string
 	var gotSourceRoot string
+	workdir := filepath.Join(t.TempDir(), "repo")
 	check, ok := checkDoctorWorkflowSourcePolicy(
 		context.Background(),
 		"alpha",
-		globalconfig.Project{Workflow: "/repo/WORKFLOW.md", Workdir: "/repo"},
+		globalconfig.Project{Workflow: filepath.Join(workdir, "WORKFLOW.md"), Workdir: workdir},
 		workflowconfig.Config{Tracker: workflowconfig.Tracker{Repository: "fallback/repository"}},
 		"/workspace-root",
 		doctorDeps{
@@ -160,7 +169,7 @@ func TestCheckDoctorWorkflowSourcePolicyUsesGitHubDefaultBranch(t *testing.T) {
 	if !ok {
 		t.Fatal("checkDoctorWorkflowSourcePolicy() ok = false, want true")
 	}
-	if check.Name != "Project alpha workflow source policy" || gotRepository != "source/repository" || gotDefaultBranch != "trunk" || gotSourceRoot != "/repo" {
+	if check.Name != "Project alpha workflow source policy" || gotRepository != "source/repository" || gotDefaultBranch != "trunk" || gotSourceRoot != workdir {
 		t.Fatalf("check = %#v, repository = %q, default branch = %q, source root = %q", check, gotRepository, gotDefaultBranch, gotSourceRoot)
 	}
 }
