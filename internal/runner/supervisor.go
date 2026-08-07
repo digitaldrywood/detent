@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
@@ -162,9 +164,6 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)
 		}
 		attrs := []any{
-			"event", "worker_attempt_finished",
-			"issue_id", request.Issue.ID,
-			"issue_identifier", request.Issue.Identifier,
 			"issue_state", request.Issue.State,
 			"attempt", request.Attempt,
 			"worker_host", request.WorkerHost,
@@ -176,14 +175,19 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			"error", completion.Err,
 		}
 		attrs = append(attrs, backendErrorAttrs(completion.Err)...)
+		level := slog.LevelDebug
 		if IsTransientOverload(completion.Err) {
 			attrs = append(attrs, "reason", "transient_overload")
-			s.logger.Info("worker_attempt_finished", attrs...)
+			level = slog.LevelInfo
 		} else if completion.Err != nil {
-			s.logger.Warn("worker_attempt_finished", attrs...)
-		} else {
-			s.logger.Debug("worker_attempt_finished", attrs...)
+			level = slog.LevelWarn
 		}
+		telemetry.LogLifecycle(s.logger, level, telemetry.LifecycleWorkAttempt, "worker_attempt_finished", telemetry.LifecycleCorrelation{
+			ProjectID:       request.ProjectID,
+			IssueID:         request.Issue.ID,
+			IssueIdentifier: request.Issue.Identifier,
+			WorkAttemptID:   request.WorkAttemptID,
+		}, attrs...)
 	}()
 
 	result, err := s.backend.Run(ctx, request)

@@ -297,6 +297,7 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
+	ProjectID           string
 	Issue               connector.Issue
 	Attempt             int
 	WorkAttemptID       int64

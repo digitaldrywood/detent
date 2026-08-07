@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
@@ -436,6 +437,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 				WorkerHost:    workerHost,
 			}, now, store.WorkAttemptTerminalFailure, workAttemptErrorStartTransition, err.Error(), "starting", "start state transition failed")
 			o.logWorkerLifecycle(issue, "worker_capacity_released",
+				telemetry.WorkAttemptIDKey, workAttemptID,
 				"attempt", attempt,
 				"worker_host", strings.TrimSpace(workerHost),
 				"reason", dispatchIssueFailureStartStateTransition,
@@ -524,6 +526,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	delete(state.Completed, issue.ID)
 
 	request := RunRequest{
+		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
 		Issue:               issue,
 		Attempt:             attempt,
 		WorkAttemptID:       workAttemptID,
@@ -548,6 +551,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.logWorkerLifecycle(issue, "worker_attempt_started",
+		telemetry.WorkAttemptIDKey, workAttemptID,
 		"attempt", attempt,
 		"worker_host", strings.TrimSpace(workerHost),
 		"mode", strings.TrimSpace(runMode),

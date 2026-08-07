@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -600,6 +601,7 @@ func (o *Orchestrator) warnImplementProgressRefresh(issue connector.Issue, messa
 func (o *Orchestrator) blockImplementProgress(
 	ctx context.Context,
 	state *State,
+	running Running,
 	decision implementCompletionProgressDecision,
 	blockedAt time.Time,
 ) bool {
@@ -679,6 +681,11 @@ func (o *Orchestrator) blockImplementProgress(
 		Event:   "implement_worker_no_progress_limit",
 		Message: "parked " + issueLabel(issue) + " after implement progress breaker " + blockReason,
 	})
+	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "implement_worker_no_progress_limit", o.runningLifecycleCorrelation(issue, running),
+		"block_reason", blockReason,
+		"consecutive_no_progress", decision.ConsecutiveNoProgress,
+		"no_progress_limit", decision.NoProgressLimit,
+	)
 	return true
 }
 
