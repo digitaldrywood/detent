@@ -70,11 +70,57 @@ func ResolveSnapshotIssue(snapshot telemetry.Snapshot, query Query, scope Snapsh
 	if len(matches) == 0 {
 		return SnapshotIssueSelection{}, ErrNotFound
 	}
-	identity, err := resolveIdentity(query, collectedEvidence{snapshotIssues: matches})
+	projectMatches, err := resolveSnapshotProject(query, matches)
 	if err != nil {
 		return SnapshotIssueSelection{}, err
 	}
-	return SnapshotIssueSelection{Identity: identity, Issue: matches[0].issue, Source: matches[0].source}, nil
+	if len(projectMatches) == 0 {
+		return SnapshotIssueSelection{}, ErrNotFound
+	}
+	selectedRank := projectMatches[0].rank
+	selectedMatches := []snapshotIssue{projectMatches[0]}
+	for _, match := range projectMatches[1:] {
+		if match.rank != selectedRank {
+			break
+		}
+		selectedMatches = append(selectedMatches, match)
+	}
+	identity, err := resolveIdentity(query, collectedEvidence{snapshotIssues: selectedMatches})
+	if err != nil {
+		return SnapshotIssueSelection{}, err
+	}
+	lookup := mergeLookupIdentity(store.IssueIdentity{
+		ProjectID:  identity.ProjectID,
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+	}, identitiesFromSnapshot(projectMatches))
+	identity.ProjectID = lookup.ProjectID
+	identity.IssueID = lookup.IssueID
+	identity.Identifier = lookup.Identifier
+	identity.IssueURL = lookup.IssueURL
+	return SnapshotIssueSelection{Identity: identity, Issue: selectedMatches[0].issue, Source: selectedMatches[0].source}, nil
+}
+
+func resolveSnapshotProject(query Query, matches []snapshotIssue) ([]snapshotIssue, error) {
+	projectEvidence := make([]snapshotIssue, len(matches))
+	for index, match := range matches {
+		match.issue.ID = ""
+		match.issue.Identifier = ""
+		match.issue.URL = ""
+		projectEvidence[index] = match
+	}
+	identity, err := resolveIdentity(Query{ProjectID: query.ProjectID}, collectedEvidence{snapshotIssues: projectEvidence})
+	if err != nil {
+		return nil, err
+	}
+	projectMatches := make([]snapshotIssue, 0, len(matches))
+	for _, match := range matches {
+		if match.issue.ProjectID == identity.ProjectID {
+			projectMatches = append(projectMatches, match)
+		}
+	}
+	return projectMatches, nil
 }
 
 func matchingSnapshotIssuesInScope(snapshot telemetry.Snapshot, query Query, scope SnapshotIssueScope) []snapshotIssue {

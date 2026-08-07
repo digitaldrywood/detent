@@ -57,6 +57,9 @@ func TestResolveSnapshotIssuePrecedenceAndScope(t *testing.T) {
 	runtime.State = "In Progress"
 	completed := base
 	completed.State = "Done"
+	staleRuntime := runtime
+	staleRuntime.Identifier = "example/renamed#1"
+	staleRuntime.URL = "https://example.com/renamed/issues/1"
 	tests := []struct {
 		name       string
 		snapshot   telemetry.Snapshot
@@ -71,6 +74,15 @@ func TestResolveSnapshotIssuePrecedenceAndScope(t *testing.T) {
 				BoardIssues: []telemetry.Issue{board},
 				Pipeline:    []telemetry.Issue{pipeline},
 				Running:     []telemetry.Running{{Issue: runtime}},
+			},
+			wantSource: "board",
+			wantLane:   "Rework",
+		},
+		{
+			name: "stale lower precedence identity does not create ambiguity",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{board},
+				Running:     []telemetry.Running{{Issue: staleRuntime}},
 			},
 			wantSource: "board",
 			wantLane:   "Rework",
