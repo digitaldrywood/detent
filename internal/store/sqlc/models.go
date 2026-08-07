@@ -216,6 +216,17 @@ type FairShareUsage struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
+type MergeRequiredCheckStreak struct {
+	ProjectID                 string `json:"project_id"`
+	IssueID                   string `json:"issue_id"`
+	Repository                string `json:"repository"`
+	PrNumber                  int64  `json:"pr_number"`
+	CheckName                 string `json:"check_name"`
+	RequiredChecksFingerprint string `json:"required_checks_fingerprint"`
+	ConsecutiveMissing        int64  `json:"consecutive_missing"`
+	UpdatedAt                 string `json:"updated_at"`
+}
+
 type RetroRun struct {
 	ID            int64          `json:"id"`
 	ProjectID     string         `json:"project_id"`

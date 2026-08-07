@@ -144,6 +144,13 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		}
 		return err
 	}
+	if stateIn(targetState, o.cfg.TerminalStates) {
+		terminalIssue := cloneIssue(issue)
+		if strings.TrimSpace(terminalIssue.ID) == "" {
+			terminalIssue.ID = issueID
+		}
+		o.clearMergeRequiredCheckStreaks(ctx, terminalIssue)
+	}
 	updateIssueStateSnapshots(state, issueID, issue, targetState, at)
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID

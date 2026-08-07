@@ -52,6 +52,7 @@ type Store interface {
 	WorkflowMetricsStore
 	WorkAttemptStore
 	WorkAttemptCapacityReleaseStore
+	MergeRequiredCheckStore
 	OperatorStopStore
 	ValidatorMemoStore
 	RuntimeEvidenceStore
@@ -154,6 +155,11 @@ type IssueSchedulerDecisionStore interface {
 type WorkAttemptCapacityReleaseStore interface {
 	ListPendingWorkAttemptCapacityReleases(context.Context, string) ([]WorkAttempt, error)
 	ClearWorkAttemptCapacityRelease(context.Context, int64) error
+}
+
+type MergeRequiredCheckStore interface {
+	EvaluateMergeRequiredChecks(context.Context, MergeRequiredCheckEvaluation) ([]MergeRequiredCheckStreak, error)
+	ClearMergeRequiredCheckStreaks(context.Context, string, string) error
 }
 
 type OperatorStopStore interface {
@@ -679,6 +685,21 @@ type WorkAttemptReclaim struct {
 	TerminalState WorkAttemptTerminalState
 	ErrorClass    string
 	ErrorMessage  string
+}
+
+type MergeRequiredCheckEvaluation struct {
+	ProjectID                 string
+	IssueID                   string
+	Repository                string
+	PRNumber                  int
+	RequiredChecksFingerprint string
+	MissingChecks             []string
+	EvaluatedAt               time.Time
+}
+
+type MergeRequiredCheckStreak struct {
+	CheckName          string
+	ConsecutiveMissing int
 }
 
 type OperatorStopUpdate struct {
