@@ -152,7 +152,12 @@ that ref. `WORKFLOW.local.md` remains machine-local in the working tree and is
 applied over the ref-backed shared file. When `workflow_ref` is omitted, Detent
 keeps reading the working-tree shared file. If `workflow_ref` points at a ref
 that does not contain the workflow file, `detent doctor` reports a load failure
-for `<ref>:WORKFLOW.md`.
+for `<ref>:WORKFLOW.md`. For GitHub pull-request projects, doctor also warns
+when `workflow_ref` is omitted and compares the checked-out branch and
+`detent.yaml` with the source repository's default branch. For a configured
+remote-tracking ref, doctor compares the local ref revision with its remote
+counterpart. This freshness check uses `git ls-remote` but does not fetch;
+fetch the ref so Detent can load the new revision when doctor reports it stale.
 
 Use the project administration commands to edit `global.yaml`:
 

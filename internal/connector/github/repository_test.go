@@ -14,11 +14,13 @@ func TestFetchRepositoryInfoSurfacesVisibility(t *testing.T) {
 		response       string
 		wantPrivate    bool
 		wantVisibility string
+		wantBranch     string
 	}{
 		{
 			name:           "public",
-			response:       `{"id":1,"full_name":"digitaldrywood/detent","html_url":"https://github.com/digitaldrywood/detent","private":false,"visibility":"public"}`,
+			response:       `{"id":1,"full_name":"digitaldrywood/detent","html_url":"https://github.com/digitaldrywood/detent","private":false,"visibility":"public","default_branch":"main"}`,
 			wantVisibility: "public",
+			wantBranch:     "main",
 		},
 		{
 			name:           "private fallback",
@@ -41,7 +43,7 @@ func TestFetchRepositoryInfoSurfacesVisibility(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FetchRepositoryInfo() error = %v", err)
 			}
-			if got.Private != test.wantPrivate || got.Visibility != test.wantVisibility {
+			if got.Private != test.wantPrivate || got.Visibility != test.wantVisibility || got.DefaultBranch != test.wantBranch {
 				t.Fatalf("FetchRepositoryInfo() = %#v", got)
 			}
 		})

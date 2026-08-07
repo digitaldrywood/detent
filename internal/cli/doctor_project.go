@@ -302,6 +302,10 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	setDoctorCurrentCheck("Project " + id + " workflow source policy")
+	if sourcePolicyCheck, ok := checkDoctorWorkflowSourcePolicy(ctx, id, project, workflow.Config, projectSourceRoot(project, workflow.Config), deps); ok {
+		checks = append(checks, sourcePolicyCheck)
+	}
 	setDoctorCurrentCheck("Project " + id + " local workflow overlay")
 	if overlayCheck, ok := checkDoctorLocalWorkflowOverlay(ctx, id, workflow, deps); ok {
 		checks = append(checks, overlayCheck)
