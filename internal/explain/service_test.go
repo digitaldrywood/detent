@@ -94,6 +94,39 @@ func TestServiceKeepsProjectsIsolated(t *testing.T) {
 	}
 }
 
+func TestServiceNormalizesDecoratedIssueURLs(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 18, 0, 0, 0, time.UTC)
+	canonicalURL := "https://github.com/digitaldrywood/detent/issues/1639"
+	reader := &evidenceReader{observation: liveIssueObservation(now, telemetry.Issue{
+		ID:        "issue-1639",
+		URL:       canonicalURL,
+		ProjectID: "detent",
+		State:     "In Progress",
+	})}
+	tests := []struct {
+		name  string
+		query Query
+	}{
+		{name: "reference", query: Query{ProjectID: "detent", Reference: canonicalURL + "?notification=thread#event"}},
+		{name: "issue URL", query: Query{ProjectID: "detent", IssueURL: canonicalURL + "?notification=thread#event"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := newTestService(now, reader).Explain(context.Background(), tt.query)
+			if err != nil {
+				t.Fatalf("Explain() error = %v", err)
+			}
+			if !got.Found || got.Identity.IssueURL != canonicalURL {
+				t.Fatalf("explanation = %#v, want canonical URL %q", got, canonicalURL)
+			}
+		})
+	}
+}
+
 func TestServiceSeparatesCurrentLaneFromEnteredTransition(t *testing.T) {
 	t.Parallel()
 

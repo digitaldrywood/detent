@@ -57,6 +57,7 @@ type Dependencies struct {
 	MagicLinkSender  auth.Sender
 	IdentityProvider auth.IdentityProvider
 	Chat             chatpkg.Provider
+	IssueExplainer   IssueExplainer
 }
 
 type Mode string
@@ -160,6 +161,7 @@ type Server struct {
 	identityProvider    auth.IdentityProvider
 	identityAllowlist   *auth.Allowlist
 	chat                *chatpkg.Service
+	issueExplainer      IssueExplainer
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -264,6 +266,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		magicLinks:          magicLinks,
 		identityProvider:    identityProvider,
 		identityAllowlist:   identityAllowlist,
+		issueExplainer:      deps.IssueExplainer,
 	}
 	if !magicLinksEnabled && !oidcEnabled {
 		server.sessions = nil
@@ -378,6 +381,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/runs/:attempt/stop", s.apiStopRunDialog, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/runs/:attempt/stop", s.apiStopRun, apiDashboardMutateAuth, apiProjectWriteScope)
