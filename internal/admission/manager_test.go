@@ -2532,11 +2532,11 @@ type faultAdmissionStore struct {
 	latestOK            bool
 }
 
-func (s *faultAdmissionStore) ExpireAdmissionProposals(context.Context, string, time.Time) (int, error) {
+func (s *faultAdmissionStore) ExpireAdmissionProposals(ctx context.Context, projectID string, cutoff time.Time) (int, error) {
 	if s.expireErr != nil {
 		return 0, s.expireErr
 	}
-	return s.Store.ExpireAdmissionProposals(context.Background(), "detent", time.Now())
+	return s.Store.ExpireAdmissionProposals(ctx, projectID, cutoff)
 }
 
 func (s *faultAdmissionStore) RefreshAdmissionOutcomes(ctx context.Context, refresh admissionmodel.OutcomeRefresh) error {
