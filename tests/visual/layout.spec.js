@@ -296,6 +296,98 @@ test("board home renders lanes without page overflow", async ({
   await capturePageAndAttach(page, "board-home.png", testInfo);
 });
 
+test("board card metadata truncates before its pull request link", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-full-integration",
+    route: "/projects/dogfood/kanban",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const card = page.locator("article", {
+    hasText: "Review deterministic chart colors",
+  });
+  const header = card.locator('[data-board-card-content="cozy"]');
+  await header.evaluate((row) => {
+    const project = row.querySelector("span.min-w-0");
+    project.textContent = "digitaldrywood-release-train-platform";
+    const badge = document.createElement("span");
+    badge.className =
+      "inline-flex min-w-7 max-w-24 shrink items-center rounded-chip border border-warn/30 bg-warn/15 px-1.5 py-0.5 font-mono text-2xs font-semibold text-warn";
+    badge.dataset.boardPriority = "";
+    const label = document.createElement("span");
+    label.className = "min-w-0 truncate";
+    label.textContent = "priority-medium";
+    badge.append(label);
+    row.insertBefore(badge, project.nextSibling);
+  });
+
+  const assertContained = async () => {
+    const layout = await card.evaluate((article) => {
+      const row = article.querySelector('[data-board-card-content="cozy"]');
+      const priority = row.querySelector("[data-board-priority]");
+      const priorityText = priority.firstElementChild;
+      const pullRequest = row.lastElementChild;
+      const cardRect = article.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const pullRequestRect = pullRequest.getBoundingClientRect();
+      const childrenContained = Array.from(row.children).every((child) => {
+        const childRect = child.getBoundingClientRect();
+        return childRect.left >= cardRect.left && childRect.right <= cardRect.right;
+      });
+      return {
+        cardRight: cardRect.right,
+        rowRight: rowRect.right,
+        pullRequestRight: pullRequestRect.right,
+        childrenContained,
+        priorityClientWidth: priorityText.clientWidth,
+        priorityScrollWidth: priorityText.scrollWidth,
+        priorityTextOverflow: getComputedStyle(priorityText).textOverflow,
+      };
+    });
+    expect(layout.rowRight).toBeLessThanOrEqual(layout.cardRight);
+    expect(layout.pullRequestRight).toBeLessThanOrEqual(layout.cardRight);
+    expect(layout.childrenContained).toBe(true);
+    expect(layout.priorityClientWidth).toBeGreaterThanOrEqual(12);
+    expect(layout.priorityClientWidth).toBeLessThan(layout.priorityScrollWidth);
+    expect(layout.priorityTextOverflow).toBe("ellipsis");
+  };
+
+  await page.locator("#board-lane-picker summary").click();
+  const visibleLaneIDs = await page
+    .locator('[data-board-lane][data-lane-hidden="false"]')
+    .evaluateAll((lanes) => lanes.map((lane) => lane.dataset.boardLane));
+  const laneToHide = visibleLaneIDs.find((laneID) => laneID !== "human-review");
+  await page
+    .locator(`[data-board-lane-visibility="${laneToHide}"]`)
+    .selectOption("hide");
+  await page.locator("#board-lane-picker summary").click();
+  await expect(page.locator("[data-board-lane-count]")).toHaveText("5/9");
+
+  await page.locator('[data-density-choice="compact"]').click();
+  await expect(header).toBeHidden();
+  await page.locator('[data-density-choice="cozy"]').click();
+  await expect(header).toBeVisible();
+  await assertContained();
+  await attachScreenshotEvidence(page, "board-card-header-5-lanes.png", testInfo);
+  await page.locator('[data-density-choice="comfy"]').click();
+  await expect(header).toBeVisible();
+  await assertContained();
+
+  await page.locator("#board-lane-picker summary").click();
+  for (const select of await page.locator("[data-board-lane-visibility]").all()) {
+    await select.selectOption("show");
+  }
+  await page.locator("#board-lane-picker summary").click();
+  await expect(page.locator("[data-board-lane-count]")).toHaveText("9/9");
+  await page.locator('[data-density-choice="cozy"]').click();
+  await assertContained();
+  await attachScreenshotEvidence(page, "board-card-header-9-lanes.png", testInfo);
+});
+
 test("board keeps dependency waits on cards without global alerts", async ({
   page,
 }, testInfo) => {
