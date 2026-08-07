@@ -19,6 +19,16 @@ type snapshotIssue struct {
 	source string
 }
 
+type SnapshotIssueScope struct {
+	IncludeCompleted bool
+}
+
+type SnapshotIssueSelection struct {
+	Identity Identity
+	Issue    telemetry.Issue
+	Source   string
+}
+
 func normalizeSnapshotObservation(observation SnapshotObservation, now time.Time) SnapshotObservation {
 	if observation.ExpiresAt == nil && !observation.Snapshot.LastKnownUntil.IsZero() {
 		expiresAt := observation.Snapshot.LastKnownUntil.UTC()
@@ -47,7 +57,78 @@ func normalizeSnapshotObservation(observation SnapshotObservation, now time.Time
 }
 
 func matchingSnapshotIssues(snapshot telemetry.Snapshot, query Query) []snapshotIssue {
-	candidates := make([]snapshotIssue, 0, len(snapshot.BoardIssues)+len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked)+len(snapshot.Completed))
+	return matchingSnapshotIssuesInScope(snapshot, query, SnapshotIssueScope{IncludeCompleted: true})
+}
+
+func ResolveSnapshotIssue(snapshot telemetry.Snapshot, query Query, scope SnapshotIssueScope) (SnapshotIssueSelection, error) {
+	query = normalizeQuery(query)
+	if !queryHasIssueReference(query) {
+		return SnapshotIssueSelection{}, ErrIssueReferenceNeeded
+	}
+
+	matches := matchingSnapshotIssuesInScope(snapshot, query, scope)
+	if len(matches) == 0 {
+		return SnapshotIssueSelection{}, ErrNotFound
+	}
+	projectMatches, err := resolveSnapshotProject(query, matches)
+	if err != nil {
+		return SnapshotIssueSelection{}, err
+	}
+	if len(projectMatches) == 0 {
+		return SnapshotIssueSelection{}, ErrNotFound
+	}
+	selectedRank := projectMatches[0].rank
+	selectedMatches := []snapshotIssue{projectMatches[0]}
+	for _, match := range projectMatches[1:] {
+		if match.rank != selectedRank {
+			break
+		}
+		selectedMatches = append(selectedMatches, match)
+	}
+	identity, err := resolveIdentity(query, collectedEvidence{snapshotIssues: selectedMatches})
+	if err != nil {
+		return SnapshotIssueSelection{}, err
+	}
+	lookup := mergeLookupIdentity(store.IssueIdentity{
+		ProjectID:  identity.ProjectID,
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+	}, identitiesFromSnapshot(projectMatches))
+	identity.ProjectID = lookup.ProjectID
+	identity.IssueID = lookup.IssueID
+	identity.Identifier = lookup.Identifier
+	identity.IssueURL = lookup.IssueURL
+	return SnapshotIssueSelection{Identity: identity, Issue: selectedMatches[0].issue, Source: selectedMatches[0].source}, nil
+}
+
+func resolveSnapshotProject(query Query, matches []snapshotIssue) ([]snapshotIssue, error) {
+	projectEvidence := make([]snapshotIssue, len(matches))
+	for index, match := range matches {
+		match.issue.ID = ""
+		match.issue.Identifier = ""
+		match.issue.URL = ""
+		projectEvidence[index] = match
+	}
+	identity, err := resolveIdentity(Query{ProjectID: query.ProjectID}, collectedEvidence{snapshotIssues: projectEvidence})
+	if err != nil {
+		return nil, err
+	}
+	projectMatches := make([]snapshotIssue, 0, len(matches))
+	for _, match := range matches {
+		if match.issue.ProjectID == identity.ProjectID {
+			projectMatches = append(projectMatches, match)
+		}
+	}
+	return projectMatches, nil
+}
+
+func matchingSnapshotIssuesInScope(snapshot telemetry.Snapshot, query Query, scope SnapshotIssueScope) []snapshotIssue {
+	capacity := len(snapshot.BoardIssues) + len(snapshot.Pipeline) + len(snapshot.Running) + len(snapshot.Queue) + len(snapshot.Blocked)
+	if scope.IncludeCompleted {
+		capacity += len(snapshot.Completed)
+	}
+	candidates := make([]snapshotIssue, 0, capacity)
 	for _, issue := range snapshot.BoardIssues {
 		candidates = append(candidates, snapshotIssue{issue: issue, rank: 0, source: "board"})
 	}
@@ -63,8 +144,10 @@ func matchingSnapshotIssues(snapshot telemetry.Snapshot, query Query) []snapshot
 	for _, issue := range snapshot.Blocked {
 		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 4, source: "blocked"})
 	}
-	for _, issue := range snapshot.Completed {
-		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 5, source: "completed"})
+	if scope.IncludeCompleted {
+		for _, issue := range snapshot.Completed {
+			candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 5, source: "completed"})
+		}
 	}
 
 	matches := make([]snapshotIssue, 0, 1)
@@ -73,7 +156,10 @@ func matchingSnapshotIssues(snapshot telemetry.Snapshot, query Query) []snapshot
 		if projectID == "" {
 			projectID = strings.TrimSpace(snapshot.Project.ID)
 		}
-		if projectID != query.ProjectID || !queryMatchesIssue(query, candidate.issue) {
+		if query.ProjectID != "" && projectID != query.ProjectID {
+			continue
+		}
+		if !queryMatchesIssue(query, candidate.issue) {
 			continue
 		}
 		candidate.issue.ProjectID = projectID
@@ -210,16 +296,18 @@ func issueValuesMatch(identity store.IssueIdentity, issueID string, identifier s
 }
 
 func resolveIdentity(query Query, collected collectedEvidence) (Identity, error) {
+	projectIDs := map[string]struct{}{}
 	issueIDs := map[string]struct{}{}
 	identifiers := map[string]struct{}{}
 	issueURLs := map[string]struct{}{}
 	add := func(identity store.IssueIdentity) {
+		addIdentityValue(projectIDs, identity.ProjectID)
 		addIdentityValue(issueIDs, identity.IssueID)
 		addIdentityValue(identifiers, identity.Identifier)
 		addIdentityValue(issueURLs, identity.IssueURL)
 	}
 	if query.IssueID != "" || query.Identifier != "" || query.IssueURL != "" {
-		add(store.IssueIdentity{IssueID: query.IssueID, Identifier: query.Identifier, IssueURL: query.IssueURL})
+		add(store.IssueIdentity{ProjectID: query.ProjectID, IssueID: query.IssueID, Identifier: query.Identifier, IssueURL: query.IssueURL})
 	}
 	for _, identity := range identitiesFromSnapshot(collected.snapshotIssues) {
 		add(identity)
@@ -237,6 +325,7 @@ func resolveIdentity(query Query, collected collectedEvidence) (Identity, error)
 		name   string
 		values map[string]struct{}
 	}{
+		{name: "project_id", values: projectIDs},
 		{name: "issue_id", values: issueIDs},
 		{name: "identifier", values: identifiers},
 		{name: "issue_url", values: issueURLs},
@@ -247,7 +336,7 @@ func resolveIdentity(query Query, collected collectedEvidence) (Identity, error)
 	}
 
 	identity := Identity{
-		ProjectID:  query.ProjectID,
+		ProjectID:  firstIdentityValue(projectIDs, query.ProjectID),
 		IssueID:    firstIdentityValue(issueIDs, query.IssueID),
 		Identifier: firstIdentityValue(identifiers, query.Identifier),
 		IssueURL:   firstIdentityValue(issueURLs, query.IssueURL),
