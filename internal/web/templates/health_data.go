@@ -370,6 +370,87 @@ func stalenessHealthDetail(warnings []telemetry.StalenessWarning) string {
 	return formatCount(len(warnings)) + " warnings need operator attention."
 }
 
+func healthCopyPayload(view healthView) string {
+	var payload strings.Builder
+	payload.WriteString("Detent health — ")
+	payload.WriteString(boardCountLabel(len(view.Rows), "signal", "signals"))
+	payload.WriteString(" — checked ")
+	payload.WriteString(view.CheckedAt.UTC().Format(time.RFC3339))
+	payload.WriteByte('\n')
+	payload.WriteString(healthCopyPlainText(strings.TrimSpace(strings.TrimSpace(view.Verdict) + " " + strings.TrimSpace(view.Detail))))
+
+	for index, row := range view.Rows {
+		if index == 0 {
+			payload.WriteString("\n\n")
+		} else {
+			payload.WriteByte('\n')
+		}
+		payload.WriteString(healthCopyKind(row.Kind))
+		payload.WriteByte(' ')
+		payload.WriteString(healthCopyPlainText(strings.TrimSpace(row.Component)))
+		payload.WriteString(" | ")
+		payload.WriteString(healthCopyPlainText(strings.TrimSpace(row.Status)))
+		payload.WriteString(" | ")
+		payload.WriteString(healthCopyPlainText(strings.TrimSpace(row.Detail)))
+		if !row.DetailAt.IsZero() {
+			payload.WriteString(" · observed ")
+			payload.WriteString(row.DetailAt.UTC().Format(time.RFC3339))
+		}
+		if quota := strings.TrimSpace(row.Quota); quota != "" {
+			payload.WriteString(" | ")
+			payload.WriteString(healthCopyPlainText(quota))
+		}
+		payload.WriteString(" | resets ")
+		if !row.ResetAt.IsZero() {
+			payload.WriteString(row.ResetAt.UTC().Format(time.RFC3339))
+		} else if resets := strings.TrimSpace(row.Resets); resets != "" {
+			payload.WriteString(healthCopyPlainText(resets))
+		} else {
+			payload.WriteString("—")
+		}
+	}
+
+	return payload.String()
+}
+
+func healthCopyPlainText(value string) string {
+	const prefix = "{{detent-time:"
+	for {
+		start := strings.Index(value, prefix)
+		if start < 0 {
+			return value
+		}
+		endOffset := strings.Index(value[start+len(prefix):], "}}")
+		if endOffset < 0 {
+			return value
+		}
+		end := start + len(prefix) + endOffset
+		token := value[start+len(prefix) : end]
+		separator := strings.IndexByte(token, ':')
+		if separator < 0 {
+			return value
+		}
+		replacement := token[separator+1:]
+		if parsed, err := time.Parse(time.RFC3339Nano, replacement); err == nil {
+			replacement = parsed.UTC().Format(time.RFC3339)
+		}
+		value = value[:start] + replacement + value[end+2:]
+	}
+}
+
+func healthCopyKind(kind primitives.Kind) string {
+	switch kind {
+	case primitives.KindOK:
+		return "[OK]  "
+	case primitives.KindWarn:
+		return "[WARN]"
+	case primitives.KindErr:
+		return "[ERR] "
+	default:
+		return "[INFO]"
+	}
+}
+
 func doctorStyleStalenessTarget(warning telemetry.StalenessWarning) string {
 	for _, value := range []string{warning.Identifier, warning.IssueID, warning.ProjectID} {
 		if value = strings.TrimSpace(value); value != "" {

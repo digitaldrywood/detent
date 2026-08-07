@@ -99,6 +99,87 @@ func TestHealthViewVerdicts(t *testing.T) {
 	}
 }
 
+func TestHealthCopyPayload(t *testing.T) {
+	t.Parallel()
+
+	checkedAt := time.Date(2026, 8, 7, 22, 21, 52, 0, time.FixedZone("CDT", -5*60*60))
+	detailAt := time.Date(2026, 8, 7, 20, 15, 0, 0, time.FixedZone("CDT", -5*60*60))
+	resetAt := time.Date(2026, 8, 7, 23, 0, 47, 0, time.FixedZone("CDT", -5*60*60))
+	tests := []struct {
+		name string
+		view healthView
+		want string
+	}{
+		{
+			name: "no rows",
+			view: healthView{
+				Verdict:   "Waiting for the first health snapshot.",
+				Detail:    "No signals have been reported.",
+				CheckedAt: checkedAt,
+			},
+			want: "Detent health — 0 signals — checked 2026-08-08T03:21:52Z\n" +
+				"Waiting for the first health snapshot. No signals have been reported.",
+		},
+		{
+			name: "warning rows only",
+			view: healthView{
+				Verdict:   "Fleet work is stale.",
+				Detail:    "2 warnings need operator attention.",
+				CheckedAt: checkedAt,
+				Rows: []healthRow{
+					{Component: "Fleet staleness · detent", Kind: primitives.KindWarn, Status: "Stale", Detail: "digitaldrywood/detent#1651 · repeated decision · 1h21m", Resets: "on progress"},
+					{Component: "Fleet staleness · detent", Kind: primitives.KindWarn, Status: "Reminder due", Detail: "digitaldrywood/detent#1650 · waiting for operator", Resets: "on progress"},
+				},
+			},
+			want: "Detent health — 2 signals — checked 2026-08-08T03:21:52Z\n" +
+				"Fleet work is stale. 2 warnings need operator attention.\n\n" +
+				"[WARN] Fleet staleness · detent | Stale | digitaldrywood/detent#1651 · repeated decision · 1h21m | resets on progress\n" +
+				"[WARN] Fleet staleness · detent | Reminder due | digitaldrywood/detent#1650 · waiting for operator | resets on progress",
+		},
+		{
+			name: "mixed warning healthy and quota rows",
+			view: healthView{
+				Verdict:   "GitHub API pressure detected.",
+				Detail:    "REST requests are approaching the limit; next reset " + localTimeToken(resetAt, LocalTimeOnly) + ".",
+				CheckedAt: checkedAt,
+				Rows: []healthRow{
+					{Component: "GitHub REST", Kind: primitives.KindWarn, Status: "Backoff", Detail: "Requests in backoff", Quota: "4,795 / 5,000", ResetAt: resetAt},
+					{Component: "Scheduler", Kind: primitives.KindOK, Status: "Running", Detail: "2 active sessions", Resets: "—"},
+				},
+			},
+			want: "Detent health — 2 signals — checked 2026-08-08T03:21:52Z\n" +
+				"GitHub API pressure detected. REST requests are approaching the limit; next reset 2026-08-08T04:00:47Z.\n\n" +
+				"[WARN] GitHub REST | Backoff | Requests in backoff | 4,795 / 5,000 | resets 2026-08-08T04:00:47Z\n" +
+				"[OK]   Scheduler | Running | 2 active sessions | resets —",
+		},
+		{
+			name: "detail timestamp and zero-value timestamps",
+			view: healthView{
+				Verdict:   "All systems nominal.",
+				Detail:    "Signals are current.",
+				CheckedAt: checkedAt,
+				Rows: []healthRow{
+					{Component: "Detent update", Kind: primitives.KindNeutral, Status: "Scheduled", Detail: "Last check", DetailAt: detailAt},
+					{Component: "Backoff", Kind: primitives.KindOK, Status: "None", Detail: "No endpoints in backoff"},
+				},
+			},
+			want: "Detent health — 2 signals — checked 2026-08-08T03:21:52Z\n" +
+				"All systems nominal. Signals are current.\n\n" +
+				"[INFO] Detent update | Scheduled | Last check · observed 2026-08-08T01:15:00Z | resets —\n" +
+				"[OK]   Backoff | None | No endpoints in backoff | resets —",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := healthCopyPayload(tt.view); got != tt.want {
+				t.Fatalf("healthCopyPayload() =\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHealthStrandedActiveRowsGroupByProject(t *testing.T) {
 	t.Parallel()
 

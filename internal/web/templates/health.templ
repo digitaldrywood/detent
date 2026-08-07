@@ -48,7 +48,14 @@ templ HealthSnapshotV2(data DashboardData) {
 			<span class="text-2xs font-semibold uppercase text-dim">Status</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Detail</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Quota</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Resets</span>
+			<span class="flex items-center justify-end gap-1 text-2xs font-semibold uppercase text-dim">
+				<span>Resets</span>
+				@copyTextButton(healthCopyPayload(view), "Copy", "Copy all health signals", copyTextButtonOptions{
+					ID: "health-copy-all",
+					Class: "inline-flex h-7 items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-1 text-2xs font-medium normal-case text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+					LabelClass: "",
+				})
+			</span>
 		</div>
 		if len(view.Rows) == 0 {
 			@primitives.EmptyLine("No health signals yet")

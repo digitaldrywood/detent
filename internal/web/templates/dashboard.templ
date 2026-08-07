@@ -4121,9 +4121,25 @@ templ issueCopyButton(value string) {
 }
 
 templ diagnosticPromptCopyButton(value string, label string, title string) {
+	@copyTextButton(value, label, title, copyTextButtonOptions{
+		Class: "inline-flex min-h-9 max-w-full items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+		LabelClass: "truncate",
+	})
+}
+
+type copyTextButtonOptions struct {
+	ID         string
+	Class      string
+	LabelClass string
+}
+
+templ copyTextButton(value string, label string, title string, options copyTextButtonOptions) {
 	<button
+		if options.ID != "" {
+			id={ options.ID }
+		}
 		type="button"
-		class="inline-flex min-h-9 max-w-full items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+		class={ options.Class }
 		data-label={ label }
 		data-copy={ value }
 		title={ title }
@@ -4131,7 +4147,7 @@ templ diagnosticPromptCopyButton(value string, label string, title string) {
 		onclick="const done = () => { const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200); }; if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(this.dataset.copy).then(done, done); } else { done(); }"
 	>
 		@icon.ClipboardCopy(icon.Props{Class: "size-3.5 shrink-0"})
-		<span class="truncate" data-copy-label>{ label }</span>
+		<span class={ options.LabelClass } data-copy-label>{ label }</span>
 	</button>
 }
 
