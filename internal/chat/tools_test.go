@@ -1,6 +1,24 @@
 package chat
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestToolsIncludesReusableReadOnlyCatalog(t *testing.T) {
+	t.Parallel()
+
+	tools := Tools()
+	wantNames := []string{"board_state", "fleet_health", "telemetry_usage", "recent_activity", "explain_item"}
+	for index, name := range wantNames {
+		if tools[index].Name != name {
+			t.Fatalf("Tools()[%d].Name = %q, want %q", index, tools[index].Name, name)
+		}
+	}
+	if !strings.Contains(tools[3].Description, "live-only") {
+		t.Fatalf("recent_activity description = %q", tools[3].Description)
+	}
+}
 
 func TestActionSummaryDescribesOperatorActions(t *testing.T) {
 	t.Parallel()
