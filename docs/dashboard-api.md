@@ -179,6 +179,7 @@ Useful endpoints:
 | `/reports` | Usage reports for spend, tokens, projects, issues, PRs, and models. |
 | `/health` | Server health and configured dependency checks. |
 | `/events` | Server-sent dashboard updates. Use `?view=kanban` for the fleet board and `?project=<id>&view=kanban` for a project board. |
+| `/api/v1/openapi.yaml` | Public OpenAPI 3 catalog for the stable JSON API. HTML, HTMX, and SSE routes are excluded. |
 | `/api/v1/state` | JSON telemetry snapshot. |
 | `/api/v1/timeseries?window=10m&bucket=1m` | Fleet chart samples for running agents, tokens/sec, and completions. |
 | `/api/v1/projects/<id>/state` | Project-scoped JSON telemetry snapshot. |

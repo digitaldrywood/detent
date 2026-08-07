@@ -322,6 +322,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) registerRoutes() {
 	s.echo.GET("/static/*", s.assets.serve)
 	s.echo.GET("/health", s.health)
+	s.echo.GET("/api/v1/openapi.yaml", s.openAPI)
 	if s.magicLinks != nil || s.identityProvider != nil {
 		s.echo.GET("/login", s.loginPage)
 	}
