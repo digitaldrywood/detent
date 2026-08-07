@@ -23,7 +23,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/explain"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -35,31 +37,12 @@ import (
 const (
 	chatSessionCookieName = "detent_chat_session"
 	chatSessionMaxAge     = int((24 * time.Hour) / time.Second)
-	defaultChatToolLimit  = 100
 )
 
 type chatScenarioContextKey struct{}
 
 type chatMessageRequest struct {
 	Message string `form:"message" json:"message"`
-}
-
-type chatBoardRow struct {
-	ProjectID         string     `json:"project_id,omitempty"`
-	IssueID           string     `json:"issue_id"`
-	Identifier        string     `json:"identifier,omitempty"`
-	Title             string     `json:"title,omitempty"`
-	State             string     `json:"state,omitempty"`
-	Priority          *int       `json:"priority,omitempty"`
-	PriorityName      string     `json:"priority_name,omitempty"`
-	BlockedReason     string     `json:"blocked_reason,omitempty"`
-	BlockedSource     string     `json:"blocked_source,omitempty"`
-	Active            bool       `json:"active,omitempty"`
-	Attempt           int        `json:"attempt,omitempty"`
-	WorkAttemptID     int64      `json:"work_attempt_id,omitempty"`
-	DetentSessionID   int64      `json:"detent_session_id,omitempty"`
-	ProviderSessionID string     `json:"provider_session_id,omitempty"`
-	CompletedAt       *time.Time `json:"completed_at,omitempty"`
 }
 
 func (s *Server) apiChatPanel(c echo.Context) error {
@@ -198,117 +181,72 @@ func (s *Server) chatSnapshot(ctx context.Context) telemetry.Snapshot {
 	return s.latestSnapshot(ctx)
 }
 
-func (s *Server) ExecuteTool(ctx context.Context, call chatpkg.ToolCall) (chatpkg.ToolResult, error) {
+type dashboardToolExecutor struct {
+	readOnly *operatortool.Executor
+	server   *Server
+}
+
+func (e *dashboardToolExecutor) ExecuteTool(ctx context.Context, call chatpkg.ToolCall) (chatpkg.ToolResult, error) {
 	switch call.Name {
-	case "board_state":
-		return s.chatBoardState(ctx, call.Arguments)
-	case "fleet_health":
-		return s.chatFleetHealth(ctx)
-	case "telemetry_usage":
-		return s.chatTelemetryUsage(ctx, call.Arguments)
-	case "recent_activity":
-		return s.chatRecentActivity(ctx, call.Arguments)
 	case "propose_move_item":
-		return s.chatMoveProposal(ctx, call.Arguments)
+		return e.server.chatMoveProposal(ctx, call.Arguments)
 	case "propose_set_priority":
-		return s.chatPriorityProposal(ctx, call.Arguments)
+		return e.server.chatPriorityProposal(ctx, call.Arguments)
 	case "propose_stop_run":
-		return s.chatStopProposal(ctx, call.Arguments)
+		return e.server.chatStopProposal(ctx, call.Arguments)
 	case "propose_file_issue":
-		return s.chatFileIssueProposal(ctx, call.Arguments)
+		return e.server.chatFileIssueProposal(ctx, call.Arguments)
 	default:
-		return chatpkg.ToolResult{}, fmt.Errorf("unknown chat tool %q", call.Name)
+		result, err := e.readOnly.Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
+		return chatpkg.ToolResult{Content: string(result.Content)}, err
 	}
 }
 
-func (s *Server) chatBoardState(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		State     string `json:"state"`
-		Limit     int    `json:"limit"`
-	}
-	if err := decodeChatToolArguments(raw, &request); err != nil {
-		return chatpkg.ToolResult{}, err
-	}
-	limit := chatToolLimit(request.Limit)
-	snapshot := s.chatSnapshot(ctx)
-	rows := chatBoardRows(snapshot, request.ProjectID, request.State)
-	if len(rows) > limit {
-		rows = rows[:limit]
-	}
-	return chatJSONResult(struct {
-		GeneratedAt time.Time        `json:"generated_at"`
-		Counts      telemetry.Counts `json:"counts"`
-		Items       []chatBoardRow   `json:"items"`
-	}{GeneratedAt: snapshot.GeneratedAt, Counts: snapshot.Counts, Items: rows})
+func (s *Server) newChatToolExecutor() *dashboardToolExecutor {
+	readOnly := operatortool.NewExecutor(operatortool.Dependencies{
+		Snapshots: operatortool.SnapshotFunc(func(ctx context.Context) (telemetry.Snapshot, error) {
+			return s.chatSnapshot(ctx), nil
+		}),
+		Explainer: explain.New(s.explainDependencies()),
+	})
+	return &dashboardToolExecutor{readOnly: readOnly, server: s}
 }
 
-func (s *Server) chatFleetHealth(ctx context.Context) (chatpkg.ToolResult, error) {
-	snapshot := s.chatSnapshot(ctx)
-	return chatJSONResult(struct {
-		GeneratedAt        time.Time                    `json:"generated_at"`
-		Auth               telemetry.AuthHealth         `json:"auth"`
-		Shutdown           telemetry.Shutdown           `json:"shutdown"`
-		Refresh            telemetry.Refresh            `json:"refresh"`
-		Counts             telemetry.Counts             `json:"counts"`
-		RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
-		BackendOutages     []telemetry.BackendOutage    `json:"backend_outages"`
-		FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers"`
-		DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries"`
-	}{snapshot.GeneratedAt, snapshot.Auth, snapshot.Shutdown, snapshot.Refresh, snapshot.Counts, snapshot.RateLimits, snapshot.BackendOutages, snapshot.FailureBreakers, snapshot.DispatchRecoveries})
+func (s *Server) explainDependencies() explain.Dependencies {
+	deps := explain.Dependencies{Snapshots: chatExplanationSnapshots{server: s}}
+	if s.store == nil {
+		return deps
+	}
+	deps.Workflow = s.store
+	deps.Attempts = s.store
+	deps.Admission = s.store
+	if scheduler, ok := s.store.(explain.SchedulerReader); ok {
+		deps.Scheduler = scheduler
+	}
+	if sessions, ok := s.store.(explain.SessionReader); ok {
+		deps.Sessions = sessions
+	}
+	return deps
 }
 
-func (s *Server) chatTelemetryUsage(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-	}
-	if err := decodeChatToolArguments(raw, &request); err != nil {
-		return chatpkg.ToolResult{}, err
-	}
-	snapshot := s.chatSnapshot(ctx)
-	projects := slices.Clone(snapshot.Projects)
-	if request.ProjectID != "" {
-		projects = slices.DeleteFunc(projects, func(candidate telemetry.ProjectSnapshot) bool {
-			return !strings.EqualFold(candidate.Project.ID, strings.TrimSpace(request.ProjectID))
-		})
-	}
-	return chatJSONResult(struct {
-		GeneratedAt    time.Time                   `json:"generated_at"`
-		Projects       []telemetry.ProjectSnapshot `json:"projects"`
-		Tokens         telemetry.Tokens            `json:"tokens"`
-		Throughput     telemetry.TokenThroughput   `json:"throughput"`
-		LifetimeTotals telemetry.LifetimeTotals    `json:"lifetime_totals"`
-		Budget         telemetry.Budget            `json:"budget"`
-	}{snapshot.GeneratedAt, projects, snapshot.Tokens, snapshot.Throughput, snapshot.LifetimeTotals, snapshot.Budget})
+type chatExplanationSnapshots struct {
+	server *Server
 }
 
-func (s *Server) chatRecentActivity(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		Limit     int    `json:"limit"`
+func (s chatExplanationSnapshots) Snapshot(ctx context.Context) (explain.SnapshotObservation, error) {
+	snapshot := s.server.chatSnapshot(ctx)
+	observation := explain.SnapshotObservation{State: explain.SourceLive, Snapshot: snapshot}
+	if snapshot.GeneratedAt.IsZero() {
+		observation.State = explain.SourceUnavailable
 	}
-	if err := decodeChatToolArguments(raw, &request); err != nil {
-		return chatpkg.ToolResult{}, err
+	if snapshot.LastKnown {
+		observation.State = explain.SourceLastKnown
+		if !snapshot.LastKnownUntil.IsZero() {
+			expiresAt := snapshot.LastKnownUntil
+			observation.ExpiresAt = &expiresAt
+		}
 	}
-	snapshot := s.chatSnapshot(ctx)
-	events := slices.Clone(snapshot.Events)
-	completed := slices.Clone(snapshot.Completed)
-	if request.ProjectID != "" {
-		projectID := strings.TrimSpace(request.ProjectID)
-		completed = slices.DeleteFunc(completed, func(candidate telemetry.Completed) bool { return !strings.EqualFold(candidate.ProjectID, projectID) })
-	}
-	limit := chatToolLimit(request.Limit)
-	if len(events) > limit {
-		events = events[len(events)-limit:]
-	}
-	if len(completed) > limit {
-		completed = completed[:limit]
-	}
-	return chatJSONResult(struct {
-		GeneratedAt time.Time                 `json:"generated_at"`
-		Events      []telemetry.ActivityEvent `json:"events"`
-		Completed   []telemetry.Completed     `json:"completed"`
-	}{snapshot.GeneratedAt, events, completed})
+	return observation, nil
 }
 
 func (s *Server) chatMoveProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
@@ -613,66 +551,6 @@ func demoChatAction(action chatpkg.Action) string {
 	}
 }
 
-func chatBoardRows(snapshot telemetry.Snapshot, projectID string, state string) []chatBoardRow {
-	rows := make(map[string]chatBoardRow)
-	add := func(issue telemetry.Issue) {
-		key := issue.ProjectID + "\x00" + issue.ID
-		rows[key] = chatBoardRow{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, Title: issue.Title, State: issue.State, Priority: issue.Priority, PriorityName: issue.PriorityName}
-	}
-	for _, issue := range snapshot.BoardIssues {
-		add(issue)
-	}
-	for _, issue := range snapshot.Pipeline {
-		add(issue)
-	}
-	for _, running := range snapshot.Running {
-		add(running.Issue)
-		key := running.ProjectID + "\x00" + running.ID
-		row := rows[key]
-		row.Active = true
-		row.Attempt = running.Attempt
-		row.WorkAttemptID = running.WorkAttemptID
-		row.DetentSessionID = running.DetentSessionID
-		row.ProviderSessionID = running.SessionID
-		rows[key] = row
-	}
-	for _, queued := range snapshot.Queue {
-		add(queued.Issue)
-	}
-	for _, blocked := range snapshot.Blocked {
-		issue := blocked.Issue
-		issue.State = "Blocked"
-		add(issue)
-		key := blocked.ProjectID + "\x00" + blocked.ID
-		row := rows[key]
-		row.BlockedReason = blocked.Error
-		row.BlockedSource = string(blocked.Source)
-		rows[key] = row
-	}
-	for _, completed := range snapshot.Completed {
-		add(completed.Issue)
-		key := completed.ProjectID + "\x00" + completed.ID
-		row := rows[key]
-		completedAt := completed.CompletedAt
-		row.CompletedAt = &completedAt
-		rows[key] = row
-	}
-	out := make([]chatBoardRow, 0, len(rows))
-	for _, row := range rows {
-		if projectID != "" && !strings.EqualFold(row.ProjectID, strings.TrimSpace(projectID)) {
-			continue
-		}
-		if state != "" && !strings.EqualFold(row.State, strings.TrimSpace(state)) {
-			continue
-		}
-		out = append(out, row)
-	}
-	slices.SortFunc(out, func(left chatBoardRow, right chatBoardRow) int {
-		return strings.Compare(left.Identifier, right.Identifier)
-	})
-	return out
-}
-
 func chatFindIssue(snapshot telemetry.Snapshot, projectID string, identifier string) (telemetry.Issue, bool) {
 	projectID = strings.TrimSpace(projectID)
 	identifier = strings.TrimSpace(identifier)
@@ -718,21 +596,6 @@ func decodeChatToolArguments(raw json.RawMessage, target any) error {
 	return nil
 }
 
-func chatJSONResult(value any) (chatpkg.ToolResult, error) {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return chatpkg.ToolResult{}, err
-	}
-	return chatpkg.ToolResult{Content: string(data)}, nil
-}
-
-func chatToolLimit(limit int) int {
-	if limit <= 0 {
-		return defaultChatToolLimit
-	}
-	return min(limit, 200)
-}
-
 func trimChatStrings(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -743,5 +606,5 @@ func trimChatStrings(values []string) []string {
 	return out
 }
 
-var _ chatpkg.ToolExecutor = (*Server)(nil)
+var _ chatpkg.ToolExecutor = (*dashboardToolExecutor)(nil)
 var _ chatpkg.ActionExecutor = (*Server)(nil)

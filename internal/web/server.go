@@ -272,7 +272,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	if server.demo != nil {
 		chatProvider = server.demoChatProvider()
 	}
-	server.chat = chatpkg.NewService(chatProvider, server, server)
+	server.chat = chatpkg.NewService(chatProvider, server.newChatToolExecutor(), server)
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate)
 	server.registerRoutes()

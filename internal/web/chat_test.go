@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -57,6 +58,63 @@ func TestChatQuestionUsesLiveBoardToolAndPersistsSession(t *testing.T) {
 	reloaded := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{path: "/api/v1/chat", cookies: []*http.Cookie{cookie}, headers: map[string]string{"Authorization": "Bearer detent_test_token"}})
 	if !strings.Contains(reloaded.Body.String(), "What is blocked?") || !strings.Contains(reloaded.Body.String(), "Issue #1362 is blocked") {
 		t.Fatalf("reloaded conversation = %s", reloaded.Body.String())
+	}
+}
+
+func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 8, 7, 20, 15, 0, 0, time.UTC)
+	toolCalled := false
+	deps := testDeps(t)
+	deps.Store = openWebTestStore(t)
+	deps.Chat = chatpkg.ProviderFunc(func(ctx context.Context, request chatpkg.TurnRequest) (chatpkg.TurnResponse, error) {
+		found := false
+		for _, tool := range request.Tools {
+			if tool.Name == "explain_item" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return chatpkg.TurnResponse{}, errors.New("explain_item was not discovered")
+		}
+		result, err := request.Handle(ctx, chatpkg.ToolCall{Name: "explain_item", Arguments: json.RawMessage(`{"project_id":"detent","reference":"digitaldrywood/detent#1647"}`)})
+		if err != nil {
+			return chatpkg.TurnResponse{}, err
+		}
+		var explanation struct {
+			Schema      int       `json:"schema"`
+			ObservedAt  time.Time `json:"observed_at"`
+			CurrentLane struct {
+				Name string `json:"name"`
+			} `json:"current_lane"`
+		}
+		if err := json.Unmarshal([]byte(result.Content), &explanation); err != nil {
+			return chatpkg.TurnResponse{}, err
+		}
+		toolCalled = explanation.Schema == 1 && !explanation.ObservedAt.IsZero() && explanation.CurrentLane.Name == "Rework"
+		return chatpkg.TurnResponse{Content: "Issue #1647 is in Rework because its latest transition requires another pass."}, nil
+	})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: observedAt,
+		BoardIssues: []telemetry.Issue{{ID: "issue-1647", Identifier: "digitaldrywood/detent#1647", ProjectID: "detent", Title: "Extract operator tool executor", State: "Rework"}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	panel := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{path: "/api/v1/chat", headers: map[string]string{"Authorization": "Bearer detent_test_token"}})
+	cookie := panel.Result().Cookies()[0]
+	message := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{method: http.MethodPost, path: "/api/v1/chat/messages", form: url.Values{"message": {"Why is issue 1647 in Rework?"}}, cookies: []*http.Cookie{cookie}, headers: map[string]string{"Authorization": "Bearer detent_test_token"}})
+	if message.Code != http.StatusOK || !strings.Contains(message.Body.String(), "latest transition") {
+		t.Fatalf("message status/body = %d/%s", message.Code, message.Body.String())
+	}
+	if !toolCalled {
+		t.Fatal("provider did not receive the versioned issue explanation result")
 	}
 }
 
