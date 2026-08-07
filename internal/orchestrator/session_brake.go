@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -63,11 +64,7 @@ func (o *Orchestrator) handleSessionBrake(
 	targetState := sessionBrakeTargetState(o.cfg, resumable)
 
 	if o.logger != nil {
-		o.logger.Warn(
-			"session_brake_tripped",
-			"event", "session_brake_tripped",
-			"issue_id", running.Issue.ID,
-			"issue_identifier", running.Issue.Identifier,
+		telemetry.LogLifecycle(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, "session_brake_tripped", o.runningLifecycleCorrelation(running.Issue, running),
 			"reason", brake.Reason,
 			"cause_fingerprint", brake.CauseFingerprint,
 			"elapsed", brake.Elapsed,

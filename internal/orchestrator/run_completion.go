@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -117,6 +118,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
+		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+		telemetry.DetentSessionIDKey, running.DetentSessionID,
+		telemetry.ProviderSessionIDKey, running.SessionID,
 		"attempt", running.Attempt,
 		"worker_host", strings.TrimSpace(running.WorkerHost),
 		"reason", "run_completed",
@@ -188,6 +192,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			running.DiffStats = event.Result.DiffStats
 		}
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
 			"attempt", running.Attempt,
 			"worker_host", strings.TrimSpace(running.WorkerHost),
 			"final_state", strings.TrimSpace(running.Issue.State),
@@ -198,6 +205,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 
 	if event.Err != nil {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
 			"attempt", running.Attempt,
 			"worker_host", strings.TrimSpace(running.WorkerHost),
 			"retry_attempt", event.RetryAttempt,
@@ -245,7 +255,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {
 			return
 		}
-		if spendProgress.Block && o.blockSpendProgress(ctx, state, running.Issue, spendProgress, event.CompletedAt) {
+		if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {
 			return
 		}
 		if mergeWorkerIssue(running.Issue) {
@@ -290,6 +300,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 
 	if event.Request.Mode == runpkg.RunModePlan {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
 			"attempt", running.Attempt,
 			"worker_host", strings.TrimSpace(running.WorkerHost),
 			"mode", strings.TrimSpace(event.Request.Mode),
@@ -322,6 +335,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		finalState = FinalStateCompleted
 	}
 	o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(nil, finalState),
+		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+		telemetry.DetentSessionIDKey, running.DetentSessionID,
+		telemetry.ProviderSessionIDKey, running.SessionID,
 		"attempt", running.Attempt,
 		"worker_host", strings.TrimSpace(running.WorkerHost),
 		"mode", strings.TrimSpace(event.Request.Mode),
@@ -432,11 +448,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.finishCompletedGateWaitRun(ctx, state, running.Issue)
 		return
 	}
-	if spendProgress.Block && o.blockSpendProgress(ctx, state, running.Issue, spendProgress, event.CompletedAt) {
+	if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {
 		return
 	}
 	if terminalState == store.WorkAttemptTerminalNoProgress && progress.Block {
-		if o.blockImplementProgress(ctx, state, progress, event.CompletedAt) {
+		if o.blockImplementProgress(ctx, state, running, progress, event.CompletedAt) {
 			return
 		}
 	}
@@ -672,9 +688,6 @@ func (o *Orchestrator) parkInstantFailure(
 	})
 	if o.logger != nil {
 		attrs := []any{
-			"event", "worker_instant_fail_circuit_breaker_tripped",
-			"issue_id", issue.ID,
-			"issue_identifier", issue.Identifier,
 			"attempt", attempt,
 			"instant_failures", failure.Count,
 			"target_state", targetState,
@@ -691,7 +704,7 @@ func (o *Orchestrator) parkInstantFailure(
 				attrs = append(attrs, "backend_error_message", message)
 			}
 		}
-		o.logger.Error("worker instant fail circuit breaker tripped", attrs...)
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "worker_instant_fail_circuit_breaker_tripped", "worker instant fail circuit breaker tripped", o.runningLifecycleCorrelation(issue, running), attrs...)
 	}
 }
 
@@ -771,11 +784,7 @@ func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
 		Message: "parked " + issueLabel(issue) + " after a session token ceiling failure: " + reason,
 	})
 	if o.logger != nil {
-		o.logger.Error(
-			"worker token ceiling circuit breaker tripped",
-			"event", "worker_token_ceiling_circuit_breaker_tripped",
-			"issue_id", issue.ID,
-			"issue_identifier", issue.Identifier,
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "worker_token_ceiling_circuit_breaker_tripped", "worker token ceiling circuit breaker tripped", o.runningLifecycleCorrelation(issue, running),
 			"failed_attempt", running.Attempt,
 			"prevented_retry_attempt", attempt,
 			"repeated_failures", failure.Count,
@@ -940,10 +949,7 @@ func (o *Orchestrator) parkRepeatedFailure(
 		Message: "parked " + issueLabel(issue) + " after repeated worker failures: " + failure.Error,
 	})
 	if o.logger != nil {
-		o.logger.Error("worker repeated failure circuit breaker tripped",
-			"event", "worker_repeated_failure_circuit_breaker_tripped",
-			"issue_id", issue.ID,
-			"issue_identifier", issue.Identifier,
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "worker_repeated_failure_circuit_breaker_tripped", "worker repeated failure circuit breaker tripped", o.runningLifecycleCorrelation(issue, running),
 			"attempt", attempt,
 			"repeated_failures", failure.Count,
 			"first_failure_at", failure.FirstFailureAt,

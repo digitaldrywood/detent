@@ -560,6 +560,7 @@ func (r *Runner) prepareMergeFastPath(
 	switch precheck.Status {
 	case workspace.MergePrepareStatusClean:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_clean",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			"workspace_path", info.Path,
 			"workspace_branch", info.Branch,
 		)
@@ -571,6 +572,7 @@ func (r *Runner) prepareMergeFastPath(
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			"workspace_path", info.Path,
 			"workspace_branch", info.Branch,
 			"status", string(precheck.Status),
@@ -793,7 +795,7 @@ func (r *Runner) runAgentTurn(
 		if update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "" {
 			turnStarted = true
 		}
-		r.logAgentUpdate(runRequest.Issue, update)
+		r.logAgentUpdate(runRequest, detentSessionID, update)
 		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update); err != nil {
 			return err
 		}
@@ -967,6 +969,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	mode := normalizeRunMode(req.Mode)
 	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) {
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			"workspace_branch", strings.TrimSpace(req.Issue.BranchName),
 		)
 		return RunResult{
@@ -980,7 +983,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		runWorkspace = &admissionWorkspace{logger: r.logger}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
-	r.logWorkerEvent(req.Issue, "worker_workspace_create_started")
+	r.logWorkerEvent(req.Issue, "worker_workspace_create_started", telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
 	}
@@ -989,6 +992,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("create workspace: %w", err)
 	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
+		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
@@ -997,6 +1001,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
 	}
 	r.logWorkerEvent(req.Issue, "worker_before_run_finished",
+		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 		"workspace_path", info.Path,
 	)
 
@@ -1019,6 +1024,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.afterRun(runWorkspace, info, workspaceIssue)
 			afterRunPending = false
 			r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 				"workspace_path", info.Path,
 			)
 			return precheckResult, nil
@@ -1101,6 +1107,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			return RunResult{}, err
 		} else if refused {
 			r.logWorkerEvent(req.Issue, "worker_budget_refused",
+				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 				"workspace_path", info.Path,
 				"backend_id", selection.BackendID,
 				"route", selection.RouteName,
@@ -1132,6 +1139,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if verifyErr != nil {
 			orphanRecoveryFallbackReason = errorString(verifyErr)
 			r.logWorkerEvent(req.Issue, "worker_orphan_resume_preflight_failed_fallback",
+				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 				"workspace_path", info.Path,
 				"backend_id", selection.BackendID,
 				"route", selection.RouteName,
@@ -1219,6 +1227,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
 			"workspace_path", info.Path,
 			"backend_id", selection.BackendID,
 			"route", selection.RouteName,
@@ -1283,6 +1293,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	r.afterRun(runWorkspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+		telemetry.DetentSessionIDKey, sessionID,
 		"workspace_path", info.Path,
 	)
 
@@ -1295,7 +1307,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(finishContext, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
+			r.finishSession(finishContext, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -1312,7 +1324,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -1325,7 +1337,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -1337,7 +1349,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -1547,7 +1559,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
-		r.logAgentUpdate(req.Issue, update)
+		r.logAgentUpdate(runReq, sessionID, update)
 		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update); err != nil {
 			return err
 		}
@@ -1614,6 +1626,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	r.afterRun(r.workspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_check_after_run_finished",
+		telemetry.DetentSessionIDKey, sessionID,
 		"workspace_path", info.Path,
 	)
 
@@ -1623,7 +1636,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = finalStateForTurnError(turnErr)
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
 
@@ -1632,10 +1645,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
@@ -1976,6 +1989,7 @@ func (r *Runner) finishSession(
 	ctx context.Context,
 	sessionID int64,
 	started bool,
+	workAttemptID int64,
 	issue connector.Issue,
 	startedAt time.Time,
 	finishedAt time.Time,
@@ -2017,6 +2031,7 @@ func (r *Runner) finishSession(
 		return fmt.Errorf("finish agent session: %w", err)
 	}
 	attrs := []any{
+		telemetry.WorkAttemptIDKey, workAttemptID,
 		"detent_session_id", sessionID,
 		"provider_thread_id", turnResult.ThreadID,
 		"provider_session_id", turnResult.SessionID,
@@ -2997,39 +3012,35 @@ func (r *Runner) logWorkerEventLevel(level slog.Level, issue connector.Issue, ev
 	if r == nil || r.logger == nil {
 		return
 	}
+	correlation, attrs := workerLifecycleCorrelation(r.projectID, issue, attrs)
 	all := []any{
-		"event", strings.TrimSpace(event),
-		"project_id", strings.TrimSpace(r.projectID),
-		"issue_id", strings.TrimSpace(issue.ID),
-		"issue_identifier", strings.TrimSpace(issue.Identifier),
 		"issue_state", strings.TrimSpace(issue.State),
 	}
 	all = append(all, attrs...)
-	message := strings.TrimSpace(event)
-	switch {
-	case level >= slog.LevelError:
-		r.logger.Error(message, all...)
-	case level >= slog.LevelWarn:
-		r.logger.Warn(message, all...)
-	case level >= slog.LevelInfo:
-		r.logger.Info(message, all...)
-	default:
-		r.logger.Debug(message, all...)
-	}
+	telemetry.LogLifecycle(r.logger, level, workerLifecycleClass(event), event, correlation, all...)
 }
 
-func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
+func (r *Runner) logAgentUpdate(req RunRequest, detentSessionID int64, update AgentUpdate) {
 	event := strings.TrimSpace(string(update.Type))
 	if event == "" {
 		event = strings.TrimSpace(update.Method)
 	}
+	logEvent := func(level slog.Level, lifecycleEvent string, attrs ...any) {
+		correlation := []any{
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, detentSessionID,
+			telemetry.ProviderSessionIDKey, agentUpdateProviderSessionID(update),
+		}
+		correlation = append(correlation, attrs...)
+		r.logWorkerEventLevel(level, req.Issue, lifecycleEvent, correlation...)
+	}
 	switch update.Type {
 	case AgentUpdateProcessStarted:
-		r.logWorkerEvent(issue, "worker_process_started",
+		logEvent(slog.LevelDebug, "worker_process_started",
 			"process_identity", strings.TrimSpace(update.ProcessIdentity),
 		)
 	case AgentUpdateTurnStarted:
-		r.logWorkerEvent(issue, "worker_turn_started",
+		logEvent(slog.LevelDebug, "worker_turn_started",
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
 		)
@@ -3041,12 +3052,12 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 		}
 		attrs = append(attrs, agentUpdateBackendErrorAttrs(update)...)
 		if failedAgentTurnStatus(update.Status) {
-			r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_turn_finished", attrs...)
+			logEvent(slog.LevelWarn, "worker_turn_finished", attrs...)
 		} else {
-			r.logWorkerEvent(issue, "worker_turn_finished", attrs...)
+			logEvent(slog.LevelDebug, "worker_turn_finished", attrs...)
 		}
 	case AgentUpdateTokenUsage:
-		r.logWorkerEvent(issue, "worker_usage_updated",
+		logEvent(slog.LevelDebug, "worker_usage_updated",
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
 			"total_tokens", update.Tokens.TotalTokens,
@@ -3054,12 +3065,12 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 			"output_tokens", update.Tokens.OutputTokens,
 		)
 	case AgentUpdateRateLimits:
-		r.logWorkerEvent(issue, "worker_rate_limits_updated",
+		logEvent(slog.LevelDebug, "worker_rate_limits_updated",
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
 		)
 	case AgentUpdateModelUpdated:
-		r.logWorkerEvent(issue, "worker_model_updated",
+		logEvent(slog.LevelDebug, "worker_model_updated",
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
 			"model", strings.TrimSpace(update.Model),
@@ -3068,12 +3079,88 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 		return
 	default:
 		if event != "" && update.Type != AgentUpdateMessageDelta {
-			r.logWorkerEvent(issue, "worker_agent_update",
+			logEvent(slog.LevelDebug, "worker_agent_update",
 				"agent_event", event,
 				"thread_id", strings.TrimSpace(update.ThreadID),
 				"turn_id", strings.TrimSpace(update.TurnID),
 			)
 		}
+	}
+}
+
+func agentUpdateProviderSessionID(update AgentUpdate) string {
+	if providerSessionID := strings.TrimSpace(update.ProviderSessionID); providerSessionID != "" {
+		return providerSessionID
+	}
+	threadID := strings.TrimSpace(update.ThreadID)
+	turnID := strings.TrimSpace(update.TurnID)
+	if threadID == "" || turnID == "" {
+		return ""
+	}
+	if threadID == turnID {
+		return threadID
+	}
+	return threadID + "-" + turnID
+}
+
+func workerLifecycleClass(event string) telemetry.LifecycleClass {
+	switch strings.TrimSpace(event) {
+	case "worker_workspace_create_started", "worker_workspace_created", "worker_before_run_finished", "worker_after_run_finished",
+		"worker_check_workspace_create_started", "worker_check_workspace_created", "worker_check_before_run_finished", "worker_check_after_run_finished":
+		return telemetry.LifecycleWorkspace
+	case "worker_session_started", "worker_session_finished", "worker_command_started", "worker_command_finished", "worker_check_started", "worker_check_finished":
+		return telemetry.LifecycleDetentSession
+	case "worker_process_started", "worker_turn_started", "worker_turn_finished", "worker_usage_updated", "worker_rate_limits_updated", "worker_model_updated", "worker_agent_update", "worker_runtime_identity_resolved", "worker_runtime_identity_changed":
+		return telemetry.LifecycleProviderSession
+	default:
+		return telemetry.LifecycleWorkAttempt
+	}
+}
+
+func workerLifecycleCorrelation(projectID string, issue connector.Issue, attrs []any) (telemetry.LifecycleCorrelation, []any) {
+	correlation := telemetry.LifecycleCorrelation{
+		ProjectID:       projectID,
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+	}
+	remaining := make([]any, 0, len(attrs))
+	for index := 0; index < len(attrs); {
+		if index+1 >= len(attrs) {
+			remaining = append(remaining, attrs[index])
+			break
+		}
+		key, ok := attrs[index].(string)
+		if !ok {
+			remaining = append(remaining, attrs[index], attrs[index+1])
+			index += 2
+			continue
+		}
+		value := attrs[index+1]
+		switch key {
+		case telemetry.WorkAttemptIDKey:
+			correlation.WorkAttemptID = lifecycleInt64(value)
+		case telemetry.DetentSessionIDKey:
+			correlation.DetentSessionID = lifecycleInt64(value)
+		case telemetry.ProviderSessionIDKey:
+			if providerSessionID, ok := value.(string); ok {
+				correlation.ProviderSessionID = providerSessionID
+			}
+		default:
+			remaining = append(remaining, key, value)
+		}
+		index += 2
+	}
+	return correlation, remaining
+}
+
+func lifecycleInt64(value any) int64 {
+	switch value := value.(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	default:
+		return 0
 	}
 }
 

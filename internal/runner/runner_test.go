@@ -2422,6 +2422,83 @@ func TestLogRuntimeIdentityChangeUsesCanonicalFieldsWithoutPayloadSecrets(t *tes
 	}
 }
 
+func TestLogAgentUpdateNormalizesProviderSessionID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		update     AgentUpdate
+		want       string
+		wantAbsent bool
+	}{
+		{
+			name: "explicit provider session",
+			update: AgentUpdate{
+				Type:              AgentUpdateTokenUsage,
+				ThreadID:          "thread-1",
+				TurnID:            "turn-1",
+				ProviderSessionID: "provider-session-1",
+			},
+			want: "provider-session-1",
+		},
+		{
+			name: "Claude session uses shared thread and turn ID",
+			update: AgentUpdate{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "claude-session-1",
+				TurnID:   "claude-session-1",
+			},
+			want: "claude-session-1",
+		},
+		{
+			name: "Codex session combines thread and turn IDs",
+			update: AgentUpdate{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-1",
+				TurnID:   "turn-1",
+			},
+			want: "thread-1-turn-1",
+		},
+		{
+			name: "incomplete identity remains absent",
+			update: AgentUpdate{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-1",
+			},
+			wantAbsent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			r := &Runner{
+				projectID: "detent",
+				logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+					Level: slog.LevelDebug,
+				})),
+			}
+			r.logAgentUpdate(RunRequest{
+				Issue:         connector.Issue{ID: "issue-1645", Identifier: "digitaldrywood/detent#1645"},
+				WorkAttemptID: 1645,
+			}, 1652, tt.update)
+
+			got := logs.String()
+			if tt.wantAbsent {
+				if strings.Contains(got, telemetry.ProviderSessionIDKey+"=") {
+					t.Fatalf("provider session ID unexpectedly logged:\n%s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, telemetry.ProviderSessionIDKey+"="+tt.want) {
+				t.Fatalf("provider session ID missing from log:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestRunnerRunCompletesSuccessfulTurnWithCleanupError(t *testing.T) {
 	t.Parallel()
 

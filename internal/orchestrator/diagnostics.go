@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
@@ -59,7 +61,7 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		"worker_host", strings.TrimSpace(decision.WorkerHost),
 		"unblocker_count", decision.UnblockerCount,
 	)
-	o.logger.Debug("scheduler_dispatch_decision", attrs...)
+	telemetry.LogLifecycle(o.logger, slog.LevelDebug, telemetry.LifecycleDispatch, "scheduler_dispatch_decision", o.issueLifecycleCorrelation(decision.Issue), attrs...)
 }
 
 func unblockerDecisionReason(count int) string {
@@ -77,10 +79,9 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 	if reason == "" {
 		reason = "slot_" + strings.TrimSpace(outcome)
 	}
-	attrs := o.issueLogAttrs(issue,
+	attrs := []any{
 		"outcome", strings.TrimSpace(outcome),
 		"reason", reason,
-		"project_id", strings.TrimSpace(o.cfg.Project.ID),
 		"pool", strings.TrimSpace(decision.PoolName),
 		"project_weight", o.cfg.Project.Weight,
 		"project_priority", o.cfg.Project.Priority,
@@ -101,8 +102,8 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 		"lower_priority_running", decision.LowerPriorityRunning,
 		"ready_projects", decision.ReadyProjects,
 		"running_projects", decision.RunningProjects,
-	)
-	o.logger.Debug("scheduler_dispatch_slot_decision", attrs...)
+	}
+	telemetry.LogLifecycle(o.logger, slog.LevelDebug, telemetry.LifecycleDispatch, "scheduler_dispatch_slot_decision", o.issueLifecycleCorrelation(issue), attrs...)
 }
 
 func (o *Orchestrator) recordDispatchGateRefusal(
@@ -253,17 +254,42 @@ func (o *Orchestrator) logWorkerLifecycle(issue connector.Issue, event string, a
 	if o == nil || o.logger == nil {
 		return
 	}
-	all := o.issueLogAttrs(issue, "event", strings.TrimSpace(event))
-	all = append(all, attrs...)
-	o.logger.Debug(strings.TrimSpace(event), all...)
+	correlation := o.issueLifecycleCorrelation(issue)
+	remaining := make([]any, 0, len(attrs))
+	for index := 0; index < len(attrs); {
+		if index+1 >= len(attrs) {
+			remaining = append(remaining, attrs[index])
+			break
+		}
+		key, ok := attrs[index].(string)
+		if !ok {
+			remaining = append(remaining, attrs[index], attrs[index+1])
+			index += 2
+			continue
+		}
+		value := attrs[index+1]
+		switch key {
+		case telemetry.WorkAttemptIDKey:
+			correlation.WorkAttemptID = lifecycleCorrelationInt64(value)
+		case telemetry.DetentSessionIDKey:
+			correlation.DetentSessionID = lifecycleCorrelationInt64(value)
+		case telemetry.ProviderSessionIDKey:
+			if providerSessionID, ok := value.(string); ok {
+				correlation.ProviderSessionID = providerSessionID
+			}
+		default:
+			remaining = append(remaining, key, value)
+		}
+		index += 2
+	}
+	telemetry.LogLifecycle(o.logger, slog.LevelDebug, telemetry.LifecycleWorkAttempt, event, correlation, remaining...)
 }
 
 func (o *Orchestrator) schedulerDecisionAttrs(state *State, now time.Time, issue connector.Issue, attrs ...any) []any {
 	projectStats := o.projectStateSlotStats(issue, state)
 	pool := o.dispatchPoolSnapshot()
-	all := o.issueLogAttrs(issue,
+	all := []any{
 		"lane", normalizeState(issue.State),
-		"project_id", strings.TrimSpace(o.cfg.Project.ID),
 		"pool", pool.Name,
 		"project_weight", o.cfg.Project.Weight,
 		"project_priority", o.cfg.Project.Priority,
@@ -276,22 +302,41 @@ func (o *Orchestrator) schedulerDecisionAttrs(state *State, now time.Time, issue
 		"guaranteed_capacity", pool.Guaranteed,
 		"burst_capacity", pool.BurstTo,
 		"borrowed_slots", pool.Borrowed,
-	)
+	}
 	all = append(all, snapshotAgeAttrs(issue, now)...)
 	all = append(all, pullRequestDiagnosticAttrs(issue, now)...)
 	all = append(all, attrs...)
 	return all
 }
 
-func (o *Orchestrator) issueLogAttrs(issue connector.Issue, attrs ...any) []any {
-	all := []any{
-		"issue_id", strings.TrimSpace(issue.ID),
-		"issue_identifier", strings.TrimSpace(issue.Identifier),
-		"issue_repo", issueRepository(issue),
-		"issue_state", strings.TrimSpace(issue.State),
+func (o *Orchestrator) issueLifecycleCorrelation(issue connector.Issue) telemetry.LifecycleCorrelation {
+	correlation := telemetry.LifecycleCorrelation{
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
 	}
-	all = append(all, attrs...)
-	return all
+	if o != nil {
+		correlation.ProjectID = o.cfg.Project.ID
+	}
+	return correlation
+}
+
+func (o *Orchestrator) runningLifecycleCorrelation(issue connector.Issue, running Running) telemetry.LifecycleCorrelation {
+	correlation := o.issueLifecycleCorrelation(issue)
+	correlation.WorkAttemptID = running.WorkAttemptID
+	correlation.DetentSessionID = running.DetentSessionID
+	correlation.ProviderSessionID = running.SessionID
+	return correlation
+}
+
+func lifecycleCorrelationInt64(value any) int64 {
+	switch value := value.(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	default:
+		return 0
+	}
 }
 
 func snapshotAgeAttrs(issue connector.Issue, now time.Time) []any {

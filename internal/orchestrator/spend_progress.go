@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -398,11 +399,11 @@ func dispatchAcceptedStateChange(running Running) (bool, string) {
 func (o *Orchestrator) blockSpendProgress(
 	ctx context.Context,
 	state *State,
-	issue connector.Issue,
+	running Running,
 	decision spendProgressDecision,
 	blockedAt time.Time,
 ) bool {
-	issue = cloneIssue(issue)
+	issue := cloneIssue(running.Issue)
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
 		return false
@@ -462,10 +463,7 @@ func (o *Orchestrator) blockSpendProgress(
 		Message: fmt.Sprintf("parked %s after %s: %s", issueLabel(issue), spendProgressUsageSummary(decision), spendProgressCaseSummary(decision.Case)),
 	})
 	if o.logger != nil {
-		o.logger.Error("no-progress circuit breaker tripped",
-			"event", "spend_since_progress_circuit_breaker_tripped",
-			"issue_id", issueID,
-			"issue_identifier", issue.Identifier,
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "spend_since_progress_circuit_breaker_tripped", "no-progress circuit breaker tripped", o.runningLifecycleCorrelation(issue, running),
 			"blocked_by", decision.BlockedBy,
 			"total_tokens", decision.Spend.TotalTokens,
 			"token_limit", decision.TokenLimit,

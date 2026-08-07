@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -80,14 +81,12 @@ func (o *Orchestrator) handleBackendCapacityError(
 		Message: backendCapacityStatusMessage(outage),
 	})
 	if o.logger != nil {
-		o.logger.Warn(
-			"backend capacity paused",
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, "backend_capacity_paused", "backend capacity paused", o.runningLifecycleCorrelation(running.Issue, running),
 			"backend_id", outage.Scope.BackendID,
 			"backend_kind", outage.Scope.BackendKind,
 			"provider", outage.Scope.Provider,
 			"reset_at", outage.ResetAt,
 			"resume_at", outage.ResumeAt,
-			"issue_id", running.Issue.ID,
 			"error", event.Err,
 		)
 	}
@@ -314,8 +313,7 @@ func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validato
 			Message: backendCapacityStatusMessage(outage),
 		})
 		if o.logger != nil {
-			o.logger.Warn(
-				"validator backend capacity paused",
+			telemetry.LogLifecycleMessage(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, "backend_capacity_paused", "validator backend capacity paused", telemetry.LifecycleCorrelation{ProjectID: o.cfg.Project.ID},
 				"backend_id", outage.Scope.BackendID,
 				"provider", outage.Scope.Provider,
 				"resume_at", outage.ResumeAt,
@@ -376,12 +374,13 @@ func (o *Orchestrator) markBackendCapacityProbe(state *State, key string, issueI
 		Message: "backend " + outage.Scope.BackendID + " capacity probe started with " + strings.TrimSpace(issueID),
 	})
 	if o.logger != nil {
-		o.logger.Info(
-			"backend capacity probe started",
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelInfo, telemetry.LifecycleSafetyControl, "backend_capacity_probe_started", "backend capacity probe started", telemetry.LifecycleCorrelation{
+			ProjectID: o.cfg.Project.ID,
+			IssueID:   issueID,
+		},
 			"backend_id", outage.Scope.BackendID,
 			"backend_kind", outage.Scope.BackendKind,
 			"provider", outage.Scope.Provider,
-			"issue_id", strings.TrimSpace(issueID),
 			"probe_attempt", outage.ProbeAttempts,
 			"provider_resume_at", outage.ResumeAt,
 		)
@@ -461,8 +460,7 @@ func (o *Orchestrator) completeBackendCapacityRecovery(
 		Message: "backend " + outage.Scope.BackendID + " capacity recovered via " + source,
 	})
 	if o.logger != nil {
-		o.logger.Info(
-			"backend capacity recovered",
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelInfo, telemetry.LifecycleSafetyControl, "backend_capacity_recovered", "backend capacity recovered", telemetry.LifecycleCorrelation{ProjectID: o.cfg.Project.ID},
 			"backend_id", outage.Scope.BackendID,
 			"backend_kind", outage.Scope.BackendKind,
 			"provider", outage.Scope.Provider,
@@ -500,8 +498,7 @@ func (o *Orchestrator) deferBackendCapacityProbe(state *State, running Running, 
 		Message: "backend " + outage.Scope.BackendID + " capacity probe failed; retrying at " + outage.NextProbeAt.Format(time.RFC3339),
 	})
 	if o.logger != nil {
-		o.logger.Warn(
-			"backend capacity probe deferred",
+		telemetry.LogLifecycleMessage(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, "backend_capacity_probe_deferred", "backend capacity probe deferred", o.runningLifecycleCorrelation(running.Issue, running),
 			"backend_id", outage.Scope.BackendID,
 			"backend_kind", outage.Scope.BackendKind,
 			"provider", outage.Scope.Provider,
@@ -555,8 +552,7 @@ func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, cl
 			Message: "operator cleared backend " + outage.Scope.BackendID + " capacity outage",
 		})
 		if o.logger != nil {
-			o.logger.Info(
-				"operator cleared backend capacity outage",
+			telemetry.LogLifecycleMessage(o.logger, slog.LevelInfo, telemetry.LifecycleSafetyControl, "backend_capacity_operator_cleared", "operator cleared backend capacity outage", telemetry.LifecycleCorrelation{ProjectID: o.cfg.Project.ID},
 				"backend_id", outage.Scope.BackendID,
 				"backend_kind", outage.Scope.BackendKind,
 				"provider", outage.Scope.Provider,
@@ -756,6 +752,12 @@ func (o *Orchestrator) applyBackendCapacityBlockedRecovery(
 		Event:   "backend_capacity_blocked_issue_recovered",
 		Message: "recovered " + issueLabel(issue) + " from Blocked to " + targetState,
 	})
+	telemetry.LogLifecycleMessage(o.logger, slog.LevelInfo, telemetry.LifecycleSafetyControl, "backend_capacity_blocked_issue_recovered", "backend capacity blocked issue recovered", o.issueLifecycleCorrelation(issue),
+		"backend_id", outage.Scope.BackendID,
+		"backend_kind", outage.Scope.BackendKind,
+		"provider", outage.Scope.Provider,
+		"target_state", targetState,
+	)
 	return true
 }
 

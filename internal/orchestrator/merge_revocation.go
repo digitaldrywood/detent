@@ -298,6 +298,9 @@ func (o *Orchestrator) finishMergeRevocation(
 	o.routeMergeRevocation(ctx, state, &revocation, completedAt)
 	o.commentMergeRevocation(ctx, state, revocation, completedAt)
 	o.logWorkerLifecycle(running.Issue, "worker_merge_revoked",
+		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+		telemetry.DetentSessionIDKey, running.DetentSessionID,
+		telemetry.ProviderSessionIDKey, running.SessionID,
 		"attempt", running.Attempt,
 		"worker_host", strings.TrimSpace(running.WorkerHost),
 		"reason", revocation.reason,

@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
@@ -91,6 +92,7 @@ type Settings struct {
 }
 
 type Result struct {
+	ProjectID       string
 	CandidatesFound int
 	Candidates      int
 	Proposals       []admissionmodel.Proposal
@@ -267,6 +269,7 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 
 func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor time.Time) (result Result, runErr error) {
 	result = newResult()
+	result.ProjectID = strings.TrimSpace(settings.ProjectID)
 	startedAt := m.now().UTC()
 	record := admissionmodel.RunRecord{
 		ProjectID:    settings.ProjectID,
@@ -970,12 +973,11 @@ func (m *Manager) admitProposal(
 	if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
 		return fmt.Errorf("resolve admitted backlog proposal %s: %w", proposal.ID, err)
 	}
-	m.logger.InfoContext(
-		ctx,
-		"backlog admission proposal admitted",
-		"project", proposal.ProjectID,
-		"issue_id", proposal.IssueID,
-		"identifier", proposal.IssueIdentifier,
+	telemetry.LogLifecycleMessageContext(ctx, m.logger, slog.LevelInfo, telemetry.LifecycleAdmission, "backlog_admission_proposal_admitted", "backlog admission proposal admitted", telemetry.LifecycleCorrelation{
+		ProjectID:       proposal.ProjectID,
+		IssueID:         proposal.IssueID,
+		IssueIdentifier: proposal.IssueIdentifier,
+	},
 		"from_state", issue.State,
 		"target_state", proposal.TargetState,
 		"proposal_id", proposal.ID,
@@ -1742,7 +1744,7 @@ func (m *Manager) runAndLog(ctx context.Context, scheduledFor time.Time) {
 		}
 		return
 	}
-	m.logger.InfoContext(ctx, "scheduled backlog admission completed",
+	telemetry.LogLifecycleMessageContext(ctx, m.logger, slog.LevelInfo, telemetry.LifecycleAdmission, "scheduled_backlog_admission_completed", "scheduled backlog admission completed", telemetry.LifecycleCorrelation{ProjectID: result.ProjectID},
 		"candidates", result.Candidates,
 		"proposals", len(result.Proposals),
 		"deferred_reason", result.DeferredReason,
