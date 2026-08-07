@@ -3,6 +3,7 @@ package explain
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -321,11 +322,24 @@ func (s *Service) collectAdmission(ctx context.Context, identity store.IssueIden
 func normalizeQuery(query Query) Query {
 	return Query{
 		ProjectID:  strings.TrimSpace(query.ProjectID),
-		Reference:  strings.TrimSpace(query.Reference),
+		Reference:  normalizeIssueURL(query.Reference),
 		IssueID:    strings.TrimSpace(query.IssueID),
 		Identifier: strings.TrimSpace(query.Identifier),
-		IssueURL:   strings.TrimSpace(query.IssueURL),
+		IssueURL:   normalizeIssueURL(query.IssueURL),
 	}
+}
+
+func normalizeIssueURL(value string) string {
+	value = strings.TrimSpace(value)
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return value
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
 }
 
 func queryHasIssueReference(query Query) bool {
