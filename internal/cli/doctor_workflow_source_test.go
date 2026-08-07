@@ -174,6 +174,95 @@ func TestCheckDoctorWorkflowSourcePolicyUsesGitHubDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorProjectRunsWorkflowSourcePolicyBeforeMutableKinds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*workflowconfig.Config)
+	}{
+		{
+			name: "tracker kind drifted",
+			mutate: func(cfg *workflowconfig.Config) {
+				cfg.Tracker.Kind = workflowconfig.TrackerMemory
+			},
+		},
+		{
+			name: "deliverable kind drifted",
+			mutate: func(cfg *workflowconfig.Config) {
+				cfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
+			},
+		},
+		{
+			name: "workspace kind drifted",
+			mutate: func(cfg *workflowconfig.Config) {
+				cfg.Workspace.Kind = workflowconfig.WorkspaceFilesystem
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			sourceRoot := t.TempDir()
+			workflow := validDoctorDependencyWorkflow(false)
+			workflow.Workspace.Root = sourceRoot
+			tt.mutate(&workflow)
+
+			deps := successfulDoctorDeps()
+			deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+				return workflowconfig.Workflow{Config: workflow}, nil
+			}
+			deps.gitRemoteURL = func(context.Context, string) (string, error) {
+				return "https://github.com/source/repository.git", nil
+			}
+			called := false
+			deps.workflowSourcePolicy = func(_ context.Context, projectID string, _ globalconfig.Project, gotSourceRoot string, defaultBranch string) doctorCheck {
+				called = true
+				if projectID != "alpha" || gotSourceRoot != sourceRoot || defaultBranch != "main" {
+					t.Fatalf("policy inputs = project %q, root %q, branch %q", projectID, gotSourceRoot, defaultBranch)
+				}
+				return doctorCheck{Name: "Project alpha workflow source policy", Status: doctorFail, Detail: "policy drift detected"}
+			}
+
+			checks := checkDoctorProject(context.Background(), globalconfig.Project{
+				ID:       "alpha",
+				Workflow: filepath.Join(sourceRoot, "WORKFLOW.md"),
+				Workdir:  sourceRoot,
+			}, deps, RuntimeSecret{}, false)
+			if !called {
+				t.Fatal("workflow source policy was skipped")
+			}
+			assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow source policy", doctorFail, "policy drift detected")
+		})
+	}
+}
+
+func TestCheckDoctorWorkflowSourcePolicySkipsNonGitHubMutableProject(t *testing.T) {
+	t.Parallel()
+
+	_, ok := checkDoctorWorkflowSourcePolicy(
+		context.Background(),
+		"alpha",
+		globalconfig.Project{Workflow: "WORKFLOW.md", Workdir: "/repo"},
+		workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: workflowconfig.TrackerMemory}},
+		"/repo",
+		doctorDeps{
+			gitRemoteURL: func(context.Context, string) (string, error) {
+				return "file:///tmp/repository.git", nil
+			},
+			workflowSourcePolicy: func(context.Context, string, globalconfig.Project, string, string) doctorCheck {
+				t.Fatal("workflow source policy should not run")
+				return doctorCheck{}
+			},
+		},
+	)
+	if ok {
+		t.Fatal("checkDoctorWorkflowSourcePolicy() ok = true, want false")
+	}
+}
+
 func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	t.Helper()
 

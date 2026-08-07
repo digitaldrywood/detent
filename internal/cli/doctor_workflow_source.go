@@ -46,15 +46,19 @@ func checkDoctorWorkflowSourcePolicy(
 
 	name := "Project " + projectID + " workflow source policy"
 	repository := ""
+	trackerUsesGitHub := doctorTrackerUsesGitHubReads(cfg.Tracker.Kind)
 	if deps.gitRemoteURL != nil {
 		if remote, err := deps.gitRemoteURL(ctx, workflowSourceRoot); err == nil {
 			repository, _ = doctorGitHubRepositoryFromRemoteURL(remote)
 		}
 	}
-	if repository == "" {
+	if repository == "" && trackerUsesGitHub {
 		repository = strings.TrimSpace(cfg.Tracker.Repository)
 	}
 	if repository == "" {
+		if !trackerUsesGitHub {
+			return doctorCheck{}, false
+		}
 		return doctorCheck{
 			Name:   name,
 			Status: doctorWarn,
