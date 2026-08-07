@@ -59,7 +59,7 @@ func dashboardAccessPublicRequest(req *http.Request) bool {
 		return false
 	}
 	path := req.URL.Path
-	if path == "/health" || strings.HasPrefix(path, "/static/") {
+	if path == "/health" || path == openAPIPath || strings.HasPrefix(path, "/static/") {
 		return true
 	}
 	if path == "/api/v1/webhooks/github" || strings.HasPrefix(path, "/api/v1/intake/") {

@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	openAPIPath      = "/api/v1/openapi.yaml"
 	openAPIMediaType = "application/vnd.oai.openapi+yaml;version=3.0"
 	openAPIVersion   = "1.0.0"
 )

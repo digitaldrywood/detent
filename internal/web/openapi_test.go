@@ -12,6 +12,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -87,6 +88,73 @@ func TestServerOpenAPIDoesNotWeakenAPIAuthentication(t *testing.T) {
 	}
 	if response.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("GET /api/v1/state Content-Type = %q, want application/json", response.Header.Get("Content-Type"))
+	}
+}
+
+func TestServerOpenAPIBypassesDashboardAuthentication(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(*testing.T) (web.Config, web.Dependencies)
+	}{
+		{
+			name: "magic link",
+			setup: func(t *testing.T) (web.Config, web.Dependencies) {
+				deps := testDeps(t)
+				deps.Store = openWebTestStore(t)
+				deps.MagicLinkSender = &webAuthSender{}
+				cfg := openAPITestConfig()
+				cfg.GlobalConfig.Auth = globalconfig.Auth{
+					Mode:          globalconfig.AuthModeMagicLink,
+					AllowedEmails: []string{"operator@example.com"},
+					LinkTTL:       "15m",
+					SessionTTL:    "1h",
+				}
+				return cfg, deps
+			},
+		},
+		{
+			name: "OIDC",
+			setup: func(t *testing.T) (web.Config, web.Dependencies) {
+				deps := testDeps(t)
+				deps.Store = openWebTestStore(t)
+				deps.IdentityProvider = &webOIDCProvider{}
+				cfg := openAPITestConfig()
+				cfg.GlobalConfig.Auth = globalconfig.Auth{
+					Mode:          globalconfig.AuthModeOIDC,
+					AllowedEmails: []string{"operator@example.com"},
+					SessionTTL:    "1h",
+					OIDC: globalconfig.OIDC{
+						IssuerURL:    "https://issuer.example.invalid",
+						ClientID:     "test-client",
+						ClientSecret: "test-client-secret",
+					},
+				}
+				return cfg, deps
+			},
+		},
+		{
+			name: "private dashboard token",
+			setup: func(t *testing.T) (web.Config, web.Dependencies) {
+				cfg := openAPITestConfig()
+				cfg.GlobalConfig.DashboardAccess = globalconfig.DashboardAccess{
+					Mode:  globalconfig.DashboardAccessModePrivateToken,
+					Token: privateDashboardTestToken(12),
+				}
+				return cfg, testDeps(t)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, deps := tt.setup(t)
+			server := newConfiguredOpenAPITestServer(t, cfg, deps)
+			httpServer := httptest.NewServer(server.Handler())
+			t.Cleanup(httpServer.Close)
+			parseOpenAPI(t, requestOpenAPI(t, httpServer.URL))
+		})
 	}
 }
 
@@ -206,8 +274,13 @@ func TestServerOpenAPIOnboardingRouteDifferences(t *testing.T) {
 
 func newOpenAPITestServer(t *testing.T, mode web.Mode, deps web.Dependencies) *web.Server {
 	t.Helper()
-	server, err := web.NewServer(web.Config{
-		Mode:          mode,
+	cfg := openAPITestConfig()
+	cfg.Mode = mode
+	return newConfiguredOpenAPITestServer(t, cfg, deps)
+}
+
+func openAPITestConfig() web.Config {
+	return web.Config{
 		ServerAddress: "0.0.0.0:8443",
 		DashboardURL:  "https://private-dashboard.example.invalid/operator",
 		LookupEnv: func(key string) string {
@@ -219,7 +292,12 @@ func newOpenAPITestServer(t *testing.T, mode web.Mode, deps web.Dependencies) *w
 		Hostname: func() (string, error) {
 			return "private-hostname.example.invalid", nil
 		},
-	}, deps)
+	}
+}
+
+func newConfiguredOpenAPITestServer(t *testing.T, cfg web.Config, deps web.Dependencies) *web.Server {
+	t.Helper()
+	server, err := web.NewServer(cfg, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -240,7 +318,7 @@ func requestOpenAPI(t *testing.T, baseURL string) []byte {
 		t.Fatalf("NewRequestWithContext() error = %v", err)
 	}
 	request.Host = "request-host.example.invalid"
-	request.Header.Set("X-API-Key", "request-header-must-not-appear")
+	request.Header.Set("X-Runtime-Header", "request-header-must-not-appear")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET %s error = %v", openAPIPath, err)
