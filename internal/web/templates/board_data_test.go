@@ -907,6 +907,41 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 	}
 }
 
+func TestBoardCardHeaderKeepsPullRequestAfterTruncatingMetadata(t *testing.T) {
+	t.Parallel()
+
+	card := boardCardView{
+		DomID:          "card-detent-1629",
+		Number:         "#1629",
+		URL:            "https://github.com/digitaldrywood/detent/issues/1629",
+		Project:        "digitaldrywood-release-train-platform",
+		PriorityBadge:  "priority-medium",
+		PriorityTitle:  "Dispatch priority",
+		PriorityDetail: "Label priority-medium is configured at dispatch label rank 2.",
+		MetaRight:      "PR #1630",
+		PRURL:          "https://github.com/digitaldrywood/detent/pull/1630",
+		Title:          "Keep pull request metadata inside the card",
+	}
+	html := renderBoardComponent(t, boardCardView2(card))
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "project can shrink to zero", want: `<span class="min-w-0 truncate">digitaldrywood-release-train-platform</span>`},
+		{name: "priority badge preserves an ellipsis", want: `class="inline-flex min-w-7 max-w-24 shrink items-center`},
+		{name: "priority text paints ellipsis", want: `<span class="min-w-0 truncate">priority-medium</span>`},
+		{name: "pull request never shrinks", want: `class="ml-auto flex-none whitespace-nowrap tabular-nums"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(html, tt.want) {
+				t.Fatalf("board card header missing %q:\n%s", tt.want, html)
+			}
+		})
+	}
+}
+
 func TestBoardCardActivityPreview(t *testing.T) {
 	t.Parallel()
 
@@ -1094,7 +1129,7 @@ func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T)
 	boardCard := boardCardSection(t, boardHTML, title)
 	for _, want := range []string{
 		`class="flex-none max-w-16 truncate text-text">` + localID,
-		`class="min-w-8 truncate">` + projectID,
+		`class="min-w-0 truncate">` + projectID,
 	} {
 		if !strings.Contains(boardCard, want) {
 			t.Fatalf("board card missing %q:\n%s", want, boardCard)

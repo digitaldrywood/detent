@@ -1446,7 +1446,7 @@ func boardLanesClass(data DashboardData) string {
 }
 
 func boardPriorityBadgeClass(card boardCardView) string {
-	base := "inline-flex max-w-24 flex-none items-center truncate rounded-chip border px-1.5 py-0.5 font-mono text-2xs font-semibold"
+	base := "inline-flex min-w-7 max-w-24 shrink items-center rounded-chip border px-1.5 py-0.5 font-mono text-2xs font-semibold"
 	if card.PriorityTop {
 		return base + " border-err/30 bg-err/15 text-err"
 	}

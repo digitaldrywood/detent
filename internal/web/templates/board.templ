@@ -462,12 +462,12 @@ templ boardCardView2(card boardCardView) {
 			}
 		}
 	>
-		<div class="flex min-w-0 items-center gap-1.5 font-mono text-2xs font-medium text-sec" data-board-card-content="cozy">
+		<div class="flex min-w-0 items-center gap-0.5 font-mono text-2xs font-medium text-sec" data-board-card-content="cozy">
 			if card.Running {
 				@primitives.StatusDot(primitives.KindOK, true)
 			}
 			@primitives.TrackerReferenceLink(card.Number, card.URL, boardCardNumberClass(card))
-			<span class="min-w-8 truncate">{ card.Project }</span>
+			<span class="min-w-0 truncate">{ card.Project }</span>
 			if card.PriorityBadge != "" {
 				<span
 					id={ card.DomID + "-priority" }
@@ -483,15 +483,14 @@ templ boardCardView2(card boardCardView) {
 					data-help-title={ card.PriorityTitle }
 					data-help-description={ card.PriorityDetail }
 					onclick="event.stopPropagation()"
-				>{ card.PriorityBadge }</span>
+				><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
 			}
-			<span class="flex-1"></span>
 			if card.MoveDisabledText != "" {
-				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			} else if card.Done {
-				<span class="text-ok" role="img" aria-label="done">✓</span>
+				<span class="ml-auto text-ok" role="img" aria-label="done">✓</span>
 			} else if card.MetaRight != "" {
-				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "flex-none whitespace-nowrap tabular-nums")
+				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
