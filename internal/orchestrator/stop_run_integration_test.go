@@ -68,7 +68,7 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	if receipt.TerminalState != store.WorkAttemptTerminalOperatorStopped || receipt.Phase != "operator_stop_succeeded" {
 		t.Fatalf("work attempt = %#v, want successful operator stop", receipt)
 	}
-	timeline, err := runtimeStore.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{IssueID: issue.ID})
+	timeline, err := runtimeStore.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: issue.ID})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}
@@ -233,7 +233,7 @@ func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
 		t.Fatalf("tracker operations = %#v, want first priority before first state", operations)
 	}
 	waitForOperatorStopRunnerIssue(t, runner.started, issue.ID)
-	timeline, err := runtimeStore.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{IssueID: issue.ID})
+	timeline, err := runtimeStore.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: issue.ID})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}

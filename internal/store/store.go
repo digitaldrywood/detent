@@ -32,7 +32,10 @@ const (
 
 const defaultBusyTimeout = 5 * time.Second
 
-var ErrNotFound = errors.New("store record not found")
+var (
+	ErrNotFound        = errors.New("store record not found")
+	ErrProjectRequired = errors.New("project_id is required")
+)
 
 type Config struct {
 	Backend     Backend
@@ -142,6 +145,10 @@ type WorkAttemptStore interface {
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type IssueSchedulerDecisionStore interface {
+	ListIssueSchedulerDecisions(context.Context, IssueSchedulerDecisionQuery) ([]SchedulerDecision, error)
 }
 
 type WorkAttemptCapacityReleaseStore interface {
@@ -710,6 +717,11 @@ type SchedulerDecisionQuery struct {
 	Limit     int
 }
 
+type IssueSchedulerDecisionQuery struct {
+	Identity IssueIdentity
+	Limit    int
+}
+
 type WorkflowMetricsQuery struct {
 	ProjectID string
 	From      time.Time
@@ -855,6 +867,7 @@ type CycleTimeBucket struct {
 }
 
 type IssueIdentity struct {
+	ProjectID  string
 	IssueID    string
 	Identifier string
 	IssueURL   string
@@ -888,6 +901,7 @@ type IssueActivityEvent struct {
 }
 
 type IssueAgentSession struct {
+	ProjectID         string
 	DetentSessionID   int64
 	ProviderThreadID  string
 	ProviderSessionID string

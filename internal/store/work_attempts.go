@@ -418,6 +418,39 @@ func (s *sqliteStore) ListRecentSchedulerDecisions(ctx context.Context, query Sc
 	return decisions, nil
 }
 
+func (s *sqliteStore) ListIssueSchedulerDecisions(ctx context.Context, query IssueSchedulerDecisionQuery) ([]SchedulerDecision, error) {
+	identity := normalizeIssueIdentity(query.Identity)
+	if identity.ProjectID == "" {
+		return nil, ErrProjectRequired
+	}
+	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
+		return []SchedulerDecision{}, nil
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = defaultSchedulerDecisionLimit
+	}
+	rows, err := s.queries.ListIssueSchedulerDecisions(ctx, sqlc.ListIssueSchedulerDecisionsParams{
+		ProjectID:  identity.ProjectID,
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+		Limit:      int64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing issue scheduler decisions: %w", err)
+	}
+	decisions := make([]SchedulerDecision, 0, len(rows))
+	for _, row := range rows {
+		decision, err := schedulerDecisionFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
+}
+
 func workAttemptsFromRows(rows []sqlc.WorkAttempt) ([]WorkAttempt, error) {
 	attempts := make([]WorkAttempt, 0, len(rows))
 	for _, row := range rows {

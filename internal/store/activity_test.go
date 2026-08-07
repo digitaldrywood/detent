@@ -146,6 +146,7 @@ func TestLatestIssueAgentSessionIncludesTerminalFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			issueID := "issue-history-" + tt.name
 			sessionID, err := backend.StartSession(ctx, SessionStart{
+				ProjectID:        "detent",
 				IssueID:          issueID,
 				Identifier:       "digitaldrywood/detent#" + tt.name,
 				StartedAt:        base.Add(time.Duration(index) * time.Minute),
@@ -162,7 +163,7 @@ func TestLatestIssueAgentSessionIncludesTerminalFailures(t *testing.T) {
 				t.Fatalf("FinishSession() error = %v", err)
 			}
 
-			got, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, IssueIdentity{IssueID: issueID})
+			got, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, IssueIdentity{ProjectID: "detent", IssueID: issueID})
 			if err != nil {
 				t.Fatalf("LatestIssueAgentSession() error = %v", err)
 			}

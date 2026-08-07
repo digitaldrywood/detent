@@ -247,7 +247,7 @@ func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
 		!got.TransitionAt.Equal(transitionAt) {
 		t.Fatalf("accepted proposal = %#v", got)
 	}
-	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{IssueID: proposal.IssueID})
+	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: proposal.ProjectID, IssueID: proposal.IssueID})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}

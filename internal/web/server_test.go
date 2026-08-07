@@ -9949,11 +9949,15 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 	}
 
 	missing := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline", http.StatusBadRequest)
+	if got := nestedString(t, missing, "error", "code"); got != "missing_project_id" {
+		t.Fatalf("error.code = %q, want missing_project_id", got)
+	}
+	missing = requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline?project_id=detent", http.StatusBadRequest)
 	if got := nestedString(t, missing, "error", "code"); got != "missing_issue_identity" {
 		t.Fatalf("error.code = %q, want missing_issue_identity", got)
 	}
 
-	payload := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline?identifier=digitaldrywood/detent%23722", http.StatusOK)
+	payload := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline?project_id=detent&identifier=digitaldrywood/detent%23722", http.StatusOK)
 	events := payload["events"].([]any)
 	if len(events) != 1 {
 		t.Fatalf("events len = %d, want 1", len(events))

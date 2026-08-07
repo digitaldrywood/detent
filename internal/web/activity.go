@@ -568,7 +568,7 @@ func (s *Server) latestIssueAgentSession(ctx context.Context, issue telemetry.Is
 	if !ok {
 		return store.IssueAgentSession{}, store.ErrNotFound
 	}
-	return activityStore.LatestIssueAgentSession(ctx, store.IssueIdentity{IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
+	return activityStore.LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
 }
 
 func boardSessionEvent(event activity.Event) templates.BoardSessionEvent {

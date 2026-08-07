@@ -269,6 +269,7 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1156", Title: "Closed transcript", State: "Done"}
 	backend := openWebTestStore(t)
 	sessionID, err := backend.StartSession(ctx, store.SessionStart{
+		ProjectID:        issue.ProjectID,
 		IssueID:          issue.ID,
 		Identifier:       issue.Identifier,
 		IssueURL:         issue.URL,

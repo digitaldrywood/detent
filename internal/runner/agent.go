@@ -292,6 +292,7 @@ func (r *Runner) IssueBudgetStatus(ctx context.Context, issue connector.Issue) (
 	}
 
 	status, err := provider.IssueStatus(ctx, store.IssueIdentity{
+		ProjectID:  r.projectID,
 		IssueID:    issue.ID,
 		Identifier: issue.Identifier,
 		IssueURL:   issue.URL,

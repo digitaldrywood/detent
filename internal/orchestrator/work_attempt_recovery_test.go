@@ -106,6 +106,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	issue := recoveryTestIssue()
 	attemptID := startRecoveryWorkAttempt(t, ctx, runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-10*time.Minute))
 	sessionID, err := runtimeStore.StartSession(ctx, store.SessionStart{
+		ProjectID:        "detent",
 		IssueID:          issue.ID,
 		Identifier:       issue.Identifier,
 		IssueURL:         issue.URL,
@@ -279,7 +280,7 @@ func recoveryTimelineEvent(
 ) store.WorkflowPhaseEvent {
 	t.Helper()
 
-	timeline, err := runtimeStore.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: issueID})
+	timeline, err := runtimeStore.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "detent", IssueID: issueID})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}

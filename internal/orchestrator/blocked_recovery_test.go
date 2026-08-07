@@ -327,7 +327,7 @@ func TestObservedStructuredBlockedRecoveryReasonAuthorizesRecovery(t *testing.T)
 	if _, ok := transitioned[after.ID]; !ok {
 		t.Fatalf("transitioned[%q] missing", after.ID)
 	}
-	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{IssueID: after.ID})
+	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: after.ID})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}
@@ -644,6 +644,7 @@ func metricsTimeline(
 	t.Helper()
 
 	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{
+		ProjectID:  defaultWorkflowMetricsProjectID,
 		IssueID:    issue.ID,
 		Identifier: issue.Identifier,
 		IssueURL:   issue.URL,

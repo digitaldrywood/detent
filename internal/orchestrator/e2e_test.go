@@ -134,7 +134,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 		t.Fatalf("agent-output.txt = %q, want done", got)
 	}
 
-	spend, err := storeBackend.IssueTokenSpend(ctx, store.IssueIdentity{Identifier: issue.Identifier})
+	spend, err := storeBackend.IssueTokenSpend(ctx, store.IssueIdentity{ProjectID: "detent", Identifier: issue.Identifier})
 	if err != nil {
 		t.Fatalf("IssueTokenSpend() error = %v", err)
 	}

@@ -174,6 +174,7 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 	if capActive(effective.PerIssueMaxUSD) {
 		currentSpend := 0.0
 		identity := store.IssueIdentity{
+			ProjectID:  c.cfg.ProjectID,
 			IssueID:    req.IssueID,
 			Identifier: req.Identifier,
 			IssueURL:   req.IssueURL,
@@ -231,6 +232,9 @@ func (c *Checker) IssueStatus(ctx context.Context, identity store.IssueIdentity)
 	}
 	if missingSpendStore(c.spend) {
 		return IssueStatus{}, ErrMissingSpendStore
+	}
+	if strings.TrimSpace(identity.ProjectID) == "" {
+		identity.ProjectID = c.cfg.ProjectID
 	}
 
 	issueSpend, err := c.spend.IssueTokenSpend(ctx, identity)

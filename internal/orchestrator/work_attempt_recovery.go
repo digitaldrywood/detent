@@ -376,6 +376,7 @@ func (o *Orchestrator) latestWorkAttemptResumeState(ctx context.Context, attempt
 		return nil, false
 	}
 	state, err := o.agentResume.LatestIssueAgentResumeState(ctx, store.IssueIdentity{
+		ProjectID:  attempt.ProjectID,
 		IssueID:    attempt.IssueID,
 		Identifier: attempt.Identifier,
 		IssueURL:   attempt.IssueURL,
