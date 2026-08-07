@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
@@ -107,13 +108,14 @@ func (u Update) NormalizedCheckIntervalHours() int {
 }
 
 type Settings struct {
-	MaxConcurrentAgents int            `yaml:"max_concurrent_agents"`
-	Scheduling          string         `yaml:"scheduling"`
-	AgentPools          []AgentPool    `yaml:"agent_pools,omitempty"`
-	Identity            Identity       `yaml:"identity,omitempty"`
-	Knowledge           Knowledge      `yaml:"knowledge,omitempty"`
-	FairShare           map[string]any `yaml:"fair_share,omitempty"`
-	Startup             map[string]any `yaml:"startup,omitempty"`
+	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
+	Scheduling          string              `yaml:"scheduling"`
+	AgentPools          []AgentPool         `yaml:"agent_pools,omitempty"`
+	ActiveHours         *activehours.Config `yaml:"active_hours,omitempty"`
+	Identity            Identity            `yaml:"identity,omitempty"`
+	Knowledge           Knowledge           `yaml:"knowledge,omitempty"`
+	FairShare           map[string]any      `yaml:"fair_share,omitempty"`
+	Startup             map[string]any      `yaml:"startup,omitempty"`
 }
 
 type AgentPool struct {
@@ -124,26 +126,29 @@ type AgentPool struct {
 }
 
 type Project struct {
-	ID               string              `yaml:"id"`
-	Pool             string              `yaml:"pool,omitempty"`
-	Workflow         string              `yaml:"workflow"`
-	WorkflowRef      string              `yaml:"workflow_ref,omitempty"`
-	Workdir          string              `yaml:"workdir"`
-	Color            string              `yaml:"color,omitempty"`
-	Knowledge        Knowledge           `yaml:"knowledge,omitempty"`
-	Weight           int                 `yaml:"weight"`
-	Priority         int                 `yaml:"priority"`
-	Paused           bool                `yaml:"paused,omitempty"`
-	PausedReason     string              `yaml:"paused_reason,omitempty"`
-	PausedAt         string              `yaml:"paused_at,omitempty"`
-	PausedUntilIssue string              `yaml:"paused_until_issue,omitempty"`
-	PausedUntil      string              `yaml:"paused_until,omitempty"`
-	CredentialRef    string              `yaml:"credential_ref,omitempty"`
-	Authorization    selector.Selector   `yaml:"authorization,omitempty"`
-	Intake           intakeconfig.Config `yaml:"intake,omitempty"`
-	Identity         Identity            `yaml:"-"`
-	GlobalKnowledge  Knowledge           `yaml:"-"`
-	IntakeConfigured bool                `yaml:"-"`
+	ID                       string              `yaml:"id"`
+	Pool                     string              `yaml:"pool,omitempty"`
+	Workflow                 string              `yaml:"workflow"`
+	WorkflowRef              string              `yaml:"workflow_ref,omitempty"`
+	Workdir                  string              `yaml:"workdir"`
+	Color                    string              `yaml:"color,omitempty"`
+	Knowledge                Knowledge           `yaml:"knowledge,omitempty"`
+	Weight                   int                 `yaml:"weight"`
+	Priority                 int                 `yaml:"priority"`
+	Paused                   bool                `yaml:"paused,omitempty"`
+	PausedReason             string              `yaml:"paused_reason,omitempty"`
+	PausedAt                 string              `yaml:"paused_at,omitempty"`
+	PausedUntilIssue         string              `yaml:"paused_until_issue,omitempty"`
+	PausedUntil              string              `yaml:"paused_until,omitempty"`
+	ActiveHours              *activehours.Config `yaml:"active_hours,omitempty"`
+	ActiveHoursOverrideUntil string              `yaml:"active_hours_override_until,omitempty"`
+	CredentialRef            string              `yaml:"credential_ref,omitempty"`
+	Authorization            selector.Selector   `yaml:"authorization,omitempty"`
+	Intake                   intakeconfig.Config `yaml:"intake,omitempty"`
+	Identity                 Identity            `yaml:"-"`
+	GlobalKnowledge          Knowledge           `yaml:"-"`
+	GlobalActiveHours        *activehours.Config `yaml:"-"`
+	IntakeConfigured         bool                `yaml:"-"`
 }
 
 type Identity = workflowconfig.Identity
@@ -647,6 +652,9 @@ func (c Config) Validate(opts ...Option) error {
 		problems = append(problems, "global.scheduling: must be one of "+strings.Join(schedulingModes, ", "))
 	}
 	problems = append(problems, agentPoolProblems(c.Global.AgentPools)...)
+	if c.Global.ActiveHours != nil {
+		problems = append(problems, c.Global.ActiveHours.Validate("global.active_hours")...)
+	}
 	problems = append(problems, c.Global.Identity.Validate("global.identity")...)
 	problems = append(problems, startupErrors(c.Global.Startup, "global.startup")...)
 
@@ -679,6 +687,14 @@ func (c Config) Validate(opts ...Option) error {
 			problems = append(problems, prefix+".credential_ref: must not be blank")
 		}
 		problems = append(problems, pauseProjectProblems(project, prefix)...)
+		if project.ActiveHours != nil {
+			problems = append(problems, project.ActiveHours.Validate(prefix+".active_hours")...)
+		}
+		if value := strings.TrimSpace(project.ActiveHoursOverrideUntil); value != "" {
+			if _, err := time.Parse(time.RFC3339, value); err != nil {
+				problems = append(problems, prefix+".active_hours_override_until: must be an RFC 3339 timestamp")
+			}
+		}
 		problems = append(problems, project.Authorization.Validate(prefix+".authorization")...)
 	}
 	problems = append(problems, duplicateProjectIDErrorsFromProjects(c.Projects)...)
@@ -1007,6 +1023,7 @@ func globalErrors(value any) []string {
 	problems = append(problems, positiveIntegerError(global["max_concurrent_agents"], "global.max_concurrent_agents")...)
 	problems = append(problems, schedulingErrors(global["scheduling"], "global.scheduling")...)
 	problems = append(problems, agentPoolsErrors(global["agent_pools"])...)
+	problems = append(problems, activeHoursErrors(global["active_hours"], "global.active_hours")...)
 	problems = append(problems, optionalMapErrors(global, "identity")...)
 	problems = append(problems, identityErrors(global["identity"], "global.identity")...)
 	problems = append(problems, knowledgeErrors(global["knowledge"], "global.knowledge")...)
@@ -1213,6 +1230,8 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, integerError(project["priority"], prefix+".priority")...)
 	problems = append(problems, pausedErrors(project, prefix)...)
 	problems = append(problems, pauseMetadataErrors(project, prefix)...)
+	problems = append(problems, activeHoursErrors(project["active_hours"], prefix+".active_hours")...)
+	problems = append(problems, pauseTimestampErrors(project, "active_hours_override_until", prefix)...)
 	problems = append(problems, knowledgeErrors(project["knowledge"], prefix+".knowledge")...)
 	problems = append(problems, credentialRefErrors(project, prefix)...)
 	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
@@ -1845,10 +1864,19 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	var activeHours *activehours.Config
+	if attrs["active_hours"] != nil {
+		parsed, err := buildActiveHours(attrs["active_hours"], "global.active_hours")
+		if err != nil {
+			return Settings{}, err
+		}
+		activeHours = &parsed
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
 	settings.Scheduling = scheduling
 	settings.AgentPools = agentPools
+	settings.ActiveHours = activeHours
 	settings.Identity = identity
 	settings.Knowledge = knowledge
 	settings.FairShare = fairShare
@@ -1978,6 +2006,15 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			return nil, err
 		}
 		pausedUntil := pauseTimestampString(project["paused_until"])
+		var activeHours *activehours.Config
+		if project["active_hours"] != nil {
+			parsed, err := buildActiveHours(project["active_hours"], prefix+".active_hours")
+			if err != nil {
+				return nil, err
+			}
+			activeHours = &parsed
+		}
+		activeHoursOverrideUntil := pauseTimestampString(project["active_hours_override_until"])
 		credentialRef, err := optionalString(project["credential_ref"], prefix+".credential_ref")
 		if err != nil {
 			return nil, err
@@ -1996,27 +2033,58 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		}
 
 		out = append(out, Project{
-			ID:               strings.TrimSpace(id),
-			Pool:             pool,
-			Workflow:         strings.TrimSpace(workflow),
-			WorkflowRef:      strings.TrimSpace(workflowRef),
-			Workdir:          workdir,
-			Color:            color,
-			Knowledge:        knowledge,
-			Weight:           weight,
-			Priority:         priority,
-			Paused:           paused,
-			PausedReason:     strings.TrimSpace(pausedReason),
-			PausedAt:         pausedAt,
-			PausedUntilIssue: strings.TrimSpace(pausedUntilIssue),
-			PausedUntil:      pausedUntil,
-			CredentialRef:    credentialRef,
-			Authorization:    authorization,
-			Intake:           projectIntake,
-			IntakeConfigured: intakeConfigured,
+			ID:                       strings.TrimSpace(id),
+			Pool:                     pool,
+			Workflow:                 strings.TrimSpace(workflow),
+			WorkflowRef:              strings.TrimSpace(workflowRef),
+			Workdir:                  workdir,
+			Color:                    color,
+			Knowledge:                knowledge,
+			Weight:                   weight,
+			Priority:                 priority,
+			Paused:                   paused,
+			PausedReason:             strings.TrimSpace(pausedReason),
+			PausedAt:                 pausedAt,
+			PausedUntilIssue:         strings.TrimSpace(pausedUntilIssue),
+			PausedUntil:              pausedUntil,
+			ActiveHours:              activeHours,
+			ActiveHoursOverrideUntil: activeHoursOverrideUntil,
+			CredentialRef:            credentialRef,
+			Authorization:            authorization,
+			Intake:                   projectIntake,
+			IntakeConfigured:         intakeConfigured,
 		})
 	}
 	return out, nil
+}
+
+func activeHoursErrors(value any, prefix string) []string {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return []string{prefix + ": must be a mapping"}
+	}
+	var config activehours.Config
+	if err := decodeYAMLValue(value, &config); err != nil {
+		return []string{prefix + ": " + err.Error()}
+	}
+	return config.Validate(prefix)
+}
+
+func buildActiveHours(value any, prefix string) (activehours.Config, error) {
+	if _, err := mapValue(value, prefix); err != nil {
+		return activehours.Config{}, err
+	}
+	var config activehours.Config
+	if err := decodeYAMLValue(value, &config); err != nil {
+		return activehours.Config{}, fmt.Errorf("%s: %w", prefix, err)
+	}
+	config = config.Normalize()
+	if problems := config.Validate(prefix); len(problems) > 0 {
+		return activehours.Config{}, errors.New(strings.Join(problems, "; "))
+	}
+	return config, nil
 }
 
 func intakeErrors(value any, prefix string) []string {

@@ -139,18 +139,22 @@ func appLiveStatusAt(data DashboardShellData) time.Time {
 }
 
 type appShellProject struct {
-	ID       string
-	Name     string
-	Initials string
-	Href     string
-	Live     bool
-	Count    string
-	Todo     int
-	Active   int
-	Waiting  int
-	Blocked  int
-	Paused   bool
-	Selected bool
+	ID                         string
+	Name                       string
+	Initials                   string
+	Href                       string
+	Live                       bool
+	Count                      string
+	Todo                       int
+	Active                     int
+	Waiting                    int
+	Blocked                    int
+	Paused                     bool
+	Selected                   bool
+	ActiveHoursVisible         bool
+	ActiveHoursCozyLabel       string
+	ActiveHoursCompactLabel    string
+	ActiveHoursHelpDescription string
 }
 
 func appShellProjects(data DashboardShellData) []appShellProject {
@@ -174,6 +178,8 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 			Paused:   project.Paused,
 			Selected: strings.TrimSpace(data.ProjectID) == id,
 		}
+		item.ActiveHoursVisible, item.ActiveHoursCozyLabel, item.ActiveHoursCompactLabel, item.ActiveHoursHelpDescription = appProjectActiveHoursIndicator(project)
+		item.ActiveHoursVisible = item.ActiveHoursVisible && !item.Paused
 		item.Initials = appProjectInitials(item.Name, item.ID)
 		if project.Paused {
 			item.Count = "paused"
@@ -295,6 +301,9 @@ func appProjectDotKind(project appShellProject) primitives.Kind {
 	if project.Paused {
 		return primitives.KindWarn
 	}
+	if project.ActiveHoursVisible {
+		return primitives.KindNeutral
+	}
 	if project.Live {
 		return primitives.KindOK
 	}
@@ -314,6 +323,9 @@ func appProjectStatus(project appShellProject) string {
 	if project.Paused {
 		return "paused"
 	}
+	if project.ActiveHoursVisible {
+		return "off hours"
+	}
 	if project.Live {
 		return "active"
 	}
@@ -325,6 +337,53 @@ func appProjectBadgeLabel(project appShellProject) string {
 		return "paused"
 	}
 	return project.Count + " board load"
+}
+
+func appProjectActiveHoursIndicator(project ProjectSmallMultiple) (bool, string, string, string) {
+	visible, _, compact, detail := projectActiveHoursIndicator(project)
+	if !visible {
+		return false, "", "", ""
+	}
+	cozy := "Off hours"
+	if project.ActiveHours.NextOpen != nil {
+		cozy = "Off · " + compact
+	}
+	return true, cozy, compact, detail
+}
+
+func appProjectHelpScope(project appShellProject) string {
+	if project.ActiveHoursVisible {
+		return "project-active-hours"
+	}
+	return "project-load"
+}
+
+func appProjectHelpTerm(project appShellProject) string {
+	if project.ActiveHoursVisible {
+		return "sidebar-active-hours-" + project.ID
+	}
+	return "sidebar-project-" + project.ID
+}
+
+func appProjectHelpTitle(project appShellProject) string {
+	if project.ActiveHoursVisible {
+		return "Active hours · " + project.Name
+	}
+	return project.Name
+}
+
+func appProjectHelpDescription(project appShellProject) string {
+	if project.ActiveHoursVisible {
+		return project.ActiveHoursHelpDescription + " Board: " + appProjectBreakdown(project) + "."
+	}
+	return appProjectBreakdown(project)
+}
+
+func appProjectAriaLabel(project appShellProject) string {
+	if project.ActiveHoursVisible {
+		return project.Name + ", " + project.ActiveHoursCozyLabel
+	}
+	return project.Name
 }
 
 func appDensityButtonClass(data DashboardShellData, choice string) string {

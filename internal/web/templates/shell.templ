@@ -133,12 +133,12 @@ templ AppSidebarContent(data DashboardShellData) {
 					class={ appProjectLinkClass(project) }
 					data-sidebar-project={ project.ID }
 					data-help-trigger
-					data-help-scope="project-load"
-					data-help-term={ "sidebar-project-" + project.ID }
-					data-help-title={ project.Name }
-					data-help-description={ appProjectBreakdown(project) }
+					data-help-scope={ appProjectHelpScope(project) }
+					data-help-term={ appProjectHelpTerm(project) }
+					data-help-title={ appProjectHelpTitle(project) }
+					data-help-description={ appProjectHelpDescription(project) }
 					data-sidebar-project-status={ appProjectStatus(project) }
-					aria-label={ project.Name }
+					aria-label={ appProjectAriaLabel(project) }
 					{ sidebarAriaCurrent(project.Selected)... }
 				>
 					<span class="group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:right-0 group-data-[rail=true]/rail:top-0 group-data-[rail=true]/rail:z-10 group-data-[rail=true]/rail:grid group-data-[rail=true]/rail:size-2.5 group-data-[rail=true]/rail:place-items-center group-data-[rail=true]/rail:rounded-full group-data-[rail=true]/rail:bg-page" data-sidebar-project-activity={ boardBoolAttr(project.Live) }>
@@ -146,7 +146,13 @@ templ AppSidebarContent(data DashboardShellData) {
 					</span>
 					<span class="hidden size-7 place-items-center rounded-card border border-line bg-elev font-mono text-2xs font-semibold text-text group-data-[rail=true]/rail:grid" aria-hidden="true" data-sidebar-project-identity>{ project.Initials }</span>
 					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden" data-sidebar-project-label>{ project.Name }</span>
-					if project.Count != "" {
+					if project.ActiveHoursVisible {
+						<span class="inline-flex h-5 max-w-24 flex-none items-center gap-0.5 rounded-chip bg-elev px-1 font-mono text-[10px] font-medium text-sec group-data-[rail=true]/rail:hidden" data-sidebar-project-active-hours aria-label={ project.ActiveHoursCozyLabel }>
+							@icon.ClockCheck(icon.Props{Class: "size-3 shrink-0"})
+							<span class="truncate" data-active-hours-label="cozy">{ project.ActiveHoursCozyLabel }</span>
+							<span data-active-hours-label="compact">{ project.ActiveHoursCompactLabel }</span>
+						</span>
+					} else if project.Count != "" {
 						<span class={ appProjectCountClass(project) } data-sidebar-project-badge data-sidebar-project-blocked={ boardBoolAttr(project.Blocked > 0) } aria-label={ appProjectBadgeLabel(project) }>{ project.Count }</span>
 					}
 				</a>

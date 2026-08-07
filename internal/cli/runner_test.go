@@ -103,7 +103,7 @@ func TestProjectSnapshotMetadataIncludesAgentPool(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := projectSnapshotMetadataFromConfig(globalconfig.Project{ID: "detent", Pool: tt.pool})
+			got := projectSnapshotMetadataFromConfig(globalconfig.Project{ID: "detent", Pool: tt.pool}, time.Now())
 			if got.Pool != tt.want {
 				t.Fatalf("projectSnapshotMetadataFromConfig().Pool = %q, want %q", got.Pool, tt.want)
 			}

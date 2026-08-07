@@ -21,6 +21,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -572,14 +573,27 @@ func backfillRuntimeSessionProjects(
 }
 
 func globalProjectCandidates(projects []globalconfig.Project) []scheduler.ProjectCandidate {
+	return globalProjectCandidatesWithDefault(projects, nil)
+}
+
+func globalProjectCandidatesWithDefault(projects []globalconfig.Project, defaultActiveHours *activehours.Config) []scheduler.ProjectCandidate {
 	candidates := make([]scheduler.ProjectCandidate, 0, len(projects))
-	for _, project := range projects {
+	for _, projectConfig := range projects {
+		activeHours := activehours.Config{}
+		if projectConfig.ActiveHours != nil {
+			activeHours = projectConfig.ActiveHours.Normalize()
+		} else if defaultActiveHours != nil {
+			activeHours = defaultActiveHours.Normalize()
+		}
+		overrideUntil := activehours.ParsePersistedOverride(projectConfig.ActiveHoursOverrideUntil)
 		candidates = append(candidates, scheduler.ProjectCandidate{
-			ID:       project.ID,
-			Pool:     project.Pool,
-			Weight:   project.Weight,
-			Priority: project.Priority,
-			Paused:   project.Paused,
+			ID:                       projectConfig.ID,
+			Pool:                     projectConfig.Pool,
+			Weight:                   projectConfig.Weight,
+			Priority:                 projectConfig.Priority,
+			Paused:                   projectConfig.Paused,
+			ActiveHours:              activeHours,
+			ActiveHoursOverrideUntil: overrideUntil,
 		})
 	}
 	return candidates
@@ -591,6 +605,11 @@ func syncGlobalDispatchProjects(
 	registry *project.Registry,
 ) {
 	candidates := globalProjectCandidates(projects)
+	for index, candidate := range candidates {
+		if runtimeProject, ok := registry.Get(project.ID(candidate.ID)); ok {
+			candidates[index] = runtimeProject.DispatchCandidate()
+		}
+	}
 	gate.SetProjects(candidates)
 	for _, candidate := range candidates {
 		if candidate.Paused {
@@ -1189,7 +1208,7 @@ func buildGlobalDispatchPools(
 	if err != nil {
 		return nil, err
 	}
-	registry, err := scheduler.NewPoolRegistry(pools, globalProjectCandidates(cfg.Projects))
+	registry, err := scheduler.NewPoolRegistry(pools, globalProjectCandidatesWithDefault(cfg.Projects, cfg.Global.ActiveHours))
 	if err != nil {
 		return nil, fmt.Errorf("create agent pools: %w", err)
 	}
@@ -1257,7 +1276,7 @@ func applyGlobalRuntimeConfig(
 	if err != nil {
 		return err
 	}
-	if err := gate.Reconfigure(pools, globalProjectCandidates(cfg.Projects)); err != nil {
+	if err := gate.Reconfigure(pools, globalProjectCandidatesWithDefault(cfg.Projects, cfg.Global.ActiveHours)); err != nil {
 		return fmt.Errorf("reconfigure agent pools: %w", err)
 	}
 	if logLevel != nil {

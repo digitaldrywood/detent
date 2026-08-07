@@ -304,6 +304,92 @@ projects:
 	}
 }
 
+func TestReadParsesAndValidatesActiveHours(t *testing.T) {
+	paths := createProjectFiles(t)
+	tests := []struct {
+		name        string
+		global      string
+		project     string
+		wantProblem string
+	}{
+		{
+			name: "global default and project override",
+			global: `
+  active_hours:
+    timezone: America/Chicago
+    windows:
+      - Mon-Sun 22:00-06:00`,
+			project: `
+    active_hours:
+      timezone: America/New_York
+      windows:
+        - Mon-Fri 21:00-05:00
+    active_hours_override_until: 2026-08-08T02:00:00Z`,
+		},
+		{
+			name: "windows without timezone",
+			project: `
+    active_hours:
+      windows:
+        - Mon-Sun 22:00-06:00`,
+			wantProblem: "projects[0].active_hours.timezone: is required",
+		},
+		{
+			name: "malformed window",
+			global: `
+  active_hours:
+    timezone: UTC
+    windows:
+      - weekdays overnight`,
+			wantProblem: "global.active_hours.windows[0]",
+		},
+		{
+			name: "invalid override timestamp",
+			project: `
+    active_hours_override_until: tomorrow`,
+			wantProblem: "active_hours_override_until: must be an RFC 3339 timestamp",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(paths.root, strings.ReplaceAll(test.name, " ", "-")+".yaml")
+			writeFile(t, path, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted`+test.global+`
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 1
+    priority: 0`+test.project+`
+`)
+
+			cfg, err := Read(path, WithHome(paths.home))
+			if test.wantProblem != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantProblem) {
+					t.Fatalf("Read() error = %v, want containing %q", err, test.wantProblem)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Read() error = %v", err)
+			}
+			if cfg.Global.ActiveHours == nil || cfg.Global.ActiveHours.Timezone != "America/Chicago" {
+				t.Fatalf("Global.ActiveHours = %#v", cfg.Global.ActiveHours)
+			}
+			if cfg.Projects[0].ActiveHours == nil || cfg.Projects[0].ActiveHours.Timezone != "America/New_York" {
+				t.Fatalf("Project.ActiveHours = %#v", cfg.Projects[0].ActiveHours)
+			}
+			if got := cfg.Projects[0].ActiveHoursOverrideUntil; got != "2026-08-08T02:00:00Z" {
+				t.Fatalf("ActiveHoursOverrideUntil = %q", got)
+			}
+		})
+	}
+}
+
 func TestReadValidatesUpdateSettings(t *testing.T) {
 	t.Parallel()
 

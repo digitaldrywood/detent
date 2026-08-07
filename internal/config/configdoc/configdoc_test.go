@@ -50,6 +50,9 @@ func TestConfigDocumentation(t *testing.T) {
 			if !strings.Contains(content, "backlog_admission.schedule") {
 				t.Errorf("%s does not include backlog_admission.schedule", name)
 			}
+			if !strings.Contains(content, "active_hours.timezone") || !strings.Contains(content, "active_hours.windows") {
+				t.Errorf("%s does not include active-hours child fields", name)
+			}
 			if !strings.Contains(content, "valid five-field cron expression") {
 				t.Errorf("%s does not include backlog admission cron validation", name)
 			}

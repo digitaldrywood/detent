@@ -150,6 +150,22 @@ optionally inserts a plan-review stop before implementation.
 ### Operations, budgets, and observability
 
 `server` controls the project dashboard bind and Kanban mutation policy.
+`active_hours` optionally limits new agent dispatches to recurring weekday and
+wall-clock spans in a required IANA timezone. Use window values such as
+`Mon-Fri 22:00-06:00`; ranges that end before their start wrap past
+midnight, and `00:00-24:00` covers a full day. A project entry in `global.yaml`
+overrides `global.active_hours`, and either host-local value overrides the
+project's checked-in setting. Window close drains existing agents instead of
+stopping them.
+
+Detent evaluates membership on each scheduler tick, preserving local
+wall-clock hours through daylight-saving changes and restarts. Spring forward
+can shorten a wrapping window by one hour, while fall back can lengthen it by
+one hour. `detent doctor` previews opening and closing times in both the named
+timezone and UTC. A temporary `detent resume <id> --for <duration>` override
+admits work outside the window until its persisted expiry; manual pause remains
+the stronger, independent gate.
+
 `observability` controls dashboard refresh, efficiency anomaly thresholds, and
 optional OTLP export. `budget` is the project-wide spend policy;
 `agent.budget` can further constrain agent sessions. `release` enables
@@ -243,6 +259,9 @@ rendering and fails on drift.
 
 | Key | Type | Default | Required | Validation |
 | --- | --- | --- | --- | --- |
+| `active_hours` | `object` | `see child fields` | Conditional | .timezone: is required when active_hours is set<br>.timezone: must be a valid IANA timezone<br>.windows: must contain at least one recurring window |
+| `active_hours.timezone` | `string` | `none` | No | None |
+| `active_hours.windows` | `list<string>` | `[]` | No | values: must use <WEEKDAY-FROM>-<WEEKDAY-TO> <HH>:<MM>-<HH>:<MM> |
 | `agent` | `object` | `see child fields` | No | None |
 | `agent.auto_promote` | `object` | `see child fields` | No | None |
 | `agent.auto_promote.allowed_issue_labels` | `list<string>` | `[]` | No | labels must not be blank |
@@ -487,7 +506,7 @@ rendering and fails on drift.
 | `observability.staleness.lanes[].threshold_hours` | `integer` | `72` | No | must be greater than 0 |
 | `observability.staleness.no_completion_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.no_merge_hours` | `integer` | `12` | No | must be greater than 0 |
-| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","reserved_for_higher_priority_project"]` | No | None |
+| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","reserved_for_higher_priority_project"]` | No | None |
 | `observability.staleness.repeated_decision_count` | `integer` | `20` | No | must be greater than 0 |
 | `observability.staleness.repeated_window_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.webhook` | `object` | `see child fields` | No | None |

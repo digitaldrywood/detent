@@ -365,6 +365,18 @@
   display: none;
 }
 
+[data-active-hours-label="compact"] {
+  display: none;
+}
+
+[data-density="compact"] [data-active-hours-label="cozy"] {
+  display: none;
+}
+
+[data-density="compact"] [data-active-hours-label="compact"] {
+  display: inline;
+}
+
 [data-density="comfy"] [data-board-card-content="comfy"] {
   display: grid;
 }

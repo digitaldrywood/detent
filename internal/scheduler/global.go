@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -28,11 +29,17 @@ type GlobalScheduler interface {
 }
 
 type ProjectCandidate struct {
-	ID       string
-	Pool     string
-	Weight   int
-	Priority int
-	Paused   bool
+	ID                       string
+	Pool                     string
+	Weight                   int
+	Priority                 int
+	Paused                   bool
+	ActiveHours              activehours.Config
+	ActiveHoursOverrideUntil time.Time
+}
+
+func (p ProjectCandidate) ActiveHoursStatus(now time.Time) (activehours.Status, error) {
+	return activehours.Evaluate(p.ActiveHours, now, p.ActiveHoursOverrideUntil)
 }
 
 type RunningProject struct {

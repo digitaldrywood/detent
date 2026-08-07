@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -56,6 +57,52 @@ func TestManagerDisabledRegistersNoSchedule(t *testing.T) {
 	if err := manager.Run(ctx); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+}
+
+func TestManagerUpdateProjectCandidate(t *testing.T) {
+	t.Parallel()
+
+	manager, err := New(Settings{
+		ProjectID: "detent",
+		Config:    config.BacklogAdmission{Enabled: false},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	windows := []string{"Mon-Fri 22:00-06:00"}
+	manager.UpdateProjectCandidate(scheduler.ProjectCandidate{
+		ID: " alpha ",
+		ActiveHours: activehours.Config{
+			Timezone: " America/Chicago ",
+			Windows:  windows,
+		},
+	})
+	windows[0] = "Sat-Sun 00:00-24:00"
+
+	manager.mu.RLock()
+	got := cloneSettings(manager.settings).ProjectCandidate
+	manager.mu.RUnlock()
+	want := scheduler.ProjectCandidate{
+		ID: "alpha",
+		ActiveHours: activehours.Config{
+			Timezone: "America/Chicago",
+			Windows:  []string{"Mon-Fri 22:00-06:00"},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ProjectCandidate = %#v, want %#v", got, want)
+	}
+
+	manager.UpdateProjectCandidate(scheduler.ProjectCandidate{})
+	manager.mu.RLock()
+	got = manager.settings.ProjectCandidate
+	manager.mu.RUnlock()
+	if got.ID != "detent" {
+		t.Fatalf("ProjectCandidate.ID = %q, want detent", got.ID)
+	}
+
+	var missing *Manager
+	missing.UpdateProjectCandidate(scheduler.ProjectCandidate{})
 }
 
 func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {

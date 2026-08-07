@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -246,6 +247,9 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "scheduling", field: "global.scheduling", mutate: func(cfg *globalconfig.Config) { cfg.Global.Scheduling = globalconfig.SchedulingRoundRobin }},
 		{name: "agent pools", field: "global.agent_pools", mutate: func(cfg *globalconfig.Config) {
 			cfg.Global.AgentPools = []globalconfig.AgentPool{{Name: "video", MaxConcurrentAgents: 4}}
+		}},
+		{name: "active hours", field: "global.active_hours", mutate: func(cfg *globalconfig.Config) {
+			cfg.Global.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Sun 22:00-06:00"}}
 		}},
 		{name: "identity", field: "global.identity", mutate: func(cfg *globalconfig.Config) {
 			cfg.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}

@@ -28,6 +28,10 @@ update:
 global:
   max_concurrent_agents: 8
   scheduling: weighted
+  active_hours:
+    timezone: America/Chicago
+    windows:
+      - Mon-Sun 22:00-06:00
   agent_pools:
     - name: code
       max_concurrent_agents: 5
@@ -50,6 +54,11 @@ projects:
     color: "#1192e8"
     weight: 2
     priority: 1
+    active_hours:
+      timezone: America/Chicago
+      windows:
+        - Mon-Fri 22:00-06:00
+        - Sat-Sun 00:00-24:00
   - id: website
     workflow: /absolute/path/to/website/WORKFLOW.md
     workdir: /absolute/path/to/website
@@ -173,6 +182,7 @@ detent pause <id> \
   --reason "maintenance" \
   --until 2026-08-01T12:00:00Z
 detent unpause <id>
+detent resume <id> --for 2h
 detent promote <id> --priority 1
 detent remove-project <id>
 ```
@@ -195,19 +205,48 @@ before dispatch resumes, so edits made while paused take effect on unpause. If
 the current workflow cannot be loaded or prepared, unpause returns the error and
 the project remains paused.
 
+`active_hours` limits new agent dispatches to recurring wall-clock windows. It
+may be set as a `global.active_hours` default, overridden by
+`projects[].active_hours`, or placed in the project's `detent.yaml`. Host-local
+`global.yaml` policy wins over project configuration. Every configured policy
+requires an IANA `timezone` and one or more windows in
+`Mon-Sun HH:MM-HH:MM` form. Weekday ranges are inclusive, `00:00-24:00`
+represents a full day, and a range such as `22:00-06:00` wraps into the next
+morning.
+
+The gate is evaluated as a span on every dispatch decision, so a restart inside
+a window admits work immediately and a restart outside it stays idle. At window
+close Detent drains: running agents continue, while new dispatches receive the
+benign `outside_active_window` refusal reason. Active hours never change
+`paused` or its metadata, and manual pause remains stronger than an open
+window.
+
+Window edges keep wall-clock meaning across daylight-saving changes. A
+spring-forward gap can shorten an overnight window by an hour; a fall-back
+repeat can lengthen it by an hour. Membership evaluation avoids missed or
+duplicated start events in both cases. `detent doctor` shows the next opening
+and closing in the configured timezone and UTC.
+
+Use `detent resume <id> --for 2h` or `detent resume <id> --until <RFC3339>` for
+a one-shot active-hours override. The timestamp is persisted in
+`active_hours_override_until`, admits dispatch outside the recurring window,
+and expires without another command. It does not clear a manual pause; unpause
+the project first when both gates apply.
+
 For projects whose workflow file is already present on the target branch, you
 can include `--workflow-ref origin/main` during registration or add
 `workflow_ref: origin/main` to the project entry later.
 
 | Field | Reload behavior |
 | --- | --- |
-| Project list and project settings | Live reload |
+| Project list and project settings, including active hours and overrides | Live reload |
 | Credentials: `github_token` and project credentials | Live reload |
 | `dashboard_access` mode, token, and write access | Live reload; token changes invalidate private dashboard sessions |
 | `auth` | Restart required; persisted sessions remain valid until their configured expiry |
 | `global.startup` | Live reload |
 | `instance_name` | Live reload |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
+| `global.active_hours` | Live reload at the next dispatch decision; running agents drain when a window closes |
 | `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
 | `log_level` | Live reload |
 | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |

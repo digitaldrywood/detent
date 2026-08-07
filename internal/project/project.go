@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/admission"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -136,6 +137,7 @@ type Project struct {
 	id                        ID
 	cfg                       globalconfig.Project
 	workflow                  workflowconfig.Workflow
+	workflowActiveHours       activehours.Config
 	githubToken               string
 	connector                 connector.Connector
 	connectorFactory          ConnectorFactory
@@ -157,6 +159,7 @@ type Project struct {
 	workflowReconcileInterval time.Duration
 
 	mu              sync.Mutex
+	configMu        sync.Mutex
 	cancel          context.CancelFunc
 	done            chan struct{}
 	runErr          error
@@ -183,6 +186,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
+	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, deps.GitHubToken)
 	if err := workflow.Config.Validate(); err != nil {
@@ -284,7 +288,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Issues:             admissionIssueStore(projectConnector),
 		Scheduler:          projectScheduler,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
-		ProjectCandidate:   projectSchedulerCandidate(cfg.Project),
+		ProjectCandidate:   projectSchedulerCandidate(cfg.Project, workflow.Config),
 		TerminalStates:     workflow.Config.Tracker.TerminalStates,
 		ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
 	}, deps.AdmissionStore, logger, nil)
@@ -345,6 +349,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		id:                        id,
 		cfg:                       cfg.Project,
 		workflow:                  workflow,
+		workflowActiveHours:       workflowActiveHours,
 		githubToken:               strings.TrimSpace(deps.GitHubToken),
 		connector:                 projectConnector,
 		connectorFactory:          connectorFactory,
@@ -394,6 +399,58 @@ func (p *Project) Workflow() workflowconfig.Workflow {
 	defer p.mu.Unlock()
 
 	return p.workflow
+}
+
+func (p *Project) ActiveHoursStatus(now time.Time) (activehours.Status, error) {
+	if p == nil {
+		return activehours.Status{}, nil
+	}
+	p.mu.Lock()
+	candidate := p.orchConfig.Project
+	p.mu.Unlock()
+	return candidate.ActiveHoursStatus(now)
+}
+
+func (p *Project) DispatchCandidate() scheduler.ProjectCandidate {
+	if p == nil {
+		return scheduler.ProjectCandidate{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.orchConfig.Project
+}
+
+func (p *Project) updateActiveHours(ctx context.Context, cfg globalconfig.Project) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
+
+	p.mu.Lock()
+	workflow := p.workflow
+	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
+	runtimeConfig := projectOrchestratorConfig(cfg, workflow.Config)
+	projectOrchestrator := p.orchestrator
+	running := p.done != nil
+	projectAdmission := p.admission
+	p.mu.Unlock()
+
+	if projectOrchestrator != nil && running {
+		if err := projectOrchestrator.UpdateConfig(ctx, runtimeConfig); err != nil {
+			return fmt.Errorf("update project active hours: %w", err)
+		}
+	}
+	if projectAdmission != nil {
+		projectAdmission.UpdateProjectCandidate(runtimeConfig.Project)
+	}
+
+	p.mu.Lock()
+	p.cfg = cfg
+	p.workflow = workflow
+	p.orchConfig = runtimeConfig
+	p.mu.Unlock()
+	return nil
 }
 
 func (p *Project) WorkflowSourceStatus() WorkflowSourceStatus {
@@ -1183,6 +1240,9 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 }
 
 func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
+
 	if update.Err != nil {
 		return p.workflowReloadError("workflow reload failed", update.Path, update.Err)
 	}
@@ -1202,6 +1262,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
+	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 	if err := workflow.Config.Validate(); err != nil {
@@ -1330,7 +1391,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Issues:             admissionIssueStore(projectConnector),
 			Scheduler:          projectScheduler,
 			GlobalDispatchGate: globalDispatchGate,
-			ProjectCandidate:   projectSchedulerCandidate(projectConfig),
+			ProjectCandidate:   projectSchedulerCandidate(projectConfig, workflow.Config),
 			TerminalStates:     workflow.Config.Tracker.TerminalStates,
 			ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
 		}); err != nil {
@@ -1341,6 +1402,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.mu.Lock()
 	previousRetroProduct := p.retroProduct
 	p.workflow = workflow
+	p.workflowActiveHours = workflowActiveHours
 	p.workflowSource.Hash = workflow.SourceHash
 	p.workflowSource.Revision = workflow.Definition.Revision
 	p.workflowSource.Layout = workflow.Definition.Layout
@@ -1408,12 +1470,15 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	cfg.Project = scheduler.ProjectCandidate{
-		ID:       project.ID,
-		Pool:     project.Pool,
-		Weight:   project.Weight,
-		Priority: project.Priority,
-		Paused:   project.Paused,
+		ID:                       project.ID,
+		Pool:                     project.Pool,
+		Weight:                   project.Weight,
+		Priority:                 project.Priority,
+		Paused:                   project.Paused,
+		ActiveHours:              workflow.ActiveHours,
+		ActiveHoursOverrideUntil: overrideUntil,
 	}
 	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
 	if lessonPath == "" {
@@ -1436,6 +1501,7 @@ func workflowConfigWithProjectIdentity(
 		workflow.Intake = project.Intake
 		workflow.Intake.Normalize()
 	}
+	workflow.ActiveHours = EffectiveActiveHours(project, workflow.ActiveHours)
 	workflow = workflowConfigWithProjectPaths(project, workflow)
 	if workflow.Agent.Knowledge.Enabled {
 		workflow.Agent.Knowledge = workflowconfig.KnowledgeWithSources(
@@ -1489,13 +1555,26 @@ func admissionIssueStore(projectConnector connector.Connector) admission.IssueSt
 	return issueStore
 }
 
-func projectSchedulerCandidate(project globalconfig.Project) scheduler.ProjectCandidate {
+func EffectiveActiveHours(project globalconfig.Project, workflow activehours.Config) activehours.Config {
+	if project.ActiveHours != nil {
+		return project.ActiveHours.Normalize()
+	}
+	if project.GlobalActiveHours != nil {
+		return project.GlobalActiveHours.Normalize()
+	}
+	return workflow.Normalize()
+}
+
+func projectSchedulerCandidate(project globalconfig.Project, workflow workflowconfig.Config) scheduler.ProjectCandidate {
+	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	return scheduler.ProjectCandidate{
-		ID:       project.ID,
-		Pool:     project.Pool,
-		Weight:   project.Weight,
-		Priority: project.Priority,
-		Paused:   project.Paused,
+		ID:                       project.ID,
+		Pool:                     project.Pool,
+		Weight:                   project.Weight,
+		Priority:                 project.Priority,
+		Paused:                   project.Paused,
+		ActiveHours:              EffectiveActiveHours(project, workflow.ActiveHours),
+		ActiveHoursOverrideUntil: overrideUntil,
 	}
 }
 

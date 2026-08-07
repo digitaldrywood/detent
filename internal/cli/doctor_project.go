@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -35,6 +36,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
 	for _, project := range cfg.Projects {
+		project.GlobalActiveHours = cfg.Global.ActiveHours
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 	}
 
@@ -183,6 +185,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
+		project.GlobalActiveHours = cfg.Global.ActiveHours
 		id := doctorProjectID(project)
 		progress := newDoctorCheckProgress()
 		jobs = append(jobs, doctorCheckJob{
@@ -241,6 +244,7 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGlobalGitHubToken(githubToken))
+	workflow.Config.ActiveHours = projectpkg.EffectiveActiveHours(project, workflow.Config.ActiveHours)
 	if err := workflow.Config.Validate(); err != nil {
 		return []doctorCheck{
 			{
@@ -262,6 +266,9 @@ func checkDoctorProjectWithProgress(
 	}
 	if pauseCheck, ok := checkDoctorProjectPause(ctx, id, project, workflow.Config, deps); ok {
 		checks = append(checks, pauseCheck)
+	}
+	if activeHoursCheck, ok := checkDoctorProjectActiveHours(id, project, workflow.Config, deps); ok {
+		checks = append(checks, activeHoursCheck)
 	}
 
 	workflowCheck := doctorCheck{
@@ -418,6 +425,64 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorProjectActiveHours(
+	id string,
+	project globalconfig.Project,
+	workflow workflowconfig.Config,
+	deps doctorDeps,
+) (doctorCheck, bool) {
+	config := projectpkg.EffectiveActiveHours(project, workflow.ActiveHours)
+	if !config.Configured() {
+		return doctorCheck{}, false
+	}
+	now := time.Now().UTC()
+	if deps.now != nil {
+		now = deps.now().UTC()
+	}
+	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
+	status, err := activehours.Evaluate(config, now, overrideUntil)
+	if err != nil {
+		return doctorCheck{
+			Name:   "Project " + id + " active hours",
+			Status: doctorFail,
+			Detail: err.Error(),
+			Hint:   "Fix active_hours in global.yaml or detent.yaml, then rerun detent doctor.",
+		}, true
+	}
+	location, err := time.LoadLocation(config.Timezone)
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	detail := fmt.Sprintf(
+		"off hours in %s; next open %s; next close %s",
+		config.Timezone,
+		doctorActiveHoursTime(status.NextOpen, location),
+		doctorActiveHoursTime(status.NextClose, location),
+	)
+	if status.WindowOpen {
+		detail = fmt.Sprintf(
+			"window open in %s; current close %s; following open %s",
+			config.Timezone,
+			doctorActiveHoursTime(status.NextClose, location),
+			doctorActiveHoursTime(status.NextOpen, location),
+		)
+	}
+	if status.OverrideActive {
+		detail = "override active until " + doctorActiveHoursTime(status.OverrideUntil, location) + "; " + detail
+	}
+	if project.Paused {
+		detail += "; manual pause still blocks dispatch"
+	}
+	return doctorCheck{Name: "Project " + id + " active hours", Status: doctorOK, Detail: detail}, true
+}
+
+func doctorActiveHoursTime(value time.Time, location *time.Location) string {
+	if value.IsZero() {
+		return "unavailable"
+	}
+	return value.In(location).Format("2006-01-02 15:04 MST") + " (" + value.UTC().Format("2006-01-02 15:04 UTC") + ")"
 }
 
 func checkDoctorProjectPause(

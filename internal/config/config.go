@@ -16,6 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -130,28 +131,29 @@ type WorkflowOverlay struct {
 }
 
 type Config struct {
-	Identity         Identity         `yaml:"identity,omitempty"`
-	Tracker          Tracker          `yaml:"tracker"`
-	Polling          Polling          `yaml:"polling"`
-	Workspace        Workspace        `yaml:"workspace"`
-	Workpad          Workpad          `yaml:"workpad,omitempty"`
-	Deliverable      Deliverable      `yaml:"deliverable,omitempty"`
-	Dependencies     Dependencies     `yaml:"dependencies,omitempty"`
-	Worker           Worker           `yaml:"worker"`
-	Agent            Agent            `yaml:"agent"`
-	Agents           Agents           `yaml:"agents"`
-	Codex            Codex            `yaml:"codex"`
-	Gate             gate.Config      `yaml:"gate"`
-	Plan             gate.PlanConfig  `yaml:"plan"`
-	Server           Server           `yaml:"server"`
-	Observability    Observability    `yaml:"observability"`
-	Budget           Budget           `yaml:"budget"`
-	Release          Release          `yaml:"release,omitempty"`
-	Hooks            Hooks            `yaml:"hooks"`
-	Intake           intake.Config    `yaml:"intake,omitempty"`
-	Retro            retro.Config     `yaml:"retro,omitempty"`
-	Routines         []Routine        `yaml:"routines,omitempty"`
-	BacklogAdmission BacklogAdmission `yaml:"backlog_admission,omitempty"`
+	Identity         Identity           `yaml:"identity,omitempty"`
+	ActiveHours      activehours.Config `yaml:"active_hours,omitempty"`
+	Tracker          Tracker            `yaml:"tracker"`
+	Polling          Polling            `yaml:"polling"`
+	Workspace        Workspace          `yaml:"workspace"`
+	Workpad          Workpad            `yaml:"workpad,omitempty"`
+	Deliverable      Deliverable        `yaml:"deliverable,omitempty"`
+	Dependencies     Dependencies       `yaml:"dependencies,omitempty"`
+	Worker           Worker             `yaml:"worker"`
+	Agent            Agent              `yaml:"agent"`
+	Agents           Agents             `yaml:"agents"`
+	Codex            Codex              `yaml:"codex"`
+	Gate             gate.Config        `yaml:"gate"`
+	Plan             gate.PlanConfig    `yaml:"plan"`
+	Server           Server             `yaml:"server"`
+	Observability    Observability      `yaml:"observability"`
+	Budget           Budget             `yaml:"budget"`
+	Release          Release            `yaml:"release,omitempty"`
+	Hooks            Hooks              `yaml:"hooks"`
+	Intake           intake.Config      `yaml:"intake,omitempty"`
+	Retro            retro.Config       `yaml:"retro,omitempty"`
+	Routines         []Routine          `yaml:"routines,omitempty"`
+	BacklogAdmission BacklogAdmission   `yaml:"backlog_admission,omitempty"`
 
 	configuredFields map[string]struct{}
 }
@@ -1422,6 +1424,7 @@ func (c *Config) Validate() error {
 	var problems []string
 
 	problems = append(problems, c.Identity.Validate("identity")...)
+	problems = append(problems, c.ActiveHours.Validate("active_hours")...)
 	c.validateTracker(&problems)
 	problems = append(problems, c.Dependencies.Validate("dependencies")...)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
@@ -1578,6 +1581,7 @@ func cloneYAMLNode(in *yaml.Node) *yaml.Node {
 
 func (c *Config) normalize() {
 	c.Identity.Normalize()
+	c.ActiveHours = c.ActiveHours.Normalize()
 	c.Tracker.Kind = strings.ToLower(strings.TrimSpace(c.Tracker.Kind))
 	if (c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal) && c.Tracker.Endpoint == defaultLinearEndpoint {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
@@ -2610,6 +2614,7 @@ func defaultStalenessRepeatedDecisionBenignReasons() []string {
 		"github_rest_capacity_paused",
 		"github_rest_recovery",
 		"global_capacity_full",
+		"outside_active_window",
 		"reserved_for_higher_priority_project",
 	}
 }

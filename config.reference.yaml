@@ -12,6 +12,12 @@
 #   ownership_mode: null
 #   # identity.owner_field | type: string | default: none | required: No | validation: must be blank when identity.ownership_mode is assignee
 #   owner_field: null
+# # active_hours | type: object | default: see child fields | required: Conditional | validation: .timezone: is required when active_hours is set; .timezone: must be a valid IANA timezone; .windows: must contain at least one recurring window
+# active_hours:
+#   # active_hours.timezone | type: string | default: none | required: No | validation: None
+#   timezone: null
+#   # active_hours.windows | type: list<string> | default: [] | required: No | validation: values: must use <WEEKDAY-FROM>-<WEEKDAY-TO> <HH>:<MM>-<HH>:<MM>
+#   windows: []
 # # tracker | type: object | default: see child fields | required: No | validation: intake.sources[].creates.status must name a configured tracker state; retro.target_state must name a configured tracker state
 # tracker:
 #   # tracker.kind | type: string | default: none | required: Yes | validation: backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it; backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift; intake.sources requires tracker.kind github; is required; must be one of github, github_local, linear, memory, local_sqlite; release.enabled requires tracker.kind github or github_local; tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite
@@ -883,8 +889,8 @@
 #     no_merge_hours: 12
 #     # observability.staleness.repeated_decision_count | type: integer | default: 20 | required: No | validation: must be greater than 0
 #     repeated_decision_count: 20
-#     # observability.staleness.repeated_decision_benign_reasons | type: list<string> | default: ["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","reserved_for_higher_priority_project"] | required: No | validation: None
-#     repeated_decision_benign_reasons: ["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","reserved_for_higher_priority_project"]
+#     # observability.staleness.repeated_decision_benign_reasons | type: list<string> | default: ["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","reserved_for_higher_priority_project"] | required: No | validation: None
+#     repeated_decision_benign_reasons: ["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","reserved_for_higher_priority_project"]
 #     # observability.staleness.repeated_window_hours | type: integer | default: 24 | required: No | validation: must be greater than 0
 #     repeated_window_hours: 24
 #     # observability.staleness.webhook | type: object | default: see child fields | required: No | validation: None

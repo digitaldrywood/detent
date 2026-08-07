@@ -2534,7 +2534,25 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 					<p class="mt-1 truncate font-mono text-xs text-sec">{ card.ActivityLabel }</p>
 				</div>
 			</div>
-			<span class="shrink-0 rounded-full bg-accent/15 px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
+			<div class="flex shrink-0 items-center gap-1.5">
+				if card.ActiveHoursVisible {
+					<button
+						type="button"
+						class="inline-flex h-7 items-center gap-1 rounded-full border border-line bg-elev px-2 font-mono text-[11px] font-medium text-sec focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+						aria-label={ card.ActiveHoursHelpTitle + ": " + card.ActiveHoursHelpDescription }
+						data-help-trigger
+						data-help-scope="project-active-hours"
+						data-help-term={ card.ActiveHoursHelpTerm }
+						data-help-title={ card.ActiveHoursHelpTitle }
+						data-help-description={ card.ActiveHoursHelpDescription }
+					>
+						@icon.ClockCheck(icon.Props{Class: "size-3.5 shrink-0"})
+						<span data-active-hours-label="cozy">{ card.ActiveHoursCozyLabel }</span>
+						<span data-active-hours-label="compact">{ card.ActiveHoursCompactLabel }</span>
+					</button>
+				}
+				<span class="shrink-0 rounded-full bg-accent/15 px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
+			</div>
 		</div>
 		if card.ExternalURL != "" {
 			<a class="mt-2 block truncate text-xs text-sec underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.ExternalURL } target="_blank" rel="noopener noreferrer">{ card.ExternalURL }</a>
