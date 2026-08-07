@@ -119,6 +119,56 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 	}
 }
 
+func TestParseWorkflowActiveHours(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		activeHours string
+		wantZone    string
+		wantProblem string
+	}{
+		{
+			name: "valid",
+			activeHours: `active_hours:
+  timezone: America/Chicago
+  windows:
+    - Mon-Fri 22:00-06:00
+`,
+			wantZone: "America/Chicago",
+		},
+		{
+			name: "missing timezone",
+			activeHours: `active_hours:
+  windows:
+    - Mon-Fri 22:00-06:00
+`,
+			wantProblem: "active_hours.timezone: is required",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte("---\n" + test.activeHours + "tracker:\n  kind: memory\n---\n"))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if test.wantProblem != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantProblem) {
+					t.Fatalf("ParseWorkflow() error = %v, want containing %q", err, test.wantProblem)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.ActiveHours.Timezone; got != test.wantZone {
+				t.Fatalf("ActiveHours.Timezone = %q, want %q", got, test.wantZone)
+			}
+		})
+	}
+}
+
 func TestLoadWorkflowWithoutOverlayPreservesExistingBehavior(t *testing.T) {
 	t.Parallel()
 
@@ -1842,6 +1892,7 @@ func TestDefaultStalenessObservability(t *testing.T) {
 		"github_rest_capacity_paused",
 		"github_rest_recovery",
 		"global_capacity_full",
+		"outside_active_window",
 		"reserved_for_higher_priority_project",
 	}
 	if got := cfg.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, wantReasons) {

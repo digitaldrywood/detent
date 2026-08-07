@@ -404,6 +404,48 @@ func TestAppSidebarContentRendersPausedProjectStatus(t *testing.T) {
 	}
 }
 
+func TestAppSidebarContentRendersActiveHoursStatus(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	nextOpen := time.Date(2026, time.June, 15, 22, 0, 0, 0, location)
+	data := DashboardShellData{Projects: []ProjectSmallMultiple{
+		{ID: "detent", Name: "Detent"},
+		{
+			ID:   "docs-site",
+			Name: "docs-site",
+			ActiveHours: telemetry.ActiveHours{
+				Configured: true,
+				Timezone:   location.String(),
+				NextOpen:   &nextOpen,
+			},
+		},
+	}}
+	var buf bytes.Buffer
+	if err := AppSidebarContent(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`data-sidebar-project="docs-site"`,
+		`data-sidebar-project-status="off hours"`,
+		`data-help-scope="project-active-hours"`,
+		`data-help-term="sidebar-active-hours-docs-site"`,
+		`data-sidebar-project-active-hours`,
+		`data-active-hours-label="cozy">Off · 22:00</span>`,
+		`data-active-hours-label="compact">22:00</span>`,
+		`aria-label="docs-site, Off · 22:00"`,
+		`In-flight agents continue draining`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("sidebar missing active-hours marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestAppShellHTMLAttributes(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
@@ -155,11 +156,47 @@ type Shutdown struct {
 }
 
 type Project struct {
-	ID          string `json:"id,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	URL         string `json:"url,omitempty"`
-	Color       string `json:"color,omitempty"`
-	Pool        string `json:"pool,omitempty"`
+	ID          string      `json:"id,omitempty"`
+	DisplayName string      `json:"display_name,omitempty"`
+	URL         string      `json:"url,omitempty"`
+	Color       string      `json:"color,omitempty"`
+	Pool        string      `json:"pool,omitempty"`
+	ActiveHours ActiveHours `json:"active_hours,omitzero"`
+}
+
+type ActiveHours struct {
+	Configured     bool       `json:"configured"`
+	WindowOpen     bool       `json:"window_open"`
+	Open           bool       `json:"open"`
+	OverrideActive bool       `json:"override_active"`
+	Timezone       string     `json:"timezone,omitempty"`
+	NextOpen       *time.Time `json:"next_open,omitempty"`
+	NextClose      *time.Time `json:"next_close,omitempty"`
+	OverrideUntil  *time.Time `json:"override_until,omitempty"`
+}
+
+func (a ActiveHours) IsZero() bool {
+	return !a.Configured && !a.WindowOpen && !a.Open && !a.OverrideActive && a.Timezone == "" && a.NextOpen == nil && a.NextClose == nil && a.OverrideUntil == nil
+}
+
+func ActiveHoursFromStatus(status activehours.Status) ActiveHours {
+	return ActiveHours{
+		Configured:     status.Configured,
+		WindowOpen:     status.WindowOpen,
+		Open:           status.Open,
+		OverrideActive: status.OverrideActive,
+		Timezone:       status.Timezone,
+		NextOpen:       activeHoursTimePointer(status.NextOpen),
+		NextClose:      activeHoursTimePointer(status.NextClose),
+		OverrideUntil:  activeHoursTimePointer(status.OverrideUntil),
+	}
+}
+
+func activeHoursTimePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 type AgentPool struct {

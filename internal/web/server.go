@@ -1090,6 +1090,16 @@ func (s *Server) projectHealth() (string, []healthProject) {
 
 	status := "ok"
 	projectHealth := s.registry.Health()
+	activeHoursByProject := make(map[string]telemetry.ActiveHours)
+	now := time.Now().UTC()
+	for _, trackedProject := range s.registry.List() {
+		if trackedProject == nil {
+			continue
+		}
+		if activeHours, err := trackedProject.ActiveHoursStatus(now); err == nil {
+			activeHoursByProject[string(trackedProject.ID())] = telemetry.ActiveHoursFromStatus(activeHours)
+		}
+	}
 	projects := make([]healthProject, 0, len(projectHealth))
 	for _, health := range projectHealth {
 		switch health.Status {
@@ -1107,6 +1117,7 @@ func (s *Server) projectHealth() (string, []healthProject) {
 			LastErrorAt:  health.LastErrorAt,
 			NextRetryAt:  health.NextRetryAt,
 			RetryStopped: health.RetryStopped,
+			ActiveHours:  activeHoursByProject[health.Project.ID],
 		})
 	}
 	return status, projects
@@ -1336,12 +1347,13 @@ type healthEnvironment struct {
 }
 
 type healthProject struct {
-	ProjectID    string    `json:"project_id"`
-	Status       string    `json:"status"`
-	LastError    string    `json:"last_error,omitempty"`
-	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
-	NextRetryAt  time.Time `json:"next_retry_at,omitzero"`
-	RetryStopped bool      `json:"retry_stopped"`
+	ProjectID    string                `json:"project_id"`
+	Status       string                `json:"status"`
+	LastError    string                `json:"last_error,omitempty"`
+	LastErrorAt  time.Time             `json:"last_error_at,omitzero"`
+	NextRetryAt  time.Time             `json:"next_retry_at,omitzero"`
+	RetryStopped bool                  `json:"retry_stopped"`
+	ActiveHours  telemetry.ActiveHours `json:"active_hours,omitzero"`
 }
 
 type healthWorkflowSource struct {

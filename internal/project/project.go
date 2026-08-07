@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/admission"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -284,7 +285,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Issues:             admissionIssueStore(projectConnector),
 		Scheduler:          projectScheduler,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
-		ProjectCandidate:   projectSchedulerCandidate(cfg.Project),
+		ProjectCandidate:   projectSchedulerCandidate(cfg.Project, workflow.Config),
 		TerminalStates:     workflow.Config.Tracker.TerminalStates,
 		ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
 	}, deps.AdmissionStore, logger, nil)
@@ -394,6 +395,25 @@ func (p *Project) Workflow() workflowconfig.Workflow {
 	defer p.mu.Unlock()
 
 	return p.workflow
+}
+
+func (p *Project) ActiveHoursStatus(now time.Time) (activehours.Status, error) {
+	if p == nil {
+		return activehours.Status{}, nil
+	}
+	p.mu.Lock()
+	candidate := p.orchConfig.Project
+	p.mu.Unlock()
+	return candidate.ActiveHoursStatus(now)
+}
+
+func (p *Project) DispatchCandidate() scheduler.ProjectCandidate {
+	if p == nil {
+		return scheduler.ProjectCandidate{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.orchConfig.Project
 }
 
 func (p *Project) WorkflowSourceStatus() WorkflowSourceStatus {
@@ -1330,7 +1350,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Issues:             admissionIssueStore(projectConnector),
 			Scheduler:          projectScheduler,
 			GlobalDispatchGate: globalDispatchGate,
-			ProjectCandidate:   projectSchedulerCandidate(projectConfig),
+			ProjectCandidate:   projectSchedulerCandidate(projectConfig, workflow.Config),
 			TerminalStates:     workflow.Config.Tracker.TerminalStates,
 			ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
 		}); err != nil {
@@ -1408,12 +1428,15 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	cfg.Project = scheduler.ProjectCandidate{
-		ID:       project.ID,
-		Pool:     project.Pool,
-		Weight:   project.Weight,
-		Priority: project.Priority,
-		Paused:   project.Paused,
+		ID:                       project.ID,
+		Pool:                     project.Pool,
+		Weight:                   project.Weight,
+		Priority:                 project.Priority,
+		Paused:                   project.Paused,
+		ActiveHours:              workflow.ActiveHours,
+		ActiveHoursOverrideUntil: overrideUntil,
 	}
 	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
 	if lessonPath == "" {
@@ -1436,6 +1459,7 @@ func workflowConfigWithProjectIdentity(
 		workflow.Intake = project.Intake
 		workflow.Intake.Normalize()
 	}
+	workflow.ActiveHours = EffectiveActiveHours(project, workflow.ActiveHours)
 	workflow = workflowConfigWithProjectPaths(project, workflow)
 	if workflow.Agent.Knowledge.Enabled {
 		workflow.Agent.Knowledge = workflowconfig.KnowledgeWithSources(
@@ -1489,13 +1513,26 @@ func admissionIssueStore(projectConnector connector.Connector) admission.IssueSt
 	return issueStore
 }
 
-func projectSchedulerCandidate(project globalconfig.Project) scheduler.ProjectCandidate {
+func EffectiveActiveHours(project globalconfig.Project, workflow activehours.Config) activehours.Config {
+	if project.ActiveHours != nil {
+		return project.ActiveHours.Normalize()
+	}
+	if project.GlobalActiveHours != nil {
+		return project.GlobalActiveHours.Normalize()
+	}
+	return workflow.Normalize()
+}
+
+func projectSchedulerCandidate(project globalconfig.Project, workflow workflowconfig.Config) scheduler.ProjectCandidate {
+	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	return scheduler.ProjectCandidate{
-		ID:       project.ID,
-		Pool:     project.Pool,
-		Weight:   project.Weight,
-		Priority: project.Priority,
-		Paused:   project.Paused,
+		ID:                       project.ID,
+		Pool:                     project.Pool,
+		Weight:                   project.Weight,
+		Priority:                 project.Priority,
+		Paused:                   project.Paused,
+		ActiveHours:              EffectiveActiveHours(project, workflow.ActiveHours),
+		ActiveHoursOverrideUntil: overrideUntil,
 	}
 }
 

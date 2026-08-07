@@ -77,6 +77,7 @@ const (
 	OperationAddProject     Operation = "add-project"
 	OperationPauseProject   Operation = "pause"
 	OperationUnpauseProject Operation = "unpause"
+	OperationResumeProject  Operation = "resume"
 	OperationPromoteProject Operation = "promote"
 	OperationRemoveProject  Operation = "remove-project"
 )
@@ -147,6 +148,12 @@ type projectPausedResult struct {
 	PausedReason     string `json:"paused_reason,omitempty"`
 	PausedUntilIssue string `json:"paused_until_issue,omitempty"`
 	PausedUntil      string `json:"paused_until,omitempty"`
+}
+
+type projectResumedResult struct {
+	Status                   string `json:"status"`
+	Project                  string `json:"project"`
+	ActiveHoursOverrideUntil string `json:"active_hours_override_until"`
 }
 
 type projectPriorityResult struct {
@@ -446,6 +453,7 @@ detent --format json config path`),
 			clearProjectPause(project)
 			return nil
 		}),
+		newResumeProjectCommand(&configPath, opts),
 		newGitHubLocalCommand(&configPath, opts),
 		newWorkItemCommand(&configPath, opts),
 		newBudgetCommand(&configPath, opts),
@@ -879,6 +887,68 @@ func validatePauseFlags(reason string, untilIssue string, until string) error {
 	return nil
 }
 
+func newResumeProjectCommand(configPath *string, opts options) *cobra.Command {
+	var duration string
+	var until string
+	cmd := &cobra.Command{
+		Use:     "resume PROJECT_ID",
+		Short:   "Temporarily allow dispatch outside active hours",
+		Example: "detent resume api --for 2h",
+		Args:    ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			now := time.Now().UTC()
+			overrideUntil, err := activeHoursOverrideDeadline(now, duration, until)
+			if err != nil {
+				return err
+			}
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationResumeProject, args[0], func(project *globalconfig.Project) error {
+				if project.Paused {
+					return WrapValidation(errors.New("project is manually paused; run detent unpause before adding an active-hours override"))
+				}
+				project.ActiveHoursOverrideUntil = overrideUntil.Format(time.RFC3339)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			return out.Write(nil, projectEditResult(OperationResumeProject, updated))
+		},
+	}
+	cmd.Flags().StringVar(&duration, "for", "", "allow dispatch for this Go duration, such as 2h")
+	cmd.Flags().StringVar(&until, "until", "", "allow dispatch until this RFC 3339 timestamp")
+	return cmd
+}
+
+func activeHoursOverrideDeadline(now time.Time, duration string, until string) (time.Time, error) {
+	duration = strings.TrimSpace(duration)
+	until = strings.TrimSpace(until)
+	if duration == "" && until == "" {
+		return time.Time{}, WrapValidation(errors.New("one of --for or --until is required"))
+	}
+	if duration != "" && until != "" {
+		return time.Time{}, WrapValidation(errors.New("--for and --until are mutually exclusive"))
+	}
+	if duration != "" {
+		parsed, err := time.ParseDuration(duration)
+		if err != nil || parsed <= 0 {
+			return time.Time{}, WrapValidation(errors.New("--for must be a positive Go duration such as 2h"))
+		}
+		return now.Add(parsed), nil
+	}
+	parsed, err := time.Parse(time.RFC3339, until)
+	if err != nil {
+		return time.Time{}, WrapValidation(errors.New("--until must be an RFC 3339 timestamp"))
+	}
+	if !parsed.After(now) {
+		return time.Time{}, WrapValidation(errors.New("--until must be in the future"))
+	}
+	return parsed, nil
+}
+
 func pauseMetadataConfigured(project globalconfig.Project) bool {
 	return strings.TrimSpace(project.PausedReason) != "" ||
 		strings.TrimSpace(project.PausedUntilIssue) != "" ||
@@ -1093,6 +1163,12 @@ func projectEditResult(operation Operation, project globalconfig.Project) any {
 			PausedReason:     project.PausedReason,
 			PausedUntilIssue: project.PausedUntilIssue,
 			PausedUntil:      project.PausedUntil,
+		}
+	case OperationResumeProject:
+		return projectResumedResult{
+			Status:                   "ok",
+			Project:                  project.ID,
+			ActiveHoursOverrideUntil: project.ActiveHoursOverrideUntil,
 		}
 	default:
 		return newProjectResult(project)

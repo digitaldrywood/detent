@@ -379,6 +379,7 @@ type ProjectSmallMultiple struct {
 	PauseReason               string
 	PauseIssue                string
 	PauseUntil                string
+	ActiveHours               telemetry.ActiveHours
 	Running                   int
 	QueueCount                int
 	Blocked                   int
@@ -412,22 +413,28 @@ type ProjectSmallMultipleSample struct {
 }
 
 type projectSmallMultipleCard struct {
-	ID              string
-	Name            string
-	Href            string
-	ExternalURL     string
-	ProjectColor    string
-	ActivityLabel   string
-	PauseDetail     string
-	RunningLabel    string
-	QueueLabel      string
-	BlockedLabel    string
-	CompletedLabel  string
-	ThroughputLabel string
-	SpendLabel      string
-	ThroughputChart SeriesChartData
-	SpendChart      SeriesChartData
-	QueueChart      SeriesChartData
+	ID                         string
+	Name                       string
+	Href                       string
+	ExternalURL                string
+	ProjectColor               string
+	ActivityLabel              string
+	PauseDetail                string
+	ActiveHoursVisible         bool
+	ActiveHoursCozyLabel       string
+	ActiveHoursCompactLabel    string
+	ActiveHoursHelpTerm        string
+	ActiveHoursHelpTitle       string
+	ActiveHoursHelpDescription string
+	RunningLabel               string
+	QueueLabel                 string
+	BlockedLabel               string
+	CompletedLabel             string
+	ThroughputLabel            string
+	SpendLabel                 string
+	ThroughputChart            SeriesChartData
+	SpendChart                 SeriesChartData
+	QueueChart                 SeriesChartData
 }
 
 type sidebarProjectItem struct {
@@ -1108,20 +1115,27 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 	for _, project := range projects {
 		name := projectSmallMultipleName(project)
 		samples := projectSmallMultipleSamples(project)
+		activeHoursVisible, activeHoursCozyLabel, activeHoursCompactLabel, activeHoursHelpDescription := projectActiveHoursIndicator(project)
 		cards = append(cards, projectSmallMultipleCard{
-			ID:              strings.TrimSpace(project.ID),
-			Name:            name,
-			Href:            projectOpenPath(project.ID),
-			ExternalURL:     strings.TrimSpace(project.URL),
-			ProjectColor:    projectColorForProject(project),
-			ActivityLabel:   projectSmallMultipleActivityLabel(project),
-			PauseDetail:     projectSmallMultiplePauseDetail(project),
-			RunningLabel:    formatCount(project.Running) + " running",
-			QueueLabel:      formatCount(project.QueueCount) + " queued",
-			BlockedLabel:    formatCount(project.Blocked) + " blocked",
-			CompletedLabel:  formatCount(project.Completed) + " sessions",
-			ThroughputLabel: formatDecimal(project.ThroughputTokensPerSecond) + " tps",
-			SpendLabel:      formatUSD(project.CurrentSpendUSD),
+			ID:                         strings.TrimSpace(project.ID),
+			Name:                       name,
+			Href:                       projectOpenPath(project.ID),
+			ExternalURL:                strings.TrimSpace(project.URL),
+			ProjectColor:               projectColorForProject(project),
+			ActivityLabel:              projectSmallMultipleActivityLabel(project),
+			PauseDetail:                projectSmallMultiplePauseDetail(project),
+			ActiveHoursVisible:         activeHoursVisible,
+			ActiveHoursCozyLabel:       activeHoursCozyLabel,
+			ActiveHoursCompactLabel:    activeHoursCompactLabel,
+			ActiveHoursHelpTerm:        "active-hours-" + boardCardSlug(project.ID),
+			ActiveHoursHelpTitle:       "Active hours · " + name,
+			ActiveHoursHelpDescription: activeHoursHelpDescription,
+			RunningLabel:               formatCount(project.Running) + " running",
+			QueueLabel:                 formatCount(project.QueueCount) + " queued",
+			BlockedLabel:               formatCount(project.Blocked) + " blocked",
+			CompletedLabel:             formatCount(project.Completed) + " sessions",
+			ThroughputLabel:            formatDecimal(project.ThroughputTokensPerSecond) + " tps",
+			SpendLabel:                 formatUSD(project.CurrentSpendUSD),
 			ThroughputChart: projectSmallMultipleChart(name+" throughput", samples, "tps", "text-accent", func(sample ProjectSmallMultipleSample) float64 {
 				return sample.ThroughputTokensPerSecond
 			}),
@@ -1134,6 +1148,30 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 		})
 	}
 	return cards
+}
+
+func projectActiveHoursIndicator(project ProjectSmallMultiple) (bool, string, string, string) {
+	active := project.ActiveHours
+	if !active.Configured || active.Open {
+		return false, "", "", ""
+	}
+	if active.NextOpen == nil {
+		return true, "Off hours", "Off", "Dispatch is outside the configured active-hours window. In-flight agents continue draining."
+	}
+	opening := projectActiveHoursTime(active.NextOpen, active.Timezone, "15:04 MST")
+	detail := "Dispatch reopens at " + projectActiveHoursTime(active.NextOpen, active.Timezone, "Mon, Jan 2 at 15:04 MST") + " in " + active.Timezone + ". In-flight agents continue draining."
+	return true, "Off hours · opens " + opening, projectActiveHoursTime(active.NextOpen, active.Timezone, "15:04"), detail
+}
+
+func projectActiveHoursTime(value *time.Time, timezone string, layout string) string {
+	if value == nil {
+		return "unavailable"
+	}
+	location, err := time.LoadLocation(strings.TrimSpace(timezone))
+	if err != nil {
+		return value.Format(layout)
+	}
+	return value.In(location).Format(layout)
 }
 
 func projectSmallMultiplePauseDetail(project ProjectSmallMultiple) string {
@@ -1218,6 +1256,8 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 	switch {
 	case project.Paused:
 		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
+	case project.ActiveHours.Configured && !project.ActiveHours.Open:
+		return projectStatusView{Rank: 3, Label: "off hours", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case project.BoardBlocked > 0:
 		dotClass := "bg-dim"
 		if project.Running > 0 {
@@ -1234,7 +1274,7 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 }
 
 func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
-	if item.StatusLabel == "paused" {
+	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" {
 		return item.StatusLabel
 	}
 	return item.RunningLabel

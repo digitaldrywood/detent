@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 const (
 	DispatchGateReasonGranted                          = "granted"
 	DispatchGateReasonGlobalCapacityFull               = "global_capacity_full"
+	DispatchGateReasonOutsideActiveWindow              = "outside_active_window"
 	DispatchGateReasonPaused                           = "dispatch_paused"
 	DispatchGateReasonReservedForHigherPriority        = "reserved_for_higher_priority_state"
 	DispatchGateReasonReservedForHigherPriorityProject = "reserved_for_higher_priority_project"
@@ -339,13 +341,23 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	}
 
 	g.projects[project.ID] = project
+	status, err := project.ActiveHoursStatus(now)
+	if err != nil {
+		return Slot{}, false, DispatchGateDecision{}, fmt.Errorf("evaluate project %q active hours: %w", project.ID, err)
+	}
+	if !status.Open {
+		delete(g.ready, project.ID)
+		delete(g.selected, project.ID)
+		g.projectCycles[project.ID] = projectCycleState{idle: true}
+		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonOutsideActiveWindow), nil
+	}
 	g.ready[project.ID] = readyProjectSlot{ProjectCandidate: project, request: req}
 	if g.dispatchPauses > 0 {
 		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
 	}
 	if g.global.Mode() == ModeStrictPriority {
 		g.projectCycles[project.ID] = projectCycleState{}
-		if reservedProjectID, reservedReq, reserved := g.higherPriorityProjectReservationLocked(project); reserved {
+		if reservedProjectID, reservedReq, reserved := g.higherPriorityProjectReservationLocked(project, now); reserved {
 			return Slot{}, false, g.projectDecisionLocked(project.ID, req, reservedProjectID, reservedReq), nil
 		}
 	}
@@ -533,6 +545,9 @@ func (g *GlobalDispatchGate) reconcileSelectionsLocked() {
 }
 
 func (g *GlobalDispatchGate) fillSelectionsLocked(ctx context.Context, now time.Time, reserveWhenFull bool) error {
+	if err := g.pruneClosedReadyProjectsLocked(now); err != nil {
+		return err
+	}
 	for {
 		excluded := g.selectedProjectIDsLocked()
 		projects, requests := g.readyProjectsForSelectionLocked(excluded, g.unreservedCapacityLocked())
@@ -686,6 +701,7 @@ func (g *GlobalDispatchGate) projectDecisionLocked(
 
 func (g *GlobalDispatchGate) higherPriorityProjectReservationLocked(
 	project ProjectCandidate,
+	now time.Time,
 ) (string, SlotRequest, bool) {
 	projectRank := priorityRank(project.Priority)
 	selectedID := ""
@@ -693,6 +709,10 @@ func (g *GlobalDispatchGate) higherPriorityProjectReservationLocked(
 	selectedReq := SlotRequest{}
 	for projectID, candidate := range g.projects {
 		if projectID == project.ID || priorityRank(candidate.Priority) >= projectRank {
+			continue
+		}
+		status, err := candidate.ActiveHoursStatus(now)
+		if err != nil || !status.Open {
 			continue
 		}
 		cycle, ok := g.projectCycles[projectID]
@@ -712,6 +732,22 @@ func (g *GlobalDispatchGate) higherPriorityProjectReservationLocked(
 		}
 	}
 	return selectedID, selectedReq, selectedID != ""
+}
+
+func (g *GlobalDispatchGate) pruneClosedReadyProjectsLocked(now time.Time) error {
+	for projectID, ready := range g.ready {
+		status, err := ready.ActiveHoursStatus(now)
+		if err != nil {
+			return fmt.Errorf("evaluate project %q active hours: %w", projectID, err)
+		}
+		if status.Open {
+			continue
+		}
+		delete(g.ready, projectID)
+		delete(g.selected, projectID)
+		g.projectCycles[projectID] = projectCycleState{idle: true}
+	}
+	return nil
 }
 
 func (g *GlobalDispatchGate) hasHigherPriorityRunningProjectLocked(project ProjectCandidate) bool {

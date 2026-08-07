@@ -19,6 +19,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -241,6 +242,27 @@ func TestSyncGlobalDispatchProjectsMarksUnstartedProjectsIdle(t *testing.T) {
 	}
 	if err := gate.Release(slot); err != nil {
 		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestGlobalProjectCandidatesApplyHostActiveHours(t *testing.T) {
+	t.Parallel()
+	globalDefault := activehours.Config{Timezone: "America/Chicago", Windows: []string{"Mon-Sun 22:00-06:00"}}
+	projectOverride := activehours.Config{Timezone: "America/New_York", Windows: []string{"Mon-Fri 21:00-05:00"}}
+	projects := []globalconfig.Project{
+		{ID: "default", ActiveHoursOverrideUntil: "2026-08-08T02:00:00Z"},
+		{ID: "override", ActiveHours: &projectOverride},
+	}
+
+	candidates := globalProjectCandidatesWithDefault(projects, &globalDefault)
+	if got := candidates[0].ActiveHours.Timezone; got != globalDefault.Timezone {
+		t.Fatalf("default Timezone = %q, want %q", got, globalDefault.Timezone)
+	}
+	if got := candidates[1].ActiveHours.Timezone; got != projectOverride.Timezone {
+		t.Fatalf("override Timezone = %q, want %q", got, projectOverride.Timezone)
+	}
+	if got := candidates[0].ActiveHoursOverrideUntil.Format(time.RFC3339); got != projects[0].ActiveHoursOverrideUntil {
+		t.Fatalf("ActiveHoursOverrideUntil = %q, want %q", got, projects[0].ActiveHoursOverrideUntil)
 	}
 }
 

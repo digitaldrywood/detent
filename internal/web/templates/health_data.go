@@ -42,7 +42,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	view := healthView{
 		CheckedAt: snapshot.GeneratedAt,
 		Footnote:  "GitHub quota bars turn amber at 90%; project budget bars warn at 80% and turn red at the cap.",
-		Rows:      append(healthRows(snapshot), healthBudgetRows(data)...),
+		Rows:      append(append(healthRows(snapshot), healthActiveHoursRows(data)...), healthBudgetRows(data)...),
 	}
 	if len(snapshot.StalenessWarnings) > 0 {
 		view.Kind = primitives.KindWarn
@@ -114,6 +114,49 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = api.Detail
 	}
 	return view
+}
+
+func healthActiveHoursRows(data DashboardData) []healthRow {
+	rows := make([]healthRow, 0, len(data.Projects))
+	for _, project := range data.Projects {
+		active := project.ActiveHours
+		if !active.Configured {
+			continue
+		}
+		row := healthRow{
+			ID:        "health-active-hours-" + boardCardSlug(project.ID),
+			Component: "Active hours · " + projectSmallMultipleName(project),
+			Kind:      primitives.KindOK,
+		}
+		switch {
+		case active.OverrideActive:
+			row.Status = "Override"
+			row.Detail = "Dispatch allowed outside the recurring window"
+			row.Resets = "at override expiry"
+			if active.OverrideUntil != nil {
+				row.ResetAt = *active.OverrideUntil
+				row.Detail += " until " + projectActiveHoursTime(active.OverrideUntil, active.Timezone, "Mon, Jan 2 at 15:04 MST")
+			}
+		case active.WindowOpen:
+			row.Status = "Open"
+			row.Detail = "Dispatch admission is open in " + active.Timezone
+			row.Resets = "at window close"
+			if active.NextClose != nil {
+				row.ResetAt = *active.NextClose
+				row.Detail += " until " + projectActiveHoursTime(active.NextClose, active.Timezone, "Mon, Jan 2 at 15:04 MST")
+			}
+		default:
+			row.Status = "Off hours"
+			row.Detail = "New dispatches are waiting for the next window in " + active.Timezone
+			row.Resets = "at window open"
+			if active.NextOpen != nil {
+				row.ResetAt = *active.NextOpen
+				row.Detail += " at " + projectActiveHoursTime(active.NextOpen, active.Timezone, "Mon, Jan 2 at 15:04 MST")
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func healthBudgetRows(data DashboardData) []healthRow {

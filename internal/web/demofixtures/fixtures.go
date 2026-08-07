@@ -997,6 +997,20 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 				Reason:       "release readiness",
 			}
 		}
+		if variant == "active-hours" && projects[i].ID == "docs-site" {
+			location, err := time.LoadLocation("America/Chicago")
+			if err != nil {
+				location = time.FixedZone("CDT", -5*60*60)
+			}
+			nextOpen := time.Date(2026, time.June, 15, 22, 0, 0, 0, location)
+			nextClose := time.Date(2026, time.June, 16, 6, 0, 0, 0, location)
+			projects[i].ActiveHours = telemetry.ActiveHours{
+				Configured: true,
+				Timezone:   location.String(),
+				NextOpen:   &nextOpen,
+				NextClose:  &nextClose,
+			}
+		}
 	}
 	switch variant {
 	case "project-empty", "reports-empty", "settings-empty", "no-history":
@@ -1090,7 +1104,7 @@ func demoProjectSnapshots(projects []templates.ProjectSmallMultiple) []telemetry
 	out := make([]telemetry.ProjectSnapshot, 0, len(projects))
 	for _, project := range projects {
 		out = append(out, telemetry.ProjectSnapshot{
-			Project: telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Color: project.Color, Pool: project.Pool},
+			Project: telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Color: project.Color, Pool: project.Pool, ActiveHours: project.ActiveHours},
 			Counts:  telemetry.Counts{Running: project.Running, Queue: project.QueueCount, Blocked: project.Blocked, Completed: project.Completed},
 			Tokens:  telemetry.Tokens{Total: project.TotalTokens},
 			Throughput: telemetry.TokenThroughput{

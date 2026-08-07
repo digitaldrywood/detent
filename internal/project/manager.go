@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,6 +115,10 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 	projects := append([]globalconfig.Project(nil), cfg.Projects...)
 	for index := range projects {
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
+		if cfg.Global.ActiveHours != nil {
+			activeHours := cfg.Global.ActiveHours.Normalize()
+			projects[index].GlobalActiveHours = &activeHours
+		}
 	}
 
 	return normalizeManagerConfig(ManagerConfig{
@@ -1224,6 +1229,15 @@ func normalizeManagerProjectConfig(cfg globalconfig.Project) globalconfig.Projec
 	cfg.ID = string(normalizeProjectID(ID(cfg.ID)))
 	cfg.Identity.Normalize()
 	cfg.GlobalKnowledge.Normalize()
+	if cfg.ActiveHours != nil {
+		activeHours := cfg.ActiveHours.Normalize()
+		cfg.ActiveHours = &activeHours
+	}
+	if cfg.GlobalActiveHours != nil {
+		activeHours := cfg.GlobalActiveHours.Normalize()
+		cfg.GlobalActiveHours = &activeHours
+	}
+	cfg.ActiveHoursOverrideUntil = strings.TrimSpace(cfg.ActiveHoursOverrideUntil)
 	cfg.Knowledge.Normalize()
 	cfg.Intake.Normalize()
 	return cfg

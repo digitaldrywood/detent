@@ -4,11 +4,153 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
+
+func TestGlobalDispatchGateActiveHoursAdmission(t *testing.T) {
+	t.Parallel()
+	config := activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 22:00-06:00"}}
+	project := scheduler.ProjectCandidate{ID: "overnight", Weight: 1, ActiveHours: config}
+	tests := []struct {
+		name       string
+		now        time.Time
+		override   time.Time
+		want       bool
+		wantReason string
+	}{
+		{
+			name:       "process starts inside window",
+			now:        time.Date(2026, time.August, 7, 23, 0, 0, 0, time.UTC),
+			want:       true,
+			wantReason: scheduler.DispatchGateReasonGranted,
+		},
+		{
+			name:       "process starts outside window",
+			now:        time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC),
+			wantReason: scheduler.DispatchGateReasonOutsideActiveWindow,
+		},
+		{
+			name:       "unexpired override",
+			now:        time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC),
+			override:   time.Date(2026, time.August, 7, 14, 0, 0, 0, time.UTC),
+			want:       true,
+			wantReason: scheduler.DispatchGateReasonGranted,
+		},
+		{
+			name:       "expired override",
+			now:        time.Date(2026, time.August, 7, 15, 0, 0, 0, time.UTC),
+			override:   time.Date(2026, time.August, 7, 14, 0, 0, 0, time.UTC),
+			wantReason: scheduler.DispatchGateReasonOutsideActiveWindow,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+			candidate := project
+			candidate.ActiveHoursOverrideUntil = test.override
+			slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), candidate, scheduler.SlotRequest{State: "Todo"}, test.now)
+			if err != nil {
+				t.Fatalf("TryAcquireWithDecision() error = %v", err)
+			}
+			if ok != test.want || decision.Reason != test.wantReason {
+				t.Fatalf("TryAcquireWithDecision() ok = %t reason = %q, want %t %q", ok, decision.Reason, test.want, test.wantReason)
+			}
+			if ok {
+				if err := gate.Release(slot); err != nil {
+					t.Fatalf("Release() error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestGlobalDispatchGateRejectsInvalidActiveHours(t *testing.T) {
+	t.Parallel()
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{
+		ID:          "invalid-schedule",
+		ActiveHours: activehours.Config{Timezone: "not/a-zone", Windows: []string{"Mon-Fri 22:00-06:00"}},
+	}
+
+	_, ok, _, err := gate.TryAcquireWithDecision(t.Context(), project, scheduler.SlotRequest{State: "Todo"}, time.Now())
+	if err == nil || ok || !strings.Contains(err.Error(), `evaluate project "invalid-schedule" active hours`) {
+		t.Fatalf("TryAcquireWithDecision() ok = %t error = %v, want active-hours validation error", ok, err)
+	}
+}
+
+func TestGlobalDispatchGateDrainsAtActiveHoursClose(t *testing.T) {
+	t.Parallel()
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 2}))
+	project := scheduler.ProjectCandidate{
+		ID:          "overnight",
+		Weight:      1,
+		ActiveHours: activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 22:00-06:00"}},
+	}
+	inside := time.Date(2026, time.August, 7, 23, 59, 0, 0, time.UTC)
+	slot, ok, _, err := gate.TryAcquireWithDecision(t.Context(), project, scheduler.SlotRequest{State: "Todo"}, inside)
+	if err != nil || !ok {
+		t.Fatalf("inside-window TryAcquireWithDecision() ok = %t error = %v", ok, err)
+	}
+
+	outside := time.Date(2026, time.August, 8, 6, 0, 0, 0, time.UTC)
+	if _, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), project, scheduler.SlotRequest{State: "Todo"}, outside); err != nil {
+		t.Fatalf("outside-window TryAcquireWithDecision() error = %v", err)
+	} else if ok || decision.Reason != scheduler.DispatchGateReasonOutsideActiveWindow {
+		t.Fatalf("outside-window decision = %#v, want refusal", decision)
+	}
+	if snapshot := gate.PoolSnapshot(); snapshot.Used != 1 {
+		t.Fatalf("PoolSnapshot().Used = %d, want in-flight slot retained", snapshot.Used)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestGlobalDispatchGateClosedProjectDoesNotReserveCapacity(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC)
+	closed := scheduler.ProjectCandidate{
+		ID:          "urgent",
+		Priority:    0,
+		ActiveHours: activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 22:00-23:00"}},
+	}
+	open := scheduler.ProjectCandidate{ID: "normal", Priority: 2}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}), closed, open)
+	gate.MarkReady(closed)
+
+	slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), open, scheduler.SlotRequest{State: "Todo"}, now)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want grant", ok, decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestGlobalDispatchGateManualPauseIsStrongerThanOpenWindow(t *testing.T) {
+	t.Parallel()
+	project := scheduler.ProjectCandidate{
+		ID:          "paused",
+		Paused:      true,
+		ActiveHours: activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}},
+	}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+
+	_, ok, err := gate.TryAcquire(t.Context(), project, scheduler.SlotRequest{State: "Todo"}, time.Now())
+	if !errors.Is(err, scheduler.ErrNoCandidates) || ok {
+		t.Fatalf("TryAcquire() ok = %t error = %v, want paused candidate rejection", ok, err)
+	}
+}
 
 func TestGlobalDispatchGateUsesConfiguredProjectSelection(t *testing.T) {
 	t.Parallel()

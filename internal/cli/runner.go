@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/claudecode"
@@ -488,7 +489,7 @@ func startupSnapshot(
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:    now,
 		Instance:       startupSnapshotInstance(cfg),
-		Projects:       startupProjectSnapshots(cfg.Projects, refresh),
+		Projects:       startupProjectSnapshots(cfg, refresh, now),
 		DashboardURL:   cleanDashboardURL(dashboardURL),
 		Shutdown:       telemetry.Shutdown{Status: "running"},
 		Refresh:        refresh,
@@ -514,15 +515,16 @@ func startupSnapshotInstance(cfg globalconfig.Config) telemetry.Instance {
 	}
 }
 
-func startupProjectSnapshots(projects []globalconfig.Project, refresh telemetry.Refresh) []telemetry.ProjectSnapshot {
-	out := make([]telemetry.ProjectSnapshot, 0, len(projects))
-	for _, cfg := range projects {
-		id := strings.TrimSpace(cfg.ID)
+func startupProjectSnapshots(cfg globalconfig.Config, refresh telemetry.Refresh, now time.Time) []telemetry.ProjectSnapshot {
+	out := make([]telemetry.ProjectSnapshot, 0, len(cfg.Projects))
+	for _, projectConfig := range cfg.Projects {
+		id := strings.TrimSpace(projectConfig.ID)
 		if id == "" {
 			continue
 		}
+		projectConfig.GlobalActiveHours = cfg.Global.ActiveHours
 		out = append(out, telemetry.ProjectSnapshot{
-			Project: projectSnapshotMetadataFromConfig(cfg),
+			Project: projectSnapshotMetadataFromConfig(projectConfig, now),
 			Refresh: refresh,
 		})
 	}
@@ -551,7 +553,7 @@ func publishSnapshotOnce(
 	tracked := make(map[project.ID]struct{}, len(trackedProjects))
 	for _, trackedProject := range trackedProjects {
 		tracked[trackedProject.ID()] = struct{}{}
-		projectMetadata := projectSnapshotMetadata(trackedProject)
+		projectMetadata := projectSnapshotMetadata(trackedProject, now)
 		if !trackedProject.Running() {
 			if trackedProject.Paused() {
 				merged = mergeSnapshot(merged, telemetry.Snapshot{
@@ -615,7 +617,7 @@ func publishSnapshotOnce(
 			continue
 		}
 		merged = mergeSnapshot(merged, telemetry.Snapshot{
-			Project:      projectSnapshotMetadataFromConfig(health.Project),
+			Project:      projectSnapshotMetadataFromConfig(health.Project, now),
 			DashboardURL: cleanDashboardURL(dashboardURL),
 			Shutdown:     telemetry.Shutdown{Status: "running"},
 			Refresh: runtimeErrorRefresh(project.RuntimeError{
@@ -664,19 +666,20 @@ func telemetryUpdateStatus(sources []autoUpdateStatusSource) telemetry.Update {
 	}
 }
 
-func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project {
+func projectSnapshotMetadata(trackedProject *project.Project, now time.Time) telemetry.Project {
 	if trackedProject == nil {
 		return telemetry.Project{}
 	}
 
 	cfg := trackedProject.Config()
 	workflow := trackedProject.Workflow()
-	metadata := projectSnapshotMetadataFromConfig(cfg)
+	metadata := projectSnapshotMetadataFromConfig(cfg, now)
 	metadata.URL = projectURLFromWorkflow(workflow.Config)
+	metadata.ActiveHours = telemetryActiveHours(project.EffectiveActiveHours(cfg, workflow.Config.ActiveHours), cfg.ActiveHoursOverrideUntil, now)
 	return metadata
 }
 
-func projectSnapshotMetadataFromConfig(cfg globalconfig.Project) telemetry.Project {
+func projectSnapshotMetadataFromConfig(cfg globalconfig.Project, now time.Time) telemetry.Project {
 	id := strings.TrimSpace(cfg.ID)
 	pool := strings.TrimSpace(cfg.Pool)
 	if pool == "" {
@@ -687,7 +690,20 @@ func projectSnapshotMetadataFromConfig(cfg globalconfig.Project) telemetry.Proje
 		DisplayName: id,
 		Color:       projectcolor.ColorFor(id, cfg.Color),
 		Pool:        pool,
+		ActiveHours: telemetryActiveHours(project.EffectiveActiveHours(cfg, activehours.Config{}), cfg.ActiveHoursOverrideUntil, now),
 	}
+}
+
+func telemetryActiveHours(config activehours.Config, overrideValue string, now time.Time) telemetry.ActiveHours {
+	if !config.Configured() {
+		return telemetry.ActiveHours{}
+	}
+	overrideUntil := activehours.ParsePersistedOverride(overrideValue)
+	status, err := activehours.Evaluate(config, now, overrideUntil)
+	if err != nil {
+		return telemetry.ActiveHours{Configured: true, Timezone: config.Timezone}
+	}
+	return telemetry.ActiveHoursFromStatus(status)
 }
 
 func telemetryAgentPools(source agentPoolSnapshotSource) []telemetry.AgentPool {

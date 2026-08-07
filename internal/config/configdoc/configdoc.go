@@ -239,6 +239,7 @@ func backendOptionNodes(prefix string) []*schemaNode {
 func expandable(typ reflect.Type) bool {
 	path := typ.PkgPath()
 	return path == "github.com/digitaldrywood/detent/internal/config" ||
+		path == "github.com/digitaldrywood/detent/internal/activehours" ||
 		path == "github.com/digitaldrywood/detent/internal/connector" ||
 		path == "github.com/digitaldrywood/detent/internal/gate" ||
 		path == "github.com/digitaldrywood/detent/internal/intake" ||

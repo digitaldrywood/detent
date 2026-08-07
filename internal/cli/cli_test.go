@@ -1364,7 +1364,7 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		},
 	})
 
-	signals := make(chan cli.Signal, 4)
+	signals := make(chan cli.Signal, 5)
 	runCommand := func(args ...string) {
 		t.Helper()
 
@@ -1407,6 +1407,19 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		}
 	})
 	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
+
+	resumeStarted := time.Now().UTC()
+	runCommand("resume", "detent", "--for", "2h")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+		until, err := time.Parse(time.RFC3339, project.ActiveHoursOverrideUntil)
+		if err != nil {
+			t.Fatalf("ActiveHoursOverrideUntil = %q: %v", project.ActiveHoursOverrideUntil, err)
+		}
+		if until.Before(resumeStarted.Add(119*time.Minute)) || until.After(time.Now().UTC().Add(121*time.Minute)) {
+			t.Fatalf("ActiveHoursOverrideUntil = %v, want about two hours from now", until)
+		}
+	})
+	assertSignal(t, signals, cli.OperationResumeProject, "detent")
 
 	runCommand("promote", "detent", "--priority", "1")
 	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
@@ -1604,6 +1617,47 @@ func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
 			err := cmd.Execute()
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Execute() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResumeCommandRejectsInvalidFlagsAndManualPause(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		args   []string
+		paused bool
+		want   string
+	}{
+		{name: "missing expiry", args: []string{"resume", "detent"}, want: "one of --for or --until is required"},
+		{name: "mutually exclusive expiry", args: []string{"resume", "detent", "--for", "2h", "--until", "2099-01-01T00:00:00Z"}, want: "--for and --until are mutually exclusive"},
+		{name: "invalid duration", args: []string{"resume", "detent", "--for", "tomorrow"}, want: "--for must be a positive Go duration"},
+		{name: "negative duration", args: []string{"resume", "detent", "--for", "-1h"}, want: "--for must be a positive Go duration"},
+		{name: "invalid timestamp", args: []string{"resume", "detent", "--until", "tomorrow"}, want: "--until must be an RFC 3339 timestamp"},
+		{name: "past timestamp", args: []string{"resume", "detent", "--until", "2000-01-01T00:00:00Z"}, want: "--until must be in the future"},
+		{name: "manual pause", args: []string{"resume", "detent", "--for", "2h"}, paused: true, want: "project is manually paused"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			paths := createProjectFiles(t)
+			configPath := filepath.Join(paths.root, "global.yaml")
+			writeGlobalConfig(t, configPath, []globalconfig.Project{{
+				ID:       "detent",
+				Workflow: paths.workflowPath,
+				Workdir:  paths.workdirPath,
+				Weight:   1,
+				Paused:   test.paused,
+			}})
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append([]string{"--config", configPath}, test.args...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Execute() error = %v, want substring %q", err, test.want)
 			}
 		})
 	}

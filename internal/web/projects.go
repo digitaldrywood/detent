@@ -29,16 +29,15 @@ func newProjectSmallMultipleRecorder() *projectSmallMultipleRecorder {
 
 func (s *Server) projectSmallMultiples(ctx context.Context, snapshot telemetry.Snapshot) []templates.ProjectSmallMultiple {
 	projects := projectSmallMultiplesFromSnapshot(snapshot)
-	projects = s.addConfiguredProjectMultiples(projects)
-	if len(projects) == 0 {
-		return nil
-	}
-
 	now := snapshot.GeneratedAt
 	if now.IsZero() {
 		now = time.Now().UTC().Truncate(time.Second)
 	}
 	now = now.UTC()
+	projects = s.addConfiguredProjectMultiples(projects, now)
+	if len(projects) == 0 {
+		return nil
+	}
 	overrideNow := time.Now().UTC().Truncate(time.Second)
 
 	spend := s.projectSpend(ctx, projectSmallMultipleIDs(projects), now)
@@ -55,16 +54,15 @@ func (s *Server) projectSmallMultiples(ctx context.Context, snapshot telemetry.S
 
 func (s *Server) cachedProjectSmallMultiples(snapshot telemetry.Snapshot) []templates.ProjectSmallMultiple {
 	projects := projectSmallMultiplesFromSnapshot(snapshot)
-	projects = s.addConfiguredProjectMultiples(projects)
-	if len(projects) == 0 {
-		return nil
-	}
-
 	now := snapshot.GeneratedAt
 	if now.IsZero() {
 		now = time.Now().UTC().Truncate(time.Second)
 	}
 	now = now.UTC()
+	projects = s.addConfiguredProjectMultiples(projects, now)
+	if len(projects) == 0 {
+		return nil
+	}
 	for i := range projects {
 		projects[i].BudgetResetAt = dailyBudgetReset(now)
 	}
@@ -90,6 +88,7 @@ func projectSmallMultiplesFromSnapshot(snapshot telemetry.Snapshot) []templates.
 			URL:          strings.TrimSpace(snapshot.Project.URL),
 			Color:        snapshotProjectColor(snapshot.Project.Color),
 			Pool:         strings.TrimSpace(snapshot.Project.Pool),
+			ActiveHours:  snapshot.Project.ActiveHours,
 			Running:      snapshot.Counts.Running,
 			QueueCount:   snapshot.Counts.Queue,
 			Blocked:      snapshot.Counts.Blocked,
@@ -111,6 +110,7 @@ func projectSmallMultipleFromSnapshot(project telemetry.ProjectSnapshot, workloa
 		URL:                       strings.TrimSpace(project.Project.URL),
 		Color:                     snapshotProjectColor(project.Project.Color),
 		Pool:                      strings.TrimSpace(project.Project.Pool),
+		ActiveHours:               project.Project.ActiveHours,
 		Running:                   project.Counts.Running,
 		QueueCount:                project.Counts.Queue,
 		Blocked:                   project.Counts.Blocked,
@@ -135,7 +135,7 @@ func projectID(project telemetry.Project) string {
 	return ""
 }
 
-func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmallMultiple) []templates.ProjectSmallMultiple {
+func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmallMultiple, now time.Time) []templates.ProjectSmallMultiple {
 	if s.registry == nil {
 		return projects
 	}
@@ -150,6 +150,10 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			continue
 		}
 		projectConfig := trackedProject.Config()
+		activeHours := telemetry.ActiveHours{}
+		if status, err := trackedProject.ActiveHoursStatus(now); err == nil {
+			activeHours = telemetry.ActiveHoursFromStatus(status)
+		}
 		configured[id] = templates.ProjectSmallMultiple{
 			ID:             id,
 			Name:           id,
@@ -160,6 +164,7 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			PauseReason:    projectConfig.PausedReason,
 			PauseIssue:     projectConfig.PausedUntilIssue,
 			PauseUntil:     projectConfig.PausedUntil,
+			ActiveHours:    activeHours,
 			BudgetEnabled:  trackedProject.Workflow().Config.Budget.Enabled,
 			PerDayMaxUSD:   trackedProject.Workflow().Config.Budget.PerDayMaxUSD,
 			PerIssueMaxUSD: trackedProject.Workflow().Config.Budget.PerIssueMaxUSD,
@@ -180,6 +185,7 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			projects[i].PauseReason = configuredProject.PauseReason
 			projects[i].PauseIssue = configuredProject.PauseIssue
 			projects[i].PauseUntil = configuredProject.PauseUntil
+			projects[i].ActiveHours = configuredProject.ActiveHours
 			projects[i].BudgetEnabled = configuredProject.BudgetEnabled
 			projects[i].PerDayMaxUSD = configuredProject.PerDayMaxUSD
 			projects[i].PerIssueMaxUSD = configuredProject.PerIssueMaxUSD
