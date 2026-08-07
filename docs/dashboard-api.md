@@ -186,7 +186,16 @@ Useful endpoints:
 | `/api/v1/projects/<id>/work-items` | Create a runtime work item with `POST` for `local_sqlite` and `github_local` trackers. |
 | `/api/v1/refresh` | Request an orchestrator refresh with `POST`. |
 | `/api/v1/webhooks/github` | Accept signed GitHub webhook deliveries with `POST`. |
-| `/api/v1/<issue>` | JSON detail for a running, retrying, or blocked issue. |
+| `/api/v1/<issue>` | JSON detail for a known board, pipeline, running, retrying, or blocked issue. |
+
+The wildcard issue route accepts an issue ID, canonical identifier, issue URL,
+bare number, or `#number`. Add `?project=<id>` when a number or other reference
+exists in more than one project; an unscoped collision returns
+`ambiguous_issue_reference`. The response reports the board `lane` separately
+from runtime `activity` (`idle`, `running`, `retrying`, or `blocked`). Board data
+takes precedence over pipeline and runtime copies for lane and identity, while
+runtime activity uses running, retrying, then blocked precedence. Completed and
+tracker-drift-only items are not part of this route.
 
 ### Dashboard Magic-Link Authentication
 

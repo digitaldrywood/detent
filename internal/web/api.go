@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -186,21 +187,31 @@ func (s *Server) apiIssue(c echo.Context) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
-		payload, found := issueResponse(issueIdentifier(c), demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant))
-		if !found {
-			return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
-		}
-		return c.JSON(http.StatusOK, payload)
+		return apiIssueResponse(c, demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant))
 	}
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("snapshot_unavailable", "Snapshot unavailable"))
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
 
-	payload, ok := issueResponse(issueIdentifier(c), snapshot)
-	if !ok {
+	return apiIssueResponse(c, snapshot)
+}
+
+func apiIssueResponse(c echo.Context, snapshot telemetry.Snapshot) error {
+	payload, err := issueResponse(issueIdentifier(c), c.QueryParam("project"), snapshot)
+	if errors.Is(err, explain.ErrIssueReferenceNeeded) {
+		return c.JSON(http.StatusBadRequest, errorResponse("issue_reference_required", "Issue reference is required"))
+	}
+	var ambiguous *explain.AmbiguousIdentityError
+	if errors.As(err, &ambiguous) {
+		return c.JSON(http.StatusConflict, errorResponse("ambiguous_issue_reference", "Issue reference is ambiguous; specify project"))
+	}
+	if errors.Is(err, explain.ErrNotFound) {
 		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
+	}
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errorResponse("issue_resolution_failed", "Issue resolution failed"))
 	}
 
 	return c.JSON(http.StatusOK, payload)
@@ -535,62 +546,59 @@ func boardResponse(snapshot telemetry.Snapshot) boardAPIResponse {
 	}
 }
 
-func issueResponse(identifier string, snapshot telemetry.Snapshot) (issueAPIResponse, bool) {
-	if running, ok := findRunning(identifier, snapshot.Running); ok {
-		return issueAPIResponse{
-			IssueIdentifier: running.Identifier,
-			IssueID:         running.ID,
-			Status:          "running",
-			Workspace:       workspaceResponse(running.WorkspacePath, running.WorkerHost),
-			Attempts:        attemptsAPIResponse{},
-			Running:         runningIssueResponse(running),
-			Retry:           nil,
-			Blocked:         nil,
-			Logs:            logsAPIResponse{CodexSessionLogs: []logAPIResponse{}},
-			RecentEvents:    recentEventsFromTelemetry(running.RecentEvents, running.LastEventAt, running.LastEvent, running.LastMessage),
-			LastError:       nil,
-			Tracked:         map[string]any{},
-		}, true
+func issueResponse(reference string, projectID string, snapshot telemetry.Snapshot) (issueAPIResponse, error) {
+	resolved, err := explain.ResolveSnapshotIssue(snapshot, explain.Query{ProjectID: projectID, Reference: reference}, explain.SnapshotIssueScope{})
+	if err != nil {
+		return issueAPIResponse{}, err
 	}
-	if retry, ok := findRetry(identifier, snapshot.Queue); ok {
-		err := optionalString(retry.Error)
-		return issueAPIResponse{
-			IssueIdentifier: retry.Identifier,
-			IssueID:         retry.ID,
-			Status:          "retrying",
-			Workspace:       workspaceResponse(retry.WorkspacePath, retry.WorkerHost),
-			Attempts: attemptsAPIResponse{
-				RestartCount:        max(retry.Attempt-1, 0),
-				CurrentRetryAttempt: retry.Attempt,
-			},
-			Running:      nil,
-			Retry:        retryIssueResponse(retry),
-			Blocked:      nil,
-			Logs:         logsAPIResponse{CodexSessionLogs: []logAPIResponse{}},
-			RecentEvents: []recentEventAPIResponse{},
-			LastError:    err,
-			Tracked:      map[string]any{},
-		}, true
+	payload := issueAPIResponse{
+		IssueIdentifier: resolved.Identity.Identifier,
+		IssueID:         resolved.Identity.IssueID,
+		ProjectID:       resolved.Identity.ProjectID,
+		Status:          "idle",
+		Lane:            resolved.Issue.State,
+		Activity:        "idle",
+		Workspace:       workspaceResponse("", ""),
+		Attempts:        attemptsAPIResponse{},
+		Running:         nil,
+		Retry:           nil,
+		Blocked:         nil,
+		Logs:            logsAPIResponse{CodexSessionLogs: []logAPIResponse{}},
+		RecentEvents:    []recentEventAPIResponse{},
+		LastError:       nil,
+		Tracked:         map[string]any{},
 	}
-	if blocked, ok := findBlocked(identifier, snapshot.Blocked); ok {
-		err := optionalString(blocked.Error)
-		return issueAPIResponse{
-			IssueIdentifier: blocked.Identifier,
-			IssueID:         blocked.ID,
-			Status:          "blocked",
-			Workspace:       workspaceResponse(blocked.WorkspacePath, blocked.WorkerHost),
-			Attempts:        attemptsAPIResponse{},
-			Running:         nil,
-			Retry:           nil,
-			Blocked:         blockedIssueResponse(blocked),
-			Logs:            logsAPIResponse{CodexSessionLogs: []logAPIResponse{}},
-			RecentEvents:    recentEvents(blocked.LastEventAt, blocked.LastEvent, blocked.LastMessage),
-			LastError:       err,
-			Tracked:         map[string]any{},
-		}, true
+	if running, ok := findRunning(resolved.Identity, snapshot.Running); ok {
+		payload.Status = "running"
+		payload.Activity = "running"
+		payload.Workspace = workspaceResponse(running.WorkspacePath, running.WorkerHost)
+		payload.Running = runningIssueResponse(running)
+		payload.RecentEvents = recentEventsFromTelemetry(running.RecentEvents, running.LastEventAt, running.LastEvent, running.LastMessage)
+		return payload, nil
+	}
+	if retry, ok := findRetry(resolved.Identity, snapshot.Queue); ok {
+		payload.Status = "retrying"
+		payload.Activity = "retrying"
+		payload.Workspace = workspaceResponse(retry.WorkspacePath, retry.WorkerHost)
+		payload.Attempts = attemptsAPIResponse{
+			RestartCount:        max(retry.Attempt-1, 0),
+			CurrentRetryAttempt: retry.Attempt,
+		}
+		payload.Retry = retryIssueResponse(retry)
+		payload.LastError = optionalString(retry.Error)
+		return payload, nil
+	}
+	if blocked, ok := findBlocked(resolved.Identity, snapshot.Blocked); ok {
+		payload.Status = "blocked"
+		payload.Activity = "blocked"
+		payload.Workspace = workspaceResponse(blocked.WorkspacePath, blocked.WorkerHost)
+		payload.Blocked = blockedIssueResponse(blocked)
+		payload.RecentEvents = recentEvents(blocked.LastEventAt, blocked.LastEvent, blocked.LastMessage)
+		payload.LastError = optionalString(blocked.Error)
+		return payload, nil
 	}
 
-	return issueAPIResponse{}, false
+	return payload, nil
 }
 
 func countsResponse(snapshot telemetry.Snapshot) countsAPIResponse {
@@ -818,35 +826,41 @@ func recentEventsFromTelemetry(events []telemetry.ActivityEvent, fallbackAt *tim
 	return payload
 }
 
-func findRunning(identifier string, entries []telemetry.Running) (telemetry.Running, bool) {
+func findRunning(identity explain.Identity, entries []telemetry.Running) (telemetry.Running, bool) {
 	for _, entry := range entries {
-		if issueMatches(entry.Issue, identifier) {
+		if issueMatchesIdentity(entry.Issue, identity) {
 			return entry, true
 		}
 	}
 	return telemetry.Running{}, false
 }
 
-func findRetry(identifier string, entries []telemetry.Queued) (telemetry.Queued, bool) {
+func findRetry(identity explain.Identity, entries []telemetry.Queued) (telemetry.Queued, bool) {
 	for _, entry := range entries {
-		if issueMatches(entry.Issue, identifier) {
+		if issueMatchesIdentity(entry.Issue, identity) {
 			return entry, true
 		}
 	}
 	return telemetry.Queued{}, false
 }
 
-func findBlocked(identifier string, entries []telemetry.Blocked) (telemetry.Blocked, bool) {
+func findBlocked(identity explain.Identity, entries []telemetry.Blocked) (telemetry.Blocked, bool) {
 	for _, entry := range entries {
-		if issueMatches(entry.Issue, identifier) {
+		if issueMatchesIdentity(entry.Issue, identity) {
 			return entry, true
 		}
 	}
 	return telemetry.Blocked{}, false
 }
 
-func issueMatches(issue telemetry.Issue, value string) bool {
-	return value != "" && (issue.Identifier == value || issue.ID == value)
+func issueMatchesIdentity(issue telemetry.Issue, identity explain.Identity) bool {
+	if issue.ProjectID != "" && identity.ProjectID != "" && issue.ProjectID != identity.ProjectID {
+		return false
+	}
+	return issue.ID != "" && issue.ID == identity.IssueID ||
+		issue.Identifier != "" && issue.Identifier == identity.Identifier ||
+		issue.URL != "" && issue.URL == identity.IssueURL ||
+		issue.Number > 0 && issue.Number == identity.Number
 }
 
 func workspaceResponse(path string, host string) workspaceAPIResponse {
@@ -1340,10 +1354,15 @@ func generatedAt(snapshot telemetry.Snapshot, fallback time.Time) time.Time {
 }
 
 func issueIdentifier(c echo.Context) string {
+	value := c.Param("*")
 	if issue := c.Param("issue"); issue != "" {
-		return issue
+		value = issue
 	}
-	return c.Param("*")
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return value
+	}
+	return decoded
 }
 
 func errorResponse(code string, message string) apiErrorResponse {
@@ -1686,7 +1705,10 @@ type workflowPhaseEventAPIResponse struct {
 type issueAPIResponse struct {
 	IssueIdentifier string                   `json:"issue_identifier"`
 	IssueID         string                   `json:"issue_id"`
+	ProjectID       string                   `json:"project_id,omitempty"`
 	Status          string                   `json:"status"`
+	Lane            string                   `json:"lane,omitempty"`
+	Activity        string                   `json:"activity"`
 	Workspace       workspaceAPIResponse     `json:"workspace"`
 	Attempts        attemptsAPIResponse      `json:"attempts"`
 	Running         *runningIssueAPIResponse `json:"running"`
