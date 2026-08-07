@@ -156,6 +156,42 @@ paths:
                   - $ref: "#/components/schemas/State"
                   - $ref: "#/components/schemas/SnapshotUnavailable"
         "404": {$ref: "#/components/responses/Problem"}
+  /api/v1/projects/{project_id}/issues/explanation:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      operationId: getIssueExplanation
+      summary: Explain an issue's current orchestration state
+      description: Returns the versioned issue explanation read model, including degraded source states when live evidence is unavailable.
+      tags: [projects, telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/projects/:project_id/issues/explanation
+      parameters:
+        - in: query
+          name: reference
+          required: true
+          description: Issue ID, canonical identifier, issue URL, bare number, or hash-prefixed number.
+          schema: {type: string, minLength: 1}
+        - in: query
+          name: schema
+          description: Requested response schema version. Omit to use the current version.
+          schema: {type: integer, enum: [1]}
+      responses:
+        "200":
+          description: Versioned issue explanation, possibly containing degraded or last-known evidence.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IssueExplanation"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/timeseries:
     parameters:
       - $ref: "#/components/parameters/ProjectID"
@@ -858,6 +894,66 @@ components:
           properties:
             code: {type: string, enum: [snapshot_unavailable]}
             message: {type: string}
+    IssueExplanation:
+      type: object
+      description: Version 1 issue state assembled from tracker, runtime, session, pull-request, and gate evidence.
+      required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, sources, evidence]
+      properties:
+        schema: {type: integer, enum: [1]}
+        found: {type: boolean}
+        observed_at: {type: string, format: date-time}
+        identity: {$ref: "#/components/schemas/IssueExplanationIdentity"}
+        current_lane: {$ref: "#/components/schemas/IssueExplanationLane"}
+        latest_transition: {$ref: "#/components/schemas/GenericObject"}
+        eligibility: {$ref: "#/components/schemas/GenericObject"}
+        attempt: {$ref: "#/components/schemas/GenericObject"}
+        sessions: {$ref: "#/components/schemas/GenericObject"}
+        pull_request: {$ref: "#/components/schemas/GenericObject"}
+        required_gate: {$ref: "#/components/schemas/GenericObject"}
+        sources:
+          type: array
+          items: {$ref: "#/components/schemas/IssueExplanationSource"}
+        evidence:
+          type: array
+          items: {$ref: "#/components/schemas/IssueExplanationEvidence"}
+    IssueExplanationIdentity:
+      type: object
+      required: [project_id]
+      properties:
+        project_id: {type: string}
+        issue_id: {type: string}
+        identifier: {type: string}
+        issue_url: {type: string, format: uri}
+        number: {type: integer}
+        title: {type: string}
+    IssueExplanationLane:
+      type: object
+      required: [freshness, degraded]
+      properties:
+        name: {type: string}
+        observed_at: {type: string, format: date-time}
+        freshness: {$ref: "#/components/schemas/IssueExplanationSourceState"}
+        degraded: {type: boolean}
+        evidence_id: {type: string}
+    IssueExplanationSource:
+      type: object
+      required: [name, state]
+      properties:
+        name: {type: string}
+        state: {$ref: "#/components/schemas/IssueExplanationSourceState"}
+        code: {type: string}
+    IssueExplanationEvidence:
+      type: object
+      required: [id, kind]
+      properties:
+        id: {type: string}
+        kind:
+          type: string
+          enum: [snapshot, workflow, attempt, scheduler, admission, session, provider_session, pull_request]
+        observed_at: {type: string, format: date-time}
+    IssueExplanationSourceState:
+      type: string
+      enum: [available, live, last_known, expired, unavailable, corrupt]
     State:
       type: object
       required: [generated_at, status, shutdown, instance, projects, stats, board]
