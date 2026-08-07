@@ -242,6 +242,46 @@ func TestServiceAttemptSessionAndGatePrecedence(t *testing.T) {
 	}
 }
 
+func TestServiceActiveAttemptGateFallback(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 18, 0, 0, 0, time.UTC)
+	prNumber := int64(11)
+	tests := []struct {
+		name       string
+		issue      telemetry.Issue
+		wantState  GateState
+		wantSource string
+	}{
+		{name: "snapshot has no pull request", issue: telemetry.Issue{}, wantState: GatePassed, wantSource: "attempt"},
+		{name: "snapshot hydration unavailable", issue: telemetry.Issue{PullRequest: &telemetry.PullRequest{Number: 11, HydrationUnavailableReason: "rate_limit"}}, wantState: GatePassed, wantSource: "attempt"},
+		{name: "snapshot gate unknown", issue: telemetry.Issue{PullRequest: &telemetry.PullRequest{Number: 11}}, wantState: GatePassed, wantSource: "attempt"},
+		{name: "snapshot gate is usable", issue: telemetry.Issue{PullRequest: &telemetry.PullRequest{Number: 11, CIStatus: "pending"}}, wantState: GatePending, wantSource: "snapshot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := tt.issue
+			issue.ID = "issue-1"
+			issue.ProjectID = "detent"
+			reader := &evidenceReader{
+				observation: liveIssueObservation(now, issue),
+				active: []store.WorkAttempt{{
+					ID: 5, ProjectID: "detent", IssueID: "issue-1", PRNumber: &prNumber,
+					Status: store.WorkAttemptStatusActive, StartedAt: now.Add(-time.Minute), HeartbeatAt: now, CIState: "passed",
+				}},
+			}
+			got, err := newTestService(now, reader).Explain(context.Background(), Query{ProjectID: "detent", IssueID: "issue-1"})
+			if err != nil {
+				t.Fatalf("Explain() error = %v", err)
+			}
+			if got.RequiredGate.State != tt.wantState || got.RequiredGate.Source != tt.wantSource {
+				t.Fatalf("required gate = %#v, want state %q from %q", got.RequiredGate, tt.wantState, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestServiceDistinguishesRequiredGateStates(t *testing.T) {
 	t.Parallel()
 

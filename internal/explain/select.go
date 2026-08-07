@@ -696,11 +696,14 @@ func selectGate(attempt *store.WorkAttempt, selection string, collected collecte
 	snapshotGate, snapshotRecorded := gateFromSnapshot(collected)
 	attemptGate, attemptRecorded := gateFromAttempt(attempt, selection)
 
-	if collected.snapshot.State == SourceLive && snapshotRecorded {
+	if collected.snapshot.State == SourceLive && snapshotRecorded && gateIsUsable(snapshotGate) {
 		return snapshotGate
 	}
-	if selection == "active" && attemptRecorded {
+	if selection == "active" && attemptRecorded && gateIsUsable(attemptGate) {
 		return attemptGate
+	}
+	if collected.snapshot.State == SourceLive && snapshotRecorded {
+		return snapshotGate
 	}
 	if collected.snapshot.State == SourceLastKnown && snapshotRecorded {
 		return snapshotGate
@@ -717,6 +720,10 @@ func selectGate(attempt *store.WorkAttempt, selection string, collected collecte
 		gate.State = GateUnavailable
 	}
 	return gate
+}
+
+func gateIsUsable(gate Gate) bool {
+	return gate.State == GatePending || gate.State == GateFailed || gate.State == GatePassed
 }
 
 func gateFromSnapshot(collected collectedEvidence) (Gate, bool) {
