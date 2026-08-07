@@ -148,6 +148,7 @@ type Dependencies struct {
 	Efficiency           efficiency.Recorder
 	LifecycleExporter    efficiency.LifecycleExporter
 	WorkAttempts         store.WorkAttemptStore
+	MergeRequiredChecks  store.MergeRequiredCheckStore
 	ProgressSpend        store.ProgressSpendStore
 	AgentResume          store.AgentResumeStore
 	OrphanSessions       store.OrphanSessionStore
@@ -201,6 +202,7 @@ type Orchestrator struct {
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter
 	workAttempts            store.WorkAttemptStore
+	mergeRequiredChecks     store.MergeRequiredCheckStore
 	operatorStops           store.OperatorStopStore
 	progressSpend           store.ProgressSpendStore
 	agentResume             store.AgentResumeStore
@@ -404,6 +406,17 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			progressSpend = candidate
 		}
 	}
+	mergeRequiredChecks := deps.MergeRequiredChecks
+	if mergeRequiredChecks == nil {
+		if candidate, ok := deps.WorkAttempts.(store.MergeRequiredCheckStore); ok {
+			mergeRequiredChecks = candidate
+		}
+	}
+	if mergeRequiredChecks == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.MergeRequiredCheckStore); ok {
+			mergeRequiredChecks = candidate
+		}
+	}
 	var operatorStops store.OperatorStopStore
 	if candidate, ok := deps.WorkAttempts.(store.OperatorStopStore); ok {
 		operatorStops = candidate
@@ -455,6 +468,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		efficiency:              deps.Efficiency,
 		lifecycleExporter:       deps.LifecycleExporter,
 		workAttempts:            deps.WorkAttempts,
+		mergeRequiredChecks:     mergeRequiredChecks,
 		operatorStops:           operatorStops,
 		progressSpend:           progressSpend,
 		agentResume:             agentResume,

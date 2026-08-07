@@ -1092,6 +1092,12 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.finishMergeRevocation(ctx, state, event, running, revocation)
 		return true
 	}
+	missingChecks := mergeWorkerMissingRequiredChecks(issue)
+	streaks := o.evaluateMergeRequiredCheckStreaks(ctx, issue, missingChecks, event.CompletedAt)
+	if persistent := persistentMissingRequiredCheckStreaks(streaks); len(persistent) > 0 {
+		o.blockPersistentlyMissingRequiredChecks(ctx, state, event, running, issue, persistent)
+		return true
+	}
 	if event.Result.PullRequestHeadPushed {
 		triggerPending := false
 		if !event.Result.CITriggerLabelReapplied {
@@ -1109,7 +1115,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
 			return true
 		}
-		if missingChecks := mergeWorkerMissingRequiredChecks(issue); len(missingChecks) > 0 {
+		if len(missingChecks) > 0 {
 			triggerPending := o.scheduleCITriggerLabel(ctx, issue, missingChecks, running.Attempt, false, false)
 			if triggerPending || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
 				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
@@ -2003,6 +2009,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	tokens TokenTotals,
 ) {
 	o.heartbeats.remove(issueID)
+	o.clearMergeRequiredCheckStreaks(ctx, running.Issue)
 	o.completeDurableWorkAttempt(ctx, state, running, completedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	if running.cancel != nil {
