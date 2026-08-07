@@ -5968,6 +5968,15 @@ func successfulDoctorDeps() doctorDeps {
 		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
 			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
 		},
+		githubRepositoryInfo: func(_ context.Context, _ workflowconfig.Config, repository string) (ghconnector.RepositoryInfo, error) {
+			return ghconnector.RepositoryInfo{
+				ID:            1,
+				NameWithOwner: repository,
+				Private:       true,
+				Visibility:    "private",
+				DefaultBranch: "main",
+			}, nil
+		},
 		listen: func(string, string) (net.Listener, error) {
 			return fakeDoctorListener{addr: fakeDoctorAddr("127.0.0.1:49152")}, nil
 		},
@@ -5976,6 +5985,13 @@ func successfulDoctorDeps() doctorDeps {
 		},
 		gitWorkTree: func(context.Context, string) error {
 			return nil
+		},
+		workflowSourcePolicy: func(_ context.Context, projectID string, _ globalconfig.Project, _ string, _ string) doctorCheck {
+			return doctorCheck{
+				Name:   "Project " + projectID + " workflow source policy",
+				Status: doctorOK,
+				Detail: "workflow source policy verified",
+			}
 		},
 		executable: func() (string, error) {
 			return filepath.Join("Users", "corylanou", "go", "bin", "detent"), nil
