@@ -35,6 +35,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
+func TestMain(m *testing.M) {
+	if err := os.Unsetenv("DETENT_API_TOKEN"); err != nil {
+		panic("clear DETENT_API_TOKEN: " + err.Error())
+	}
+	os.Exit(m.Run())
+}
+
 func TestShouldLaunchTerminalDashboard(t *testing.T) {
 	t.Parallel()
 
