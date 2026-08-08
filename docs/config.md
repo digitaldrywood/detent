@@ -581,6 +581,8 @@ rendering and fails on drift.
 | `retro.single_occurrence_severity` | `string` | `"critical" when configured` | No | must be one of info, warning, high, critical |
 | `retro.target_state` | `string` | `"Backlog" when configured` | No | must name a configured tracker state |
 | `routines` | `list<object>` | `[]` | No | None |
+| `routines[].max_findings_per_run` | `integer` | `3 when configured` | No | must be greater than 0 |
+| `routines[].max_open_findings` | `integer` | `10 when configured` | No | must be greater than 0 |
 | `routines[].name` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
 | `routines[].prompt` | `string` | `none` | Conditional | is required |
 | `routines[].schedule` | `string` | `none` | Conditional | is required<br>must be a valid five-field cron expression |

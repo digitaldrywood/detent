@@ -70,6 +70,8 @@ instead of built-in Go behavior.
 routines:
   - name: dependency-audit
     schedule: "0 3 * * 1"
+    max_findings_per_run: 3
+    max_open_findings: 10
     prompt: |
       Apply the dependency-audit criteria in the Maintenance section below.
       Propose only actionable upgrades with repository evidence and explicit
@@ -88,6 +90,13 @@ directly or point the agent to a named section or file in the repository.
 Invalid blocks fail workflow validation and appear as `detent doctor` workflow
 errors.
 
+`max_findings_per_run` defaults to `3` and is the hard maximum Detent will file
+from one run. `max_open_findings` defaults to `10` and stops a routine from
+filing more work when that many issues filed by the same routine remain open.
+Both values must be greater than zero. These limits are enforced after proposal
+validation and deduplication and immediately before issue creation, regardless
+of what the routine prompt asks the agent to do.
+
 When a routine is enabled or its schedule changes, its first run is the next
 scheduled occurrence; Detent does not replay missed occurrences. Each run uses
 a fresh read-only agent session. The agent proposes zero or more findings with
@@ -95,16 +104,21 @@ a stable `dedup_key`, title, and issue body. Detent validates those proposals,
 files accepted findings with the `detent:todo` label in `Todo`, and leaves
 normal onboarding to the existing board loop.
 
+Routine findings bypass Backlog and backlog admission, including admission's
+author allowlist and proposal decision step. They become dispatchable Todo work
+as soon as Detent files them.
+
 Filed issue bodies carry a project/routine/key fingerprint. A later run with the
 same fingerprint skips filing while the matching issue is open, including when
 that issue has moved to another configured board state. Closing the issue allows
 a future recurrence to file a new issue. Multiple identical proposals in one
 run are also collapsed.
 
-The runtime store records the scheduled, started, and completed times, filed
-and deduplicated counts, issue references, and any failure for every run.
-`detent doctor` shows the latest result for each configured routine, warns when
-a routine has never run, and flags three consecutive failures. ProjectV2
+The runtime store records the scheduled, started, and completed times; proposed,
+filed, deduplicated, and safety-limited counts; issue references; and any failure
+for every run. `detent doctor` shows the latest result for each configured
+routine, warns when a routine has never run, and flags three consecutive
+failures or three consecutive runs that hit a finding ceiling. ProjectV2
 trackers must set `tracker.repository` so Detent can create the repository issue
 before adding it to the board.
 

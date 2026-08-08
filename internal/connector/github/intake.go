@@ -63,7 +63,7 @@ func (c *Connector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDra
 	}
 	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
 		if err := c.addIntakeIssueToProject(ctx, issue.ID); err != nil {
-			return intake.Issue{}, err
+			return intakeIssue(issue), err
 		}
 	}
 	return intakeIssue(issue), nil
@@ -165,5 +165,6 @@ func intakeIssue(issue connector.Issue) intake.Issue {
 		Number:     number,
 		URL:        strings.TrimSpace(issue.URL),
 		Body:       issue.Description,
+		Closed:     issue.Closed,
 	}
 }

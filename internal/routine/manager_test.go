@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +271,110 @@ func TestManagerRunOnceDeduplicatesRepeatedProposalInSameRun(t *testing.T) {
 	}
 }
 
+func TestManagerRunOnceEnforcesFindingLimits(t *testing.T) {
+	t.Parallel()
+	proposals := []Proposal{
+		{DedupKey: "finding/one", Title: "Finding one", Body: "Evidence one."},
+		{DedupKey: "finding/two", Title: "Finding two", Body: "Evidence two."},
+		{DedupKey: "finding/three", Title: "Finding three", Body: "Evidence three."},
+	}
+	tests := []struct {
+		name         string
+		maxPerRun    int
+		maxOpen      int
+		proposals    int
+		existingOpen int
+		wantFiled    int
+		wantLimited  int
+	}{
+		{name: "under per-run cap", maxPerRun: 3, maxOpen: 10, proposals: 2, wantFiled: 2},
+		{name: "exactly at per-run cap", maxPerRun: 2, maxOpen: 10, proposals: 2, wantFiled: 2},
+		{name: "over per-run cap", maxPerRun: 2, maxOpen: 10, proposals: 3, wantFiled: 2, wantLimited: 1},
+		{name: "over open-finding cap with existing issues", maxPerRun: 3, maxOpen: 2, proposals: 1, existingOpen: 2, wantLimited: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issues := &fakeIssueStore{}
+			for index := range tt.existingOpen {
+				issues.issues = append(issues.issues, connector.Issue{
+					ID: fmt.Sprintf("existing-%d", index),
+				})
+			}
+			store := &fakeStore{}
+			if tt.existingOpen > 0 {
+				record := RunRecord{ProjectID: "detent", RoutineName: "maintenance"}
+				for index := range tt.existingOpen {
+					record.Issues = append(record.Issues, IssueRecord{ID: fmt.Sprintf("existing-%d", index)})
+				}
+				store.records = append(store.records, record)
+			}
+			manager, err := New(Settings{
+				ProjectID: "detent",
+				Definitions: []config.Routine{{
+					Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect.",
+					MaxFindingsPerRun: tt.maxPerRun, MaxOpenFindings: tt.maxOpen,
+				}},
+				SearchStates: []string{"Backlog", "Todo", "Done"},
+				Runner:       fakeRunner{proposals: proposals[:tt.proposals]},
+				Issues:       issues,
+			}, store, nil, func() time.Time { return time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC) })
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			result, err := manager.RunOnce(context.Background(), "maintenance")
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if result.Proposed != tt.proposals || len(result.Filed) != tt.wantFiled || result.Limited != tt.wantLimited {
+				t.Fatalf("Result = %#v, want proposed=%d filed=%d limited=%d", result, tt.proposals, tt.wantFiled, tt.wantLimited)
+			}
+			gotRecord := store.records[len(store.records)-1]
+			if gotRecord.Proposed != tt.proposals || gotRecord.Filed != tt.wantFiled || gotRecord.Limited != tt.wantLimited {
+				t.Fatalf("Run records = %#v", store.records)
+			}
+		})
+	}
+}
+
+func TestManagerRunOnceCountsPartialCreationsAgainstLimits(t *testing.T) {
+	t.Parallel()
+	proposals := []Proposal{
+		{DedupKey: "finding/one", Title: "Finding one", Body: "Evidence one."},
+		{DedupKey: "finding/two", Title: "Finding two", Body: "Evidence two."},
+		{DedupKey: "finding/three", Title: "Finding three", Body: "Evidence three."},
+	}
+	issues := &fakeIssueStore{createErr: errors.New("project add failed"), partialCreate: true, hideFromBoard: true}
+	store := &fakeStore{}
+	manager, err := New(Settings{
+		ProjectID: "detent",
+		Definitions: []config.Routine{{
+			Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect.", MaxFindingsPerRun: 2, MaxOpenFindings: 2,
+		}},
+		SearchStates: []string{"Todo"},
+		Runner:       fakeRunner{proposals: proposals},
+		Issues:       issues,
+	}, store, nil, func() time.Time { return time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	result, err := manager.RunOnce(context.Background(), "maintenance")
+	if err == nil || !strings.Contains(err.Error(), "project add failed") {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if issues.createCalls != 2 || len(result.Filed) != 2 || result.Limited != 1 || len(store.trackedIssues) != 2 {
+		t.Fatalf("first result = %#v, create calls = %d, tracked = %#v", result, issues.createCalls, store.trackedIssues)
+	}
+
+	result, err = manager.RunOnce(context.Background(), "maintenance")
+	if err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	if issues.createCalls != 2 || len(result.Filed) != 0 || result.Limited != 3 {
+		t.Fatalf("second result = %#v, create calls = %d", result, issues.createCalls)
+	}
+}
+
 func TestManagerRunOnceRecordsFailures(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)
@@ -356,8 +461,10 @@ func (f fakeRunner) Run(ctx context.Context, request runner.RunRequest) (runner.
 }
 
 type fakeStore struct {
-	records   []RunRecord
-	recordErr error
+	records       []RunRecord
+	trackedIssues []IssueRecord
+	closedIssues  map[string]bool
+	recordErr     error
 }
 
 func (s *fakeStore) LatestRoutineRun(_ context.Context, projectID string, routineName string) (RunRecord, bool, error) {
@@ -374,13 +481,56 @@ func (s *fakeStore) RecordRoutineRun(_ context.Context, record RunRecord) error 
 	return s.recordErr
 }
 
+func (s *fakeStore) OpenRoutineIssueIDs(_ context.Context, projectID string, routineName string) ([]string, error) {
+	seen := map[string]struct{}{}
+	var issueIDs []string
+	for _, record := range s.records {
+		if record.ProjectID != projectID || record.RoutineName != routineName {
+			continue
+		}
+		for _, issue := range record.Issues {
+			if !s.closedIssues[issue.ID] {
+				seen[issue.ID] = struct{}{}
+			}
+		}
+	}
+	for _, issue := range s.trackedIssues {
+		if !s.closedIssues[issue.ID] {
+			seen[issue.ID] = struct{}{}
+		}
+	}
+	for issueID := range seen {
+		issueIDs = append(issueIDs, issueID)
+	}
+	return issueIDs, nil
+}
+
+func (s *fakeStore) RecordRoutineIssue(_ context.Context, _ string, _ string, issue IssueRecord) error {
+	s.trackedIssues = append(s.trackedIssues, issue)
+	return nil
+}
+
+func (s *fakeStore) CloseRoutineIssues(_ context.Context, _ string, _ string, issueIDs []string) error {
+	if s.closedIssues == nil {
+		s.closedIssues = map[string]bool{}
+	}
+	for _, issueID := range issueIDs {
+		s.closedIssues[issueID] = true
+	}
+	return nil
+}
+
 type fakeIssueStore struct {
-	issues    []connector.Issue
-	drafts    []intake.IssueDraft
-	states    []string
-	fetchErr  error
-	createErr error
-	stateErr  error
+	issues        []connector.Issue
+	drafts        []intake.IssueDraft
+	states        []string
+	fetchErr      error
+	createErr     error
+	stateErr      error
+	findErr       error
+	partialCreate bool
+	hideFromBoard bool
+	createCalls   int
 }
 
 type routineMetricsRecorder struct {
@@ -393,17 +543,48 @@ func (r *routineMetricsRecorder) RecordWorkflowPhaseEvent(_ context.Context, eve
 }
 
 func (s *fakeIssueStore) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	if s.hideFromBoard {
+		return nil, s.fetchErr
+	}
 	return append([]connector.Issue(nil), s.issues...), s.fetchErr
 }
 
+func (s *fakeIssueStore) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) ([]connector.Issue, error) {
+	wanted := map[string]struct{}{}
+	for _, issueID := range issueIDs {
+		wanted[issueID] = struct{}{}
+	}
+	var issues []connector.Issue
+	for _, issue := range s.issues {
+		if _, ok := wanted[issue.ID]; ok {
+			issues = append(issues, issue)
+		}
+	}
+	return issues, s.fetchErr
+}
+
+func (s *fakeIssueStore) FindIntakeIssue(_ context.Context, marker string) (intake.Issue, bool, error) {
+	if s.findErr != nil {
+		return intake.Issue{}, false, s.findErr
+	}
+	for _, issue := range s.issues {
+		if strings.Contains(issue.Description, marker) {
+			return intake.Issue{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL, Body: issue.Description, Closed: issue.Closed}, true, nil
+		}
+	}
+	return intake.Issue{}, false, nil
+}
+
 func (s *fakeIssueStore) CreateIntakeIssue(_ context.Context, draft intake.IssueDraft) (intake.Issue, error) {
-	if s.createErr != nil {
+	s.createCalls++
+	if s.createErr != nil && !s.partialCreate {
 		return intake.Issue{}, s.createErr
 	}
 	s.drafts = append(s.drafts, draft)
 	id := "issue-" + time.Now().Format("150405.000000000")
 	s.issues = append(s.issues, connector.Issue{ID: id, Identifier: "DET-1", Description: draft.Body, Labels: append([]string(nil), draft.Labels...)})
-	return intake.Issue{ID: id, Identifier: "DET-1", URL: "https://example.test/issues/1", Body: draft.Body}, nil
+	issue := intake.Issue{ID: id, Identifier: "DET-1", URL: "https://example.test/issues/1", Body: draft.Body}
+	return issue, s.createErr
 }
 
 func (s *fakeIssueStore) SetIntakeIssueState(_ context.Context, _ string, state string) error {

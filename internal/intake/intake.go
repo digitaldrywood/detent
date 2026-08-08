@@ -41,6 +41,7 @@ type Issue struct {
 	Number     int    `json:"number,omitempty"`
 	URL        string `json:"url,omitempty"`
 	Body       string `json:"-"`
+	Closed     bool   `json:"-"`
 }
 
 type IssueDraft struct {

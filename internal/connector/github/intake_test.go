@@ -139,6 +139,33 @@ func TestConnectorCreateIntakeIssueAddsProjectV2Item(t *testing.T) {
 	}
 }
 
+func TestConnectorCreateIntakeIssueReturnsPartialIssueWhenProjectAddFails(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/issues",
+			body:   `{"node_id":"I_2","number":2,"title":"Alert","body":"body","state":"open","html_url":"https://github.com/example/repo/issues/2"}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/",
+			status: http.StatusInternalServerError,
+			body:   `{"message":"project unavailable"}`,
+		},
+	})
+	connector := newGitHubTestConnector(t, server, Config{Repository: "example/repo", ProjectSlug: "PVT_1"})
+
+	issue, err := connector.CreateIntakeIssue(context.Background(), intake.IssueDraft{Title: "Alert", Body: "body"})
+	if err == nil {
+		t.Fatal("CreateIntakeIssue() error = nil")
+	}
+	if issue.ID != "I_2" || issue.Number != 2 {
+		t.Fatalf("CreateIntakeIssue() issue = %#v", issue)
+	}
+}
+
 func TestConnectorSetIntakeIssueStateResolvesUncachedProjectItem(t *testing.T) {
 	t.Parallel()
 

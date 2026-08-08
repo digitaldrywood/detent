@@ -8,8 +8,10 @@ type RunRecord struct {
 	ScheduledFor time.Time
 	StartedAt    time.Time
 	CompletedAt  time.Time
+	Proposed     int
 	Filed        int
 	Deduplicated int
+	Limited      int
 	Issues       []IssueRecord
 	Error        string
 }

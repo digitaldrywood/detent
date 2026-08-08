@@ -564,6 +564,7 @@ func memoryIntakeIssue(issue connector.Issue) intake.Issue {
 		Number:     issue.Number,
 		URL:        issue.URL,
 		Body:       issue.Description,
+		Closed:     issue.Closed,
 	}
 }
 

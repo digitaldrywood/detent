@@ -240,6 +240,15 @@ type RetroRun struct {
 	EventDay      string         `json:"event_day"`
 }
 
+type RoutineFinding struct {
+	ProjectID   string `json:"project_id"`
+	RoutineName string `json:"routine_name"`
+	IssueID     string `json:"issue_id"`
+	Identifier  string `json:"identifier"`
+	Url         string `json:"url"`
+	Open        int64  `json:"open"`
+}
+
 type RoutineRun struct {
 	ID                int64          `json:"id"`
 	ProjectID         string         `json:"project_id"`
@@ -251,6 +260,8 @@ type RoutineRun struct {
 	DeduplicatedCount int64          `json:"deduplicated_count"`
 	IssuesJson        string         `json:"issues_json"`
 	Error             sql.NullString `json:"error"`
+	ProposedCount     int64          `json:"proposed_count"`
+	LimitedCount      int64          `json:"limited_count"`
 }
 
 type SchedulerDecision struct {
