@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io/fs"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/operatorskill"
 )
 
 func TestStaticFSContainsCSSOutput(t *testing.T) {
@@ -16,5 +18,11 @@ func TestStaticFSContainsCSSOutput(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("tailwindcss")) {
 		t.Fatalf("css/output.css missing Tailwind marker:\n%s", data)
+	}
+}
+
+func TestOperatorSkillContentMatchesBundle(t *testing.T) {
+	if content := OperatorSkillContent(); !bytes.Equal(content, operatorskill.Content()) {
+		t.Fatal("OperatorSkillContent() does not match the source bundle")
 	}
 }
