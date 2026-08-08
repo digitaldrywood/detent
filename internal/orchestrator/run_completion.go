@@ -1358,6 +1358,9 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 	if issue.PullRequest == nil {
 		return reason
 	}
+	if unstartedChecks := pullRequestCheckNames(issue.PullRequest.UnstartedChecks); len(unstartedChecks) > 0 {
+		return reason + ": unstarted checks: " + strings.Join(unstartedChecks, ", ")
+	}
 	pendingRequiredChecks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
 	for _, check := range issue.PullRequest.RequiredCheckFailures {
 		if autoPromoteCheckPending(check) && strings.TrimSpace(check.Name) != "" {
@@ -1369,9 +1372,6 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 	}
 	if runningChecks := uniqueStrings(issue.PullRequest.RunningChecks); len(runningChecks) > 0 {
 		return reason + ": pending checks: " + strings.Join(runningChecks, ", ")
-	}
-	if unstartedChecks := pullRequestCheckNames(issue.PullRequest.UnstartedChecks); len(unstartedChecks) > 0 {
-		return reason + ": unstarted checks: " + strings.Join(unstartedChecks, ", ")
 	}
 	return reason
 }

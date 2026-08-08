@@ -2462,6 +2462,24 @@ func TestCheckRunTelemetryDistinguishesUnstartedChecks(t *testing.T) {
 			checkRuns:   []restCheckRun{{Name: "Portability Verify", Status: "in_progress", CreatedAt: &oldQueuedAt, StartedAt: &recentStartedAt}},
 			wantRunning: []string{"Portability Verify"},
 		},
+		{
+			name: "unstarted checks are sorted and limited",
+			checkRuns: []restCheckRun{
+				{ID: 6, Name: "F", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 1, Name: "A", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 5, Name: "E", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 2, Name: "B", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 4, Name: "D", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 3, Name: "C", Status: "queued", CreatedAt: &oldQueuedAt},
+			},
+			wantUnstarted: []connector.PullRequestCheck{
+				{ID: 1, Name: "A", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 2, Name: "B", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 3, Name: "C", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 4, Name: "D", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 5, Name: "E", Status: "queued", QueueSeconds: 47 * 60},
+			},
+		},
 		{name: "empty check run list"},
 	}
 

@@ -482,6 +482,9 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun,
 		}
 		return unstartedChecks[i].Name < unstartedChecks[j].Name
 	})
+	if len(unstartedChecks) > pullRequestUnstartedCheckLimit {
+		unstartedChecks = unstartedChecks[:pullRequestUnstartedCheckLimit]
+	}
 	var durationSeconds int64
 	if !hasRunning && checkStartedAt != nil && completedAt != nil && !completedAt.Before(*checkStartedAt) {
 		durationSeconds = int64(completedAt.Sub(*checkStartedAt) / time.Second)

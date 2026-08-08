@@ -19,6 +19,7 @@ const (
 	pullRequestsPageLimit                     = 3
 	pullRequestSlowCheckLimit                 = 3
 	pullRequestRunningCheckLimit              = 5
+	pullRequestUnstartedCheckLimit            = 5
 	defaultUnstartedCheckThreshold            = 15 * time.Minute
 	defaultProjectItemStatusState             = "Backlog"
 	defaultProjectItemStatusWriteParallelism  = 4
