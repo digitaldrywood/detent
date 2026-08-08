@@ -45,12 +45,14 @@ the orchestration policy changes with the code it governs.
 
 - `github_token: gh` reuses the authenticated GitHub CLI credential instead of
   storing a token in YAML.
-- Five host slots bound total process concurrency. Project caps divide that
-  capacity into three API slots and two storefront slots, so either repository
-  can stay responsive without exhausting the host.
-- Weighted scheduling gives the API twice the dispatch share when both queues
-  are ready. Equal priority keeps that weight meaningful; lower numeric
-  priority can still be assigned temporarily with `detent promote`.
+- Five host slots bound total process concurrency. Project caps limit the API
+  to three agents and the storefront to two, so either repository can stay
+  responsive without exhausting the host.
+- Weighted scheduling prefers the API two to one when both queues are ready and
+  a host and project slot are available. Once both projects reach their caps,
+  running concurrency is bounded at three to two; weights do not override
+  those caps. Equal priority keeps weight meaningful before saturation. Use
+  `detent promote` to assign a temporarily lower numeric priority.
 - Source checkouts and generated worktrees have separate roots. Agents work in
   isolated worktrees and never mutate the long-lived source checkout.
 - Each project has its own color for dashboard scanning, but IDs remain the
@@ -61,9 +63,10 @@ the orchestration policy changes with the code it governs.
 Both projects use repository labels as their status source, auto-provision the
 expected labels, serialize the merge lane, require `make check`, and keep the
 dashboard on loopback. The API may run three agents concurrently because its
-queue receives the larger scheduling share; the storefront is capped at two.
-Everything else stays intentionally aligned so operators can reason about one
-workflow across both repositories.
+project cap is three; the storefront is capped at two. Scheduling weights
+choose between ready projects while capacity remains. Everything else stays
+intentionally aligned so operators can reason about one workflow across both
+repositories.
 
 The files include every setting needed for this deployment model. Optional
 subsystems such as intake, scheduled routines, model routing, budgets, and
