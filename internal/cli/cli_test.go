@@ -1214,6 +1214,10 @@ func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
 			writeGlobalConfig(t, targetPath, nil)
 			runCLITestGit(t, repo, "init")
 			repositoryRoot := runCLITestGit(t, repo, "rev-parse", "--show-toplevel")
+			repositoryRoot, err := filepath.Abs(repositoryRoot)
+			if err != nil {
+				t.Fatalf("Abs(%q) error = %v", repositoryRoot, err)
+			}
 			runCLITestGit(t, repo, "add", "global.yaml")
 			runCLITestGit(t, repo, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "commit", "-m", "initial")
 
