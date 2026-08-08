@@ -16,6 +16,24 @@ type RepositoryInfo struct {
 	DefaultBranch string
 }
 
+func (c *Connector) FetchRepositoryLabels(ctx context.Context, repository string) ([]string, error) {
+	repo, ok := pullRequestRepoFromName(repository)
+	if !ok {
+		return nil, fmt.Errorf("invalid GitHub repository %q", repository)
+	}
+	labels, err := fetchRESTList[label](ctx, c.client, restRepositoryLabelsListPath(repo))
+	if err != nil {
+		return nil, fmt.Errorf("fetch github repository labels: %w", err)
+	}
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if name := strings.TrimSpace(label.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func (c *Connector) FetchRepositoryInfo(ctx context.Context, repository string) (RepositoryInfo, error) {
 	repository = strings.TrimSpace(repository)
 	if repository == "" {

@@ -1542,6 +1542,40 @@ rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
 
+Create the repository labels referenced by the generated escape-hatch config
+for every GitHub status-source mode. Read the existing inventory first and do
+not pass `--force`: an existing label with the same case-insensitive name must
+be left unchanged. The helper also remains available for the status-label step
+below when `GITHUB_MODE=label`:
+
+```sh
+TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+AUTO_PROMOTE_OPTOUT_LABEL="$(awk -F= '/^AUTO_PROMOTE_OPTOUT_LABEL=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+MAX_SESSION_TOKEN_OVERRIDE_LABEL="$(awk -F= '/^MAX_SESSION_TOKEN_OVERRIDE_LABEL=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+test -n "$AUTO_PROMOTE_OPTOUT_LABEL" || AUTO_PROMOTE_OPTOUT_LABEL=requires-human-review
+test -n "$MAX_SESSION_TOKEN_OVERRIDE_LABEL" || MAX_SESSION_TOKEN_OVERRIDE_LABEL=allow-large-session
+
+gh api "repos/$TARGET_REPOSITORY/labels" --paginate --jq '.[].name' \
+  > "$ONBOARDING_DIR/repo-labels.txt"
+
+create_label_if_missing() {
+  label_name="$1"
+  label_color="$2"
+  label_description="$3"
+  if rg -Fxi -- "$label_name" "$ONBOARDING_DIR/repo-labels.txt" >/dev/null; then
+    return
+  fi
+  gh label create "$label_name" --repo "$TARGET_REPOSITORY" \
+    --color "$label_color" --description "$label_description"
+  printf '%s\n' "$label_name" >> "$ONBOARDING_DIR/repo-labels.txt"
+}
+
+create_label_if_missing "$AUTO_PROMOTE_OPTOUT_LABEL" b60205 \
+  "Excludes an issue from Detent auto-promotion."
+create_label_if_missing "$MAX_SESSION_TOKEN_OVERRIDE_LABEL" fbca04 \
+  "Allows an issue to exceed the configured agent session token ceiling."
+```
+
 Before any ProjectV2 board mutation such as `gh project create`, `gh project
 link`, `gh project field-create`, or `gh project item-edit`, also run:
 
@@ -1844,26 +1878,27 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      "$ONBOARDING_DIR/repo-labels.sorted.txt"
    ```
 
-   If `comm` prints missing labels and you are using the default prefix, create
-   them before starting Detent:
+   If `comm` prints missing labels, create them before starting Detent. Reuse
+   the idempotent `create_label_if_missing` helper defined above so existing
+   labels are not overwritten:
 
    ```sh
-   gh label create detent:backlog --repo <repo-owner>/<repo-name> \
-     --color cfd3d7 --description "Not ready for Detent dispatch."
-   gh label create detent:todo --repo <repo-owner>/<repo-name> \
-     --color cfd3d7 --description "Ready for Detent dispatch."
-   gh label create detent:in-progress --repo <repo-owner>/<repo-name> \
-     --color fbca04 --description "Work is currently active."
-   gh label create detent:blocked --repo <repo-owner>/<repo-name> \
-     --color d73a4a --description "Cannot continue without human input."
-   gh label create detent:human-review --repo <repo-owner>/<repo-name> \
-     --color 6f42c1 --description "Waiting for human review."
-   gh label create detent:rework --repo <repo-owner>/<repo-name> \
-     --color d93f0b --description "Changes are requested before review can continue."
-   gh label create detent:merging --repo <repo-owner>/<repo-name> \
-     --color 6f42c1 --description "Approved work is being integrated."
-   gh label create detent:done --repo <repo-owner>/<repo-name> \
-     --color 0e8a16 --description "Work is complete."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}backlog" cfd3d7 \
+     "Not ready for Detent dispatch."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}todo" cfd3d7 \
+     "Ready for Detent dispatch."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}in-progress" fbca04 \
+     "Work is currently active."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}blocked" d73a4a \
+     "Cannot continue without human input."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}human-review" 6f42c1 \
+     "Waiting for human review."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}rework" d93f0b \
+     "Changes are requested before review can continue."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}merging" 6f42c1 \
+     "Approved work is being integrated."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}done" 0e8a16 \
+     "Work is complete."
    ```
 
    For a custom `STATUS_LABEL_PREFIX` or custom workflow states, generate the
@@ -2297,7 +2332,18 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an
    additional token-consumption backstop because cached context is counted
    again on every Codex turn. A small multiplier can terminate otherwise
-   healthy sessions after only a few full-context turns. Keep
+   healthy sessions after only a few full-context turns. Whenever
+   `MAX_SESSION_TOKENS` is positive, record the per-issue escape hatch that the
+   generated config will reference:
+
+   ```sh
+   printf '%s\n' \
+     'MAX_SESSION_TOKEN_OVERRIDE_LABEL=allow-large-session' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^MAX_SESSION_TOKEN_OVERRIDE_LABEL=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Keep
    `agent.no_progress_token_limit` positive as the cross-session brake,
    especially when `budget.billing_mode: subscription` makes USD controls
    inert.
