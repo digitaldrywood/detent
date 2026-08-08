@@ -12,12 +12,100 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
+
+func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
+	t.Parallel()
+
+	want := json.RawMessage(`{"generated_at":"2026-08-08T02:30:00Z","freshness":"last_known","expires_at":"2026-08-08T02:45:00Z","items":[]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/operator-tools/board_state" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Accept") != "application/json" || request.Header.Get("Content-Type") != "application/json" || request.Header.Get("Authorization") != "Bearer read-token" {
+			t.Errorf("headers = %#v", request.Header)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("ReadAll() error = %v", err)
+		}
+		if string(body) != `{"project_id":"detent","limit":1}` {
+			t.Errorf("body = %s", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(want)
+	}))
+	t.Cleanup(server.Close)
+	client := dashboardClientForServer(t, server, "read-token")
+	result, err := client.Execute(t.Context(), operatortool.Call{
+		Name:      operatortool.BoardState,
+		Arguments: json.RawMessage(`{"project_id":"detent","limit":1}`),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !jsonEqualBytes(result.Content, want) {
+		t.Fatalf("result = %s, want %s", result.Content, want)
+	}
+}
+
+func TestDashboardReadClientOperatorToolFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("mutation rejected before HTTP", func(t *testing.T) {
+		t.Parallel()
+		var requests atomic.Int64
+		client := &DashboardReadClient{
+			baseURL: &url.URL{Scheme: "http", Host: "example.invalid"},
+			http: dashboardHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+				requests.Add(1)
+				return nil, errors.New("unexpected request")
+			}),
+		}
+		_, err := client.Execute(t.Context(), operatortool.Call{Name: "propose_move_item"})
+		if !errors.Is(err, operatortool.ErrUnknownTool) || requests.Load() != 0 {
+			t.Fatalf("error = %v, requests = %d", err, requests.Load())
+		}
+	})
+
+	t.Run("daemon unavailable", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		client := dashboardClientForServer(t, server, "")
+		server.Close()
+		_, err := client.Execute(t.Context(), operatortool.Call{Name: operatortool.FleetHealth})
+		var transport *DashboardTransportError
+		if !errors.As(err, &transport) || transport.Timeout {
+			t.Fatalf("error = %#v, want unavailable transport error", err)
+		}
+	})
+
+	t.Run("malformed daemon result", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(writer, `[]`)
+		}))
+		t.Cleanup(server.Close)
+		client := dashboardClientForServer(t, server, "")
+		_, err := client.Execute(t.Context(), operatortool.Call{Name: operatortool.TelemetryUsage})
+		if err == nil || !strings.Contains(err.Error(), "not a JSON object") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
+func jsonEqualBytes(left []byte, right []byte) bool {
+	var leftValue any
+	var rightValue any
+	return json.Unmarshal(left, &leftValue) == nil && json.Unmarshal(right, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
+}
 
 func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
 	t.Parallel()

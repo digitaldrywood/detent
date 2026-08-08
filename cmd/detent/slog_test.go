@@ -338,6 +338,7 @@ func TestCommandOutputJSONSelected(t *testing.T) {
 		{name: "env pretty overrides pipe", env: "pretty"},
 		{name: "flag json overrides env pretty", env: "pretty", args: []string{"version", "--format", "json"}, stdoutTTY: true, want: true},
 		{name: "flag pretty overrides env json", env: "json", args: []string{"--format=pretty", "version"}, want: false},
+		{name: "MCP always reserves stdout", env: "pretty", args: []string{"--config", "/tmp/example", "mcp"}, stdoutTTY: true, want: true},
 	}
 
 	for _, tt := range tests {

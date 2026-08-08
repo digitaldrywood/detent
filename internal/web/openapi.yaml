@@ -103,6 +103,42 @@ paths:
         "400": {$ref: "#/components/responses/Problem"}
         "401": {$ref: "#/components/responses/Problem"}
         "403": {$ref: "#/components/responses/Problem"}
+  /api/v1/operator-tools/{tool_name}:
+    parameters:
+      - in: path
+        name: tool_name
+        required: true
+        description: Name from the shared read-only operator tool catalog.
+        schema: {type: string, minLength: 1}
+    post:
+      operationId: callReadOnlyOperatorTool
+      summary: Call a shared read-only operator tool
+      description: Executes only tools in the shared read-only catalog against the daemon's live read model. The POST body contains the tool arguments and cannot dispatch dashboard proposal mutations.
+      tags: [telemetry, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operator-tools/:tool_name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GenericObject"}
+      responses:
+        "200":
+          description: Exact structured result produced by the shared operator tool executor.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "413": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/work-items:
     parameters:
       - $ref: "#/components/parameters/ProjectID"

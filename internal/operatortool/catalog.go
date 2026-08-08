@@ -13,6 +13,7 @@ const (
 	ExplainItem      = "explain_item"
 	DefaultItemLimit = 100
 	MaxItemLimit     = 200
+	MaxArgumentBytes = 64 * 1024
 	MaxResultBytes   = 256 * 1024
 )
 
@@ -32,6 +33,15 @@ func Catalog() []Definition {
 		definition(RecentActivity, "Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.", activitySchema),
 		definition(ExplainItem, "Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.", `{"type":"object","required":["project_id","reference"],"properties":{"project_id":{"type":"string","minLength":1},"reference":{"type":"string","minLength":1}},"additionalProperties":false}`),
 	}
+}
+
+func Lookup(name string) (Definition, bool) {
+	for _, definition := range Catalog() {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return Definition{}, false
 }
 
 func definition(name string, description string, schema string) Definition {

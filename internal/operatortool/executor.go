@@ -1,16 +1,24 @@
 package operatortool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+var (
+	ErrInvalidArguments    = errors.New("invalid tool arguments")
+	ErrSnapshotUnavailable = errors.New("operator telemetry snapshot is unavailable")
+	ErrUnknownTool         = errors.New("unknown read-only operator tool")
 )
 
 type Call struct {
@@ -63,7 +71,7 @@ func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
 	case ExplainItem:
 		return e.explainItem(ctx, call.Arguments)
 	default:
-		return Result{}, fmt.Errorf("unknown read-only operator tool %q", call.Name)
+		return Result{}, fmt.Errorf("%w %q", ErrUnknownTool, call.Name)
 	}
 }
 
@@ -82,16 +90,27 @@ func (e *Executor) boardState(ctx context.Context, raw json.RawMessage) (Result,
 	}
 	items := boardItems(snapshot, request.ProjectID, request.State)
 	items = bounded(items, itemLimit(request.Limit))
-	return encodeResult(BoardStateResult{GeneratedAt: snapshot.GeneratedAt, Counts: snapshot.Counts, Items: items})
+	return encodeResult(BoardStateResult{
+		GeneratedAt: snapshot.GeneratedAt,
+		Freshness:   snapshotFreshness(snapshot),
+		ExpiresAt:   snapshotExpiresAt(snapshot),
+		Counts:      snapshot.Counts,
+		Items:       items,
+	})
 }
 
-func (e *Executor) fleetHealth(ctx context.Context, _ json.RawMessage) (Result, error) {
+func (e *Executor) fleetHealth(ctx context.Context, raw json.RawMessage) (Result, error) {
+	if err := decodeArguments(raw, &struct{}{}); err != nil {
+		return Result{}, err
+	}
 	snapshot, err := e.snapshot(ctx)
 	if err != nil {
 		return Result{}, err
 	}
 	return encodeResult(FleetHealthResult{
 		GeneratedAt:        snapshot.GeneratedAt,
+		Freshness:          snapshotFreshness(snapshot),
+		ExpiresAt:          snapshotExpiresAt(snapshot),
 		Auth:               snapshot.Auth,
 		Shutdown:           snapshot.Shutdown,
 		Refresh:            snapshot.Refresh,
@@ -123,6 +142,8 @@ func (e *Executor) telemetryUsage(ctx context.Context, raw json.RawMessage) (Res
 	projects = bounded(projects, MaxItemLimit)
 	return encodeResult(TelemetryUsageResult{
 		GeneratedAt:    snapshot.GeneratedAt,
+		Freshness:      snapshotFreshness(snapshot),
+		ExpiresAt:      snapshotExpiresAt(snapshot),
 		Projects:       projects,
 		Tokens:         snapshot.Tokens,
 		Throughput:     snapshot.Throughput,
@@ -156,7 +177,13 @@ func (e *Executor) recentActivity(ctx context.Context, raw json.RawMessage) (Res
 		events = events[len(events)-limit:]
 	}
 	completed = bounded(completed, limit)
-	return encodeResult(RecentActivityResult{GeneratedAt: snapshot.GeneratedAt, Events: events, Completed: completed})
+	return encodeResult(RecentActivityResult{
+		GeneratedAt: snapshot.GeneratedAt,
+		Freshness:   snapshotFreshness(snapshot),
+		ExpiresAt:   snapshotExpiresAt(snapshot),
+		Events:      events,
+		Completed:   completed,
+	})
 }
 
 func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result, error) {
@@ -166,6 +193,11 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	}
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
+	}
+	request.ProjectID = strings.TrimSpace(request.ProjectID)
+	request.Reference = strings.TrimSpace(request.Reference)
+	if request.ProjectID == "" || request.Reference == "" {
+		return Result{}, fmt.Errorf("%w: project_id and reference are required", ErrInvalidArguments)
 	}
 	if e.explainer == nil {
 		return Result{}, errors.New("issue explanation is unavailable")
@@ -179,19 +211,53 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 
 func (e *Executor) snapshot(ctx context.Context) (telemetry.Snapshot, error) {
 	if e.snapshots == nil {
-		return telemetry.Snapshot{}, errors.New("operator telemetry snapshot is unavailable")
+		return telemetry.Snapshot{}, ErrSnapshotUnavailable
 	}
-	return e.snapshots.Snapshot(ctx)
+	snapshot, err := e.snapshots.Snapshot(ctx)
+	if err != nil {
+		return telemetry.Snapshot{}, err
+	}
+	if snapshot.GeneratedAt.IsZero() {
+		return telemetry.Snapshot{}, ErrSnapshotUnavailable
+	}
+	return snapshot, nil
 }
 
 func decodeArguments(raw json.RawMessage, target any) error {
 	if len(raw) == 0 || string(raw) == "null" {
 		raw = json.RawMessage(`{}`)
 	}
-	if err := json.Unmarshal(raw, target); err != nil {
-		return fmt.Errorf("invalid tool arguments: %w", err)
+	if len(raw) > MaxArgumentBytes {
+		return fmt.Errorf("%w: payload exceeds %d bytes", ErrInvalidArguments, MaxArgumentBytes)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidArguments, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return fmt.Errorf("%w: %w", ErrInvalidArguments, err)
 	}
 	return nil
+}
+
+func snapshotFreshness(snapshot telemetry.Snapshot) explain.SourceState {
+	if snapshot.LastKnown {
+		return explain.SourceLastKnown
+	}
+	return explain.SourceLive
+}
+
+func snapshotExpiresAt(snapshot telemetry.Snapshot) *time.Time {
+	if !snapshot.LastKnown || snapshot.LastKnownUntil.IsZero() {
+		return nil
+	}
+	expiresAt := snapshot.LastKnownUntil.UTC()
+	return &expiresAt
 }
 
 func encodeResult(value any) (Result, error) {
@@ -249,9 +315,11 @@ func boundedBudget(budget telemetry.Budget) telemetry.Budget {
 }
 
 type BoardStateResult struct {
-	GeneratedAt time.Time        `json:"generated_at"`
-	Counts      telemetry.Counts `json:"counts"`
-	Items       []BoardItem      `json:"items"`
+	GeneratedAt time.Time           `json:"generated_at"`
+	Freshness   explain.SourceState `json:"freshness"`
+	ExpiresAt   *time.Time          `json:"expires_at,omitempty"`
+	Counts      telemetry.Counts    `json:"counts"`
+	Items       []BoardItem         `json:"items"`
 }
 
 type BoardItem struct {
@@ -274,6 +342,8 @@ type BoardItem struct {
 
 type FleetHealthResult struct {
 	GeneratedAt        time.Time                    `json:"generated_at"`
+	Freshness          explain.SourceState          `json:"freshness"`
+	ExpiresAt          *time.Time                   `json:"expires_at,omitempty"`
 	Auth               telemetry.AuthHealth         `json:"auth"`
 	Shutdown           telemetry.Shutdown           `json:"shutdown"`
 	Refresh            telemetry.Refresh            `json:"refresh"`
@@ -286,6 +356,8 @@ type FleetHealthResult struct {
 
 type TelemetryUsageResult struct {
 	GeneratedAt    time.Time                   `json:"generated_at"`
+	Freshness      explain.SourceState         `json:"freshness"`
+	ExpiresAt      *time.Time                  `json:"expires_at,omitempty"`
 	Projects       []telemetry.ProjectSnapshot `json:"projects"`
 	Tokens         telemetry.Tokens            `json:"tokens"`
 	Throughput     telemetry.TokenThroughput   `json:"throughput"`
@@ -295,6 +367,8 @@ type TelemetryUsageResult struct {
 
 type RecentActivityResult struct {
 	GeneratedAt time.Time                 `json:"generated_at"`
+	Freshness   explain.SourceState       `json:"freshness"`
+	ExpiresAt   *time.Time                `json:"expires_at,omitempty"`
 	Events      []telemetry.ActivityEvent `json:"events"`
 	Completed   []telemetry.Completed     `json:"completed"`
 }
