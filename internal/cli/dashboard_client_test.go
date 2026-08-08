@@ -234,6 +234,7 @@ func TestClassifyDashboardReadProblems(t *testing.T) {
 		{name: "forbidden", err: &DashboardResponseError{StatusCode: http.StatusForbidden, Code: "forbidden", Message: "scope denied"}, wantCode: errorCodeDashboardForbidden, wantExit: ExitAuth, wantDetail: "scope denied"},
 		{name: "ambiguous", err: &DashboardResponseError{StatusCode: http.StatusConflict, Code: "ambiguous_reference", Message: "ambiguous"}, wantCode: errorCodeAmbiguousReference, wantExit: ExitValidation, wantDetail: "ambiguous"},
 		{name: "not found", err: &DashboardResponseError{StatusCode: http.StatusNotFound, Code: "issue_not_found", Message: "missing"}, wantCode: errorCodeIssueNotFound, wantExit: ExitNotFoundOrConfig, wantDetail: "missing"},
+		{name: "route unsupported", err: &DashboardResponseError{StatusCode: http.StatusNotFound, Code: "project_not_found", Message: "Project not found"}, wantCode: errorCodeUnsupportedModelVersion, wantExit: ExitGeneral, wantDetail: "running service does not support the issue explanation API"},
 		{name: "unsupported model", err: &DashboardResponseError{StatusCode: http.StatusConflict, Code: "version_conflict", Message: "unsupported"}, wantCode: errorCodeUnsupportedModelVersion, wantExit: ExitGeneral, wantDetail: "unsupported"},
 		{name: "runtime unavailable", err: &DashboardResponseError{StatusCode: http.StatusServiceUnavailable, Code: "runtime_unavailable", Message: "not ready"}, wantCode: errorCodeRuntimeUnavailable, wantExit: ExitGeneral, wantDetail: "not ready"},
 	}

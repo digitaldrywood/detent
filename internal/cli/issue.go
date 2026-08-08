@@ -80,8 +80,10 @@ func classifyDashboardReadError(err error) error {
 		return NewClassifiedError(ErrDashboardForbidden, errorCodeDashboardForbidden, detail, "Use a credential with read scope for the requested project.", nil)
 	case response.Code == "ambiguous_reference":
 		return NewClassifiedError(ErrDashboardAmbiguousReference, errorCodeAmbiguousReference, detail, "Use an issue ID, canonical identifier, or full issue URL within the selected project.", nil)
-	case response.StatusCode == http.StatusNotFound || response.Code == "issue_not_found":
+	case response.Code == "issue_not_found":
 		return NewClassifiedError(ErrDashboardIssueNotFound, errorCodeIssueNotFound, detail, "Verify --project and the issue reference.", nil)
+	case response.StatusCode == http.StatusNotFound:
+		return NewClassifiedError(ErrDashboardUnsupportedModel, errorCodeUnsupportedModelVersion, "running service does not support the issue explanation API", "Upgrade or restart Detent so the running service provides the issue explanation endpoint.", nil)
 	case response.Code == "version_conflict":
 		return NewClassifiedError(ErrDashboardUnsupportedModel, errorCodeUnsupportedModelVersion, detail, "Upgrade Detent so the CLI and running service support the same read-model schema.", nil)
 	case response.Code == "bad_request":
