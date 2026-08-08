@@ -115,6 +115,7 @@ func newRootCommandWithRestart(ctx context.Context, shutdownController *cli.Shut
 	cmd.AddCommand(
 		newVersionCommand(),
 		newUpdateCommand(ctx, newDefaultUpdateRunner),
+		newSkillCommand(build),
 		newShadowRunCommand(),
 	)
 	cli.ConfigureExamplesFirstHelp(cmd)
