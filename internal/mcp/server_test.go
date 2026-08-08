@@ -155,6 +155,42 @@ func TestToolCallReturnsStructuredContentOnce(t *testing.T) {
 	}
 }
 
+func TestToolCallReturnsTextContentForLegacyVersions(t *testing.T) {
+	t.Parallel()
+
+	content := json.RawMessage(`{"generated_at":"2026-08-08T02:30:00Z","freshness":"live","items":[]}`)
+	tests := []struct {
+		name    string
+		version string
+	}{
+		{name: "March 2025", version: "2025-03-26"},
+		{name: "November 2024", version: "2024-11-05"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			executor := &staticExecutor{result: operatortool.Result{Content: content}}
+			client := startLiveServer(t, executor)
+			client.write(strings.Replace(initializeRequest, ProtocolVersion, test.version, 1))
+			client.read()
+			client.write(initializedNotice)
+			client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"board_state","arguments":{"limit":1}}}`)
+			response := client.read()
+			client.close()
+
+			var result struct {
+				Content           []textContent   `json:"content"`
+				StructuredContent json.RawMessage `json:"structuredContent"`
+			}
+			decodeResult(t, response, &result)
+			if len(result.Content) != 1 || result.Content[0].Type != "text" || result.Content[0].Text != string(content) || len(result.StructuredContent) != 0 {
+				t.Fatalf("tool result = %#v, want one JSON text content block", result)
+			}
+		})
+	}
+}
+
 func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 	t.Parallel()
 

@@ -125,12 +125,13 @@ type session struct {
 	version  string
 	output   io.Writer
 
-	mu       sync.Mutex
-	state    lifecycleState
-	active   map[string]*activeRequest
-	calls    sync.WaitGroup
-	writeMu  sync.Mutex
-	writeErr error
+	mu              sync.Mutex
+	state           lifecycleState
+	protocolVersion string
+	active          map[string]*activeRequest
+	calls           sync.WaitGroup
+	writeMu         sync.Mutex
+	writeErr        error
 }
 
 type activeRequest struct {
@@ -220,15 +221,16 @@ func (s *session) initialize(message request) error {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid initialize parameters", nil)
 	}
 
+	negotiated := negotiateVersion(params.ProtocolVersion)
 	s.mu.Lock()
 	if s.state != stateNew {
 		s.mu.Unlock()
 		return s.writeError(message.ID, codeInvalidRequest, "Server is already initialized", nil)
 	}
 	s.state = stateInitialized
+	s.protocolVersion = negotiated
 	s.mu.Unlock()
 
-	negotiated := negotiateVersion(params.ProtocolVersion)
 	return s.writeResult(message.ID, map[string]any{
 		"protocolVersion": negotiated,
 		"capabilities": map[string]any{
@@ -341,6 +343,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 	}
 	s.active[key] = active
 	s.calls.Add(1)
+	protocolVersion := s.protocolVersion
 	s.mu.Unlock()
 
 	call := operatortool.Call{Name: params.Name, Arguments: params.Arguments}
@@ -360,10 +363,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			}
 			return
 		}
-		if writeErr := s.writeResult(message.ID, toolCallResult{
-			Content:           []textContent{},
-			StructuredContent: result.Content,
-		}); writeErr != nil {
+		if writeErr := s.writeResult(message.ID, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
 			return
 		}
 	}()
@@ -396,6 +396,13 @@ type toolCallResult struct {
 type textContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+func successfulToolCallResult(protocolVersion string, content json.RawMessage) toolCallResult {
+	if protocolVersion == "2024-11-05" || protocolVersion == "2025-03-26" {
+		return toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}}
+	}
+	return toolCallResult{Content: []textContent{}, StructuredContent: content}
 }
 
 func (s *session) completeRequest(key string, active *activeRequest) bool {

@@ -147,7 +147,8 @@ It supports the initialization-based MCP revisions `2024-11-05`, `2025-03-26`,
 `2025-06-18`, and `2025-11-25`, negotiating `2025-11-25` when a client requests
 another revision. The process reads newline-delimited JSON-RPC messages from
 stdin and reserves stdout for protocol frames. Logs and command diagnostics go
-to stderr.
+to stderr. Successful calls use structured content for the 2025-06-18 and
+2025-11-25 revisions and one JSON text content block for the older revisions.
 
 The MCP process is an HTTP client of the already-running Detent daemon. It uses
 the same config, host, port, wildcard-to-loopback mapping, API-token precedence,
