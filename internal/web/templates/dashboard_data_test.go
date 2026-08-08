@@ -2960,6 +2960,86 @@ func TestPRPipelineWaitDetailIncludesDispatchSkipReason(t *testing.T) {
 	}
 }
 
+func TestPRPipelineWaitDetailShowsCurrentMergeSubstate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 22, 13, 0, 0, time.UTC)
+	enteredAt := now.Add(-10 * time.Minute)
+	acquiredAt := now.Add(-9 * time.Minute)
+	ciWaitStartedAt := now.Add(-8 * time.Minute)
+	completedAt := now.Add(-time.Minute)
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  string
+	}{
+		{
+			name: "waiting for merge worker slot",
+			issue: telemetry.Issue{
+				State:       "Merging",
+				MergeTiming: &telemetry.MergeTiming{EnteredMergingAt: &enteredAt},
+			},
+			want: "waiting for merge worker slot since " + localTimeToken(enteredAt, LocalTimeOnly),
+		},
+		{
+			name: "waiting on named current-head checks",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					RunningChecks: []string{"Test Coverage", "Release"},
+					RequiredCheckFailures: []telemetry.PullRequestCheck{
+						{Name: "Test Coverage", Status: "in_progress"},
+						{Name: "Release", Status: "queued"},
+					},
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					CIWaitStartedAt:           &ciWaitStartedAt,
+				},
+			},
+			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": Test Coverage, Release",
+		},
+		{
+			name: "active merge without a blocking check",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus: "success",
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+				},
+			},
+			want: "active merge since " + localTimeToken(acquiredAt, LocalTimeOnly),
+		},
+		{
+			name: "terminal merge retains duration detail",
+			issue: telemetry.Issue{
+				State: "Done",
+				MergeTiming: &telemetry.MergeTiming{
+					MergedAt:                   &completedAt,
+					QueueWaitSeconds:           60,
+					ActiveMergeDurationSeconds: 480,
+					TotalMergingSeconds:        540,
+				},
+			},
+			want: "merge queue 1m 0s / active merge 8m 0s / total Merging 9m 0s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := prPipelineWaitDetail(tt.issue); got != tt.want {
+				t.Fatalf("prPipelineWaitDetail() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRPipelineCardIncludesIssueAndPullRequestIdentity(t *testing.T) {
 	t.Parallel()
 

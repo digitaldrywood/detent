@@ -4079,6 +4079,7 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
 	parts := []string{}
+	mergeDetail := prPipelineMergeWaitDetail(issue)
 	if reason := prPipelineDispatchSkipWaitReason(issue); reason != "" {
 		parts = append(parts, reason)
 	} else if reason := prPipelineAutoPromoteWaitReason(issue); reason != "" {
@@ -4109,12 +4110,12 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		if slowChecks := prPipelineSlowChecks(issue.PullRequest.SlowChecks); slowChecks != "" {
 			parts = append(parts, "slow "+slowChecks)
 		}
-		if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" {
+		if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" && mergeDetail == "" {
 			parts = append(parts, "running "+runningChecks)
 		}
 	}
-	if merge := prPipelineMergeWaitDetail(issue.MergeTiming); merge != "" {
-		parts = append(parts, merge)
+	if mergeDetail != "" {
+		parts = append(parts, mergeDetail)
 	}
 	return strings.Join(parts, " / ")
 }
@@ -4190,9 +4191,25 @@ func prPipelineHumanReviewWaitReason(issue telemetry.Issue) string {
 	return "waiting for auto-promote"
 }
 
-func prPipelineMergeWaitDetail(timing *telemetry.MergeTiming) string {
+func prPipelineMergeWaitDetail(issue telemetry.Issue) string {
+	timing := issue.MergeTiming
 	if timing == nil {
 		return ""
+	}
+	if timing.MergedAt == nil && timing.MergeFailedAt == nil && prPipelineLaneID(issue.State) == "merging" {
+		if timing.MergeWorkerSlotAcquiredAt == nil {
+			return prPipelineMergeSubstate("waiting for merge worker slot", timing.EnteredMergingAt)
+		}
+		if checks := prPipelineMergeBlockingChecks(issue.PullRequest); checks != "" {
+			state := prPipelineMergeSubstate(
+				"waiting on current-head CI",
+				timing.CIWaitStartedAt,
+				timing.MergeStartedAt,
+				timing.MergeWorkerSlotAcquiredAt,
+			)
+			return state + ": " + checks
+		}
+		return prPipelineMergeSubstate("active merge", timing.MergeWorkerSlotAcquiredAt)
 	}
 	parts := []string{}
 	if timing.QueueWaitSeconds > 0 {
@@ -4205,6 +4222,41 @@ func prPipelineMergeWaitDetail(timing *telemetry.MergeTiming) string {
 		parts = append(parts, "total Merging "+formatDuration(float64(timing.TotalMergingSeconds)))
 	}
 	return strings.Join(parts, " / ")
+}
+
+func prPipelineMergeSubstate(state string, sinceCandidates ...*time.Time) string {
+	for _, since := range sinceCandidates {
+		if since != nil && !since.IsZero() {
+			return state + " since " + localTimeToken(*since, LocalTimeOnly)
+		}
+	}
+	return state
+}
+
+func prPipelineMergeBlockingChecks(pullRequest *telemetry.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	checks := make([]string, 0, len(pullRequest.RequiredCheckFailures)+len(pullRequest.RunningChecks))
+	for _, check := range pullRequest.RequiredCheckFailures {
+		if prPipelineCheckPending(check) {
+			checks = append(checks, check.Name)
+		}
+	}
+	checks = append(checks, pullRequest.RunningChecks...)
+	return strings.Join(uniqueStrings(checks), ", ")
+}
+
+func prPipelineCheckPending(check telemetry.PullRequestCheck) bool {
+	if strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(check.Status)) {
+	case "missing", "pending", "queued", "waiting", "in_progress", "in progress", "requested", "expected":
+		return true
+	default:
+		return false
+	}
 }
 
 func pullRequestHydrationWaitDetail(unavailableReason string, degradedReason string, nextRetryAt *time.Time) string {
