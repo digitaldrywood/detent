@@ -138,6 +138,7 @@ Structured command objects:
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
 | `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
+| `detent state [--project detent]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
 ### MCP stdio server
@@ -180,3 +181,18 @@ caller cancellation.
 JSON mode writes exactly one issue explanation DTO to stdout. Pretty mode is a
 human-readable projection of the same DTO. Diagnostics and JSON problem objects
 remain on stderr.
+
+### Fleet state reads
+
+`detent state` reads the public `/api/v1/state` model from the running service.
+`--project <project-id>` selects the existing project-scoped state route. The
+CLI projection does not expose the fuller internal snapshot's `board_issues`
+array. It preserves `generated_at`, refresh freshness and source degradation,
+and snapshot-unavailable degraded responses.
+
+Every JSON array is limited to its first 100 entries in service order. The
+top-level `truncation` object always reports that limit and contains
+`truncated` plus a `collections` array of JSON Pointer paths and omitted counts.
+The one-MiB shared-client response limit also bounds non-collection content.
+JSON is written to stdout, pretty output is only a human-readable projection,
+and diagnostics remain on stderr.

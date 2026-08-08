@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 const (
 	dashboardReadTimeout     = 10 * time.Second
 	dashboardResponseBodyMax = 1 << 20
+	stateCollectionLimit     = 100
 )
 
 type dashboardHTTPClient interface {
@@ -59,6 +61,22 @@ func (e *DashboardResponseError) Error() string {
 type DashboardTransportError struct {
 	Timeout bool
 	Err     error
+}
+
+type DashboardState struct {
+	payload    map[string]any
+	Truncation StateTruncation
+}
+
+type StateTruncation struct {
+	Limit       int                         `json:"limit"`
+	Truncated   bool                        `json:"truncated"`
+	Collections []StateCollectionTruncation `json:"collections"`
+}
+
+type StateCollectionTruncation struct {
+	Path    string `json:"path"`
+	Omitted int    `json:"omitted"`
 }
 
 func (e *DashboardTransportError) Error() string {
@@ -121,10 +139,9 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 	if projectID == "" || reference == "" {
 		return explain.IssueExplanation{}, ValidationError("--project and issue reference are required")
 	}
-	if c == nil || c.baseURL == nil || c.http == nil {
+	if c == nil || c.baseURL == nil {
 		return explain.IssueExplanation{}, errors.New("dashboard API client is not configured")
 	}
-
 	requestURL := *c.baseURL
 	requestURL.Path = "/api/v1/projects/" + projectID + "/issues/explanation"
 	requestURL.RawPath = "/api/v1/projects/" + url.PathEscape(projectID) + "/issues/explanation"
@@ -133,6 +150,75 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 	query.Set("schema", strconv.Itoa(explain.SchemaVersion))
 	requestURL.RawQuery = query.Encode()
 
+	var result explain.IssueExplanation
+	statusCode, err := c.readJSON(ctx, requestURL, &result)
+	if err != nil {
+		return explain.IssueExplanation{}, err
+	}
+	if result.Schema != explain.SchemaVersion {
+		return explain.IssueExplanation{}, &DashboardResponseError{
+			StatusCode: statusCode,
+			Code:       "version_conflict",
+			Message:    fmt.Sprintf("dashboard returned unsupported issue explanation schema %d", result.Schema),
+		}
+	}
+	return result, nil
+}
+
+func (c *DashboardReadClient) State(ctx context.Context, projectID string) (DashboardState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return DashboardState{}, err
+	}
+	if c == nil || c.baseURL == nil {
+		return DashboardState{}, errors.New("dashboard API client is not configured")
+	}
+
+	requestURL := *c.baseURL
+	projectID = strings.TrimSpace(projectID)
+	requestURL.Path = "/api/v1/state"
+	requestURL.RawPath = ""
+	if projectID != "" {
+		requestURL.Path = "/api/v1/projects/" + projectID + "/state"
+		requestURL.RawPath = "/api/v1/projects/" + url.PathEscape(projectID) + "/state"
+	}
+
+	payload := map[string]any{}
+	if _, err := c.readJSON(ctx, requestURL, &payload); err != nil {
+		return DashboardState{}, err
+	}
+	delete(payload, "board_issues")
+	truncation := StateTruncation{Limit: stateCollectionLimit, Collections: []StateCollectionTruncation{}}
+	truncateStateCollections(payload, "", &truncation)
+	truncation.Truncated = len(truncation.Collections) > 0
+	return DashboardState{payload: payload, Truncation: truncation}, nil
+}
+
+func (s DashboardState) MarshalJSON() ([]byte, error) {
+	payload := make(map[string]any, len(s.payload)+1)
+	for key, value := range s.payload {
+		payload[key] = value
+	}
+	payload["truncation"] = s.Truncation
+	return json.Marshal(payload)
+}
+
+func (s DashboardState) field(name string) any {
+	return s.payload[name]
+}
+
+func (c *DashboardReadClient) readJSON(ctx context.Context, requestURL url.URL, result any) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if c == nil || c.baseURL == nil || c.http == nil {
+		return 0, errors.New("dashboard API client is not configured")
+	}
 	timeout := c.timeout
 	if timeout <= 0 {
 		timeout = dashboardReadTimeout
@@ -141,7 +227,7 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
-		return explain.IssueExplanation{}, fmt.Errorf("create dashboard API request: %w", err)
+		return 0, fmt.Errorf("create dashboard API request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
 	if c.credential != "" {
@@ -151,38 +237,79 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 	response, err := c.http.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {
-			return explain.IssueExplanation{}, ctx.Err()
+			return 0, ctx.Err()
 		}
-		return explain.IssueExplanation{}, &DashboardTransportError{
+		return 0, &DashboardTransportError{
 			Timeout: errors.Is(requestContext.Err(), context.DeadlineExceeded),
 			Err:     err,
 		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return explain.IssueExplanation{}, decodeDashboardResponseError(response)
+		return response.StatusCode, decodeDashboardResponseError(response)
 	}
+	if err := decodeDashboardJSON(response.Body, result); err != nil {
+		return response.StatusCode, err
+	}
+	return response.StatusCode, nil
+}
 
-	var result explain.IssueExplanation
-	decoder := json.NewDecoder(io.LimitReader(response.Body, dashboardResponseBodyMax))
-	if err := decoder.Decode(&result); err != nil {
-		return explain.IssueExplanation{}, fmt.Errorf("decode dashboard API response: %w", err)
+func decodeDashboardJSON(reader io.Reader, result any) error {
+	body, err := io.ReadAll(io.LimitReader(reader, dashboardResponseBodyMax+1))
+	if err != nil {
+		return fmt.Errorf("read dashboard API response: %w", err)
+	}
+	if len(body) > dashboardResponseBodyMax {
+		return fmt.Errorf("read dashboard API response: response exceeds %d bytes", dashboardResponseBodyMax)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(result); err != nil {
+		return fmt.Errorf("decode dashboard API response: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return explain.IssueExplanation{}, fmt.Errorf("decode dashboard API response: %w", err)
+		return fmt.Errorf("decode dashboard API response: %w", err)
 	}
-	if result.Schema != explain.SchemaVersion {
-		return explain.IssueExplanation{}, &DashboardResponseError{
-			StatusCode: response.StatusCode,
-			Code:       "version_conflict",
-			Message:    fmt.Sprintf("dashboard returned unsupported issue explanation schema %d", result.Schema),
+	return nil
+}
+
+func truncateStateCollections(value any, path string, truncation *StateTruncation) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		if typed == nil {
+			return typed
 		}
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			typed[key] = truncateStateCollections(typed[key], path+"/"+jsonPointerToken(key), truncation)
+		}
+		return typed
+	case []any:
+		if len(typed) > stateCollectionLimit {
+			truncation.Collections = append(truncation.Collections, StateCollectionTruncation{
+				Path:    path,
+				Omitted: len(typed) - stateCollectionLimit,
+			})
+			typed = typed[:stateCollectionLimit]
+		}
+		for index := range typed {
+			typed[index] = truncateStateCollections(typed[index], path+"/"+strconv.Itoa(index), truncation)
+		}
+		return typed
 	}
-	return result, nil
+	return value
+}
+
+func jsonPointerToken(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
 }
 
 func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
