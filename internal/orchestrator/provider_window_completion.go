@@ -47,6 +47,8 @@ func (o *Orchestrator) handleModelPermitDeferred(
 		DueAt:         completedAt.Add(delay),
 		Error:         dispatchSkipRateWindowBackpressure,
 		WorkerHost:    running.WorkerHost,
+		RetryMode:     event.Request.RetryMode,
+		ResumeState:   event.Request.ResumeState,
 		MergePrecheck: cloneMergePrecheck(event.Result.MergePrecheck),
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{

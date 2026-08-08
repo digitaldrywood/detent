@@ -10,6 +10,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestProviderWindowAdmissionDecisions(t *testing.T) {
@@ -222,11 +223,22 @@ func TestModelPermitDeferralReleasesHardCapacityAndPreservesPrecheck(t *testing.
 		ModelPermitExempt: true,
 	}
 	precheck := &runpkg.MergePrecheck{Status: "dirty", Message: "local changes", DiffStats: DiffStats{FilesChanged: 1}}
+	resumeState := store.AgentResumeState{
+		DetentSessionID:   1659,
+		ProviderThreadID:  "thread-1659",
+		ProviderSessionID: "session-1659",
+		Orphaned:          true,
+	}
 	orch := &Orchestrator{cfg: cfg}
 
 	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
-		IssueID:     issue.ID,
-		Request:     runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeMerge},
+		IssueID: issue.ID,
+		Request: runpkg.RunRequest{
+			Issue:       issue,
+			Mode:        runpkg.RunModeMerge,
+			RetryMode:   runpkg.RetryModeResume,
+			ResumeState: resumeState,
+		},
 		Result:      runpkg.RunResult{Output: runpkg.RunOutputMergeFallbackDeferred, MergePrecheck: precheck},
 		Err:         runpkg.ErrModelPermitUnavailable,
 		CompletedAt: now,
@@ -241,6 +253,9 @@ func TestModelPermitDeferralReleasesHardCapacityAndPreservesPrecheck(t *testing.
 	retry := state.Retry[issue.ID]
 	if retry.MergePrecheck == nil || retry.MergePrecheck.Status != precheck.Status || retry.MergePrecheck.Message != precheck.Message {
 		t.Fatalf("retry = %#v, want preserved precheck", retry)
+	}
+	if retry.RetryMode != runpkg.RetryModeResume || retry.ResumeState != resumeState {
+		t.Fatalf("retry = %#v, want preserved resume metadata", retry)
 	}
 }
 
