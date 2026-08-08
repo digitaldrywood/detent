@@ -1082,7 +1082,7 @@ func renderOnboardingWorkflowAdmissionCriteria(prompt string, root *yaml.Node, a
 }
 
 func readOnboardingAgentsFile(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G703 -- path is AGENTS.md under the resolved operator-selected source root.
 	if err == nil {
 		return string(raw), nil
 	}
