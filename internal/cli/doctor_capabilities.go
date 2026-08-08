@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -253,9 +252,20 @@ func doctorEnabledCapability(name string, enabled bool, configuredDetail string,
 	return doctorCapability{Name: name, State: doctorCapabilityUnused, Detail: unusedDetail}
 }
 
-func findDoctorIssueEffortGuidance(sourceRoot string) (string, error) {
+func findDoctorIssueEffortGuidance(sourceRoot string) (_ string, resultErr error) {
+	root, err := os.OpenRoot(sourceRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("source root could not be opened: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, root.Close())
+	}()
+
 	for _, path := range []string{"AGENTS.md", "CLAUDE.md"} {
-		content, err := os.ReadFile(filepath.Join(sourceRoot, path))
+		content, err := root.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
