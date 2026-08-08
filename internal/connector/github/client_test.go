@@ -1152,6 +1152,34 @@ func TestClientFlushRESTRateLimitUsageAttributesEndpointBudgets(t *testing.T) {
 	}
 }
 
+func TestClientRESTCredentialIdentityStaysStableAcrossInstallationTokenRotation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source func(*InstallationTokenSource) TokenSource
+	}{
+		{name: "installation source", source: func(source *InstallationTokenSource) TokenSource { return source }},
+		{name: "token resolver", source: func(source *InstallationTokenSource) TokenSource { return &TokenResolver{app: source} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := &InstallationTokenSource{installationID: "4242", cachedToken: "first-token"}
+			client := &Client{restEndpoint: "https://api.github.com", tokenSource: test.source(source)}
+			first := client.restCredentialIdentity("first-token")
+			source.mu.Lock()
+			source.cachedToken = "second-token"
+			source.mu.Unlock()
+			second := client.restCredentialIdentity("second-token")
+			if first != "github-app-installation:4242" || second != first {
+				t.Fatalf("identities = %q, %q, want stable installation identity", first, second)
+			}
+		})
+	}
+}
+
 func TestClientWarnsOnUnexplainedRESTBudgetDivergence(t *testing.T) {
 	t.Parallel()
 

@@ -772,6 +772,11 @@ func (c *Client) restSharedBackoffKey(token string) string {
 }
 
 func (c *Client) restCredentialIdentity(token string) string {
+	if source, ok := c.tokenSource.(CredentialIdentitySource); ok {
+		if identity := strings.TrimSpace(source.CredentialIdentity(token)); identity != "" {
+			return identity
+		}
+	}
 	sum := sha256.Sum256([]byte(c.restEndpoint + "\x00" + token))
 	return fmt.Sprintf("github-rest:%x", sum[:6])
 }

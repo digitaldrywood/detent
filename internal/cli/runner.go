@@ -938,8 +938,12 @@ func mergeFleetRateLimits(current *telemetry.RateLimits, incoming *telemetry.Rat
 	}
 
 	merged := *current
-	merged.GitHubREST = mergeFleetRESTBucket(current.GitHubREST, incoming.GitHubREST)
 	merged.GitHubRESTBudgets = mergeFleetRESTBudgets(current.GitHubRESTBudgets, incoming.GitHubRESTBudgets)
+	merged.GitHubREST = mergeFleetRESTBucket(current.GitHubREST, incoming.GitHubREST)
+	if bucket := fleetRESTBucketFromBudgets(merged.GitHubRESTBudgets); bucket != nil {
+		bucket.Cost = rateLimitBucketCost(current.GitHubREST) + rateLimitBucketCost(incoming.GitHubREST)
+		merged.GitHubREST = bucket
+	}
 	merged.RESTUsage = mergeFleetRESTUsage(current.RESTUsage, incoming.RESTUsage)
 	if merged.GitHubGraphQL == nil {
 		merged.GitHubGraphQL = incoming.GitHubGraphQL
@@ -948,6 +952,13 @@ func mergeFleetRateLimits(current *telemetry.RateLimits, incoming *telemetry.Rat
 		merged.GraphQLCost = incoming.GraphQLCost
 	}
 	return &merged
+}
+
+func rateLimitBucketCost(bucket *telemetry.RateLimitBucket) int64 {
+	if bucket == nil {
+		return 0
+	}
+	return bucket.Cost
 }
 
 func mergeFleetRESTBucket(current *telemetry.RateLimitBucket, incoming *telemetry.RateLimitBucket) *telemetry.RateLimitBucket {
@@ -1037,6 +1048,67 @@ func cloneFleetRESTBudget(budget telemetry.RESTBudget) telemetry.RESTBudget {
 		budget.ObservedAt = &observedAt
 	}
 	return budget
+}
+
+func fleetRESTBucketFromBudgets(budgets []telemetry.RESTBudget) *telemetry.RateLimitBucket {
+	currentByCredentialResource := make(map[string]telemetry.RESTBudget, len(budgets))
+	for _, budget := range budgets {
+		key := strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.Resource)
+		existing, ok := currentByCredentialResource[key]
+		if !ok || restBudgetObservedAfter(budget, existing) || (restBudgetObservedTogether(budget, existing) && restBudgetRemainingRatio(budget) < restBudgetRemainingRatio(existing)) {
+			currentByCredentialResource[key] = budget
+		}
+	}
+	candidates := make([]telemetry.RESTBudget, 0, len(currentByCredentialResource))
+	hasCore := false
+	for _, budget := range currentByCredentialResource {
+		if strings.EqualFold(strings.TrimSpace(budget.Resource), "core") {
+			hasCore = true
+		}
+		candidates = append(candidates, budget)
+	}
+	var selected *telemetry.RESTBudget
+	for index := range candidates {
+		candidate := &candidates[index]
+		if hasCore && !strings.EqualFold(strings.TrimSpace(candidate.Resource), "core") {
+			continue
+		}
+		if selected == nil || restBudgetRemainingRatio(*candidate) < restBudgetRemainingRatio(*selected) {
+			selected = candidate
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	return &telemetry.RateLimitBucket{
+		Remaining:  selected.Remaining,
+		Used:       selected.Used,
+		Limit:      selected.Limit,
+		ResetAt:    cloneTimePointer(selected.ResetAt),
+		ObservedAt: cloneTimePointer(selected.ObservedAt),
+	}
+}
+
+func restBudgetObservedTogether(left telemetry.RESTBudget, right telemetry.RESTBudget) bool {
+	if left.ObservedAt == nil || right.ObservedAt == nil {
+		return left.ObservedAt == nil && right.ObservedAt == nil
+	}
+	return left.ObservedAt.Equal(*right.ObservedAt)
+}
+
+func restBudgetRemainingRatio(budget telemetry.RESTBudget) float64 {
+	if budget.Limit <= 0 {
+		return 2
+	}
+	return float64(budget.Remaining) / float64(budget.Limit)
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTUsage) *telemetry.RESTUsage {
