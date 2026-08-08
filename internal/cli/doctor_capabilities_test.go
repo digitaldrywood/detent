@@ -22,7 +22,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 		sharedPrompt   string
 		effortGuidance bool
 		wantStates     map[string]doctorCapabilityState
-		wantDetails    map[string]string
+		wantDetails    map[string][]string
 	}{
 		{
 			name: "fully configured project",
@@ -32,6 +32,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				cfg.BacklogAdmission.Enabled = true
 				cfg.BacklogAdmission.CriteriaSection = "Admission Criteria"
 				cfg.BacklogAdmission.Sources.Untracked = true
+				cfg.BacklogAdmission.TargetState = "Todo"
 				cfg.BacklogAdmission.ExcludeLabels = []string{"skip-admission"}
 				cfg.Routines = []workflowconfig.Routine{{Name: "dependency-audit"}}
 				cfg.Intake.Sources = []intake.Source{{Name: "alerts"}}
@@ -75,15 +76,19 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				"release":                             doctorCapabilityUnused,
 				"detent-agent effort rubric":          doctorCapabilityUnused,
 			},
-			wantDetails: map[string]string{
-				"backlog_admission":          "criteria_section to a shared WORKFLOW.md heading",
-				"routines":                   "recurring agent prompts",
-				"intake.sources":             "external webhook or scheduled signals",
-				"agent.followups":            "meaningful out-of-scope discoveries",
-				"agent.auto_promote":         "review-ready work automatically",
-				"retro":                      "recurring failure telemetry",
-				"release":                    "cut releases automatically",
-				"detent-agent effort rubric": "deliberate reasoning effort",
+			wantDetails: map[string][]string{
+				"backlog_admission": {
+					"backlog_admission.sources with at least one selector",
+					"backlog_admission.target_state to a configured workflow state",
+					"backlog_admission.criteria_section to a shared WORKFLOW.md heading",
+				},
+				"routines":                   {"recurring agent prompts"},
+				"intake.sources":             {"external webhook or scheduled signals"},
+				"agent.followups":            {"meaningful out-of-scope discoveries"},
+				"agent.auto_promote":         {"review-ready work automatically"},
+				"retro":                      {"recurring failure telemetry"},
+				"release":                    {"cut releases automatically"},
+				"detent-agent effort rubric": {"deliberate reasoning effort"},
 			},
 		},
 		{
@@ -93,6 +98,8 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceProjectV2
 				cfg.Agent.Followups.Enabled = false
 				cfg.BacklogAdmission.CriteriaSection = "Admission Criteria"
+				cfg.BacklogAdmission.Sources.States = []string{"Backlog"}
+				cfg.BacklogAdmission.TargetState = "Todo"
 			},
 			sharedPrompt: "## Admission Criteria\n\n- **Alignment** — Prefer operator-visible work.\n",
 			wantStates: map[string]doctorCapabilityState{
@@ -107,9 +114,9 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				"release":                             doctorCapabilityUnused,
 				"detent-agent effort rubric":          doctorCapabilityUnused,
 			},
-			wantDetails: map[string]string{
-				"backlog_admission.sources.untracked": "project_v2 status cannot identify untracked",
-				"backlog_admission.exclude_labels":    "first 20 issue labels",
+			wantDetails: map[string][]string{
+				"backlog_admission.sources.untracked": {"project_v2 status cannot identify untracked"},
+				"backlog_admission.exclude_labels":    {"first 20 issue labels"},
 			},
 		},
 	}
@@ -150,8 +157,10 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				if capability.State != wantState {
 					t.Errorf("%s state = %s, want %s", capability.Name, capability.State, wantState)
 				}
-				if wantDetail := tt.wantDetails[capability.Name]; wantDetail != "" && !strings.Contains(capability.Detail, wantDetail) {
-					t.Errorf("%s detail = %q, want containing %q", capability.Name, capability.Detail, wantDetail)
+				for _, wantDetail := range tt.wantDetails[capability.Name] {
+					if !strings.Contains(capability.Detail, wantDetail) {
+						t.Errorf("%s detail = %q, want containing %q", capability.Name, capability.Detail, wantDetail)
+					}
 				}
 			}
 
@@ -182,29 +191,59 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 func TestCheckDoctorCapabilitiesUsesProjectIntakeOverride(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
-	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-	cfg.Intake.Sources = []intake.Source{{Name: "workflow-source"}}
-	check := checkDoctorCapabilities(
-		globalconfig.Project{
-			ID:               "alpha",
-			Workdir:          root,
-			IntakeConfigured: true,
-			Intake:           intake.Config{},
+	tests := []struct {
+		name          string
+		trackerKind   string
+		projectIntake intake.Config
+		wantState     doctorCapabilityState
+		wantDetail    string
+	}{
+		{
+			name:        "disabled override replaces workflow sources",
+			trackerKind: workflowconfig.TrackerGitHub,
+			wantState:   doctorCapabilityUnused,
 		},
-		workflowconfig.Workflow{Config: cfg},
-	)
-
-	for _, capability := range check.Capabilities.Capabilities {
-		if capability.Name != "intake.sources" {
-			continue
-		}
-		if capability.State != doctorCapabilityUnused {
-			t.Fatalf("intake.sources state = %s, want %s", capability.State, doctorCapabilityUnused)
-		}
-		return
+		{
+			name:          "enabled override is unavailable for non github tracker",
+			trackerKind:   workflowconfig.TrackerMemory,
+			projectIntake: intake.Config{Sources: []intake.Source{{Name: "project-source"}}},
+			wantState:     doctorCapabilityUnavailable,
+			wantDetail:    "intake.sources requires github",
+		},
 	}
-	t.Fatal("intake.sources capability missing")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = tt.trackerKind
+			cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+			cfg.Intake.Sources = []intake.Source{{Name: "workflow-source"}}
+			check := checkDoctorCapabilities(
+				globalconfig.Project{
+					ID:               "alpha",
+					Workdir:          root,
+					IntakeConfigured: true,
+					Intake:           tt.projectIntake,
+				},
+				workflowconfig.Workflow{Config: cfg},
+			)
+
+			for _, capability := range check.Capabilities.Capabilities {
+				if capability.Name != "intake.sources" {
+					continue
+				}
+				if capability.State != tt.wantState {
+					t.Fatalf("intake.sources state = %s, want %s", capability.State, tt.wantState)
+				}
+				if !strings.Contains(capability.Detail, tt.wantDetail) {
+					t.Fatalf("intake.sources detail = %q, want containing %q", capability.Detail, tt.wantDetail)
+				}
+				return
+			}
+			t.Fatal("intake.sources capability missing")
+		})
+	}
 }

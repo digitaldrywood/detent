@@ -103,11 +103,21 @@ func doctorBacklogAdmissionCapability(cfg workflowconfig.Config, sharedPrompt st
 			Detail: "tracker.kind " + cfg.Tracker.Kind + " does not provide candidate selectors required for backlog admission.",
 		}
 	}
+	prerequisites := make([]string, 0, 3)
+	if len(cfg.BacklogAdmission.Sources.States) == 0 && len(cfg.BacklogAdmission.Sources.Labels) == 0 && !cfg.BacklogAdmission.Sources.Untracked {
+		prerequisites = append(prerequisites, "configure backlog_admission.sources with at least one selector")
+	}
+	if strings.TrimSpace(cfg.BacklogAdmission.TargetState) == "" {
+		prerequisites = append(prerequisites, "set backlog_admission.target_state to a configured workflow state")
+	}
 	if _, err := workflowconfig.ResolveAdmissionCriteria(sharedPrompt, cfg.BacklogAdmission.CriteriaSection); err != nil {
+		prerequisites = append(prerequisites, "set backlog_admission.criteria_section to a shared WORKFLOW.md heading with at least one admission dimension ("+err.Error()+")")
+	}
+	if len(prerequisites) > 0 {
 		return doctorCapability{
 			Name:   "backlog_admission",
 			State:  doctorCapabilityUnavailable,
-			Detail: "Prerequisite: set backlog_admission.criteria_section to a shared WORKFLOW.md heading with at least one admission dimension; enabling then evaluates backlog candidates and proposes or admits matching work. Current prerequisite: " + err.Error() + ".",
+			Detail: "Prerequisites: " + strings.Join(prerequisites, "; ") + ". Once satisfied, enabling evaluates backlog candidates and proposes or admits matching work.",
 		}
 	}
 	return doctorCapability{
@@ -169,18 +179,18 @@ func doctorRoutineCapability(cfg workflowconfig.Config) doctorCapability {
 }
 
 func doctorIntakeCapability(cfg workflowconfig.Config, enabled bool, count int) doctorCapability {
-	if enabled {
-		return doctorCapability{
-			Name:   "intake.sources",
-			State:  doctorCapabilityConfigured,
-			Detail: fmt.Sprintf("%d source(s) turn external or scheduled signals into tracker issues.", count),
-		}
-	}
 	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
 		return doctorCapability{
 			Name:   "intake.sources",
 			State:  doctorCapabilityUnavailable,
 			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot create intake issues; intake.sources requires github.",
+		}
+	}
+	if enabled {
+		return doctorCapability{
+			Name:   "intake.sources",
+			State:  doctorCapabilityConfigured,
+			Detail: fmt.Sprintf("%d source(s) turn external or scheduled signals into tracker issues.", count),
 		}
 	}
 	return doctorCapability{Name: "intake.sources", State: doctorCapabilityUnused, Detail: "Enable to turn external webhook or scheduled signals into tracker issues."}
