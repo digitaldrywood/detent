@@ -29,6 +29,9 @@ const (
 	autoPromoteGateWaitTimeoutHumanReview = "human_review"
 	defaultAutoPromoteGateWaitTimeout     = time.Hour
 	mergeWorkerProjectStateFull           = "project_state_capacity_full"
+	mergeBaseRefreshRequiredChecksPending = "required_checks_pending"
+	mergeBaseRefreshLaneUnavailable       = "merge_lane_capacity_unavailable"
+	mergeBaseRefreshGlobalUnavailable     = "global_capacity_unavailable"
 )
 
 type autoPromoteTickResult struct {
@@ -39,6 +42,12 @@ type autoPromoteTickResult struct {
 type staleMergingPullRequestDecision struct {
 	targetState string
 	reason      string
+}
+
+type mergeBaseRefreshDecision struct {
+	applicable bool
+	proceed    bool
+	reason     string
 }
 
 type autoPromoteReworkLimitSummary struct {
@@ -1188,6 +1197,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 			}
 		}
 		if projectStats.available <= 0 {
+			o.logMergeBaseRefreshDeferred(issue, mergeBaseRefreshLaneUnavailable)
 			o.logMergeWorkerSlotWait(
 				issue,
 				scheduler.DispatchGateDecision{Reason: mergeWorkerProjectStateFull},
@@ -1338,6 +1348,10 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			continue
 		}
 		if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
+			decision := decideMergeBaseRefresh(issue, true, true)
+			if decision.applicable && !decision.proceed {
+				o.logMergeBaseRefreshDeferred(issue, decision.reason)
+			}
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
@@ -1370,7 +1384,35 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue, cfg Config) bool {
 	if pullRequest.Draft {
 		return false
 	}
-	return !staleMergingCIRed(pullRequest.CIStatus)
+	if staleMergingCIRed(pullRequest.CIStatus) {
+		return false
+	}
+	decision := decideMergeBaseRefresh(issue, true, true)
+	return !decision.applicable || decision.proceed
+}
+
+func decideMergeBaseRefresh(issue connector.Issue, laneAvailable bool, globalAvailable bool) mergeBaseRefreshDecision {
+	if issue.PullRequest == nil || !strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") {
+		return mergeBaseRefreshDecision{}
+	}
+	if len(issue.PullRequest.RequiredCheckFailures) > 0 {
+		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshRequiredChecksPending}
+	}
+	if !laneAvailable {
+		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshLaneUnavailable}
+	}
+	if !globalAvailable {
+		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshGlobalUnavailable}
+	}
+	return mergeBaseRefreshDecision{applicable: true, proceed: true}
+}
+
+func (o *Orchestrator) logMergeBaseRefreshDeferred(issue connector.Issue, reason string) {
+	if o.logger == nil || issue.PullRequest == nil ||
+		!strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") {
+		return
+	}
+	o.logger.Info("merge_base_refresh_deferred", mergeWorkerLogAttrs(issue, "reason", strings.TrimSpace(reason))...)
 }
 
 func staleMergingCIRed(status string) bool {

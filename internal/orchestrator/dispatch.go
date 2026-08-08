@@ -362,6 +362,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		o.recordDispatchGateRefusal(ctx, state, issue, attempt, workerHost, now, decision, projectStats)
 		o.logSchedulerSlotDecision(issue, "waiting", decision, projectStats)
 		if mergeWorkerIssue(issue) {
+			o.logMergeBaseRefreshDeferred(issue, mergeBaseRefreshGlobalUnavailable)
 			o.logMergeWorkerSlotWait(issue, decision, projectStats)
 		} else {
 			o.logDispatchSlotWait(issue, decision, projectStats)

@@ -140,15 +140,21 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 	}
 	timing := o.markMergeWorkerSlotAcquired(state, issue, now)
 	timing.MergeStartedAt = now.UTC()
-	timing.BaseRefreshStartedAt = timing.MergeStartedAt
-	timing.BaseRefreshFinishedAt = time.Time{}
+	baseRefreshStarted := issue.PullRequest != nil &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind")
+	if baseRefreshStarted {
+		timing.BaseRefreshStartedAt = timing.MergeStartedAt
+		timing.BaseRefreshFinishedAt = time.Time{}
+	}
 	if timing.CIWaitStartedAt.IsZero() {
 		timing.CIWaitStartedAt = timing.MergeStartedAt
 	}
 	timing.CIWaitFinishedAt = time.Time{}
 	timing = timing.withDurations(now)
 	state.MergeTimings[strings.TrimSpace(issue.ID)] = timing
-	o.logMergeTimingInfo("merge_base_refresh_started", issue, timing)
+	if baseRefreshStarted {
+		o.logMergeTimingInfo("merge_base_refresh_started", issue, timing)
+	}
 	o.logMergeTimingInfo("merge_ci_wait_started", issue, timing)
 	return timing
 }
@@ -157,8 +163,11 @@ func (o *Orchestrator) recordMergeCompleted(state *State, issue connector.Issue,
 	if !mergeWorkerIssue(issue) {
 		return MergeTiming{}
 	}
+	refreshPending := mergeBaseRefreshPending(state, issue)
 	timing := o.completeMergeTiming(state, issue, at, "", true)
-	o.logMergeTimingInfo("merge_base_refresh_finished", issue, timing, "final_state", strings.TrimSpace(finalState))
+	if refreshPending {
+		o.logMergeTimingInfo("merge_base_refresh_finished", issue, timing, "final_state", strings.TrimSpace(finalState))
+	}
 	o.logMergeTimingInfo("merge_ci_wait_finished", issue, timing, "final_state", strings.TrimSpace(finalState))
 	o.logMergeTimingInfo("merge_completed", issue, timing, "final_state", strings.TrimSpace(finalState))
 	return timing
@@ -196,12 +205,15 @@ func (o *Orchestrator) recordMergeFailed(state *State, issue connector.Issue, at
 		}
 		return timing
 	}
+	refreshPending := !timing.BaseRefreshStartedAt.IsZero() && timing.BaseRefreshFinishedAt.IsZero()
 	timing = o.completeMergeTiming(state, issue, at, reason, false)
 	attrs := []any{"reason", strings.TrimSpace(reason)}
 	if err != nil {
 		attrs = append(attrs, "error", err)
 	}
-	o.logMergeTimingInfo("merge_base_refresh_finished", issue, timing, attrs...)
+	if refreshPending {
+		o.logMergeTimingInfo("merge_base_refresh_finished", issue, timing, attrs...)
+	}
 	o.logMergeTimingInfo("merge_ci_wait_finished", issue, timing, attrs...)
 	o.logMergeTimingWarn("merge_failed", issue, timing, attrs...)
 	return timing
@@ -227,9 +239,6 @@ func (o *Orchestrator) completeMergeTiming(state *State, issue connector.Issue, 
 		timing.MergeFailedAt = completedAt
 		timing.MergeFailureReason = strings.TrimSpace(reason)
 	}
-	if timing.BaseRefreshStartedAt.IsZero() && !timing.MergeStartedAt.IsZero() {
-		timing.BaseRefreshStartedAt = timing.MergeStartedAt
-	}
 	if timing.CIWaitStartedAt.IsZero() && !timing.MergeStartedAt.IsZero() {
 		timing.CIWaitStartedAt = timing.MergeStartedAt
 	}
@@ -242,6 +251,14 @@ func (o *Orchestrator) completeMergeTiming(state *State, issue connector.Issue, 
 	timing = timing.withDurations(completedAt)
 	state.MergeTimings[strings.TrimSpace(issue.ID)] = timing
 	return timing
+}
+
+func mergeBaseRefreshPending(state *State, issue connector.Issue) bool {
+	if state == nil {
+		return false
+	}
+	timing := state.MergeTimings[strings.TrimSpace(issue.ID)]
+	return !timing.BaseRefreshStartedAt.IsZero() && timing.BaseRefreshFinishedAt.IsZero()
 }
 
 func mergeQueueEnteredAt(issue connector.Issue, fallback time.Time) time.Time {

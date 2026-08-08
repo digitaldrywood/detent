@@ -79,6 +79,49 @@ func TestMarkMergeStartedPreservesCurrentHeadCIWaitDeadline(t *testing.T) {
 	}
 }
 
+func TestMarkMergeStartedRecordsOnlyActualBaseRefresh(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		mergeableState string
+		wantRefresh    bool
+	}{
+		{name: "behind head", mergeableState: "behind", wantRefresh: true},
+		{name: "current head", mergeableState: "clean"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:         "issue-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Identifier: "digitaldrywood/detent#1692",
+				State:      "Merging",
+				PullRequest: &connector.PullRequest{
+					Number:         1694,
+					State:          "OPEN",
+					MergeableState: tt.mergeableState,
+				},
+			}
+			state := newState(normalizeConfig(Config{}))
+			var logs strings.Builder
+			orch := &Orchestrator{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+
+			got := orch.markMergeStarted(&state, issue, now)
+
+			if got.BaseRefreshStartedAt.IsZero() == tt.wantRefresh {
+				t.Fatalf("BaseRefreshStartedAt = %v, want refresh recorded %t", got.BaseRefreshStartedAt, tt.wantRefresh)
+			}
+			if strings.Contains(logs.String(), "merge_base_refresh_started") != tt.wantRefresh {
+				t.Fatalf("logs %q, want refresh event %t", logs.String(), tt.wantRefresh)
+			}
+		})
+	}
+}
+
 func TestRecordMergeFailedRejectsFailureBeforeMergeEntry(t *testing.T) {
 	t.Parallel()
 

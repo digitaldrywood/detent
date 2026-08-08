@@ -608,8 +608,7 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	if !strings.EqualFold(strings.TrimSpace(pullRequest.State), "open") || pullRequest.Draft {
 		return false
 	}
-	mergeableState := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
-	if mergeableState != "behind" && mergeableState != "clean" {
+	if !strings.EqualFold(strings.TrimSpace(pullRequest.MergeableState), "clean") {
 		return false
 	}
 	if strings.TrimSpace(pullRequest.HeadSHA) == "" {
