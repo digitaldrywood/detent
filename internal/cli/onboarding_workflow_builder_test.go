@@ -590,11 +590,41 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		existing string
+		name             string
+		existing         string
+		wantHeadingCount int
+		wantUnchanged    bool
 	}{
-		{name: "creates AGENTS.md when absent"},
-		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n"},
+		{name: "creates AGENTS.md when absent", wantHeadingCount: 1},
+		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n", wantHeadingCount: 1},
+		{
+			name:             "appends when matching heading lacks guidance",
+			existing:         "# Repository agent guidance\n\n## Issue effort selection\n\nRecord estimates here.\n",
+			wantHeadingCount: 2,
+		},
+		{
+			name: "preserves complete existing guidance",
+			existing: strings.Join([]string{
+				"# Repository agent guidance",
+				"",
+				"## Issue effort selection",
+				"",
+				"```detent-agent",
+				"schema: 1",
+				"effort: high",
+				"```",
+				"",
+				"- `medium` — Small work.",
+				"- `high` — Standard work.",
+				"- `xhigh` — Complex work.",
+				"- `max` — Operator-designated work.",
+				"",
+				"Leave `model` unset.",
+				"",
+			}, "\n"),
+			wantHeadingCount: 1,
+			wantUnchanged:    true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -623,11 +653,14 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 				t.Fatalf("ReadFile(AGENTS.md) error = %v", err)
 			}
 			got := string(raw)
+			if tt.wantUnchanged && got != tt.existing {
+				t.Fatalf("AGENTS.md changed complete existing guidance:\n%s", got)
+			}
 			if tt.existing != "" && !strings.HasPrefix(got, strings.TrimRight(tt.existing, "\n")) {
 				t.Fatalf("AGENTS.md did not preserve existing content:\n%s", got)
 			}
-			if count := strings.Count(got, "## Issue effort selection"); count != 1 {
-				t.Fatalf("effort heading count = %d, want 1:\n%s", count, got)
+			if count := strings.Count(got, "## Issue effort selection"); count != tt.wantHeadingCount {
+				t.Fatalf("effort heading count = %d, want %d:\n%s", count, tt.wantHeadingCount, got)
 			}
 			for _, want := range []string{"```detent-agent", "effort: high", "`medium`", "`high`", "`xhigh`", "`max`", "Leave `model` unset"} {
 				if !strings.Contains(got, want) {

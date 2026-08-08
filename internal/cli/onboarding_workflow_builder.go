@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	workflowtemplates "github.com/digitaldrywood/detent/docs/templates"
+	"github.com/digitaldrywood/detent/internal/agentoverride"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -1093,7 +1094,7 @@ func readOnboardingAgentsFile(path string) (string, error) {
 }
 
 func renderOnboardingAgentGuidance(existing string, answers onboardingAnswers) (string, error) {
-	if hasOnboardingMarkdownHeading(existing, "## "+onboardingEffortRubricHeading) {
+	if hasOnboardingEffortGuidance(existing) {
 		return existing, nil
 	}
 	fields := onboardingEffortGuidanceFields()
@@ -1157,13 +1158,42 @@ func missingOnboardingGuidanceAnswers(answers onboardingAnswers, fields []onboar
 	return missing
 }
 
-func hasOnboardingMarkdownHeading(text string, heading string) bool {
-	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
-		if strings.TrimSpace(line) == heading {
-			return true
+func hasOnboardingEffortGuidance(text string) bool {
+	section, found := onboardingMarkdownSection(text, "## "+onboardingEffortRubricHeading)
+	if !found {
+		return false
+	}
+	override, found, err := agentoverride.FromIssueBody(section)
+	if err != nil || !found || override.Effort == "" || override.Model != "" {
+		return false
+	}
+	for _, field := range onboardingEffortGuidanceFields() {
+		if !strings.Contains(section, "`"+field.Heading+"`") {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+func onboardingMarkdownSection(text string, heading string) (string, bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	start := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if start < 0 {
+			if trimmed == heading {
+				start = index + 1
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") {
+			return strings.Join(lines[start:index], "\n"), true
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	return strings.Join(lines[start:], "\n"), true
 }
 
 func onboardingYAMLScalarValue(node *yaml.Node, key string) string {
