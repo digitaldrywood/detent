@@ -83,7 +83,8 @@ func (o *Orchestrator) stalenessDispatchableItems(candidates []connector.Issue, 
 	seen := make(map[string]struct{})
 	planner := o.dispatchPlanner()
 	for _, issue := range candidates {
-		if !planner.dispatchableIssueDecision(issue, state, false, now, "").dispatchable {
+		decision := planner.dispatchableIssueDecision(issue, state, false, now, "")
+		if !decision.dispatchable && decision.reason != dispatchSkipRateWindowBackpressure {
 			continue
 		}
 		key := workflowIssueIdentityKey(issue)

@@ -119,6 +119,7 @@ func TestEvaluateRepeatedDecisions(t *testing.T) {
 			"github_rest_capacity_paused",
 			"github_rest_recovery",
 			"global_capacity_full",
+			"provider_rate_window_backpressure",
 			"reserved_for_higher_priority_project",
 		},
 		TerminalStates: []string{"Done", "Cancelled", "Canceled"},
@@ -141,6 +142,10 @@ func TestEvaluateRepeatedDecisions(t *testing.T) {
 		{
 			name:      "global capacity wait stays quiet",
 			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "global_capacity_full", "Todo"),
+		},
+		{
+			name:      "provider rate window pacing stays quiet",
+			decisions: repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "provider_rate_window_backpressure", "Todo"),
 		},
 		{
 			name:      "REST capacity pause stays quiet",
@@ -212,6 +217,54 @@ func TestEvaluateRepeatedDecisions(t *testing.T) {
 			}
 			if tt.want == 1 && (got[0].Kind != KindRepeatedDecision || got[0].Count != 20) {
 				t.Fatalf("Evaluate()[0] = %#v, want repeated decision warning with count 20", got[0])
+			}
+		})
+	}
+}
+
+func TestEvaluateProviderRateWindowPacing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 7, 15, 0, 0, 0, time.UTC)
+	cfg := Config{
+		Enabled:                       true,
+		NoCompletionThreshold:         12 * time.Hour,
+		RepeatedDecisionCount:         20,
+		RepeatedDecisionWindow:        24 * time.Hour,
+		RepeatedDecisionBenignReasons: []string{"provider_rate_window_backpressure"},
+	}
+
+	tests := []struct {
+		name        string
+		completions []Completion
+		wantKind    string
+	}{
+		{
+			name:        "paced but progressing",
+			completions: []Completion{{At: now.Add(-time.Hour)}},
+		},
+		{
+			name:     "paced and stalled",
+			wantKind: KindProjectLiveness,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := Evaluate(cfg, Input{
+				ProjectID:    "detent",
+				Dispatchable: []Item{{ID: "issue-1", EnteredAt: now.Add(-13 * time.Hour)}},
+				Completions:  tt.completions,
+				Decisions:    repeatedDecisions(now.Add(-time.Hour), 20, 3*time.Minute, "provider_rate_window_backpressure", "Todo"),
+			}, now)
+			if tt.wantKind == "" {
+				if len(warnings) != 0 {
+					t.Fatalf("Evaluate() warnings = %#v, want none", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 || warnings[0].Kind != tt.wantKind {
+				t.Fatalf("Evaluate() warnings = %#v, want one %s warning", warnings, tt.wantKind)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -142,6 +143,84 @@ func TestStalenessDispatchableItemsUsesDispatchPlannerEligibility(t *testing.T) 
 	items := orch.stalenessDispatchableItems([]connector.Issue{unauthorized, authorized}, &state, now)
 	if len(items) != 1 || items[0].ID != authorized.ID {
 		t.Fatalf("dispatchable staleness items = %#v, want only authorized issue", items)
+	}
+}
+
+func TestRefreshStalenessWarningsProviderRateWindowPacing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 7, 15, 0, 0, 0, time.UTC)
+	enteredAt := now.Add(-13 * time.Hour)
+	candidate := dispatchTestIssue("issue-paced", "Todo")
+	candidate.StageUpdatedAt = &enteredAt
+
+	tests := []struct {
+		name       string
+		completion *time.Time
+		wantKind   string
+	}{
+		{
+			name:       "paced but progressing",
+			completion: timePointer(now.Add(-time.Hour)),
+		},
+		{
+			name:     "paced and stalled",
+			wantKind: staleness.KindProjectLiveness,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{
+				BillingMode:         workflowconfig.BillingModeSubscription,
+				MaxConcurrentAgents: 10,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Staleness: staleness.Config{
+					Enabled:                       true,
+					NoCompletionThreshold:         12 * time.Hour,
+					RepeatedDecisionCount:         20,
+					RepeatedDecisionWindow:        24 * time.Hour,
+					RepeatedDecisionBenignReasons: []string{dispatchSkipRateWindowBackpressure},
+				},
+			})
+			cfg.Project.ID = "detent"
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			state.RateLimits = providerRateLimits(50, 100)
+			for index := range 5 {
+				id := fmt.Sprintf("running-%d", index)
+				state.Running[id] = Running{Issue: dispatchTestIssue(id, "Todo")}
+			}
+			if tt.completion != nil {
+				state.Completed["completed"] = Completed{CompletedAt: *tt.completion}
+			}
+			for index := range 20 {
+				state.SchedulerDecisions = append(state.SchedulerDecisions, telemetry.SchedulerDecision{
+					IssueID:    candidate.ID,
+					Identifier: candidate.Identifier,
+					Result:     "skipped",
+					Reason:     dispatchSkipRateWindowBackpressure,
+					DecisionAt: now.Add(-time.Hour).Add(time.Duration(index) * 3 * time.Minute),
+				})
+			}
+
+			orch.refreshStalenessWarnings(t.Context(), &state, []connector.Issue{candidate}, now)
+			if tt.wantKind == "" {
+				if len(state.StalenessWarnings) != 0 {
+					t.Fatalf("staleness warnings = %#v, want none", state.StalenessWarnings)
+				}
+				return
+			}
+			if len(state.StalenessWarnings) != 1 {
+				t.Fatalf("staleness warnings = %#v, want one %s warning", state.StalenessWarnings, tt.wantKind)
+			}
+			for _, warning := range state.StalenessWarnings {
+				if warning.Warning.Kind != tt.wantKind {
+					t.Fatalf("warning kind = %q, want %q", warning.Warning.Kind, tt.wantKind)
+				}
+			}
+		})
 	}
 }
 

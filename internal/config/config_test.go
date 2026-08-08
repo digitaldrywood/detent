@@ -1893,6 +1893,7 @@ func TestDefaultStalenessObservability(t *testing.T) {
 		"github_rest_recovery",
 		"global_capacity_full",
 		"outside_active_window",
+		"provider_rate_window_backpressure",
 		"reserved_for_higher_priority_project",
 	}
 	if got := cfg.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, wantReasons) {
@@ -1907,6 +1908,45 @@ func TestDefaultStalenessObservability(t *testing.T) {
 	cfg.Observability.Staleness.Normalize()
 	if got, want := cfg.Observability.Staleness.RepeatedDecisionBenignReasons, []string{"planned_maintenance"}; !slices.Equal(got, want) {
 		t.Fatalf("normalized RepeatedDecisionBenignReasons = %#v, want %#v", got, want)
+	}
+}
+
+func TestStalenessRepeatedDecisionBenignReasonsOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{
+			name: "project override replaces defaults",
+			yaml: `---
+tracker:
+  kind: memory
+observability:
+  staleness:
+    repeated_decision_benign_reasons:
+      - planned_maintenance
+      - provider_rate_window_backpressure
+---
+Prompt
+`,
+			want: []string{"planned_maintenance", "provider_rate_window_backpressure"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, tt.want) {
+				t.Fatalf("RepeatedDecisionBenignReasons = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 

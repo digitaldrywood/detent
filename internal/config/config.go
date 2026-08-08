@@ -2615,6 +2615,7 @@ func defaultStalenessRepeatedDecisionBenignReasons() []string {
 		"github_rest_recovery",
 		"global_capacity_full",
 		"outside_active_window",
+		"provider_rate_window_backpressure",
 		"reserved_for_higher_priority_project",
 	}
 }
