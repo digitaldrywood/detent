@@ -1243,7 +1243,15 @@ func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
 			if err := cmd.Execute(); err != nil {
 				t.Fatalf("Execute() error = %v", err)
 			}
-			for _, want := range append([]string{repositoryRoot}, tt.want...) {
+			repositoryRootOutput := repositoryRoot
+			if len(tt.formatArgs) > 0 {
+				encodedRepositoryRoot, err := json.Marshal(repositoryRoot)
+				if err != nil {
+					t.Fatalf("Marshal(%q) error = %v", repositoryRoot, err)
+				}
+				repositoryRootOutput = `"repository_root": ` + string(encodedRepositoryRoot)
+			}
+			for _, want := range append([]string{repositoryRootOutput}, tt.want...) {
 				if !strings.Contains(stdout.String(), want) {
 					t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
 				}
