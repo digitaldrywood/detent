@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -267,23 +268,7 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := t.TempDir()
-	t.Cleanup(func() {
-		if err := os.RemoveAll(root); err != nil {
-			remaining := make([]string, 0)
-			walkErr := filepath.WalkDir(root, func(path string, _ os.DirEntry, walkErr error) error {
-				if walkErr != nil {
-					return walkErr
-				}
-				relative, err := filepath.Rel(root, path)
-				if err != nil {
-					return err
-				}
-				remaining = append(remaining, relative)
-				return nil
-			})
-			t.Errorf("RemoveAll(%s) error = %v; remaining paths = %q; inspect error = %v", root, err, remaining, walkErr)
-		}
-	})
+	t.Cleanup(func() { cleanupDoctorWorkflowSourceRepository(t, root) })
 	remote := filepath.Join(root, "remote.git")
 	seed := filepath.Join(root, "seed")
 	repo := filepath.Join(root, "checkout")
@@ -301,6 +286,37 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	runDoctorWorkflowSourceGit(t, repo, "config", "user.name", "Detent Test")
 	runDoctorWorkflowSourceGit(t, repo, "config", "user.email", "detent@example.com")
 	return repo, remote
+}
+
+func cleanupDoctorWorkflowSourceRepository(t *testing.T, root string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var err error
+	for {
+		err = os.RemoveAll(root)
+		if err == nil {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	remaining := make([]string, 0)
+	walkErr := filepath.WalkDir(root, func(path string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, relativeErr := filepath.Rel(root, path)
+		if relativeErr != nil {
+			return relativeErr
+		}
+		remaining = append(remaining, relative)
+		return nil
+	})
+	t.Errorf("RemoveAll(%s) error = %v; remaining paths = %q; inspect error = %v", root, err, remaining, walkErr)
 }
 
 func writeDoctorWorkflowSourceFile(t *testing.T, path string, content string) {
