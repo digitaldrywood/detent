@@ -212,6 +212,18 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	}
 	rows = append(rows, healthStrandedActiveRows(snapshot.StrandedActiveIssues)...)
 	if snapshot.RateLimits != nil {
+		for _, provider := range []struct {
+			id        string
+			component string
+			bucket    *telemetry.RateLimitBucket
+		}{
+			{id: "health-provider-primary", component: "Provider primary window", bucket: snapshot.RateLimits.Primary},
+			{id: "health-provider-secondary", component: "Provider secondary window", bucket: snapshot.RateLimits.Secondary},
+		} {
+			if provider.bucket != nil {
+				rows = append(rows, healthProviderBucketRow(provider.id, provider.component, provider.bucket))
+			}
+		}
 		if bucket := snapshot.RateLimits.GitHubREST; bucket != nil {
 			row := healthBucketRow("health-github-rest", "GitHub REST", bucket)
 			// Keep the exhaustion/backoff detail on unhealthy rows rather than
@@ -239,6 +251,32 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthProviderBucketRow(id string, component string, bucket *telemetry.RateLimitBucket) healthRow {
+	row := healthRow{
+		ID:        id,
+		Component: component,
+		Kind:      primitives.KindOK,
+		Status:    "Healthy",
+		Detail:    "Provider window has full dispatch capacity",
+		Resets:    "—",
+	}
+	if bucket.Limit > 0 {
+		remaining := max(int64(0), min(bucket.Remaining, bucket.Limit))
+		used := bucket.Limit - remaining
+		remainingPct := int(float64(remaining) / float64(bucket.Limit) * 100)
+		row.Quota = formatInt(used) + " / " + formatInt(bucket.Limit)
+		row.QuotaPct = 100 - remainingPct
+		if remaining < bucket.Limit {
+			row.Status = "Pacing"
+			row.Detail = formatCount(remainingPct) + "% remaining · dispatch capacity scales with the provider window"
+		}
+	}
+	if bucket.ResetAt != nil {
+		row.ResetAt = *bucket.ResetAt
+	}
+	return row
 }
 
 func healthAdmissionProposalRows(proposals []telemetry.AdmissionProposal, observedAt time.Time) []healthRow {

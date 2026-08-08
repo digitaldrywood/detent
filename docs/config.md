@@ -516,7 +516,7 @@ rendering and fails on drift.
 | `observability.staleness.lanes[].threshold_hours` | `integer` | `72` | No | must be greater than 0 |
 | `observability.staleness.no_completion_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.no_merge_hours` | `integer` | `12` | No | must be greater than 0 |
-| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","reserved_for_higher_priority_project"]` | No | None |
+| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","provider_rate_window_backpressure","reserved_for_higher_priority_project"]` | No | None |
 | `observability.staleness.repeated_decision_count` | `integer` | `20` | No | must be greater than 0 |
 | `observability.staleness.repeated_window_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.webhook` | `object` | `see child fields` | No | None |

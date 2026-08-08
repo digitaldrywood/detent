@@ -353,6 +353,55 @@ func TestHealthRows(t *testing.T) {
 	}
 }
 
+func TestHealthRowsShowProviderRateWindowPacing(t *testing.T) {
+	t.Parallel()
+	resetAt := time.Date(2026, 8, 7, 17, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		limits    *telemetry.RateLimits
+		wantRows  int
+		wantNames []string
+	}{
+		{
+			name: "primary depressed",
+			limits: &telemetry.RateLimits{
+				Primary: &telemetry.RateLimitBucket{Remaining: 48, Limit: 100, ResetAt: &resetAt},
+			},
+			wantRows:  1,
+			wantNames: []string{"Provider primary window"},
+		},
+		{
+			name: "primary and secondary depressed",
+			limits: &telemetry.RateLimits{
+				Primary:   &telemetry.RateLimitBucket{Remaining: 80, Limit: 100},
+				Secondary: &telemetry.RateLimitBucket{Remaining: 30, Limit: 100},
+			},
+			wantRows:  2,
+			wantNames: []string{"Provider primary window", "Provider secondary window"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rows := healthRows(telemetry.Snapshot{RateLimits: tt.limits})
+			providerRows := rows[:len(rows)-3]
+			if len(providerRows) != tt.wantRows {
+				t.Fatalf("provider rows = %#v, want %d", providerRows, tt.wantRows)
+			}
+			for index, row := range providerRows {
+				if row.Component != tt.wantNames[index] || row.Kind != primitives.KindOK || row.Status != "Pacing" {
+					t.Fatalf("provider row %d = %#v", index, row)
+				}
+				if row.Quota == "" || row.QuotaPct == 0 || row.QuotaWarn {
+					t.Fatalf("provider quota row %d = %#v", index, row)
+				}
+			}
+		})
+	}
+}
+
 func TestHealthRowsExhaustedByRemainingCount(t *testing.T) {
 	// Zero remaining with no explicit status must read Exhausted so the
 	// details row matches the exhaustion verdict.
