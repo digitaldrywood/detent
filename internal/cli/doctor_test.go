@@ -1108,8 +1108,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "subscription billing is the default", "effective cross-session progress brake", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "advisory:", "subscription billing is the default", "effective cross-session progress brake", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "inherited spend breaker warns about billing ambiguity",
@@ -1117,8 +1117,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "subscription billing is the default", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "advisory:", "subscription billing is the default", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1127,8 +1127,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "advisory:", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "all progress brakes disabled",
@@ -1136,8 +1136,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledProgressWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "billing_mode=subscription", "no effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "advisory:", "billing_mode=subscription", "no effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -1145,8 +1145,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "advisory:", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -3210,7 +3210,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
 	}
-	if len(checks) != 7 || checks[4].Status != doctorOK || checks[4].Name != "Project alpha source repo" {
+	if len(checks) != 8 || checks[5].Status != doctorOK || checks[5].Name != "Project alpha source repo" {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
 	}
 }
@@ -5632,7 +5632,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 		blockDependency bool
 	}{
 		{name: "GitHub readiness", current: "GitHub readiness", lastCompleted: "Project alpha skills"},
-		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha workflow", blockOverlay: true},
+		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha capabilities", blockOverlay: true},
 		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha repository merge policy", blockDependency: true},
 	}
 
