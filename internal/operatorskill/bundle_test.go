@@ -158,11 +158,24 @@ func assertSafetyContract(t *testing.T, document string) {
 
 func splitSkillDocument(t *testing.T, document string) (string, string) {
 	t.Helper()
+	document = strings.ReplaceAll(document, "\r\n", "\n")
 	parts := strings.SplitN(document, "---\n", 3)
 	if len(parts) != 3 || parts[0] != "" {
 		t.Fatal("skill document does not have YAML frontmatter")
 	}
 	return parts[1], parts[2]
+}
+
+func TestSplitSkillDocumentAcceptsPlatformLineEndings(t *testing.T) {
+	for _, document := range []string{
+		"---\nname: example\n---\nbody\n",
+		"---\r\nname: example\r\n---\r\nbody\r\n",
+	} {
+		frontmatter, body := splitSkillDocument(t, document)
+		if frontmatter != "name: example\n" || body != "body\n" {
+			t.Fatalf("splitSkillDocument() = %q, %q", frontmatter, body)
+		}
+	}
 }
 
 func stringValue(value any) string {
