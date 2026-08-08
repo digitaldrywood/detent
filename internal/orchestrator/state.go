@@ -132,6 +132,7 @@ type Running struct {
 	Tokens                TokenTotals
 	CapacityScope         backendcapacity.Scope
 	CapacityProbe         bool
+	ModelPermitExempt     bool
 	StopDestination       string
 	StopPriorityOptions   []telemetry.StopRunPriorityOption
 	globalSlot            scheduler.Slot
@@ -211,6 +212,7 @@ type Retry struct {
 	CapacityScope backendcapacity.Scope
 	RetryMode     runpkg.RetryMode
 	ResumeState   store.AgentResumeState
+	MergePrecheck *runpkg.MergePrecheck
 }
 
 type InstantFailure struct {
@@ -409,6 +411,7 @@ func (s State) clone() State {
 	}
 	for id, retry := range s.Retry {
 		retry.Issue = cloneIssue(retry.Issue)
+		retry.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
 		cloned.Retry[id] = retry
 	}
 	for id, failure := range s.InstantFailures {
@@ -436,6 +439,14 @@ func (s State) clone() State {
 	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
+}
+
+func cloneMergePrecheck(precheck *runpkg.MergePrecheck) *runpkg.MergePrecheck {
+	if precheck == nil {
+		return nil
+	}
+	cloned := *precheck
+	return &cloned
 }
 
 func cloneAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {

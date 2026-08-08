@@ -25,7 +25,8 @@ func TestDispatchRecoveryRampBoundsDispatchUntilProgress(t *testing.T) {
 		dispatchTestIssue("issue-3", "Todo"),
 	}
 	dispatched := []string{}
-	hooks := dispatchPlanHooks{dispatch: func(issue connector.Issue, _ int, _ string) bool {
+	hooks := dispatchPlanHooks{dispatch: func(action dispatchAction) bool {
+		issue := action.issue
 		_, allowed, _ := tryReserveDispatchRecovery(&state, issue.ID, now)
 		if allowed {
 			dispatched = append(dispatched, issue.ID)

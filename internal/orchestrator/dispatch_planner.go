@@ -21,7 +21,7 @@ type dispatchPlanner struct {
 type dispatchPlanHooks struct {
 	hydrate                 func(connector.Issue) (connector.Issue, bool)
 	beforeDispatch          func(connector.Issue, int) bool
-	dispatch                func(connector.Issue, int, string) bool
+	dispatch                func(dispatchAction) bool
 	dispatchFailed          func(connector.Issue) bool
 	retryDispatchFailed     func(connector.Issue, Retry)
 	preserveMissingDueRetry func(Retry) bool
@@ -29,10 +29,12 @@ type dispatchPlanHooks struct {
 }
 
 type dispatchAction struct {
-	issue      connector.Issue
-	attempt    int
-	workerHost string
-	retry      bool
+	issue               connector.Issue
+	attempt             int
+	workerHost          string
+	retry               bool
+	modelPermitRequired bool
+	retryState          *Retry
 }
 
 type dispatchPlanDecision struct {
@@ -108,16 +110,12 @@ func (p dispatchPlanner) plan(
 			}
 			continue
 		}
-		if p.availableSlots(state) == 0 {
-			reason := dispatchSkipGlobalCapacityFull
-			if p.rateWindowBackpressureActive(state) {
-				reason = dispatchSkipRateWindowBackpressure
-			}
+		if p.hardAvailableSlots(state) == 0 {
 			for skipIndex := index; skipIndex < len(plannedCandidates); skipIndex++ {
 				p.logDecision(hooks, dispatchPlanDecision{
 					Issue:         plannedCandidates[skipIndex],
 					QueuePosition: skipIndex + 1,
-					SkipReason:    reason,
+					SkipReason:    dispatchSkipGlobalCapacityFull,
 				})
 			}
 			break
@@ -203,9 +201,9 @@ func (p dispatchPlanner) applyDispatchAction(
 	hooks dispatchPlanHooks,
 ) bool {
 	if hooks.dispatch != nil {
-		return hooks.dispatch(action.issue, action.attempt, action.workerHost)
+		return hooks.dispatch(action)
 	}
-	p.markDispatched(state, action.issue, action.attempt, now, action.workerHost)
+	p.markDispatched(state, action, now)
 	return true
 }
 
@@ -234,14 +232,22 @@ func (p dispatchPlanner) retryAction(
 	}
 	delete(state.Retry, retry.Issue.ID)
 
-	decision := p.dispatchableIssueDecision(issue, state, true, now, retry.WorkerHost)
+	modelPermitRequired := p.modelPermitRequiredAtDispatch(issue) || retry.MergePrecheck != nil
+	decision := p.dispatchableIssueDecisionForModelRequirement(
+		issue,
+		state,
+		true,
+		now,
+		retry.WorkerHost,
+		modelPermitRequired,
+	)
 	if !decision.dispatchable {
 		if p.budgetCooldownActive(state, issue.ID, now) {
-			p.scheduleRetry(state, issue, retry.Attempt, now, "budget cooldown active", false, retry.WorkerHost)
+			p.rescheduleRetry(state, retry, now, "budget cooldown active", false)
 			return dispatchAction{}, false, decision.reason
 		}
-		if !p.slotsAvailable(issue, state, retry.WorkerHost) {
-			p.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false, retry.WorkerHost)
+		if !p.slotsAvailableForModelRequirement(issue, state, retry.WorkerHost, modelPermitRequired) {
+			p.rescheduleRetry(state, retry, now, "no available orchestrator slots", false)
 			return dispatchAction{}, false, decision.reason
 		}
 		if _, blocked := state.Blocked[issue.ID]; blocked {
@@ -253,7 +259,7 @@ func (p dispatchPlanner) retryAction(
 		return dispatchAction{}, false, decision.reason
 	}
 
-	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true)
+	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true, modelPermitRequired, &retry)
 	if !ok {
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
 	}
@@ -274,7 +280,7 @@ func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now
 		return dispatchAction{}, false, decision.reason
 	}
 
-	action, ok := p.newDispatchAction(state, issue, 0, "", false)
+	action, ok := p.newDispatchAction(state, issue, 0, "", false, p.modelPermitRequiredAtDispatch(issue), nil)
 	if !ok {
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
 	}
@@ -287,6 +293,8 @@ func (p dispatchPlanner) newDispatchAction(
 	attempt int,
 	preferredWorkerHost string,
 	retry bool,
+	modelPermitRequired bool,
+	retryState *Retry,
 ) (dispatchAction, bool) {
 	workerHost, ok := p.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
@@ -294,26 +302,23 @@ func (p dispatchPlanner) newDispatchAction(
 	}
 
 	return dispatchAction{
-		issue:      cloneIssue(issue),
-		attempt:    attempt,
-		workerHost: workerHost,
-		retry:      retry,
+		issue:               cloneIssue(issue),
+		attempt:             attempt,
+		workerHost:          workerHost,
+		retry:               retry,
+		modelPermitRequired: modelPermitRequired,
+		retryState:          retryState,
 	}, true
 }
 
-func (p dispatchPlanner) markDispatched(
-	state *State,
-	issue connector.Issue,
-	attempt int,
-	now time.Time,
-	workerHost string,
-) {
-	issue = cloneIssue(issue)
+func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
+	issue := cloneIssue(action.issue)
 	state.Running[issue.ID] = Running{
-		Issue:      issue,
-		Attempt:    attempt,
-		StartedAt:  now,
-		WorkerHost: workerHost,
+		Issue:             issue,
+		Attempt:           action.attempt,
+		StartedAt:         now,
+		WorkerHost:        action.workerHost,
+		ModelPermitExempt: !action.modelPermitRequired,
 	}
 	state.Claimed[issue.ID] = Claimed{
 		Issue:     issue,
@@ -520,6 +525,24 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	now time.Time,
 	preferredWorkerHost string,
 ) dispatchableDecision {
+	return p.dispatchableIssueDecisionForModelRequirement(
+		issue,
+		state,
+		allowClaimed,
+		now,
+		preferredWorkerHost,
+		p.modelPermitRequiredAtDispatch(issue),
+	)
+}
+
+func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
+	issue connector.Issue,
+	state *State,
+	allowClaimed bool,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+) dispatchableDecision {
 	if !validCandidate(issue) {
 		return dispatchableDecision{reason: dispatchSkipInvalidCandidate}
 	}
@@ -574,7 +597,10 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	if p.budgetCooldownActive(state, issue.ID, now) {
 		return dispatchableDecision{reason: dispatchSkipBudgetCooldown}
 	}
-	if p.availableSlots(state) == 0 {
+	if p.hardAvailableSlots(state) == 0 {
+		return dispatchableDecision{reason: dispatchSkipGlobalCapacityFull}
+	}
+	if modelPermitRequired && p.availableSlots(state) == 0 {
 		if p.rateWindowBackpressureActive(state) {
 			return dispatchableDecision{reason: dispatchSkipRateWindowBackpressure}
 		}
@@ -644,13 +670,37 @@ func (p dispatchPlanner) authorized(issue connector.Issue) bool {
 	return selector.Match(issue, p.cfg.Authorization, p.cfg.SelectorContext)
 }
 
-func (p dispatchPlanner) slotsAvailable(issue connector.Issue, state *State, preferredWorkerHost string) bool {
-	return p.availableSlots(state) > 0 &&
-		p.stateSlotsAvailable(issue, state) &&
+func (p dispatchPlanner) slotsAvailableForModelRequirement(
+	issue connector.Issue,
+	state *State,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+) bool {
+	if p.hardAvailableSlots(state) == 0 {
+		return false
+	}
+	if modelPermitRequired && p.availableSlots(state) == 0 {
+		return false
+	}
+	return p.stateSlotsAvailable(issue, state) &&
 		p.workerSlotsAvailable(state, preferredWorkerHost)
 }
 
 func (p dispatchPlanner) availableSlots(state *State) int {
+	return min(p.hardAvailableSlots(state), p.providerModelPermitSlots(state))
+}
+
+func (p dispatchPlanner) hardAvailableSlots(state *State) int {
+	if state == nil {
+		return 0
+	}
+	return max(0, state.MaxConcurrentAgents-len(state.Running))
+}
+
+func (p dispatchPlanner) providerModelPermitSlots(state *State) int {
+	if state == nil {
+		return 0
+	}
 	limit := state.MaxConcurrentAgents
 	if p.cfg.subscriptionBilling() {
 		if remaining, ok := providerRateWindowRemainingPercent(state); ok {
@@ -658,12 +708,33 @@ func (p dispatchPlanner) availableSlots(state *State) int {
 			limit = max(1, limit)
 		}
 	}
-	available := limit - len(state.Running)
+	available := limit - modelPermitsUsed(state)
 	return max(0, available)
 }
 
 func (p dispatchPlanner) rateWindowBackpressureActive(state *State) bool {
-	return p.cfg.subscriptionBilling() && availableSlots(state) > 0 && p.availableSlots(state) == 0
+	return p.cfg.subscriptionBilling() && p.hardAvailableSlots(state) > 0 && p.providerModelPermitSlots(state) == 0
+}
+
+func (p dispatchPlanner) modelPermitRequiredAtDispatch(issue connector.Issue) bool {
+	return !p.mechanicalMergeAdmission(issue)
+}
+
+func (p dispatchPlanner) mechanicalMergeAdmission(issue connector.Issue) bool {
+	return p.cfg.MergeFastPathEnabled && normalizeState(issue.State) == normalizeState(autoPromoteMergingState)
+}
+
+func modelPermitsUsed(state *State) int {
+	if state == nil {
+		return 0
+	}
+	used := 0
+	for _, running := range state.Running {
+		if !running.ModelPermitExempt {
+			used++
+		}
+	}
+	return used
 }
 
 func providerRateWindowRemainingPercent(state *State) (float64, bool) {
@@ -752,6 +823,22 @@ func (p dispatchPlanner) scheduleRetry(
 	}
 
 	p.scheduleRetryAfter(state, issue, attempt, now, p.retryDelay(attempt, continuation), err, workerHost)
+}
+
+func (p dispatchPlanner) rescheduleRetry(
+	state *State,
+	retry Retry,
+	now time.Time,
+	err string,
+	continuation bool,
+) {
+	if retry.Attempt < 1 {
+		retry.Attempt = 1
+	}
+	retry.DueAt = now.Add(p.retryDelay(retry.Attempt, continuation))
+	retry.Error = p.operatorText(err)
+	retry.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
+	state.Retry[retry.Issue.ID] = retry
 }
 
 func (p dispatchPlanner) scheduleRetryAfter(

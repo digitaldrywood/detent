@@ -137,6 +137,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
+	if o.handleModelPermitDeferred(ctx, state, event, running) {
+		return
+	}
 	if event.Err != nil {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}

@@ -144,8 +144,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			}
 			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
 		},
-		dispatch: func(issue connector.Issue, attempt int, workerHost string) bool {
-			outcome := o.dispatchIssueWithOutcome(ctx, state, issue, attempt, now, workerHost)
+		dispatch: func(action dispatchAction) bool {
+			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
 			if !outcome.dispatched {
 				lastDispatchFailure = outcome.reason
 			} else {
@@ -161,6 +161,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
+			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
 			state.Retry[issue.ID] = rescheduled
 		},
 		preserveMissingDueRetry: func(retry Retry) bool {
@@ -205,7 +206,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 		return
 	}
 	for _, issue := range issues {
-		if o.dispatchPlanner().availableSlots(state) == 0 {
+		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 			return
 		}
 		issue, ok := o.hydrateDispatchIssue(ctx, issue)
@@ -263,6 +264,24 @@ func (o *Orchestrator) dispatchIssue(
 	return o.dispatchIssueWithOutcome(ctx, state, issue, attempt, now, preferredWorkerHost).dispatched
 }
 
+func (o *Orchestrator) dispatchIssueWithAction(
+	ctx context.Context,
+	state *State,
+	action dispatchAction,
+	now time.Time,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithAdmission(
+		ctx,
+		state,
+		action.issue,
+		action.attempt,
+		now,
+		action.workerHost,
+		action.modelPermitRequired,
+		action.retryState,
+	)
+}
+
 func (o *Orchestrator) dispatchIssueWithOutcome(
 	ctx context.Context,
 	state *State,
@@ -270,6 +289,28 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	attempt int,
 	now time.Time,
 	preferredWorkerHost string,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithAdmission(
+		ctx,
+		state,
+		issue,
+		attempt,
+		now,
+		preferredWorkerHost,
+		o.dispatchPlanner().modelPermitRequiredAtDispatch(issue),
+		nil,
+	)
+}
+
+func (o *Orchestrator) dispatchIssueWithAdmission(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+	retryState *Retry,
 ) dispatchIssueOutcome {
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
@@ -288,6 +329,10 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		return dispatchIssueOutcome{reason: reason}
 	}
 	queuedRetry, retryQueued := state.Retry[issue.ID]
+	if retryState != nil {
+		queuedRetry = *retryState
+		retryQueued = true
+	}
 	runMode := o.dispatchMode(ctx, state, issue)
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
 	capacityScope, capacityProbeKey, capacityPaused := o.backendCapacityDispatch(state, capacityRequest, now)
@@ -299,7 +344,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	if targetState != "" {
 		slotIssue = cloneIssue(issue)
 		slotIssue.State = targetState
-		if !o.dispatchPlanner().slotsAvailable(slotIssue, state, preferredWorkerHost) {
+		if !o.dispatchPlanner().slotsAvailableForModelRequirement(slotIssue, state, preferredWorkerHost, modelPermitRequired) {
 			return dispatchIssueOutcome{reason: dispatchIssueFailureLocalSlotUnavailable}
 		}
 	}
@@ -511,6 +556,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		WorkerHost:          workerHost,
 		CapacityScope:       capacityScope,
 		CapacityProbe:       capacityProbeKey != "",
+		ModelPermitExempt:   !modelPermitRequired,
 		StopDestination:     o.cfg.StopRunTargetState,
 		StopPriorityOptions: stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
 		globalSlot:          globalSlot,
@@ -541,6 +587,10 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		OnActivityUpdate:    o.activityUpdateHandler(runCtx, issue),
 		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
 		ProgressProbe:       o.sessionProgressProbe(issue),
+		MergePrecheck:       cloneMergePrecheck(queuedRetry.MergePrecheck),
+	}
+	if !modelPermitRequired {
+		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)
 	}
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode

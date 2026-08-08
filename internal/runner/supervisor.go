@@ -207,6 +207,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 func cooperativeStopError(err error) bool {
 	return errors.Is(err, ErrOperatorStopped) ||
 		errors.Is(err, ErrMergeRevoked) ||
+		errors.Is(err, ErrModelPermitUnavailable) ||
 		errors.Is(err, ErrMergeWorkerStartupTimeout) ||
 		errors.Is(err, ErrMergeWorkerDurationExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
