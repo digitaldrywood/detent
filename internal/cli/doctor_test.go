@@ -5977,6 +5977,12 @@ func successfulDoctorDeps() doctorDeps {
 				DefaultBranch: "main",
 			}, nil
 		},
+		githubLabels: func(_ context.Context, cfg workflowconfig.Config, _ string) ([]string, error) {
+			return []string{
+				cfg.Agent.AutoPromote.OptoutLabel,
+				cfg.Agent.MaxSessionTokenOverrideLabel,
+			}, nil
+		},
 		listen: func(string, string) (net.Listener, error) {
 			return fakeDoctorListener{addr: fakeDoctorAddr("127.0.0.1:49152")}, nil
 		},

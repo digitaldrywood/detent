@@ -340,6 +340,8 @@ func checkDoctorProjectWithProgress(
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		setDoctorCurrentCheck("Project " + id + " issue agent models")
 		checks = append(checks, checkDoctorIssueAgentModels(ctx, id, project, workflow.Config, deps))
+		setDoctorCurrentCheck("Project " + id + " configured labels")
+		checks = append(checks, checkDoctorConfiguredLabels(ctx, id, project, workflow.Config, deps))
 	}
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		setDoctorCurrentCheck("Project " + id + " auto-promote")

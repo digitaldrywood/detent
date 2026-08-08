@@ -3,8 +3,28 @@ package github
 import (
 	"context"
 	"net/http"
+	"slices"
 	"testing"
 )
+
+func TestFetchRepositoryLabels(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/labels?per_page=100",
+		body:   `[{"name":"bug"},{"name":" requires-human-review "},{"name":""}]`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	got, err := c.FetchRepositoryLabels(context.Background(), "digitaldrywood/detent")
+	if err != nil {
+		t.Fatalf("FetchRepositoryLabels() error = %v", err)
+	}
+	want := []string{"bug", "requires-human-review"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("FetchRepositoryLabels() = %#v, want %#v", got, want)
+	}
+}
 
 func TestFetchRepositoryInfoSurfacesVisibility(t *testing.T) {
 	t.Parallel()
