@@ -1723,6 +1723,14 @@ func validIdentityOnboardingAnswers(t *testing.T) string {
 		"REFERENCE_REPOSITORIES=digitaldrywood/detent-orchestration,corylanou/website-template",
 		"DETENT_ONBOARDING_MODE=add-project",
 		"IDENTITY_CONFIRMED=true",
+		"ADMISSION_ALIGNMENT_CRITERIA=Repairs customer-visible defects and advances documented product goals.",
+		"ADMISSION_READINESS_CRITERIA=Requires repository evidence, resolved dependencies, and checkable completion criteria.",
+		"ADMISSION_SIZE_CRITERIA=Fits implementation and validation within one agent run.",
+		"ADMISSION_SAFETY_GATES=Requires credentials and destructive actions to be explicitly authorized before admission.",
+		"EFFORT_MEDIUM_CRITERIA=Small mechanical work with exact acceptance criteria.",
+		"EFFORT_HIGH_CRITERIA=Standard features and fixes with some ambiguity or cross-cutting impact.",
+		"EFFORT_XHIGH_CRITERIA=New subsystems or tricky state, concurrency, restart, recovery, or interaction work.",
+		"EFFORT_MAX_CRITERIA=Exceptional operator-designated work that must never be selected automatically.",
 		"",
 	}, "\n")
 }

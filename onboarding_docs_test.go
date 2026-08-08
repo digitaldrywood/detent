@@ -446,6 +446,39 @@ func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.
 	assertOrder(t, onboarding, "Conservative/manual expands to:", "GATE_REQUIRE_AUTOMATED_REVIEW=true")
 }
 
+func TestOnboardingDocsGenerateAdmissionAndEffortGuidance(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"ADMISSION_ALIGNMENT_CRITERIA",
+		"ADMISSION_READINESS_CRITERIA",
+		"ADMISSION_SIZE_CRITERIA",
+		"ADMISSION_SAFETY_GATES",
+		"EFFORT_MEDIUM_CRITERIA",
+		"EFFORT_HIGH_CRITERIA",
+		"EFFORT_XHIGH_CRITERIA",
+		"EFFORT_MAX_CRITERIA",
+		"## Admission Criteria",
+		"### Alignment",
+		"### Readiness",
+		"### Size",
+		"### Safety Gates",
+		"creates or appends the operator-approved four-tier rubric in `AGENTS.md`",
+		"leaves `model` unset",
+		`detent onboarding build-workflow`,
+		"contain no detent-agent guidance",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	assertOrder(t, onboarding, "For assisted or autonomous intake", "ADMISSION_ALIGNMENT_CRITERIA")
+	assertOrder(t, onboarding, "Ask every project", "EFFORT_MEDIUM_CRITERIA")
+	assertOrder(t, onboarding, "## Phase 4", "detent onboarding build-workflow")
+	assertOrder(t, onboarding, "detent onboarding build-workflow", "## Phase 5")
+}
+
 func TestOnboardingDocsSkipDuplicateProfileSuppliedQuestions(t *testing.T) {
 	t.Parallel()
 

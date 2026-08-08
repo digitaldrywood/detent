@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	workflowtemplates "github.com/digitaldrywood/detent/docs/templates"
+	"github.com/digitaldrywood/detent/internal/agentoverride"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -27,6 +28,8 @@ const (
 	onboardingWorkflowWorkerModelPinned           = "pinned"
 	onboardingWorkflowDefaultSessionTokens        = int64(2000000)
 	onboardingWorkflowDefaultSessionOverrideLabel = "allow-large-session"
+	onboardingAdmissionCriteriaHeading            = "Admission Criteria"
+	onboardingEffortRubricHeading                 = "Issue effort selection"
 )
 
 type onboardingBuildWorkflowConfig struct {
@@ -42,11 +45,18 @@ type onboardingBuildWorkflowResult struct {
 	Preset     string                       `json:"preset"`
 	Path       string                       `json:"path"`
 	ConfigPath string                       `json:"config_path"`
+	AgentsPath string                       `json:"agents_path"`
 	Written    bool                         `json:"written"`
 	Probe      onboardingRepoProbe          `json:"probe"`
 	Decisions  []onboardingWorkflowDecision `json:"decisions"`
 	Workflow   string                       `json:"workflow"`
 	Config     string                       `json:"config"`
+	Agents     string                       `json:"agents"`
+}
+
+type onboardingGuidanceField struct {
+	Key     string
+	Heading string
 }
 
 type onboardingWorkflowDecision struct {
@@ -93,7 +103,7 @@ func newOnboardingBuildWorkflowCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:          "build-workflow",
-		Short:        "Build detent.yaml and WORKFLOW.md from onboarding answers and repository probes",
+		Short:        "Build detent.yaml, WORKFLOW.md, and AGENTS.md from onboarding answers and repository probes",
 		Example:      `detent onboarding build-workflow --answers "$ONBOARDING_DIR/answers.env" --output WORKFLOW.md --write`,
 		Args:         NoArgs,
 		SilenceUsage: true,
@@ -121,7 +131,7 @@ func newOnboardingBuildWorkflowCommand() *cobra.Command {
 	cmd.Flags().StringVar(&outputPath, "output", "WORKFLOW.md", "WORKFLOW.md anchor path; detent.yaml is written beside it")
 	cmd.Flags().StringVar(&targetSourceRoot, "target-source-root", "", "explicit target repository checkout root")
 	cmd.Flags().StringVar(&preset, "preset", "", "workflow preset: project_v2, issue_field, label, github_local, or non_code_artifact")
-	cmd.Flags().BoolVar(&write, "write", false, "write the generated detent.yaml and WORKFLOW.md")
+	cmd.Flags().BoolVar(&write, "write", false, "write the generated detent.yaml, WORKFLOW.md, and AGENTS.md")
 	return cmd
 }
 
@@ -148,6 +158,15 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 	}
 
 	projectConfig, workflow, decisions, err := renderOnboardingWorkflow(ctx, preset, answers, validation, probe)
+	if err != nil {
+		return onboardingBuildWorkflowResult{}, err
+	}
+	agentsPath := filepath.Join(sourceRoot, "AGENTS.md")
+	existingAgents, err := readOnboardingAgentsFile(agentsPath)
+	if err != nil {
+		return onboardingBuildWorkflowResult{}, err
+	}
+	agents, err := renderOnboardingAgentGuidance(existingAgents, answers)
 	if err != nil {
 		return onboardingBuildWorkflowResult{}, err
 	}
@@ -180,6 +199,9 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		if err := os.WriteFile(projectConfigPath, []byte(projectConfig), 0o600); err != nil {
 			return onboardingBuildWorkflowResult{}, fmt.Errorf("write project config %s: %w", projectConfigPath, err)
 		}
+		if err := os.WriteFile(agentsPath, []byte(agents), 0o600); err != nil {
+			return onboardingBuildWorkflowResult{}, fmt.Errorf("write agent guidance %s: %w", agentsPath, err)
+		}
 	}
 
 	return onboardingBuildWorkflowResult{
@@ -187,11 +209,13 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		Preset:     preset.Name,
 		Path:       outputPath,
 		ConfigPath: projectConfigPath,
+		AgentsPath: agentsPath,
 		Written:    cfg.Write,
 		Probe:      probe,
 		Decisions:  decisions,
 		Workflow:   workflow,
 		Config:     projectConfig,
+		Agents:     agents,
 	}, nil
 }
 
@@ -317,7 +341,10 @@ func renderOnboardingWorkflow(
 		return "", "", nil, err
 	}
 	renderedPrompt := renderOnboardingWorkflowPrompt(preset.Name, preset.PromptRaw, reviewFlow)
-	renderedPrompt = renderOnboardingWorkflowAdmissionCriteria(renderedPrompt, root)
+	renderedPrompt, err = renderOnboardingWorkflowAdmissionCriteria(renderedPrompt, root, answers)
+	if err != nil {
+		return "", "", nil, err
+	}
 
 	rawConfig, err := yaml.Marshal(root)
 	if err != nil {
@@ -737,7 +764,7 @@ func applyOnboardingWorkflowAdmissionDecisions(root *yaml.Node, answers onboardi
 	schedule, scheduleProvenance, scheduleWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_SCHEDULE", workflowconfig.DefaultBacklogAdmissionSchedule, "preset", "bounded admission polling cadence")
 	sourceState, sourceProvenance, sourceWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_SOURCE_STATE", "Backlog", "preset", "evaluate work waiting in Backlog")
 	targetState, targetProvenance, targetWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_TARGET_STATE", "Todo", "preset", "admitted work becomes dispatch eligible")
-	criteriaSection, criteriaProvenance, criteriaWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_CRITERIA_SECTION", "", "preset", "admission requires project-owned criteria")
+	criteriaSection, criteriaProvenance, criteriaWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_CRITERIA_SECTION", onboardingAdmissionCriteriaHeading, "preset", "generated project-owned admission criteria heading")
 	if strings.TrimSpace(criteriaSection) == "" {
 		return NewValidationError(
 			"BACKLOG_ADMISSION_CRITERIA_SECTION is required when BACKLOG_ADMISSION_ENABLED=true",
@@ -1023,26 +1050,150 @@ func renderOnboardingWorkflowPrompt(preset string, prompt []byte, flow onboardin
 	return replaceOnboardingWorkflowSection(text, "## Required Execution Flow", section)
 }
 
-func renderOnboardingWorkflowAdmissionCriteria(prompt string, root *yaml.Node) string {
+func renderOnboardingWorkflowAdmissionCriteria(prompt string, root *yaml.Node, answers onboardingAnswers) (string, error) {
 	admission := onboardingYAMLMappingValue(root, "backlog_admission")
 	if admission == nil || strings.TrimSpace(onboardingYAMLScalarValue(admission, "enabled")) != "true" {
-		return prompt
+		return prompt, nil
 	}
 	section := strings.TrimSpace(onboardingYAMLScalarValue(admission, "criteria_section"))
 	if section == "" {
-		return prompt
+		return prompt, nil
 	}
 	if _, err := workflowconfig.ResolveAdmissionCriteria(prompt, section); err == nil || !strings.Contains(err.Error(), "was not found") {
-		return prompt
+		return prompt, nil
 	}
-	return strings.TrimRight(prompt, "\n") + "\n\n" + markdownLines(
-		"## "+section,
+	fields := onboardingAdmissionGuidanceFields()
+	missing := missingOnboardingGuidanceAnswers(answers, fields)
+	if len(missing) > 0 {
+		return "", NewValidationError(
+			strings.Join(missing, ", ")+" required when backlog admission is enabled",
+			"Record project-specific Alignment, Readiness, Size, and Safety Gates criteria in answers.env.",
+			nil,
+		)
+	}
+	lines := []string{
+		"## " + section,
 		"",
-		"- **Alignment** — Admit work that advances explicit project goals or repairs a reproducible defect.",
-		"- **Readiness** — Admit only issues with clear expected behavior and checkable completion criteria.",
-		"- **Size** — Admit only work that can be completed and validated in one agent run.",
-		"- **Safety** — Leave destructive, credential-gated, ambiguous, or dependency-blocked work in Backlog.",
-	)
+		"Detent evaluates work for admission using the project-specific criteria recorded during onboarding.",
+	}
+	for _, field := range fields {
+		lines = append(lines, "", "### "+field.Heading, "", strings.TrimSpace(answers.Values[field.Key]))
+	}
+	return strings.TrimRight(prompt, "\n") + "\n\n" + markdownLines(lines...), nil
+}
+
+func readOnboardingAgentsFile(path string) (string, error) {
+	raw, err := os.ReadFile(path) // #nosec G703 -- path is AGENTS.md under the resolved operator-selected source root.
+	if err == nil {
+		return string(raw), nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	return "", fmt.Errorf("read agent guidance %s: %w", path, err)
+}
+
+func renderOnboardingAgentGuidance(existing string, answers onboardingAnswers) (string, error) {
+	if hasOnboardingEffortGuidance(existing) {
+		return existing, nil
+	}
+	fields := onboardingEffortGuidanceFields()
+	missing := missingOnboardingGuidanceAnswers(answers, fields)
+	if len(missing) > 0 {
+		return "", NewValidationError(
+			strings.Join(missing, ", ")+" required to generate AGENTS.md effort guidance",
+			"Record project-specific medium, high, xhigh, and max effort criteria in answers.env.",
+			nil,
+		)
+	}
+	lines := []string{
+		"## " + onboardingEffortRubricHeading,
+		"",
+		"Every issue created for this repository must include an explicit reasoning effort override:",
+		"",
+		"```detent-agent",
+		"schema: 1",
+		"effort: high",
+		"```",
+		"",
+		"Choose the effort from this project-specific rubric:",
+		"",
+	}
+	for _, field := range fields {
+		lines = append(lines, "- `"+field.Heading+"` — "+strings.TrimSpace(answers.Values[field.Key]))
+	}
+	lines = append(lines, "", "Leave `model` unset so the issue inherits the fleet-standard model.")
+	rubric := markdownLines(lines...)
+	if strings.TrimSpace(existing) == "" {
+		return rubric, nil
+	}
+	return strings.TrimRight(existing, "\n") + "\n\n" + rubric, nil
+}
+
+func onboardingAdmissionGuidanceFields() []onboardingGuidanceField {
+	return []onboardingGuidanceField{
+		{Key: "ADMISSION_ALIGNMENT_CRITERIA", Heading: "Alignment"},
+		{Key: "ADMISSION_READINESS_CRITERIA", Heading: "Readiness"},
+		{Key: "ADMISSION_SIZE_CRITERIA", Heading: "Size"},
+		{Key: "ADMISSION_SAFETY_GATES", Heading: "Safety Gates"},
+	}
+}
+
+func onboardingEffortGuidanceFields() []onboardingGuidanceField {
+	return []onboardingGuidanceField{
+		{Key: "EFFORT_MEDIUM_CRITERIA", Heading: "medium"},
+		{Key: "EFFORT_HIGH_CRITERIA", Heading: "high"},
+		{Key: "EFFORT_XHIGH_CRITERIA", Heading: "xhigh"},
+		{Key: "EFFORT_MAX_CRITERIA", Heading: "max"},
+	}
+}
+
+func missingOnboardingGuidanceAnswers(answers onboardingAnswers, fields []onboardingGuidanceField) []string {
+	var missing []string
+	for _, field := range fields {
+		if strings.TrimSpace(answers.Values[field.Key]) == "" {
+			missing = append(missing, field.Key)
+		}
+	}
+	return missing
+}
+
+func hasOnboardingEffortGuidance(text string) bool {
+	section, found := onboardingMarkdownSection(text, "## "+onboardingEffortRubricHeading)
+	if !found {
+		return false
+	}
+	override, found, err := agentoverride.FromIssueBody(section)
+	if err != nil || !found || override.Effort == "" || override.Model != "" {
+		return false
+	}
+	for _, field := range onboardingEffortGuidanceFields() {
+		if !strings.Contains(section, "`"+field.Heading+"`") {
+			return false
+		}
+	}
+	return true
+}
+
+func onboardingMarkdownSection(text string, heading string) (string, bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	start := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if start < 0 {
+			if trimmed == heading {
+				start = index + 1
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") {
+			return strings.Join(lines[start:index], "\n"), true
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	return strings.Join(lines[start:], "\n"), true
 }
 
 func onboardingYAMLScalarValue(node *yaml.Node, key string) string {
@@ -1454,6 +1605,7 @@ func writeOnboardingBuildWorkflowPretty(w io.Writer, result onboardingBuildWorkf
 		"preset: " + result.Preset,
 		"path: " + result.Path,
 		"config_path: " + result.ConfigPath,
+		"agents_path: " + result.AgentsPath,
 		"written: " + strconv.FormatBool(result.Written),
 		"source_root: " + result.Probe.SourceRoot,
 	}
@@ -1475,6 +1627,9 @@ func writeOnboardingBuildWorkflowPretty(w io.Writer, result onboardingBuildWorkf
 			"",
 			"WORKFLOW.md preview:",
 			strings.TrimSpace(result.Workflow),
+			"",
+			"AGENTS.md preview:",
+			strings.TrimSpace(result.Agents),
 		)
 	}
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
