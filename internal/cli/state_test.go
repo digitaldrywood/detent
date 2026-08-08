@@ -277,6 +277,39 @@ func TestStateCommandOutput(t *testing.T) {
 	}
 }
 
+func TestStateCommandRejectsBlankExplicitProject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "empty", args: []string{"--project", ""}},
+		{name: "whitespace", args: []string{"--project", "  \t"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			configPath := "/config/global.yaml"
+			host := "127.0.0.1"
+			port := 1
+			cmd := newStateCommand(&configPath, &host, &port, options{})
+			cmd.SilenceUsage = true
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "--project must not be blank") {
+				t.Fatalf("Execute() error = %v, want blank project validation error", err)
+			}
+			problem := ProblemForError(err)
+			if problem.ExitCode != ExitValidation {
+				t.Fatalf("exit code = %d, want %d", problem.ExitCode, ExitValidation)
+			}
+		})
+	}
+}
+
 func TestStateCommandHelpDocumentsBoundsAndScoping(t *testing.T) {
 	t.Parallel()
 

@@ -23,6 +23,9 @@ detent state --project detent
 detent state --format json | jq '.running'`),
 		Args: NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if flagChanged(cmd, "project") && strings.TrimSpace(projectID) == "" {
+				return NewValidationError("--project must not be blank", "Pass a configured Detent project ID or omit --project for fleet state.", nil)
+			}
 			out, err := OutputForCommand(cmd)
 			if err != nil {
 				return err
