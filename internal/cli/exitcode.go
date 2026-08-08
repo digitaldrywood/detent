@@ -23,8 +23,17 @@ const (
 )
 
 var (
-	ErrGitHubAuth = errors.New("github auth failed")
-	ErrValidation = errors.New("input validation failed")
+	ErrGitHubAuth                  = errors.New("github auth failed")
+	ErrValidation                  = errors.New("input validation failed")
+	ErrDashboardUnreachable        = errors.New("dashboard unreachable")
+	ErrDashboardTimeout            = errors.New("dashboard request timed out")
+	ErrDashboardUnauthorized       = errors.New("dashboard authentication failed")
+	ErrDashboardForbidden          = errors.New("dashboard access forbidden")
+	ErrDashboardAmbiguousReference = errors.New("ambiguous issue reference")
+	ErrDashboardIssueNotFound      = errors.New("dashboard issue not found")
+	ErrDashboardUnsupportedModel   = errors.New("unsupported dashboard model version")
+	ErrDashboardRuntimeUnavailable = errors.New("dashboard runtime unavailable")
+	ErrDashboardRequestFailed      = errors.New("dashboard request failed")
 )
 
 type ErrorClass struct {
@@ -44,6 +53,69 @@ var (
 )
 
 var errorClassifiers = []errorClass{
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeDashboardUnreachable, ExitCode: ExitGeneral},
+		Title:      "Dashboard unreachable",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardUnreachable)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeDashboardTimeout, ExitCode: ExitGeneral},
+		Title:      "Dashboard request timed out",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardTimeout)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeDashboardUnauthorized, ExitCode: ExitAuth},
+		Title:      "Dashboard authentication failed",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardUnauthorized)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeDashboardForbidden, ExitCode: ExitAuth},
+		Title:      "Dashboard access forbidden",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardForbidden)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeAmbiguousReference, ExitCode: ExitValidation},
+		Title:      "Issue reference is ambiguous",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardAmbiguousReference)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeIssueNotFound, ExitCode: ExitNotFoundOrConfig},
+		Title:      "Issue not found",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardIssueNotFound)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeUnsupportedModelVersion, ExitCode: ExitGeneral},
+		Title:      "Issue explanation schema is unsupported",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardUnsupportedModel)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeRuntimeUnavailable, ExitCode: ExitGeneral},
+		Title:      "Issue explanation runtime unavailable",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardRuntimeUnavailable)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeDashboardRequestFailed, ExitCode: ExitGeneral},
+		Title:      "Dashboard request failed",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDashboardRequestFailed)
+		},
+	},
 	{
 		ErrorClass: ErrorClass{Slug: errorCodeUnknownCommand, ExitCode: ExitValidation},
 		Title:      "Unknown command",

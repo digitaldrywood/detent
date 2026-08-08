@@ -384,7 +384,10 @@ JSON errors:
   Optional fields: suggested_fix, did_you_mean, docs_url.
   Stable codes: general, validation, unknown_command, unknown_flag, github_auth,
   config_exists, project_exists, project_not_found, doctor_failed, shutdown_forced,
-  shutdown_timeout.
+  shutdown_timeout, dashboard_unreachable, dashboard_timeout,
+  dashboard_unauthorized, dashboard_forbidden, ambiguous_reference,
+  issue_not_found, unsupported_model_version, runtime_unavailable,
+  dashboard_request_failed.
 
 Exit codes:
   0  success
@@ -460,6 +463,7 @@ detent --format json config path`),
 		newKeyCommand(&configPath, opts),
 		newConfigCommand(&configPath, opts),
 		newCapacityCommand(&configPath, &host, &port, opts),
+		newIssueCommand(&configPath, &host, &port, opts),
 		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),
 		newRemoveProjectCommand(&configPath, opts),
