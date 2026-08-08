@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1456,9 +1457,85 @@ func TestAwaitBootDashboardURL(t *testing.T) {
 	}
 }
 
+func TestAwaitDashboard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		setup       func(*testing.T) (context.Context, *http.Client, string, <-chan error)
+		wantBody    string
+		wantErrText string
+	}{
+		{
+			name: "dashboard ready",
+			setup: func(t *testing.T) (context.Context, *http.Client, string, <-chan error) {
+				t.Helper()
+
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					_, _ = writer.Write([]byte("ready"))
+				}))
+				t.Cleanup(server.Close)
+				return context.Background(), server.Client(), server.URL, make(chan error)
+			},
+			wantBody: "ready",
+		},
+		{
+			name: "runtime exits early",
+			setup: func(*testing.T) (context.Context, *http.Client, string, <-chan error) {
+				done := make(chan error, 1)
+				done <- errors.New("store unavailable")
+				return context.Background(), http.DefaultClient, "http://127.0.0.1:0/health", done
+			},
+			wantErrText: "startRunning returned before dashboard responded: store unavailable",
+		},
+		{
+			name: "runtime exits without error",
+			setup: func(*testing.T) (context.Context, *http.Client, string, <-chan error) {
+				done := make(chan error, 1)
+				done <- nil
+				return context.Background(), http.DefaultClient, "http://127.0.0.1:0/health", done
+			},
+			wantErrText: "startRunning returned before dashboard responded without error",
+		},
+		{
+			name: "deadlock guard expires",
+			setup: func(t *testing.T) (context.Context, *http.Client, string, <-chan error) {
+				t.Helper()
+
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, http.DefaultClient, "http://127.0.0.1:0/health", make(chan error)
+			},
+			wantErrText: "timed out waiting for dashboard at http://127.0.0.1:0/health: context canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, client, url, done := tt.setup(t)
+			body, err := awaitDashboard(ctx, client, url, done)
+			if tt.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("awaitDashboard() error = %v, want containing %q", err, tt.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("awaitDashboard() error = %v", err)
+			}
+			if body != tt.wantBody {
+				t.Fatalf("awaitDashboard() = %q, want %q", body, tt.wantBody)
+			}
+		})
+	}
+}
+
 const (
-	bootProvisioningStartTimeout = 45 * time.Second
-	bootDashboardURLTimeout      = 45 * time.Second
+	bootProvisioningStartTimeout    = 45 * time.Second
+	bootDashboardURLTimeout         = 45 * time.Second
+	dashboardReadinessDeadlockGuard = 2 * time.Minute
 )
 
 type bootOutput struct {
@@ -1573,40 +1650,69 @@ func bootDashboardURL(output string) string {
 func waitForDashboard(t *testing.T, url string, done <-chan error) string {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dashboardReadinessDeadlockGuard)
 	defer cancel()
+	return waitForDashboardContext(t, ctx, url, done)
+}
+
+func waitForDashboardContext(t *testing.T, ctx context.Context, url string, done <-chan error) string {
+	t.Helper()
 
 	client := http.Client{Timeout: time.Second}
-	for ctx.Err() == nil {
+	body, err := awaitDashboard(ctx, &client, url, done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func awaitDashboard(ctx context.Context, client *http.Client, url string, done <-chan error) (string, error) {
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+
+	for {
 		select {
 		case err := <-done:
-			t.Fatalf("startRunning returned before dashboard responded: %v", err)
+			return "", dashboardExitError(err)
+		case <-ctx.Done():
+			return "", fmt.Errorf("timed out waiting for dashboard at %s: %w", url, ctx.Err())
 		default:
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
-			t.Fatalf("NewRequestWithContext() error = %v", err)
+			return "", fmt.Errorf("create dashboard readiness request: %w", err)
 		}
 		resp, err := client.Do(req)
 		if err == nil {
 			body, readErr := io.ReadAll(resp.Body)
 			closeErr := resp.Body.Close()
 			if readErr != nil {
-				t.Fatalf("ReadAll() error = %v", readErr)
+				return "", fmt.Errorf("read dashboard readiness response: %w", readErr)
 			}
 			if closeErr != nil {
-				t.Fatalf("Body.Close() error = %v", closeErr)
+				return "", fmt.Errorf("close dashboard readiness response: %w", closeErr)
 			}
 			if resp.StatusCode == http.StatusOK {
-				return string(body)
+				return string(body), nil
 			}
 		}
 
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case err := <-done:
+			return "", dashboardExitError(err)
+		case <-ctx.Done():
+			return "", fmt.Errorf("timed out waiting for dashboard at %s: %w", url, ctx.Err())
+		case <-retry.C:
+		}
 	}
-	t.Fatalf("timed out waiting for dashboard at %s", url)
-	return ""
+}
+
+func dashboardExitError(err error) error {
+	if err == nil {
+		return errors.New("startRunning returned before dashboard responded without error")
+	}
+	return fmt.Errorf("startRunning returned before dashboard responded: %w", err)
 }
 
 func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name string, ok func(string) bool) string {
@@ -1617,7 +1723,7 @@ func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name
 
 	lastBody := ""
 	for ctx.Err() == nil {
-		body := waitForDashboard(t, url, done)
+		body := waitForDashboardContext(t, ctx, url, done)
 		lastBody = body
 		if ok(body) {
 			return body
