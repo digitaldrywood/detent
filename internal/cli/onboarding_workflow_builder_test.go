@@ -484,6 +484,102 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 	}
 }
 
+func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		profile            string
+		wantAdmission      bool
+		wantAutoAdmit      bool
+		wantRoutines       int
+		wantIntakeSources  int
+		wantTrustedAuthors bool
+	}{
+		{profile: "manual_intake"},
+		{profile: "assisted_intake", wantAdmission: true},
+		{profile: "autonomous_intake", wantAdmission: true, wantAutoAdmit: true, wantRoutines: 1, wantIntakeSources: 1, wantTrustedAuthors: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.profile, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "label", "review_gate", "INTAKE_PROFILE="+tt.profile))
+			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       false,
+			})
+			if err != nil {
+				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
+			}
+			workflow, err := parseOnboardingBuildWorkflowResult(result)
+			if err != nil {
+				t.Fatalf("ParseProjectDefinition() error = %v\nconfig:\n%s\nworkflow:\n%s", err, result.Config, result.Workflow)
+			}
+			if !workflow.Config.Agent.Followups.Enabled {
+				t.Fatal("Agent.Followups.Enabled = false, want true")
+			}
+			if workflow.Config.BacklogAdmission.Enabled != tt.wantAdmission {
+				t.Fatalf("BacklogAdmission.Enabled = %t, want %t", workflow.Config.BacklogAdmission.Enabled, tt.wantAdmission)
+			}
+			if workflow.Config.BacklogAdmission.AutoAdmit != tt.wantAutoAdmit {
+				t.Fatalf("BacklogAdmission.AutoAdmit = %t, want %t", workflow.Config.BacklogAdmission.AutoAdmit, tt.wantAutoAdmit)
+			}
+			if got := len(workflow.Config.BacklogAdmission.Authors.AllowAssociation) > 0; got != tt.wantTrustedAuthors {
+				t.Fatalf("BacklogAdmission.Authors.AllowAssociation configured = %t, want %t", got, tt.wantTrustedAuthors)
+			}
+			if tt.wantAutoAdmit {
+				if warning := workflowconfig.BacklogAdmissionPublicExposureWarning(workflow.Config.BacklogAdmission, "public"); warning != "" {
+					t.Fatalf("autonomous intake public exposure warning = %q", warning)
+				}
+			}
+			if len(workflow.Config.Routines) != tt.wantRoutines {
+				t.Fatalf("len(Routines) = %d, want %d", len(workflow.Config.Routines), tt.wantRoutines)
+			}
+			if len(workflow.Config.Intake.Sources) != tt.wantIntakeSources {
+				t.Fatalf("len(Intake.Sources) = %d, want %d", len(workflow.Config.Intake.Sources), tt.wantIntakeSources)
+			}
+			assertOnboardingWorkflowDecision(t, result.Decisions, "answers.intake_profile", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "agent.followups.enabled", "answer")
+			if !tt.wantAdmission {
+				if strings.Contains(result.Config, "backlog_admission:") {
+					t.Fatalf("manual intake emitted backlog_admission block:\n%s", result.Config)
+				}
+				assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission", "answer")
+				return
+			}
+			for _, want := range []string{
+				"max_candidates_per_run: 50",
+				"max_proposals_per_run: 3",
+				"max_open_proposals: 10",
+				"proposal_expiry_days: 7",
+				"## Admission Criteria",
+			} {
+				if !strings.Contains(result.Config+result.Workflow, want) {
+					t.Fatalf("generated output missing %q\nconfig:\n%s\nworkflow:\n%s", want, result.Config, result.Workflow)
+				}
+			}
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.enabled", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.max_candidates_per_run", "answer")
+		})
+	}
+}
+
+func TestBuildOnboardingWorkflowRejectsInvalidIntakeProfile(t *testing.T) {
+	t.Parallel()
+
+	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+	answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "label", "review_gate", "INTAKE_PROFILE=unbounded_intake"))
+	_, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+		AnswersPath: answersPath,
+		Write:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "INTAKE_PROFILE must be manual_intake, assisted_intake, or autonomous_intake") {
+		t.Fatalf("buildOnboardingWorkflow() error = %v, want invalid intake profile error", err)
+	}
+}
+
 func TestRenderOnboardingWorkflowPromptReplacesCRLFExecutionFlow(t *testing.T) {
 	t.Parallel()
 

@@ -890,7 +890,8 @@ human intent profile can explain the operating effect. After a named delivery
 profile supplies a field, skip the duplicate low-level question unless the
 operator asks for an advanced override.
 Ask or select the delivery profile before emitting low-level `KANBAN_MODE`
-defaults. For `GITHUB_MODE=label` add-project onboarding on an operator-owned
+defaults. Ask or select the work-intake profile before emitting its low-level
+fields. For `GITHUB_MODE=label` add-project onboarding on an operator-owned
 local or private Detent instance, recommend `KANBAN_MODE=integration` even when
 the pre-mutation `detent doctor --port 0` skipped write probes. Skipped
 pre-mutation write probes must not become a `read_only` recommendation;
@@ -1094,7 +1095,100 @@ probes.
    For Custom/advanced, do not write `DELIVERY_PROFILE`; continue through the
    lower-level fields below and record the operator's explicit mixed policy.
 
-6. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
+6. **Work intake policy.** Ask how work should enter the board immediately
+   after the delivery-policy question so the operator sees the inbound and
+   outbound automation choices together. Present the operating model before
+   showing any `answers.env` keys:
+
+   ```text
+   How should new work enter Detent's board?
+
+   1. Manual intake: humans file planned work, and implementer agents preserve out-of-scope discoveries in Backlog; Detent does not scan or promote that work automatically.
+   2. Assisted intake: Detent evaluates Backlog work against the project's admission criteria and proposes promotion to Todo for human approval.
+   3. Autonomous intake: Detent scans for stale TODOs, runs a scheduled repository-maintenance sweep, and automatically admits qualifying Backlog work at or above an explicit confidence floor.
+   ```
+
+   These profiles use only built-in Detent mechanisms. Do not configure Sentry,
+   Datadog, Slack, or generic webhook receivers as part of this question. The
+   built-in `stale-todos` scheduled scanner is included in autonomous intake.
+
+   Write the selected profile first:
+
+   ```sh
+   printf '%s\n' \
+     'INTAKE_PROFILE=<manual_intake|assisted_intake|autonomous_intake>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^INTAKE_PROFILE=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Then show the canonical keys as a secondary implementation mapping. Manual
+   intake expands to:
+
+   ```sh
+   printf '%s\n' \
+     'FOLLOWUPS_ENABLED=true' \
+     'BACKLOG_ADMISSION_ENABLED=false' \
+     'ROUTINES_ENABLED=false' \
+     'STALE_TODOS_ENABLED=false' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Assisted intake expands to:
+
+   ```sh
+   printf '%s\n' \
+     'FOLLOWUPS_ENABLED=true' \
+     'BACKLOG_ADMISSION_ENABLED=true' \
+     'BACKLOG_ADMISSION_SCHEDULE=*/15 * * * *' \
+     'BACKLOG_ADMISSION_SOURCE_STATE=Backlog' \
+     'BACKLOG_ADMISSION_TARGET_STATE=Todo' \
+     'BACKLOG_ADMISSION_CRITERIA_SECTION=Admission Criteria' \
+     'BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN=50' \
+     'BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN=3' \
+     'BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS=10' \
+     'BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS=7' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT=false' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE=0.9' \
+     'ROUTINES_ENABLED=false' \
+     'STALE_TODOS_ENABLED=false' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Autonomous intake expands to the same bounded admission settings, with
+   `BACKLOG_ADMISSION_AUTO_ADMIT=true`, plus:
+
+   ```sh
+   printf '%s\n' \
+     'FOLLOWUPS_ENABLED=true' \
+     'BACKLOG_ADMISSION_ENABLED=true' \
+     'BACKLOG_ADMISSION_SCHEDULE=*/15 * * * *' \
+     'BACKLOG_ADMISSION_SOURCE_STATE=Backlog' \
+     'BACKLOG_ADMISSION_TARGET_STATE=Todo' \
+     'BACKLOG_ADMISSION_CRITERIA_SECTION=Admission Criteria' \
+     'BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN=50' \
+     'BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN=3' \
+     'BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS=10' \
+     'BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS=7' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT=true' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE=0.9' \
+     'BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION=OWNER,MEMBER,COLLABORATOR' \
+     'ROUTINES_ENABLED=true' \
+     'ROUTINE_NAME=repository-maintenance' \
+     'ROUTINE_SCHEDULE=0 6 * * 1' \
+     'ROUTINE_PROMPT=Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria. Each issue body must include a fenced `detent-agent` block with `schema: 1` and a best-guess `effort` selected from the project rubric.' \
+     'STALE_TODOS_ENABLED=true' \
+     'STALE_TODOS_SCHEDULE=0 6 * * 1' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Admission-enabled profiles require the named shared `WORKFLOW.md` criteria
+   section. The workflow builder emits `## Admission Criteria` with a bounded
+   baseline rubric and sets `criteria_section` to the exact heading, so the
+   generated project definition passes admission validation. The four run
+   ceilings are always written explicitly. For Custom/advanced, omit
+   `INTAKE_PROFILE` and record the underlying keys directly.
+
+7. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
    wants to override a selected profile's `KANBAN_MODE`, switch to
    Custom/advanced and remove or omit `DELIVERY_PROFILE` before recording the
    mixed policy: "Should Detent's project Kanban be read-only or allow GitHub
@@ -1118,7 +1212,7 @@ probes.
    rg '^KANBAN_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Scheduling.** Ask: "What `global.yaml` `priority` from 0-4 and `weight`
+8. **Scheduling.** Ask: "What `global.yaml` `priority` from 0-4 and `weight`
    should this project receive?" Show `$ONBOARDING_DIR/global-projects.txt`.
    Disambiguate this from the board `Priority` field: `global.yaml` `priority`
    ranks projects on the host; the board `Priority` field ranks issues inside
@@ -1134,7 +1228,7 @@ probes.
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Project color.** Ask: "Should this project have a fixed dashboard color,
+9. **Project color.** Ask: "Should this project have a fixed dashboard color,
    or should Detent assign one automatically?" Show
    `$ONBOARDING_DIR/global-projects.txt` so existing colors are discoverable.
    Explain that `projects[].color` is optional, accepts opaque CSS hex values
@@ -1149,7 +1243,7 @@ probes.
    rg '^PROJECT_COLOR=' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Dispatch label ordering.** Ask: "When two issues have the same configured
+10. **Dispatch label ordering.** Ask: "When two issues have the same configured
    `Priority`, should labels break the tie before age?" Show the label counts
    from `$ONBOARDING_DIR/issue-counts.json` and recommend an ordered list from
    labels that represent work type or risk, such as `bug`, `regression`, then
@@ -1166,7 +1260,7 @@ probes.
    rg '^DISPATCH_PRIORITY_BY_LABEL=' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Instance name.** Ask: "What optional instance name should appear in
+11. **Instance name.** Ask: "What optional instance name should appear in
    Detent browser tabs and the navbar?" Recommendation source: the short
    hostname, existing `global.identity.name`, and any operator naming
    convention for this host. Default if silent: the short hostname. Verify:
@@ -1179,7 +1273,7 @@ probes.
    rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
    ```
 
-11. **Authorization filters.** Ask: "Should Detent consider all board items or
+12. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -1219,7 +1313,7 @@ probes.
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-12. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+13. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -1236,7 +1330,7 @@ probes.
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-13. **Validation gate.** Ask for the gate kind and command: "Use the detected
+14. **Validation gate.** Ask for the gate kind and command: "Use the detected
    command, a custom command, or a human review label gate?" Ask the automated
    review subquestion only for Custom/advanced. If the operator wants to
    override a selected profile's `GATE_REQUIRE_AUTOMATED_REVIEW`, switch to
@@ -1270,7 +1364,7 @@ probes.
    behavior or cost control, but it must be reviewed and updated before the
    provider retires that model generation.
 
-14. **Worker model.** Ask: "Should Codex workers follow the provider default,
+15. **Worker model.** Ask: "Should Codex workers follow the provider default,
    or pin a specific model for this project?" Recommend provider default. It
    follows generation upgrades automatically, survives model retirements, and
    still produces accurate model telemetry from the Codex session. A pin is a
@@ -1302,7 +1396,7 @@ probes.
    accepts it. Treat it as an optional per-project Codex config override only
    after confirming the selected model supports the requested effort.
 
-15. **Concurrency.** Ask: "How many agents may this project run at once?"
+16. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -1346,7 +1440,7 @@ probes.
    roughly how many full-context turns fit; record it only when the operator
    explicitly requests that additional ceiling.
 
-16. **Review policy.** Ask this only for Custom/advanced. If the operator wants
+17. **Review policy.** Ask this only for Custom/advanced. If the operator wants
    to override a selected profile's `AUTO_PROMOTE_*`, switch to Custom/advanced
    and remove or omit `DELIVERY_PROFILE` before recording the mixed policy:
    "Should Detent hard-stop at `Human Review`, or may it auto-promote to
@@ -1386,7 +1480,7 @@ probes.
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-17. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
+18. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
    operator wants to override a selected profile's
    `DEPENDENCY_AUTO_UNBLOCK_ENABLED`, switch to Custom/advanced and remove or
    omit `DELIVERY_PROFILE` before recording the mixed policy: "Should
@@ -1413,7 +1507,7 @@ probes.
    rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
    ```
 
-18. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+19. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, manifests, and CI workflows
    in `<source-root>`. Default if silent: template prompt plus any repo
@@ -1462,7 +1556,7 @@ probes.
    rg '^ALIGN_REPOSITORY_MERGE_SETTINGS=(true|false)$' "$ONBOARDING_DIR/answers.env"
    ```
 
-19. **Issue backfill.** Ask: "Which issue filter should be bulk-added, should the
+20. **Issue backfill.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -3294,6 +3388,14 @@ the card instead of auto-resolving it.
 | Session catastrophe bounds | `agent.max_turns`, `agent.max_session_duration_ms`, and `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
+| Work-intake profile | `INTAKE_PROFILE` selects `manual_intake`, `assisted_intake`, or `autonomous_intake`. |
+| Implementer follow-ups | `FOLLOWUPS_ENABLED` maps to `agent.followups.enabled`. |
+| Backlog admission switch and cadence | `BACKLOG_ADMISSION_ENABLED` and `BACKLOG_ADMISSION_SCHEDULE` map to `backlog_admission.enabled` and `backlog_admission.schedule`. |
+| Backlog admission path | `BACKLOG_ADMISSION_SOURCE_STATE`, `BACKLOG_ADMISSION_TARGET_STATE`, and `BACKLOG_ADMISSION_CRITERIA_SECTION` map to `backlog_admission.sources.states`, `target_state`, and `criteria_section`. |
+| Backlog admission ceilings | `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN`, `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN`, `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS`, and `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` map to the same-named lower-case `backlog_admission` keys. |
+| Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`; `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` maps to the trusted `backlog_admission.authors.allow_association` scopes. |
+| Scheduled repository routine | `ROUTINES_ENABLED`, `ROUTINE_NAME`, `ROUTINE_SCHEDULE`, and `ROUTINE_PROMPT` control the generated `routines` entry. |
+| Built-in stale-TODO intake | `STALE_TODOS_ENABLED` and `STALE_TODOS_SCHEDULE` control the generated scheduled `intake.sources` scanner. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |
 | Backfill filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
 | Initial issue status | ProjectV2 or issue-field `Status` value, or one status label in label mode, usually `Backlog` or `Todo`. |
