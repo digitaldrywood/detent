@@ -371,6 +371,33 @@ Do not enable `trust_loopback_peer_read` behind a reverse proxy on the same
 host. Every remote request relayed by that proxy appears to Detent to have a
 loopback direct peer and would receive read access.
 
+### Remote MCP
+
+The running Detent web server exposes the shared read-only operator catalog at
+`/mcp` using MCP Streamable HTTP. It uses the web server's existing listener and
+shutdown lifecycle; no second port or credential system is created. Configure a
+remote MCP client with a URL such as `https://detent.example.com/mcp` and send a
+scoped API key as `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+
+Remote MCP requires an all-projects key whose only scope is `read`. Static
+`api_token` values, dashboard sessions and cookies, loopback peer trust,
+write/admin-only keys, and project-scoped keys are not accepted. Create a
+dedicated key from the API Keys dashboard or `POST /api/v1/keys`; the server
+applies the existing per-IP and per-key API rate limits to every MCP request.
+
+The endpoint supports the same protocol revisions and exactly the same five
+tools as `detent mcp` over stdio. Requests, tool arguments, tool results, and
+HTTP response envelopes are bounded. GET streaming is not needed by this
+read-only surface and returns `405`; clients receive each JSON-RPC response on
+the POST that submitted its request. Clients can end a session with `DELETE
+/mcp` and its `Mcp-Session-Id` header.
+
+Terminate TLS at Detent or a trusted reverse proxy for remote access. Public
+MCP URLs must use HTTPS; plain HTTP is acceptable only when testing through a
+loopback URL. Configure proxies and tracing systems to redact `Authorization`
+and `X-API-Key` headers; Detent never includes either credential in protocol
+errors, API usage records, or application logs.
+
 ### Private Dashboard URL Access
 
 For a personal deployment that needs remote dashboard access without a VPN,
