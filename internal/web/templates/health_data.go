@@ -44,6 +44,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		Footnote:  "GitHub quota bars turn amber at 90%; project budget bars warn at 80% and turn red at the cap.",
 		Rows:      append(append(healthRows(snapshot), healthActiveHoursRows(data)...), healthBudgetRows(data)...),
 	}
+	if len(snapshot.CIUnavailable) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = "CI is unavailable."
+		view.Detail = ciUnavailableHealthDetail(snapshot.CIUnavailable)
+		return view
+	}
 	if len(snapshot.StalenessWarnings) > 0 {
 		view.Kind = primitives.KindWarn
 		view.Verdict = "Fleet work is stale."
@@ -207,6 +213,7 @@ func healthBudgetRows(data DashboardData) []healthRow {
 
 func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows := make([]healthRow, 0, 4)
+	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
 	for _, warning := range snapshot.StalenessWarnings {
 		rows = append(rows, healthStalenessRow(warning))
 	}
@@ -251,6 +258,44 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthCIUnavailableRows(conditions []telemetry.CICondition) []healthRow {
+	rows := make([]healthRow, 0, len(conditions))
+	for index, condition := range conditions {
+		projectID := strings.TrimSpace(condition.ProjectID)
+		if projectID == "" {
+			projectID = "project"
+		}
+		rows = append(rows, healthRow{
+			ID:        "health-ci-unavailable-" + boardAlertRowSlug(projectID, index),
+			Component: "CI · " + projectID,
+			Kind:      primitives.KindErr,
+			Status:    "Unavailable",
+			Detail: boardCountLabel(condition.UnstartedCheckCount, "queued check", "queued checks") +
+				" never started " + ciUnavailableConditionDetail(condition),
+			Resets:   "when checks start",
+			DetailAt: condition.LastObservedAt,
+		})
+	}
+	return rows
+}
+
+func ciUnavailableHealthDetail(conditions []telemetry.CICondition) string {
+	checkCount := 0
+	pullRequestCount := 0
+	oldestQueueSeconds := int64(0)
+	for _, condition := range conditions {
+		checkCount += condition.UnstartedCheckCount
+		pullRequestCount += condition.PullRequestCount
+		oldestQueueSeconds = max(oldestQueueSeconds, condition.OldestQueueSeconds)
+	}
+	detail := boardCountLabel(checkCount, "check is", "checks are") + " queued and unstarted across " +
+		boardCountLabel(pullRequestCount, "PR", "PRs")
+	if oldestQueueSeconds > 0 {
+		detail += "; oldest queued " + formatDuration(float64(oldestQueueSeconds))
+	}
+	return detail + "."
 }
 
 func healthProviderBucketRow(id string, component string, bucket *telemetry.RateLimitBucket) healthRow {

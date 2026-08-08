@@ -34,6 +34,7 @@ type boardAlertKind string
 const (
 	boardAlertKindLastKnown             boardAlertKind = "board-last-known"
 	boardAlertKindFailureBreaker        boardAlertKind = "project-failure-breaker"
+	boardAlertKindCIUnavailable         boardAlertKind = "ci-unavailable"
 	boardAlertKindStaleness             boardAlertKind = "staleness-warning"
 	boardAlertKindTrackerStale          boardAlertKind = "board-stale-data"
 	boardAlertKindAdmissionProposal     boardAlertKind = "admission-proposal"
@@ -48,6 +49,7 @@ const (
 	boardAlertSeverityTrackerStale                     = 400
 	boardAlertSeverityStaleness                        = 450
 	boardAlertSeverityFailureBreaker                   = 500
+	boardAlertSeverityCIUnavailable                    = 550
 	boardAlertSeverityLastKnown                        = 600
 )
 
@@ -88,6 +90,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 	if alert, ok := boardFailureBreakerAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
+	if alert, ok := boardCIUnavailableAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
 	alerts = append(alerts, boardStalenessAlerts(snapshot.StalenessWarnings)...)
 	if alert, ok := boardTrackerStaleAlert(snapshot); ok {
 		alerts = append(alerts, alert)
@@ -108,6 +113,48 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		return alerts[i].Severity > alerts[j].Severity
 	})
 	return alerts
+}
+
+func boardCIUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if len(snapshot.CIUnavailable) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.CIUnavailable))
+	for index, condition := range snapshot.CIUnavailable {
+		label := strings.TrimSpace(condition.ProjectID)
+		if label == "" {
+			label = "CI"
+		}
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-ci-unavailable-" + boardAlertRowSlug(label, index),
+			Label:   label,
+			Summary: boardCountLabel(condition.UnstartedCheckCount, "queued check", "queued checks") + " never started",
+			Detail:  ciUnavailableConditionDetail(condition),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-ci-unavailable",
+		Kind:          boardAlertKindCIUnavailable,
+		Severity:      boardAlertSeverityCIUnavailable,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "CI unavailable (" + boardCountLabel(len(snapshot.CIUnavailable), "project", "projects") + ")",
+		DetailSummary: "Runner attention required; CI-gated dispatch is paused.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func ciUnavailableConditionDetail(condition telemetry.CICondition) string {
+	detail := "across " + boardCountLabel(condition.PullRequestCount, "PR", "PRs")
+	if condition.OldestQueueSeconds > 0 {
+		detail += " · oldest queued " + formatDuration(float64(condition.OldestQueueSeconds))
+	}
+	if condition.ParkedAttemptCount > 0 {
+		detail += " · " + boardCountLabel(condition.ParkedAttemptCount, "attempt parked", "attempts parked")
+	}
+	return detail
 }
 
 func boardAdmissionProposalAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {

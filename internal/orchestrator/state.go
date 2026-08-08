@@ -80,6 +80,7 @@ type State struct {
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
+	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
 	DiffStats                map[string]DiffStats
@@ -133,6 +134,7 @@ type Running struct {
 	CapacityScope         backendcapacity.Scope
 	CapacityProbe         bool
 	ModelPermitExempt     bool
+	CIStopRequested       bool
 	StopDestination       string
 	StopPriorityOptions   []telemetry.StopRunPriorityOption
 	globalSlot            scheduler.Slot
@@ -213,6 +215,7 @@ type Retry struct {
 	RetryMode     runpkg.RetryMode
 	ResumeState   store.AgentResumeState
 	MergePrecheck *runpkg.MergePrecheck
+	CIUnavailable bool
 }
 
 type InstantFailure struct {
@@ -373,6 +376,7 @@ func (s State) clone() State {
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
+		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),

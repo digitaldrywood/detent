@@ -6680,6 +6680,46 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	}
 }
 
+func TestHealthReportsCICondition(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		CIUnavailable: []telemetry.CICondition{{
+			ProjectID:           "detent",
+			UnstartedCheckCount: 6,
+			PullRequestCount:    2,
+			OldestQueueSeconds:  47 * 60,
+			DetectedAt:          now.Add(-32 * time.Minute),
+			LastObservedAt:      now,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if got := nestedString(t, health, "status"); got != "needs_attention" {
+		t.Fatalf("health status = %q, want needs_attention", got)
+	}
+	conditions := health["ci_unavailable"].([]any)
+	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "unstarted_check_count") != "6" {
+		t.Fatalf("health ci_unavailable = %#v", conditions)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	conditions = state["ci_unavailable"].([]any)
+	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "pull_request_count") != "2" {
+		t.Fatalf("state ci_unavailable = %#v", conditions)
+	}
+}
+
 func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.T) {
 	t.Parallel()
 

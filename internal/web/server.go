@@ -1057,12 +1057,14 @@ func (s *Server) health(c echo.Context) error {
 	sessionsRemaining := 0
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
+	ciUnavailable := []telemetry.CICondition{}
 	stalenessWarnings := []telemetry.StalenessWarning{}
 	strandedActiveIssues := []telemetry.StrandedIssue{}
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
+			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
 			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
 			strandedActiveIssues = append(strandedActiveIssues, snapshot.StrandedActiveIssues...)
 			if snapshot.Shutdown.Draining {
@@ -1087,6 +1089,9 @@ func (s *Server) health(c echo.Context) error {
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
+		if len(ciUnavailable) > 0 {
+			status = "needs_attention"
+		}
 	}
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:            status,
@@ -1099,6 +1104,7 @@ func (s *Server) health(c echo.Context) error {
 		Environment:       healthEnvironment{Path: os.Getenv("PATH")},
 		Budgets:           budgets,
 		Workflows:         workflows,
+		CIUnavailable:     ciUnavailable,
 		BackendOutages:    backendOutages,
 		StalenessWarnings: stalenessWarnings,
 		StrandedIssues:    strandedActiveIssues,
@@ -1359,6 +1365,7 @@ type healthResponse struct {
 	Environment       healthEnvironment            `json:"environment"`
 	Budgets           []healthBudget               `json:"budgets,omitempty"`
 	Workflows         []healthWorkflowSource       `json:"workflows,omitempty"`
+	CIUnavailable     []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
 	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
 	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`

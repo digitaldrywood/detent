@@ -249,6 +249,8 @@
 #             duration_seconds: 0
 #         # tracker.issues[].pull_request.running_checks | type: list<string> | default: [] | required: No | validation: None
 #         running_checks: []
+#         # tracker.issues[].pull_request.unstarted_check_count | type: integer | default: 0 when configured | required: No | validation: None
+#         unstarted_check_count: 0
 #         # tracker.issues[].pull_request.unstarted_checks | type: list<object> | default: [] | required: No | validation: None
 #         unstarted_checks:
 #           -

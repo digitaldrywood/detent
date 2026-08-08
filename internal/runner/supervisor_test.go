@@ -146,6 +146,17 @@ func TestMergeWorkerDurationExceededFinalState(t *testing.T) {
 	}
 }
 
+func TestCIUnavailableIsCooperativeStop(t *testing.T) {
+	t.Parallel()
+
+	if !cooperativeStopError(ErrCIUnavailable) {
+		t.Fatal("cooperativeStopError(ErrCIUnavailable) = false, want true")
+	}
+	if got := finalStateForTurnError(ErrCIUnavailable); got != FinalStateCIUnavailable {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateCIUnavailable)
+	}
+}
+
 func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	t.Parallel()
 

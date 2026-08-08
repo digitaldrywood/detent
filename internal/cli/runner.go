@@ -903,6 +903,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.TrackerDrift.UntrackedOpen = append(current.TrackerDrift.UntrackedOpen, next.TrackerDrift.UntrackedOpen...)
 	current.TrackerDrift.OpenTerminal = append(current.TrackerDrift.OpenTerminal, next.TrackerDrift.OpenTerminal...)
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
+	current.CIUnavailable = append(current.CIUnavailable, next.CIUnavailable...)
 	current.BackendOutages = append(current.BackendOutages, next.BackendOutages...)
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
 	current.DispatchRecoveries = append(current.DispatchRecoveries, next.DispatchRecoveries...)
@@ -1303,6 +1304,11 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	for i := range snapshot.BackendOutages {
 		if strings.TrimSpace(snapshot.BackendOutages[i].ProjectID) == "" {
 			snapshot.BackendOutages[i].ProjectID = projectID
+		}
+	}
+	for i := range snapshot.CIUnavailable {
+		if strings.TrimSpace(snapshot.CIUnavailable[i].ProjectID) == "" {
+			snapshot.CIUnavailable[i].ProjectID = projectID
 		}
 	}
 	for i := range snapshot.FailureBreakers {

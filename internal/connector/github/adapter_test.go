@@ -2371,6 +2371,9 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	if len(pr.UnstartedChecks) != 1 || pr.UnstartedChecks[0].Name != "Portability Verify" || pr.UnstartedChecks[0].QueueSeconds != 56*60 {
 		t.Fatalf("UnstartedChecks = %#v, want Portability Verify queued 56 minutes", pr.UnstartedChecks)
 	}
+	if pr.UnstartedCheckCount != 1 {
+		t.Fatalf("UnstartedCheckCount = %d, want 1", pr.UnstartedCheckCount)
+	}
 	if len(pr.CodexReviewFindings) != 1 ||
 		pr.CodexReviewFindings[0].Body != "[P1] Unsafe migration." ||
 		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2" {
@@ -2421,6 +2424,7 @@ func TestCheckRunTelemetryDistinguishesUnstartedChecks(t *testing.T) {
 		checkRuns     []restCheckRun
 		wantRunning   []string
 		wantUnstarted []connector.PullRequestCheck
+		wantCount     int
 	}{
 		{
 			name: "all checks in progress",
@@ -2479,6 +2483,7 @@ func TestCheckRunTelemetryDistinguishesUnstartedChecks(t *testing.T) {
 				{ID: 4, Name: "D", Status: "queued", QueueSeconds: 47 * 60},
 				{ID: 5, Name: "E", Status: "queued", QueueSeconds: 47 * 60},
 			},
+			wantCount: 6,
 		},
 		{name: "empty check run list"},
 	}
@@ -2493,6 +2498,13 @@ func TestCheckRunTelemetryDistinguishesUnstartedChecks(t *testing.T) {
 			}
 			if !slices.Equal(summary.UnstartedChecks, tt.wantUnstarted) {
 				t.Fatalf("UnstartedChecks = %#v, want %#v", summary.UnstartedChecks, tt.wantUnstarted)
+			}
+			wantCount := tt.wantCount
+			if wantCount == 0 {
+				wantCount = len(tt.wantUnstarted)
+			}
+			if summary.UnstartedCount != wantCount {
+				t.Fatalf("UnstartedCount = %d, want %d", summary.UnstartedCount, wantCount)
 			}
 		})
 	}

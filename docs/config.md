@@ -793,6 +793,7 @@ rendering and fails on drift.
 | `tracker.issues[].pull_request.transient_failed_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.transient_failed_checks[].status` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.transient_failed_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_check_count` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.unstarted_checks` | `list<object>` | `[]` | No | None |
 | `tracker.issues[].pull_request.unstarted_checks[].conclusion` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.unstarted_checks[].details_url` | `string` | `none` | No | None |
