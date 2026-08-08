@@ -93,7 +93,7 @@ func sessionRouteExempt(request *http.Request) bool {
 		return false
 	}
 	path := request.URL.Path
-	return path == "/health" || path == "/login" || path == "/auth/magic-link" || path == "/auth/oidc/start" || path == "/auth/oidc/callback" || strings.HasPrefix(path, "/static/") || path == "/api/v1/webhooks/github" || strings.HasPrefix(path, "/api/v1/intake/")
+	return path == "/health" || path == "/login" || path == "/auth/magic-link" || path == "/auth/oidc/start" || path == "/auth/oidc/callback" || strings.HasPrefix(path, "/static/") || path == openAPIPath || path == "/api/v1/webhooks/github" || strings.HasPrefix(path, "/api/v1/intake/")
 }
 
 func alternativeAPIAuth(request *http.Request) bool {
