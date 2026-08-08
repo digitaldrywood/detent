@@ -729,7 +729,7 @@ recommendations before asking what to change.
    ```
 
 5. **Inspect open issue distribution.** Count candidate issues by label,
-   assignee, author, and milestone before recommending authorization and intake
+   assignee, author, and milestone before recommending authorization and backfill
    filters. Verify:
 
    ```sh
@@ -841,11 +841,11 @@ recommendations before asking what to change.
      'concurrency: <max agents and Merging cap recommendation>' \
      'review_policy: <hard stop or auto-promote recommendation>' \
      'prompt: <template or repo-specific recommendation, from repo docs>' \
-     'intake: <bulk-add filter and initial Status recommendation>' \
+     'backfill: <bulk-add filter and initial Status recommendation>' \
      > "$ONBOARDING_DIR/recommendations.md"
    rg -n '^(mode|board|rate_budget|scheduling|authorization|dashboard_bind):' \
      "$ONBOARDING_DIR/recommendations.md"
-   rg -n '^(gate|concurrency|review_policy|prompt|intake):' \
+   rg -n '^(gate|concurrency|review_policy|prompt|backfill):' \
      "$ONBOARDING_DIR/recommendations.md"
    ```
 
@@ -2667,14 +2667,14 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      "$ONBOARDING_DIR/repo-labels.txt"
    ```
 
-2. **ProjectV2 intake: bulk-add issues by the selected filter and set initial
+2. **ProjectV2 backfill: bulk-add issues by the selected filter and set initial
    `Status`.** Run only when `GITHUB_MODE=project_v2`. Use the exact
-   `gh issue list` flags from the intake answer. Use `Backlog` for broad intake
+   `gh issue list` flags from the backfill answer. Use `Backlog` for broad backfill
    and `Todo` only for work that should dispatch immediately. This verifies the
    write `project` scope if no earlier board creation, linking, field creation,
    or item edit has already done so.
    `gh project item-add` and `gh project item-edit` are GraphQL mutations, so
-   do not start a broad intake when the budget warning from Phase 1 is still
+   do not start a broad backfill when the budget warning from Phase 1 is still
    unresolved. Verify with one cached inventory after the mutations finish:
 
    ```sh
@@ -2685,9 +2685,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
    gh project field-list <project-number> --owner <project-owner> --format json \
-     > "$ONBOARDING_DIR/project-fields.intake.json"
-   STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.intake.json")"
-   STATUS_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "<initial-status>") | .id' "$ONBOARDING_DIR/project-fields.intake.json")"
+     > "$ONBOARDING_DIR/project-fields.backfill.json"
+   STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.backfill.json")"
+   STATUS_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "<initial-status>") | .id' "$ONBOARDING_DIR/project-fields.backfill.json")"
 
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
      --limit 1000 --json url --jq '.[].url' |
@@ -2701,13 +2701,13 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    done
 
    gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
-     > "$ONBOARDING_DIR/project-items.after-intake.json"
+     > "$ONBOARDING_DIR/project-items.after-backfill.json"
    jq '[.items[] | select(.content.repository == "<repo-owner>/<repo-name>" and .status == "<initial-status>")] | length' \
-     "$ONBOARDING_DIR/project-items.after-intake.json"
+     "$ONBOARDING_DIR/project-items.after-backfill.json"
    ```
 
-3. **Issue-field intake: set initial issue-field Status on selected issues.**
-   Run only when `GITHUB_MODE=issue_field`. Use `Backlog` for broad intake and
+3. **Issue-field backfill: set initial issue-field Status on selected issues.**
+   Run only when `GITHUB_MODE=issue_field`. Use `Backlog` for broad backfill and
    `Todo` only for work that should dispatch immediately. Issue-field writes
    can trigger notifications and secondary rate limits, so keep broad edits
    deliberate and use `detent doctor --allow-write-probes` to prove the write
@@ -2732,12 +2732,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    done
 
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
-     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-intake.json"
-   jq '. | length' "$ONBOARDING_DIR/issues.after-intake.json"
+     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-backfill.json"
+   jq '. | length' "$ONBOARDING_DIR/issues.after-backfill.json"
    ```
 
-4. **Label intake: set the initial status label on selected issues.** Run only
-   when `GITHUB_MODE=label`. Use `Backlog` for broad intake and `Todo` only for
+4. **Label backfill: set the initial status label on selected issues.** Run only
+   when `GITHUB_MODE=label`. Use `Backlog` for broad backfill and `Todo` only for
    work that should dispatch immediately. Each issue should have exactly one
    configured status label with the selected prefix. Preserve ordinary labels
    such as `documentation`, `bug`, or `enhancement`; remove only labels that
@@ -2775,8 +2775,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    gh issue list --repo <repo-owner>/<repo-name> --state open \
      --label "$STATUS_LABEL" <chosen-gh-issue-list-flags> \
-     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-intake.json"
-   jq '. | length' "$ONBOARDING_DIR/issues.after-intake.json"
+     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-backfill.json"
+   jq '. | length' "$ONBOARDING_DIR/issues.after-backfill.json"
    ```
 
 5. **Optionally enable ProjectV2 auto-add.** Run only when
@@ -2889,7 +2889,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    TODO_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
    STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
-   ITEMS_JSON="$ONBOARDING_DIR/project-items.after-intake.json"
+   ITEMS_JSON="$ONBOARDING_DIR/project-items.after-backfill.json"
    if ! test -f "$ITEMS_JSON"; then
      gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
        > "$ONBOARDING_DIR/project-items.smoke.json"
@@ -3155,7 +3155,7 @@ the card instead of auto-resolving it.
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |
-| Intake filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
+| Backfill filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
 | Initial issue status | ProjectV2 or issue-field `Status` value, or one status label in label mode, usually `Backlog` or `Todo`. |
 
 ### What A Good Detent Issue Looks Like

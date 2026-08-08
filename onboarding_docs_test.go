@@ -54,12 +54,31 @@ func TestOnboardingDocsDistinguishIssueBackfillFromIntakeSources(t *testing.T) {
 		"## Phase 6 — Issue Backfill",
 		"ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>",
 		"[`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake)",
+		"backfill: <bulk-add filter and initial Status recommendation>",
+		"**ProjectV2 backfill:",
+		"**Issue-field backfill:",
+		"**Label backfill:",
+		"project-items.after-backfill.json",
+		"issues.after-backfill.json",
+		"| Backfill filter |",
 	} {
 		assertContains(t, onboarding, want)
 	}
 	staleKey := "INTAKE_" + "GH_FLAGS"
 	if strings.Contains(onboarding, staleKey) {
 		t.Fatalf("docs/ONBOARDING.md contains stale %s key", staleKey)
+	}
+	for _, stale := range []string{
+		"ProjectV2 intake:",
+		"Issue-field intake:",
+		"Label intake:",
+		"after-intake",
+		"project-fields.intake",
+		"| Intake filter |",
+	} {
+		if strings.Contains(onboarding, stale) {
+			t.Fatalf("docs/ONBOARDING.md contains stale %q wording", stale)
+		}
 	}
 }
 
