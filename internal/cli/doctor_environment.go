@@ -78,7 +78,7 @@ func resolveDoctorBinaryEnvironment(ctx context.Context, resolution globalconfig
 	return fallback("orchestrator PATH is unavailable because the running instance did not report it")
 }
 
-func checkDoctorConfigReload(cfg globalconfig.Config) doctorCheck {
+func checkDoctorConfigReload(ctx context.Context, cfg globalconfig.Config, run CommandRunner) doctorCheck {
 	path := strings.TrimSpace(cfg.Path)
 	if path == "" {
 		return doctorCheck{
@@ -98,28 +98,36 @@ func checkDoctorConfigReload(cfg globalconfig.Config) doctorCheck {
 			Hint:   "Fix the global config path before relying on live reload.",
 		}
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return doctorCheck{
-			Name:   "Global config reload",
-			Status: doctorOK,
-			Detail: path + " is watched for live reload",
+	target := path
+	detail := path + " is watched for live reload"
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return doctorCheck{
+				Name:   "Global config reload",
+				Status: doctorWarn,
+				Detail: fmt.Sprintf("%s is a symlink but its target cannot be resolved: %v", path, err),
+				Hint:   "Fix the symlink target before relying on live reload.",
+			}
 		}
+		detail = fmt.Sprintf("%s is a symlink to %s; live reload watches the configured path and target", path, target)
 	}
 
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return doctorCheck{
-			Name:   "Global config reload",
-			Status: doctorWarn,
-			Detail: fmt.Sprintf("%s is a symlink but its target cannot be resolved: %v", path, err),
-			Hint:   "Fix the symlink target before relying on live reload.",
-		}
-	}
-	return doctorCheck{
+	check := doctorCheck{
 		Name:   "Global config reload",
 		Status: doctorOK,
-		Detail: fmt.Sprintf("%s is a symlink to %s; live reload watches the configured path and target", path, target),
+		Detail: detail,
 	}
+	gitStatus := inspectGlobalConfigGit(ctx, target, run)
+	if gitStatus == nil {
+		return check
+	}
+	check.Detail += fmt.Sprintf("; resolved config %s is in git repository %s and is %s", gitStatus.ResolvedPath, gitStatus.RepositoryRoot, gitStatus.trackedStatus())
+	if gitStatus.Dirty {
+		check.Status = doctorWarn
+		check.Hint = globalConfigGitDurabilityWarning(gitStatus.RepositoryRoot)
+	}
+	return check
 }
 
 func checkDoctorInstanceIdentity(cfg globalconfig.Config) doctorCheck {

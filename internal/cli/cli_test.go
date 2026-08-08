@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -879,7 +880,9 @@ func TestProjectCommandsWriteJSONResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := cli.NewRootCommand(context.Background())
+			cmd := cli.NewRootCommand(context.Background(), cli.WithCommandRunner(func(context.Context, string, ...string) (string, error) {
+				return "", errors.New("not a git repository")
+			}))
 			var stdout bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&bytes.Buffer{})
@@ -1181,6 +1184,67 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 	}
 	if got.Weight != 5 || !got.Paused {
 		t.Fatalf("project weight/paused = %d/%v, want 5/true", got.Weight, got.Paused)
+	}
+}
+
+func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
+	tests := []struct {
+		name       string
+		formatArgs []string
+		stdoutTTY  bool
+		want       []string
+	}{
+		{
+			name:      "pretty",
+			stdoutTTY: true,
+			want:      []string{"global_config_repository:", "global_config_status: tracked", "not durably recorded", "git checkout", "git reset"},
+		},
+		{
+			name:       "json",
+			formatArgs: []string{"--format", "json"},
+			want:       []string{`"global_config_git"`, `"tracked": true`, `"dirty": true`, `"status": " M global.yaml"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := createProjectFiles(t)
+			repo := paths.root
+			targetPath := filepath.Join(repo, "global.yaml")
+			writeGlobalConfig(t, targetPath, nil)
+			runCLITestGit(t, repo, "init")
+			repositoryRoot := runCLITestGit(t, repo, "rev-parse", "--show-toplevel")
+			runCLITestGit(t, repo, "add", "global.yaml")
+			runCLITestGit(t, repo, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "commit", "-m", "initial")
+
+			linkPath := filepath.Join(t.TempDir(), "global.yaml")
+			if err := os.Symlink(targetPath, linkPath); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return tt.stdoutTTY }))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			args := append([]string{}, tt.formatArgs...)
+			args = append(args,
+				"--config", linkPath,
+				"add-project",
+				"--id", "detent",
+				"--workflow", paths.workflowPath,
+				"--workdir", paths.workdirPath,
+			)
+			cmd.SetArgs(args)
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			for _, want := range append([]string{repositoryRoot}, tt.want...) {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+				}
+			}
+		})
 	}
 }
 
@@ -1852,6 +1916,18 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 	if err := globalconfig.Write(path, cfg); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
+}
+
+func runCLITestGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s error = %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {

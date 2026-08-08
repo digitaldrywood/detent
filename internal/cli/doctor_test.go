@@ -1819,7 +1819,9 @@ func TestCheckDoctorConfigReload(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	got := checkDoctorConfigReload(globalconfig.Config{Path: path})
+	got := checkDoctorConfigReload(context.Background(), globalconfig.Config{Path: path}, func(context.Context, string, ...string) (string, error) {
+		return "", errors.New("not a git repository")
+	})
 	if got.Status != doctorOK {
 		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
 	}
@@ -1846,7 +1848,9 @@ func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
 		t.Fatalf("EvalSymlinks() error = %v", err)
 	}
 
-	got := checkDoctorConfigReload(globalconfig.Config{Path: linkPath})
+	got := checkDoctorConfigReload(context.Background(), globalconfig.Config{Path: linkPath}, func(context.Context, string, ...string) (string, error) {
+		return "", errors.New("not a git repository")
+	})
 	if got.Status != doctorOK {
 		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
 	}
@@ -1854,6 +1858,117 @@ func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 		}
+	}
+}
+
+func TestCheckDoctorConfigReloadReportsGitStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setup      func(*testing.T) (globalconfig.Config, CommandRunner)
+		wantStatus doctorStatus
+		wantDetail []string
+		wantHint   []string
+		avoid      []string
+	}{
+		{
+			name: "regular tracked config is clean",
+			setup: func(t *testing.T) (globalconfig.Config, CommandRunner) {
+				repo := t.TempDir()
+				path := filepath.Join(repo, "global.yaml")
+				if err := os.WriteFile(path, []byte("global"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				runDoctorWorkflowSourceGit(t, repo, "init")
+				runDoctorWorkflowSourceGit(t, repo, "add", "global.yaml")
+				runDoctorWorkflowSourceGit(t, repo, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "commit", "-m", "initial")
+				return globalconfig.Config{Path: path}, defaultCommandRunner
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"is watched for live reload", "git repository", "global.yaml", "tracked and clean"},
+		},
+		{
+			name: "symlink target has tracked changes",
+			setup: func(t *testing.T) (globalconfig.Config, CommandRunner) {
+				repo := t.TempDir()
+				targetPath := filepath.Join(repo, "global.yaml")
+				if err := os.WriteFile(targetPath, []byte("before"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				runDoctorWorkflowSourceGit(t, repo, "init")
+				runDoctorWorkflowSourceGit(t, repo, "add", "global.yaml")
+				runDoctorWorkflowSourceGit(t, repo, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "commit", "-m", "initial")
+				if err := os.WriteFile(targetPath, []byte("after"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				linkPath := filepath.Join(t.TempDir(), "global.yaml")
+				if err := os.Symlink(targetPath, linkPath); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+				return globalconfig.Config{Path: linkPath}, defaultCommandRunner
+			},
+			wantStatus: doctorWarn,
+			wantDetail: []string{"symlink", "git repository", "global.yaml", "tracked status", " M global.yaml"},
+			wantHint:   []string{"not durably recorded", "git checkout", "git reset", "discard"},
+		},
+		{
+			name: "config outside repository is skipped",
+			setup: func(t *testing.T) (globalconfig.Config, CommandRunner) {
+				path := filepath.Join(t.TempDir(), "global.yaml")
+				if err := os.WriteFile(path, []byte("global"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				return globalconfig.Config{Path: path}, func(context.Context, string, ...string) (string, error) {
+					return "", errors.New("not a git repository")
+				}
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"is watched for live reload"},
+			avoid:      []string{"git repository", "not durably recorded"},
+		},
+		{
+			name: "git unavailable is skipped",
+			setup: func(t *testing.T) (globalconfig.Config, CommandRunner) {
+				path := filepath.Join(t.TempDir(), "global.yaml")
+				if err := os.WriteFile(path, []byte("global"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				return globalconfig.Config{Path: path}, func(context.Context, string, ...string) (string, error) {
+					return "", errors.New("git unavailable")
+				}
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"is watched for live reload"},
+			avoid:      []string{"git repository", "not durably recorded"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, runner := tt.setup(t)
+			got := checkDoctorConfigReload(context.Background(), cfg, runner)
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+			for _, want := range tt.wantHint {
+				if !strings.Contains(got.Hint, want) {
+					t.Fatalf("Hint = %q, want containing %q", got.Hint, want)
+				}
+			}
+			for _, avoid := range tt.avoid {
+				if strings.Contains(got.Detail+got.Hint, avoid) {
+					t.Fatalf("check output = %q, want not containing %q", got.Detail+got.Hint, avoid)
+				}
+			}
+		})
 	}
 }
 

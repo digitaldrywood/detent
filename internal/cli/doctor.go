@@ -417,7 +417,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		boot.Global = *global
 		boot.Host = bootHost(ctx, cfg.Host, firstGlobalProject(*global))
 		writeDoctorProgressStart(progressOut, "Global config reload")
-		check := checkDoctorConfigReload(*global)
+		check := checkDoctorConfigReload(ctx, *global, opts.runCommand)
 		writeDoctorProgressDone(progressOut, check)
 		report.Add(check)
 		writeDoctorProgressStart(progressOut, "Instance identity")
