@@ -85,11 +85,28 @@ func newSkillInstallCommand(deps skillInstallDeps) *cobra.Command {
 			if installErr == nil {
 				return nil
 			}
-			hint := "No files were changed. Review the reported path and retry."
-			if errors.Is(installErr, skillinstall.ErrConflict) {
-				hint = "Review the reported differences, then rerun with --force to create deterministic backups and replace managed files."
+			switch {
+			case errors.Is(installErr, skillinstall.ErrConflict):
+				return cli.NewValidationError(
+					installErr.Error(),
+					"Review the reported differences, then rerun with --force to create deterministic backups and replace managed files.",
+					nil,
+				)
+			case errors.Is(installErr, skillinstall.ErrUnsafePath):
+				return cli.NewValidationError(installErr.Error(), "No files were changed. Review the reported unsafe path and retry.", nil)
+			case result.Status == "rollback_failed":
+				return &cli.HintedError{
+					Err:     installErr,
+					Message: installErr.Error(),
+					Hint:    "Rollback did not restore every path. Inspect the reported rollback failures and repair the listed paths before retrying.",
+				}
+			default:
+				return &cli.HintedError{
+					Err:     installErr,
+					Message: installErr.Error(),
+					Hint:    "The installer rolled back completed actions. Review the operational error and retry when the filesystem is healthy.",
+				}
 			}
-			return cli.NewValidationError(installErr.Error(), hint, nil)
 		},
 	}
 	cmd.Flags().StringSliceVar(&targetValues, "target", nil, "agent client target: claude-code, codex, or antigravity (repeatable)")

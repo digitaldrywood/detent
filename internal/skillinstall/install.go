@@ -555,9 +555,11 @@ func rollback(result *Result, applied []plannedOperation, operations fileOperati
 			action.Status = "failed"
 			action.Error = err.Error()
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback %s: %w", operation.path, err))
+			result.Targets[operation.targetIndex].Status = "rollback_failed"
+			result.Targets[operation.targetIndex].Error = err.Error()
 		}
 		result.Rollback = append(result.Rollback, action)
-		if result.Targets[operation.targetIndex].Status != "failed" {
+		if result.Targets[operation.targetIndex].Status != "failed" && result.Targets[operation.targetIndex].Status != "rollback_failed" {
 			result.Targets[operation.targetIndex].Status = "rolled_back"
 		}
 	}

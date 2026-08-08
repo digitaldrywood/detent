@@ -564,6 +564,50 @@ func TestInstallRollsBackPartialMultiTargetFailure(t *testing.T) {
 	}
 }
 
+func TestInstallReportsRollbackFailurePerTarget(t *testing.T) {
+	t.Parallel()
+
+	config := testConfig(t, TargetClaudeCode, TargetCodex)
+	writeFailed := false
+	claudeSkill := filepath.Join(config.Roots[TargetClaudeCode].Skills, operatorskill.Directory, operatorskill.SkillFile)
+	result, err := install(config, fileOperations{
+		mkdir: os.Mkdir,
+		remove: func(path string) error {
+			if path == claudeSkill {
+				return errors.New("injected rollback failure")
+			}
+			return os.Remove(path)
+		},
+		atomicWrite: func(path string, content []byte, mode os.FileMode) error {
+			codexSkill := filepath.Join(config.Roots[TargetCodex].Skills, operatorskill.Directory, operatorskill.SkillFile)
+			if path == codexSkill && !writeFailed {
+				writeFailed = true
+				return errors.New("injected write failure")
+			}
+			return atomicWrite(path, content, mode)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected rollback failure") {
+		t.Fatalf("install() error = %v, want rollback failure", err)
+	}
+	if result.Status != "rollback_failed" || result.Targets[0].Status != "rollback_failed" {
+		t.Fatalf("result = %#v, want first target and result rollback_failed", result)
+	}
+	if result.Targets[1].Status != "failed" {
+		t.Fatalf("failed apply target status = %q, want failed", result.Targets[1].Status)
+	}
+	rollbackFailure := false
+	for _, action := range result.Rollback {
+		if action.Target == TargetClaudeCode && action.Status == "failed" {
+			rollbackFailure = true
+			break
+		}
+	}
+	if !rollbackFailure {
+		t.Fatalf("rollback actions = %#v, want failed Claude Code rollback", result.Rollback)
+	}
+}
+
 func testConfig(t *testing.T, targets ...Target) Config {
 	t.Helper()
 	home := t.TempDir()

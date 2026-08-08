@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/operatorskill"
 	"github.com/digitaldrywood/detent/internal/skillinstall"
 )
@@ -120,6 +121,46 @@ func TestSkillInstallCommandJSONConflictNeverPrompts(t *testing.T) {
 	got := readSkillCLIFile(t, skillPath)
 	if result.Status != "failed" || !bytes.Equal(got, modified) {
 		t.Fatalf("result = %#v, content = %q, want safe conflict", result, got)
+	}
+}
+
+func TestSkillInstallCommandPreservesOperationalFailureClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		status   string
+		wantHint string
+		dontWant string
+	}{
+		{name: "rollback succeeded", status: "failed", wantHint: "rolled back completed actions", dontWant: "No files were changed"},
+		{name: "rollback failed", status: "rollback_failed", wantHint: "Rollback did not restore every path", dontWant: "No files were changed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newSkillInstallCommand(skillInstallDeps{
+				homeDir: func() (string, error) { return t.TempDir(), nil },
+				install: func(skillinstall.Config) (skillinstall.Result, error) {
+					return skillinstall.Result{Status: tt.status}, errors.New("disk write failed")
+				},
+			})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--target", "codex"})
+
+			err := cmd.ExecuteContext(context.Background())
+			if err == nil {
+				t.Fatal("ExecuteContext() error = nil, want operational error")
+			}
+			if got := cli.ExitCode(err); got != cli.ExitGeneral {
+				t.Fatalf("ExitCode() = %d, want %d", got, cli.ExitGeneral)
+			}
+			hint := cli.ErrorHint(err)
+			if !strings.Contains(hint, tt.wantHint) || strings.Contains(hint, tt.dontWant) {
+				t.Fatalf("hint = %q, want %q and not %q", hint, tt.wantHint, tt.dontWant)
+			}
+		})
 	}
 }
 
