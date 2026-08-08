@@ -158,7 +158,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return !mergeWorkerIssue(issue) || lastDispatchFailure != dispatchIssueFailureGlobalSlotUnavailable
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
-			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
+			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
@@ -175,6 +175,17 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			o.logDispatchPlanDecision(ctx, state, now, decision)
 		},
 	})
+}
+
+func dispatchFailureRetryReason(reason string) string {
+	switch reason {
+	case dispatchIssueFailureClaimFailed:
+		return "claim verification failed"
+	case dispatchIssueFailureGlobalSlotUnavailable:
+		return dispatchSkipGlobalCapacityFull
+	default:
+		return reason
+	}
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {

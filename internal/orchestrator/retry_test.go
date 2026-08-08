@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -52,6 +53,88 @@ func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
 	}
 	if !retry.DueAt.After(now) {
 		t.Fatalf("Retry[%q].DueAt = %s, want after %s", retrying.ID, retry.DueAt, now)
+	}
+}
+
+func TestDispatchReadyIssuesPreservesGlobalCapacityRefusal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	heldSlot, ok, decision, err := globalGate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "alpha", Weight: 1}, scheduler.SlotRequest{
+		State:    "Todo",
+		Priority: 2,
+	}, now)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("TryAcquireWithDecision() ok = false, want true; decision = %#v", decision)
+	}
+	t.Cleanup(func() {
+		if err := globalGate.Release(heldSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:   2,
+		FailureRetryBaseDelay: time.Second,
+		ActiveStates:          []string{"Todo"},
+		TerminalStates:        []string{"Done"},
+		Project:               scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+	})
+	orch := Orchestrator{cfg: cfg, globalDispatchGate: globalGate}
+	state := newState(cfg)
+	retrying := retryTestIssue("retrying", "digitaldrywood/detent#1720")
+	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[retrying.ID] = Retry{
+		Issue:   retrying,
+		Attempt: 2,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "previous failure",
+	}
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{retrying}, now)
+
+	retry, ok := state.Retry[retrying.ID]
+	if !ok {
+		t.Fatalf("Retry[%q] missing after global capacity refusal", retrying.ID)
+	}
+	if retry.Error != dispatchSkipGlobalCapacityFull {
+		t.Fatalf("Retry[%q].Error = %q, want %q", retrying.ID, retry.Error, dispatchSkipGlobalCapacityFull)
+	}
+}
+
+func TestDispatchFailureRetryReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{name: "draining", reason: dispatchIssueFailureDraining, want: dispatchIssueFailureDraining},
+		{name: "local slot unavailable", reason: dispatchIssueFailureLocalSlotUnavailable, want: dispatchIssueFailureLocalSlotUnavailable},
+		{name: "worker host unavailable", reason: dispatchIssueFailureWorkerHostUnavailable, want: dispatchIssueFailureWorkerHostUnavailable},
+		{name: "global capacity full", reason: dispatchIssueFailureGlobalSlotUnavailable, want: dispatchSkipGlobalCapacityFull},
+		{name: "claim verification", reason: dispatchIssueFailureClaimFailed, want: "claim verification failed"},
+		{name: "work attempt start", reason: dispatchIssueFailureWorkAttemptStart, want: dispatchIssueFailureWorkAttemptStart},
+		{name: "start state transition", reason: dispatchIssueFailureStartStateTransition, want: dispatchIssueFailureStartStateTransition},
+		{name: "backend capacity paused", reason: dispatchIssueFailureBackendCapacityPaused, want: dispatchIssueFailureBackendCapacityPaused},
+		{name: "github rest capacity paused", reason: dispatchIssueFailureGitHubRESTPaused, want: dispatchIssueFailureGitHubRESTPaused},
+		{name: "recovery ramp", reason: dispatchIssueFailureRecoveryRamp, want: dispatchIssueFailureRecoveryRamp},
+		{name: "project failure breaker", reason: projectFailureBreakerDispatchPaused, want: projectFailureBreakerDispatchPaused},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := dispatchFailureRetryReason(tt.reason); got != tt.want {
+				t.Fatalf("dispatchFailureRetryReason(%q) = %q, want %q", tt.reason, got, tt.want)
+			}
+		})
 	}
 }
 
