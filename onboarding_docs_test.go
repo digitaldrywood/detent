@@ -50,7 +50,7 @@ func TestOnboardingDocsDistinguishIssueBackfillFromIntakeSources(t *testing.T) {
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
 
 	for _, want := range []string{
-		"19. **Issue backfill.**",
+		"20. **Issue backfill.**",
 		"## Phase 6 — Issue Backfill",
 		"ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>",
 		"[`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake)",
