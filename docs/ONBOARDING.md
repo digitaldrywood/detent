@@ -826,7 +826,51 @@ recommendations before asking what to change.
    jq -e 'type == "array"' "$ONBOARDING_DIR/priority-counts.json"
    ```
 
-8. **Record recommendations before the interview.** The recommendation must
+8. **Inspect repository merge settings.** Read the target repository's enabled
+   pull request merge methods and save them with the other discovery artifacts.
+   For an existing `detent.yaml`, use its configured
+   `deliverable.merge_method`; otherwise use the maintained template default of
+   `squash`. The artifact records whether the selected method is disabled or
+   whether additional methods remain enabled, either of which would make the
+   repository fail the merge-policy doctor check. Verify:
+
+   ```sh
+   TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+   TARGET_SOURCE_ROOT="$(awk -F= '/^TARGET_SOURCE_ROOT=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+   DELIVERABLE_MERGE_METHOD="$(sed -n 's/^  merge_method: //p' "$TARGET_SOURCE_ROOT/detent.yaml" 2>/dev/null | tail -n 1)"
+   DELIVERABLE_MERGE_METHOD="${DELIVERABLE_MERGE_METHOD:-squash}"
+   case "$DELIVERABLE_MERGE_METHOD" in
+     squash|merge|rebase) ;;
+     *) printf 'invalid deliverable.merge_method: %s\n' "$DELIVERABLE_MERGE_METHOD" >&2; exit 1 ;;
+   esac
+   gh api "repos/$TARGET_REPOSITORY" \
+     --jq '{allow_merge_commit,allow_squash_merge,allow_rebase_merge}' \
+     > "$ONBOARDING_DIR/repository-merge-settings.json"
+   jq --arg selected "$DELIVERABLE_MERGE_METHOD" '
+     . + {
+       selected_merge_method: $selected,
+       selected_method_enabled: (
+         if $selected == "merge" then .allow_merge_commit
+         elif $selected == "squash" then .allow_squash_merge
+         else .allow_rebase_merge
+         end
+       ),
+       additional_methods_enabled: ([
+         if .allow_merge_commit then "merge" else empty end,
+         if .allow_squash_merge then "squash" else empty end,
+         if .allow_rebase_merge then "rebase" else empty end
+       ] | map(select(. != $selected)) | length > 0)
+     }
+   ' "$ONBOARDING_DIR/repository-merge-settings.json" \
+     > "$ONBOARDING_DIR/repository-merge-policy.json"
+   jq -e '
+     (.selected_merge_method == "squash" or .selected_merge_method == "merge" or .selected_merge_method == "rebase")
+     and (.selected_method_enabled | type == "boolean")
+     and (.additional_methods_enabled | type == "boolean")
+   ' "$ONBOARDING_DIR/repository-merge-policy.json"
+   ```
+
+9. **Record recommendations before the interview.** The recommendation must
    cite the discovery artifact that produced it. Verify:
 
    ```sh
@@ -840,12 +884,13 @@ recommendations before asking what to change.
      'gate: <gate recommendation, from gate-diagnostic.json and gate.txt>' \
      'concurrency: <max agents and Merging cap recommendation>' \
      'review_policy: <hard stop or auto-promote recommendation>' \
+     'merge_policy: <align-or-leave recommendation, from repository-merge-policy.json>' \
      'prompt: <template or repo-specific recommendation, from repo docs>' \
      'intake: <bulk-add filter and initial Status recommendation>' \
      > "$ONBOARDING_DIR/recommendations.md"
    rg -n '^(mode|board|rate_budget|scheduling|authorization|dashboard_bind):' \
      "$ONBOARDING_DIR/recommendations.md"
-   rg -n '^(gate|concurrency|review_policy|prompt|intake):' \
+   rg -n '^(gate|concurrency|review_policy|merge_policy|prompt|intake):' \
      "$ONBOARDING_DIR/recommendations.md"
    ```
 
@@ -1411,7 +1456,30 @@ probes.
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-19. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+19. **Repository merge settings.** Read the selected method and mismatch flags
+   from `$ONBOARDING_DIR/repository-merge-policy.json`. When additional methods
+   are enabled, ask: "GitHub currently permits methods beyond the selected
+   `<merge-method>` strategy. Agent-side auto-detection can choose different
+   methods and produce mixed history. Should onboarding align the repository so
+   only `<merge-method>` is enabled?" When the selected method itself is
+   disabled, explain that agents cannot complete the configured delivery
+   strategy and ask the same alignment question. Recommend alignment so the
+   first post-onboarding `detent doctor` run is clean, but make clear that this
+   changes repository settings and still requires Phase 2.5 mutation approval.
+   Declining is valid and does not block onboarding. Ask no question when the
+   repository already enables exactly the selected method. Record every
+   operator answer when a mismatch exists:
+
+   ```sh
+   jq '{selected_merge_method,selected_method_enabled,additional_methods_enabled}' \
+     "$ONBOARDING_DIR/repository-merge-policy.json"
+   printf '%s\n' \
+     'ALIGN_REPOSITORY_MERGE_SETTINGS=<true|false>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^ALIGN_REPOSITORY_MERGE_SETTINGS=(true|false)$' "$ONBOARDING_DIR/answers.env"
+   ```
+
+20. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -1437,6 +1505,10 @@ values mutation steps will read:
 
 ```sh
 detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write
+if jq -e '.selected_method_enabled == false or .additional_methods_enabled == true' \
+  "$ONBOARDING_DIR/repository-merge-policy.json" >/dev/null; then
+  rg '^ALIGN_REPOSITORY_MERGE_SETTINGS=(true|false)$' "$ONBOARDING_DIR/answers.env"
+fi
 ```
 
 Show the operator `$ONBOARDING_DIR/recommendations.md`, the plain-English
@@ -1511,6 +1583,45 @@ case "$GITHUB_MODE" in
     exit 1
     ;;
 esac
+```
+
+If the interview found repository merge-policy drift and the operator selected
+`ALIGN_REPOSITORY_MERGE_SETTINGS=true`, apply the alignment only after the gate
+above passes. These are the same three-flag PATCH forms that `detent doctor`
+recommends. Save the resulting settings as a post-mutation artifact. A recorded
+`false` answer skips this mutation and does not block the remaining onboarding
+steps:
+
+```sh
+ALIGN_REPOSITORY_MERGE_SETTINGS="$(awk -F= '/^ALIGN_REPOSITORY_MERGE_SETTINGS=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+if test "$ALIGN_REPOSITORY_MERGE_SETTINGS" = "true"; then
+  detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
+  rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+  awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+  TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+  DELIVERABLE_MERGE_METHOD="$(jq -r '.selected_merge_method' "$ONBOARDING_DIR/repository-merge-policy.json")"
+  case "$DELIVERABLE_MERGE_METHOD" in
+    merge)
+      gh api --method PATCH "repos/$TARGET_REPOSITORY" -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false
+      ;;
+    squash)
+      gh api --method PATCH "repos/$TARGET_REPOSITORY" -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false
+      ;;
+    rebase)
+      gh api --method PATCH "repos/$TARGET_REPOSITORY" -F allow_merge_commit=false -F allow_squash_merge=false -F allow_rebase_merge=true
+      ;;
+    *)
+      printf 'invalid selected merge method: %s\n' "$DELIVERABLE_MERGE_METHOD" >&2
+      exit 1
+      ;;
+  esac
+  gh api "repos/$TARGET_REPOSITORY" \
+    --jq '{allow_merge_commit,allow_squash_merge,allow_rebase_merge}' \
+    > "$ONBOARDING_DIR/repository-merge-settings.after.json"
+else
+  printf '{"applied":false,"reason":"operator declined or alignment was not needed"}\n' \
+    > "$ONBOARDING_DIR/repository-merge-settings.after.json"
+fi
 ```
 
 Only after this gate passes and the operator has confirmed mutation may doctor
@@ -3146,7 +3257,7 @@ the card instead of auto-resolving it.
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `detent.yaml`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `detent.yaml`. |
 | Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `detent.yaml`. |
-| Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. |
+| Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. Onboarding records the repository's enabled methods and, with explicit interview and mutation approval, aligns GitHub to the selected method. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `detent.yaml`. |
 | Session catastrophe bounds | `agent.max_turns`, `agent.max_session_duration_ms`, and `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
