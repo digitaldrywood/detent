@@ -267,6 +267,23 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := t.TempDir()
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			remaining := make([]string, 0)
+			walkErr := filepath.WalkDir(root, func(path string, _ os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				relative, err := filepath.Rel(root, path)
+				if err != nil {
+					return err
+				}
+				remaining = append(remaining, relative)
+				return nil
+			})
+			t.Errorf("RemoveAll(%s) error = %v; remaining paths = %q; inspect error = %v", root, err, remaining, walkErr)
+		}
+	})
 	remote := filepath.Join(root, "remote.git")
 	seed := filepath.Join(root, "seed")
 	repo := filepath.Join(root, "checkout")
@@ -297,7 +314,8 @@ func writeDoctorWorkflowSourceFile(t *testing.T, path string, content string) {
 func runDoctorWorkflowSourceGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	gitArgs := append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)
+	cmd := exec.Command("git", gitArgs...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
