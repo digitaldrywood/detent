@@ -245,6 +245,7 @@ interview-to-config mapping that exists before YAML is rendered.
 | `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` | `backlog_admission.proposal_expiry_days` |
 | `BACKLOG_ADMISSION_AUTO_ADMIT` | `backlog_admission.auto_admit` |
 | `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` | `backlog_admission.auto_admit_min_confidence` |
+| `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` | `backlog_admission.authors.allow_association` |
 | `ROUTINES_ENABLED` | Controls whether the generated `routines` list is present |
 | `ROUTINE_NAME` | `routines[].name` |
 | `ROUTINE_SCHEDULE` | `routines[].schedule` |

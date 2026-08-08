@@ -140,6 +140,7 @@ func TestIntakeProfileAnswerExpansion(t *testing.T) {
 				"BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS":      "7",
 				"BACKLOG_ADMISSION_AUTO_ADMIT":                "true",
 				"BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE": "0.9",
+				"BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION": IntakeProfileTrustedAssociations,
 				"ROUTINES_ENABLED":                            "true",
 				"ROUTINE_NAME":                                IntakeProfileRoutineName,
 				"ROUTINE_SCHEDULE":                            IntakeProfileRoutineSchedule,
@@ -170,6 +171,20 @@ func TestIntakeProfileRejectsUnknown(t *testing.T) {
 
 	if _, ok := IntakeProfileAnswerExpansion("unbounded_intake"); ok {
 		t.Fatal("IntakeProfileAnswerExpansion(unbounded_intake) ok = true, want false")
+	}
+}
+
+func TestAutonomousIntakeRoutineRequiresEffortMetadata(t *testing.T) {
+	t.Parallel()
+
+	answers, ok := IntakeProfileAnswerExpansion(IntakeProfileAutonomous)
+	if !ok {
+		t.Fatal("IntakeProfileAnswerExpansion(autonomous_intake) ok = false, want true")
+	}
+	for _, want := range []string{"fenced `detent-agent` block", "`schema: 1`", "best-guess `effort`"} {
+		if !strings.Contains(answers["ROUTINE_PROMPT"], want) {
+			t.Fatalf("ROUTINE_PROMPT missing %q: %s", want, answers["ROUTINE_PROMPT"])
+		}
 	}
 }
 

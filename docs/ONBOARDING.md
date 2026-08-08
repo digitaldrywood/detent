@@ -1171,10 +1171,11 @@ probes.
      'BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS=7' \
      'BACKLOG_ADMISSION_AUTO_ADMIT=true' \
      'BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE=0.9' \
+     'BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION=OWNER,MEMBER,COLLABORATOR' \
      'ROUTINES_ENABLED=true' \
      'ROUTINE_NAME=repository-maintenance' \
      'ROUTINE_SCHEDULE=0 6 * * 1' \
-     'ROUTINE_PROMPT=Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria.' \
+     'ROUTINE_PROMPT=Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria. Each issue body must include a fenced `detent-agent` block with `schema: 1` and a best-guess `effort` selected from the project rubric.' \
      'STALE_TODOS_ENABLED=true' \
      'STALE_TODOS_SCHEDULE=0 6 * * 1' \
      >> "$ONBOARDING_DIR/answers.env"
@@ -3392,7 +3393,7 @@ the card instead of auto-resolving it.
 | Backlog admission switch and cadence | `BACKLOG_ADMISSION_ENABLED` and `BACKLOG_ADMISSION_SCHEDULE` map to `backlog_admission.enabled` and `backlog_admission.schedule`. |
 | Backlog admission path | `BACKLOG_ADMISSION_SOURCE_STATE`, `BACKLOG_ADMISSION_TARGET_STATE`, and `BACKLOG_ADMISSION_CRITERIA_SECTION` map to `backlog_admission.sources.states`, `target_state`, and `criteria_section`. |
 | Backlog admission ceilings | `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN`, `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN`, `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS`, and `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` map to the same-named lower-case `backlog_admission` keys. |
-| Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`. |
+| Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`; `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` maps to the trusted `backlog_admission.authors.allow_association` scopes. |
 | Scheduled repository routine | `ROUTINES_ENABLED`, `ROUTINE_NAME`, `ROUTINE_SCHEDULE`, and `ROUTINE_PROMPT` control the generated `routines` entry. |
 | Built-in stale-TODO intake | `STALE_TODOS_ENABLED` and `STALE_TODOS_SCHEDULE` control the generated scheduled `intake.sources` scanner. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |

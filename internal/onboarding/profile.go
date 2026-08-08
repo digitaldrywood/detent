@@ -22,8 +22,9 @@ const (
 	IntakeProfileCriteriaSection      = "Admission Criteria"
 	IntakeProfileRoutineName          = "repository-maintenance"
 	IntakeProfileRoutineSchedule      = "0 6 * * 1"
-	IntakeProfileRoutinePrompt        = "Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria."
+	IntakeProfileRoutinePrompt        = "Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria. Each issue body must include a fenced `detent-agent` block with `schema: 1` and a best-guess `effort` selected from the project rubric."
 	IntakeProfileStaleTODOsSchedule   = "0 6 * * 1"
+	IntakeProfileTrustedAssociations  = "OWNER,MEMBER,COLLABORATOR"
 )
 
 type DeliveryProfileSettings struct {
@@ -323,6 +324,9 @@ func IntakeProfileAnswerExpansion(value string) (map[string]string, bool) {
 		answers["BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS"] = strconv.Itoa(workflowconfig.DefaultBacklogAdmissionProposalExpiryDays)
 		answers["BACKLOG_ADMISSION_AUTO_ADMIT"] = strconv.FormatBool(settings.BacklogAdmissionAutoAdmit)
 		answers["BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE"] = strconv.FormatFloat(settings.BacklogAdmissionMinConfidence, 'f', -1, 64)
+		if settings.BacklogAdmissionAutoAdmit {
+			answers["BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION"] = IntakeProfileTrustedAssociations
+		}
 	}
 	if settings.RoutinesEnabled {
 		answers["ROUTINE_NAME"] = IntakeProfileRoutineName

@@ -488,15 +488,16 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		profile           string
-		wantAdmission     bool
-		wantAutoAdmit     bool
-		wantRoutines      int
-		wantIntakeSources int
+		profile            string
+		wantAdmission      bool
+		wantAutoAdmit      bool
+		wantRoutines       int
+		wantIntakeSources  int
+		wantTrustedAuthors bool
 	}{
 		{profile: "manual_intake"},
 		{profile: "assisted_intake", wantAdmission: true},
-		{profile: "autonomous_intake", wantAdmission: true, wantAutoAdmit: true, wantRoutines: 1, wantIntakeSources: 1},
+		{profile: "autonomous_intake", wantAdmission: true, wantAutoAdmit: true, wantRoutines: 1, wantIntakeSources: 1, wantTrustedAuthors: true},
 	}
 
 	for _, tt := range tests {
@@ -524,6 +525,14 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 			}
 			if workflow.Config.BacklogAdmission.AutoAdmit != tt.wantAutoAdmit {
 				t.Fatalf("BacklogAdmission.AutoAdmit = %t, want %t", workflow.Config.BacklogAdmission.AutoAdmit, tt.wantAutoAdmit)
+			}
+			if got := len(workflow.Config.BacklogAdmission.Authors.AllowAssociation) > 0; got != tt.wantTrustedAuthors {
+				t.Fatalf("BacklogAdmission.Authors.AllowAssociation configured = %t, want %t", got, tt.wantTrustedAuthors)
+			}
+			if tt.wantAutoAdmit {
+				if warning := workflowconfig.BacklogAdmissionPublicExposureWarning(workflow.Config.BacklogAdmission, "public"); warning != "" {
+					t.Fatalf("autonomous intake public exposure warning = %q", warning)
+				}
 			}
 			if len(workflow.Config.Routines) != tt.wantRoutines {
 				t.Fatalf("len(Routines) = %d, want %d", len(workflow.Config.Routines), tt.wantRoutines)

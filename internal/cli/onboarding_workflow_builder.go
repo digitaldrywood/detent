@@ -769,6 +769,7 @@ func applyOnboardingWorkflowAdmissionDecisions(root *yaml.Node, answers onboardi
 	if err != nil {
 		return err
 	}
+	authorAssociations, authorAssociationsProvenance, authorAssociationsWhy := onboardingWorkflowIntakeListDecision(answers, profileAnswers, "BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION", nil, "preset", "no admission author restriction")
 
 	decisions.set(root, "backlog_admission.enabled", true, provenance, why)
 	decisions.set(root, "backlog_admission.schedule", schedule, scheduleProvenance, scheduleWhy)
@@ -782,6 +783,11 @@ func applyOnboardingWorkflowAdmissionDecisions(root *yaml.Node, answers onboardi
 	decisions.set(root, "backlog_admission.proposal_expiry_days", proposalExpiryDays, proposalExpiryProvenance, proposalExpiryWhy)
 	decisions.set(root, "backlog_admission.auto_admit", autoAdmit, autoAdmitProvenance, autoAdmitWhy)
 	decisions.set(root, "backlog_admission.auto_admit_min_confidence", minConfidence, minConfidenceProvenance, minConfidenceWhy)
+	if len(authorAssociations) > 0 {
+		decisions.set(root, "backlog_admission.authors.allow_association", authorAssociations, authorAssociationsProvenance, authorAssociationsWhy)
+	} else {
+		deleteOnboardingYAMLPath(root, []string{"backlog_admission", "authors"})
+	}
 	return nil
 }
 
@@ -962,6 +968,11 @@ func onboardingWorkflowIntakeFloatDecision(answers onboardingAnswers, profile ma
 		return 0, "", "", NewValidationError(key+" must be a number", "Use a numeric value for threshold onboarding answers.", nil)
 	}
 	return value, provenance, why, nil
+}
+
+func onboardingWorkflowIntakeListDecision(answers onboardingAnswers, profile map[string]string, key string, fallback []string, fallbackProvenance string, fallbackWhy string) ([]string, string, string) {
+	raw, provenance, why := onboardingWorkflowIntakeStringDecision(answers, profile, key, strings.Join(fallback, ","), fallbackProvenance, fallbackWhy)
+	return splitOnboardingWorkflowList(raw), provenance, why
 }
 
 func onboardingWorkflowListDecision(answers onboardingAnswers, key string, fallback []string, fallbackProvenance string, fallbackWhy string) ([]string, string, string) {
