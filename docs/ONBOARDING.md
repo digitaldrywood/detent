@@ -828,45 +828,28 @@ recommendations before asking what to change.
 
 8. **Inspect repository merge settings.** Read the target repository's enabled
    pull request merge methods and save them with the other discovery artifacts.
-   For an existing `detent.yaml`, use its configured
-   `deliverable.merge_method`; otherwise use the maintained template default of
-   `squash`. The artifact records whether the selected method is disabled or
-   whether additional methods remain enabled, either of which would make the
-   repository fail the merge-policy doctor check. Verify:
+   For an existing project definition, use the effective
+   `deliverable.merge_method`, including any `detent.local.yaml` override;
+   otherwise use the maintained template default of `squash`. The artifact
+   records whether the selected method is disabled or whether additional
+   methods remain enabled, either of which would make the repository fail the
+   merge-policy doctor check. Verify:
 
    ```sh
    TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
    TARGET_SOURCE_ROOT="$(awk -F= '/^TARGET_SOURCE_ROOT=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
-   DELIVERABLE_MERGE_METHOD="$(sed -n 's/^  merge_method: //p' "$TARGET_SOURCE_ROOT/detent.yaml" 2>/dev/null | tail -n 1)"
-   DELIVERABLE_MERGE_METHOD="${DELIVERABLE_MERGE_METHOD:-squash}"
-   case "$DELIVERABLE_MERGE_METHOD" in
-     squash|merge|rebase) ;;
-     *) printf 'invalid deliverable.merge_method: %s\n' "$DELIVERABLE_MERGE_METHOD" >&2; exit 1 ;;
-   esac
-   gh api "repos/$TARGET_REPOSITORY" \
-     --jq '{allow_merge_commit,allow_squash_merge,allow_rebase_merge}' \
-     > "$ONBOARDING_DIR/repository-merge-settings.json"
-   jq --arg selected "$DELIVERABLE_MERGE_METHOD" '
-     . + {
-       selected_merge_method: $selected,
-       selected_method_enabled: (
-         if $selected == "merge" then .allow_merge_commit
-         elif $selected == "squash" then .allow_squash_merge
-         else .allow_rebase_merge
-         end
-       ),
-       additional_methods_enabled: ([
-         if .allow_merge_commit then "merge" else empty end,
-         if .allow_squash_merge then "squash" else empty end,
-         if .allow_rebase_merge then "rebase" else empty end
-       ] | map(select(. != $selected)) | length > 0)
-     }
-   ' "$ONBOARDING_DIR/repository-merge-settings.json" \
+   detent --format json onboarding inspect-merge-policy \
+     --source-root "$TARGET_SOURCE_ROOT" \
+     --repository "$TARGET_REPOSITORY" \
      > "$ONBOARDING_DIR/repository-merge-policy.json"
    jq -e '
      (.selected_merge_method == "squash" or .selected_merge_method == "merge" or .selected_merge_method == "rebase")
+     and (.selection_source == "template_default" or .selection_source == "effective_project_definition")
      and (.selected_method_enabled | type == "boolean")
      and (.additional_methods_enabled | type == "boolean")
+     and (.allow_merge_commit | type == "boolean")
+     and (.allow_squash_merge | type == "boolean")
+     and (.allow_rebase_merge | type == "boolean")
    ' "$ONBOARDING_DIR/repository-merge-policy.json"
    ```
 
@@ -1456,7 +1439,7 @@ probes.
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-19. **Repository merge settings.** Read the selected method and mismatch flags
+18a. **Repository merge settings.** Read the selected method and mismatch flags
    from `$ONBOARDING_DIR/repository-merge-policy.json`. When additional methods
    are enabled, ask: "GitHub currently permits methods beyond the selected
    `<merge-method>` strategy. Agent-side auto-detection can choose different
@@ -1479,7 +1462,7 @@ probes.
    rg '^ALIGN_REPOSITORY_MERGE_SETTINGS=(true|false)$' "$ONBOARDING_DIR/answers.env"
    ```
 
-20. **Issue backfill.** Ask: "Which issue filter should be bulk-added, should the
+19. **Issue backfill.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe

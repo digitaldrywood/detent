@@ -168,6 +168,7 @@ func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 		newOnboardingDraftAnswersCommand(configPath, opts),
 		newOnboardingBuildWorkflowCommand(),
 		newOnboardingDiagnoseGateCommand(),
+		newOnboardingInspectMergePolicyCommand(),
 	)
 	return cmd
 }
