@@ -60,7 +60,9 @@ func (o *Orchestrator) markMergeWorkerSlotAcquired(state *State, issue connector
 	slotAlreadyAcquired := !timing.MergeWorkerSlotAcquiredAt.IsZero() &&
 		timing.MergedAt.IsZero() &&
 		timing.MergeFailedAt.IsZero()
-	timing.MergeWorkerSlotAcquiredAt = now.UTC()
+	if !slotAlreadyAcquired {
+		timing.MergeWorkerSlotAcquiredAt = now.UTC()
+	}
 	timing.MergedAt = time.Time{}
 	timing.MergeFailedAt = time.Time{}
 	timing.MergeFailureReason = ""
@@ -274,7 +276,7 @@ func (t MergeTiming) withDurations(now time.Time) MergeTiming {
 	now = now.UTC()
 	queueEnd := firstNonZeroTime(t.MergeWorkerSlotAcquiredAt, t.MergeStartedAt, t.MergedAt, t.MergeFailedAt, now)
 	t.QueueWaitSeconds = durationSeconds(t.EnteredMergingAt, queueEnd)
-	activeStart := firstNonZeroTime(t.MergeStartedAt, t.MergeWorkerSlotAcquiredAt)
+	activeStart := firstNonZeroTime(t.MergeWorkerSlotAcquiredAt, t.MergeStartedAt)
 	activeEnd := firstNonZeroTime(t.MergedAt, t.MergeFailedAt, now)
 	t.ActiveMergeDurationSeconds = durationSeconds(activeStart, activeEnd)
 	totalEnd := firstNonZeroTime(t.MergedAt, t.MergeFailedAt, now)

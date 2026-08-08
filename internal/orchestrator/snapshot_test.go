@@ -1216,14 +1216,14 @@ func TestStateSnapshotIncludesMergeTimingTelemetry(t *testing.T) {
 		t.Fatalf("Running = %#v, want active merge timing", snapshot.Running)
 	}
 	active := snapshot.Running[0].MergeTiming
-	if active.QueueWaitSeconds != 120 || active.ActiveMergeDurationSeconds != 360 || active.TotalMergingSeconds != 540 {
+	if active.QueueWaitSeconds != 120 || active.ActiveMergeDurationSeconds != 420 || active.TotalMergingSeconds != 540 {
 		t.Fatalf("active MergeTiming = %#v, want live active durations", active)
 	}
 	if len(snapshot.Completed) != 1 || snapshot.Completed[0].MergeTiming == nil {
 		t.Fatalf("Completed = %#v, want completed merge timing", snapshot.Completed)
 	}
 	done := snapshot.Completed[0].MergeTiming
-	if done.QueueWaitSeconds != 120 || done.ActiveMergeDurationSeconds != 240 || done.TotalMergingSeconds != 420 || done.MergedAt == nil {
+	if done.QueueWaitSeconds != 120 || done.ActiveMergeDurationSeconds != 300 || done.TotalMergingSeconds != 420 || done.MergedAt == nil {
 		t.Fatalf("completed MergeTiming = %#v, want terminal durations", done)
 	}
 }

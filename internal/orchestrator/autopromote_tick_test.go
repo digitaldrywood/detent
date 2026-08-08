@@ -3960,7 +3960,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		"reason=runner_failed",
 		"merge command failed",
 		"queue_wait_seconds=120",
-		"active_merge_duration_seconds=300",
+		"active_merge_duration_seconds=360",
 		"total_merging_seconds=480",
 		"head_sha=head-merge-log",
 		"base_sha=base-merge-log",
@@ -3995,7 +3995,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		"final_state=Done",
 		"pull_request_number=73",
 		"queue_wait_seconds=120",
-		"active_merge_duration_seconds=300",
+		"active_merge_duration_seconds=360",
 		"total_merging_seconds=480",
 		"head_sha=head-merge-log",
 		"base_sha=base-merge-log",
@@ -4005,7 +4005,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		}
 	}
 	completed := successState.Completed[successIssue.ID]
-	if completed.MergeTiming.MergedAt.IsZero() || completed.MergeTiming.ActiveMergeDurationSeconds != 300 {
+	if completed.MergeTiming.MergedAt.IsZero() || completed.MergeTiming.ActiveMergeDurationSeconds != 360 {
 		t.Fatalf("Completed[%q].MergeTiming = %#v, want successful terminal durations", successIssue.ID, completed.MergeTiming)
 	}
 }
