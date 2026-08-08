@@ -13,7 +13,276 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 8, 18, 33, 59, 0, time.UTC)
+	resolved := dependencyAutoUnblockIssue("issue-workpad-resolved", "Done")
+	resolved.Identifier = "digitaldrywood/ghostreel#34"
+	resolved.Closed = true
+	unresolved := dependencyAutoUnblockIssue("issue-workpad-unresolved", "In Progress")
+	unresolved.Identifier = "digitaldrywood/ghostreel#35"
+
+	tests := []struct {
+		name                string
+		blockers            []connector.Issue
+		humanAction         string
+		invalid             *workpad.Invalid
+		labels              []string
+		stickyReason        string
+		nativeDuplicate     bool
+		workpadUpdatedAt    time.Time
+		previousLaneStarted time.Time
+		wantTransition      bool
+		wantHoldReason      string
+		wantUnresolved      string
+		wantWorkpadLookup   bool
+	}{
+		{
+			name:                "all refs resolved after no progress limit",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        noProgressLimitReason,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantTransition:      true,
+			wantWorkpadLookup:   true,
+		},
+		{
+			name:                "resolved ref also has native relation",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        noProgressLimitReason,
+			nativeDuplicate:     true,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantTransition:      true,
+			wantWorkpadLookup:   true,
+		},
+		{
+			name:                "one of several refs unresolved",
+			blockers:            []connector.Issue{resolved, unresolved},
+			stickyReason:        noProgressLimitReason,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantHoldReason:      "workpad_blocker",
+			wantUnresolved:      unresolved.Identifier,
+			wantWorkpadLookup:   true,
+		},
+		{
+			name:                "resolved refs with human action",
+			blockers:            []connector.Issue{resolved},
+			humanAction:         "install production credentials",
+			stickyReason:        noProgressLimitReason,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantHoldReason:      "human_action",
+		},
+		{
+			name:                "resolved refs with opt-out label",
+			blockers:            []connector.Issue{resolved},
+			labels:              []string{"requires-human-review"},
+			stickyReason:        noProgressLimitReason,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantHoldReason:      "human_action",
+		},
+		{
+			name:                "invalid signal",
+			blockers:            []connector.Issue{resolved},
+			invalid:             &workpad.Invalid{Message: "invalid status block"},
+			stickyReason:        noProgressLimitReason,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantHoldReason:      "invalid_workpad_signal",
+		},
+		{
+			name:                "resolved refs with exhausted rework breaker",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        "rework_limit",
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantWorkpadLookup:   true,
+		},
+		{
+			name:                "resolved refs with operator stop",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        string(store.WorkAttemptTerminalOperatorStopped),
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantHoldReason:      "operator_stop",
+		},
+		{
+			name:                "stale blocker list from prior blocked entry",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        noProgressLimitReason,
+			workpadUpdatedAt:    parkedAt.Add(-2 * time.Hour),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			waiting := dependencyAutoUnblockIssue("issue-workpad-no-progress", blockedStatusState)
+			waiting.StageUpdatedAt = &parkedAt
+			waiting.Labels = append(waiting.Labels, tt.labels...)
+			waiting.WorkpadSignal = &workpad.Signal{
+				Source:      workpad.SourceStructured,
+				CommentURL:  "https://github.test/workpad/current",
+				Status:      workpad.StatusBlocked,
+				HumanAction: tt.humanAction,
+				Invalid:     tt.invalid,
+			}
+			for _, blocker := range tt.blockers {
+				waiting.WorkpadSignal.Blockers = append(waiting.WorkpadSignal.Blockers, workpad.Blocker{
+					Ref:        blocker.Identifier,
+					Identifier: blocker.Identifier,
+				})
+			}
+			if tt.nativeDuplicate {
+				waiting.BlockedBy = []connector.BlockedRef{{
+					Identifier: resolved.Identifier,
+					Source:     connector.BlockedRefSourceNative,
+				}}
+			}
+			waiting.BlockerReason = workpad.Reason(waiting.WorkpadSignal)
+			waiting.Comments = []connector.IssueComment{{
+				URL:       waiting.WorkpadSignal.CommentURL,
+				UpdatedAt: timePointer(tt.workpadUpdatedAt),
+			}}
+			tracker := &dependencyAutoUnblockConnector{
+				stateIssues: []connector.Issue{waiting},
+				blockers:    tt.blockers,
+			}
+			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+				Enabled:      true,
+				SourceStates: []string{blockedStatusState},
+				TargetState:  "Todo",
+				Readiness:    DependencyReadinessTerminalOrMerged,
+			})
+			orch.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch.workflowMetrics = metrics
+			recordDependencyLaneEntry(t, metrics, waiting, "In Progress", "dispatch", tt.previousLaneStarted)
+			recordDependencyLaneEntry(t, metrics, waiting, blockedStatusState, tt.stickyReason, parkedAt)
+			state := newState(orch.cfg)
+			state.Blocked[waiting.ID] = Blocked{
+				Issue:     waiting,
+				Reason:    tt.stickyReason,
+				BlockedAt: parkedAt,
+				Source:    BlockedSourceProjectStatus,
+			}
+
+			orch.tick(t.Context(), &state, parkedAt.Add(3*time.Hour))
+
+			if tt.wantTransition {
+				if got, want := tracker.updates, []dependencyAutoUnblockUpdate{{issueID: waiting.ID, state: "Todo"}}; !slices.Equal(got, want) {
+					t.Fatalf("updates = %#v, want resolved Workpad blocker moved to Todo", got)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, resolved.Identifier) {
+					t.Fatalf("comments = %#v, want recovery audit naming %s", tracker.comments, resolved.Identifier)
+				}
+			} else if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want issue held", tracker.updates)
+			}
+			if tt.wantHoldReason != "" && !strings.Contains(logs.String(), "reason="+tt.wantHoldReason) {
+				t.Fatalf("logs missing hold reason %q:\n%s", tt.wantHoldReason, logs.String())
+			}
+			if tt.wantUnresolved != "" && !strings.Contains(logs.String(), "unresolved_workpad_blockers=["+tt.wantUnresolved+"]") {
+				t.Fatalf("logs missing unresolved blocker %q:\n%s", tt.wantUnresolved, logs.String())
+			}
+			lookedUp := slices.Contains(tracker.identifierCalls, resolved.Identifier)
+			if lookedUp != tt.wantWorkpadLookup {
+				t.Fatalf("workpad blocker lookup = %t, want %t; calls = %#v", lookedUp, tt.wantWorkpadLookup, tracker.identifierCalls)
+			}
+			if tt.name == "stale blocker list from prior blocked entry" && strings.Contains(logs.String(), "reason=workpad_blocker") {
+				t.Fatalf("stale Workpad blocker held current entry:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+func TestWorkpadDependencyAutoUnblockConsumptionSurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 8, 18, 33, 59, 0, time.UTC)
+	waiting := dependencyAutoUnblockIssue("issue-workpad-restart", blockedStatusState)
+	waiting.StageUpdatedAt = &parkedAt
+	waiting.WorkpadSignal = &workpad.Signal{
+		Source: workpad.SourceStructured,
+		Status: workpad.StatusBlocked,
+		Blockers: []workpad.Blocker{{
+			Ref:        "digitaldrywood/ghostreel#34",
+			Identifier: "digitaldrywood/ghostreel#34",
+		}},
+	}
+	blocker := dependencyAutoUnblockIssue("issue-workpad-restart-blocker", "Done")
+	blocker.Identifier = "digitaldrywood/ghostreel#34"
+	blocker.Closed = true
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{blockedStatusState},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+
+	if transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, parkedAt.Add(time.Minute)); len(transitioned) != 1 {
+		t.Fatalf("first transitioned = %#v, want successful Workpad recovery", transitioned)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, blocker.Identifier) {
+		t.Fatalf("comments = %#v, want one recovery audit naming %s", tracker.comments, blocker.Identifier)
+	}
+
+	restartedTracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	restarted := dependencyAutoUnblockOrchestrator(restartedTracker, orch.cfg.DependencyAutoUnblock)
+	restarted.workflowMetrics = metrics
+	restartedState := newState(restarted.cfg)
+
+	if transitioned := restarted.autoUnblockDependencyIssues(t.Context(), &restartedState, restartedTracker.stateIssues, parkedAt.Add(2*time.Minute)); len(transitioned) != 0 {
+		t.Fatalf("restart transitioned = %#v, want consumed blocker signature held", transitioned)
+	}
+	if len(restartedTracker.updates) != 0 || len(restartedTracker.comments) != 0 {
+		t.Fatalf("restart updates = %#v, comments = %#v, want no repeated transition", restartedTracker.updates, restartedTracker.comments)
+	}
+}
+
+func recordDependencyLaneEntry(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+	phase string,
+	reason string,
+	at time.Time,
+) {
+	t.Helper()
+	if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+		ProjectID:  defaultWorkflowMetricsProjectID,
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		IssueURL:   issue.URL,
+		PhaseType:  store.WorkflowPhaseTypeLane,
+		PhaseName:  phase,
+		Reason:     reason,
+		Status:     "entered",
+		StartedAt:  at,
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+}
 
 func TestTickAutoUnblocksDependencyWaitingIssue(t *testing.T) {
 	t.Parallel()
