@@ -2047,7 +2047,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 
 	base := connector.PullRequest{
 		State:          "open",
-		MergeableState: "behind",
+		MergeableState: "clean",
 		CIStatus:       "success",
 		HeadSHA:        "checked-head",
 	}
@@ -2056,8 +2056,9 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 		mutate func(*connector.PullRequest)
 		want   bool
 	}{
-		{name: "behind green head", want: true},
-		{name: "current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = " CLEAN " }, want: true},
+		{name: "current green head", want: true},
+		{name: "normalized current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = " CLEAN " }, want: true},
+		{name: "behind green head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "behind" }},
 		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
 		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
 		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},
@@ -2078,7 +2079,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 	}
 }
 
-func TestRunnerMergeCheckedHeadSkipsWorkspace(t *testing.T) {
+func TestRunnerMergeCurrentHeadSkipsWorkspace(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeMergeWorkspaceBackend{}
@@ -2098,7 +2099,7 @@ func TestRunnerMergeCheckedHeadSkipsWorkspace(t *testing.T) {
 			BranchName: "detent/checked-head",
 			PullRequest: &connector.PullRequest{
 				State:          "open",
-				MergeableState: "behind",
+				MergeableState: "clean",
 				CIStatus:       "success",
 				HeadSHA:        "checked-head",
 			},

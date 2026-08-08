@@ -20,7 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestMergingFastPathBehindCheckedHeadMergesWithoutRebaseOrAgentDispatch(t *testing.T) {
+func TestMergingFastPathBehindReadyRefreshesThenMerges(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 26, 13, 20, 0, 0, time.UTC)
@@ -97,14 +97,14 @@ func TestMergingFastPathBehindCheckedHeadMergesWithoutRebaseOrAgentDispatch(t *t
 	}
 	orch.handleRunResult(context.Background(), &state, completion)
 
-	if got := workspaceBackend.createCalls.Load(); got != 0 {
-		t.Fatalf("Create() calls = %d, want 0", got)
+	if got := workspaceBackend.createCalls.Load(); got != 1 {
+		t.Fatalf("Create() calls = %d, want 1", got)
 	}
-	if got := workspaceBackend.prepareCalls.Load(); got != 0 {
-		t.Fatalf("PrepareMerge() calls = %d, want 0", got)
+	if got := workspaceBackend.prepareCalls.Load(); got != 1 {
+		t.Fatalf("PrepareMerge() calls = %d, want 1", got)
 	}
-	if got := workspaceBackend.afterRunCalls.Load(); got != 0 {
-		t.Fatalf("AfterRun() calls = %d, want 0", got)
+	if got := workspaceBackend.afterRunCalls.Load(); got != 1 {
+		t.Fatalf("AfterRun() calls = %d, want 1", got)
 	}
 	if got := agentBackend.calls.Load(); got != 0 {
 		t.Fatalf("AgentBackend.RunTurn() calls = %d, want 0", got)

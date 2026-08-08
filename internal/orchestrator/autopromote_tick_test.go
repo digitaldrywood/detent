@@ -4029,6 +4029,27 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 			want: true,
 		},
 		{
+			name: "behind and ready for base refresh",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "behind",
+				CIStatus:       "success",
+			},
+			want: true,
+		},
+		{
+			name: "behind with pending required check",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "behind",
+				CIStatus:       "pending",
+				RequiredCheckFailures: []connector.PullRequestCheck{{
+					Name:   "Portability Verify (windows-latest)",
+					Status: "in_progress",
+				}},
+			},
+		},
+		{
 			name:        "missing pull request",
 			pullRequest: nil,
 		},
@@ -4388,6 +4409,73 @@ func TestMergeWorkerHeadReady(t *testing.T) {
 			}
 			if got := mergeWorkerHeadReady(issue); got != tt.want {
 				t.Fatalf("mergeWorkerHeadReady() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecideMergeBaseRefresh(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		mergeableState  string
+		ciStatus        string
+		requiredChecks  []connector.PullRequestCheck
+		laneAvailable   bool
+		globalAvailable bool
+		want            mergeBaseRefreshDecision
+	}{
+		{
+			name:            "behind and ready",
+			mergeableState:  "behind",
+			ciStatus:        "success",
+			laneAvailable:   true,
+			globalAvailable: true,
+			want:            mergeBaseRefreshDecision{applicable: true, proceed: true},
+		},
+		{
+			name:           "behind with pending required check",
+			mergeableState: "behind",
+			ciStatus:       "pending",
+			requiredChecks: []connector.PullRequestCheck{{Name: "Portability Verify", Status: "in_progress"}},
+			laneAvailable:  true,
+			want:           mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshRequiredChecksPending},
+		},
+		{
+			name:            "behind with occupied merge lane",
+			mergeableState:  "behind",
+			ciStatus:        "success",
+			globalAvailable: true,
+			want:            mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshLaneUnavailable},
+		},
+		{
+			name:           "behind without global capacity",
+			mergeableState: "behind",
+			ciStatus:       "success",
+			laneAvailable:  true,
+			want:           mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshGlobalUnavailable},
+		},
+		{
+			name:            "not behind",
+			mergeableState:  "clean",
+			ciStatus:        "success",
+			laneAvailable:   true,
+			globalAvailable: true,
+			want:            mergeBaseRefreshDecision{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := nativeMergeQueueTestIssue(1692, tt.ciStatus)
+			issue.PullRequest.MergeableState = tt.mergeableState
+			issue.PullRequest.RequiredCheckFailures = tt.requiredChecks
+			got := decideMergeBaseRefresh(issue, tt.laneAvailable, tt.globalAvailable)
+			if got != tt.want {
+				t.Fatalf("decideMergeBaseRefresh() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}
