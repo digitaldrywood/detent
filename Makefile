@@ -26,17 +26,22 @@ NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
 GOVULNCHECK_VERSION ?= v1.6.0
 GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+# Upstream issue: https://github.com/securego/gosec/issues/1712
 GOSEC_VERSION ?= v2.28.0
-GOSEC ?= go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
+GOSEC_PATCH ?= scripts/gosec-v2.28.0-deterministic.patch
+GOSEC_DETERMINISM_RUNS ?= 8
 GO_TEST := env -u DETENT_API_TOKEN go test
 # G115: existing conversions are bounded or intentionally preserve platform/API widths.
 # G301: shared runtime, service, and artifact directories intentionally require traversal access.
 # G304: Detent intentionally reads operator-selected config, workflow, and workspace paths.
 # G306: flagged files are non-secret configs, manifests, screenshots, and generated artifacts.
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
+GOSEC_EXCLUDE_DIRS ?= .detent
+GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
 
-.PHONY: dev generate check-generated css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-generated css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -120,9 +125,15 @@ lint:
 vet:
 	go vet ./...
 
-security:
+gosec-build:
+	./scripts/build-gosec.sh "$(GOSEC_VERSION)" "$(GOSEC_PATCH)" "$(GOSEC_BINARY)"
+
+security-gosec-determinism: gosec-build
+	./scripts/check-gosec-determinism.sh "$(GOSEC_BINARY)" "$(GOSEC_DETERMINISM_RUNS)"
+
+security: security-gosec-determinism
 	$(GOVULNCHECK) ./...
-	$(GOSEC) -quiet -exclude-generated -severity=medium -confidence=medium -exclude=$(GOSEC_EXCLUDES) ./...
+	$(GOSEC_BINARY) -quiet -exclude-generated -severity=medium -confidence=medium -exclude=$(GOSEC_EXCLUDES) $(GOSEC_EXCLUDE_DIR_FLAGS) ./...
 
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
@@ -181,6 +192,7 @@ help:
 	@echo "  visual-e2e   Run Playwright visual layout tests"
 	@echo "  visual-e2e-update  Update Playwright visual baselines"
 	@echo "  lint         Run golangci-lint"
+	@echo "  security-gosec-determinism  Verify deterministic G705 caller traversal"
 	@echo "  security     Run govulncheck and gosec security scans"
 	@echo "  check        Run the local validation gate, including NilAway"
 	@echo "  modernize-check  Run the Go modernizer diff check"
