@@ -236,6 +236,7 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 	output := &lockedBuffer{}
 	store := newBlockingBoardSnapshotStore()
 	backgroundWaitStarted := make(chan struct{})
+	runtimeExit := make(chan error, 1)
 	done := make(chan struct{})
 	var runErr error
 	go func() {
@@ -250,6 +251,7 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 				},
 			},
 		)
+		runtimeExit <- runErr
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -262,9 +264,9 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 		}
 	})
 
-	dashboardURL := waitForIsolatedRuntimeURL(t, output, nil)
-	waitForDashboard(t, dashboardURL+"/health", nil)
-	postRuntimeRefresh(t, dashboardURL, nil)
+	dashboardURL := waitForIsolatedRuntimeURL(t, output, runtimeExit)
+	waitForDashboard(t, dashboardURL+"/health", runtimeExit)
+	postRuntimeRefresh(t, dashboardURL, runtimeExit)
 	select {
 	case <-store.started:
 	case <-time.After(10 * time.Second):
@@ -513,7 +515,7 @@ func waitForDashboardConditionWithRefresh(
 			postRuntimeRefresh(t, refreshURL, done)
 			nextRefresh = now.Add(time.Second)
 		}
-		body := waitForDashboard(t, conditionURL, done)
+		body := waitForDashboardContext(t, ctx, conditionURL, done)
 		lastBody = body
 		if ok(body) {
 			return body
