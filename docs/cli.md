@@ -78,6 +78,26 @@ Detent logs with `log/slog`.
 - The terminal dashboard writes JSON logs to `detent.log` next to the runtime
   database. `log_max_size_bytes` defaults to 52428800 and `log_max_backups`
   defaults to 5.
+- `detent logs` reads that resolved dashboard log and its numbered backups.
+  Headless runs stream JSON or development text logs to stdout or stderr
+  instead of a file, so the command reports the dashboard log as unavailable
+  when no file exists. It never switches to an arbitrary path or parses text
+  logs.
+- Log filters use the canonical fields `project_id`, `issue_id`,
+  `issue_identifier`, `work_attempt_id`, `detent_session_id`, and
+  `provider_session_id`. All supplied filters combine conjunctively. `--since`
+  and `--until` are inclusive RFC3339 boundaries compared in UTC, and `--level`
+  means the selected level or higher.
+- With no overrides, the command examines at most the most recent 8 MiB, keeps
+  at most the latest 1,000 matching records in chronological order, and uses a
+  24-hour UTC window ending at invocation time. The JSON summary reports byte
+  or record truncation explicitly.
+- `--output json` writes `{ "records": [...], "summary": {...} }`.
+  `--output jsonl` writes one original JSON log record per line to stdout.
+  Malformed and partial records are skipped and reported as bounded JSON
+  diagnostics on stderr without echoing their contents. JSONL reports
+  truncation with an `output_truncated` diagnostic on stderr; the full counts
+  are available in the JSON summary.
 - Per-request GitHub REST request/response debug logs are off by default. Set
   `tracker.github_rest_debug_logging: true` only while diagnosing REST traffic.
 
