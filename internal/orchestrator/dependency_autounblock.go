@@ -132,7 +132,7 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			continue
 		}
 		if stickyReason := o.issueStickyBlockReason(ctx, state, hydrated); stickyReason != "" &&
-			(!dependencyBlockersReady(workpadBlockers, cfg, o.cfg.TerminalStates) || workpadBlockerStickyOverrideDenied(stickyReason)) {
+			(!dependencyBlockersReady(workpadBlockers, cfg, o.cfg.TerminalStates) || !workpadBlockerStickyOverrideAllowed(stickyReason)) {
 			continue
 		}
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
@@ -1063,13 +1063,8 @@ func stickyBlockReason(reason string) bool {
 	}
 }
 
-func workpadBlockerStickyOverrideDenied(reason string) bool {
-	switch strings.ToLower(strings.TrimSpace(reason)) {
-	case "rework_limit", string(AutoPromoteReasonMergeRevocationLimit):
-		return true
-	default:
-		return false
-	}
+func workpadBlockerStickyOverrideAllowed(reason string) bool {
+	return strings.EqualFold(strings.TrimSpace(reason), noProgressLimitReason)
 }
 
 func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
