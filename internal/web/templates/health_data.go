@@ -375,7 +375,11 @@ func healthCopyPayload(view healthView) string {
 	payload.WriteString("Detent health — ")
 	payload.WriteString(boardCountLabel(len(view.Rows), "signal", "signals"))
 	payload.WriteString(" — checked ")
-	payload.WriteString(view.CheckedAt.UTC().Format(time.RFC3339))
+	if view.CheckedAt.IsZero() {
+		payload.WriteString("unavailable")
+	} else {
+		payload.WriteString(view.CheckedAt.UTC().Format(time.RFC3339))
+	}
 	payload.WriteByte('\n')
 	payload.WriteString(healthCopyPlainText(strings.TrimSpace(strings.TrimSpace(view.Verdict) + " " + strings.TrimSpace(view.Detail))))
 

@@ -113,11 +113,10 @@ func TestHealthCopyPayload(t *testing.T) {
 		{
 			name: "no rows",
 			view: healthView{
-				Verdict:   "Waiting for the first health snapshot.",
-				Detail:    "No signals have been reported.",
-				CheckedAt: checkedAt,
+				Verdict: "Waiting for the first health snapshot.",
+				Detail:  "No signals have been reported.",
 			},
-			want: "Detent health — 0 signals — checked 2026-08-08T03:21:52Z\n" +
+			want: "Detent health — 0 signals — checked unavailable\n" +
 				"Waiting for the first health snapshot. No signals have been reported.",
 		},
 		{
