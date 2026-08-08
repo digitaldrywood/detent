@@ -22,14 +22,14 @@ printf 'module detent.example/gosecfixture\n\ngo 1.26\n' > "$fixture_dir/go.mod"
 	printf 'func writeResponse(writer http.ResponseWriter, value string) {\n'
 	printf '\t_, _ = writer.Write([]byte(value))\n'
 	printf '}\n\n'
-	printf 'func tainted(writer http.ResponseWriter, request *http.Request) {\n'
+	printf 'func aTainted(writer http.ResponseWriter, request *http.Request) {\n'
 	printf '\twriteResponse(writer, request.URL.Query().Get("value"))\n'
 	printf '}\n\n'
-	for ((caller = 0; caller < 600; caller++)); do
+	for ((caller = 0; caller < 8192; caller++)); do
 		printf 'func filler%s() { writeResponse(nil, "static") }\n' "$caller"
 	done
 	printf '\nfunc main() {\n'
-	printf '\thttp.HandleFunc("/", tainted)\n'
+	printf '\thttp.HandleFunc("/", aTainted)\n'
 	printf '}\n'
 } > "$fixture_dir/main.go"
 
