@@ -44,6 +44,25 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, readme, "Defaults are recommendations only")
 }
 
+func TestOnboardingDocsDistinguishIssueBackfillFromIntakeSources(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"19. **Issue backfill.**",
+		"## Phase 6 — Issue Backfill",
+		"ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>",
+		"[`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake)",
+	} {
+		assertContains(t, onboarding, want)
+	}
+	staleKey := "INTAKE_" + "GH_FLAGS"
+	if strings.Contains(onboarding, staleKey) {
+		t.Fatalf("docs/ONBOARDING.md contains stale %s key", staleKey)
+	}
+}
+
 func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 	t.Parallel()
 

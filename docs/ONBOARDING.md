@@ -1411,20 +1411,23 @@ probes.
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-19. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+19. **Issue backfill.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
    filter to `Backlog`, then move one known issue to `Todo` for the smoke test.
+   This one-time backfill adds existing issues; it is separate from the ongoing
+   [`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake) feature,
+   which creates issues from external signals and scheduled scans.
    Verify:
 
    ```sh
    printf '%s\n' \
-     'INTAKE_GH_FLAGS=<gh-issue-list-flags>' \
+     'ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>' \
      'INITIAL_STATUS=<Backlog|Todo>' \
      'ENABLE_AUTO_ADD=<true|false>' \
      >> "$ONBOARDING_DIR/answers.env"
-   rg '^(INTAKE_GH_FLAGS|INITIAL_STATUS|ENABLE_AUTO_ADD)=' "$ONBOARDING_DIR/answers.env"
+   rg '^(ISSUE_BACKFILL_GH_FLAGS|INITIAL_STATUS|ENABLE_AUTO_ADD)=' "$ONBOARDING_DIR/answers.env"
    ```
 
 ## Phase 2.5 — Mutation Authorization
@@ -2630,7 +2633,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    throwaway worktree with the same service PATH before moving an issue to
    `Todo`.
 
-## Phase 6 — Issue Intake
+## Phase 6 — Issue Backfill
 
 Before adding issues to a ProjectV2 board, setting issue-field values, changing
 status labels, or enabling ProjectV2 auto-add, rerun:
@@ -2638,7 +2641,7 @@ status labels, or enabling ProjectV2 auto-add, rerun:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
-rg '^INTAKE_GH_FLAGS=' "$ONBOARDING_DIR/answers.env"
+rg '^ISSUE_BACKFILL_GH_FLAGS=' "$ONBOARDING_DIR/answers.env"
 rg '^INITIAL_STATUS=' "$ONBOARDING_DIR/answers.env"
 detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
