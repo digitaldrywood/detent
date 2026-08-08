@@ -192,7 +192,8 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 
 	result, err := s.backend.Run(ctx, request)
 	if cause := context.Cause(ctx); errors.Is(cause, ErrMergeWorkerStartupTimeout) ||
-		errors.Is(cause, ErrMergeWorkerDurationExceeded) {
+		errors.Is(cause, ErrMergeWorkerDurationExceeded) ||
+		errors.Is(cause, ErrCIUnavailable) {
 		err = errors.Join(cause, err)
 		if errors.Is(cause, ErrMergeWorkerDurationExceeded) {
 			result.FinalState = FinalStateMergeDurationExceeded

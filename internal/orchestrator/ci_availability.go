@@ -73,7 +73,7 @@ func evaluateCIAvailability(issues []connector.Issue, now time.Time) (CIConditio
 	pullRequests := make(map[string]ciUnavailablePullRequest)
 	for _, issue := range issues {
 		pullRequest := issue.PullRequest
-		if pullRequest == nil {
+		if pullRequest == nil || normalizePullRequestState(pullRequest.State) != "open" {
 			continue
 		}
 		checkCount := max(pullRequest.UnstartedCheckCount, len(pullRequest.UnstartedChecks))

@@ -38,6 +38,16 @@ func TestSyncCIAvailability(t *testing.T) {
 			},
 		},
 		{
+			name: "inactive pull requests do not raise condition",
+			issues: func() []connector.Issue {
+				closed := ciAvailabilityIssue("closed", 15, 2, []connector.PullRequestCheck{{Name: "Verify", Status: "queued", QueueSeconds: 3_600}})
+				closed.PullRequest.State = "CLOSED"
+				merged := ciAvailabilityIssue("merged", 16, 3, []connector.PullRequestCheck{{Name: "Lint", Status: "queued", QueueSeconds: 2_700}})
+				merged.PullRequest.State = "MERGED"
+				return []connector.Issue{closed, merged}
+			}(),
+		},
+		{
 			name: "sustained unstarted checks across PRs raise condition",
 			issues: []connector.Issue{
 				ciAvailabilityIssue("first", 13, 2, []connector.PullRequestCheck{{Name: "Verify", Status: "queued", QueueSeconds: 3_600}}),
