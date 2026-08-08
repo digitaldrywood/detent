@@ -2,10 +2,12 @@ package detent
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
@@ -571,6 +573,48 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			}
 			if !tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) != "" {
 				t.Fatalf("WriteProbeIssue = %q, want blank", cfg.Tracker.WriteProbeIssue)
+			}
+		})
+	}
+}
+
+func TestWorkedMultiProjectConfigsLoadAndValidate(t *testing.T) {
+	t.Parallel()
+
+	globalPath := "docs/examples/multi-project/global.yaml"
+	globalRaw, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", globalPath, err)
+	}
+	repositoryRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	localGlobal := strings.ReplaceAll(string(globalRaw), "/srv/detent/repos/orders-api", repositoryRoot)
+	localGlobal = strings.ReplaceAll(localGlobal, "/srv/detent/repos/storefront", repositoryRoot)
+	if _, err := globalconfig.Parse([]byte(localGlobal), globalPath, globalconfig.WithMissingWorkflowFiles()); err != nil {
+		t.Fatalf("globalconfig.Parse() error = %v", err)
+	}
+
+	for _, project := range []string{"orders-api", "storefront"} {
+		project := project
+		t.Run(project, func(t *testing.T) {
+			t.Parallel()
+
+			configPath := filepath.Join("docs", "examples", "multi-project", project, "detent.yaml")
+			configRaw, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
+			}
+			_, err = workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				WorkflowPath: filepath.Join(filepath.Dir(configPath), "WORKFLOW.md"),
+				Workflow:     []byte("# Example workflow\n"),
+				ConfigPath:   configPath,
+				Config:       configRaw,
+				HasConfig:    true,
+			})
+			if err != nil {
+				t.Fatalf("ParseProjectDefinition() error = %v", err)
 			}
 		})
 	}

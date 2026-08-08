@@ -151,10 +151,11 @@ criteria, review gates, and merge rules — and Detent runs that process with
 rigor, isolation, and parallelism across many issues at once. The intelligence
 stays in your spec; the runtime supplies the discipline.
 
-**See it for real:**
-[`digitaldrywood/detent-orchestration`](https://github.com/digitaldrywood/detent-orchestration)
-is Detent's own production config — it dispatches the agents that build Detent
-itself. Copy it as a template, and use
+**See it for real:** Detent uses the same host-and-project configuration model
+to dispatch the agents that build Detent itself. The in-repository
+[worked multi-project configuration](docs/examples/multi-project/README.md)
+shows that setup with complete, annotated, and sanitized files you can copy.
+Use
 [Bootstrap On A New Machine](docs/bootstrap.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
 to go from a bare machine to a running board. To onboard a repository, verify an
 existing install, or add a new project to an existing Detent host, use the

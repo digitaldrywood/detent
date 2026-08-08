@@ -482,9 +482,9 @@ git -C <source-root> rev-parse --show-toplevel
 ```
 
 Do not use a reference or tooling repository as the target. A wrong target repository failure example looks like this: the operator mentions
-`digitaldrywood/detent-orchestration` as an example config and
+`example/reference-config` as an example config and
 `customer/api` as the actual project, but the agent runs issue, label, board,
-or validation discovery against `digitaldrywood/detent-orchestration`. Stop,
+or validation discovery against `example/reference-config`. Stop,
 rewrite `TARGET_REPOSITORY=customer/api`, verify `TARGET_SOURCE_ROOT` points to
 that checkout, and rerun `detent onboarding validate-answers --phase identity`
 before discovery resumes.

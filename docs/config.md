@@ -101,6 +101,9 @@ GitHub token redacted.
   project config.
 - [`config.annotated.yaml`](../config.annotated.yaml) is a realistic GitHub
   setup with explanations beside each deliberate choice.
+- The [worked multi-project configuration](examples/multi-project/README.md)
+  pairs an annotated host config with two complete project configs and explains
+  the operator rationale behind their scheduling and isolation choices.
 - [`config.reference.yaml`](../config.reference.yaml) contains every supported
   project key. It is fully commented so you can copy only what you need.
 
