@@ -524,7 +524,7 @@ func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) er
 	if c.Request().Header.Get("HX-Request") != "true" {
 		return c.JSON(http.StatusOK, map[string]any{"ok": true, "message": message})
 	}
-	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+	setKanbanActionSucceeded(c)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
 	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 	return render(c, templates.BoardSnapshot(data))

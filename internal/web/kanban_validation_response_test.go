@@ -143,6 +143,47 @@ func TestKanbanCommentValidationResponse(t *testing.T) {
 	}
 }
 
+func TestKanbanFeedbackSuccessTriggerTiming(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		status      int
+		wantTrigger string
+	}{
+		{
+			name:        "success triggers after swap",
+			status:      http.StatusOK,
+			wantTrigger: kanbanDialogSucceeded,
+		},
+		{
+			name:   "validation error does not trigger success",
+			status: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/kanban/move", nil)
+			req.Header.Set("HX-Request", "true")
+			c := echo.New().NewContext(req, rec)
+
+			if err := kanbanFeedback(c, tt.status, "feedback"); err != nil {
+				t.Fatalf("kanbanFeedback() error = %v", err)
+			}
+			if got := rec.Header().Get(kanbanSuccessTriggerHeader); got != tt.wantTrigger {
+				t.Fatalf("%s = %q, want %q", kanbanSuccessTriggerHeader, got, tt.wantTrigger)
+			}
+			if got := rec.Header().Get("HX-Trigger"); got != "" {
+				t.Fatalf("HX-Trigger = %q, want empty", got)
+			}
+		})
+	}
+}
+
 func newKanbanValidationResponseTestServer() *Server {
 	workflow := workflowconfig.Default()
 	workflow.Server.Kanban = workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}

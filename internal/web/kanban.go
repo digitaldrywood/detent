@@ -71,6 +71,7 @@ const (
 	kanbanProjectBoardTarget       = "#snapshot"
 	kanbanFleetBoardTarget         = "#snapshot"
 	kanbanDialogSucceeded          = "kanbanActionSucceeded"
+	kanbanSuccessTriggerHeader     = "HX-Trigger-After-Swap"
 	kanbanBlockedState             = "Blocked"
 	kanbanRefreshRetryDelay        = 2 * time.Second
 	kanbanMoveUnsupportedMessage   = "This project's tracker does not support moving cards."
@@ -302,7 +303,7 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 		data.Kanban.Feedback = message
 		data.Kanban.FeedbackKind = "success"
 
-		c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+		setKanbanActionSucceeded(c)
 		c.Response().Header().Set("HX-Retarget", kanbanFleetBoardTarget)
 		c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 		return render(c, templates.BoardSnapshot(data))
@@ -317,7 +318,7 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 		data.Kanban.FeedbackKind = "success"
 	}
 
-	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+	setKanbanActionSucceeded(c)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
 	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 	return render(c, templates.BoardSnapshot(data))
@@ -422,7 +423,7 @@ func (s *Server) kanbanRemoveSuccess(c echo.Context, req kanbanRemoveRequest, me
 	data.Kanban.Feedback = message
 	data.Kanban.FeedbackKind = "success"
 
-	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+	setKanbanActionSucceeded(c)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
 	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 	return render(c, templates.BoardSnapshot(data))
@@ -1601,7 +1602,7 @@ func kanbanFeedback(c echo.Context, status int, message string) error {
 		if status >= http.StatusBadRequest {
 			class = "border-err bg-err/15 text-err"
 		} else {
-			c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+			setKanbanActionSucceeded(c)
 		}
 		return c.HTML(status, `<div id="kanban-feedback" role="status" aria-live="polite" class="rounded-md border px-3 py-2 text-sm `+class+`">`+html.EscapeString(message)+`</div>`)
 	}
@@ -1609,6 +1610,10 @@ func kanbanFeedback(c echo.Context, status int, message string) error {
 		return c.JSON(status, errorResponse("kanban_action_failed", message))
 	}
 	return c.JSON(status, map[string]any{"ok": true, "message": message})
+}
+
+func setKanbanActionSucceeded(c echo.Context) {
+	c.Response().Header().Set(kanbanSuccessTriggerHeader, kanbanDialogSucceeded)
 }
 
 func kanbanPullRequestRepository(issue telemetry.Issue) string {
