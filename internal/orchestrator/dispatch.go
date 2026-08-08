@@ -131,6 +131,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
 	var lastDispatchFailure string
@@ -205,6 +206,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	for _, issue := range issues {
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 			return

@@ -2471,6 +2471,90 @@ func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *
 	}
 }
 
+func TestFilterImplementDependencyDeferralsUsesDurableAttemptHistory(t *testing.T) {
+	t.Parallel()
+
+	issue := implementProgressIssueWithoutPR()
+	issue.Fields = map[string]string{"Status": "In Progress"}
+	history := []store.WorkAttempt{implementProgressDependencyDeferralHistoryAttempt(1, "digitaldrywood/detent#134", "Todo")}
+	tests := []struct {
+		name          string
+		blockerState  string
+		wantCandidate bool
+	}{
+		{name: "unresolved blocker suppresses worker after restart", blockerState: "Todo"},
+		{name: "terminal blocker releases worker after restart", blockerState: "Done", wantCandidate: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				Project:             scheduler.ProjectCandidate{ID: "detent"},
+				ActiveStates:        []string{"Todo", "In Progress"},
+				TerminalStates:      []string{"Done", "Cancelled"},
+			})
+			tracker := hydratingDispatchConnector{
+				issue:    issue,
+				blockers: []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: tt.blockerState}},
+			}
+			orch := Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: &recordingWorkAttemptStore{history: history},
+			}
+
+			filtered := orch.filterImplementDependencyDeferrals(t.Context(), []connector.Issue{issue})
+			if got := len(filtered) == 1; got != tt.wantCandidate {
+				t.Fatalf("candidate retained = %v, want %v", got, tt.wantCandidate)
+			}
+		})
+	}
+}
+
+func TestDispatchReadyIssuesDoesNotLaunchDurableDependencyDeferral(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 19, 0, 0, 0, time.UTC)
+	issue := implementProgressIssueWithoutPR()
+	issue.AssignedToWorker = true
+	issue.Fields = map[string]string{"Status": "In Progress"}
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg: cfg,
+		connector: hydratingDispatchConnector{
+			issue:    issue,
+			blockers: []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Todo"}},
+		},
+		workAttempts: &recordingWorkAttemptStore{history: []store.WorkAttempt{
+			implementProgressDependencyDeferralHistoryAttempt(1, "digitaldrywood/detent#134", "Todo"),
+		}},
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	if !orch.dispatchable(issue, &state, now) {
+		t.Fatal("control candidate is not independently dispatchable")
+	}
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected worker launch for durable dependency deferral: %#v", request)
+	default:
+	}
+	if _, blocked := state.Blocked[issue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present for dependency deferral", issue.ID)
+	}
+}
+
 func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -3032,7 +3116,8 @@ func (c *budgetRefusalCommentConnector) SetField(context.Context, string, string
 var _ connector.Connector = (*budgetRefusalCommentConnector)(nil)
 
 type hydratingDispatchConnector struct {
-	issue connector.Issue
+	issue    connector.Issue
+	blockers []connector.Issue
 }
 
 func (c hydratingDispatchConnector) Name() string {
@@ -3052,6 +3137,10 @@ func (c hydratingDispatchConnector) FetchIssueStatesByIDs(_ context.Context, ids
 		return []connector.Issue{c.issue}, nil
 	}
 	return nil, nil
+}
+
+func (c hydratingDispatchConnector) FetchIssueStatesByIdentifiers(context.Context, []string) ([]connector.Issue, error) {
+	return cloneIssues(c.blockers), nil
 }
 
 func (c hydratingDispatchConnector) CreateComment(context.Context, string, string) error {

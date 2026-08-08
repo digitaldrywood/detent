@@ -459,6 +459,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 	}
+	if progress.DependencyDeferral {
+		o.finishImplementDependencyDeferral(ctx, state, running.Issue, event.CompletedAt)
+		return
+	}
 	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
 		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
 			o.logger.Warn("per-issue budget hold claim release failed", "issue_id", event.IssueID, "error", err)
