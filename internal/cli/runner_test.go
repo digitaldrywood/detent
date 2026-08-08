@@ -1270,6 +1270,54 @@ func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotAttributesFleetRESTBudgets(t *testing.T) {
+	t.Parallel()
+
+	firstObserved := time.Date(2026, 8, 8, 18, 0, 0, 0, time.UTC)
+	secondObserved := firstObserved.Add(time.Minute)
+	coreReset := firstObserved.Add(time.Hour)
+	searchReset := firstObserved.Add(2 * time.Minute)
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Limit: 5000, Remaining: 4200, ObservedAt: &firstObserved},
+			GitHubRESTBudgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4200, ResetAt: &coreReset, ObservedAt: &firstObserved},
+			},
+			RESTUsage: &telemetry.RESTUsage{TotalRequests: 3, BillableRequests: 3},
+		},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		BackendOutages: []telemetry.BackendOutage{{Kind: "github_rest_rate_limit", Reason: "dispatch paused"}},
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Limit: 5000, Remaining: 300, ObservedAt: &secondObserved},
+			GitHubRESTBudgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 300, ResetAt: &coreReset, ObservedAt: &secondObserved},
+				{CredentialIdentity: "github-rest:search", EndpointFamily: "issue search", Resource: "search", Limit: 30, Remaining: 20, ResetAt: &searchReset, ObservedAt: &secondObserved},
+			},
+			RESTUsage: &telemetry.RESTUsage{TotalRequests: 2, BillableRequests: 1},
+		},
+	})
+
+	if got.RateLimits == nil || len(got.RateLimits.GitHubRESTBudgets) != 2 {
+		t.Fatalf("RateLimits = %#v, want two credential endpoint budgets", got.RateLimits)
+	}
+	if budget := got.RateLimits.GitHubRESTBudgets[0]; budget.CredentialIdentity != "github-rest:search" || budget.ResetAt == nil || !budget.ResetAt.Equal(searchReset) {
+		t.Fatalf("GitHubRESTBudgets[0] = %#v, want search credential and reset", budget)
+	}
+	if budget := got.RateLimits.GitHubRESTBudgets[1]; budget.CredentialIdentity != "github-rest:shared" || budget.Remaining != 300 || budget.ResetAt == nil || !budget.ResetAt.Equal(coreReset) {
+		t.Fatalf("GitHubRESTBudgets[1] = %#v, want latest shared credential core budget", budget)
+	}
+	if got.RateLimits.RESTUsage == nil || got.RateLimits.RESTUsage.TotalRequests != 5 || got.RateLimits.RESTUsage.BillableRequests != 4 {
+		t.Fatalf("RESTUsage = %#v, want aggregated project request counts", got.RateLimits.RESTUsage)
+	}
+	if got.RateLimits.GitHubREST == nil || got.RateLimits.GitHubREST.Remaining != 300 {
+		t.Fatalf("GitHubREST = %#v, want most constrained compatibility bucket", got.RateLimits.GitHubREST)
+	}
+	if len(got.BackendOutages) != 1 || got.BackendOutages[0].Kind != "github_rest_rate_limit" {
+		t.Fatalf("BackendOutages = %#v, want fleet-visible REST dispatch condition", got.BackendOutages)
+	}
+}
+
 func TestDedupeSnapshotIssues(t *testing.T) {
 	t.Parallel()
 

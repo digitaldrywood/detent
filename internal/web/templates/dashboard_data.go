@@ -193,11 +193,13 @@ type graphQLBudgetContributorRow struct {
 }
 
 type restBudgetContributorRow struct {
-	EndpointFamily string
-	Count          string
-	Remaining      string
-	Reset          string
-	Status         string
+	CredentialIdentity string
+	EndpointFamily     string
+	Resource           string
+	Count              string
+	Remaining          string
+	Reset              string
+	Status             string
 }
 
 type gitHubAPIHealthState string
@@ -7063,7 +7065,7 @@ func hasGraphQLBudget(limits *telemetry.RateLimits) bool {
 }
 
 func hasRESTBudget(limits *telemetry.RateLimits) bool {
-	return limits != nil && (limits.GitHubREST != nil || limits.RESTUsage != nil)
+	return limits != nil && (limits.GitHubREST != nil || len(limits.GitHubRESTBudgets) > 0 || limits.RESTUsage != nil)
 }
 
 func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
@@ -7185,20 +7187,73 @@ func restBudgetRequestCount(limits *telemetry.RateLimits) string {
 }
 
 func restBudgetContributorRows(limits *telemetry.RateLimits) []restBudgetContributorRow {
+	if limits != nil && len(limits.GitHubRESTBudgets) > 0 {
+		contributors := make(map[string]telemetry.RESTUsageContributor)
+		if limits.RESTUsage != nil {
+			for _, contributor := range limits.RESTUsage.Contributors {
+				contributors[restBudgetRowKey(contributor.CredentialIdentity, contributor.EndpointFamily, contributor.Resource)] = contributor
+			}
+		}
+		rows := make([]restBudgetContributorRow, 0, len(limits.GitHubRESTBudgets))
+		for _, budget := range limits.GitHubRESTBudgets {
+			contributor := contributors[restBudgetRowKey(budget.CredentialIdentity, budget.EndpointFamily, budget.Resource)]
+			rows = append(rows, restBudgetContributorRow{
+				CredentialIdentity: strings.TrimSpace(budget.CredentialIdentity),
+				EndpointFamily:     strings.TrimSpace(budget.EndpointFamily),
+				Resource:           strings.TrimSpace(budget.Resource),
+				Count:              formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
+				Remaining:          restBudgetRowRemaining(budget),
+				Reset:              restBudgetRowReset(budget),
+				Status:             restContributorStatus(contributor),
+			})
+		}
+		return rows
+	}
 	if limits == nil || limits.RESTUsage == nil || len(limits.RESTUsage.Contributors) == 0 {
 		return nil
 	}
 	rows := make([]restBudgetContributorRow, 0, len(limits.RESTUsage.Contributors))
 	for _, contributor := range limits.RESTUsage.Contributors {
 		rows = append(rows, restBudgetContributorRow{
-			EndpointFamily: strings.TrimSpace(contributor.EndpointFamily),
-			Count:          formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
-			Remaining:      restContributorRemaining(contributor),
-			Reset:          restContributorReset(contributor),
-			Status:         restContributorStatus(contributor),
+			CredentialIdentity: strings.TrimSpace(contributor.CredentialIdentity),
+			EndpointFamily:     strings.TrimSpace(contributor.EndpointFamily),
+			Resource:           strings.TrimSpace(contributor.Resource),
+			Count:              formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
+			Remaining:          restContributorRemaining(contributor),
+			Reset:              restContributorReset(contributor),
+			Status:             restContributorStatus(contributor),
 		})
 	}
 	return rows
+}
+
+func restBudgetRowKey(credentialIdentity string, endpointFamily string, resource string) string {
+	return strings.TrimSpace(credentialIdentity) + "\x00" + strings.TrimSpace(endpointFamily) + "\x00" + strings.TrimSpace(resource)
+}
+
+func restBudgetRowRemaining(budget telemetry.RESTBudget) string {
+	if budget.Limit > 0 {
+		return formatInt(budget.Remaining) + " / " + formatInt(budget.Limit)
+	}
+	return formatInt(budget.Remaining) + " left"
+}
+
+func restBudgetRowReset(budget telemetry.RESTBudget) string {
+	if budget.ResetAt == nil {
+		return "reset n/a"
+	}
+	return localTimeToken(*budget.ResetAt, LocalTimeOnly)
+}
+
+func restBudgetCredentialCount(limits *telemetry.RateLimits) int64 {
+	if limits == nil {
+		return 0
+	}
+	identities := make(map[string]struct{}, len(limits.GitHubRESTBudgets))
+	for _, budget := range limits.GitHubRESTBudgets {
+		identities[strings.TrimSpace(budget.CredentialIdentity)] = struct{}{}
+	}
+	return int64(len(identities))
 }
 
 func restContributorRemaining(contributor telemetry.RESTUsageContributor) string {

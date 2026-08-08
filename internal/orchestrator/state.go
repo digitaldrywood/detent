@@ -688,6 +688,7 @@ func cloneRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 	cloned.Credits = cloneRateLimitBucket(rateLimits.Credits)
 	cloned.GitHubGraphQL = cloneRateLimitBucket(rateLimits.GitHubGraphQL)
 	cloned.GitHubREST = cloneRateLimitBucket(rateLimits.GitHubREST)
+	cloned.GitHubRESTBudgets = cloneRESTBudgets(rateLimits.GitHubRESTBudgets)
 	cloned.GraphQLCost = cloneGraphQLCost(rateLimits.GraphQLCost)
 	cloned.RESTUsage = cloneRESTUsage(rateLimits.RESTUsage)
 	return &cloned
@@ -706,6 +707,9 @@ func mergeRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimi
 	}
 	if current != nil && current.GitHubREST != nil && merged.GitHubREST == nil {
 		merged.GitHubREST = cloneRateLimitBucket(current.GitHubREST)
+	}
+	if current != nil && len(current.GitHubRESTBudgets) > 0 && len(merged.GitHubRESTBudgets) == 0 {
+		merged.GitHubRESTBudgets = cloneRESTBudgets(current.GitHubRESTBudgets)
 	}
 	if current != nil && current.RESTUsage != nil && merged.RESTUsage == nil {
 		merged.RESTUsage = cloneRESTUsage(current.RESTUsage)
@@ -763,6 +767,24 @@ func cloneRESTUsage(usage *telemetry.RESTUsage) *telemetry.RESTUsage {
 		}
 	}
 	return &cloned
+}
+
+func cloneRESTBudgets(budgets []telemetry.RESTBudget) []telemetry.RESTBudget {
+	if len(budgets) == 0 {
+		return nil
+	}
+	cloned := append([]telemetry.RESTBudget(nil), budgets...)
+	for index := range cloned {
+		if budgets[index].ResetAt != nil {
+			resetAt := *budgets[index].ResetAt
+			cloned[index].ResetAt = &resetAt
+		}
+		if budgets[index].ObservedAt != nil {
+			observedAt := *budgets[index].ObservedAt
+			cloned[index].ObservedAt = &observedAt
+		}
+	}
+	return cloned
 }
 
 func cloneTelemetryWorkAttempts(values []telemetry.WorkAttempt) []telemetry.WorkAttempt {

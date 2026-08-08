@@ -491,6 +491,50 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 	}
 }
 
+func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testing.T) {
+	t.Parallel()
+
+	coreReset := time.Date(2026, 8, 8, 19, 0, 0, 0, time.UTC)
+	searchReset := coreReset.Add(-45 * time.Minute)
+	limits := &telemetry.RateLimits{
+		GitHubRESTBudgets: []telemetry.RESTBudget{
+			{CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Remaining: 300, Limit: 5000, ResetAt: &coreReset},
+			{CredentialIdentity: "github-rest:app", EndpointFamily: "issue search", Resource: "search", Remaining: 20, Limit: 30, ResetAt: &searchReset},
+		},
+		RESTUsage: &telemetry.RESTUsage{Contributors: []telemetry.RESTUsageContributor{
+			{CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Count: 4, LastStatus: 200},
+			{CredentialIdentity: "github-rest:app", EndpointFamily: "issue search", Resource: "search", Count: 1, LastStatus: 200},
+		}},
+	}
+
+	rows := restBudgetContributorRows(limits)
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want 2: %#v", len(rows), rows)
+	}
+	tests := []struct {
+		index      int
+		credential string
+		family     string
+		resource   string
+		remaining  string
+		resetAt    time.Time
+	}{
+		{index: 0, credential: "github-rest:user", family: "issues", resource: "core", remaining: "300 / 5,000", resetAt: coreReset},
+		{index: 1, credential: "github-rest:app", family: "issue search", resource: "search", remaining: "20 / 30", resetAt: searchReset},
+	}
+	for _, test := range tests {
+		t.Run(test.family, func(t *testing.T) {
+			row := rows[test.index]
+			if row.CredentialIdentity != test.credential || row.EndpointFamily != test.family || row.Resource != test.resource || row.Remaining != test.remaining || row.Reset != localTimeToken(test.resetAt, LocalTimeOnly) {
+				t.Fatalf("row = %#v, want credential %q family %q resource %q remaining %q reset %v", row, test.credential, test.family, test.resource, test.remaining, test.resetAt)
+			}
+		})
+	}
+	if got := restBudgetCredentialCount(limits); got != 2 {
+		t.Fatalf("restBudgetCredentialCount() = %d, want 2", got)
+	}
+}
+
 func TestGraphQLUnknownStatusFormatsBudgetLabels(t *testing.T) {
 	t.Parallel()
 
