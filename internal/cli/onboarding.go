@@ -1441,6 +1441,9 @@ func validateOnboardingAnswers(ctx context.Context, opts options, answers onboar
 
 	problems = append(problems, validateOnboardingDeliveryProfileAnswers(answers, phase, result)...)
 	problems = append(problems, validateOnboardingIntakeProfileAnswers(answers, phase, result)...)
+	if phase == onboardingAnswersPhaseMutation {
+		problems = append(problems, validateOnboardingGuidanceAnswers(answers)...)
+	}
 
 	mode := answers.Values["GITHUB_MODE"]
 	switch mode {
@@ -1453,6 +1456,22 @@ func validateOnboardingAnswers(ctx context.Context, opts options, answers onboar
 		problems = append(problems, validateOnboardingMutationAnswers(answers, mode, result)...)
 	}
 	return problems
+}
+
+func validateOnboardingGuidanceAnswers(answers onboardingAnswers) []string {
+	problems := requireOnboardingAnswers(answers, onboardingGuidanceKeys(onboardingEffortGuidanceFields())...)
+	if strings.EqualFold(strings.TrimSpace(answers.Values["BACKLOG_ADMISSION_ENABLED"]), "true") {
+		problems = append(problems, requireOnboardingAnswers(answers, onboardingGuidanceKeys(onboardingAdmissionGuidanceFields())...)...)
+	}
+	return problems
+}
+
+func onboardingGuidanceKeys(fields []onboardingGuidanceField) []string {
+	keys := make([]string, 0, len(fields))
+	for _, field := range fields {
+		keys = append(keys, field.Key)
+	}
+	return keys
 }
 
 func validateOnboardingDeliveryProfileAnswers(answers onboardingAnswers, phase string, result *onboardingAnswersValidationResult) []string {

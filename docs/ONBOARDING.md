@@ -1182,11 +1182,50 @@ probes.
    ```
 
    Admission-enabled profiles require the named shared `WORKFLOW.md` criteria
-   section. The workflow builder emits `## Admission Criteria` with a bounded
-   baseline rubric and sets `criteria_section` to the exact heading, so the
-   generated project definition passes admission validation. The four run
-   ceilings are always written explicitly. For Custom/advanced, omit
-   `INTAKE_PROFILE` and record the underlying keys directly.
+   section. For Custom/advanced, omit `INTAKE_PROFILE` and record the
+   underlying keys directly.
+
+   Before leaving the work-intake interview, collect the project-owned prose
+   that onboarding will generate. For assisted or autonomous intake, ask the
+   operator what makes work aligned, ready, small enough for one agent run, and
+   safe to admit. Offer the repository discovery evidence as a starting point,
+   but require the operator to adapt or approve each criterion. Record each
+   answer as one sentence:
+
+   ```sh
+   printf '%s\n' \
+     'ADMISSION_ALIGNMENT_CRITERIA=<project goals, supported work, and explicit exclusions>' \
+     'ADMISSION_READINESS_CRITERIA=<required evidence and checkable completion conditions>' \
+     'ADMISSION_SIZE_CRITERIA=<largest acceptable single-agent change>' \
+     'ADMISSION_SAFETY_GATES=<dependencies, credentials, destructive actions, and project-specific safety checks>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^ADMISSION_(ALIGNMENT_CRITERIA|READINESS_CRITERIA|SIZE_CRITERIA|SAFETY_GATES)=' \
+     "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Ask every project, including manual-intake projects, how issue authors
+   should select reasoning effort. Calibrate the four tiers against concrete
+   repository examples and reserve `max` for explicit operator designation.
+   Record the operator-approved rubric:
+
+   ```sh
+   printf '%s\n' \
+     'EFFORT_MEDIUM_CRITERIA=<small, mechanical, tightly specified work>' \
+     'EFFORT_HIGH_CRITERIA=<standard feature or fix with ambiguity or cross-cutting impact>' \
+     'EFFORT_XHIGH_CRITERIA=<new subsystem or tricky state, concurrency, restart, recovery, or interaction work>' \
+     'EFFORT_MAX_CRITERIA=<exceptional work that only an operator may designate>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^EFFORT_(MEDIUM|HIGH|XHIGH|MAX)_CRITERIA=' \
+     "$ONBOARDING_DIR/answers.env"
+   ```
+
+   The workflow builder turns the admission answers into `## Admission
+   Criteria` with `### Alignment`, `### Readiness`, `### Size`, and `### Safety
+   Gates`, and sets `criteria_section` to the exact heading. It writes no
+   admission heading or dangling `criteria_section` key when admission is off.
+   It always creates or appends the operator-approved four-tier rubric in
+   `AGENTS.md`, without replacing existing content, and leaves `model` unset.
+   The four admission run ceilings are always written explicitly.
 
 7. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
    wants to override a selected profile's `KANBAN_MODE`, switch to
@@ -2096,8 +2135,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
 ## Phase 4 — Author detent.yaml And WORKFLOW.md
 
-Before writing, overwriting, or editing `<source-root>/detent.yaml` or
-`<source-root>/WORKFLOW.md`, rerun:
+Before writing, overwriting, or editing `<source-root>/detent.yaml`,
+`<source-root>/WORKFLOW.md`, or `<source-root>/AGENTS.md`, rerun:
 
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
@@ -2107,8 +2146,8 @@ rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
 
-1. **Fetch the selected mode template pair.** Read both existing files first if
-   either is
+1. **Build from the selected mode template pair.** Read all three existing files
+   first if any are
    present; this runbook is for from-zero repositories, so do not overwrite a
    human-authored contract without explicit approval. The maintained templates
    are paired `docs/templates/detent.project_v2.yaml` and
@@ -2136,13 +2175,25 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      project_v2|issue_field|label) ;;
      *) printf 'invalid GITHUB_MODE: %s\n' "$GITHUB_MODE" >&2; exit 1 ;;
    esac
-   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/WORKFLOW.${GITHUB_MODE}.md" \
-     -o <source-root>/WORKFLOW.md
-   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/detent.${GITHUB_MODE}.yaml" \
-     -o <source-root>/detent.yaml
+   detent onboarding build-workflow \
+     --answers "$ONBOARDING_DIR/answers.env" \
+     --target-source-root <source-root> \
+     --output <source-root>/WORKFLOW.md
+   detent onboarding build-workflow \
+     --answers "$ONBOARDING_DIR/answers.env" \
+     --target-source-root <source-root> \
+     --output <source-root>/WORKFLOW.md \
+     --write
    rg -n "github_status_source: ${GITHUB_MODE}|^tracker:|^workspace:|^agent:" <source-root>/detent.yaml
    test -s <source-root>/WORKFLOW.md
+   test -s <source-root>/AGENTS.md
    ```
+
+   The preview shows all three generated artifacts. With `--write`, the builder
+   creates `detent.yaml` and `WORKFLOW.md`, creates `AGENTS.md` when absent, or
+   appends the effort section to the existing file after reading it. Do not use
+   the raw template download path for mutation because it omits the
+   operator-owned generated sections.
 
    When adding Detent to a repository that already has a `WORKFLOW.md`, audit
    the existing prompt body instead of replacing it blindly. Add or tighten the
@@ -2819,11 +2870,32 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    issue by default. Set `tracker.write_probe_issue` in label mode only for
    legacy/deep issue-object proof; after switching away from an old scratch
    issue, remove its Detent status label or close it so it stops appearing as
-   board work.
+   board work. Before doctor, verify the generated project guidance. Admission
+   must name the exact generated heading and all four subsections when enabled;
+   admission-disabled projects must not retain a dangling `criteria_section`.
+   Every project must carry the four-tier effort rubric in `AGENTS.md`.
    Verify:
 
    ```sh
-   detent doctor --allow-write-probes
+   test -s <source-root>/AGENTS.md
+   rg -n '^## Issue effort selection$|^```detent-agent$|^- `(medium|high|xhigh|max)`' \
+     <source-root>/AGENTS.md
+   if rg -q '^backlog_admission:' <source-root>/detent.yaml; then
+     CRITERIA_SECTION="$(
+       sed -n 's/^[[:space:]]*criteria_section:[[:space:]]*//p' \
+         <source-root>/detent.yaml | head -n 1 | tr -d '"'
+     )"
+     test -n "$CRITERIA_SECTION"
+     rg -Fx "## $CRITERIA_SECTION" <source-root>/WORKFLOW.md
+     rg -n '^### (Alignment|Readiness|Size|Safety Gates)$' \
+       <source-root>/WORKFLOW.md
+   else
+     ! rg -q '^[[:space:]]*criteria_section:' <source-root>/detent.yaml
+   fi
+   detent doctor --allow-write-probes \
+     | tee "$ONBOARDING_DIR/doctor-preflight.txt"
+   ! rg -q 'contain no detent-agent guidance' \
+     "$ONBOARDING_DIR/doctor-preflight.txt"
    ```
 
 5. **Verify the systemd service PATH when Detent runs as a user service.**
@@ -3394,6 +3466,8 @@ the card instead of auto-resolving it.
 | Backlog admission path | `BACKLOG_ADMISSION_SOURCE_STATE`, `BACKLOG_ADMISSION_TARGET_STATE`, and `BACKLOG_ADMISSION_CRITERIA_SECTION` map to `backlog_admission.sources.states`, `target_state`, and `criteria_section`. |
 | Backlog admission ceilings | `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN`, `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN`, `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS`, and `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` map to the same-named lower-case `backlog_admission` keys. |
 | Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`; `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` maps to the trusted `backlog_admission.authors.allow_association` scopes. |
+| Admission criteria prose | `ADMISSION_ALIGNMENT_CRITERIA`, `ADMISSION_READINESS_CRITERIA`, `ADMISSION_SIZE_CRITERIA`, and `ADMISSION_SAFETY_GATES` generate the matching `WORKFLOW.md` subsections when admission is enabled. |
+| Issue effort rubric | `EFFORT_MEDIUM_CRITERIA`, `EFFORT_HIGH_CRITERIA`, `EFFORT_XHIGH_CRITERIA`, and `EFFORT_MAX_CRITERIA` generate the four-tier `detent-agent` rubric in `AGENTS.md`; `model` remains unset. |
 | Scheduled repository routine | `ROUTINES_ENABLED`, `ROUTINE_NAME`, `ROUTINE_SCHEDULE`, and `ROUTINE_PROMPT` control the generated `routines` entry. |
 | Built-in stale-TODO intake | `STALE_TODOS_ENABLED` and `STALE_TODOS_SCHEDULE` control the generated scheduled `intake.sources` scanner. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |
