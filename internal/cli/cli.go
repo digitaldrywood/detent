@@ -444,6 +444,7 @@ detent --format json config path`),
 	cmd.AddCommand(
 		newStartCommand(&configPath, &host, &port, opts),
 		newStatusCommand(&configPath, &host, &port, opts),
+		newLogsCommand(&configPath, opts),
 		newAuthCommand(&configPath, &host, &port, opts),
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newFixCommand(&configPath, opts),

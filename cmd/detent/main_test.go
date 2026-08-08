@@ -72,6 +72,7 @@ func TestRootCommandHelpCatalogJSON(t *testing.T) {
 		"add-project": false,
 		"config path": false,
 		"doctor":      false,
+		"logs":        false,
 		"start":       false,
 		"status":      false,
 		"update":      false,
