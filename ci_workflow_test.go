@@ -102,6 +102,31 @@ func TestCIConcurrencyKeepsMainPushRuns(t *testing.T) {
 	}
 }
 
+func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
+	t.Parallel()
+
+	makefile := readNormalizedFile(t, "Makefile")
+	if !strings.Contains(makefile, "GO_TEST := env -u DETENT_API_TOKEN go test") {
+		t.Fatal("Makefile Go test command must remove inherited DETENT_API_TOKEN")
+	}
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "test", want: "$(GO_TEST) ./..."},
+		{name: "test-race", want: "$(GO_TEST) -race ./..."},
+		{name: "test-cover", want: "$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(makefile, tt.want) {
+				t.Fatalf("Makefile missing %q", tt.want)
+			}
+		})
+	}
+}
+
 func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
 
