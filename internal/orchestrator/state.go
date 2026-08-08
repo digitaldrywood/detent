@@ -561,6 +561,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		}
 		pullRequest.SlowChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.SlowChecks...)
 		pullRequest.RunningChecks = append([]string(nil), issue.PullRequest.RunningChecks...)
+		pullRequest.UnstartedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.UnstartedChecks...)
 		pullRequest.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.StaleSuccessfulChecks...)
 		pullRequest.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), issue.PullRequest.RequiredCheckFailures...)
 		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)

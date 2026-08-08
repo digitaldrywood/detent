@@ -890,7 +890,10 @@ func TestStateSnapshotPopulated(t *testing.T) {
 				SlowChecks: []connector.PullRequestCheck{
 					{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 				},
-				RunningChecks:    []string{"Test Coverage"},
+				RunningChecks: []string{"Test Coverage"},
+				UnstartedChecks: []connector.PullRequestCheck{
+					{Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+				},
 				CodexReviewState: "P2",
 			},
 		},
@@ -992,6 +995,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if len(pipeline.PullRequest.RunningChecks) != 1 || pipeline.PullRequest.RunningChecks[0] != "Test Coverage" {
 		t.Fatalf("Pipeline[0].PullRequest.RunningChecks = %#v", pipeline.PullRequest.RunningChecks)
+	}
+	if len(pipeline.PullRequest.UnstartedChecks) != 1 || pipeline.PullRequest.UnstartedChecks[0].Name != "Portability Verify" || pipeline.PullRequest.UnstartedChecks[0].QueueSeconds != 47*60 {
+		t.Fatalf("Pipeline[0].PullRequest.UnstartedChecks = %#v", pipeline.PullRequest.UnstartedChecks)
 	}
 
 	if len(snapshot.Running) != 2 {

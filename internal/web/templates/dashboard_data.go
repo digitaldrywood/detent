@@ -4110,6 +4110,9 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		if slowChecks := prPipelineSlowChecks(issue.PullRequest.SlowChecks); slowChecks != "" {
 			parts = append(parts, "slow "+slowChecks)
 		}
+		if unstartedChecks := prPipelineUnstartedChecks(issue.PullRequest.UnstartedChecks); unstartedChecks != "" && mergeDetail == "" {
+			parts = append(parts, "unstarted "+unstartedChecks)
+		}
 		if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" && mergeDetail == "" {
 			parts = append(parts, "running "+runningChecks)
 		}
@@ -4252,13 +4255,27 @@ func prPipelineMergeBlockingChecks(pullRequest *telemetry.PullRequest) string {
 	if pullRequest == nil {
 		return ""
 	}
-	checks := make([]string, 0, len(pullRequest.RequiredCheckFailures)+len(pullRequest.RunningChecks))
+	unstartedNames := make(map[string]struct{}, len(pullRequest.UnstartedChecks))
+	for _, check := range pullRequest.UnstartedChecks {
+		if name := strings.ToLower(strings.TrimSpace(check.Name)); name != "" {
+			unstartedNames[name] = struct{}{}
+		}
+	}
+	checks := make([]string, 0, len(pullRequest.UnstartedChecks)+len(pullRequest.RequiredCheckFailures)+len(pullRequest.RunningChecks))
+	if unstartedChecks := prPipelineUnstartedChecks(pullRequest.UnstartedChecks); unstartedChecks != "" {
+		checks = append(checks, unstartedChecks)
+	}
 	for _, check := range pullRequest.RequiredCheckFailures {
-		if prPipelineCheckPending(check) {
+		_, unstarted := unstartedNames[strings.ToLower(strings.TrimSpace(check.Name))]
+		if prPipelineCheckPending(check) && !unstarted {
 			checks = append(checks, check.Name)
 		}
 	}
-	checks = append(checks, pullRequest.RunningChecks...)
+	for _, check := range pullRequest.RunningChecks {
+		if _, unstarted := unstartedNames[strings.ToLower(strings.TrimSpace(check))]; !unstarted {
+			checks = append(checks, check)
+		}
+	}
 	return strings.Join(uniqueStrings(checks), ", ")
 }
 
@@ -4318,6 +4335,21 @@ func prPipelineSlowChecks(checks []telemetry.PullRequestCheck) string {
 
 func prPipelineRunningChecks(checks []string) string {
 	return strings.Join(uniqueStrings(checks), ", ")
+}
+
+func prPipelineUnstartedChecks(checks []telemetry.PullRequestCheck) string {
+	labels := make([]string, 0, len(checks))
+	for _, check := range checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			continue
+		}
+		if check.QueueSeconds > 0 {
+			name += " queued " + formatDuration(float64(check.QueueSeconds))
+		}
+		labels = append(labels, name+", never started")
+	}
+	return strings.Join(labels, "; ")
 }
 
 func uniqueStrings(values []string) []string {

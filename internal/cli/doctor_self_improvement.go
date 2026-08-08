@@ -503,6 +503,7 @@ func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowPr
 		HTTPIdleConnTimeoutMS:       cfg.Tracker.HTTPIdleConnTimeoutMS,
 		GitHubRESTMinReserve:        cfg.Tracker.GitHubRESTMinReserve,
 		GitHubRESTFanoutMaxRequests: cfg.Tracker.GitHubRESTFanoutMaxRequests,
+		GitHubUnstartedSeconds:      cfg.Tracker.GitHubUnstartedSeconds,
 		GitHubRESTDebugLogging:      cfg.Tracker.GitHubRESTDebugLogging,
 		GitHubAppID:                 cfg.Tracker.GitHubAppID,
 		GitHubAppPrivateKey:         cfg.Tracker.GitHubAppPrivateKey,

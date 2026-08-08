@@ -372,6 +372,7 @@ func pullRequestDiagnosticAttrs(issue connector.Issue, now time.Time) []any {
 		"pr_check_run_count", pr.CheckRunCount,
 		"pr_status_context_count", pr.StatusContextCount,
 		"pr_running_check_count", len(pr.RunningChecks),
+		"pr_unstarted_check_count", len(pr.UnstartedChecks),
 		"pr_slow_check_count", len(pr.SlowChecks),
 		"pr_codex_review_state", strings.TrimSpace(pr.CodexReviewState),
 		"pr_latest_codex_review_state", strings.TrimSpace(pr.LatestCodexReviewState),

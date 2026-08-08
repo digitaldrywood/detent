@@ -284,6 +284,14 @@ Warnings appear in the dashboard, `/health`, and `detent doctor`. Configure
 the affected project or item, the reason, and age and threshold values in
 seconds. A delivered warning is not sent again on every scheduler tick.
 
+## Unstarted GitHub checks
+
+`tracker.github_unstarted_check_threshold_seconds` controls when a GitHub check
+that remains queued without a `started_at` timestamp appears as unstarted. The
+15-minute default is intentionally non-zero because a cold or busy runner pool
+can legitimately take several minutes to pick up a job; setting the threshold
+too low would turn ordinary queueing into an operator-facing signal.
+
 ## Generated field reference
 
 The generated block reflects the YAML-tagged Go structs reachable from the
@@ -646,6 +654,7 @@ rendering and fails on drift.
 | `tracker.github_rest_fanout_max_requests` | `integer` | `80` | No | must be greater than or equal to 0 |
 | `tracker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0 |
 | `tracker.github_status_source` | `string` | `"project_v2"` | No | must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.github_unstarted_check_threshold_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `tracker.github_webhook_secret` | `string` | `none` | No | None |
 | `tracker.http_idle_conn_timeout_ms` | `integer` | `90000` | No | must be greater than 0 |
 | `tracker.http_max_idle_conns` | `integer` | `100` | No | must be greater than 0 |
@@ -784,6 +793,15 @@ rendering and fails on drift.
 | `tracker.issues[].pull_request.transient_failed_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.transient_failed_checks[].status` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.transient_failed_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.url` | `string` | `none` | No | None |
 | `tracker.issues[].stage_updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].state` | `string` | `none` | No | None |

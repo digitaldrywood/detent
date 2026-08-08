@@ -512,6 +512,7 @@ type PullRequest struct {
 	QuietWaitSeconds           int64                       `json:"quiet_wait_seconds,omitempty"`
 	SlowChecks                 []PullRequestCheck          `json:"slow_checks,omitempty"`
 	RunningChecks              []string                    `json:"running_checks,omitempty"`
+	UnstartedChecks            []PullRequestCheck          `json:"unstarted_checks,omitempty"`
 	RequiredCheckFailures      []PullRequestCheck          `json:"required_check_failures,omitempty"`
 	CodexReviewState           string                      `json:"codex_review_state,omitempty"`
 	MergeQueueEntry            *PullRequestMergeQueueEntry `json:"merge_queue_entry,omitempty"`

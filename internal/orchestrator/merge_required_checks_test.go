@@ -167,6 +167,49 @@ func TestMergeRequiredCheckStreakClearsWhenBlocked(t *testing.T) {
 	}
 }
 
+func TestMergeWorkerCurrentHeadCIWaitReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		pullRequest *connector.PullRequest
+		want        string
+	}{
+		{name: "missing pull request", want: "waiting for current-head CI"},
+		{
+			name: "unstarted check takes priority",
+			pullRequest: &connector.PullRequest{
+				UnstartedChecks:       []connector.PullRequestCheck{{Name: "Portability Verify", Status: "queued"}},
+				RequiredCheckFailures: []connector.PullRequestCheck{{Name: "Portability Verify", Status: "queued"}},
+				RunningChecks:         []string{"Test"},
+			},
+			want: "waiting for current-head CI: unstarted checks: Portability Verify",
+		},
+		{
+			name: "pending required check",
+			pullRequest: &connector.PullRequest{
+				RequiredCheckFailures: []connector.PullRequestCheck{{Name: "Test", Status: "queued"}},
+			},
+			want: "waiting for current-head CI: pending required checks: Test",
+		},
+		{
+			name:        "running check",
+			pullRequest: &connector.PullRequest{RunningChecks: []string{"Test"}},
+			want:        "waiting for current-head CI: pending checks: Test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := connector.Issue{PullRequest: tt.pullRequest}
+			if got := mergeWorkerCurrentHeadCIWaitReason(issue); got != tt.want {
+				t.Fatalf("mergeWorkerCurrentHeadCIWaitReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 const mergeRequiredCheckTestIssueID = "issue-persistent-missing-check"
 
 type mergeRequiredCheckEvaluationStep struct {
