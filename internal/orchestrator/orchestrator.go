@@ -257,6 +257,7 @@ type Orchestrator struct {
 	capacityClearRequests   chan capacityClearRequest
 	failureCanaryRequests   chan failureBreakerCanaryRequest
 	stopRequests            chan stopRunRequest
+	modelPermitRequests     chan modelPermitRequest
 	runResults              chan runpkg.Completion
 	runUpdates              chan runUpdate
 	validatorCapacityEvents chan validatorCapacityEvent
@@ -281,6 +282,11 @@ type validatorStageFailure struct {
 
 type stateRequest struct {
 	reply chan State
+}
+
+type modelPermitRequest struct {
+	issueID string
+	reply   chan error
 }
 
 type drainRequest struct {
@@ -510,6 +516,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		capacityClearRequests:   make(chan capacityClearRequest),
 		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
 		stopRequests:            make(chan stopRunRequest),
+		modelPermitRequests:     make(chan modelPermitRequest),
 		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
 		runUpdates:              make(chan runUpdate, runUpdateBufferSize),
 		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
@@ -583,6 +590,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case request := <-o.stopRequests:
 			o.handleStopRunRequest(ctx, &state, request)
+		case request := <-o.modelPermitRequests:
+			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
 		case result := <-o.runResults:
 			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:

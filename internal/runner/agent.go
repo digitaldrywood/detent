@@ -583,6 +583,23 @@ func (r *Runner) prepareMergeFastPath(
 	}
 }
 
+func mergePrecheckFromWorkspace(precheck workspace.MergePrepareResult) MergePrecheck {
+	return MergePrecheck{
+		Status:      string(precheck.Status),
+		Message:     precheck.Message,
+		DiffStats:   diffStatsFromWorkspace(precheck.DiffStat),
+		HeadChanged: precheck.HeadChanged,
+	}
+}
+
+func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {
+	if precheck == nil {
+		return nil
+	}
+	cloned := *precheck
+	return &cloned
+}
+
 func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	if issue.PullRequest == nil {
 		return false
@@ -1012,22 +1029,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}()
 
-	mergePrecheck := workspace.MergePrepareResult{}
+	mergePrecheck := MergePrecheck{}
 	mergeFallback := false
 	if mode == RunModeMerge {
-		precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue)
-		if err != nil {
-			return RunResult{}, err
-		}
-		mergePrecheck = precheck
-		if handled {
-			r.afterRun(runWorkspace, info, workspaceIssue)
-			afterRunPending = false
-			r.logWorkerEvent(req.Issue, "worker_after_run_finished",
-				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
-				"workspace_path", info.Path,
-			)
-			return precheckResult, nil
+		if req.MergePrecheck != nil {
+			mergePrecheck = *req.MergePrecheck
+		} else {
+			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue)
+			if err != nil {
+				return RunResult{}, err
+			}
+			mergePrecheck = mergePrecheckFromWorkspace(precheck)
+			if handled {
+				r.afterRun(runWorkspace, info, workspaceIssue)
+				afterRunPending = false
+				r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+					telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+					"workspace_path", info.Path,
+				)
+				return precheckResult, nil
+			}
 		}
 		mergeFallback = true
 	}
@@ -1048,7 +1069,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Attempt:              &attempt,
 		PlanOnly:             mode == RunModePlan,
 		MergeFallback:        mergeFallback,
-		MergePrecheckStatus:  string(mergePrecheck.Status),
+		MergePrecheckStatus:  mergePrecheck.Status,
 		MergePrecheckMessage: mergePrecheck.Message,
 		WorkspacePath:        info.Path,
 		Branch:               info.Branch,
@@ -1150,6 +1171,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			resumeState = store.AgentResumeState{}
 			orphanRecoveryOutcome = store.OrphanRecoveryFresh
+		}
+	}
+	if req.AcquireModelPermit != nil {
+		if err := req.AcquireModelPermit(ctx); err != nil {
+			result := RunResult{
+				Output:        RunOutputMergeFallbackDeferred,
+				DiffStats:     mergePrecheck.DiffStats,
+				MergePrecheck: cloneMergePrecheck(&mergePrecheck),
+			}
+			if errors.Is(err, ErrModelPermitUnavailable) {
+				r.logWorkerEvent(req.Issue, "worker_merge_fallback_deferred",
+					telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+					"workspace_path", info.Path,
+					"status", mergePrecheck.Status,
+				)
+				return result, err
+			}
+			return result, fmt.Errorf("acquire model permit: %w", err)
 		}
 	}
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity, resumeState, orphanRecoveryOutcome, orphanRecoveryFallbackReason)

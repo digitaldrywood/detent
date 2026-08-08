@@ -2222,6 +2222,113 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	}
 }
 
+func TestRunnerMergeFallbackModelPermit(t *testing.T) {
+	t.Parallel()
+
+	precheck := &MergePrecheck{
+		Status:  string(workspace.MergePrepareStatusConflict),
+		Message: "CONFLICT (content): Merge conflict in README.md",
+	}
+	tests := []struct {
+		name          string
+		savedPrecheck *MergePrecheck
+		permit        ModelPermitAcquirer
+		wantPermit    int
+		wantPrepare   bool
+		wantAgent     int
+		wantDeferred  bool
+	}{
+		{
+			name: "unavailable permit defers fresh precheck",
+			permit: func(context.Context) error {
+				return ErrModelPermitUnavailable
+			},
+			wantPermit:   1,
+			wantPrepare:  true,
+			wantDeferred: true,
+		},
+		{
+			name: "available permit starts fallback",
+			permit: func(context.Context) error {
+				return nil
+			},
+			wantPermit:  1,
+			wantPrepare: true,
+			wantAgent:   1,
+		},
+		{
+			name:          "prechecked retry starts fallback without repeating preparation",
+			savedPrecheck: precheck,
+			wantAgent:     1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeMergeWorkspaceBackend{
+				fakeWorkspaceBackend: fakeWorkspaceBackend{
+					info: workspace.Info{
+						Path:   t.TempDir(),
+						Key:    "digitaldrywood_detent_1659",
+						Branch: "detent/provider-window-admission",
+					},
+				},
+				prepareResult: workspace.MergePrepareResult{
+					Status:  workspace.MergePrepareStatusConflict,
+					Message: precheck.Message,
+				},
+			}
+			agentBackend := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+			permitCalls := 0
+			var acquire ModelPermitAcquirer
+			if tt.permit != nil {
+				acquire = func(ctx context.Context) error {
+					permitCalls++
+					return tt.permit(ctx)
+				}
+			}
+
+			result, runErr := runner.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-1659",
+					Identifier: "digitaldrywood/detent#1659",
+					BranchName: "detent/provider-window-admission",
+				},
+				Mode:               RunModeMerge,
+				AcquireModelPermit: acquire,
+				MergePrecheck:      tt.savedPrecheck,
+			})
+			if got := errors.Is(runErr, ErrModelPermitUnavailable); got != tt.wantDeferred {
+				t.Fatalf("Run() error = %v, deferred=%t want %t", runErr, got, tt.wantDeferred)
+			}
+			if permitCalls != tt.wantPermit {
+				t.Fatalf("model permit calls = %d, want %d", permitCalls, tt.wantPermit)
+			}
+			if workspaceBackend.prepareCalled != tt.wantPrepare {
+				t.Fatalf("PrepareMerge() called = %t, want %t", workspaceBackend.prepareCalled, tt.wantPrepare)
+			}
+			if agentBackend.calls != tt.wantAgent {
+				t.Fatalf("AgentBackend.RunTurn() calls = %d, want %d", agentBackend.calls, tt.wantAgent)
+			}
+			if tt.wantDeferred {
+				if result.Output != RunOutputMergeFallbackDeferred || result.MergePrecheck == nil || result.MergePrecheck.Status != precheck.Status || result.MergePrecheck.Message != precheck.Message {
+					t.Fatalf("Run() result = %#v, want deferred result with preserved precheck", result)
+				}
+			}
+		})
+	}
+}
+
 func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 	t.Parallel()
 

@@ -498,7 +498,7 @@ func TestGitHubRESTCapacityOutagePausesDispatchAndResumesAtReset(t *testing.T) {
 	orch.syncGitHubRESTCapacityOutage(&state, now)
 
 	dispatches := 0
-	hooks := dispatchPlanHooks{dispatch: func(connector.Issue, int, string) bool {
+	hooks := dispatchPlanHooks{dispatch: func(dispatchAction) bool {
 		dispatches++
 		return true
 	}}

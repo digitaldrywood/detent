@@ -34,6 +34,7 @@ const (
 
 	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
 	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
+	RunOutputMergeFallbackDeferred    = "merge_fallback_deferred"
 )
 
 var (
@@ -44,6 +45,7 @@ var (
 	ErrMergeRevoked                = errors.New("merge eligibility revoked")
 	ErrMergeWorkerStartupTimeout   = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded = errors.New("merge worker duration exceeded")
+	ErrModelPermitUnavailable      = errors.New("provider model permit unavailable")
 	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
 	ErrAgentResumeUnsupported      = errors.New("agent backend does not support resume verification")
 )
@@ -318,10 +320,21 @@ type RunRequest struct {
 	Admission           *AdmissionRequest
 	AgentTools          []AgentTool
 	AgentToolHandler    AgentToolHandler
+	AcquireModelPermit  ModelPermitAcquirer
+	MergePrecheck       *MergePrecheck
 	sessionBrake        *sessionBrakeController
 }
 
 type SessionProgressProbe func(context.Context) (string, error)
+
+type ModelPermitAcquirer func(context.Context) error
+
+type MergePrecheck struct {
+	Status      string
+	Message     string
+	DiffStats   DiffStats
+	HeadChanged bool
+}
 
 type RoutineRequest struct {
 	Name     string
@@ -393,6 +406,7 @@ type RunResult struct {
 	PullRequestUpdated      bool
 	PullRequestHeadPushed   bool
 	CITriggerLabelReapplied bool
+	MergePrecheck           *MergePrecheck
 }
 
 type UsageUpdateHandler func(UsageUpdate) error
