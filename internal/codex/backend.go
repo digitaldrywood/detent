@@ -188,6 +188,13 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 	if update.ThreadID != "" && update.TurnID != "" {
 		providerSessionID = update.ThreadID + "-" + update.TurnID
 	}
+	threadTotal := runner.AgentTokenCounts{
+		InputTokens:           update.Tokens.InputTokens,
+		CachedInputTokens:     update.Tokens.CachedInputTokens,
+		OutputTokens:          update.Tokens.OutputTokens,
+		ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
+		TotalTokens:           update.Tokens.TotalTokens,
+	}
 	return runner.AgentUpdate{
 		Type:                runner.AgentUpdateType(update.Type),
 		Method:              update.Method,
@@ -210,9 +217,24 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 			OutputTokens:          update.Tokens.OutputTokens,
 			ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
 			TotalTokens:           update.Tokens.TotalTokens,
+			ThreadTotal:           &threadTotal,
+			Last:                  agentTokenCountsFromCodex(update.Tokens.Last),
 			ModelContextWindow:    update.Tokens.ModelContextWindow,
 		},
 		RateLimits: rateLimitsFromCodex(update.RateLimits),
+	}
+}
+
+func agentTokenCountsFromCodex(tokens *TokenUsageBreakdown) *runner.AgentTokenCounts {
+	if tokens == nil {
+		return nil
+	}
+	return &runner.AgentTokenCounts{
+		InputTokens:           tokens.InputTokens,
+		CachedInputTokens:     tokens.CachedInputTokens,
+		OutputTokens:          tokens.OutputTokens,
+		ReasoningOutputTokens: tokens.ReasoningOutputTokens,
+		TotalTokens:           tokens.TotalTokens,
 	}
 }
 

@@ -147,6 +147,7 @@ type Server struct {
 	assets              staticAssets
 	projects            *projectSmallMultipleRecorder
 	snapshots           *snapshotEnrichmentCache
+	spendRegressions    *spendRegressionMonitor
 	kanbanMutations     *kanbanstate.MutationTracker
 	kanbanRefreshes     *kanbanRefreshFeedbackTracker
 	kanbanRetryInFlight atomic.Bool
@@ -256,6 +257,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		assets:              newStaticAssets(cfg.staticDir()),
 		projects:            newProjectSmallMultipleRecorder(),
 		snapshots:           newSnapshotEnrichmentCache(),
+		spendRegressions:    newSpendRegressionMonitor(),
 		kanbanMutations:     kanbanstate.NewMutationTracker(),
 		kanbanRefreshes:     newKanbanRefreshFeedbackTracker(),
 		refreshes:           newManualRefreshTracker(),

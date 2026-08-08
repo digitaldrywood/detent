@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -63,11 +65,23 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 		},
 		Workspace: workspaceBackend,
 		AgentBackend: &e2eAgentBackend{
-			inputTokens:  321,
-			outputTokens: 45,
-			totalTokens:  366,
+			inputTokens:       321,
+			cachedInputTokens: 300,
+			outputTokens:      45,
+			totalTokens:       366,
+			lastInputTokens:   50,
+			lastCachedTokens:  45,
+			lastOutputTokens:  5,
+			lastTotalTokens:   55,
 		},
-		Store:  storeBackend,
+		Store: storeBackend,
+		Pricing: budget.PricingTable{
+			"gpt-5-codex": {
+				USDPerInputToken:       0.001,
+				USDPerCachedInputToken: 0.0001,
+				USDPerOutputToken:      0.01,
+			},
+		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -81,6 +95,8 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	issue.State = "Todo"
 	issue.URL = "https://github.com/digitaldrywood/detent/issues/23"
 	issue.ModelOverride = "gpt-5-codex"
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	issue.CreatedAt = &createdAt
 
 	orch, err := New(Config{
 		PollInterval:           time.Hour,
@@ -111,6 +127,9 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	completed := state.Completed[issue.ID]
 	if completed.FinalState != runpkg.FinalStateCompleted {
 		t.Fatalf("completed final state = %q, want %q", completed.FinalState, runpkg.FinalStateCompleted)
+	}
+	if completed.Tokens.Last == nil || completed.Tokens.Last.TotalTokens != 55 {
+		t.Fatalf("completed last-call tokens = %#v, want 55", completed.Tokens.Last)
 	}
 	diffStat := state.DiffStats[issue.ID]
 	if diffStat.FilesChanged != 1 || diffStat.AddedLines != 1 || diffStat.RemovedLines != 0 || diffStat.Status != "changed" {
@@ -144,12 +163,38 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	if len(spend.ByModel) != 1 || spend.ByModel[0].Model != "gpt-5-codex" {
 		t.Fatalf("IssueTokenSpend().ByModel = %#v, want gpt-5-codex", spend.ByModel)
 	}
+	issueSpend, err := storeBackend.IssueSpendSince(ctx, store.IssueSpendSinceQuery{
+		ProjectID:  "detent",
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Since:      createdAt,
+	})
+	if err != nil {
+		t.Fatalf("IssueSpendSince() error = %v", err)
+	}
+	if issueSpend.TotalTokens != 366 || issueSpend.Sessions != 1 || math.Abs(issueSpend.CostUSD-0.501) > 0.000001 {
+		t.Fatalf("IssueSpendSince() = %#v, want cumulative tokens and cost", issueSpend)
+	}
+	orch.cfg.Project.ID = "detent"
+	orch.cfg.BillingMode = config.BillingModeSubscription
+	orch.cfg.NoProgressTokenLimit = 366
+	orch.progressSpend = storeBackend
+	orch.workAttempts = nil
+	decision := orch.evaluateSpendProgress(ctx, Running{Issue: issue}, time.Now().UTC(), false, "")
+	if !decision.Block || decision.BlockedBy != "tokens" || decision.Spend.TotalTokens != 366 {
+		t.Fatalf("spend progress decision = %#v, want cumulative token block", decision)
+	}
 }
 
 type e2eAgentBackend struct {
-	inputTokens  int64
-	outputTokens int64
-	totalTokens  int64
+	inputTokens       int64
+	cachedInputTokens int64
+	outputTokens      int64
+	totalTokens       int64
+	lastInputTokens   int64
+	lastCachedTokens  int64
+	lastOutputTokens  int64
+	lastTotalTokens   int64
 }
 
 func (c *e2eAgentBackend) RunTurn(_ context.Context, req runpkg.AgentTurnRequest, onUpdate runpkg.AgentUpdateHandler) (runpkg.AgentTurnResult, error) {
@@ -160,12 +205,26 @@ func (c *e2eAgentBackend) RunTurn(_ context.Context, req runpkg.AgentTurnRequest
 		return runpkg.AgentTurnResult{}, fmt.Errorf("write agent output: %w", err)
 	}
 	if onUpdate != nil {
+		threadTotal := &runpkg.AgentTokenCounts{
+			InputTokens:       c.inputTokens,
+			CachedInputTokens: c.cachedInputTokens,
+			OutputTokens:      c.outputTokens,
+			TotalTokens:       c.totalTokens,
+		}
 		if err := onUpdate(runpkg.AgentUpdate{
 			Type: runpkg.AgentUpdateTokenUsage,
 			Tokens: runpkg.AgentTokenUsage{
-				InputTokens:  c.inputTokens,
-				OutputTokens: c.outputTokens,
-				TotalTokens:  c.totalTokens,
+				InputTokens:       c.inputTokens,
+				CachedInputTokens: c.cachedInputTokens,
+				OutputTokens:      c.outputTokens,
+				TotalTokens:       c.totalTokens,
+				ThreadTotal:       threadTotal,
+				Last: &runpkg.AgentTokenCounts{
+					InputTokens:       c.lastInputTokens,
+					CachedInputTokens: c.lastCachedTokens,
+					OutputTokens:      c.lastOutputTokens,
+					TotalTokens:       c.lastTotalTokens,
+				},
 			},
 		}); err != nil {
 			return runpkg.AgentTurnResult{}, err

@@ -732,7 +732,16 @@ type Budget struct {
 	PeriodEnd         time.Time          `json:"period_end,omitzero"`
 	SpendPoints       []BudgetSpendPoint `json:"spend_points,omitempty"`
 	Days              []BudgetDay        `json:"days,omitempty"`
+	SpendRegression   *SpendRegression   `json:"spend_regression,omitempty"`
 	Refusals          []BudgetRefusal    `json:"refusals,omitempty"`
+}
+
+type SpendRegression struct {
+	Date              string  `json:"date"`
+	PreviousSpendUSD  float64 `json:"previous_spend_usd"`
+	ProjectedSpendUSD float64 `json:"projected_spend_usd"`
+	DropPercent       float64 `json:"drop_percent"`
+	ThresholdPercent  float64 `json:"threshold_percent"`
 }
 
 type BudgetOverride struct {
@@ -870,13 +879,22 @@ type RESTBudget struct {
 }
 
 type Tokens struct {
-	Input              int64   `json:"input_tokens"`
-	CachedInput        int64   `json:"cached_input_tokens,omitempty"`
-	Output             int64   `json:"output_tokens"`
-	ReasoningOutput    int64   `json:"reasoning_output_tokens,omitempty"`
-	Total              int64   `json:"total_tokens"`
-	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
-	RuntimeSeconds     float64 `json:"seconds_running,omitempty"`
+	Input              int64           `json:"input_tokens"`
+	CachedInput        int64           `json:"cached_input_tokens,omitempty"`
+	Output             int64           `json:"output_tokens"`
+	ReasoningOutput    int64           `json:"reasoning_output_tokens,omitempty"`
+	Total              int64           `json:"total_tokens"`
+	Last               *TokenBreakdown `json:"last,omitempty"`
+	ModelContextWindow *int64          `json:"model_context_window,omitempty"`
+	RuntimeSeconds     float64         `json:"seconds_running,omitempty"`
+}
+
+type TokenBreakdown struct {
+	Input           int64 `json:"input_tokens"`
+	CachedInput     int64 `json:"cached_input_tokens,omitempty"`
+	Output          int64 `json:"output_tokens"`
+	ReasoningOutput int64 `json:"reasoning_output_tokens,omitempty"`
+	Total           int64 `json:"total_tokens"`
 }
 
 type ContextPressureState string
@@ -902,6 +920,7 @@ func (t Tokens) MarshalJSON() ([]byte, error) {
 		Output             int64            `json:"output_tokens"`
 		ReasoningOutput    int64            `json:"reasoning_output_tokens,omitempty"`
 		Total              int64            `json:"total_tokens"`
+		Last               *TokenBreakdown  `json:"last,omitempty"`
 		ModelContextWindow *int64           `json:"model_context_window,omitempty"`
 		ContextPressure    *ContextPressure `json:"context_pressure,omitempty"`
 		CacheReadFraction  float64          `json:"cache_read_fraction,omitempty"`
@@ -920,6 +939,7 @@ func (t Tokens) MarshalJSON() ([]byte, error) {
 		Output:             t.Output,
 		ReasoningOutput:    t.ReasoningOutput,
 		Total:              t.Total,
+		Last:               t.Last,
 		ModelContextWindow: t.ModelContextWindow,
 		ContextPressure:    pressure,
 		CacheReadFraction:  cacheReadFraction,
@@ -933,6 +953,9 @@ func (t Tokens) ContextPressure() (ContextPressure, bool) {
 	}
 	limit := *t.ModelContextWindow
 	total := t.Total
+	if t.Last != nil {
+		total = t.Last.Total
+	}
 	if total < 0 {
 		total = 0
 	}

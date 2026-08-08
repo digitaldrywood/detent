@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -462,6 +463,10 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 		if budget.CurrentSpendUSD <= 0 && len(budget.Days) == 0 {
 			metrics.SpendNote = "No budget spend yet."
 		}
+	}
+	if regression := budget.SpendRegression; regression != nil {
+		metrics.SpendWarn = true
+		metrics.SpendNote = fmt.Sprintf("%.0f%% below yesterday's pace (%s projected vs %s yesterday).", regression.DropPercent, formatUSD(regression.ProjectedSpendUSD), formatUSD(regression.PreviousSpendUSD))
 	}
 
 	// Gate on the points the chart actually plots (throughputTrendPoints

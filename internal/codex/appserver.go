@@ -252,7 +252,16 @@ type TokenUsage struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	Last                  *TokenUsageBreakdown
 	ModelContextWindow    *int64
+}
+
+type TokenUsageBreakdown struct {
+	InputTokens           int64 `json:"inputTokens"`
+	CachedInputTokens     int64 `json:"cachedInputTokens"`
+	OutputTokens          int64 `json:"outputTokens"`
+	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
+	TotalTokens           int64 `json:"totalTokens"`
 }
 
 type RateLimitSnapshot struct {
@@ -1226,17 +1235,13 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			Resolved    string `json:"resolvedModel"`
 			ResolvedAlt string `json:"resolved_model"`
 			TokenUsage  struct {
-				Total              tokenUsageBreakdown  `json:"total"`
-				Last               *tokenUsageBreakdown `json:"last"`
+				Total              TokenUsageBreakdown  `json:"total"`
+				Last               *TokenUsageBreakdown `json:"last"`
 				ModelContextWindow *int64               `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return Update{}, false, fmt.Errorf("%w: decode token usage: %w", ErrInvalidResponse, err)
-		}
-		usage := params.TokenUsage.Total
-		if params.TokenUsage.Last != nil {
-			usage = *params.TokenUsage.Last
 		}
 		return Update{
 			Type:     UpdateTokenUsage,
@@ -1245,11 +1250,12 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			TurnID:   params.TurnID,
 			Model:    firstNonBlank(params.Model, params.Resolved, params.ResolvedAlt, params.ModelID, params.ModelIDAlt),
 			Tokens: TokenUsage{
-				InputTokens:           usage.InputTokens,
-				CachedInputTokens:     usage.CachedInputTokens,
-				OutputTokens:          usage.OutputTokens,
-				ReasoningOutputTokens: usage.ReasoningOutputTokens,
-				TotalTokens:           usage.TotalTokens,
+				InputTokens:           params.TokenUsage.Total.InputTokens,
+				CachedInputTokens:     params.TokenUsage.Total.CachedInputTokens,
+				OutputTokens:          params.TokenUsage.Total.OutputTokens,
+				ReasoningOutputTokens: params.TokenUsage.Total.ReasoningOutputTokens,
+				TotalTokens:           params.TokenUsage.Total.TotalTokens,
+				Last:                  params.TokenUsage.Last,
 				ModelContextWindow:    params.TokenUsage.ModelContextWindow,
 			},
 			Payload: rawPayload(msg),
@@ -1573,14 +1579,6 @@ func looksLikeErrorEvent(raw json.RawMessage) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(decoded.Type), "error") || len(bytes.TrimSpace(decoded.Error)) > 0
-}
-
-type tokenUsageBreakdown struct {
-	InputTokens           int64 `json:"inputTokens"`
-	CachedInputTokens     int64 `json:"cachedInputTokens"`
-	OutputTokens          int64 `json:"outputTokens"`
-	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
-	TotalTokens           int64 `json:"totalTokens"`
 }
 
 type rateLimitSnapshotPayload struct {

@@ -32,11 +32,13 @@ import (
 )
 
 const (
-	defaultAfterRunTimeout = time.Minute
-	liveDiffStatsInterval  = 2 * time.Second
-	recentActivityLimit    = 5
-	defaultProjectID       = "default"
-	orphanResumePrompt     = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
+	defaultAfterRunTimeout         = time.Minute
+	liveDiffStatsInterval          = 2 * time.Second
+	recentActivityLimit            = 5
+	defaultProjectID               = "default"
+	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
+	implausibleUsageRuntimeSeconds = int64(1800)
+	implausibleUsageOutputTokens   = int64(1000)
 )
 
 var (
@@ -795,6 +797,7 @@ func (r *Runner) runAgentTurn(
 		strings.TrimSpace(runRequest.Issue.PRRepository),
 		ciTriggerPullRequestNumber(runRequest.Issue),
 	)
+	usage := newSessionTokenUsage(!agentResumeEmpty(turnRequest.Resume))
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
@@ -805,6 +808,9 @@ func (r *Runner) runAgentTurn(
 	turnStarted := false
 	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		if update.Type == AgentUpdateTokenUsage {
+			update.Tokens = usage.normalize(update.Tokens)
+		}
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
@@ -1578,6 +1584,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	var output strings.Builder
+	usage := newSessionTokenUsage(false)
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
@@ -1594,6 +1601,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		projectID:          r.projectID,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		if update.Type == AgentUpdateTokenUsage {
+			update.Tokens = usage.normalize(update.Tokens)
+		}
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
@@ -2079,6 +2089,7 @@ func (r *Runner) finishSession(
 	}
 	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
 	r.logWorkerEvent(issue, "worker_session_finished", attrs...)
+	r.warnImplausibleCompletedSessionUsage(issue, workAttemptID, sessionID, turns, result)
 	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
 		ProjectID:             r.projectID,
 		SessionID:             sessionID,
@@ -2104,6 +2115,26 @@ func (r *Runner) finishSession(
 		return err
 	}
 	return nil
+}
+
+func (r *Runner) warnImplausibleCompletedSessionUsage(issue connector.Issue, workAttemptID int64, sessionID int64, turns int64, result RunResult) {
+	runtimeSeconds := int64(math.Round(result.Tokens.RuntimeSeconds))
+	if result.FinalState != FinalStateCompleted || turns <= 0 || runtimeSeconds < implausibleUsageRuntimeSeconds || result.Tokens.OutputTokens >= implausibleUsageOutputTokens {
+		return
+	}
+	r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_session_usage_implausible",
+		telemetry.WorkAttemptIDKey, workAttemptID,
+		telemetry.DetentSessionIDKey, sessionID,
+		"turns", turns,
+		"runtime_seconds", runtimeSeconds,
+		"input_tokens", result.Tokens.InputTokens,
+		"cached_input_tokens", result.Tokens.CachedInputTokens,
+		"output_tokens", result.Tokens.OutputTokens,
+		"reasoning_output_tokens", result.Tokens.ReasoningOutputTokens,
+		"total_tokens", result.Tokens.TotalTokens,
+		"minimum_runtime_seconds", implausibleUsageRuntimeSeconds,
+		"output_token_threshold", implausibleUsageOutputTokens,
+	)
 }
 
 func (r *Runner) recordAgentSessionPhase(
@@ -2175,12 +2206,13 @@ func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Is
 		return nil
 	}
 	ceiling, ok := sessionTokenCeilingForUsage(cfg, update.Tokens)
-	if !ok || update.Tokens.TotalTokens <= ceiling.tokens {
+	observedTokens := sessionTokenCeilingObservedTokens(ceiling, update.Tokens)
+	if !ok || observedTokens <= ceiling.tokens {
 		return nil
 	}
 
 	err := &SessionTokenCeilingError{
-		TotalTokens:        update.Tokens.TotalTokens,
+		TotalTokens:        observedTokens,
 		CeilingTokens:      ceiling.tokens,
 		Source:             ceiling.source,
 		ModelContextWindow: ceiling.modelContextWindow,
@@ -2194,25 +2226,44 @@ func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Is
 }
 
 func sessionTokenCeilingForUsage(cfg config.Agent, tokens AgentTokenUsage) (sessionTokenCeiling, bool) {
-	var ceiling sessionTokenCeiling
+	candidates := make([]sessionTokenCeiling, 0, 2)
 	if cfg.MaxSessionTokens > 0 {
-		ceiling = sessionTokenCeiling{
+		candidates = append(candidates, sessionTokenCeiling{
 			tokens: cfg.MaxSessionTokens,
 			source: TokenCeilingSourceAbsolute,
-		}
+		})
 	}
 	if cfg.MaxSessionContextMultiplier > 0 && tokens.ModelContextWindow != nil && *tokens.ModelContextWindow > 0 {
 		limit := int64(math.Ceil(float64(*tokens.ModelContextWindow) * cfg.MaxSessionContextMultiplier))
-		if limit > 0 && (ceiling.tokens == 0 || limit < ceiling.tokens) {
-			ceiling = sessionTokenCeiling{
+		if limit > 0 {
+			candidates = append(candidates, sessionTokenCeiling{
 				tokens:             limit,
 				source:             TokenCeilingSourceContextWindow,
 				modelContextWindow: *tokens.ModelContextWindow,
 				contextMultiplier:  cfg.MaxSessionContextMultiplier,
-			}
+			})
 		}
 	}
-	return ceiling, ceiling.tokens > 0
+	if len(candidates) == 0 {
+		return sessionTokenCeiling{}, false
+	}
+	selected := candidates[0]
+	selectedBreached := sessionTokenCeilingObservedTokens(selected, tokens) > selected.tokens
+	for _, candidate := range candidates[1:] {
+		breached := sessionTokenCeilingObservedTokens(candidate, tokens) > candidate.tokens
+		if breached && !selectedBreached || breached == selectedBreached && candidate.tokens < selected.tokens {
+			selected = candidate
+			selectedBreached = breached
+		}
+	}
+	return selected, true
+}
+
+func sessionTokenCeilingObservedTokens(ceiling sessionTokenCeiling, tokens AgentTokenUsage) int64 {
+	if ceiling.source == TokenCeilingSourceContextWindow && tokens.Last != nil {
+		return tokens.Last.TotalTokens
+	}
+	return tokens.TotalTokens
 }
 
 func sessionTokenCeilingBypassed(cfg config.Agent, issue connector.Issue) bool {
@@ -2357,10 +2408,65 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 		result.Tokens.OutputTokens = update.Tokens.OutputTokens
 		result.Tokens.ReasoningOutputTokens = update.Tokens.ReasoningOutputTokens
 		result.Tokens.TotalTokens = update.Tokens.TotalTokens
+		result.Tokens.Last = cloneAgentTokenCounts(update.Tokens.Last)
 		result.Tokens.ModelContextWindow = update.Tokens.ModelContextWindow
 	case AgentUpdateRateLimits:
 		result.RateLimits = update.RateLimits
 	}
+}
+
+type sessionTokenUsage struct {
+	resumed  bool
+	baseline *AgentTokenCounts
+}
+
+func newSessionTokenUsage(resumed bool) *sessionTokenUsage {
+	return &sessionTokenUsage{resumed: resumed}
+}
+
+func (s *sessionTokenUsage) normalize(tokens AgentTokenUsage) AgentTokenUsage {
+	if tokens.ThreadTotal == nil {
+		return tokens
+	}
+	threadTotal := *tokens.ThreadTotal
+	if !s.resumed {
+		return agentTokenUsageWithCounts(tokens, threadTotal)
+	}
+	if s.baseline == nil {
+		baseline := AgentTokenCounts{}
+		if tokens.Last != nil {
+			baseline = subtractAgentTokenCounts(threadTotal, *tokens.Last)
+		}
+		s.baseline = &baseline
+	}
+	return agentTokenUsageWithCounts(tokens, subtractAgentTokenCounts(threadTotal, *s.baseline))
+}
+
+func agentTokenUsageWithCounts(tokens AgentTokenUsage, counts AgentTokenCounts) AgentTokenUsage {
+	tokens.InputTokens = counts.InputTokens
+	tokens.CachedInputTokens = counts.CachedInputTokens
+	tokens.OutputTokens = counts.OutputTokens
+	tokens.ReasoningOutputTokens = counts.ReasoningOutputTokens
+	tokens.TotalTokens = counts.TotalTokens
+	return tokens
+}
+
+func subtractAgentTokenCounts(total AgentTokenCounts, baseline AgentTokenCounts) AgentTokenCounts {
+	return AgentTokenCounts{
+		InputTokens:           max(0, total.InputTokens-baseline.InputTokens),
+		CachedInputTokens:     max(0, total.CachedInputTokens-baseline.CachedInputTokens),
+		OutputTokens:          max(0, total.OutputTokens-baseline.OutputTokens),
+		ReasoningOutputTokens: max(0, total.ReasoningOutputTokens-baseline.ReasoningOutputTokens),
+		TotalTokens:           max(0, total.TotalTokens-baseline.TotalTokens),
+	}
+}
+
+func cloneAgentTokenCounts(tokens *AgentTokenCounts) *AgentTokenCounts {
+	if tokens == nil {
+		return nil
+	}
+	clone := *tokens
+	return &clone
 }
 
 type agentRunProgress struct {
@@ -3098,13 +3204,40 @@ func (r *Runner) logAgentUpdate(req RunRequest, detentSessionID int64, update Ag
 			logEvent(slog.LevelDebug, "worker_turn_finished", attrs...)
 		}
 	case AgentUpdateTokenUsage:
-		logEvent(slog.LevelDebug, "worker_usage_updated",
+		threadTotal := AgentTokenCounts{
+			InputTokens:           update.Tokens.InputTokens,
+			CachedInputTokens:     update.Tokens.CachedInputTokens,
+			OutputTokens:          update.Tokens.OutputTokens,
+			ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
+			TotalTokens:           update.Tokens.TotalTokens,
+		}
+		if update.Tokens.ThreadTotal != nil {
+			threadTotal = *update.Tokens.ThreadTotal
+		}
+		attrs := []any{
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
 			"total_tokens", update.Tokens.TotalTokens,
 			"input_tokens", update.Tokens.InputTokens,
+			"cached_input_tokens", update.Tokens.CachedInputTokens,
 			"output_tokens", update.Tokens.OutputTokens,
-		)
+			"reasoning_output_tokens", update.Tokens.ReasoningOutputTokens,
+			"thread_total_tokens", threadTotal.TotalTokens,
+			"thread_input_tokens", threadTotal.InputTokens,
+			"thread_cached_input_tokens", threadTotal.CachedInputTokens,
+			"thread_output_tokens", threadTotal.OutputTokens,
+			"thread_reasoning_output_tokens", threadTotal.ReasoningOutputTokens,
+		}
+		if update.Tokens.Last != nil {
+			attrs = append(attrs,
+				"last_total_tokens", update.Tokens.Last.TotalTokens,
+				"last_input_tokens", update.Tokens.Last.InputTokens,
+				"last_cached_input_tokens", update.Tokens.Last.CachedInputTokens,
+				"last_output_tokens", update.Tokens.Last.OutputTokens,
+				"last_reasoning_output_tokens", update.Tokens.Last.ReasoningOutputTokens,
+			)
+		}
+		logEvent(slog.LevelDebug, "worker_usage_updated", attrs...)
 	case AgentUpdateRateLimits:
 		logEvent(slog.LevelDebug, "worker_rate_limits_updated",
 			"thread_id", strings.TrimSpace(update.ThreadID),
