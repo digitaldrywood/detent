@@ -1,0 +1,81 @@
+schema: 1
+
+# Each repository owns its status labels and project policy even though both
+# projects share one Detent host.
+tracker:
+  kind: github
+  github_status_source: label
+  repository: example-org/storefront
+  status_label_prefix: "detent:"
+  auto_provision: true
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Backlog
+    - Human Review
+    - Blocked
+  terminal_states:
+    - Done
+    - Cancelled
+  state_map:
+    Cancelled: Done
+  priority_map:
+    Urgent: 1
+    High: 2
+    Medium: 3
+    Low: 4
+    No priority: null
+
+polling:
+  interval_ms: 60000
+  conditional: true
+
+workspace:
+  root: /srv/detent/worktrees/storefront
+  source_root: /srv/detent/repos/storefront
+  cache_strategy: isolated
+  auto_branch: true
+
+deliverable:
+  merge_method: squash
+
+agent:
+  # Two project slots complete the host's five-slot capacity budget.
+  max_concurrent_agents: 2
+  max_concurrent_agents_by_state:
+    Merging: 1
+  dispatch_priority_by_state:
+    - Merging
+    - Rework
+    - In Progress
+    - Todo
+  auto_promote:
+    enabled: true
+    quiet_seconds: 600
+    optout_label: requires-human-review
+    source_state: Human Review
+    pass_state: Merging
+    rework_state: Rework
+
+codex:
+  command: codex app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+
+gate:
+  kind: command
+  run: make check
+  require_automated_review: true
+  ci_failure_action: rework
+
+server:
+  host: 127.0.0.1
+  port: 4000
+  kanban:
+    mode: integration

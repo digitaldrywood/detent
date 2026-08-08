@@ -5,8 +5,8 @@
 A complete, ordered runbook to take a bare machine to a running Detent. Every
 step has a verification command — do not proceed until it passes. An AI agent
 can execute these steps top to bottom; replace each `<...>` placeholder. The
-[`detent-orchestration`](https://github.com/digitaldrywood/detent-orchestration)
-repo is a real, working instance of this setup to copy from.
+[worked multi-project configuration](examples/multi-project/README.md) is a
+complete, annotated reference instance to compare against as you work.
 
 1. **Install Detent.** `brew install digitaldrywood/tap/detent` (macOS/Linux),
    `go install github.com/digitaldrywood/detent/cmd/detent@latest`, or a

@@ -1,0 +1,45 @@
+apiVersion: detent/v1
+kind: GlobalConfig
+
+# Host-wide values stay outside project repositories. Resolve GitHub access
+# through the authenticated CLI instead of placing a token in this file.
+env: prod
+log_level: info
+github_token: gh
+port: 4000
+instance_name: build-host
+
+# Check for releases, but leave binary replacement to an explicit operator
+# action so running work drains on the operator's schedule.
+update:
+  auto_check_enabled: true
+  check_interval_hours: 24
+  auto_apply_enabled: false
+
+global:
+  # Bound total subprocess pressure on this host. Per-project caps below split
+  # these five slots between the two repositories.
+  max_concurrent_agents: 5
+  scheduling: weighted
+  fair_share:
+    half_life: 1h
+  startup:
+    jitter_seconds: 10
+    max_spawn_per_second: 2
+    max_concurrent_starts: 2
+
+projects:
+  - id: orders-api
+    workflow: /srv/detent/repos/orders-api/WORKFLOW.md
+    workdir: /srv/detent/repos/orders-api
+    color: "#1192e8"
+    # Equal priority lets weight control the steady-state dispatch share.
+    weight: 2
+    priority: 2
+
+  - id: storefront
+    workflow: /srv/detent/repos/storefront/WORKFLOW.md
+    workdir: /srv/detent/repos/storefront
+    color: "#9f7aea"
+    weight: 1
+    priority: 2
