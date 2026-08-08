@@ -94,6 +94,51 @@ func TestHTTPTransportRequestBoundaries(t *testing.T) {
 	}
 }
 
+func TestHTTPTransportEscapesHTMLInJSONResponses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		forbidden string
+		want      string
+	}{
+		{name: "HTML tag", value: `<script>alert("xss")</script>`, forbidden: "<", want: `\u003cscript\u003ealert(\"xss\")\u003c/script\u003e`},
+		{name: "ampersand", value: "left&right", forbidden: "&", want: `left\u0026right`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			content, err := json.Marshal(map[string]string{"value": test.value})
+			if err != nil {
+				t.Fatalf("marshal tool result: %v", err)
+			}
+			handler := newTestHTTPHandler(&staticExecutor{result: operatortool.Result{Content: content}})
+			t.Cleanup(func() {
+				if err := handler.Shutdown(context.Background()); err != nil {
+					t.Errorf("Shutdown() error = %v", err)
+				}
+			})
+
+			initialize := performMCPRequest(t, handler, http.MethodPost, initializeRequest, "", "read-key", nil)
+			sessionID := initialize.Header().Get(httpSessionHeader)
+			performMCPRequest(t, handler, http.MethodPost, initializedNotice, sessionID, "read-key", nil)
+			response := performMCPRequest(t, handler, http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`, sessionID, "read-key", nil)
+
+			if got := response.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			body := response.Body.String()
+			if strings.Contains(body, test.forbidden) {
+				t.Errorf("response contains unescaped %q: %s", test.forbidden, body)
+			}
+			if !strings.Contains(body, test.want) {
+				t.Errorf("response = %s, want escaped value %q", body, test.want)
+			}
+		})
+	}
+}
+
 func TestHTTPTransportResultLimits(t *testing.T) {
 	t.Parallel()
 

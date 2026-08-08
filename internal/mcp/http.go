@@ -597,7 +597,7 @@ func writeHTTPTransportError(writer http.ResponseWriter, status int, message str
 func writeHTTPResponse(writer http.ResponseWriter, status int, frame []byte) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
-	_, _ = writer.Write(frame)
+	_, _ = writer.Write(frame) // #nosec G705 -- application/json response containing encoding/json output, not HTML
 }
 
 func marshalHTTPResponse(message response) []byte {
