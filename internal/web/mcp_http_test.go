@@ -80,6 +80,50 @@ func TestRemoteMCPRequiresGlobalReadScopedAPIKey(t *testing.T) {
 	}
 }
 
+func TestRemoteMCPBypassesDashboardAuthenticationGates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config globalconfig.Config
+	}{
+		{
+			name: "magic link",
+			config: globalconfig.Config{Auth: globalconfig.Auth{
+				Mode:          globalconfig.AuthModeMagicLink,
+				AllowedEmails: []string{"operator@example.com"},
+				LinkTTL:       "15m",
+				SessionTTL:    "1h",
+			}},
+		},
+		{
+			name: "private dashboard",
+			config: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
+				Mode:  globalconfig.DashboardAccessModePrivateToken,
+				Token: privateDashboardTestToken(9),
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			server, _ := newRemoteMCPTestServerWithConfig(t, nil, test.config)
+			token, _ := createRemoteMCPKey(t, server, "Global read", []string{"read"}, nil)
+			authorized := performJSON(t, server.Handler(), http.MethodPost, "/mcp", mcpInitializeRequest, map[string]string{
+				"Authorization": "Bearer " + token,
+			})
+			if authorized.Code != http.StatusOK || authorized.Header().Get("Mcp-Session-Id") == "" {
+				t.Fatalf("authorized response = %d %s, want initialized MCP session", authorized.Code, authorized.Body.String())
+			}
+			unauthorized := performJSON(t, server.Handler(), http.MethodPost, "/mcp", mcpInitializeRequest, nil)
+			if unauthorized.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthorized response = %d %s, want 401", unauthorized.Code, unauthorized.Body.String())
+			}
+		})
+	}
+}
+
 func TestRemoteMCPBearerTokenIsNotLoggedOrEchoed(t *testing.T) {
 	t.Parallel()
 
@@ -151,15 +195,20 @@ func TestRemoteMCPUsesWebServerShutdown(t *testing.T) {
 
 func newRemoteMCPTestServer(t *testing.T, logger *slog.Logger) (*web.Server, store.Store) {
 	t.Helper()
+	return newRemoteMCPTestServerWithConfig(t, logger, globalconfig.Config{})
+}
+
+func newRemoteMCPTestServerWithConfig(t *testing.T, logger *slog.Logger, config globalconfig.Config) (*web.Server, store.Store) {
+	t.Helper()
 	backend := openWebTestStore(t)
 	deps := testDeps(t)
 	deps.Store = backend
+	deps.MagicLinkSender = &webAuthSender{}
+	config.APIToken = "detent_admin_token"
 	server, err := web.NewServer(web.Config{
 		Logger:        logger,
 		ServerAddress: "127.0.0.1:0",
-		GlobalConfig: globalconfig.Config{
-			APIToken: "detent_admin_token",
-		},
+		GlobalConfig:  config,
 	}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
