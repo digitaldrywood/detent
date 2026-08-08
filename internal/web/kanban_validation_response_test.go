@@ -150,11 +150,13 @@ func TestKanbanFeedbackSuccessTriggerTiming(t *testing.T) {
 		name        string
 		status      int
 		wantTrigger string
+		wantHidden  bool
 	}{
 		{
 			name:        "success triggers after swap",
 			status:      http.StatusOK,
-			wantTrigger: kanbanDialogSucceeded,
+			wantTrigger: `{"kanbanActionSucceeded":{"message":"feedback"}}`,
+			wantHidden:  true,
 		},
 		{
 			name:   "validation error does not trigger success",
@@ -179,6 +181,9 @@ func TestKanbanFeedbackSuccessTriggerTiming(t *testing.T) {
 			}
 			if got := rec.Header().Get("HX-Trigger"); got != "" {
 				t.Fatalf("HX-Trigger = %q, want empty", got)
+			}
+			if got := strings.Contains(rec.Body.String(), " hidden"); got != tt.wantHidden {
+				t.Fatalf("response hidden = %t, want %t; body = %s", got, tt.wantHidden, rec.Body.String())
 			}
 		})
 	}

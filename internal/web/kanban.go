@@ -303,7 +303,7 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 		data.Kanban.Feedback = message
 		data.Kanban.FeedbackKind = "success"
 
-		setKanbanActionSucceeded(c)
+		setKanbanActionSucceeded(c, message)
 		c.Response().Header().Set("HX-Retarget", kanbanFleetBoardTarget)
 		c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 		return render(c, templates.BoardSnapshot(data))
@@ -318,7 +318,7 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 		data.Kanban.FeedbackKind = "success"
 	}
 
-	setKanbanActionSucceeded(c)
+	setKanbanActionSucceeded(c, message)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
 	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 	return render(c, templates.BoardSnapshot(data))
@@ -423,7 +423,7 @@ func (s *Server) kanbanRemoveSuccess(c echo.Context, req kanbanRemoveRequest, me
 	data.Kanban.Feedback = message
 	data.Kanban.FeedbackKind = "success"
 
-	setKanbanActionSucceeded(c)
+	setKanbanActionSucceeded(c, message)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
 	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
 	return render(c, templates.BoardSnapshot(data))
@@ -1598,13 +1598,11 @@ func kanbanFeedback(c echo.Context, status int, message string) error {
 		message = http.StatusText(status)
 	}
 	if c.Request().Header.Get("HX-Request") == "true" {
-		class := "border-ok bg-ok/15 text-ok"
-		if status >= http.StatusBadRequest {
-			class = "border-err bg-err/15 text-err"
-		} else {
-			setKanbanActionSucceeded(c)
+		if status < http.StatusBadRequest {
+			setKanbanActionSucceeded(c, message)
+			return c.HTML(status, `<div id="kanban-feedback" role="status" aria-live="polite" hidden>`+html.EscapeString(message)+`</div>`)
 		}
-		return c.HTML(status, `<div id="kanban-feedback" role="status" aria-live="polite" class="rounded-md border px-3 py-2 text-sm `+class+`">`+html.EscapeString(message)+`</div>`)
+		return c.HTML(status, `<div id="kanban-feedback" role="status" aria-live="polite" class="rounded-md border border-err bg-err/15 px-3 py-2 text-sm text-err">`+html.EscapeString(message)+`</div>`)
 	}
 	if status >= http.StatusBadRequest {
 		return c.JSON(status, errorResponse("kanban_action_failed", message))
@@ -1612,8 +1610,9 @@ func kanbanFeedback(c echo.Context, status int, message string) error {
 	return c.JSON(status, map[string]any{"ok": true, "message": message})
 }
 
-func setKanbanActionSucceeded(c echo.Context) {
-	c.Response().Header().Set(kanbanSuccessTriggerHeader, kanbanDialogSucceeded)
+func setKanbanActionSucceeded(c echo.Context, message string) {
+	trigger := `{"` + kanbanDialogSucceeded + `":{"message":` + strconv.Quote(message) + `}}`
+	c.Response().Header().Set(kanbanSuccessTriggerHeader, trigger)
 }
 
 func kanbanPullRequestRepository(issue telemetry.Issue) string {

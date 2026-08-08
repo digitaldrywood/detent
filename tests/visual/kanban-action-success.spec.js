@@ -46,9 +46,12 @@ test("moving a detail-sheet card completes without uncaught errors", async ({
       .locator('[data-board-lane="todo"]')
       .getByRole("button", { name: /Kanban demo backlog intake/ }),
   ).toBeVisible();
-  await expect(page.getByText("Moved card to Todo.")).toBeVisible();
+  await expect(
+    page.locator("[data-detent-action-notice-message]"),
+  ).toHaveText("Moved card to Todo.");
   await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
   await expect(page.locator("#kanban-feedback")).toHaveCount(1);
+  await expect(page.locator("#kanban-feedback")).toBeHidden();
 
   await page
     .locator('[data-board-lane="todo"]')
@@ -62,8 +65,12 @@ test("moving a detail-sheet card completes without uncaught errors", async ({
     .first();
   await commentDialog.getByLabel("Comment").fill("Playwright success comment");
   await commentDialog.getByRole("button", { name: /^Comment$/ }).click();
+  await expect(
+    page.locator("[data-detent-action-notice-message]"),
+  ).toHaveText("Comment submitted.");
   await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
   await expect(page.locator("#kanban-feedback")).toHaveCount(1);
+  await expect(page.locator("#kanban-feedback")).toBeHidden();
 
   await page
     .locator('[data-board-lane="todo"]')
@@ -75,7 +82,11 @@ test("moving a detail-sheet card completes without uncaught errors", async ({
   await expect(
     page.getByRole("button", { name: /Kanban demo backlog intake/ }),
   ).toHaveCount(0);
+  await expect(
+    page.locator("[data-detent-action-notice-message]"),
+  ).toHaveText("Removed card from project.");
   await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
   await expect(page.locator("#kanban-feedback")).toHaveCount(1);
+  await expect(page.locator("#kanban-feedback")).toBeHidden();
   expect(uncaughtErrors).toEqual([]);
 });
