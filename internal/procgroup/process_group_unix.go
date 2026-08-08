@@ -75,10 +75,72 @@ func Cleanup(processGroupID int) error {
 		return nil
 	}
 	err := syscall.Kill(-processGroupID, syscall.SIGKILL)
-	if err == nil || errors.Is(err, syscall.ESRCH) {
+	if errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if waitForProcessGroupExit(processGroupID, DefaultTerminationGrace) {
+		return nil
+	}
+	survivingProcesses := describeProcessGroup(processGroupID)
+	if !processTargetAlive(0, processGroupID) {
+		return nil
+	}
+	return fmt.Errorf(
+		"process group %d remained alive after SIGKILL: surviving_processes=%s",
+		processGroupID,
+		survivingProcesses,
+	)
+}
+
+func waitForProcessGroupExit(processGroupID int, grace time.Duration) bool {
+	if grace <= 0 {
+		grace = DefaultTerminationGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !processTargetAlive(0, processGroupID) {
+			return true
+		}
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func describeProcessGroup(processGroupID int) string {
+	path, err := exec.LookPath("ps")
+	if err != nil {
+		return "unavailable (locate ps: " + err.Error() + ")"
+	}
+	cmd := &exec.Cmd{
+		Path: path,
+		Args: []string{"ps", "-axo", "pid=,ppid=,pgid=,comm="},
+		Env:  append(os.Environ(), "LC_ALL=C"),
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return "unavailable (inspect process group: " + err.Error() + ")"
+	}
+	members := make([]string, 0)
+	for line := range strings.Lines(string(output)) {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[2] != strconv.Itoa(processGroupID) {
+			continue
+		}
+		members = append(members, fmt.Sprintf("pid=%s ppid=%s command=%s", fields[0], fields[1], strings.Join(fields[3:], " ")))
+	}
+	if len(members) == 0 {
+		return "none listed"
+	}
+	return strings.Join(members, "; ")
 }
 
 func Terminate(ctx context.Context, identity Identity, grace time.Duration) (TerminationOutcome, error) {

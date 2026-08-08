@@ -134,6 +134,7 @@ type Runner struct {
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
+	admissionLeaks      admissionWorkspaceLeakTracker
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -1002,7 +1003,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	runWorkspace := r.workspace
 	if req.Admission != nil {
-		runWorkspace = &admissionWorkspace{logger: r.logger}
+		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	r.logWorkerEvent(req.Issue, "worker_workspace_create_started", telemetry.WorkAttemptIDKey, req.WorkAttemptID)
