@@ -44,6 +44,44 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, readme, "Defaults are recommendations only")
 }
 
+func TestOnboardingDocsDistinguishIssueBackfillFromIntakeSources(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"19. **Issue backfill.**",
+		"## Phase 6 — Issue Backfill",
+		"ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>",
+		"[`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake)",
+		"backfill: <bulk-add filter and initial Status recommendation>",
+		"**ProjectV2 backfill:",
+		"**Issue-field backfill:",
+		"**Label backfill:",
+		"project-items.after-backfill.json",
+		"issues.after-backfill.json",
+		"| Backfill filter |",
+	} {
+		assertContains(t, onboarding, want)
+	}
+	staleKey := "INTAKE_" + "GH_FLAGS"
+	if strings.Contains(onboarding, staleKey) {
+		t.Fatalf("docs/ONBOARDING.md contains stale %s key", staleKey)
+	}
+	for _, stale := range []string{
+		"ProjectV2 intake:",
+		"Issue-field intake:",
+		"Label intake:",
+		"after-intake",
+		"project-fields.intake",
+		"| Intake filter |",
+	} {
+		if strings.Contains(onboarding, stale) {
+			t.Fatalf("docs/ONBOARDING.md contains stale %q wording", stale)
+		}
+	}
+}
+
 func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 	t.Parallel()
 
