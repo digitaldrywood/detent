@@ -27,6 +27,7 @@ const (
 	logsLineBufferSize     = 64 << 10
 	logsMaxLineBytes       = 1 << 20
 	logsMaxDiagnostics     = 100
+	logsSnapshotAttempts   = 3
 	logsOutputJSON         = "json"
 	logsOutputJSONL        = "jsonl"
 	logsTruncationBytes    = "bytes"
@@ -320,11 +321,48 @@ func filterLogsSnapshot(files []*logsSnapshotFile, filter logsFilter) (logsResul
 }
 
 func openLogsSnapshot(path string, maxBackups int) ([]*logsSnapshotFile, error) {
+	paths := logsSnapshotPaths(path, maxBackups)
+	return openLogsSnapshotWithHook(paths, nil)
+}
+
+func logsSnapshotPaths(path string, maxBackups int) []string {
 	paths := make([]string, 0, maxBackups+1)
 	for index := maxBackups; index >= 1; index-- {
 		paths = append(paths, rotatedLogPath(path, index))
 	}
 	paths = append(paths, path)
+	return paths
+}
+
+func openLogsSnapshotWithHook(paths []string, afterOpen func(int) error) ([]*logsSnapshotFile, error) {
+	for attempt := range logsSnapshotAttempts {
+		files, err := openLogsSnapshotFiles(paths)
+		if err != nil {
+			return nil, err
+		}
+		if afterOpen != nil {
+			if err := afterOpen(attempt); err != nil {
+				return nil, errors.Join(err, closeLogsSnapshot(files))
+			}
+		}
+		stable, err := logsSnapshotStable(files, paths)
+		if err == nil && stable {
+			stable, err = logsSnapshotStable(files, paths)
+		}
+		if err != nil {
+			return nil, errors.Join(err, closeLogsSnapshot(files))
+		}
+		if stable {
+			return files, nil
+		}
+		if err := closeLogsSnapshot(files); err != nil {
+			return nil, fmt.Errorf("close rotated runtime log snapshot: %w", err)
+		}
+	}
+	return nil, errors.New("runtime logs changed repeatedly while creating a snapshot; retry the command")
+}
+
+func openLogsSnapshotFiles(paths []string) ([]*logsSnapshotFile, error) {
 	files := make([]*logsSnapshotFile, 0, len(paths))
 	for _, candidate := range paths {
 		file, err := openLogsFile(candidate)
@@ -350,10 +388,48 @@ func openLogsSnapshot(path string, maxBackups int) ([]*logsSnapshotFile, error) 
 			name:   filepath.Base(candidate),
 			file:   file,
 			info:   info,
-			active: candidate == path,
+			active: len(paths) > 0 && candidate == paths[len(paths)-1],
 		})
 	}
 	return files, nil
+}
+
+func logsSnapshotStable(files []*logsSnapshotFile, paths []string) (bool, error) {
+	opened := make([]os.FileInfo, 0, len(files))
+	for _, file := range files {
+		opened = appendUniqueLogsFileInfo(opened, file.info)
+	}
+	current := make([]os.FileInfo, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("revalidate runtime log snapshot: %w", err)
+		}
+		current = appendUniqueLogsFileInfo(current, info)
+	}
+	if len(opened) != len(current) {
+		return false, nil
+	}
+	for _, info := range opened {
+		if !slices.ContainsFunc(current, func(candidate os.FileInfo) bool {
+			return os.SameFile(info, candidate)
+		}) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func appendUniqueLogsFileInfo(infos []os.FileInfo, candidate os.FileInfo) []os.FileInfo {
+	if slices.ContainsFunc(infos, func(existing os.FileInfo) bool {
+		return os.SameFile(existing, candidate)
+	}) {
+		return infos
+	}
+	return append(infos, candidate)
 }
 
 func closeLogsSnapshot(files []*logsSnapshotFile) error {

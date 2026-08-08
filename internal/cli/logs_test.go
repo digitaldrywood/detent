@@ -192,14 +192,25 @@ func TestFilterLogsReadsRotationAndReportsMalformedRecordsSafely(t *testing.T) {
 	}
 }
 
-func TestOpenLogsSnapshotPinsFilesAcrossRotationAndDeduplicates(t *testing.T) {
+func TestOpenLogsSnapshotRetriesConcurrentRotationAndDeduplicates(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "detent.log")
 	base := time.Date(2026, time.August, 7, 10, 0, 0, 0, time.UTC)
 	writeLogLines(t, path+".1", testLogRecord(base, "INFO", "backup", "alpha", "1", "", 0, 0, ""))
 	writeLogLines(t, path, testLogRecord(base.Add(time.Minute), "INFO", "active", "alpha", "1", "", 0, 0, ""))
-	files, err := openLogsSnapshot(path, 1)
+	attempts := 0
+	files, err := openLogsSnapshotWithHook(logsSnapshotPaths(path, 2), func(attempt int) error {
+		attempts++
+		if attempt > 0 {
+			return nil
+		}
+		if err := rotateLogFiles(path, 2); err != nil {
+			return err
+		}
+		writeLogLines(t, path, testLogRecord(base.Add(2*time.Minute), "INFO", "after rotation", "alpha", "1", "", 0, 0, ""))
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,18 +219,14 @@ func TestOpenLogsSnapshotPinsFilesAcrossRotationAndDeduplicates(t *testing.T) {
 			t.Errorf("closeLogsSnapshot() error = %v", err)
 		}
 	})
-	if err := os.Rename(path+".1", path+".2"); err != nil {
-		t.Fatal(err)
+	if attempts != 2 {
+		t.Fatalf("snapshot attempts = %d, want 2", attempts)
 	}
-	if err := os.Rename(path, path+".1"); err != nil {
-		t.Fatal(err)
-	}
-	writeLogLines(t, path, testLogRecord(base.Add(2*time.Minute), "INFO", "after snapshot", "alpha", "1", "", 0, 0, ""))
 	result, diagnostics := filterLogsSnapshot(files, testLogsFilter(base.Add(-time.Hour), base.Add(time.Hour)))
 	if len(diagnostics) != 0 {
 		t.Fatalf("diagnostics = %#v, want none", diagnostics)
 	}
-	if got, want := logMessages(t, result.Records), []string{"backup", "active"}; !reflect.DeepEqual(got, want) {
+	if got, want := logMessages(t, result.Records), []string{"backup", "active", "after rotation"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot messages = %v, want %v", got, want)
 	}
 
