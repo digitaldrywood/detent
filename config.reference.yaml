@@ -1011,6 +1011,10 @@
 #     schedule: null
 #     # routines[].prompt | type: string | default: none | required: Conditional | validation: is required
 #     prompt: null
+#     # routines[].max_findings_per_run | type: integer | default: 3 when configured | required: No | validation: must be greater than 0
+#     max_findings_per_run: 3
+#     # routines[].max_open_findings | type: integer | default: 10 when configured | required: No | validation: must be greater than 0
+#     max_open_findings: 10
 # # backlog_admission | type: object | default: see child fields | required: No | validation: None
 # backlog_admission:
 #   # backlog_admission.enabled | type: boolean | default: false | required: No | validation: None

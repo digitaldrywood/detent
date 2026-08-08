@@ -1348,6 +1348,27 @@ func (s *projectRoutineStore) RecordRoutineRun(_ context.Context, record routine
 	return nil
 }
 
+func (s *projectRoutineStore) OpenRoutineIssueIDs(_ context.Context, projectID string, name string) ([]string, error) {
+	var issueIDs []string
+	for _, record := range s.records {
+		if record.ProjectID != projectID || record.RoutineName != name {
+			continue
+		}
+		for _, issue := range record.Issues {
+			issueIDs = append(issueIDs, issue.ID)
+		}
+	}
+	return issueIDs, nil
+}
+
+func (s *projectRoutineStore) RecordRoutineIssue(context.Context, string, string, routinemodel.IssueRecord) error {
+	return nil
+}
+
+func (s *projectRoutineStore) CloseRoutineIssues(context.Context, string, string, []string) error {
+	return nil
+}
+
 func (blockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	<-ctx.Done()
 	return orchestrator.RunResult{}, ctx.Err()

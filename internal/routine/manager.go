@@ -45,11 +45,16 @@ var (
 
 type Store interface {
 	LatestRoutineRun(context.Context, string, string) (RunRecord, bool, error)
+	OpenRoutineIssueIDs(context.Context, string, string) ([]string, error)
+	RecordRoutineIssue(context.Context, string, string, IssueRecord) error
+	CloseRoutineIssues(context.Context, string, string, []string) error
 	RecordRoutineRun(context.Context, RunRecord) error
 }
 
 type IssueStore interface {
 	FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error)
+	FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error)
+	FindIntakeIssue(context.Context, string) (intake.Issue, bool, error)
 	CreateIntakeIssue(context.Context, intake.IssueDraft) (intake.Issue, error)
 	SetIntakeIssueState(context.Context, string, string) error
 }
@@ -65,8 +70,10 @@ type Proposal struct {
 }
 
 type Result struct {
+	Proposed     int
 	Filed        []IssueRecord
 	Deduplicated int
+	Limited      int
 }
 
 type Settings struct {
@@ -265,8 +272,10 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, definition con
 	}
 	defer func() {
 		record.CompletedAt = m.now().UTC()
+		record.Proposed = result.Proposed
 		record.Filed = len(result.Filed)
 		record.Deduplicated = result.Deduplicated
+		record.Limited = result.Limited
 		record.Issues = append([]IssueRecord{}, result.Filed...)
 		if runErr != nil {
 			record.Error = runErr.Error()
@@ -306,17 +315,57 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, definition con
 }
 
 func (m *Manager) fileProposals(ctx context.Context, settings Settings, definition config.Routine, proposals []Proposal) (Result, error) {
+	result := Result{Proposed: len(proposals)}
 	if len(proposals) == 0 {
-		return Result{}, nil
+		return result, nil
 	}
 	issues, err := settings.Issues.FetchIssuesByStates(ctx, settings.SearchStates)
 	if err != nil {
-		return Result{}, fmt.Errorf("find open routine issues: %w", err)
+		return result, fmt.Errorf("find open routine issues: %w", err)
+	}
+	filedIssueIDs, err := m.store.OpenRoutineIssueIDs(ctx, settings.ProjectID, definition.Name)
+	if err != nil {
+		return result, fmt.Errorf("find filed routine issues: %w", err)
+	}
+	filedIssueSet := make(map[string]struct{}, len(filedIssueIDs))
+	for _, issueID := range filedIssueIDs {
+		filedIssueSet[strings.TrimSpace(issueID)] = struct{}{}
+	}
+	filedIssues, err := settings.Issues.FetchIssueStatesByIDs(ctx, filedIssueIDs)
+	if err != nil {
+		return result, fmt.Errorf("refresh filed routine issues: %w", err)
+	}
+	closedIssueIDs := make([]string, 0, len(filedIssues))
+	for _, issue := range filedIssues {
+		issueID := strings.TrimSpace(issue.ID)
+		if !issue.Closed {
+			continue
+		}
+		if _, ok := filedIssueSet[issueID]; !ok {
+			continue
+		}
+		delete(filedIssueSet, issueID)
+		closedIssueIDs = append(closedIssueIDs, issueID)
+	}
+	if err := m.store.CloseRoutineIssues(ctx, settings.ProjectID, definition.Name, closedIssueIDs); err != nil {
+		return result, fmt.Errorf("close filed routine issues: %w", err)
 	}
 	openMarkers := map[string]struct{}{}
+	openFindings := len(filedIssueSet)
+	scopeMarker := routineScopeMarker(settings.ProjectID, definition.Name)
 	for _, issue := range issues {
 		if issue.Closed {
 			continue
+		}
+		issueID := strings.TrimSpace(issue.ID)
+		_, filedByRoutine := filedIssueSet[issueID]
+		if !filedByRoutine && strings.Contains(issue.Description, scopeMarker) {
+			record := IssueRecord{ID: issueID, Identifier: issue.Identifier, URL: issue.URL}
+			if err := m.store.RecordRoutineIssue(ctx, settings.ProjectID, definition.Name, record); err != nil {
+				return result, fmt.Errorf("record existing routine issue: %w", err)
+			}
+			filedIssueSet[issueID] = struct{}{}
+			openFindings++
 		}
 		for _, proposal := range proposals {
 			marker := proposalMarker(settings.ProjectID, definition.Name, proposal.DedupKey)
@@ -326,8 +375,8 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		}
 	}
 
-	result := Result{}
 	var runErr error
+	fileAttempts := 0
 	for _, proposal := range proposals {
 		proposal, err = normalizeProposal(proposal)
 		if err != nil {
@@ -339,18 +388,58 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			result.Deduplicated++
 			continue
 		}
+		if fileAttempts >= definition.MaxFindingsPerRun || openFindings >= definition.MaxOpenFindings {
+			result.Limited++
+			continue
+		}
+		existing, found, findErr := settings.Issues.FindIntakeIssue(ctx, marker)
+		if findErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("reconcile routine issue %s: %w", proposal.DedupKey, findErr))
+			break
+		}
+		if found && !existing.Closed {
+			record := IssueRecord{ID: existing.ID, Identifier: existing.Identifier, URL: existing.URL}
+			if strings.TrimSpace(record.ID) != "" {
+				if _, ok := filedIssueSet[strings.TrimSpace(record.ID)]; !ok {
+					if err := m.store.RecordRoutineIssue(ctx, settings.ProjectID, definition.Name, record); err != nil {
+						runErr = errors.Join(runErr, fmt.Errorf("record reconciled routine issue %s: %w", proposal.DedupKey, err))
+						break
+					}
+					filedIssueSet[strings.TrimSpace(record.ID)] = struct{}{}
+					openFindings++
+				}
+			} else {
+				openFindings++
+			}
+			openMarkers[marker] = struct{}{}
+			result.Deduplicated++
+			continue
+		}
+		if fileAttempts >= definition.MaxFindingsPerRun || openFindings >= definition.MaxOpenFindings {
+			result.Limited++
+			continue
+		}
+		fileAttempts++
 		issue, createErr := settings.Issues.CreateIntakeIssue(ctx, intake.IssueDraft{
 			Title:  proposal.Title,
-			Body:   marker + "\n\n" + proposal.Body,
+			Body:   scopeMarker + "\n" + marker + "\n\n" + proposal.Body,
 			Labels: []string{IssueLabel},
 		})
+		openFindings++
+		openMarkers[marker] = struct{}{}
+		record := IssueRecord{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL}
+		if strings.TrimSpace(record.ID) != "" {
+			result.Filed = append(result.Filed, record)
+			filedIssueSet[strings.TrimSpace(record.ID)] = struct{}{}
+			if err := m.store.RecordRoutineIssue(ctx, settings.ProjectID, definition.Name, record); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("record routine issue %s: %w", proposal.DedupKey, err))
+				break
+			}
+		}
 		if createErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("file routine issue %s: %w", proposal.DedupKey, createErr))
 			continue
 		}
-		record := IssueRecord{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL}
-		result.Filed = append(result.Filed, record)
-		openMarkers[marker] = struct{}{}
 		if stateErr := settings.Issues.SetIntakeIssueState(ctx, issue.ID, IssueState); stateErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("set routine issue %s state: %w", proposal.DedupKey, stateErr))
 			continue
@@ -369,6 +458,18 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		}); metricsErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record routine issue %s state provenance: %w", proposal.DedupKey, metricsErr))
 		}
+	}
+	if result.Limited > 0 {
+		m.logger.WarnContext(ctx, "routine findings dropped by safety limits",
+			"routine", definition.Name,
+			"proposed", result.Proposed,
+			"filed", len(result.Filed),
+			"deduplicated", result.Deduplicated,
+			"limited", result.Limited,
+			"max_findings_per_run", definition.MaxFindingsPerRun,
+			"max_open_findings", definition.MaxOpenFindings,
+			"open_findings", openFindings,
+		)
 	}
 	return result, runErr
 }
@@ -549,6 +650,12 @@ func proposalMarker(projectID string, routineName string, dedupKey string) strin
 	return "<!-- detent:routine fingerprint=" + hex.EncodeToString(sum[:]) + " -->"
 }
 
+func routineScopeMarker(projectID string, routineName string) string {
+	raw := strings.ToLower(strings.TrimSpace(projectID)) + "\x00" + strings.ToLower(strings.TrimSpace(routineName))
+	sum := sha256.Sum256([]byte(raw))
+	return "<!-- detent:routine scope=" + hex.EncodeToString(sum[:]) + " -->"
+}
+
 func routineIssue(projectID string, definition config.Routine) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = "routine:" + strings.TrimSpace(projectID) + ":" + definition.Name
@@ -623,11 +730,11 @@ func (m *Manager) runAndLog(ctx context.Context, name string, scheduledFor time.
 	result, err := m.runNamed(ctx, name, scheduledFor, true)
 	if err != nil {
 		if ctx.Err() == nil {
-			m.logger.ErrorContext(ctx, "scheduled routine failed", "routine", name, "filed", len(result.Filed), "deduplicated", result.Deduplicated, "error", err)
+			m.logger.ErrorContext(ctx, "scheduled routine failed", "routine", name, "proposed", result.Proposed, "filed", len(result.Filed), "deduplicated", result.Deduplicated, "limited", result.Limited, "error", err)
 		}
 		return
 	}
-	m.logger.InfoContext(ctx, "scheduled routine completed", "routine", name, "filed", len(result.Filed), "deduplicated", result.Deduplicated)
+	m.logger.InfoContext(ctx, "scheduled routine completed", "routine", name, "proposed", result.Proposed, "filed", len(result.Filed), "deduplicated", result.Deduplicated, "limited", result.Limited)
 }
 
 func stopTimer(timer *time.Timer) {

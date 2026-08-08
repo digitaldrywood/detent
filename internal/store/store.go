@@ -199,6 +199,9 @@ type RetroStore interface {
 
 type RoutineStore interface {
 	LatestRoutineRun(context.Context, string, string) (routinemodel.RunRecord, bool, error)
+	OpenRoutineIssueIDs(context.Context, string, string) ([]string, error)
+	RecordRoutineIssue(context.Context, string, string, routinemodel.IssueRecord) error
+	CloseRoutineIssues(context.Context, string, string, []string) error
 	RecordRoutineRun(context.Context, routinemodel.RunRecord) error
 }
 
