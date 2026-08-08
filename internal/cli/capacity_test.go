@@ -58,7 +58,7 @@ func TestRunCapacityClear(t *testing.T) {
 	}
 }
 
-func TestCapacityClearServerAddrNormalizesWildcardHosts(t *testing.T) {
+func TestDashboardServerAddrNormalizesWildcardHosts(t *testing.T) {
 	t.Parallel()
 
 	port := 4101
@@ -77,8 +77,8 @@ func TestCapacityClearServerAddrNormalizesWildcardHosts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := capacityClearServerAddr(BootConfig{Host: tt.host, Port: &port}); got != tt.want {
-				t.Fatalf("capacityClearServerAddr() = %q, want %q", got, tt.want)
+			if got := dashboardServerAddr(BootConfig{Host: tt.host, Port: &port}); got != tt.want {
+				t.Fatalf("dashboardServerAddr() = %q, want %q", got, tt.want)
 			}
 		})
 	}

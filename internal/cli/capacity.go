@@ -67,14 +67,14 @@ func runCapacityClear(
 	scope string,
 	opts options,
 ) (capacityClearResult, error) {
-	boot, err := resolveCapacityClearBoot(ctx, configPath, host, port, portSet, opts)
+	boot, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
 	if err != nil {
 		return capacityClearResult{}, err
 	}
 	form := url.Values{}
 	form.Set("project_id", strings.TrimSpace(projectID))
 	form.Set("scope", strings.TrimSpace(scope))
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+capacityClearServerAddr(boot)+"/api/v1/capacity/clear", strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+dashboardServerAddr(boot)+"/api/v1/capacity/clear", strings.NewReader(form.Encode()))
 	if err != nil {
 		return capacityClearResult{}, fmt.Errorf("create capacity clear request: %w", err)
 	}
@@ -105,7 +105,7 @@ func runCapacityClear(
 	return result, nil
 }
 
-func capacityClearServerAddr(boot BootConfig) string {
+func dashboardServerAddr(boot BootConfig) string {
 	host := unbracketIPv6Host(strings.TrimSpace(boot.Host))
 	switch host {
 	case "", "0.0.0.0", "::":
@@ -115,7 +115,7 @@ func capacityClearServerAddr(boot BootConfig) string {
 	return serverAddr(boot)
 }
 
-func resolveCapacityClearBoot(
+func resolveDashboardBoot(
 	ctx context.Context,
 	configPath string,
 	host string,

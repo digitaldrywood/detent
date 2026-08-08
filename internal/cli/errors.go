@@ -10,17 +10,26 @@ import (
 )
 
 const (
-	errorCodeGeneral         = "general"
-	errorCodeValidation      = "validation"
-	errorCodeUnknownCommand  = "unknown_command"
-	errorCodeUnknownFlag     = "unknown_flag"
-	errorCodeGitHubAuth      = "github_auth"
-	errorCodeConfigExists    = "config_exists"
-	errorCodeProjectExists   = "project_exists"
-	errorCodeProjectNotFound = "project_not_found"
-	errorCodeDoctorFailed    = "doctor_failed"
-	errorCodeShutdownForced  = "shutdown_forced"
-	errorCodeShutdownTimeout = "shutdown_timeout"
+	errorCodeGeneral                 = "general"
+	errorCodeValidation              = "validation"
+	errorCodeUnknownCommand          = "unknown_command"
+	errorCodeUnknownFlag             = "unknown_flag"
+	errorCodeGitHubAuth              = "github_auth"
+	errorCodeConfigExists            = "config_exists"
+	errorCodeProjectExists           = "project_exists"
+	errorCodeProjectNotFound         = "project_not_found"
+	errorCodeDoctorFailed            = "doctor_failed"
+	errorCodeShutdownForced          = "shutdown_forced"
+	errorCodeShutdownTimeout         = "shutdown_timeout"
+	errorCodeDashboardUnreachable    = "dashboard_unreachable"
+	errorCodeDashboardTimeout        = "dashboard_timeout"
+	errorCodeDashboardUnauthorized   = "dashboard_unauthorized"
+	errorCodeDashboardForbidden      = "dashboard_forbidden"
+	errorCodeAmbiguousReference      = "ambiguous_reference"
+	errorCodeIssueNotFound           = "issue_not_found"
+	errorCodeUnsupportedModelVersion = "unsupported_model_version"
+	errorCodeRuntimeUnavailable      = "runtime_unavailable"
+	errorCodeDashboardRequestFailed  = "dashboard_request_failed"
 )
 
 type ClassifiedError struct {

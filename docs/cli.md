@@ -62,6 +62,15 @@ Stable JSON error codes:
 | <a id="doctor-failed"></a>`doctor_failed` | `https://detent.dev/errors/doctor_failed` | 1 | `ErrDoctorFailed`. |
 | <a id="shutdown-forced"></a>`shutdown_forced` | `https://detent.dev/errors/shutdown_forced` | 1 | `ErrShutdownForced`. |
 | <a id="shutdown-timeout"></a>`shutdown_timeout` | `https://detent.dev/errors/shutdown_timeout` | 1 | `ErrShutdownTimeout`. |
+| <a id="dashboard-unreachable"></a>`dashboard_unreachable` | `https://detent.dev/errors/dashboard_unreachable` | 1 | The configured Detent service is stopped or unreachable. |
+| <a id="dashboard-timeout"></a>`dashboard_timeout` | `https://detent.dev/errors/dashboard_timeout` | 1 | The bounded dashboard API request timed out. |
+| <a id="dashboard-unauthorized"></a>`dashboard_unauthorized` | `https://detent.dev/errors/dashboard_unauthorized` | 2 | The dashboard API rejected the supplied credential. |
+| <a id="dashboard-forbidden"></a>`dashboard_forbidden` | `https://detent.dev/errors/dashboard_forbidden` | 2 | The credential does not allow the requested read. |
+| <a id="ambiguous-reference"></a>`ambiguous_reference` | `https://detent.dev/errors/ambiguous_reference` | 3 | The selected project contains more than one matching identity. |
+| <a id="issue-not-found"></a>`issue_not_found` | `https://detent.dev/errors/issue_not_found` | 4 | The selected project has no matching issue. |
+| <a id="unsupported-model-version"></a>`unsupported_model_version` | `https://detent.dev/errors/unsupported_model_version` | 1 | The CLI and service do not share an issue explanation schema version. |
+| <a id="runtime-unavailable"></a>`runtime_unavailable` | `https://detent.dev/errors/runtime_unavailable` | 1 | The running service cannot currently produce the issue explanation read model. |
+| <a id="dashboard-request-failed"></a>`dashboard_request_failed` | `https://detent.dev/errors/dashboard_request_failed` | 1 | The dashboard API returned another unsuccessful response. |
 
 
 ## Logging
@@ -108,4 +117,24 @@ Structured command objects:
 | `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
+| `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
+
+### Issue explanation reads
+
+`detent issue <ref> --explain --project <project-id>` reads the versioned issue
+explanation model from the running Detent service. `--project` is always
+required, including for `#number`, so issue numbers are never treated as
+globally unique. Issue IDs, canonical identifiers, and full tracker URLs are
+accepted as `<ref>`.
+
+The command resolves the configured host and port, maps wildcard bind hosts to
+loopback for dialing, and uses `DETENT_API_TOKEN` before the resolved
+`api_token`. If either source supplies a credential, the client sends it; a
+rejected credential is reported as `dashboard_unauthorized` and is not retried
+without authentication. Requests have a ten-second client timeout and honor
+caller cancellation.
+
+JSON mode writes exactly one issue explanation DTO to stdout. Pretty mode is a
+human-readable projection of the same DTO. Diagnostics and JSON problem objects
+remain on stderr.
