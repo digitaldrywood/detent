@@ -109,6 +109,27 @@ func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
 	}
 }
 
+func TestOnboardingDocsCreateEscapeHatchLabelsIdempotently(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"AUTO_PROMOTE_OPTOUT_LABEL",
+		"MAX_SESSION_TOKEN_OVERRIDE_LABEL",
+		"create_label_if_missing",
+		`rg -Fxi -- "$label_name" "$ONBOARDING_DIR/repo-labels.txt"`,
+		`gh label create "$label_name" --repo "$TARGET_REPOSITORY"`,
+		"Excludes an issue from Detent auto-promotion.",
+		"Allows an issue to exceed the configured agent session token ceiling.",
+	} {
+		assertContains(t, onboarding, want)
+	}
+
+	assertOrder(t, onboarding, "## Phase 2.5", "create_label_if_missing")
+	assertOrder(t, onboarding, "create_label_if_missing", "## Phase 4")
+}
+
 func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	t.Parallel()
 
