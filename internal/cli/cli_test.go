@@ -1213,6 +1213,7 @@ func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
 			targetPath := filepath.Join(repo, "global.yaml")
 			writeGlobalConfig(t, targetPath, nil)
 			runCLITestGit(t, repo, "init")
+			repositoryRoot := runCLITestGit(t, repo, "rev-parse", "--show-toplevel")
 			runCLITestGit(t, repo, "add", "global.yaml")
 			runCLITestGit(t, repo, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "commit", "-m", "initial")
 
@@ -1238,7 +1239,7 @@ func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
 			if err := cmd.Execute(); err != nil {
 				t.Fatalf("Execute() error = %v", err)
 			}
-			for _, want := range append([]string{repo}, tt.want...) {
+			for _, want := range append([]string{repositoryRoot}, tt.want...) {
 				if !strings.Contains(stdout.String(), want) {
 					t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
 				}
@@ -1917,7 +1918,7 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 	}
 }
 
-func runCLITestGit(t *testing.T, dir string, args ...string) {
+func runCLITestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
 	cmd := exec.Command("git", args...)
@@ -1926,6 +1927,7 @@ func runCLITestGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s error = %v\n%s", strings.Join(args, " "), err, output)
 	}
+	return strings.TrimSpace(string(output))
 }
 
 func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {
