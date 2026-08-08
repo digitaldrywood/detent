@@ -296,6 +296,47 @@ func TestCleanupWaitsForOrphanedGroupMembers(t *testing.T) {
 	}
 }
 
+func TestCleanupTreatsZombieOnlyGroupAsExited(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "sleep", "30")
+	Configure(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	pgid := GroupID(cmd)
+	t.Cleanup(func() { _ = cmd.Wait() })
+
+	if err := Cleanup(pgid); err != nil {
+		t.Fatalf("Cleanup() error = %v, want zombie-only group ignored", err)
+	}
+	if !processTargetAlive(0, pgid) {
+		t.Fatal("process group no longer exists, want unreaped zombie to remain observable")
+	}
+	assertKilled(t, cmd.Wait())
+}
+
+func TestProcessGroupExited(t *testing.T) {
+	tests := []struct {
+		name    string
+		members []processGroupMember
+		want    bool
+	}{
+		{name: "no members", want: true},
+		{name: "single zombie", members: []processGroupMember{{state: "Z"}}, want: true},
+		{name: "zombie with flags", members: []processGroupMember{{state: "Z+"}}, want: true},
+		{name: "multiple zombies", members: []processGroupMember{{state: "Z"}, {state: "Zs"}}, want: true},
+		{name: "running member", members: []processGroupMember{{state: "R"}}},
+		{name: "mixed group", members: []processGroupMember{{state: "Z"}, {state: "S"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := processGroupExited(tt.members); got != tt.want {
+				t.Fatalf("processGroupExited() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInspectAndTerminate(t *testing.T) {
 	tests := []struct {
 		name        string

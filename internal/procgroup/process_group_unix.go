@@ -84,14 +84,23 @@ func Cleanup(processGroupID int) error {
 	if waitForProcessGroupExit(processGroupID, DefaultTerminationGrace) {
 		return nil
 	}
-	survivingProcesses := describeProcessGroup(processGroupID)
+	members, inspectErr := inspectProcessGroup(processGroupID)
+	if inspectErr == nil && processGroupExited(members) {
+		return nil
+	}
 	if !processTargetAlive(0, processGroupID) {
 		return nil
+	}
+	if inspectErr == nil {
+		members, inspectErr = inspectProcessGroup(processGroupID)
+		if inspectErr == nil && processGroupExited(members) {
+			return nil
+		}
 	}
 	return fmt.Errorf(
 		"process group %d remained alive after SIGKILL: surviving_processes=%s",
 		processGroupID,
-		survivingProcesses,
+		describeProcessGroup(members, inspectErr),
 	)
 }
 
@@ -115,32 +124,73 @@ func waitForProcessGroupExit(processGroupID int, grace time.Duration) bool {
 	}
 }
 
-func describeProcessGroup(processGroupID int) string {
+type processGroupMember struct {
+	pid     string
+	ppid    string
+	state   string
+	command string
+}
+
+func inspectProcessGroup(processGroupID int) ([]processGroupMember, error) {
 	path, err := exec.LookPath("ps")
 	if err != nil {
-		return "unavailable (locate ps: " + err.Error() + ")"
+		return nil, fmt.Errorf("locate ps: %w", err)
 	}
 	cmd := &exec.Cmd{
 		Path: path,
-		Args: []string{"ps", "-axo", "pid=,ppid=,pgid=,comm="},
+		Args: []string{"ps", "-axo", "pid=,ppid=,pgid=,stat=,comm="},
 		Env:  append(os.Environ(), "LC_ALL=C"),
 	}
 	output, err := cmd.Output()
 	if err != nil {
-		return "unavailable (inspect process group: " + err.Error() + ")"
+		return nil, fmt.Errorf("inspect process group: %w", err)
 	}
-	members := make([]string, 0)
+	members := make([]processGroupMember, 0)
 	for line := range strings.Lines(string(output)) {
 		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[2] != strconv.Itoa(processGroupID) {
+		if len(fields) < 5 || fields[2] != strconv.Itoa(processGroupID) {
 			continue
 		}
-		members = append(members, fmt.Sprintf("pid=%s ppid=%s command=%s", fields[0], fields[1], strings.Join(fields[3:], " ")))
+		members = append(members, processGroupMember{
+			pid:     fields[0],
+			ppid:    fields[1],
+			state:   fields[3],
+			command: strings.Join(fields[4:], " "),
+		})
+	}
+	return members, nil
+}
+
+func processGroupExited(members []processGroupMember) bool {
+	if len(members) == 0 {
+		return true
+	}
+	for _, member := range members {
+		if !strings.HasPrefix(member.state, "Z") {
+			return false
+		}
+	}
+	return true
+}
+
+func describeProcessGroup(members []processGroupMember, err error) string {
+	if err != nil {
+		return "unavailable (" + err.Error() + ")"
 	}
 	if len(members) == 0 {
 		return "none listed"
 	}
-	return strings.Join(members, "; ")
+	descriptions := make([]string, 0, len(members))
+	for _, member := range members {
+		descriptions = append(descriptions, fmt.Sprintf(
+			"pid=%s ppid=%s state=%s command=%s",
+			member.pid,
+			member.ppid,
+			member.state,
+			member.command,
+		))
+	}
+	return strings.Join(descriptions, "; ")
 }
 
 func Terminate(ctx context.Context, identity Identity, grace time.Duration) (TerminationOutcome, error) {
