@@ -240,7 +240,7 @@ can include `--workflow-ref origin/main` during registration or add
 | Field | Reload behavior |
 | --- | --- |
 | Project list and project settings, including active hours and overrides | Live reload |
-| Credentials: `github_token` and project credentials | Live reload |
+| Credentials: `github_token`, `trust_loopback_peer_read`, and project credentials | Live reload |
 | `dashboard_access` mode, token, and write access | Live reload; token changes invalidate private dashboard sessions |
 | `auth` | Restart required; persisted sessions remain valid until their configured expiry |
 | `global.startup` | Live reload |

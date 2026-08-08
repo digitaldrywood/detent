@@ -211,6 +211,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Kind != Kind {
 		t.Fatalf("Kind = %q, want %q", cfg.Kind, Kind)
 	}
+	if cfg.TrustLoopbackPeerRead {
+		t.Fatal("TrustLoopbackPeerRead = true, want default false")
+	}
 	if cfg.Global.MaxConcurrentAgents != 8 {
 		t.Fatalf("Global.MaxConcurrentAgents = %d, want 8", cfg.Global.MaxConcurrentAgents)
 	}
@@ -245,6 +248,7 @@ log_max_size_bytes: 4096
 log_max_backups: 3
 github_token: gh
 api_token: detent_test_api_token
+trust_loopback_peer_read: true
 port: 4100
 instance_name: " buildbox "
 update:
@@ -286,6 +290,9 @@ projects:
 	}
 	if cfg.APIToken != "detent_test_api_token" {
 		t.Fatalf("APIToken = %q, want detent_test_api_token", cfg.APIToken)
+	}
+	if !cfg.TrustLoopbackPeerRead {
+		t.Fatal("TrustLoopbackPeerRead = false, want true")
 	}
 	if cfg.Port == nil || *cfg.Port != 4100 {
 		t.Fatalf("Port = %v, want 4100", cfg.Port)
@@ -530,16 +537,17 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	logMaxBackups := 3
 
 	cfg := Config{
-		Path:            configPath,
-		APIVersion:      APIVersion,
-		Kind:            Kind,
-		Env:             "dev",
-		LogLevel:        "debug",
-		LogMaxSizeBytes: &logMaxSizeBytes,
-		LogMaxBackups:   &logMaxBackups,
-		GitHubToken:     "gh",
-		APIToken:        "detent_test_api_token",
-		Port:            &port,
+		Path:                  configPath,
+		APIVersion:            APIVersion,
+		Kind:                  Kind,
+		Env:                   "dev",
+		LogLevel:              "debug",
+		LogMaxSizeBytes:       &logMaxSizeBytes,
+		LogMaxBackups:         &logMaxBackups,
+		GitHubToken:           "gh",
+		APIToken:              "detent_test_api_token",
+		TrustLoopbackPeerRead: true,
+		Port:                  &port,
 		Global: Settings{
 			MaxConcurrentAgents: 3,
 			Scheduling:          SchedulingStrict,
@@ -607,6 +615,9 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	}
 	if got.APIToken != cfg.APIToken {
 		t.Fatalf("APIToken = %q, want %q", got.APIToken, cfg.APIToken)
+	}
+	if got.TrustLoopbackPeerRead != cfg.TrustLoopbackPeerRead {
+		t.Fatalf("TrustLoopbackPeerRead = %t, want %t", got.TrustLoopbackPeerRead, cfg.TrustLoopbackPeerRead)
 	}
 	if got.Port == nil || *got.Port != *cfg.Port {
 		t.Fatalf("Port = %v, want %d", got.Port, *cfg.Port)
@@ -1333,6 +1344,7 @@ func TestReadReportsInvalidConfig(t *testing.T) {
 			raw: `apiVersion: detent/v2
 kind: SomethingElse
 instance_name: []
+trust_loopback_peer_read: maybe
 global:
   max_concurrent_agents: 0
   scheduling: random
@@ -1355,6 +1367,7 @@ projects:
 				"apiVersion: must equal detent/v1",
 				"kind: must equal GlobalConfig",
 				"instance_name: must be a string",
+				"trust_loopback_peer_read: must be a boolean",
 				"global.max_concurrent_agents: must be a positive integer",
 				"global.scheduling: must be one of weighted, strict, round_robin, fair_share",
 				"global.fair_share: must be a mapping",

@@ -55,6 +55,18 @@ func TestScopeHierarchyAndProjects(t *testing.T) {
 	}
 }
 
+func TestLoopbackPeerReadCredential(t *testing.T) {
+	t.Parallel()
+
+	credential := LoopbackPeerReadCredential()
+	if credential.ID != LoopbackPeerReadKeyID || !credential.Static {
+		t.Fatalf("LoopbackPeerReadCredential() = %#v, want static credential with ID %q", credential, LoopbackPeerReadKeyID)
+	}
+	if !HasScope(credential.Scopes, ScopeRead) || HasScope(credential.Scopes, ScopeWrite) || HasScope(credential.Scopes, ScopeAdmin) {
+		t.Fatalf("LoopbackPeerReadCredential() scopes = %v, want read only", credential.Scopes)
+	}
+}
+
 func TestAuthenticateRejectsChecksumInvalidTokenWithoutLookup(t *testing.T) {
 	t.Parallel()
 

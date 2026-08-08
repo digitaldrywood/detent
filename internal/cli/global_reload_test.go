@@ -235,6 +235,7 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "log max size", field: "log_max_size_bytes", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2048; cfg.LogMaxSizeBytes = &value }},
 		{name: "log backups", field: "log_max_backups", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2; cfg.LogMaxBackups = &value }},
 		{name: "GitHub token", field: "github_token", mutate: func(cfg *globalconfig.Config) { cfg.GitHubToken = "gh" }},
+		{name: "loopback peer read trust", field: "trust_loopback_peer_read", mutate: func(cfg *globalconfig.Config) { cfg.TrustLoopbackPeerRead = true }},
 		{name: "dashboard access mode", field: "dashboard_access.mode", mutate: func(cfg *globalconfig.Config) {
 			cfg.DashboardAccess.Mode = globalconfig.DashboardAccessModePrivateToken
 		}},

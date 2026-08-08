@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -94,6 +95,9 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		}
 		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
 	}
+	if s.trustLoopbackPeerRead() && requestAPICredentialsSupplied(c.Request()) {
+		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
+	}
 
 	if _, ok := webSessionFromContext(c.Request().Context()); ok {
 		if opts.requireDashboardManagementToken && !s.authorizeAPIKeyDashboardToken(c) {
@@ -139,6 +143,12 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		return credential, nil
 	}
 
+	if s.authorizeLoopbackPeerRead(c, opts) {
+		credential := apikey.LoopbackPeerReadCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+
 	if token != "" {
 		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
 	}
@@ -152,6 +162,13 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		message = "configure api_token or use an API key to enable API mutations on non-loopback hosts"
 	}
 	return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "api_token_required", message)
+}
+
+func (s *Server) authorizeLoopbackPeerRead(c echo.Context, opts apiAuthOptions) bool {
+	if c == nil || c.Request() == nil || opts.mutating || c.Request().Method != http.MethodGet || serverAddressLoopback(s.serverAddr) {
+		return false
+	}
+	return s.trustLoopbackPeerRead() && requestRemoteAddrLoopback(c.Request().RemoteAddr)
 }
 
 func (s *Server) authenticateCandidate(ctx context.Context, candidate string, staticToken string) (apikey.Credential, error) {
@@ -238,8 +255,23 @@ func (s *Server) apiToken() string {
 	return strings.TrimSpace(cfg.APIToken)
 }
 
+func (s *Server) trustLoopbackPeerRead() bool {
+	if s == nil {
+		return false
+	}
+	cfg := s.globalConfig
+	if s.globalConfigSource != nil {
+		cfg = s.globalConfigSource()
+	}
+	return cfg.TrustLoopbackPeerRead
+}
+
 func (s *Server) warnIfAPITokenMissingOnNonLoopback() {
 	if s == nil || s.apiToken() != "" || serverAddressLoopback(s.serverAddr) {
+		return
+	}
+	if s.trustLoopbackPeerRead() {
+		s.logger.Warn("api_token is not configured; trusted loopback peers have read-only API access and all other API access without scoped API keys will fail closed", "addr", s.serverAddr)
 		return
 	}
 	s.logger.Warn("api_token is not configured; API routes without scoped API keys will fail closed on non-loopback hosts", "addr", s.serverAddr)
@@ -260,6 +292,13 @@ func requestAPITokens(req *http.Request) []string {
 		tokens = append(tokens, apiKey)
 	}
 	return tokens
+}
+
+func requestAPICredentialsSupplied(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	return len(req.Header.Values("Authorization")) > 0 || len(req.Header.Values("X-API-Key")) > 0
 }
 
 func serverAddressLoopback(addr string) bool {
@@ -316,8 +355,8 @@ func requestHostLoopback(host string) bool {
 }
 
 func requestRemoteAddrLoopback(remoteAddr string) bool {
-	remoteAddr = strings.TrimSpace(remoteAddr)
-	return remoteAddr != "" && serverAddressLoopback(remoteAddr)
+	peer, err := netip.ParseAddrPort(remoteAddr)
+	return err == nil && peer.Addr().Unmap().IsLoopback()
 }
 
 func requestDashboardHTMXTarget(req *http.Request) bool {

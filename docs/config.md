@@ -39,6 +39,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Log backups | | `LOG_MAX_BACKUPS`, then `DETENT_LOG_MAX_BACKUPS` | `log_max_backups` | `5` |
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
 | API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
+| Loopback peer read trust | | | `trust_loopback_peer_read` | `false` |
 | Private dashboard URL | | | `dashboard_access` | disabled |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
@@ -56,6 +57,15 @@ committed. `github_token: gh-auth`, `${gh auth token}`, and
 `$(gh auth token)` are accepted aliases. If neither `GITHUB_TOKEN` nor
 `github_token` is set, Detent falls back to existing per-workflow
 `tracker.api_key` handling.
+
+Set `trust_loopback_peer_read: true` to grant tokenless read-scope API access
+to direct loopback TCP peers even when Detent binds a non-loopback address or
+has an `api_token`. The setting hot-reloads and applies only to `GET` routes;
+admin routes and mutations still require credentials. Authentication uses only
+the request's direct peer address and never trusts forwarded-client headers.
+Do not enable this setting when a reverse proxy runs on the same host: every
+request relayed by that proxy has a loopback direct peer, including requests
+that originally came from remote clients.
 
 Use `instance_name` to distinguish browser tabs and the dashboard navbar when
 several Detent instances are open at once. Detent resolves the display name
