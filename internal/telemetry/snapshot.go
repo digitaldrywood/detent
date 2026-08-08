@@ -668,14 +668,25 @@ type SchedulerDecision struct {
 
 type Queued struct {
 	Issue
-	Attempt        int        `json:"attempt"`
-	DueAt          *time.Time `json:"due_at,omitempty"`
-	DueInMillis    int64      `json:"due_in_ms,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	WorkerHost     string     `json:"worker_host,omitempty"`
-	WorkspacePath  string     `json:"workspace_path,omitempty"`
-	ProjectedSpend float64    `json:"projected_spend_usd,omitempty"`
+	Attempt               int        `json:"attempt"`
+	DueAt                 *time.Time `json:"due_at,omitempty"`
+	DueInMillis           int64      `json:"due_in_ms,omitempty"`
+	Error                 string     `json:"error,omitempty"`
+	WorkerHost            string     `json:"worker_host,omitempty"`
+	WorkspacePath         string     `json:"workspace_path,omitempty"`
+	ProjectedSpend        float64    `json:"projected_spend_usd,omitempty"`
+	QueueState            string     `json:"queue_state,omitempty"`
+	WaitStartedAt         *time.Time `json:"wait_started_at,omitempty"`
+	PollCount             int        `json:"poll_count,omitempty"`
+	PendingChecks         []string   `json:"pending_checks,omitempty"`
+	WorkspaceCreateCount  int        `json:"workspace_create_count,omitempty"`
+	WorkspaceDestroyCount int        `json:"workspace_destroy_count,omitempty"`
 }
+
+const (
+	QueueStateRetrying    = "retrying"
+	QueueStateWaitingOnCI = "waiting_on_ci"
+)
 
 type BlockedSource string
 

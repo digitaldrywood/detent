@@ -520,6 +520,15 @@ func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, mergeTimi
 			Attempt:    entry.Attempt,
 			Error:      entry.Error,
 			WorkerHost: entry.WorkerHost,
+			QueueState: telemetry.QueueStateRetrying,
+		}
+		if entry.Wait.Kind == retryWaitCurrentHeadCI {
+			queued.QueueState = telemetry.QueueStateWaitingOnCI
+			queued.WaitStartedAt = timePointer(entry.Wait.StartedAt)
+			queued.PollCount = entry.Wait.PollCount
+			queued.PendingChecks = append([]string(nil), entry.Wait.PendingChecks...)
+			queued.WorkspaceCreateCount = entry.Wait.WorkspaceCreateCount
+			queued.WorkspaceDestroyCount = entry.Wait.WorkspaceDestroyCount
 		}
 		if !entry.DueAt.IsZero() {
 			dueAt := entry.DueAt

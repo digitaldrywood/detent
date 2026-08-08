@@ -381,8 +381,8 @@ func TestMergingFallbackPushWaitsAfterWorkerReappliesCITriggerWhenHydrationIsGre
 	if !ok {
 		t.Fatalf("Retry[%q] missing while current-head checks run", issue.ID)
 	}
-	if retry.Attempt != 2 {
-		t.Fatalf("Retry[%q].Attempt = %d, want 2", issue.ID, retry.Attempt)
+	if retry.Attempt != 1 {
+		t.Fatalf("Retry[%q].Attempt = %d, want unchanged attempt 1", issue.ID, retry.Attempt)
 	}
 	if !strings.Contains(retry.Error, "current-head CI") {
 		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
@@ -807,14 +807,17 @@ func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
 	if !ok {
 		t.Fatalf("Retry[%q] missing while CI is pending", issue.ID)
 	}
-	if retry.Attempt != 2 || retry.WorkerHost != "worker-a" {
-		t.Fatalf("Retry[%q] = %#v, want attempt 2 retry on worker-a", issue.ID, retry)
+	if retry.Attempt != 1 || retry.WorkerHost != "worker-a" {
+		t.Fatalf("Retry[%q] = %#v, want unchanged attempt 1 wait on worker-a", issue.ID, retry)
 	}
 	if !strings.Contains(retry.Error, "current-head CI") {
 		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
 	}
 	if !retry.DueAt.Equal(now.Add(5 * time.Second)) {
 		t.Fatalf("Retry[%q].DueAt = %s, want continuation retry delay", issue.ID, retry.DueAt)
+	}
+	if retry.Wait.Kind != retryWaitCurrentHeadCI || retry.Wait.PollCount != 1 {
+		t.Fatalf("Retry[%q].Wait = %#v, want first current-head CI poll", issue.ID, retry.Wait)
 	}
 	if _, ok := state.Claimed[issue.ID]; !ok {
 		t.Fatalf("Claimed[%q] missing while waiting for CI", issue.ID)
@@ -838,7 +841,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 		wantMerged    bool
 	}{
 		{
-			name:          "attempt increments across waits",
+			name:          "attempt stays fixed across waits",
 			attempt:       1,
 			ciStatus:      "pending",
 			mergeable:     "blocked",
@@ -848,10 +851,10 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 				Status: "in_progress",
 			}},
 			ciWaitAge: time.Minute,
-			wantRetry: 2,
+			wantRetry: 1,
 		},
 		{
-			name:          "successive wait increments again",
+			name:          "later wait keeps attempt fixed",
 			attempt:       2,
 			ciStatus:      "pending",
 			mergeable:     "blocked",
@@ -861,7 +864,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 				Status: "in_progress",
 			}},
 			ciWaitAge: 30 * time.Minute,
-			wantRetry: 3,
+			wantRetry: 2,
 		},
 		{
 			name:          "pending check escalates at bound",
@@ -887,7 +890,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 				Status: "in_progress",
 			}},
 			ciWaitAge: mergeWorkerCurrentHeadCIWaitTimeout - time.Second,
-			wantRetry: maxMergeWorkerRunnerFailures + 1,
+			wantRetry: maxMergeWorkerRunnerFailures,
 		},
 		{
 			name:       "green check before bound merges",

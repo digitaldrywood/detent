@@ -1,12 +1,16 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
@@ -179,6 +183,7 @@ func TestDispatchReadyIssuesDefersNotReadyMergeRetryBehindReadyHead(t *testing.T
 		Attempt: 1,
 		DueAt:   now.Add(-time.Millisecond),
 		Error:   "waiting for current-head CI",
+		Wait:    RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: now.Add(-time.Minute), PollCount: 1},
 	}
 
 	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{waiting, ready}, now)
@@ -376,6 +381,7 @@ func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *
 		Attempt: 1,
 		DueAt:   now.Add(-time.Millisecond),
 		Error:   "waiting for current-head CI",
+		Wait:    RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: now.Add(-time.Minute), PollCount: 1},
 	}
 
 	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{queueHead, refreshed}, now)
@@ -387,11 +393,130 @@ func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *
 	if running.Issue.PullRequest == nil || running.Issue.PullRequest.CIStatus != "success" {
 		t.Fatalf("Running[%q].Issue.PullRequest = %#v, want refreshed green head", deferred.ID, running.Issue.PullRequest)
 	}
+	if running.Attempt != 2 {
+		t.Fatalf("Running[%q].Attempt = %d, want 2 after CI wait ended", deferred.ID, running.Attempt)
+	}
 	if _, ok := state.Running[queueHead.ID]; ok {
 		t.Fatalf("Running[%q] present while refreshed deferred head was ready", queueHead.ID)
 	}
 	if _, ok := state.Retry[deferred.ID]; ok {
 		t.Fatalf("Retry[%q] present after refreshed head dispatch", deferred.ID)
+	}
+}
+
+func TestDispatchReadyIssuesPollsCurrentHeadCIWithoutWorkerAdmission(t *testing.T) {
+	t.Parallel()
+
+	const pendingCheck = "Portability Verify (windows-latest)"
+	tests := []struct {
+		name        string
+		waitAge     time.Duration
+		wantRetry   bool
+		wantBlocked bool
+	}{
+		{name: "poll before deadline", waitAge: 10 * time.Minute, wantRetry: true},
+		{name: "poll at one hour deadline", waitAge: mergeWorkerCurrentHeadCIWaitTimeout, wantBlocked: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:    1,
+				ContinuationRetryDelay: 5 * time.Second,
+				MergeFastPathEnabled:   true,
+				ActiveStates:           []string{"Merging"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+			})
+			now := time.Date(2026, 8, 8, 18, 30, 0, 0, time.UTC)
+			issue := nativeMergeQueueTestIssue(1717, "pending")
+			issue.PullRequest.MergeableState = "blocked"
+			issue.PullRequest.UnstartedChecks = []connector.PullRequestCheck{{
+				Name:         pendingCheck,
+				Status:       "queued",
+				QueueSeconds: 47 * 60,
+			}}
+			tracker := &autoPromoteTickMergeConnector{
+				autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+			}
+			attempts := &recordingWorkAttemptStore{}
+			admission := &countingProjectDispatchGate{}
+			var logs bytes.Buffer
+			orch := Orchestrator{
+				cfg:                cfg,
+				connector:          tracker,
+				workAttempts:       attempts,
+				globalDispatchGate: admission,
+				supervisor:         newTestSupervisor(t, FakeRunner{}, cfg),
+				runResults:         make(chan runpkg.Completion, 1),
+				logger:             slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			state := newState(cfg)
+			startedAt := now.Add(-tt.waitAge)
+			state.MergeTimings[issue.ID] = MergeTiming{CIWaitStartedAt: startedAt}
+			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: startedAt}
+			state.Retry[issue.ID] = Retry{
+				Issue:      cloneIssue(issue),
+				Attempt:    7,
+				DueAt:      now.Add(-time.Second),
+				Error:      "waiting for current-head CI",
+				WorkerHost: "worker-a",
+				Wait: RetryWait{
+					Kind:                  retryWaitCurrentHeadCI,
+					StartedAt:             startedAt,
+					PollCount:             3,
+					PendingChecks:         []string{pendingCheck},
+					WorkspaceCreateCount:  1,
+					WorkspaceDestroyCount: 1,
+				},
+			}
+
+			orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+			if admission.tryAcquireCalls != 0 {
+				t.Fatalf("global admission calls = %d, want 0", admission.tryAcquireCalls)
+			}
+			if len(attempts.starts) != 0 || len(attempts.completions) != 0 {
+				t.Fatalf("durable work attempts = starts %#v completions %#v, want none", attempts.starts, attempts.completions)
+			}
+			if _, ok := state.Running[issue.ID]; ok {
+				t.Fatalf("Running[%q] present after CI poll", issue.ID)
+			}
+			if got := logs.String(); strings.Count(got, "msg=merge_worker_waiting_current_head_ci") != 1 ||
+				!strings.Contains(got, "poll_count=4") ||
+				!strings.Contains(got, "pending_checks=\""+pendingCheck+"\"") ||
+				!strings.Contains(got, "workspace_create_count=1") ||
+				!strings.Contains(got, "workspace_destroy_count=1") {
+				t.Fatalf("CI wait log = %q, want one structured poll event", got)
+			}
+
+			if tt.wantRetry {
+				retry, ok := state.Retry[issue.ID]
+				if !ok {
+					t.Fatalf("Retry[%q] missing", issue.ID)
+				}
+				if retry.Attempt != 7 || retry.Wait.PollCount != 4 {
+					t.Fatalf("Retry[%q] = %#v, want unchanged attempt 7 and poll 4", issue.ID, retry)
+				}
+				if !retry.DueAt.Equal(now.Add(5 * time.Second)) {
+					t.Fatalf("Retry[%q].DueAt = %s, want %s", issue.ID, retry.DueAt, now.Add(5*time.Second))
+				}
+				queue := state.Snapshot(now).Queue
+				if len(queue) != 1 || queue[0].QueueState != "waiting_on_ci" || queue[0].PollCount != 4 {
+					t.Fatalf("snapshot queue = %#v, want waiting-on-CI poll state", queue)
+				}
+			}
+			if tt.wantBlocked {
+				if _, ok := state.Retry[issue.ID]; ok {
+					t.Fatalf("Retry[%q] present after CI wait deadline", issue.ID)
+				}
+				blocked, ok := state.Blocked[issue.ID]
+				if !ok || !strings.Contains(blocked.Reason, pendingCheck) {
+					t.Fatalf("Blocked[%q] = %#v, want pending check at one-hour bound", issue.ID, blocked)
+				}
+			}
+		})
 	}
 }
 
@@ -489,3 +614,25 @@ func retryTestIssue(id, identifier string) connector.Issue {
 	issue.State = "Todo"
 	return issue
 }
+
+type countingProjectDispatchGate struct {
+	tryAcquireCalls int
+}
+
+func (*countingProjectDispatchGate) MarkReady(scheduler.ProjectCandidate) {}
+
+func (*countingProjectDispatchGate) MarkIdle(scheduler.ProjectCandidate) {}
+
+func (g *countingProjectDispatchGate) TryAcquire(
+	context.Context,
+	scheduler.ProjectCandidate,
+	scheduler.SlotRequest,
+	time.Time,
+) (scheduler.Slot, bool, error) {
+	g.tryAcquireCalls++
+	return scheduler.Slot{}, true, nil
+}
+
+func (*countingProjectDispatchGate) SetPreempt(scheduler.Slot, func()) {}
+
+func (*countingProjectDispatchGate) Release(scheduler.Slot) error { return nil }

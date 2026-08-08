@@ -165,6 +165,9 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
 			state.Retry[issue.ID] = rescheduled
 		},
+		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+			return o.pollMergeWorkerCurrentHeadCI(ctx, state, issue, retry, now)
+		},
 		preserveMissingDueRetry: func(retry Retry) bool {
 			return o.preserveMissingDueRetry(state, retry)
 		},

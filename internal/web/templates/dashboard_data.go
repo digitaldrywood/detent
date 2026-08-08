@@ -4575,6 +4575,21 @@ func queuedDueLabel(row telemetry.Queued) string {
 	return "n/a"
 }
 
+func queuedStateLabel(row telemetry.Queued) string {
+	if row.QueueState == telemetry.QueueStateWaitingOnCI {
+		return "Waiting on CI"
+	}
+	return "Retrying"
+}
+
+func queuedStateClass(row telemetry.Queued) string {
+	base := "inline-flex rounded-full px-2 py-1 font-medium "
+	if row.QueueState == telemetry.QueueStateWaitingOnCI {
+		return base + "bg-accent/15 text-accent"
+	}
+	return base + "bg-warn/15 text-warn"
+}
+
 func rowError(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "n/a"

@@ -51,6 +51,30 @@ func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	}
 }
 
+func TestQueuedStateLabelDistinguishesCIWaitFromRetry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		row  telemetry.Queued
+		want string
+	}{
+		{name: "current-head CI wait", row: telemetry.Queued{QueueState: telemetry.QueueStateWaitingOnCI}, want: "Waiting on CI"},
+		{name: "failure retry", row: telemetry.Queued{QueueState: telemetry.QueueStateRetrying}, want: "Retrying"},
+		{name: "legacy retry", row: telemetry.Queued{}, want: "Retrying"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := queuedStateLabel(tt.row); got != tt.want {
+				t.Fatalf("queuedStateLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLifetimeOrphanRecoveryLabels(t *testing.T) {
 	t.Parallel()
 
