@@ -1395,7 +1395,7 @@ func decideMergeBaseRefresh(issue connector.Issue, laneAvailable bool, globalAva
 	if issue.PullRequest == nil || !strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") {
 		return mergeBaseRefreshDecision{}
 	}
-	if !mergeWorkerCIGreen(issue.PullRequest.CIStatus) || len(issue.PullRequest.RequiredCheckFailures) > 0 {
+	if len(issue.PullRequest.RequiredCheckFailures) > 0 {
 		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshRequiredChecksPending}
 	}
 	if !laneAvailable {

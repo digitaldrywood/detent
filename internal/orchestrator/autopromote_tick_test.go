@@ -4050,6 +4050,15 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 			},
 		},
 		{
+			name: "behind with pending optional check",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "behind",
+				CIStatus:       "pending",
+			},
+			want: true,
+		},
+		{
 			name:        "missing pull request",
 			pullRequest: nil,
 		},
@@ -4441,6 +4450,14 @@ func TestDecideMergeBaseRefresh(t *testing.T) {
 			requiredChecks: []connector.PullRequestCheck{{Name: "Portability Verify", Status: "in_progress"}},
 			laneAvailable:  true,
 			want:           mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshRequiredChecksPending},
+		},
+		{
+			name:            "behind with pending optional check",
+			mergeableState:  "behind",
+			ciStatus:        "pending",
+			laneAvailable:   true,
+			globalAvailable: true,
+			want:            mergeBaseRefreshDecision{applicable: true, proceed: true},
 		},
 		{
 			name:            "behind with occupied merge lane",
