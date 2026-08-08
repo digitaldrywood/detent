@@ -28,6 +28,7 @@ GOVULNCHECK_VERSION ?= v1.6.0
 GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 GOSEC_VERSION ?= v2.28.0
 GOSEC ?= go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+GO_TEST := env -u DETENT_API_TOKEN go test
 # G115: existing conversions are bounded or intentionally preserve platform/API widths.
 # G301: shared runtime, service, and artifact directories intentionally require traversal access.
 # G304: Detent intentionally reads operator-selected config, workflow, and workspace paths.
@@ -81,14 +82,14 @@ build: generate
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) $(CMD_PACKAGE)
 
 test:
-	go test ./...
+	$(GO_TEST) ./...
 
 test-race:
-	go test -race ./...
+	$(GO_TEST) -race ./...
 
 test-cover:
 	@mkdir -p tmp
-	go test -coverprofile=$(COVERPROFILE_RAW) ./...
+	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./...
 	@awk 'NR == 1 || ($$1 !~ /_templ\.go:/ && $$1 !~ /\/internal\/store\/sqlc\// && $$1 !~ /\/internal\/database\/sqlc\//)' "$(COVERPROFILE_RAW)" > "$(COVERPROFILE)"
 	@coverage="$$(go tool cover -func=$(COVERPROFILE) | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
 	awk -v coverage="$$coverage" -v threshold="$(COVERAGE_THRESHOLD)" 'BEGIN { \
@@ -103,7 +104,7 @@ test-cover-packages: test-cover
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
 soak:
-	DETENT_RUN_SOAK_TESTS=1 go test ./internal/orchestrator -run '^(TestSoak|TestDispatchParityAdversarialFixtures)' -count=1
+	DETENT_RUN_SOAK_TESTS=1 $(GO_TEST) ./internal/orchestrator -run '^(TestSoak|TestDispatchParityAdversarialFixtures)' -count=1
 
 visual-e2e: build
 	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
