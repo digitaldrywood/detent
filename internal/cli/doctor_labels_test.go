@@ -133,6 +133,52 @@ func TestCheckDoctorConfiguredLabelsReportsInventoryFailure(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorConfiguredLabelsUsesTrackerRepository(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.Tracker.WriteProbeIssue = "digitaldrywood/scratch#1"
+	repositories := []string{}
+	check := checkDoctorConfiguredLabels(
+		context.Background(),
+		"detent",
+		globalconfig.Project{Workdir: "digitaldrywood/worktree#1"},
+		cfg,
+		doctorDeps{
+			githubLabels: func(_ context.Context, _ workflowconfig.Config, repository string) ([]string, error) {
+				repositories = append(repositories, repository)
+				return []string{"requires-human-review", "allow-large-session"}, nil
+			},
+			gitRemoteURL: func(context.Context, string) (string, error) {
+				return "https://github.com/digitaldrywood/checkout.git", nil
+			},
+		},
+	)
+
+	if check.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, doctorOK, check)
+	}
+	if len(repositories) != 1 || repositories[0] != cfg.Tracker.Repository {
+		t.Fatalf("repository label reads = %v, want [%s]", repositories, cfg.Tracker.Repository)
+	}
+}
+
+func TestDoctorConfiguredLabelFixTerminatesFlagParsing(t *testing.T) {
+	t.Parallel()
+
+	fix := doctorConfiguredLabelFix("digitaldrywood/detent", doctorConfiguredLabel{
+		Name:        "-escape",
+		Description: "Escape hatch.",
+		Color:       "b60205",
+	})
+	want := "gh label create --repo 'digitaldrywood/detent' --color b60205 --description 'Escape hatch.' -- '-escape'"
+	if fix != want {
+		t.Fatalf("fix = %q, want %q", fix, want)
+	}
+}
+
 func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
 	t.Parallel()
 

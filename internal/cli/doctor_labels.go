@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -38,7 +37,7 @@ func defaultDoctorGitHubRepositoryLabels(
 func checkDoctorConfiguredLabels(
 	ctx context.Context,
 	projectID string,
-	project globalconfig.Project,
+	_ globalconfig.Project,
 	cfg workflowconfig.Config,
 	deps doctorDeps,
 ) doctorCheck {
@@ -56,8 +55,8 @@ func checkDoctorConfiguredLabels(
 		}
 	}
 
-	repositories := doctorGitHubRepositories(ctx, project, cfg, deps, projectSourceRoot(project, cfg))
-	if len(repositories) == 0 {
+	repository := strings.TrimSpace(cfg.Tracker.Repository)
+	if repository == "" {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorWarn,
@@ -65,45 +64,37 @@ func checkDoctorConfiguredLabels(
 			Hint:   "Set tracker.repository to owner/repo in detent.yaml.",
 		}
 	}
-	sort.Strings(repositories)
 
 	missing := make([]string, 0)
 	fixes := make([]string, 0)
-	seenFixes := map[string]struct{}{}
 	status := doctorOK
-	for _, repository := range repositories {
-		existing, err := deps.githubLabels(ctx, cfg, repository)
-		if err != nil {
-			return doctorCheck{
-				Name:   name,
-				Status: doctorFail,
-				Detail: fmt.Sprintf("read %s labels: %v", repository, err),
-				Hint:   "Fix GitHub repository label read access, then rerun detent doctor.",
-			}
+	existing, err := deps.githubLabels(ctx, cfg, repository)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("read %s labels: %v", repository, err),
+			Hint:   "Fix GitHub repository label read access, then rerun detent doctor.",
 		}
-		existingSet := doctorNormalizedLabelSet(existing)
-		for _, label := range required {
-			if _, ok := existingSet[strings.ToLower(label.Name)]; ok {
-				continue
-			}
-			missing = append(missing, fmt.Sprintf("%s missing label %q referenced by %s", repository, label.Name, label.ConfigKey))
-			if label.Critical {
-				status = doctorFail
-			} else if status == doctorOK {
-				status = doctorWarn
-			}
-			fix := doctorConfiguredLabelFix(repository, label)
-			if _, ok := seenFixes[fix]; !ok {
-				seenFixes[fix] = struct{}{}
-				fixes = append(fixes, fix)
-			}
+	}
+	existingSet := doctorNormalizedLabelSet(existing)
+	for _, label := range required {
+		if _, ok := existingSet[strings.ToLower(label.Name)]; ok {
+			continue
 		}
+		missing = append(missing, fmt.Sprintf("%s missing label %q referenced by %s", repository, label.Name, label.ConfigKey))
+		if label.Critical {
+			status = doctorFail
+		} else if status == doctorOK {
+			status = doctorWarn
+		}
+		fixes = append(fixes, doctorConfiguredLabelFix(repository, label))
 	}
 	if len(missing) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
-			Detail: fmt.Sprintf("verified %d configured labels in %s", len(required)*len(repositories), strings.Join(repositories, ", ")),
+			Detail: fmt.Sprintf("verified %d configured labels in %s", len(required), repository),
 		}
 	}
 	return doctorCheck{
@@ -147,8 +138,8 @@ func doctorNormalizedLabelSet(labels []string) map[string]struct{} {
 }
 
 func doctorConfiguredLabelFix(repository string, label doctorConfiguredLabel) string {
-	return "gh label create " + doctorShellQuote(label.Name) +
-		" --repo " + doctorShellQuote(repository) +
+	return "gh label create --repo " + doctorShellQuote(repository) +
 		" --color " + label.Color +
-		" --description " + doctorShellQuote(label.Description)
+		" --description " + doctorShellQuote(label.Description) +
+		" -- " + doctorShellQuote(label.Name)
 }
