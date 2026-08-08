@@ -64,6 +64,68 @@ func (s *Server) apiAuthWithOptions(opts apiAuthOptions) echo.MiddlewareFunc {
 	}
 }
 
+func (s *Server) mcpAPIAuth() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			started := time.Now()
+			credential, err := s.authorizeMCPRequest(c)
+			if err != nil {
+				return err
+			}
+			if err := s.applyAPIKeyRateLimit(c, credential); err != nil {
+				s.recordAPIUsage(c, credential, started, err)
+				return err
+			}
+			s.markAPIKeyLastUsed(credential)
+			err = next(c)
+			s.recordAPIUsage(c, credential, started, err)
+			return err
+		}
+	}
+}
+
+func (s *Server) authorizeMCPRequest(c echo.Context) (apikey.Credential, error) {
+	if err := s.applyPreAuthIPRateLimit(c); err != nil {
+		return apikey.Credential{}, err
+	}
+	candidates := requestAPITokens(c.Request())
+	if len(candidates) == 0 {
+		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid read-scoped API key is required")
+	}
+	var lastAuthErr *apikey.AuthError
+	for _, candidate := range candidates {
+		credential, err := s.authenticateCandidate(c.Request().Context(), candidate, "")
+		if err != nil {
+			var authErr *apikey.AuthError
+			if errors.As(err, &authErr) {
+				if authErr.Code == "token_expired" || authErr.Code == "token_revoked" {
+					return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, authErr.Code, authErr.Message)
+				}
+				lastAuthErr = authErr
+				continue
+			}
+			s.logger.Warn("MCP API key lookup failed", "error", err)
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusServiceUnavailable, "service_unavailable", "API key authentication temporarily unavailable")
+		}
+		if !mcpReadScopeOnly(credential.Scopes) {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "read_scope_required", "MCP requires an API key with read scope only")
+		}
+		if len(credential.ProjectIDs) > 0 {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "global_scope_required", "MCP requires an API key authorized for all projects")
+		}
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+	if lastAuthErr != nil {
+		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, lastAuthErr.Code, lastAuthErr.Message)
+	}
+	return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid read-scoped API key is required")
+}
+
+func mcpReadScopeOnly(scopes []string) bool {
+	return len(scopes) == 1 && strings.EqualFold(strings.TrimSpace(scopes[0]), string(apikey.ScopeRead))
+}
+
 func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apikey.Credential, error) {
 	if err := s.applyPreAuthIPRateLimit(c); err != nil {
 		return apikey.Credential{}, err

@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -164,6 +165,7 @@ type Server struct {
 	chat                *chatpkg.Service
 	issueExplainer      IssueExplainer
 	operatorTools       *operatortool.Executor
+	mcpHTTP             *mcp.HTTPHandler
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -278,6 +280,12 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		chatProvider = server.demoChatProvider()
 	}
 	server.operatorTools = server.newReadOnlyToolExecutor()
+	server.mcpHTTP = mcp.NewHTTPHandler(server.operatorTools, server.version, mcp.HTTPConfig{
+		Principal: func(req *http.Request) string {
+			credential, _ := apiCredentialFromContext(req.Context())
+			return credential.ID
+		},
+	})
 	server.chat = chatpkg.NewService(chatProvider, server.newChatToolExecutor(), server)
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate)
@@ -313,7 +321,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.keyLimiter != nil {
 		s.keyLimiter.Stop()
 	}
-	err := s.echo.Shutdown(ctx)
+	var err error
+	if s.mcpHTTP != nil {
+		err = s.mcpHTTP.Shutdown(ctx)
+	}
+	err = errors.Join(err, s.echo.Shutdown(ctx))
 	if s.asyncWrites != nil {
 		if closeErr := s.asyncWrites.Close(ctx); closeErr != nil {
 			return errors.Join(err, closeErr)
@@ -368,6 +380,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/agent", s.onboardingAgent)
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	apiReadAuth := s.apiAuth(false)
+	mcpReadAuth := s.mcpAPIAuth()
 	apiMutateAuth := s.apiAuth(true)
 	apiDashboardReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardHTMX: true})
 	apiDashboardSSEReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardSSE: true})
@@ -382,6 +395,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope)
+	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
