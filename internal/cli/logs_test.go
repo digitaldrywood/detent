@@ -208,6 +208,9 @@ func TestOpenLogsSnapshotPinsFilesAcrossRotationAndDeduplicates(t *testing.T) {
 			t.Errorf("closeLogsSnapshot() error = %v", err)
 		}
 	})
+	if err := os.Rename(path+".1", path+".2"); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(path, path+".1"); err != nil {
 		t.Fatal(err)
 	}

@@ -327,7 +327,7 @@ func openLogsSnapshot(path string, maxBackups int) ([]*logsSnapshotFile, error) 
 	paths = append(paths, path)
 	files := make([]*logsSnapshotFile, 0, len(paths))
 	for _, candidate := range paths {
-		file, err := os.Open(candidate)
+		file, err := openLogsFile(candidate)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
