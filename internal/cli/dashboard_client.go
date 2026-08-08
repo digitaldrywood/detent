@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const (
@@ -181,6 +183,82 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 		}
 	}
 	return result, nil
+}
+
+func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return operatortool.Result{}, err
+	}
+	call.Name = strings.TrimSpace(call.Name)
+	if _, ok := operatortool.Lookup(call.Name); !ok {
+		return operatortool.Result{}, fmt.Errorf("%w %q", operatortool.ErrUnknownTool, call.Name)
+	}
+	if c == nil || c.baseURL == nil || c.http == nil {
+		return operatortool.Result{}, errors.New("dashboard API client is not configured")
+	}
+	if len(call.Arguments) == 0 || string(call.Arguments) == "null" {
+		call.Arguments = json.RawMessage(`{}`)
+	}
+	if len(call.Arguments) > operatortool.MaxArgumentBytes {
+		return operatortool.Result{}, fmt.Errorf("operator tool arguments exceed %d bytes", operatortool.MaxArgumentBytes)
+	}
+
+	requestURL := *c.baseURL
+	requestURL.Path = "/api/v1/operator-tools/" + call.Name
+	requestURL.RawPath = "/api/v1/operator-tools/" + url.PathEscape(call.Name)
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = dashboardReadTimeout
+	}
+	requestContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, requestURL.String(), bytes.NewReader(call.Arguments))
+	if err != nil {
+		return operatortool.Result{}, fmt.Errorf("create dashboard API request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	if c.credential != "" {
+		request.Header.Set("Authorization", "Bearer "+c.credential)
+	}
+
+	response, err := c.http.Do(request)
+	if err != nil {
+		if ctx.Err() != nil {
+			return operatortool.Result{}, ctx.Err()
+		}
+		return operatortool.Result{}, &DashboardTransportError{
+			Timeout: errors.Is(requestContext.Err(), context.DeadlineExceeded),
+			Err:     err,
+		}
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return operatortool.Result{}, decodeDashboardResponseError(response)
+	}
+
+	content, err := io.ReadAll(io.LimitReader(response.Body, operatortool.MaxResultBytes+1))
+	if err != nil {
+		return operatortool.Result{}, fmt.Errorf("read dashboard API response: %w", err)
+	}
+	if len(content) > operatortool.MaxResultBytes {
+		return operatortool.Result{}, fmt.Errorf("dashboard API response exceeds %d bytes", operatortool.MaxResultBytes)
+	}
+	trimmed := bytes.TrimSpace(content)
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' || !json.Valid(trimmed) {
+		return operatortool.Result{}, errors.New("decode dashboard API response: response is not a JSON object")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(content, &object); err != nil || object == nil {
+		if err == nil {
+			err = errors.New("response is not a JSON object")
+		}
+		return operatortool.Result{}, fmt.Errorf("decode dashboard API response: %w", err)
+	}
+	return operatortool.Result{Content: content}, nil
 }
 
 func decodeDashboardResponseError(response *http.Response) error {

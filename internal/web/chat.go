@@ -203,13 +203,20 @@ func (e *dashboardToolExecutor) ExecuteTool(ctx context.Context, call chatpkg.To
 }
 
 func (s *Server) newChatToolExecutor() *dashboardToolExecutor {
-	readOnly := operatortool.NewExecutor(operatortool.Dependencies{
+	return &dashboardToolExecutor{readOnly: s.operatorTools, server: s}
+}
+
+func (s *Server) newReadOnlyToolExecutor() *operatortool.Executor {
+	explainer := operatortool.Explainer(explain.New(s.explainDependencies()))
+	if s.issueExplainer != nil {
+		explainer = s.issueExplainer
+	}
+	return operatortool.NewExecutor(operatortool.Dependencies{
 		Snapshots: operatortool.SnapshotFunc(func(ctx context.Context) (telemetry.Snapshot, error) {
 			return s.chatSnapshot(ctx), nil
 		}),
-		Explainer: explain.New(s.explainDependencies()),
+		Explainer: explainer,
 	})
-	return &dashboardToolExecutor{readOnly: readOnly, server: s}
 }
 
 func (s *Server) explainDependencies() explain.Dependencies {

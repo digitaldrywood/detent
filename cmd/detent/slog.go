@@ -112,6 +112,11 @@ func useTextLogs(env string, envSet bool, stdoutTTY bool) bool {
 }
 
 func commandOutputJSONSelected(args []string, stdoutTTY bool) bool {
+	for _, arg := range args {
+		if arg == "mcp" {
+			return true
+		}
+	}
 	formatFlag, flagSet := outputFormatArg(args)
 	format, err := cli.ResolveOutputFormat(formatFlag, flagSet, os.Getenv("DETENT_FORMAT"), stdoutTTY)
 	return err == nil && format == cli.OutputFormatJSON

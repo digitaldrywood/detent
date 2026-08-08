@@ -280,10 +280,13 @@ func TestExecutorReportsInvalidInputsAndUnavailableDependencies(t *testing.T) {
 		want     string
 	}{
 		{name: "invalid board arguments", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: BoardState, Arguments: json.RawMessage(`{"limit":`)}, want: "invalid tool arguments"},
+		{name: "unknown board argument", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: BoardState, Arguments: json.RawMessage(`{"unknown":true}`)}, want: "unknown field"},
+		{name: "invalid fleet arguments", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: FleetHealth, Arguments: json.RawMessage(`[]`)}, want: "invalid tool arguments"},
 		{name: "missing snapshot", executor: NewExecutor(Dependencies{}), call: Call{Name: BoardState}, want: "snapshot is unavailable"},
+		{name: "zero snapshot", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: RecentActivity}, want: "snapshot is unavailable"},
 		{name: "snapshot failure", executor: NewExecutor(Dependencies{Snapshots: failingSnapshot{err: dependencyErr}}), call: Call{Name: FleetHealth}, want: dependencyErr.Error()},
-		{name: "missing explainer", executor: NewExecutor(Dependencies{}), call: Call{Name: ExplainItem}, want: "explanation is unavailable"},
-		{name: "explainer failure", executor: NewExecutor(Dependencies{Explainer: failingExplainer{err: dependencyErr}}), call: Call{Name: ExplainItem}, want: dependencyErr.Error()},
+		{name: "missing explainer", executor: NewExecutor(Dependencies{}), call: Call{Name: ExplainItem, Arguments: json.RawMessage(`{"project_id":"detent","reference":"issue-1"}`)}, want: "explanation is unavailable"},
+		{name: "explainer failure", executor: NewExecutor(Dependencies{Explainer: failingExplainer{err: dependencyErr}}), call: Call{Name: ExplainItem, Arguments: json.RawMessage(`{"project_id":"detent","reference":"issue-1"}`)}, want: dependencyErr.Error()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -296,6 +299,29 @@ func TestExecutorReportsInvalidInputsAndUnavailableDependencies(t *testing.T) {
 	}
 	if _, err := encodeResult(math.Inf(1)); err == nil || !strings.Contains(err.Error(), "encode operator tool result") {
 		t.Fatalf("encodeResult() error = %v", err)
+	}
+}
+
+func TestExecutorMarksLastKnownSnapshot(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 8, 8, 2, 30, 0, 0, time.UTC)
+	expiresAt := observedAt.Add(15 * time.Minute)
+	executor := newTestExecutor(telemetry.Snapshot{
+		GeneratedAt:    observedAt,
+		LastKnown:      true,
+		LastKnownUntil: expiresAt,
+	}, explain.IssueExplanation{})
+	result, err := executor.Execute(t.Context(), Call{Name: BoardState})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	var got BoardStateResult
+	if err := json.Unmarshal(result.Content, &got); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if got.Freshness != explain.SourceLastKnown || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expiresAt) || len(got.Items) != 0 {
+		t.Fatalf("last-known result = %#v", got)
 	}
 }
 

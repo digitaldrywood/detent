@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -162,6 +163,7 @@ type Server struct {
 	identityAllowlist   *auth.Allowlist
 	chat                *chatpkg.Service
 	issueExplainer      IssueExplainer
+	operatorTools       *operatortool.Executor
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -275,6 +277,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	if server.demo != nil {
 		chatProvider = server.demoChatProvider()
 	}
+	server.operatorTools = server.newReadOnlyToolExecutor()
 	server.chat = chatpkg.NewService(chatProvider, server.newChatToolExecutor(), server)
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate)
@@ -378,6 +381,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)

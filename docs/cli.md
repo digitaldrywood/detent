@@ -140,6 +140,27 @@ Structured command objects:
 | `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
+### MCP stdio server
+
+`detent mcp` serves the shared read-only operator catalog to MCP-native clients.
+It supports the initialization-based MCP revisions `2024-11-05`, `2025-03-26`,
+`2025-06-18`, and `2025-11-25`, negotiating `2025-11-25` when a client requests
+another revision. The process reads newline-delimited JSON-RPC messages from
+stdin and reserves stdout for protocol frames. Logs and command diagnostics go
+to stderr.
+
+The MCP process is an HTTP client of the already-running Detent daemon. It uses
+the same config, host, port, wildcard-to-loopback mapping, API-token precedence,
+timeouts, and read-scoped authentication bridge as `detent issue --explain`.
+It does not open SQLite, start a daemon, or call the tracker. Daemon transport
+failures return tool errors rather than empty results. Snapshot-backed results
+include `generated_at` and `freshness`; last-known results also include
+`expires_at`.
+
+The exposed tools are `board_state`, `fleet_health`, `telemetry_usage`,
+`recent_activity`, and `explain_item`. Names, descriptions, input schemas,
+limits, and result shapes come from the shared operator catalog and executor.
+
 ### Issue explanation reads
 
 `detent issue <ref> --explain --project <project-id>` reads the versioned issue
