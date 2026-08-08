@@ -4200,14 +4200,29 @@ func prPipelineMergeWaitDetail(issue telemetry.Issue) string {
 		if timing.MergeWorkerSlotAcquiredAt == nil {
 			return prPipelineMergeSubstate("waiting for merge worker slot", timing.EnteredMergingAt)
 		}
-		if checks := prPipelineMergeBlockingChecks(issue.PullRequest); checks != "" {
+		checks := prPipelineMergeBlockingChecks(issue.PullRequest)
+		if checks != "" || issue.PullRequest != nil && prPipelineCIStatus(issue, "merging") == "pending" {
 			state := prPipelineMergeSubstate(
 				"waiting on current-head CI",
 				timing.CIWaitStartedAt,
 				timing.MergeStartedAt,
 				timing.MergeWorkerSlotAcquiredAt,
 			)
+			if checks == "" {
+				checks = "check name unavailable"
+			}
 			return state + ": " + checks
+		}
+		if issue.PullRequest != nil {
+			switch strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)) {
+			case "", "unknown":
+				return prPipelineMergeSubstate(
+					"waiting for GitHub mergeability",
+					timing.CIWaitStartedAt,
+					timing.MergeStartedAt,
+					timing.MergeWorkerSlotAcquiredAt,
+				)
+			}
 		}
 		return prPipelineMergeSubstate("active merge", timing.MergeWorkerSlotAcquiredAt)
 	}

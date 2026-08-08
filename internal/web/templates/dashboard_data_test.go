@@ -3005,7 +3005,8 @@ func TestPRPipelineWaitDetailShowsCurrentMergeSubstate(t *testing.T) {
 			issue: telemetry.Issue{
 				State: "Merging",
 				PullRequest: &telemetry.PullRequest{
-					CIStatus: "success",
+					CIStatus:       "success",
+					MergeableState: "clean",
 				},
 				MergeTiming: &telemetry.MergeTiming{
 					EnteredMergingAt:          &enteredAt,
@@ -3013,6 +3014,38 @@ func TestPRPipelineWaitDetailShowsCurrentMergeSubstate(t *testing.T) {
 				},
 			},
 			want: "active merge since " + localTimeToken(acquiredAt, LocalTimeOnly),
+		},
+		{
+			name: "pending ci without a named check",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:       "pending",
+					MergeableState: "clean",
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					CIWaitStartedAt:           &ciWaitStartedAt,
+				},
+			},
+			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": check name unavailable",
+		},
+		{
+			name: "waiting for mergeability computation",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:       "success",
+					MergeableState: "unknown",
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					MergeStartedAt:            &ciWaitStartedAt,
+				},
+			},
+			want: "waiting for GitHub mergeability since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly),
 		},
 		{
 			name: "terminal merge retains duration detail",
