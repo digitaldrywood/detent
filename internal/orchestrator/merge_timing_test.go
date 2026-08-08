@@ -51,6 +51,34 @@ func TestRecordMergeQueueEnteredResetsTerminalAttempt(t *testing.T) {
 	}
 }
 
+func TestMarkMergeStartedPreservesCurrentHeadCIWaitDeadline(t *testing.T) {
+	t.Parallel()
+
+	firstStart := time.Date(2026, 8, 7, 18, 24, 27, 0, time.UTC)
+	retryStart := firstStart.Add(2*time.Minute + 17*time.Second)
+	issue := connector.Issue{
+		ID:         "issue-current-head-ci-wait",
+		Identifier: "digitaldrywood/detent#1634",
+		State:      "Merging",
+		PullRequest: &connector.PullRequest{
+			Number: 1636,
+			State:  "OPEN",
+		},
+	}
+	state := newState(normalizeConfig(Config{}))
+	orch := &Orchestrator{}
+
+	orch.markMergeStarted(&state, issue, firstStart)
+	got := orch.markMergeStarted(&state, issue, retryStart)
+
+	if !got.CIWaitStartedAt.Equal(firstStart) {
+		t.Fatalf("CIWaitStartedAt = %s, want original start %s", got.CIWaitStartedAt, firstStart)
+	}
+	if !got.MergeStartedAt.Equal(retryStart) {
+		t.Fatalf("MergeStartedAt = %s, want current attempt start %s", got.MergeStartedAt, retryStart)
+	}
+}
+
 func TestRecordMergeFailedRejectsFailureBeforeMergeEntry(t *testing.T) {
 	t.Parallel()
 

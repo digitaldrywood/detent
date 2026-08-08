@@ -266,7 +266,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
 		}
 		if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
-			if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, event.Err) {
+			if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerRetryExhaustedReason, attempt, event.Err) {
 				return
 			}
 		}
@@ -1210,14 +1210,22 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	running Running,
 	issue connector.Issue,
 ) {
+	attempt := nextAttempt(running.Attempt)
+	retryError := mergeWorkerCurrentHeadCIWaitReason(issue)
+	if o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue.ID, event.CompletedAt) {
+		err := fmt.Errorf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retryError)
+		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerCurrentHeadCIWaitExceededReason, attempt, err) {
+			return
+		}
+	}
 	o.waitForMergeWorkerRetry(
 		ctx,
 		state,
 		event,
 		running,
 		issue,
-		running.Attempt,
-		"waiting for current-head CI",
+		attempt,
+		retryError,
 		"merge_worker_waiting_current_head_ci",
 		"merge worker is waiting for current-head CI for ",
 	)
@@ -1322,13 +1330,47 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	}
 	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
 	if o.logger != nil {
-		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt)...)
+		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt, "reason", retryError)...)
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   eventName,
 		Message: eventMessage + issueLabel(issue),
 	})
+}
+
+func (o *Orchestrator) mergeWorkerCurrentHeadCIWaitExceeded(state *State, issueID string, completedAt time.Time) bool {
+	if state == nil || completedAt.IsZero() {
+		return false
+	}
+	issueID = strings.TrimSpace(issueID)
+	timing := state.MergeTimings[issueID]
+	if timing.CIWaitStartedAt.IsZero() {
+		timing.CIWaitStartedAt = completedAt.UTC()
+		state.MergeTimings[issueID] = timing
+		return false
+	}
+	return !completedAt.Before(timing.CIWaitStartedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout))
+}
+
+func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
+	const reason = "waiting for current-head CI"
+	if issue.PullRequest == nil {
+		return reason
+	}
+	pendingRequiredChecks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
+	for _, check := range issue.PullRequest.RequiredCheckFailures {
+		if autoPromoteCheckPending(check) && strings.TrimSpace(check.Name) != "" {
+			pendingRequiredChecks = append(pendingRequiredChecks, check.Name)
+		}
+	}
+	if pendingRequiredChecks = uniqueStrings(pendingRequiredChecks); len(pendingRequiredChecks) > 0 {
+		return reason + ": pending required checks: " + strings.Join(pendingRequiredChecks, ", ")
+	}
+	if runningChecks := uniqueStrings(issue.PullRequest.RunningChecks); len(runningChecks) > 0 {
+		return reason + ": pending checks: " + strings.Join(runningChecks, ", ")
+	}
+	return reason
 }
 
 func (o *Orchestrator) failProgrammaticMergeWorkerResult(
@@ -1345,7 +1387,7 @@ func (o *Orchestrator) failProgrammaticMergeWorkerResult(
 	o.recordMergeFailed(state, running.Issue, event.CompletedAt, reason, err)
 	attempt := nextAttempt(running.Attempt)
 	if attempt > maxMergeWorkerRunnerFailures {
-		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerRetryExhaustedReason, attempt, err) {
 			return
 		}
 	}
@@ -1755,7 +1797,7 @@ func (o *Orchestrator) handleIncompleteMergeWorkerResult(
 	o.recordMergeFailed(state, running.Issue, event.CompletedAt, "terminal_state_missing", err)
 	attempt := nextAttempt(running.Attempt)
 	if attempt > maxMergeWorkerRunnerFailures {
-		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerRetryExhaustedReason, attempt, err) {
 			return
 		}
 	}
@@ -1780,6 +1822,7 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	state *State,
 	running Running,
 	completedAt time.Time,
+	reasonCode string,
 	attempt int,
 	err error,
 ) bool {
@@ -1787,35 +1830,43 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	if issueID == "" || o.connector == nil {
 		return false
 	}
+	reasonCode = strings.TrimSpace(reasonCode)
+	if reasonCode == "" {
+		reasonCode = mergeWorkerRetryExhaustedReason
+	}
+	reason := reasonCode
+	if detail := errorString(err); detail != "" {
+		reason += ": " + detail
+	}
 	metadata := o.newBlockedRecoveryMetadata(
 		ctx,
 		running.Issue,
 		RunModeMerge,
-		mergeWorkerRetryExhaustedReason,
+		reason,
 		blockedRecoveryPredicateFingerprintChange,
 		autoPromoteReworkState,
 		running.DiffStats,
 	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, mergeWorkerRetryExhaustedReason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, reason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_block_failed",
 				"issue_id", issueID,
 				"identifier", running.Issue.Identifier,
-				"reason", mergeWorkerRetryExhaustedReason,
+				"reason", reason,
 				"target_state", blockedStatusState,
 				"error", err,
 			)
 		}
 		return false
 	}
-	if comment := mergeWorkerRetryExhaustedComment(running.Issue, attempt, err); strings.TrimSpace(comment) != "" {
+	if comment := mergeWorkerRetryExhaustedComment(running.Issue, reasonCode, attempt, err); strings.TrimSpace(comment) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_block_comment_failed",
 				"issue_id", issueID,
 				"identifier", running.Issue.Identifier,
-				"reason", mergeWorkerRetryExhaustedReason,
+				"reason", reason,
 				"error", err,
 			)
 		}
@@ -1830,7 +1881,7 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	delete(state.Completed, issueID)
 	issue := cloneIssue(running.Issue)
 	issue.State = blockedStatusState
-	issue.BlockerReason = mergeWorkerRetryExhaustedReason + ": " + errorString(err)
+	issue.BlockerReason = reason
 	blockedAt := completedAt.UTC()
 	issue.StageUpdatedAt = &blockedAt
 	if state.Blocked == nil {
@@ -1838,24 +1889,28 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	}
 	state.Blocked[issueID] = Blocked{
 		Issue:     issue,
-		Reason:    mergeWorkerRetryExhaustedReason,
+		Reason:    reason,
 		BlockedAt: completedAt,
 		Source:    BlockedSourceProjectStatus,
 		Recovery:  metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,
-		Event:   "merge_worker_retry_exhausted",
-		Message: "merge worker retries exhausted for " + issueLabel(running.Issue) + ": " + errorString(err),
+		Event:   reasonCode,
+		Message: reasonCode + " for " + issueLabel(running.Issue) + ": " + errorString(err),
 	})
 	return true
 }
 
-func mergeWorkerRetryExhaustedComment(issue connector.Issue, attempt int, err error) string {
+func mergeWorkerRetryExhaustedComment(issue connector.Issue, reasonCode string, attempt int, err error) string {
 	var b strings.Builder
-	b.WriteString("Merge worker retries were exhausted; parked this issue in Blocked to stop automatic redispatch.")
+	if reasonCode == mergeWorkerCurrentHeadCIWaitExceededReason {
+		b.WriteString("The current-head CI wait exceeded its bounded deadline; parked this issue in Blocked to stop automatic redispatch.")
+	} else {
+		b.WriteString("Merge worker retries were exhausted; parked this issue in Blocked to stop automatic redispatch.")
+	}
 	b.WriteString("\n\n- reason: ")
-	b.WriteString(mergeWorkerRetryExhaustedReason)
+	b.WriteString(reasonCode)
 	if attempt > 0 {
 		b.WriteString("\n- attempt: ")
 		b.WriteString(strconv.Itoa(attempt))

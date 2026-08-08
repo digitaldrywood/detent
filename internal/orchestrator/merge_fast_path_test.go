@@ -381,8 +381,8 @@ func TestMergingFallbackPushWaitsAfterWorkerReappliesCITriggerWhenHydrationIsGre
 	if !ok {
 		t.Fatalf("Retry[%q] missing while current-head checks run", issue.ID)
 	}
-	if retry.Attempt != 1 {
-		t.Fatalf("Retry[%q].Attempt = %d, want unchanged attempt 1", issue.ID, retry.Attempt)
+	if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 2", issue.ID, retry.Attempt)
 	}
 	if !strings.Contains(retry.Error, "current-head CI") {
 		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
@@ -634,6 +634,7 @@ func completeMergeFastPathTestRun(
 	now time.Time,
 	attempt int,
 	gateConfig gate.Config,
+	ciWaitAge ...time.Duration,
 ) (*autoPromoteTickMergeConnector, State) {
 	t.Helper()
 
@@ -657,6 +658,9 @@ func completeMergeFastPathTestRun(
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	state := newState(cfg)
+	if len(ciWaitAge) > 0 {
+		state.MergeTimings[issue.ID] = MergeTiming{CIWaitStartedAt: now.Add(-ciWaitAge[0])}
+	}
 	state.Running[issue.ID] = Running{
 		Issue:      cloneIssue(issue),
 		Attempt:    attempt,
@@ -803,8 +807,8 @@ func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
 	if !ok {
 		t.Fatalf("Retry[%q] missing while CI is pending", issue.ID)
 	}
-	if retry.Attempt != 1 || retry.WorkerHost != "worker-a" {
-		t.Fatalf("Retry[%q] = %#v, want same-attempt retry on worker-a", issue.ID, retry)
+	if retry.Attempt != 2 || retry.WorkerHost != "worker-a" {
+		t.Fatalf("Retry[%q] = %#v, want attempt 2 retry on worker-a", issue.ID, retry)
 	}
 	if !strings.Contains(retry.Error, "current-head CI") {
 		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
@@ -814,6 +818,140 @@ func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
 	}
 	if _, ok := state.Claimed[issue.ID]; !ok {
 		t.Fatalf("Claimed[%q] missing while waiting for CI", issue.ID)
+	}
+}
+
+func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
+	t.Parallel()
+
+	const pendingCheck = "Portability Verify (windows-latest)"
+	tests := []struct {
+		name          string
+		attempt       int
+		ciStatus      string
+		mergeable     string
+		runningChecks []string
+		failures      []connector.PullRequestCheck
+		ciWaitAge     time.Duration
+		wantRetry     int
+		wantBlocked   bool
+		wantMerged    bool
+	}{
+		{
+			name:          "attempt increments across waits",
+			attempt:       1,
+			ciStatus:      "pending",
+			mergeable:     "blocked",
+			runningChecks: []string{pendingCheck},
+			failures: []connector.PullRequestCheck{{
+				Name:   pendingCheck,
+				Status: "in_progress",
+			}},
+			ciWaitAge: time.Minute,
+			wantRetry: 2,
+		},
+		{
+			name:          "successive wait increments again",
+			attempt:       2,
+			ciStatus:      "pending",
+			mergeable:     "blocked",
+			runningChecks: []string{pendingCheck},
+			failures: []connector.PullRequestCheck{{
+				Name:   pendingCheck,
+				Status: "in_progress",
+			}},
+			ciWaitAge: 30 * time.Minute,
+			wantRetry: 3,
+		},
+		{
+			name:          "pending check escalates at bound",
+			attempt:       maxMergeWorkerRunnerFailures,
+			ciStatus:      "pending",
+			mergeable:     "blocked",
+			runningChecks: []string{pendingCheck},
+			failures: []connector.PullRequestCheck{{
+				Name:   pendingCheck,
+				Status: "in_progress",
+			}},
+			ciWaitAge:   mergeWorkerCurrentHeadCIWaitTimeout,
+			wantBlocked: true,
+		},
+		{
+			name:          "pending check remains retryable before elapsed bound",
+			attempt:       maxMergeWorkerRunnerFailures,
+			ciStatus:      "pending",
+			mergeable:     "blocked",
+			runningChecks: []string{pendingCheck},
+			failures: []connector.PullRequestCheck{{
+				Name:   pendingCheck,
+				Status: "in_progress",
+			}},
+			ciWaitAge: mergeWorkerCurrentHeadCIWaitTimeout - time.Second,
+			wantRetry: maxMergeWorkerRunnerFailures + 1,
+		},
+		{
+			name:       "green check before bound merges",
+			attempt:    maxMergeWorkerRunnerFailures,
+			ciStatus:   "success",
+			mergeable:  "clean",
+			ciWaitAge:  mergeWorkerCurrentHeadCIWaitTimeout - time.Second,
+			wantMerged: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 8, 7, 22, 14, 45, 0, time.UTC)
+			issue := autoPromoteTickIssue("issue-current-head-ci-"+strings.ReplaceAll(tt.name, " ", "-"), []string{"bug"}, &connector.PullRequest{
+				Number:                1636,
+				URL:                   "https://github.test/digitaldrywood/detent/pull/1636",
+				State:                 "OPEN",
+				MergeableState:        tt.mergeable,
+				CIStatus:              tt.ciStatus,
+				HeadSHA:               "29869e149edf099f34e92136199c5ee45056fddf",
+				RunningChecks:         append([]string(nil), tt.runningChecks...),
+				RequiredCheckFailures: append([]connector.PullRequestCheck(nil), tt.failures...),
+			})
+			issue.State = "Merging"
+			issue.Identifier = "digitaldrywood/detent#1634"
+			issue.PRRepository = "digitaldrywood/detent"
+
+			tracker, state := completeMergeFastPathTestRun(t, issue, now, tt.attempt, gate.Config{
+				RequiredStatusChecks: []string{pendingCheck},
+			}, tt.ciWaitAge)
+
+			if tt.wantRetry > 0 {
+				retry, ok := state.Retry[issue.ID]
+				if !ok {
+					t.Fatalf("Retry[%q] missing", issue.ID)
+				}
+				if retry.Attempt != tt.wantRetry {
+					t.Fatalf("Retry[%q].Attempt = %d, want %d", issue.ID, retry.Attempt, tt.wantRetry)
+				}
+				return
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatalf("Retry[%q] present after terminal disposition", issue.ID)
+			}
+			if tt.wantBlocked {
+				blocked, ok := state.Blocked[issue.ID]
+				if !ok {
+					t.Fatalf("Blocked[%q] missing", issue.ID)
+				}
+				if !strings.Contains(blocked.Reason, pendingCheck) {
+					t.Fatalf("Blocked[%q].Reason = %q, want pending check %q", issue.ID, blocked.Reason, pendingCheck)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, pendingCheck) {
+					t.Fatalf("comments = %#v, want pending check %q", tracker.comments, pendingCheck)
+				}
+				return
+			}
+			if tt.wantMerged && len(tracker.merges) != 1 {
+				t.Fatalf("merges = %#v, want one merge", tracker.merges)
+			}
+		})
 	}
 }
 

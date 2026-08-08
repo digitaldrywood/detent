@@ -1348,7 +1348,7 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 }
 
 func staleMergingIssueReadyForDispatch(issue connector.Issue, cfg Config) bool {
-	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+	if strings.TrimSpace(issue.ID) == "" || issue.Closed || issue.PullRequest == nil {
 		return false
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {

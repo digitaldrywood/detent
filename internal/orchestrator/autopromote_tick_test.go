@@ -4016,6 +4016,7 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 	tests := []struct {
 		name        string
 		pullRequest *connector.PullRequest
+		closed      bool
 		want        bool
 	}{
 		{
@@ -4032,10 +4033,20 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 			pullRequest: nil,
 		},
 		{
-			name: "merged pull request",
+			name:   "closed issue with merged pull request",
+			closed: true,
 			pullRequest: &connector.PullRequest{
 				State:    "MERGED",
 				CIStatus: "success",
+			},
+		},
+		{
+			name:   "closed issue with stale open pull request",
+			closed: true,
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
 			},
 		},
 		{
@@ -4109,6 +4120,7 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 			orch := &Orchestrator{cfg: cfg}
 			issue := autoPromoteTickIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), []string{"bug"}, tt.pullRequest)
 			issue.State = "Merging"
+			issue.Closed = tt.closed
 			got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue})
 			if tt.want {
 				if len(got) != 1 || got[0].ID != issue.ID {

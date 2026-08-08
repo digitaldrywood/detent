@@ -142,7 +142,9 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 	timing.MergeStartedAt = now.UTC()
 	timing.BaseRefreshStartedAt = timing.MergeStartedAt
 	timing.BaseRefreshFinishedAt = time.Time{}
-	timing.CIWaitStartedAt = timing.MergeStartedAt
+	if timing.CIWaitStartedAt.IsZero() {
+		timing.CIWaitStartedAt = timing.MergeStartedAt
+	}
 	timing.CIWaitFinishedAt = time.Time{}
 	timing = timing.withDurations(now)
 	state.MergeTimings[strings.TrimSpace(issue.ID)] = timing
