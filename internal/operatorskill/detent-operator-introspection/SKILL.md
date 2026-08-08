@@ -65,7 +65,7 @@ Call once:
 detent --format json issue '<issue-ref>' --explain --project '<project-id>'
 ```
 
-Stop: Treat `available` and `live` as current evidence. Label `last_known`, `expired`, `unavailable`, or `corrupt` evidence explicitly instead of presenting it as current.
+Stop: Treat only `live` evidence as current. Treat `available` as readable, then assess its observation, selection, heartbeat, and completion timestamps before describing it as current. Label `last_known`, `expired`, `unavailable`, or `corrupt` evidence explicitly.
 
 Escalate: Escalate when degraded or missing evidence prevents the requested conclusion. A successful response with degraded fields is still a success, not permission to use another data source.
 

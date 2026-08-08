@@ -129,6 +129,8 @@ func assertSafetyContract(t *testing.T, document string) {
 	for _, required := range []string{
 		"api_token_required",
 		"A successful response with degraded fields is still a success",
+		"Treat only `live` evidence as current",
+		"Treat `available` as readable",
 		"Never substitute raw database access",
 		"dashboard HTML scraping",
 		"plaintext credential recovery",
