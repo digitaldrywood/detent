@@ -139,6 +139,7 @@ Structured command objects:
 | `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
 | `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
 | `detent state [--project detent]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
+| `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
 ### MCP stdio server
@@ -162,6 +163,45 @@ include `generated_at` and `freshness`; last-known results also include
 The exposed tools are `board_state`, `fleet_health`, `telemetry_usage`,
 `recent_activity`, and `explain_item`. Names, descriptions, input schemas,
 limits, and result shapes come from the shared operator catalog and executor.
+
+### Operator skill installation
+
+`detent skill install` installs the embedded read-only operator introspection
+skill for explicitly selected local agent clients. `--target` is required and
+repeatable; supported values are `claude-code`, `codex`, and `antigravity`.
+
+| Target | Discovery scope | Deterministic installed entrypoint |
+| --- | --- | --- |
+| `claude-code` | Claude Code personal skill | `~/.claude/skills/detent-operator-introspection/SKILL.md` |
+| `codex` | Codex user skill | `~/.agents/skills/detent-operator-introspection/SKILL.md` |
+| `antigravity` | Antigravity global skill | `~/.gemini/config/skills/detent-operator-introspection/SKILL.md` |
+
+The locations intentionally follow each client's own discovery contract. The
+portable bundle body does not imply a shared client home layout, and the
+installer never writes repository `.detent/skills` worker metadata.
+
+Use `--dry-run` to validate all selected roots and print every directory,
+managed file, backup path, and action without writing. JSON output returns the
+same complete plan and result model. The command preflights every selected
+target before applying any action, so a conflict or unsafe path prevents all
+targets from changing.
+
+An exact reinstall is a no-op. A changed skill, changed install manifest,
+upgrade, downgrade, or partial prior install fails without `--force`; the
+command does not prompt in JSON mode. `--force` first creates deterministic
+content-addressed backups beside changed managed files, then atomically replaces
+only `SKILL.md` and `.detent-install.json`. Other files in the skill directory
+are preserved. If a later action fails, earlier managed-file and directory
+changes are rolled back across all selected targets, and rollback results are
+included in output.
+
+Every existing path component from the user home through the destination must
+be a real directory. Symlinked roots, directories, managed files, backup files,
+and lexical escapes are rejected. New directories use mode `0700`; managed and
+backup files use mode `0600`. The install manifest records the embedded bundle
+version and SHA-256 plus the running binary's resolved build version, commit,
+date, and dirty state. It contains no credentials, Detent config, or runtime
+filesystem paths.
 
 ### Issue explanation reads
 
