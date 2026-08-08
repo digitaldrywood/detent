@@ -1,6 +1,7 @@
 package onboarding
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
@@ -82,6 +83,93 @@ func TestDeliveryProfileRejectsUnknown(t *testing.T) {
 
 	if _, ok := DeliveryProfileAnswerExpansion("safe_start"); ok {
 		t.Fatal("DeliveryProfileAnswerExpansion(safe_start) ok = true, want false")
+	}
+}
+
+func TestIntakeProfileAnswerExpansion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		profile string
+		want    map[string]string
+	}{
+		{
+			name:    "manual",
+			profile: IntakeProfileManual,
+			want: map[string]string{
+				"FOLLOWUPS_ENABLED":         "true",
+				"BACKLOG_ADMISSION_ENABLED": "false",
+				"ROUTINES_ENABLED":          "false",
+				"STALE_TODOS_ENABLED":       "false",
+			},
+		},
+		{
+			name:    "assisted",
+			profile: IntakeProfileAssisted,
+			want: map[string]string{
+				"FOLLOWUPS_ENABLED":                           "true",
+				"BACKLOG_ADMISSION_ENABLED":                   "true",
+				"BACKLOG_ADMISSION_SCHEDULE":                  "*/15 * * * *",
+				"BACKLOG_ADMISSION_SOURCE_STATE":              "Backlog",
+				"BACKLOG_ADMISSION_TARGET_STATE":              "Todo",
+				"BACKLOG_ADMISSION_CRITERIA_SECTION":          IntakeProfileCriteriaSection,
+				"BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN":    "50",
+				"BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN":     "3",
+				"BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS":        "10",
+				"BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS":      "7",
+				"BACKLOG_ADMISSION_AUTO_ADMIT":                "false",
+				"BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE": "0.9",
+				"ROUTINES_ENABLED":                            "false",
+				"STALE_TODOS_ENABLED":                         "false",
+			},
+		},
+		{
+			name:    "autonomous",
+			profile: IntakeProfileAutonomous,
+			want: map[string]string{
+				"FOLLOWUPS_ENABLED":                           "true",
+				"BACKLOG_ADMISSION_ENABLED":                   "true",
+				"BACKLOG_ADMISSION_SCHEDULE":                  "*/15 * * * *",
+				"BACKLOG_ADMISSION_SOURCE_STATE":              "Backlog",
+				"BACKLOG_ADMISSION_TARGET_STATE":              "Todo",
+				"BACKLOG_ADMISSION_CRITERIA_SECTION":          IntakeProfileCriteriaSection,
+				"BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN":    "50",
+				"BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN":     "3",
+				"BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS":        "10",
+				"BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS":      "7",
+				"BACKLOG_ADMISSION_AUTO_ADMIT":                "true",
+				"BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE": "0.9",
+				"ROUTINES_ENABLED":                            "true",
+				"ROUTINE_NAME":                                IntakeProfileRoutineName,
+				"ROUTINE_SCHEDULE":                            IntakeProfileRoutineSchedule,
+				"ROUTINE_PROMPT":                              IntakeProfileRoutinePrompt,
+				"STALE_TODOS_ENABLED":                         "true",
+				"STALE_TODOS_SCHEDULE":                        IntakeProfileStaleTODOsSchedule,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := IntakeProfileAnswerExpansion(tt.profile)
+			if !ok {
+				t.Fatalf("IntakeProfileAnswerExpansion(%q) ok = false, want true", tt.profile)
+			}
+			if !maps.Equal(got, tt.want) {
+				t.Fatalf("answers = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIntakeProfileRejectsUnknown(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := IntakeProfileAnswerExpansion("unbounded_intake"); ok {
+		t.Fatal("IntakeProfileAnswerExpansion(unbounded_intake) ok = true, want false")
 	}
 }
 

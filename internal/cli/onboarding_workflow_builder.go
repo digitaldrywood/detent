@@ -18,6 +18,7 @@ import (
 	workflowtemplates "github.com/digitaldrywood/detent/docs/templates"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/intake"
 	onboardingprofile "github.com/digitaldrywood/detent/internal/onboarding"
 )
 
@@ -316,6 +317,7 @@ func renderOnboardingWorkflow(
 		return "", "", nil, err
 	}
 	renderedPrompt := renderOnboardingWorkflowPrompt(preset.Name, preset.PromptRaw, reviewFlow)
+	renderedPrompt = renderOnboardingWorkflowAdmissionCriteria(renderedPrompt, root)
 
 	rawConfig, err := yaml.Marshal(root)
 	if err != nil {
@@ -540,6 +542,9 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "agent.auto_promote.quiet_seconds", quietSeconds, quietProvenance, quietWhy)
 	decisions.set(root, "agent.auto_promote.gate_wait_state", gateWaitState, gateWaitProvenance, gateWaitWhy)
 	decisions.set(root, "agent.auto_promote.gate_wait_timeout_seconds", gateWaitTimeout, gateWaitTimeoutProvenance, gateWaitTimeoutWhy)
+	if err := applyOnboardingWorkflowIntakeDecisions(root, preset, answers, decisions); err != nil {
+		return "", err
+	}
 	decisions.set(root, "tracker.dependency_auto_unblock.enabled", dependencyAutoUnblock, dependencyProvenance, dependencyWhy)
 	if templateGateKind == gate.KindArtifact {
 		decisions.add("gate.kind", gate.KindArtifact, "preset", "artifact validation gate from selected preset")
@@ -627,6 +632,157 @@ func onboardingWorkflowDeliveryProfile(answers onboardingAnswers) (string, strin
 		)
 	}
 	return profile, "answer", "DELIVERY_PROFILE", nil
+}
+
+func onboardingWorkflowIntakeProfile(answers onboardingAnswers) (string, string, string, error) {
+	value, ok := onboardingWorkflowAnswer(answers, "INTAKE_PROFILE")
+	if !ok {
+		return onboardingprofile.IntakeProfileManual, "preset", "manual_intake preserves the existing explicit human-intake default", nil
+	}
+	profile := onboardingprofile.NormalizeIntakeProfile(value)
+	if _, ok := onboardingprofile.IntakeProfile(profile); !ok {
+		return "", "", "", NewValidationError(
+			"INTAKE_PROFILE must be manual_intake, assisted_intake, or autonomous_intake",
+			"Record a valid INTAKE_PROFILE or omit it to use the builder default.",
+			nil,
+		)
+	}
+	return profile, "answer", "INTAKE_PROFILE", nil
+}
+
+func applyOnboardingWorkflowIntakeDecisions(root *yaml.Node, preset string, answers onboardingAnswers, decisions *onboardingWorkflowDecisionRecorder) error {
+	profile, profileProvenance, profileWhy, err := onboardingWorkflowIntakeProfile(answers)
+	if err != nil {
+		return err
+	}
+	profileAnswers, _ := onboardingprofile.IntakeProfileAnswerExpansion(profile)
+	decisions.add("answers.intake_profile", profile, profileProvenance, profileWhy)
+
+	followupsEnabled, followupsProvenance, followupsWhy, err := onboardingWorkflowIntakeBoolDecision(answers, profileAnswers, "FOLLOWUPS_ENABLED", true, "preset", "implementer agents preserve out-of-scope discoveries by default")
+	if err != nil {
+		return err
+	}
+	admissionEnabled, admissionProvenance, admissionWhy, err := onboardingWorkflowIntakeBoolDecision(answers, profileAnswers, "BACKLOG_ADMISSION_ENABLED", false, "preset", "backlog admission is opt-in")
+	if err != nil {
+		return err
+	}
+	routinesEnabled, routinesProvenance, routinesWhy, err := onboardingWorkflowIntakeBoolDecision(answers, profileAnswers, "ROUTINES_ENABLED", false, "preset", "scheduled agent discovery is opt-in")
+	if err != nil {
+		return err
+	}
+	staleTODOsEnabled, staleTODOsProvenance, staleTODOsWhy, err := onboardingWorkflowIntakeBoolDecision(answers, profileAnswers, "STALE_TODOS_ENABLED", false, "preset", "scheduled source scanning is opt-in")
+	if err != nil {
+		return err
+	}
+	if routinesEnabled && (preset == "github_local" || preset == "non_code_artifact") {
+		return NewValidationError(
+			"ROUTINES_ENABLED=true requires a GitHub-backed workflow preset",
+			"Use project_v2, issue_field, or label mode, or choose assisted_intake/manual_intake for this tracker.",
+			nil,
+		)
+	}
+	if staleTODOsEnabled && (preset == "github_local" || preset == "non_code_artifact") {
+		return NewValidationError(
+			"STALE_TODOS_ENABLED=true requires a GitHub-backed workflow preset",
+			"Use project_v2, issue_field, or label mode, or choose assisted_intake/manual_intake for this tracker.",
+			nil,
+		)
+	}
+
+	decisions.set(root, "agent.followups.enabled", followupsEnabled, followupsProvenance, followupsWhy)
+	if admissionEnabled {
+		if err := applyOnboardingWorkflowAdmissionDecisions(root, answers, profileAnswers, admissionProvenance, admissionWhy, decisions); err != nil {
+			return err
+		}
+	} else {
+		deleteOnboardingYAMLPath(root, []string{"backlog_admission"})
+		decisions.add("backlog_admission", "omitted", admissionProvenance, admissionWhy)
+	}
+	if routinesEnabled {
+		name, nameProvenance, nameWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "ROUTINE_NAME", onboardingprofile.IntakeProfileRoutineName, "preset", "weekly repository maintenance routine")
+		schedule, scheduleProvenance, scheduleWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "ROUTINE_SCHEDULE", onboardingprofile.IntakeProfileRoutineSchedule, "preset", "weekly bounded maintenance cadence")
+		prompt, promptProvenance, promptWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "ROUTINE_PROMPT", onboardingprofile.IntakeProfileRoutinePrompt, "preset", "project criteria bound routine findings")
+		decisions.set(root, "routines", []workflowconfig.Routine{{Name: name, Schedule: schedule, Prompt: prompt}}, routinesProvenance, routinesWhy)
+		decisions.add("routines[].name", name, nameProvenance, nameWhy)
+		decisions.add("routines[].schedule", schedule, scheduleProvenance, scheduleWhy)
+		decisions.add("routines[].prompt", prompt, promptProvenance, promptWhy)
+	} else {
+		deleteOnboardingYAMLPath(root, []string{"routines"})
+		decisions.add("routines", "omitted", routinesProvenance, routinesWhy)
+	}
+	if staleTODOsEnabled {
+		schedule, scheduleProvenance, scheduleWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "STALE_TODOS_SCHEDULE", onboardingprofile.IntakeProfileStaleTODOsSchedule, "preset", "weekly stale TODO scan")
+		decisions.set(root, "intake.sources", []intake.Source{{
+			Name: "stale-todos",
+			Kind: intake.KindSchedule,
+			Cron: schedule,
+			Scan: "stale-todos",
+			Creates: intake.Creates{
+				Status: "Backlog",
+				Labels: []string{"maintenance"},
+				Title:  "{summary}",
+				Body:   "{details}",
+			},
+			DedupeBy: "fingerprint",
+		}}, staleTODOsProvenance, staleTODOsWhy)
+		decisions.add("intake.sources[].cron", schedule, scheduleProvenance, scheduleWhy)
+	} else {
+		deleteOnboardingYAMLPath(root, []string{"intake"})
+		decisions.add("intake", "omitted", staleTODOsProvenance, staleTODOsWhy)
+	}
+	return nil
+}
+
+func applyOnboardingWorkflowAdmissionDecisions(root *yaml.Node, answers onboardingAnswers, profileAnswers map[string]string, provenance string, why string, decisions *onboardingWorkflowDecisionRecorder) error {
+	schedule, scheduleProvenance, scheduleWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_SCHEDULE", workflowconfig.DefaultBacklogAdmissionSchedule, "preset", "bounded admission polling cadence")
+	sourceState, sourceProvenance, sourceWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_SOURCE_STATE", "Backlog", "preset", "evaluate work waiting in Backlog")
+	targetState, targetProvenance, targetWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_TARGET_STATE", "Todo", "preset", "admitted work becomes dispatch eligible")
+	criteriaSection, criteriaProvenance, criteriaWhy := onboardingWorkflowIntakeStringDecision(answers, profileAnswers, "BACKLOG_ADMISSION_CRITERIA_SECTION", "", "preset", "admission requires project-owned criteria")
+	if strings.TrimSpace(criteriaSection) == "" {
+		return NewValidationError(
+			"BACKLOG_ADMISSION_CRITERIA_SECTION is required when BACKLOG_ADMISSION_ENABLED=true",
+			"Name the shared WORKFLOW.md section that defines admission criteria.",
+			nil,
+		)
+	}
+	maxCandidates, maxCandidatesProvenance, maxCandidatesWhy, err := onboardingWorkflowIntakeIntDecision(answers, profileAnswers, "BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN", workflowconfig.DefaultBacklogAdmissionMaxCandidatesPerRun, "preset", "bounds candidates evaluated per admission run")
+	if err != nil {
+		return err
+	}
+	maxProposals, maxProposalsProvenance, maxProposalsWhy, err := onboardingWorkflowIntakeIntDecision(answers, profileAnswers, "BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN", workflowconfig.DefaultBacklogAdmissionMaxProposalsPerRun, "preset", "bounds new proposals per admission run")
+	if err != nil {
+		return err
+	}
+	maxOpenProposals, maxOpenProposalsProvenance, maxOpenProposalsWhy, err := onboardingWorkflowIntakeIntDecision(answers, profileAnswers, "BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS", workflowconfig.DefaultBacklogAdmissionMaxOpenProposals, "preset", "bounds unresolved admission proposals")
+	if err != nil {
+		return err
+	}
+	proposalExpiryDays, proposalExpiryProvenance, proposalExpiryWhy, err := onboardingWorkflowIntakeIntDecision(answers, profileAnswers, "BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS", workflowconfig.DefaultBacklogAdmissionProposalExpiryDays, "preset", "expires stale admission proposals")
+	if err != nil {
+		return err
+	}
+	autoAdmit, autoAdmitProvenance, autoAdmitWhy, err := onboardingWorkflowIntakeBoolDecision(answers, profileAnswers, "BACKLOG_ADMISSION_AUTO_ADMIT", false, "preset", "operator approval is required by default")
+	if err != nil {
+		return err
+	}
+	minConfidence, minConfidenceProvenance, minConfidenceWhy, err := onboardingWorkflowIntakeFloatDecision(answers, profileAnswers, "BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE", workflowconfig.DefaultBacklogAdmissionAutoAdmitMinConfidence, "preset", "explicit autonomous admission confidence floor")
+	if err != nil {
+		return err
+	}
+
+	decisions.set(root, "backlog_admission.enabled", true, provenance, why)
+	decisions.set(root, "backlog_admission.schedule", schedule, scheduleProvenance, scheduleWhy)
+	decisions.set(root, "backlog_admission.sources.states", []string{sourceState}, sourceProvenance, sourceWhy)
+	decisions.set(root, "backlog_admission.target_state", targetState, targetProvenance, targetWhy)
+	decisions.set(root, "backlog_admission.criteria_section", criteriaSection, criteriaProvenance, criteriaWhy)
+	decisions.set(root, "backlog_admission.require_effort", false, "preset", "effort rubric generation is handled separately")
+	decisions.set(root, "backlog_admission.max_candidates_per_run", maxCandidates, maxCandidatesProvenance, maxCandidatesWhy)
+	decisions.set(root, "backlog_admission.max_proposals_per_run", maxProposals, maxProposalsProvenance, maxProposalsWhy)
+	decisions.set(root, "backlog_admission.max_open_proposals", maxOpenProposals, maxOpenProposalsProvenance, maxOpenProposalsWhy)
+	decisions.set(root, "backlog_admission.proposal_expiry_days", proposalExpiryDays, proposalExpiryProvenance, proposalExpiryWhy)
+	decisions.set(root, "backlog_admission.auto_admit", autoAdmit, autoAdmitProvenance, autoAdmitWhy)
+	decisions.set(root, "backlog_admission.auto_admit_min_confidence", minConfidence, minConfidenceProvenance, minConfidenceWhy)
+	return nil
 }
 
 func onboardingWorkflowWorkerModelDecision(answers onboardingAnswers) (onboardingWorkflowWorkerModel, error) {
@@ -771,6 +927,43 @@ func onboardingWorkflowFloatDecision(answers onboardingAnswers, key string, fall
 	return value, provenance, why, nil
 }
 
+func onboardingWorkflowIntakeStringDecision(answers onboardingAnswers, profile map[string]string, key string, fallback string, fallbackProvenance string, fallbackWhy string) (string, string, string) {
+	if value, ok := onboardingWorkflowAnswer(answers, key); ok {
+		return value, "answer", key
+	}
+	if value := strings.TrimSpace(profile[key]); value != "" {
+		return value, "answer", "INTAKE_PROFILE expands " + key
+	}
+	return fallback, fallbackProvenance, fallbackWhy
+}
+
+func onboardingWorkflowIntakeBoolDecision(answers onboardingAnswers, profile map[string]string, key string, fallback bool, fallbackProvenance string, fallbackWhy string) (bool, string, string, error) {
+	raw, provenance, why := onboardingWorkflowIntakeStringDecision(answers, profile, key, strconv.FormatBool(fallback), fallbackProvenance, fallbackWhy)
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, "", "", NewValidationError(key+" must be true or false", "Use true or false for boolean onboarding answers.", nil)
+	}
+	return value, provenance, why, nil
+}
+
+func onboardingWorkflowIntakeIntDecision(answers onboardingAnswers, profile map[string]string, key string, fallback int, fallbackProvenance string, fallbackWhy string) (int, string, string, error) {
+	raw, provenance, why := onboardingWorkflowIntakeStringDecision(answers, profile, key, strconv.Itoa(fallback), fallbackProvenance, fallbackWhy)
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, "", "", NewValidationError(key+" must be an integer", "Use a whole number for integer onboarding answers.", nil)
+	}
+	return value, provenance, why, nil
+}
+
+func onboardingWorkflowIntakeFloatDecision(answers onboardingAnswers, profile map[string]string, key string, fallback float64, fallbackProvenance string, fallbackWhy string) (float64, string, string, error) {
+	raw, provenance, why := onboardingWorkflowIntakeStringDecision(answers, profile, key, strconv.FormatFloat(fallback, 'f', -1, 64), fallbackProvenance, fallbackWhy)
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, "", "", NewValidationError(key+" must be a number", "Use a numeric value for threshold onboarding answers.", nil)
+	}
+	return value, provenance, why, nil
+}
+
 func onboardingWorkflowListDecision(answers onboardingAnswers, key string, fallback []string, fallbackProvenance string, fallbackWhy string) ([]string, string, string) {
 	if raw, ok := onboardingWorkflowAnswer(answers, key); ok {
 		return splitOnboardingWorkflowList(raw), "answer", key
@@ -817,6 +1010,36 @@ func renderOnboardingWorkflowPrompt(preset string, prompt []byte, flow onboardin
 		return text
 	}
 	return replaceOnboardingWorkflowSection(text, "## Required Execution Flow", section)
+}
+
+func renderOnboardingWorkflowAdmissionCriteria(prompt string, root *yaml.Node) string {
+	admission := onboardingYAMLMappingValue(root, "backlog_admission")
+	if admission == nil || strings.TrimSpace(onboardingYAMLScalarValue(admission, "enabled")) != "true" {
+		return prompt
+	}
+	section := strings.TrimSpace(onboardingYAMLScalarValue(admission, "criteria_section"))
+	if section == "" {
+		return prompt
+	}
+	if _, err := workflowconfig.ResolveAdmissionCriteria(prompt, section); err == nil || !strings.Contains(err.Error(), "was not found") {
+		return prompt
+	}
+	return strings.TrimRight(prompt, "\n") + "\n\n" + markdownLines(
+		"## "+section,
+		"",
+		"- **Alignment** — Admit work that advances explicit project goals or repairs a reproducible defect.",
+		"- **Readiness** — Admit only issues with clear expected behavior and checkable completion criteria.",
+		"- **Size** — Admit only work that can be completed and validated in one agent run.",
+		"- **Safety** — Leave destructive, credential-gated, ambiguous, or dependency-blocked work in Backlog.",
+	)
+}
+
+func onboardingYAMLScalarValue(node *yaml.Node, key string) string {
+	value := onboardingYAMLMappingValue(node, key)
+	if value == nil || value.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return value.Value
 }
 
 func replaceOnboardingWorkflowSection(text string, heading string, replacement string) string {

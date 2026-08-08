@@ -225,6 +225,33 @@ compare your schedule with recent candidate-bearing runs and the runtime and
 token cost observed on your own host. Choose a slower explicit schedule when
 that latency/cost tradeoff is intentional.
 
+The onboarding workflow builder accepts a named `INTAKE_PROFILE` and expands
+these `answers.env` keys into the typed configuration below. The generated
+field reference remains derived from the YAML schema; this table documents the
+interview-to-config mapping that exists before YAML is rendered.
+
+| `answers.env` key | Generated config target |
+| --- | --- |
+| `INTAKE_PROFILE` | Selects the manual, assisted, or autonomous answer expansion |
+| `FOLLOWUPS_ENABLED` | `agent.followups.enabled` |
+| `BACKLOG_ADMISSION_ENABLED` | `backlog_admission.enabled`; the entire block is omitted when false |
+| `BACKLOG_ADMISSION_SCHEDULE` | `backlog_admission.schedule` |
+| `BACKLOG_ADMISSION_SOURCE_STATE` | `backlog_admission.sources.states` |
+| `BACKLOG_ADMISSION_TARGET_STATE` | `backlog_admission.target_state` |
+| `BACKLOG_ADMISSION_CRITERIA_SECTION` | `backlog_admission.criteria_section` and the matching shared `WORKFLOW.md` heading |
+| `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN` | `backlog_admission.max_candidates_per_run` |
+| `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN` | `backlog_admission.max_proposals_per_run` |
+| `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS` | `backlog_admission.max_open_proposals` |
+| `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` | `backlog_admission.proposal_expiry_days` |
+| `BACKLOG_ADMISSION_AUTO_ADMIT` | `backlog_admission.auto_admit` |
+| `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` | `backlog_admission.auto_admit_min_confidence` |
+| `ROUTINES_ENABLED` | Controls whether the generated `routines` list is present |
+| `ROUTINE_NAME` | `routines[].name` |
+| `ROUTINE_SCHEDULE` | `routines[].schedule` |
+| `ROUTINE_PROMPT` | `routines[].prompt` |
+| `STALE_TODOS_ENABLED` | Controls whether the built-in scheduled `stale-todos` source is present |
+| `STALE_TODOS_SCHEDULE` | `intake.sources[].cron` for the `stale-todos` source |
+
 ## Fleet staleness warnings
 
 `observability.staleness` detects work items that exceed lane-specific aging

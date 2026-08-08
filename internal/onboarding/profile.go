@@ -16,6 +16,14 @@ const (
 	DeliveryProfileConservativeManual = "conservative_manual"
 	DeliveryProfileAutonomousDelivery = DeliveryProfileFullAutopilot
 	DeliveryProfileConservativeReview = DeliveryProfileConservativeManual
+	IntakeProfileManual               = "manual_intake"
+	IntakeProfileAssisted             = "assisted_intake"
+	IntakeProfileAutonomous           = "autonomous_intake"
+	IntakeProfileCriteriaSection      = "Admission Criteria"
+	IntakeProfileRoutineName          = "repository-maintenance"
+	IntakeProfileRoutineSchedule      = "0 6 * * 1"
+	IntakeProfileRoutinePrompt        = "Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria."
+	IntakeProfileStaleTODOsSchedule   = "0 6 * * 1"
 )
 
 type DeliveryProfileSettings struct {
@@ -48,6 +56,28 @@ type DeliveryProfileSummary struct {
 	StopBehavior                  string           `json:"stop_behavior"`
 	StopConditions                []string         `json:"stop_conditions"`
 	AgentPoolChoice               *AgentPoolChoice `json:"agent_pool_choice,omitempty"`
+}
+
+type IntakeProfileSettings struct {
+	ID                            string
+	Label                         string
+	FollowupsEnabled              bool
+	BacklogAdmissionEnabled       bool
+	BacklogAdmissionAutoAdmit     bool
+	BacklogAdmissionMinConfidence float64
+	RoutinesEnabled               bool
+	StaleTODOsEnabled             bool
+}
+
+type IntakeProfileSummary struct {
+	EffectiveIntakeProfile      string `json:"effective_intake_profile"`
+	EffectiveIntakeProfileLabel string `json:"effective_intake_profile_label"`
+	FollowupsEnabled            bool   `json:"followups_enabled"`
+	BacklogAdmissionEnabled     bool   `json:"backlog_admission_enabled"`
+	BacklogAdmissionAutoAdmit   bool   `json:"backlog_admission_auto_admit"`
+	RoutinesEnabled             bool   `json:"routines_enabled"`
+	StaleTODOsEnabled           bool   `json:"stale_todos_enabled"`
+	Behavior                    string `json:"behavior"`
 }
 
 type ProjectWorkload struct {
@@ -224,6 +254,118 @@ func DeliveryProfileAnswerExpansion(value string) (map[string]string, bool) {
 		"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       strconv.FormatBool(settings.DependencyAutoUnblockEnabled),
 		"MERGING_CONCURRENCY":                   strconv.Itoa(settings.MergingConcurrency),
 	}, true
+}
+
+func NormalizeIntakeProfile(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "manual", "manual-intake", "manual_intake":
+		return IntakeProfileManual
+	case "assisted", "assisted-intake", "assisted_intake":
+		return IntakeProfileAssisted
+	case "autonomous", "autonomous-intake", "autonomous_intake":
+		return IntakeProfileAutonomous
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func IntakeProfile(value string) (IntakeProfileSettings, bool) {
+	switch NormalizeIntakeProfile(value) {
+	case IntakeProfileManual:
+		return IntakeProfileSettings{
+			ID:               IntakeProfileManual,
+			Label:            "Manual intake",
+			FollowupsEnabled: true,
+		}, true
+	case IntakeProfileAssisted:
+		return IntakeProfileSettings{
+			ID:                            IntakeProfileAssisted,
+			Label:                         "Assisted intake",
+			FollowupsEnabled:              true,
+			BacklogAdmissionEnabled:       true,
+			BacklogAdmissionMinConfidence: workflowconfig.DefaultBacklogAdmissionAutoAdmitMinConfidence,
+		}, true
+	case IntakeProfileAutonomous:
+		return IntakeProfileSettings{
+			ID:                            IntakeProfileAutonomous,
+			Label:                         "Autonomous intake",
+			FollowupsEnabled:              true,
+			BacklogAdmissionEnabled:       true,
+			BacklogAdmissionAutoAdmit:     true,
+			BacklogAdmissionMinConfidence: workflowconfig.DefaultBacklogAdmissionAutoAdmitMinConfidence,
+			RoutinesEnabled:               true,
+			StaleTODOsEnabled:             true,
+		}, true
+	default:
+		return IntakeProfileSettings{}, false
+	}
+}
+
+func IntakeProfileAnswerExpansion(value string) (map[string]string, bool) {
+	settings, ok := IntakeProfile(value)
+	if !ok {
+		return nil, false
+	}
+	answers := map[string]string{
+		"FOLLOWUPS_ENABLED":         strconv.FormatBool(settings.FollowupsEnabled),
+		"BACKLOG_ADMISSION_ENABLED": strconv.FormatBool(settings.BacklogAdmissionEnabled),
+		"ROUTINES_ENABLED":          strconv.FormatBool(settings.RoutinesEnabled),
+		"STALE_TODOS_ENABLED":       strconv.FormatBool(settings.StaleTODOsEnabled),
+	}
+	if settings.BacklogAdmissionEnabled {
+		answers["BACKLOG_ADMISSION_SCHEDULE"] = workflowconfig.DefaultBacklogAdmissionSchedule
+		answers["BACKLOG_ADMISSION_SOURCE_STATE"] = "Backlog"
+		answers["BACKLOG_ADMISSION_TARGET_STATE"] = "Todo"
+		answers["BACKLOG_ADMISSION_CRITERIA_SECTION"] = IntakeProfileCriteriaSection
+		answers["BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN"] = strconv.Itoa(workflowconfig.DefaultBacklogAdmissionMaxCandidatesPerRun)
+		answers["BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN"] = strconv.Itoa(workflowconfig.DefaultBacklogAdmissionMaxProposalsPerRun)
+		answers["BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS"] = strconv.Itoa(workflowconfig.DefaultBacklogAdmissionMaxOpenProposals)
+		answers["BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS"] = strconv.Itoa(workflowconfig.DefaultBacklogAdmissionProposalExpiryDays)
+		answers["BACKLOG_ADMISSION_AUTO_ADMIT"] = strconv.FormatBool(settings.BacklogAdmissionAutoAdmit)
+		answers["BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE"] = strconv.FormatFloat(settings.BacklogAdmissionMinConfidence, 'f', -1, 64)
+	}
+	if settings.RoutinesEnabled {
+		answers["ROUTINE_NAME"] = IntakeProfileRoutineName
+		answers["ROUTINE_SCHEDULE"] = IntakeProfileRoutineSchedule
+		answers["ROUTINE_PROMPT"] = IntakeProfileRoutinePrompt
+	}
+	if settings.StaleTODOsEnabled {
+		answers["STALE_TODOS_SCHEDULE"] = IntakeProfileStaleTODOsSchedule
+	}
+	return answers, true
+}
+
+func SummarizeIntakeProfile(value string) (IntakeProfileSummary, bool) {
+	settings, ok := IntakeProfile(value)
+	if !ok {
+		return IntakeProfileSummary{}, false
+	}
+	behavior := "Humans and implementer follow-ups place work in Backlog; Detent does not promote or discover additional work automatically."
+	if settings.BacklogAdmissionEnabled {
+		behavior = "Detent evaluates Backlog work and proposes promotion to Todo for operator approval."
+	}
+	if settings.BacklogAdmissionAutoAdmit {
+		behavior = "Detent scans for stale TODOs, runs a scheduled repository-maintenance sweep, and automatically admits qualifying Backlog work at or above the configured confidence floor."
+	}
+	return IntakeProfileSummary{
+		EffectiveIntakeProfile:      settings.ID,
+		EffectiveIntakeProfileLabel: settings.Label,
+		FollowupsEnabled:            settings.FollowupsEnabled,
+		BacklogAdmissionEnabled:     settings.BacklogAdmissionEnabled,
+		BacklogAdmissionAutoAdmit:   settings.BacklogAdmissionAutoAdmit,
+		RoutinesEnabled:             settings.RoutinesEnabled,
+		StaleTODOsEnabled:           settings.StaleTODOsEnabled,
+		Behavior:                    behavior,
+	}, true
+}
+
+func SortedIntakeProfileAnswerKeys(answers map[string]string) []string {
+	keys := make([]string, 0, len(answers))
+	for key := range answers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func SortedDeliveryProfileAnswerKeys(answers map[string]string) []string {
