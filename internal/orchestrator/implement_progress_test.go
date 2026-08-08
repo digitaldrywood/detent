@@ -54,6 +54,8 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		workpadHumanAction string
 		workpadBlockerRef  string
 		resolvedBlockers   []connector.Issue
+		completionErr      error
+		wantClaimed        bool
 		refreshedState     string
 		pullRequestUpdated bool
 	}{
@@ -190,6 +192,19 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantConsecutive:   0,
 			wantBlocked:       false,
 			wantRetry:         false,
+		},
+		{
+			name:              "dependency deferral persistence failure retains claim",
+			runningIssue:      implementProgressIssueWithoutPR(),
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalSuccess,
+			wantReason:        "dependency_deferral",
+			workpadBlockerRef: "digitaldrywood/detent#134",
+			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Todo"}},
+			completionErr:     errors.New("attempt store unavailable"),
+			wantClaimed:       true,
+			wantLogContains:   "complete work attempt failed",
 		},
 		{
 			name:              "malformed blocker ref counts as no progress",
@@ -400,7 +415,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				hydrateErr:       tt.hydrateErr,
 				resolvedBlockers: tt.resolvedBlockers,
 			}
-			attempts := &implementProgressAttemptStore{history: tt.history}
+			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote:            AutoPromoteConfig{NoProgressLimit: tt.noProgressLimit},
@@ -488,6 +503,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				}
 			} else if _, ok := state.Retry[tt.runningIssue.ID]; ok != tt.wantRetry {
 				t.Fatalf("retry present = %v, want %v", ok, tt.wantRetry)
+			}
+			if _, ok := state.Claimed[tt.runningIssue.ID]; ok != tt.wantClaimed {
+				t.Fatalf("claimed present = %v, want %v", ok, tt.wantClaimed)
 			}
 			if tt.wantLogContains != "" && !strings.Contains(logs.String(), tt.wantLogContains) {
 				t.Fatalf("logs did not contain %q:\n%s", tt.wantLogContains, logs.String())
@@ -1344,11 +1362,12 @@ func (c *implementProgressConnector) ReapplyPullRequestLabel(ctx context.Context
 }
 
 type implementProgressAttemptStore struct {
-	history      []store.WorkAttempt
-	historyErr   error
-	completions  []store.WorkAttemptCompletion
-	historyCalls int
-	queries      []store.WorkAttemptHistoryQuery
+	history       []store.WorkAttempt
+	historyErr    error
+	completionErr error
+	completions   []store.WorkAttemptCompletion
+	historyCalls  int
+	queries       []store.WorkAttemptHistoryQuery
 }
 
 func (s *implementProgressAttemptStore) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
@@ -1365,7 +1384,7 @@ func (s *implementProgressAttemptStore) RecordWorkAttemptHeartbeat(context.Conte
 
 func (s *implementProgressAttemptStore) CompleteWorkAttempt(_ context.Context, attrs store.WorkAttemptCompletion) error {
 	s.completions = append(s.completions, attrs)
-	return nil
+	return s.completionErr
 }
 
 func (s *implementProgressAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {

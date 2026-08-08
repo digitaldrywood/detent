@@ -11,9 +11,10 @@ import (
 )
 
 type deferredCandidate struct {
-	issue   connector.Issue
-	record  implementProgressRecord
-	blocked bool
+	issue              connector.Issue
+	record             implementProgressRecord
+	blocked            bool
+	historyUnavailable bool
 }
 
 func (o *Orchestrator) evaluateImplementDependencyDeferral(
@@ -96,6 +97,7 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 			if o.logger != nil {
 				o.logger.Warn("implement dependency deferral history lookup failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 			}
+			candidates[issue.ID] = &deferredCandidate{issue: issue, blocked: true, historyUnavailable: true}
 			continue
 		}
 		if len(attempts) == 0 {
@@ -123,6 +125,9 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 	if len(candidates) == 0 {
 		return issues
 	}
+	if len(identifiers) == 0 {
+		return removeDeferredImplementCandidates(issues, candidates)
+	}
 	resolver, ok := o.connector.(connector.IssueReferenceResolver)
 	if !ok {
 		o.warnImplementDependencyDeferralRefresh(candidates, errors.New("issue reference resolver unavailable"))
@@ -140,6 +145,9 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 		}
 	}
 	for _, candidate := range candidates {
+		if candidate.historyUnavailable {
+			continue
+		}
 		candidate.blocked = false
 		for _, blocker := range candidate.record.DependencyBlockers {
 			resolvedIssue, found := byIdentifier[normalizedIssueIdentifier(blocker.Identifier)]

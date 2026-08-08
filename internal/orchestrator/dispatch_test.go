@@ -2480,10 +2480,12 @@ func TestFilterImplementDependencyDeferralsUsesDurableAttemptHistory(t *testing.
 	tests := []struct {
 		name          string
 		blockerState  string
+		historyErr    error
 		wantCandidate bool
 	}{
 		{name: "unresolved blocker suppresses worker after restart", blockerState: "Todo"},
 		{name: "terminal blocker releases worker after restart", blockerState: "Done", wantCandidate: true},
+		{name: "history lookup failure suppresses worker", blockerState: "Todo", historyErr: errors.New("attempt store unavailable")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2502,7 +2504,7 @@ func TestFilterImplementDependencyDeferralsUsesDurableAttemptHistory(t *testing.
 			orch := Orchestrator{
 				cfg:          cfg,
 				connector:    tracker,
-				workAttempts: &recordingWorkAttemptStore{history: history},
+				workAttempts: &recordingWorkAttemptStore{history: history, historyErr: tt.historyErr},
 			}
 
 			filtered := orch.filterImplementDependencyDeferrals(t.Context(), []connector.Issue{issue})
@@ -3209,6 +3211,7 @@ type recordingWorkAttemptStore struct {
 	reclaimed               []store.WorkAttempt
 	recent                  []store.WorkAttempt
 	history                 []store.WorkAttempt
+	historyErr              error
 	historyQueries          []store.WorkAttemptHistoryQuery
 	pendingCapacityReleases []store.WorkAttempt
 	clearedCapacityReleases []int64
@@ -3278,6 +3281,9 @@ func (s *recordingWorkAttemptStore) ClearWorkAttemptCapacityRelease(_ context.Co
 
 func (s *recordingWorkAttemptStore) ListRecentTerminalWorkAttempts(_ context.Context, query store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
 	s.historyQueries = append(s.historyQueries, query)
+	if s.historyErr != nil {
+		return nil, s.historyErr
+	}
 	if s.history == nil {
 		return append([]store.WorkAttempt(nil), s.recent...), nil
 	}
