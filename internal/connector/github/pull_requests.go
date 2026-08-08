@@ -819,6 +819,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		CIDurationSeconds:            pullRequest.CI.CIDurationSeconds,
 		SlowChecks:                   append([]connector.PullRequestCheck(nil), pullRequest.CI.SlowChecks...),
 		RunningChecks:                append([]string(nil), pullRequest.CI.RunningChecks...),
+		UnstartedChecks:              append([]connector.PullRequestCheck(nil), pullRequest.CI.UnstartedChecks...),
 		StaleSuccessfulChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.StaleSuccessfulChecks...),
 		RequiredCheckFailures:        append([]connector.PullRequestCheck(nil), pullRequest.CI.RequiredFailures...),
 		TransientFailedChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.TransientFailures...),

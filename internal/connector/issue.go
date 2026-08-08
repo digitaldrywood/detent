@@ -123,6 +123,7 @@ type PullRequest struct {
 	CIDurationSeconds            int64                       `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
 	SlowChecks                   []PullRequestCheck          `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
 	RunningChecks                []string                    `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
+	UnstartedChecks              []PullRequestCheck          `json:"unstarted_checks,omitempty" yaml:"unstarted_checks,omitempty"`
 	StaleSuccessfulChecks        []PullRequestCheck          `json:"stale_successful_checks,omitempty" yaml:"stale_successful_checks,omitempty"`
 	RequiredCheckFailures        []PullRequestCheck          `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
 	TransientFailedChecks        []PullRequestCheck          `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`

@@ -17,6 +17,7 @@ type checkRunTelemetrySummary struct {
 	DurationSeconds int64
 	SlowChecks      []connector.PullRequestCheck
 	RunningChecks   []string
+	UnstartedChecks []connector.PullRequestCheck
 }
 
 type checkRunContextResult struct {
@@ -42,7 +43,11 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
-	telemetry := checkRunTelemetry(effectiveRuns, workflowRuns)
+	now := time.Now()
+	if c.now != nil {
+		now = c.now()
+	}
+	telemetry := checkRunTelemetry(effectiveRuns, workflowRuns, now, c.unstartedThreshold)
 	staleSuccessfulChecks := staleSuccessfulCheckRuns(checkRuns)
 	c.logStaleSuccessfulCheckRuns(ctx, repo, sha, staleSuccessfulChecks)
 	requiredFailures := requiredStatusCheckFailures(checkRuns, statuses, c.requiredChecks)
@@ -64,6 +69,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		CIDurationSeconds:     telemetry.DurationSeconds,
 		SlowChecks:            telemetry.SlowChecks,
 		RunningChecks:         telemetry.RunningChecks,
+		UnstartedChecks:       telemetry.UnstartedChecks,
 		StaleSuccessfulChecks: staleSuccessfulChecks,
 		RequiredFailures:      requiredFailures,
 		TransientFailures:     transientFailures,
@@ -398,7 +404,7 @@ func requiredStatusCheckPending(status string, conclusion string) bool {
 	}
 }
 
-func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun) checkRunTelemetrySummary {
+func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun, now time.Time, unstartedThreshold time.Duration) checkRunTelemetrySummary {
 	var queueCreatedAt *time.Time
 	var queueStartedAt *time.Time
 	var checkStartedAt *time.Time
@@ -406,6 +412,7 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 	hasRunning := false
 	slowChecks := make([]connector.PullRequestCheck, 0, len(checkRuns))
 	runningChecks := make([]string, 0, len(checkRuns))
+	unstartedChecks := make([]connector.PullRequestCheck, 0, len(checkRuns))
 
 	for _, run := range workflowRuns {
 		queueCreatedAt = earliestGitHubTime(queueCreatedAt, run.CreatedAt)
@@ -421,6 +428,19 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 		name := strings.TrimSpace(checkRun.Name)
 		status := normalizedCheckRunStatus(checkRun)
 		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
+		if queueSeconds, unstarted := unstartedCheckRunQueueSeconds(checkRun, now, unstartedThreshold); unstarted {
+			hasRunning = true
+			unstartedChecks = append(unstartedChecks, connector.PullRequestCheck{
+				ID:            checkRun.ID,
+				WorkflowRunID: checkRunWorkflowRunID(checkRun),
+				Name:          name,
+				Status:        status,
+				Conclusion:    conclusion,
+				DetailsURL:    firstNonBlank(checkRun.DetailsURL, checkRun.HTMLURL),
+				QueueSeconds:  queueSeconds,
+			})
+			continue
+		}
 		if (status != "" && status != "completed") || conclusion == "" {
 			hasRunning = true
 			runningChecks = append(runningChecks, name)
@@ -456,7 +476,12 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 	if len(runningChecks) > pullRequestRunningCheckLimit {
 		runningChecks = runningChecks[:pullRequestRunningCheckLimit]
 	}
-
+	sort.SliceStable(unstartedChecks, func(i, j int) bool {
+		if unstartedChecks[i].QueueSeconds != unstartedChecks[j].QueueSeconds {
+			return unstartedChecks[i].QueueSeconds > unstartedChecks[j].QueueSeconds
+		}
+		return unstartedChecks[i].Name < unstartedChecks[j].Name
+	})
 	var durationSeconds int64
 	if !hasRunning && checkStartedAt != nil && completedAt != nil && !completedAt.Before(*checkStartedAt) {
 		durationSeconds = int64(completedAt.Sub(*checkStartedAt) / time.Second)
@@ -470,7 +495,19 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 		DurationSeconds: durationSeconds,
 		SlowChecks:      slowChecks,
 		RunningChecks:   runningChecks,
+		UnstartedChecks: unstartedChecks,
 	}
+}
+
+func unstartedCheckRunQueueSeconds(checkRun restCheckRun, now time.Time, threshold time.Duration) (int64, bool) {
+	if threshold <= 0 || normalizedCheckRunStatus(checkRun) != "queued" || checkRun.StartedAt != nil || checkRun.CreatedAt == nil {
+		return 0, false
+	}
+	age := now.Sub(*checkRun.CreatedAt)
+	if age < threshold {
+		return 0, false
+	}
+	return int64(age / time.Second), true
 }
 
 func groupedCheckRuns(checkRuns []restCheckRun) [][]restCheckRun {

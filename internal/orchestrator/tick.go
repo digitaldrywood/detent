@@ -777,6 +777,9 @@ func applyPullRequestHydrationBlock(target *connector.PullRequest, source connec
 	if len(target.RequiredCheckFailures) == 0 {
 		target.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), source.RequiredCheckFailures...)
 	}
+	if len(target.UnstartedChecks) == 0 {
+		target.UnstartedChecks = append([]connector.PullRequestCheck(nil), source.UnstartedChecks...)
+	}
 	if len(target.StaleSuccessfulChecks) == 0 {
 		target.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), source.StaleSuccessfulChecks...)
 	}

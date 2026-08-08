@@ -448,7 +448,7 @@ func workflowCIBottleneck(snapshot telemetry.Snapshot) telemetry.WorkflowBottlen
 func workflowCIWaiting(pr *telemetry.PullRequest) bool {
 	status := strings.ToLower(strings.TrimSpace(pr.CIStatus))
 	if status == "" {
-		return len(pr.RunningChecks) > 0
+		return len(pr.RunningChecks) > 0 || len(pr.UnstartedChecks) > 0
 	}
 	switch status {
 	case "pending", "queued", "in_progress", "waiting", "expected":

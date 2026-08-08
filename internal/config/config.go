@@ -86,6 +86,7 @@ const (
 	DefaultStalenessRepeatedWindowHours   = 24
 	DefaultStalenessWebhookTimeoutMS      = 5000
 	DefaultStrandedActiveThresholdSeconds = 10 * 60
+	DefaultGitHubUnstartedSeconds         = 15 * 60
 	MaxStalenessRepeatedCount             = 500
 
 	defaultCodexProtocol                      = "app-server"
@@ -170,6 +171,7 @@ type Tracker struct {
 	GitHubRESTMinReserve        int                   `yaml:"github_rest_min_remaining_reserve"`
 	GitHubRESTFanoutMaxRequests int                   `yaml:"github_rest_fanout_max_requests"`
 	GitHubRESTDebugLogging      bool                  `yaml:"github_rest_debug_logging,omitempty"`
+	GitHubUnstartedSeconds      int                   `yaml:"github_unstarted_check_threshold_seconds"`
 	GitHubAppID                 string                `yaml:"github_app_id"`
 	GitHubAppPrivateKey         string                `yaml:"github_app_private_key"`
 	GitHubAppPrivateKeyPath     string                `yaml:"github_app_private_key_path"`
@@ -1248,6 +1250,7 @@ func Default() Config {
 			GitHubGraphQLMinReserve:     1000,
 			GitHubRESTMinReserve:        1000,
 			GitHubRESTFanoutMaxRequests: 80,
+			GitHubUnstartedSeconds:      DefaultGitHubUnstartedSeconds,
 			GitHubStatusSource:          GitHubStatusSourceProjectV2,
 			StatusField:                 "Status",
 			StatusLabelPrefix:           "detent:",
@@ -1717,6 +1720,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_graphql_min_remaining_reserve", c.Tracker.GitHubGraphQLMinReserve, problems)
 	validatePositive("tracker.github_rest_min_remaining_reserve", c.Tracker.GitHubRESTMinReserve, problems)
 	validateNonNegative("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
+	validatePositive("tracker.github_unstarted_check_threshold_seconds", c.Tracker.GitHubUnstartedSeconds, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }

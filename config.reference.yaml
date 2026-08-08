@@ -42,6 +42,8 @@
 #   github_rest_fanout_max_requests: 80
 #   # tracker.github_rest_debug_logging | type: boolean | default: false | required: No | validation: None
 #   github_rest_debug_logging: false
+#   # tracker.github_unstarted_check_threshold_seconds | type: integer | default: 900 | required: No | validation: must be greater than 0
+#   github_unstarted_check_threshold_seconds: 900
 #   # tracker.github_app_id | type: string | default: none | required: Conditional | validation: is required for github app
 #   github_app_id: null
 #   # tracker.github_app_private_key | type: string | default: none | required: Conditional | validation: or tracker.github_app_private_key_path is required for github app
@@ -247,6 +249,25 @@
 #             duration_seconds: 0
 #         # tracker.issues[].pull_request.running_checks | type: list<string> | default: [] | required: No | validation: None
 #         running_checks: []
+#         # tracker.issues[].pull_request.unstarted_checks | type: list<object> | default: [] | required: No | validation: None
+#         unstarted_checks:
+#           -
+#             # tracker.issues[].pull_request.unstarted_checks[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.unstarted_checks[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.unstarted_checks[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.unstarted_checks[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.unstarted_checks[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.unstarted_checks[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.unstarted_checks[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.unstarted_checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
 #         # tracker.issues[].pull_request.stale_successful_checks | type: list<object> | default: [] | required: No | validation: None
 #         stale_successful_checks:
 #           -

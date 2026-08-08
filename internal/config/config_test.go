@@ -671,6 +671,50 @@ func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 	}
 }
 
+func TestGitHubUnstartedCheckThresholdConfiguration(t *testing.T) {
+	t.Parallel()
+
+	intPointer := func(value int) *int { return &value }
+	tests := []struct {
+		name    string
+		value   *int
+		want    int
+		wantErr string
+	}{
+		{name: "default", want: DefaultGitHubUnstartedSeconds},
+		{name: "custom", value: intPointer(300), want: 300},
+		{name: "zero rejected", value: intPointer(0), wantErr: "tracker.github_unstarted_check_threshold_seconds must be greater than 0"},
+		{name: "negative rejected", value: intPointer(-1), wantErr: "tracker.github_unstarted_check_threshold_seconds must be greater than 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := "---\ntracker:\n  kind: memory\n"
+			if tt.value != nil {
+				raw += "  github_unstarted_check_threshold_seconds: " + strconv.Itoa(*tt.value) + "\n"
+			}
+			raw += "---\nPrompt\n"
+			workflow, err := ParseWorkflow([]byte(raw))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.Tracker.GitHubUnstartedSeconds; got != tt.want {
+				t.Fatalf("GitHubUnstartedSeconds = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowFrontmatter(t *testing.T) {
 	t.Parallel()
 

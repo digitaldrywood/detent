@@ -19,6 +19,7 @@ const (
 	pullRequestsPageLimit                     = 3
 	pullRequestSlowCheckLimit                 = 3
 	pullRequestRunningCheckLimit              = 5
+	defaultUnstartedCheckThreshold            = 15 * time.Minute
 	defaultProjectItemStatusState             = "Backlog"
 	defaultProjectItemStatusWriteParallelism  = 4
 	defaultProjectItemStatusWriteTimeout      = 2 * time.Minute
@@ -332,6 +333,7 @@ type pullRequestCI struct {
 	CIDurationSeconds     int64
 	SlowChecks            []connector.PullRequestCheck
 	RunningChecks         []string
+	UnstartedChecks       []connector.PullRequestCheck
 	StaleSuccessfulChecks []connector.PullRequestCheck
 	RequiredFailures      []connector.PullRequestCheck
 	TransientFailures     []connector.PullRequestCheck

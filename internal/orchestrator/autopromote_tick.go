@@ -2396,6 +2396,7 @@ func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest)
 		return nil
 	}
 	checks := append([]string(nil), pullRequest.RunningChecks...)
+	checks = append(checks, pullRequestCheckNames(pullRequest.UnstartedChecks)...)
 	for _, check := range pullRequest.RequiredCheckFailures {
 		if !autoPromoteCheckPending(check) {
 			continue
@@ -2403,6 +2404,14 @@ func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest)
 		checks = append(checks, check.Name)
 	}
 	return uniqueStrings(checks)
+}
+
+func pullRequestCheckNames(checks []connector.PullRequestCheck) []string {
+	names := make([]string, 0, len(checks))
+	for _, check := range checks {
+		names = append(names, check.Name)
+	}
+	return uniqueStrings(names)
 }
 
 func autoPromoteCheckPending(check connector.PullRequestCheck) bool {

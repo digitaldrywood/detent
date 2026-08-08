@@ -1370,6 +1370,9 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 	if runningChecks := uniqueStrings(issue.PullRequest.RunningChecks); len(runningChecks) > 0 {
 		return reason + ": pending checks: " + strings.Join(runningChecks, ", ")
 	}
+	if unstartedChecks := pullRequestCheckNames(issue.PullRequest.UnstartedChecks); len(unstartedChecks) > 0 {
+		return reason + ": unstarted checks: " + strings.Join(unstartedChecks, ", ")
+	}
 	return reason
 }
 
@@ -1486,7 +1489,7 @@ func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
 	if mergeable != "" && mergeable != "clean" && mergeable != "unknown" && mergeable != "behind" && mergeable != "blocked" {
 		return false
 	}
-	if mergeable == "blocked" && len(pullRequest.RunningChecks) == 0 {
+	if mergeable == "blocked" && len(pullRequest.RunningChecks) == 0 && len(pullRequest.UnstartedChecks) == 0 {
 		return false
 	}
 	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {

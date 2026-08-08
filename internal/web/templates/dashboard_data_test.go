@@ -2687,7 +2687,10 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 							SlowChecks: []telemetry.PullRequestCheck{
 								{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 							},
-							RunningChecks:    []string{"Test Coverage"},
+							RunningChecks: []string{"Test Coverage"},
+							UnstartedChecks: []telemetry.PullRequestCheck{
+								{Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+							},
 							CodexReviewState: "P2",
 						},
 					},
@@ -2737,7 +2740,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 			},
 			want: []pipelineCardSnapshot{
 				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until " + localTimeToken(retryAt, LocalTimeOnly)},
-				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / running Test Coverage", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
+				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / unstarted Portability Verify queued 47m 0s, never started / running Test Coverage", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#146", Title: "Cancelled today PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "45m 0s"},
@@ -2999,6 +3002,27 @@ func TestPRPipelineWaitDetailShowsCurrentMergeSubstate(t *testing.T) {
 				},
 			},
 			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": Test Coverage, Release",
+		},
+		{
+			name: "waiting on unstarted current-head check",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus: "pending",
+					UnstartedChecks: []telemetry.PullRequestCheck{
+						{Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+					},
+					RequiredCheckFailures: []telemetry.PullRequestCheck{
+						{Name: "Portability Verify", Status: "queued"},
+					},
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					CIWaitStartedAt:           &ciWaitStartedAt,
+				},
+			},
+			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": Portability Verify queued 47m 0s, never started",
 		},
 		{
 			name: "active merge without a blocking check",
