@@ -67,6 +67,7 @@ type doctorCheck struct {
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
 	ProjectDefinition         *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
+	Capabilities              *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization      doctorWorkflowOptimizationReport           `json:"-"`
 }
 
@@ -913,6 +914,13 @@ func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputForma
 	for _, check := range report.Checks {
 		if _, err := fmt.Fprintf(out, "%-5s  %-28s  %s\n", check.Status, check.Name, check.Detail); err != nil {
 			return err
+		}
+		if check.Capabilities != nil {
+			for _, capability := range check.Capabilities.Capabilities {
+				if _, err := fmt.Fprintf(out, "%-5s  %-28s  %s\n", "", strings.ToUpper(string(capability.State))+" "+capability.Name, capability.Detail); err != nil {
+					return err
+				}
+			}
 		}
 		if strings.TrimSpace(check.Hint) != "" {
 			if _, err := fmt.Fprintf(out, "%-5s  %-28s  Hint: %s\n", "", "", check.Hint); err != nil {

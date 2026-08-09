@@ -309,6 +309,8 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	setDoctorCurrentCheck("Project " + id + " capabilities")
+	checks = append(checks, checkDoctorCapabilities(project, workflow))
 	setDoctorCurrentCheck("Project " + id + " workflow source policy")
 	if sourcePolicyCheck, ok := checkDoctorWorkflowSourcePolicy(ctx, id, project, workflow.Config, projectSourceRoot(project, workflow.Config), deps); ok {
 		checks = append(checks, sourcePolicyCheck)
@@ -907,25 +909,19 @@ func checkDoctorIssueEffortGuidanceForSource(id string, project globalconfig.Pro
 
 func checkDoctorIssueEffortGuidance(id string, sourceRoot string) doctorCheck {
 	name := "Project " + id + " issue effort guidance"
-	paths := []string{"AGENTS.md", "CLAUDE.md"}
-	for _, path := range paths {
-		content, err := os.ReadFile(filepath.Join(sourceRoot, path))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+	path, err := findDoctorIssueEffortGuidance(sourceRoot)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "skipped because " + err.Error(),
 		}
-		if err != nil {
-			return doctorCheck{
-				Name:   name,
-				Status: doctorOK,
-				Detail: fmt.Sprintf("skipped because %s could not be read: %v", path, err),
-			}
-		}
-		if strings.Contains(strings.ToLower(string(content)), "detent-agent") {
-			return doctorCheck{
-				Name:   name,
-				Status: doctorOK,
-				Detail: path + " mentions detent-agent effort guidance",
-			}
+	}
+	if path != "" {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: path + " mentions detent-agent effort guidance",
 		}
 	}
 	return doctorCheck{
