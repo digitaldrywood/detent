@@ -9787,6 +9787,46 @@ func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 	}
 }
 
+func TestServerSurfacesFleetSpendWhenBudgetCapsAreDisabled(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	registry := project.NewRegistry()
+	mustSetWebProject(t, registry, "detent", false)
+	var gotQuery store.BudgetCostQuery
+	deps := testDeps(t)
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		budgetCostEvents: func(_ context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			gotQuery = query
+			return []store.BudgetCostEvent{
+				{ProjectID: "detent", At: generatedAt.Add(-time.Hour), CostUSD: 3.22},
+				{ProjectID: "detent", At: generatedAt.AddDate(0, 0, -1), CostUSD: 363.50},
+			}, nil
+		},
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	budgetState := state["budget"].(map[string]any)
+	if budgetState["enabled"] != false || budgetState["today_spend_usd"] != float64(3.22) {
+		t.Fatalf("budget = %#v, want uncapped fleet spend", budgetState)
+	}
+	regression := budgetState["spend_regression"].(map[string]any)
+	if regression["drop_percent"].(float64) < 98 || regression["previous_spend_usd"] != float64(363.50) || regression["projected_spend_usd"] != float64(6.44) {
+		t.Fatalf("spend regression = %#v, want same-day fleet regression", regression)
+	}
+	if len(gotQuery.ProjectIDs) != 1 || gotQuery.ProjectIDs[0] != "detent" {
+		t.Fatalf("BudgetCostQuery.ProjectIDs = %#v, want all configured projects", gotQuery.ProjectIDs)
+	}
+}
+
 func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 	t.Parallel()
 

@@ -148,11 +148,14 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	if updates[3].Type != UpdateAgentMessageDelta || updates[3].Delta != "hello" {
 		t.Fatalf("updates[3] = %#v, want agent message delta", updates[3])
 	}
-	if updates[4].Type != UpdateTokenUsage || updates[4].Tokens.TotalTokens != 5 {
-		t.Fatalf("updates[4] = %#v, want last-turn token usage total 5", updates[4])
+	if updates[4].Type != UpdateTokenUsage || updates[4].Tokens.TotalTokens != 27 {
+		t.Fatalf("updates[4] = %#v, want cumulative token usage total 27", updates[4])
 	}
-	if updates[4].Tokens.CachedInputTokens != 1 || updates[4].Tokens.ReasoningOutputTokens != 1 {
+	if updates[4].Tokens.CachedInputTokens != 5 || updates[4].Tokens.ReasoningOutputTokens != 3 {
 		t.Fatalf("updates[4].Tokens = %#v", updates[4].Tokens)
+	}
+	if updates[4].Tokens.Last == nil || updates[4].Tokens.Last.TotalTokens != 5 || updates[4].Tokens.Last.CachedInputTokens != 1 {
+		t.Fatalf("updates[4].Tokens.Last = %#v, want last-call token usage", updates[4].Tokens.Last)
 	}
 	if updates[4].Tokens.ModelContextWindow == nil || *updates[4].Tokens.ModelContextWindow != 200000 {
 		t.Fatalf("updates[4].Tokens.ModelContextWindow = %#v", updates[4].Tokens.ModelContextWindow)
@@ -171,13 +174,14 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
-func TestUpdateFromMessageUsesPerTurnTokenUsage(t *testing.T) {
+func TestUpdateFromMessagePreservesCumulativeAndLastTokenUsage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
 		tokenUsage string
 		want       TokenUsage
+		wantLast   *TokenUsageBreakdown
 	}{
 		{
 			name: "last turn available",
@@ -187,6 +191,13 @@ func TestUpdateFromMessageUsesPerTurnTokenUsage(t *testing.T) {
 				"modelContextWindow":200000
 			}`,
 			want: TokenUsage{
+				InputTokens:           20,
+				CachedInputTokens:     5,
+				OutputTokens:          7,
+				ReasoningOutputTokens: 3,
+				TotalTokens:           27,
+			},
+			wantLast: &TokenUsageBreakdown{
 				InputTokens:           2,
 				CachedInputTokens:     1,
 				OutputTokens:          3,
@@ -232,6 +243,9 @@ func TestUpdateFromMessageUsesPerTurnTokenUsage(t *testing.T) {
 				update.Tokens.ReasoningOutputTokens != tt.want.ReasoningOutputTokens ||
 				update.Tokens.TotalTokens != tt.want.TotalTokens {
 				t.Fatalf("Tokens = %#v, want %#v", update.Tokens, tt.want)
+			}
+			if !reflect.DeepEqual(update.Tokens.Last, tt.wantLast) {
+				t.Fatalf("Tokens.Last = %#v, want %#v", update.Tokens.Last, tt.wantLast)
 			}
 			if update.Tokens.ModelContextWindow == nil || *update.Tokens.ModelContextWindow != 200000 {
 				t.Fatalf("ModelContextWindow = %#v, want 200000", update.Tokens.ModelContextWindow)

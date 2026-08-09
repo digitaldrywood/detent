@@ -128,6 +128,40 @@ func TestToolTurnInstructions(t *testing.T) {
 	}
 }
 
+func TestAgentUpdateFromCodexCarriesCumulativeAndLastTokenUsage(t *testing.T) {
+	t.Parallel()
+
+	contextWindow := int64(200_000)
+	update := agentUpdateFromCodex(Update{
+		Type:     UpdateTokenUsage,
+		ThreadID: "thread-1716",
+		TurnID:   "turn-2",
+		Tokens: TokenUsage{
+			InputTokens:        14_300_000,
+			CachedInputTokens:  13_900_000,
+			OutputTokens:       119_042,
+			TotalTokens:        14_419_042,
+			ModelContextWindow: &contextWindow,
+			Last: &TokenUsageBreakdown{
+				InputTokens:       78_500,
+				CachedInputTokens: 76_000,
+				OutputTokens:      1_048,
+				TotalTokens:       79_548,
+			},
+		},
+	})
+
+	if update.Tokens.ThreadTotal == nil || update.Tokens.ThreadTotal.TotalTokens != 14_419_042 {
+		t.Fatalf("ThreadTotal = %#v, want cumulative provider total", update.Tokens.ThreadTotal)
+	}
+	if update.Tokens.Last == nil || update.Tokens.Last.TotalTokens != 79_548 {
+		t.Fatalf("Last = %#v, want last-call usage", update.Tokens.Last)
+	}
+	if update.ProviderSessionID != "thread-1716-turn-2" {
+		t.Fatalf("ProviderSessionID = %q, want thread-turn identity", update.ProviderSessionID)
+	}
+}
+
 func TestAgentBackendEnforcesConfiguredStallTimeout(t *testing.T) {
 	t.Parallel()
 

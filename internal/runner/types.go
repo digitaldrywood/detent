@@ -257,7 +257,17 @@ type AgentTokenUsage struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	ThreadTotal           *AgentTokenCounts
+	Last                  *AgentTokenCounts
 	ModelContextWindow    *int64
+}
+
+type AgentTokenCounts struct {
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
 }
 
 type SessionTokenCeilingError struct {
@@ -475,6 +485,7 @@ type TokenTotals struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	Last                  *AgentTokenCounts
 	ModelContextWindow    *int64
 	RuntimeSeconds        float64
 }

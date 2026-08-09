@@ -966,6 +966,7 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 		PeriodEnd:         optionalTime(budget.PeriodEnd),
 		SpendPoints:       budget.SpendPoints,
 		Days:              days,
+		SpendRegression:   budget.SpendRegression,
 		Refusals:          budget.Refusals,
 	}
 }
@@ -1614,6 +1615,7 @@ type budgetAPIResponse struct {
 	PeriodEnd         *time.Time                   `json:"period_end,omitempty"`
 	SpendPoints       []telemetry.BudgetSpendPoint `json:"spend_points,omitempty"`
 	Days              []telemetry.BudgetDay        `json:"days"`
+	SpendRegression   *telemetry.SpendRegression   `json:"spend_regression,omitempty"`
 	Refusals          []telemetry.BudgetRefusal    `json:"refusals,omitempty"`
 }
 

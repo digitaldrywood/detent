@@ -556,6 +556,26 @@ func TestFleetAllClearLine(t *testing.T) {
 	}
 }
 
+func TestFleetViewSurfacesDailySpendRegression(t *testing.T) {
+	t.Parallel()
+
+	data := fleetTestData()
+	data.Snapshot.Budget.SpendRegression = &telemetry.SpendRegression{
+		Date:              "2026-08-08",
+		PreviousSpendUSD:  363.50,
+		ProjectedSpendUSD: 3.22,
+		DropPercent:       99.1,
+		ThresholdPercent:  90,
+	}
+	view := fleetViewFromDashboard(data)
+	if view.Spend != "$45.50 today" {
+		t.Fatalf("Spend = %q, want fleet daily spend figure", view.Spend)
+	}
+	if !view.Metrics.SpendWarn || !strings.Contains(view.Metrics.SpendNote, "99% below yesterday's pace") || !strings.Contains(view.Metrics.SpendNote, "$3.22 projected vs $363.50 yesterday") {
+		t.Fatalf("spend regression metrics = %#v", view.Metrics)
+	}
+}
+
 func TestSplitIssueIdentifier(t *testing.T) {
 	tests := []struct {
 		identifier string
