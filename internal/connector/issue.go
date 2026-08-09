@@ -84,8 +84,9 @@ type BlockedRef struct {
 }
 
 const (
-	BlockedRefSourceNative = "native"
-	BlockedRefSourceProse  = "prose"
+	BlockedRefSourceNative  = "native"
+	BlockedRefSourceProse   = "prose"
+	BlockedRefSourceWorkpad = "workpad"
 )
 
 type DependencyCapability struct {
