@@ -18,6 +18,7 @@ import (
 const (
 	implementProgressMetadataKey       = "completion_progress"
 	implementProgressOutcomeNoProgress = "no_progress"
+	implementDependencyDeferralReason  = "dependency_deferral"
 	noProgressLimitReason              = "no_progress_limit"
 	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
@@ -43,6 +44,9 @@ type implementCompletionProgressDecision struct {
 	BlockReason            string
 	Block                  bool
 	Warning                string
+	DependencyDeferral     bool
+	DependencyBlockers     []implementDependencyBlocker
+	RejectedBlockerRefs    []string
 }
 
 type implementProgressRecord struct {
@@ -63,6 +67,15 @@ type implementProgressRecord struct {
 	NoProgressLimit        int                               `json:"no_progress_limit,omitempty"`
 	BlockReason            string                            `json:"block_reason,omitempty"`
 	Warning                string                            `json:"warning,omitempty"`
+	DependencyDeferral     bool                              `json:"dependency_deferral,omitempty"`
+	DependencyBlockers     []implementDependencyBlocker      `json:"dependency_blockers,omitempty"`
+	RejectedBlockerRefs    []string                          `json:"rejected_blocker_refs,omitempty"`
+}
+
+type implementDependencyBlocker struct {
+	ID         string `json:"id,omitempty"`
+	Identifier string `json:"identifier"`
+	State      string `json:"state,omitempty"`
 }
 
 type implementProgressSignatureRecord struct {
@@ -150,6 +163,18 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		if !diffStatsPresent(running.DiffStats) {
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
 			return decision
+		}
+		if implementProgressDiffStatsClean(running.DiffStats) {
+			blockers, rejected, deferred := o.evaluateImplementDependencyDeferral(ctx, issue)
+			decision.DependencyBlockers = blockers
+			decision.RejectedBlockerRefs = rejected
+			if deferred {
+				decision.Outcome = store.WorkAttemptTerminalSuccess
+				decision.Reason = implementDependencyDeferralReason
+				decision.DependencyDeferral = true
+				decision.WorkpadStatus = workpad.StatusBlocked
+				return decision
+			}
 		}
 		if !implementProgressDiffStatsClean(running.DiffStats) {
 			if strings.TrimSpace(running.DiffStats.Fingerprint) == "" {
@@ -483,6 +508,9 @@ func implementCompletionProgressMetadata(decision implementCompletionProgressDec
 		NoProgressLimit:        decision.NoProgressLimit,
 		BlockReason:            strings.TrimSpace(decision.BlockReason),
 		Warning:                strings.TrimSpace(decision.Warning),
+		DependencyDeferral:     decision.DependencyDeferral,
+		DependencyBlockers:     append([]implementDependencyBlocker(nil), decision.DependencyBlockers...),
+		RejectedBlockerRefs:    append([]string(nil), decision.RejectedBlockerRefs...),
 	}
 	if decision.PreviousSignatureFound {
 		previous := implementProgressSignatureRecordFromSignature(decision.PreviousSignature)
@@ -687,6 +715,23 @@ func (o *Orchestrator) blockImplementProgress(
 		"no_progress_limit", decision.NoProgressLimit,
 	)
 	return true
+}
+
+func (o *Orchestrator) finishImplementDependencyDeferral(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	completedAt time.Time,
+) {
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Warn("implement dependency deferral claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	o.releaseClaim(state, issue.ID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      completedAt,
+		Event:   "implement_dependency_deferred",
+		Message: "deferred " + issueLabel(issue) + " while declared dependencies remain unresolved",
+	})
 }
 
 func implementProgressRecoveryReason(decision implementCompletionProgressDecision) string {

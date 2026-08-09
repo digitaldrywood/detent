@@ -409,7 +409,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		statusMessage = "artifact gate convergence breaker tripped"
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
 		implementCompletionProgressMetadata(progress),
 		spendProgressMetadata(spendProgress),
 		artifactGateConvergenceMetadata(artifactConvergence),
@@ -458,6 +458,18 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if o.blockImplementProgress(ctx, state, running, progress, event.CompletedAt) {
 			return
 		}
+	}
+	if progress.DependencyDeferral {
+		if attemptCompleted {
+			o.finishImplementDependencyDeferral(ctx, state, running.Issue, event.CompletedAt)
+		} else {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "implement_dependency_deferral_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dependency deferral persistence failed",
+			})
+		}
+		return
 	}
 	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
 		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
