@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -182,6 +183,94 @@ func TestRefreshProjectCommand(t *testing.T) {
 			}
 			if !second.Result.Noop || second.Result.Diff != "" || len(second.changes) != 0 {
 				t.Fatalf("second refresh = %#v with %d changes, want empty diff", second.Result, len(second.changes))
+			}
+		})
+	}
+}
+
+func TestPlanProjectRefreshRejectsWorkflowRef(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProjectRefreshTestFixture(t, "manual_intake")
+	raw := readProjectRefreshTestFile(t, fixture.globalPath)
+	raw = replaceProjectRefreshTestText(t, raw, "    workflow: "+fixture.workflowPath+"\n", "    workflow: "+fixture.workflowPath+"\n    workflow_ref: origin/main\n")
+	writeOnboardingWorkflowBuilderFile(t, fixture.globalPath, raw)
+
+	_, err := planProjectRefresh(context.Background(), projectRefreshConfig{
+		ConfigPath: fixture.globalPath,
+		ProjectID:  "api",
+		Options:    defaultOptions(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "workflow_ref-backed project") {
+		t.Fatalf("planProjectRefresh() error = %v, want workflow_ref rejection", err)
+	}
+}
+
+func TestApplyProjectRefreshRollsBackRenameFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		firstExists bool
+	}{
+		{name: "restores replaced file", firstExists: true},
+		{name: "removes newly created file", firstExists: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			firstPath := filepath.Join(root, "first.md")
+			secondPath := filepath.Join(root, "second.yaml")
+			firstBefore := []byte("first before\n")
+			if tt.firstExists {
+				writeOnboardingWorkflowBuilderFile(t, firstPath, string(firstBefore))
+			}
+			firstPlanBefore := firstBefore
+			if !tt.firstExists {
+				firstPlanBefore = nil
+			}
+			secondBefore := []byte("second before\n")
+			writeOnboardingWorkflowBuilderFile(t, secondPath, string(secondBefore))
+			plan := projectRefreshPlan{changes: []projectRefreshChange{
+				{path: firstPath, before: firstPlanBefore, after: []byte("first after\n"), mode: 0o644, existed: tt.firstExists},
+				{path: secondPath, before: secondBefore, after: []byte("second after\n"), mode: 0o644, existed: true},
+			}}
+
+			failed := false
+			rename := func(oldPath string, newPath string) error {
+				if !failed && newPath == secondPath && strings.Contains(filepath.Base(oldPath), ".detent-refresh-") {
+					failed = true
+					return errors.New("injected rename failure")
+				}
+				return os.Rename(oldPath, newPath)
+			}
+			if err := applyProjectRefreshWithRename(plan, rename); err == nil || !strings.Contains(err.Error(), "injected rename failure") {
+				t.Fatalf("applyProjectRefreshWithRename() error = %v, want injected failure", err)
+			}
+
+			first, err := os.ReadFile(firstPath)
+			if tt.firstExists {
+				if err != nil || !bytes.Equal(first, firstBefore) {
+					t.Fatalf("first file after rollback = %q, %v; want %q", first, err, firstBefore)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("new first file remains after rollback: %q, %v", first, err)
+			}
+			second, err := os.ReadFile(secondPath)
+			if err != nil || !bytes.Equal(second, secondBefore) {
+				t.Fatalf("second file after rollback = %q, %v; want %q", second, err, secondBefore)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatalf("ReadDir() error = %v", err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".detent-refresh-") {
+					t.Fatalf("refresh artifact remains after rollback: %s", entry.Name())
+				}
 			}
 		})
 	}

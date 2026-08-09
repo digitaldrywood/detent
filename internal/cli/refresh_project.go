@@ -78,6 +78,14 @@ type projectRefreshChange struct {
 	existed bool
 }
 
+type projectRefreshStagedChange struct {
+	target  string
+	temp    string
+	backup  string
+	existed bool
+	applied bool
+}
+
 type projectRefreshFeatureDescriptor struct {
 	name   string
 	path   string
@@ -181,6 +189,13 @@ func planProjectRefresh(ctx context.Context, cfg projectRefreshConfig) (projectR
 		return projectRefreshPlan{}, projectNotFoundError(id, available)
 	}
 	registered := global.Projects[0]
+	if strings.TrimSpace(registered.WorkflowRef) != "" {
+		return projectRefreshPlan{}, NewValidationError(
+			"refresh-project cannot update a workflow_ref-backed project",
+			"Refresh the workflow definition in its source ref, update projects[].workflow_ref, then rerun refresh-project.",
+			nil,
+		)
+	}
 	workflowPath, err := projectRefreshWorkflowPath(registered)
 	if err != nil {
 		return projectRefreshPlan{}, err
@@ -826,6 +841,10 @@ func appendProjectRefreshChange(
 }
 
 func applyProjectRefresh(plan projectRefreshPlan) error {
+	return applyProjectRefreshWithRename(plan, os.Rename)
+}
+
+func applyProjectRefreshWithRename(plan projectRefreshPlan, rename func(string, string) error) error {
 	for _, change := range plan.changes {
 		current, _, exists, err := readOptionalProjectRefreshFile(change.path)
 		if err != nil {
@@ -836,11 +855,7 @@ func applyProjectRefresh(plan projectRefreshPlan) error {
 		}
 	}
 
-	type stagedChange struct {
-		target string
-		temp   string
-	}
-	staged := make([]stagedChange, 0, len(plan.changes))
+	staged := make([]projectRefreshStagedChange, 0, len(plan.changes))
 	cleanup := func() error {
 		var cleanupErrors []error
 		for _, change := range staged {
@@ -880,15 +895,90 @@ func applyProjectRefresh(plan projectRefreshPlan) error {
 			}
 			return errors.Join(fmt.Errorf("close staged refresh file %s: %w", change.path, err), removeErr, cleanup())
 		}
-		staged = append(staged, stagedChange{target: change.path, temp: tempPath})
+		staged = append(staged, projectRefreshStagedChange{target: change.path, temp: tempPath, existed: change.existed})
 	}
 	for index, change := range staged {
-		if err := os.Rename(change.temp, change.target); err != nil {
-			return errors.Join(fmt.Errorf("apply refreshed file %s: %w", change.target, err), cleanup())
+		if change.existed {
+			backup, err := reserveProjectRefreshBackupPath(change.target)
+			if err != nil {
+				return errors.Join(err, rollbackProjectRefresh(staged[:index], rename), cleanup())
+			}
+			if err := rename(change.target, backup); err != nil {
+				return errors.Join(
+					fmt.Errorf("preserve current file %s: %w", change.target, err),
+					rollbackProjectRefresh(staged[:index], rename),
+					cleanup(),
+				)
+			}
+			staged[index].backup = backup
+		}
+		if err := rename(change.temp, change.target); err != nil {
+			var restoreErr error
+			if change.existed {
+				restoreErr = rename(staged[index].backup, change.target)
+				if restoreErr == nil {
+					staged[index].backup = ""
+				} else {
+					restoreErr = fmt.Errorf("restore current file %s from %s: %w", change.target, staged[index].backup, restoreErr)
+				}
+			}
+			return errors.Join(
+				fmt.Errorf("apply refreshed file %s: %w", change.target, err),
+				restoreErr,
+				rollbackProjectRefresh(staged[:index], rename),
+				cleanup(),
+			)
 		}
 		staged[index].temp = ""
+		staged[index].applied = true
 	}
-	return nil
+	var cleanupErrors []error
+	for index := range staged {
+		if staged[index].backup == "" {
+			continue
+		}
+		if err := os.Remove(staged[index].backup); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove refresh backup %s: %w", staged[index].backup, err))
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func reserveProjectRefreshBackupPath(target string) (string, error) {
+	file, err := os.CreateTemp(filepath.Dir(target), ".detent-refresh-backup-*")
+	if err != nil {
+		return "", fmt.Errorf("reserve refresh backup for %s: %w", target, err)
+	}
+	path := file.Name()
+	if err := discardProjectRefreshTemp(file, path); err != nil {
+		return "", fmt.Errorf("reserve refresh backup for %s: %w", target, err)
+	}
+	return path, nil
+}
+
+func rollbackProjectRefresh(staged []projectRefreshStagedChange, rename func(string, string) error) error {
+	var rollbackErrors []error
+	for index := len(staged) - 1; index >= 0; index-- {
+		change := &staged[index]
+		if !change.applied {
+			continue
+		}
+		if err := os.Remove(change.target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("remove refreshed file %s during rollback: %w", change.target, err))
+			continue
+		}
+		if !change.existed {
+			change.applied = false
+			continue
+		}
+		if err := rename(change.backup, change.target); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore original file %s from %s: %w", change.target, change.backup, err))
+			continue
+		}
+		change.backup = ""
+		change.applied = false
+	}
+	return errors.Join(rollbackErrors...)
 }
 
 func discardProjectRefreshTemp(file *os.File, path string) error {
