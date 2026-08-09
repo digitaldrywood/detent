@@ -1168,6 +1168,8 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		"Issue effort selection",
 		"recommended_effort",
 		"standard feature work",
+		"exactly one finding for every configured dimension",
+		"Confidence is telemetry only and cannot override a failed dimension",
 	} {
 		if !strings.Contains(agentBackend.request.Prompt, want) {
 			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
