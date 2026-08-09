@@ -41,6 +41,8 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		result = "selected"
 		if decision.UnblockerCount > 0 {
 			reason = unblockerDecisionReason(decision.UnblockerCount)
+		} else if strings.TrimSpace(decision.SelectionReason) != "" {
+			reason = strings.TrimSpace(decision.SelectionReason)
 		} else if reason == "" {
 			reason = "selected"
 		}
@@ -55,6 +57,7 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 	attrs := o.schedulerDecisionAttrs(state, now, decision.Issue,
 		"result", result,
 		"skip_reason", reason,
+		"selection_reason", strings.TrimSpace(decision.SelectionReason),
 		"queue_position", decision.QueuePosition,
 		"retry", decision.Retry,
 		"attempt", decision.Attempt,

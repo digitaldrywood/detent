@@ -73,6 +73,7 @@ const (
 	DefaultOverloadRetryDelayMS              = 45000
 	DefaultMergeWorkerStartupTimeoutMS       = 4 * 60 * 1000
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
+	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
 
@@ -353,7 +354,8 @@ type Shutdown struct {
 }
 
 type MergeFastPath struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled            bool `yaml:"enabled"`
+	FairnessAgeSeconds int  `yaml:"fairness_age_seconds"`
 }
 
 type Agents struct {
@@ -1309,7 +1311,10 @@ func Default() Config {
 			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
 			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
 			StopRun:                     StopRun{TargetState: "Blocked"},
-			MergeFastPath:               MergeFastPath{Enabled: true},
+			MergeFastPath: MergeFastPath{
+				Enabled:            true,
+				FairnessAgeSeconds: DefaultMergeFairnessAgeSeconds,
+			},
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
@@ -1624,6 +1629,9 @@ func (c *Config) normalize() {
 	}
 	if c.Agent.MergeWorkerMaxDurationMS == 0 {
 		c.Agent.MergeWorkerMaxDurationMS = DefaultMergeWorkerMaxDurationMS
+	}
+	if c.Agent.MergeFastPath.FairnessAgeSeconds == 0 {
+		c.Agent.MergeFastPath.FairnessAgeSeconds = DefaultMergeFairnessAgeSeconds
 	}
 	if c.Agent.FailureBreaker.SameClassLimit == 0 {
 		c.Agent.FailureBreaker.SameClassLimit = DefaultFailureBreakerSameClassLimit
@@ -2026,6 +2034,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
 	validateLabelList(prefix+".dispatch_priority_by_label", a.DispatchPriorityByLabel, problems)
+	validatePositive(prefix+".merge_fast_path.fairness_age_seconds", a.MergeFastPath.FairnessAgeSeconds, problems)
 	a.AutoPromote.validate(prefix+".auto_promote", problems)
 	a.OutputTruncation.validate(prefix+".output_truncation", problems)
 	a.Budget.validate(prefix+".budget", problems)

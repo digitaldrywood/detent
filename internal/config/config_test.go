@@ -1467,6 +1467,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if !cfg.Agent.MergeFastPath.Enabled {
 		t.Fatal("Agent.MergeFastPath.Enabled = false, want true default")
 	}
+	if cfg.Agent.MergeFastPath.FairnessAgeSeconds != DefaultMergeFairnessAgeSeconds {
+		t.Fatalf("Agent.MergeFastPath.FairnessAgeSeconds = %d, want %d", cfg.Agent.MergeFastPath.FairnessAgeSeconds, DefaultMergeFairnessAgeSeconds)
+	}
 	if cfg.Agent.ExperimentalThreadResume {
 		t.Fatal("Agent.ExperimentalThreadResume = true, want disabled default")
 	}
@@ -1764,12 +1767,13 @@ func TestParseWorkflowAgentMergeFastPath(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
-		name    string
-		enabled string
-		want    bool
+		name               string
+		enabled            string
+		fairnessAgeSeconds int
+		want               bool
 	}{
-		{name: "enabled", enabled: "true", want: true},
-		{name: "disabled", enabled: "false", want: false},
+		{name: "enabled", enabled: "true", fairnessAgeSeconds: 5400, want: true},
+		{name: "disabled", enabled: "false", fairnessAgeSeconds: 900, want: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -1778,6 +1782,7 @@ func TestParseWorkflowAgentMergeFastPath(t *testing.T) {
 agent:
   merge_fast_path:
     enabled: ` + tt.enabled + `
+    fairness_age_seconds: ` + strconv.Itoa(tt.fairnessAgeSeconds) + `
 ---
 Body
 `))
@@ -1787,7 +1792,22 @@ Body
 			if workflow.Config.Agent.MergeFastPath.Enabled != tt.want {
 				t.Fatalf("Agent.MergeFastPath.Enabled = %t, want %t", workflow.Config.Agent.MergeFastPath.Enabled, tt.want)
 			}
+			if workflow.Config.Agent.MergeFastPath.FairnessAgeSeconds != tt.fairnessAgeSeconds {
+				t.Fatalf("Agent.MergeFastPath.FairnessAgeSeconds = %d, want %d", workflow.Config.Agent.MergeFastPath.FairnessAgeSeconds, tt.fairnessAgeSeconds)
+			}
 		})
+	}
+}
+
+func TestValidateMergeFastPathRejectsNegativeFairnessAge(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Agent.MergeFastPath.FairnessAgeSeconds = -1
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "agent.merge_fast_path.fairness_age_seconds must be greater than 0") {
+		t.Fatalf("Validate() error = %v, want fairness age validation", err)
 	}
 }
 

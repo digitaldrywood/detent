@@ -585,6 +585,8 @@
 #   merge_fast_path:
 #     # agent.merge_fast_path.enabled | type: boolean | default: true | required: No | validation: None
 #     enabled: true
+#     # agent.merge_fast_path.fairness_age_seconds | type: integer | default: 7200 | required: No | validation: must be greater than 0
+#     fairness_age_seconds: 7200
 #   # agent.auto_promote | type: object | default: see child fields | required: No | validation: None
 #   auto_promote:
 #     # agent.auto_promote.enabled | type: boolean | default: false | required: No | validation: None

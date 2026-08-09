@@ -245,6 +245,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.OverloadRetryDelayMS = 60000
 	cfg.Agent.MergeWorkerStartupTimeoutMS = 180000
 	cfg.Agent.MergeWorkerMaxDurationMS = 7200000
+	cfg.Agent.MergeFastPath.FairnessAgeSeconds = 5400
 	cfg.Observability.StrandedActiveThresholdSeconds = 42
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
@@ -341,6 +342,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if !got.MergeFastPathEnabled {
 		t.Fatal("MergeFastPathEnabled = false, want true")
+	}
+	if got.MergeFairnessAge != 90*time.Minute {
+		t.Fatalf("MergeFairnessAge = %s, want 1h30m0s", got.MergeFairnessAge)
 	}
 	if got.MergeMethod != workflowconfig.MergeMethodRebase {
 		t.Fatalf("MergeMethod = %q, want rebase", got.MergeMethod)

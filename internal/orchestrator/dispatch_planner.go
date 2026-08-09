@@ -38,14 +38,15 @@ type dispatchAction struct {
 }
 
 type dispatchPlanDecision struct {
-	Issue          connector.Issue
-	QueuePosition  int
-	Attempt        int
-	WorkerHost     string
-	Retry          bool
-	Selected       bool
-	SkipReason     string
-	UnblockerCount int
+	Issue           connector.Issue
+	QueuePosition   int
+	Attempt         int
+	WorkerHost      string
+	Retry           bool
+	Selected        bool
+	SkipReason      string
+	SelectionReason string
+	UnblockerCount  int
 }
 
 func newDispatchPlanner(cfg Config) dispatchPlanner {
@@ -74,18 +75,31 @@ func (p dispatchPlanner) plan(
 	)
 	clearBlockedUnblockerCounts(plannedCandidates, state.Blocked)
 	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel, p.cfg.PrioritizeUnblockers)
-	prioritizeReadyMergingIssues(plannedCandidates)
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
+	dueRetries = dueRetriesByIssue(state, now)
+	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg.MergeFairnessAge)
+	logDecision := func(decision dispatchPlanDecision) {
+		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
+		p.logDecision(hooks, decision)
+	}
 
 	plan := DispatchPlan{}
 	continuations := 0
 	for index, issue := range plannedCandidates {
 		queuePosition := index + 1
+		if mergePriority.stickyIssueID != "" && mergeWorkerIssue(issue) && strings.TrimSpace(issue.ID) != mergePriority.stickyIssueID {
+			logDecision(dispatchPlanDecision{
+				Issue:         issue,
+				QueuePosition: queuePosition,
+				SkipReason:    dispatchSkipMergeFairnessReserved,
+			})
+			continue
+		}
 		if retry, ok := dueRetries[issue.ID]; ok {
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
-				p.logDecision(hooks, dispatchPlanDecision{
+				logDecision(dispatchPlanDecision{
 					Issue:         issue,
 					QueuePosition: queuePosition,
 					Attempt:       retry.Attempt,
@@ -95,7 +109,7 @@ func (p dispatchPlanner) plan(
 				})
 				continue
 			}
-			p.logDecision(hooks, dispatchPlanDecision{
+			logDecision(dispatchPlanDecision{
 				Issue:         action.issue,
 				QueuePosition: queuePosition,
 				Attempt:       action.attempt,
@@ -112,7 +126,7 @@ func (p dispatchPlanner) plan(
 		}
 		if p.hardAvailableSlots(state) == 0 {
 			for skipIndex := index; skipIndex < len(plannedCandidates); skipIndex++ {
-				p.logDecision(hooks, dispatchPlanDecision{
+				logDecision(dispatchPlanDecision{
 					Issue:         plannedCandidates[skipIndex],
 					QueuePosition: skipIndex + 1,
 					SkipReason:    dispatchSkipGlobalCapacityFull,
@@ -124,7 +138,7 @@ func (p dispatchPlanner) plan(
 			var ok bool
 			issue, ok = hooks.hydrate(issue)
 			if !ok {
-				p.logDecision(hooks, dispatchPlanDecision{
+				logDecision(dispatchPlanDecision{
 					Issue:         issue,
 					QueuePosition: queuePosition,
 					SkipReason:    dispatchSkipHydrationFailed,
@@ -134,7 +148,7 @@ func (p dispatchPlanner) plan(
 		}
 		action, ok, reason := p.dispatchAction(state, issue, now)
 		if !ok {
-			p.logDecision(hooks, dispatchPlanDecision{
+			logDecision(dispatchPlanDecision{
 				Issue:         issue,
 				QueuePosition: queuePosition,
 				SkipReason:    reason,
@@ -147,7 +161,7 @@ func (p dispatchPlanner) plan(
 			continuations++
 		}
 		if hooks.beforeDispatch != nil && !hooks.beforeDispatch(action.issue, continuationIndex) {
-			p.logDecision(hooks, dispatchPlanDecision{
+			logDecision(dispatchPlanDecision{
 				Issue:         action.issue,
 				QueuePosition: queuePosition,
 				Attempt:       action.attempt,
@@ -157,7 +171,7 @@ func (p dispatchPlanner) plan(
 			})
 			break
 		}
-		p.logDecision(hooks, dispatchPlanDecision{
+		logDecision(dispatchPlanDecision{
 			Issue:         action.issue,
 			QueuePosition: queuePosition,
 			Attempt:       action.attempt,
@@ -516,6 +530,7 @@ const (
 	dispatchSkipGlobalCapacityFull       = "global_capacity_full"
 	dispatchSkipHydrationFailed          = "hydrate_failed"
 	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
+	dispatchSkipMergeFairnessReserved    = "merge_fairness_head_reserved"
 	dispatchSkipGitHubRESTCapacity       = "github_rest_capacity_paused"
 	dispatchSkipCIUnavailable            = "ci_unavailable"
 	dispatchSkipProjectFailureBreaker    = projectFailureBreakerDispatchPaused
