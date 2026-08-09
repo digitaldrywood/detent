@@ -1115,6 +1115,17 @@ func TestMCPElicitationResponse(t *testing.T) {
 			wantReason: "unsupported_schema",
 		},
 		{
+			name: "browser constrained empty form",
+			params: `{
+				"serverName":"chrome-devtools",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{},"required":["confirmation"]},
+				"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			wantAction: "decline",
+			wantReason: "unsupported_schema",
+		},
+		{
 			name: "unsupported browser form",
 			params: `{
 				"serverName":"chrome-devtools",

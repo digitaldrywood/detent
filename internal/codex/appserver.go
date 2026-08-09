@@ -1158,10 +1158,7 @@ func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitat
 		ServerName      string          `json:"serverName"`
 		Mode            string          `json:"mode"`
 		Meta            json.RawMessage `json:"_meta"`
-		RequestedSchema struct {
-			Type       string                     `json:"type"`
-			Properties map[string]json.RawMessage `json:"properties"`
-		} `json:"requestedSchema"`
+		RequestedSchema json.RawMessage `json:"requestedSchema"`
 	}
 	if err := json.Unmarshal(params, &request); err != nil {
 		return decline()
@@ -1190,9 +1187,7 @@ func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitat
 		decision.Reason = "unsupported_approval_kind"
 		return decline()
 	}
-	if request.RequestedSchema.Type != "object" ||
-		request.RequestedSchema.Properties == nil ||
-		len(request.RequestedSchema.Properties) != 0 {
+	if !isEmptyObjectSchema(request.RequestedSchema) {
 		decision.Reason = "unsupported_schema"
 		return decline()
 	}
@@ -1200,6 +1195,24 @@ func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitat
 	decision.Action = "accept"
 	decision.Reason = "supported_browser_tool_approval"
 	return map[string]any{"action": "accept", "content": map[string]any{}}, decision
+}
+
+func isEmptyObjectSchema(data json.RawMessage) bool {
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(data, &schema); err != nil || len(schema) != 2 {
+		return false
+	}
+
+	var schemaType string
+	if err := json.Unmarshal(schema["type"], &schemaType); err != nil || schemaType != "object" {
+		return false
+	}
+
+	var properties map[string]json.RawMessage
+	if err := json.Unmarshal(schema["properties"], &properties); err != nil {
+		return false
+	}
+	return properties != nil && len(properties) == 0
 }
 
 func logMCPElicitationDecision(ctx context.Context, logger *slog.Logger, decision mcpElicitationDecision) {
