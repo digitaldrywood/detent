@@ -19,6 +19,7 @@ const (
 	implementProgressMetadataKey       = "completion_progress"
 	implementProgressOutcomeNoProgress = "no_progress"
 	implementDependencyDeferralReason  = "dependency_deferral"
+	implementMergedCompletionReason    = "merged_pull_request_completion"
 	noProgressLimitReason              = "no_progress_limit"
 	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
@@ -121,6 +122,29 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		decision.TrackerState = strings.TrimSpace(issue.State)
 		if workpadCurrent {
 			decision.WorkpadStatus, decision.HumanAction = implementProgressBlockedHumanAction(issue)
+		}
+		if workpadCurrent && implementProgressMergedCompletionCandidate(issue, running.DiffStats) &&
+			implementProgressLinkedPullRequest(issue) && issue.PullRequest == nil {
+			hydrator, ok := o.connector.(connector.PullRequestHydrator)
+			if !ok {
+				decision.Warning = "pull request hydrator unavailable"
+				o.warnImplementProgressHydration(issue, decision.Warning, nil)
+			} else {
+				hydrated, err := hydrator.HydratePullRequest(ctx, issue)
+				if err != nil {
+					decision.Warning = err.Error()
+					o.warnImplementProgressHydration(issue, "pull request hydration failed", err)
+				} else {
+					issue = hydrated
+					decision.Issue = issue
+				}
+			}
+		}
+		if workpadCurrent && implementProgressMergedCompletion(issue, running.DiffStats) {
+			decision.WorkpadStatus = workpad.StatusComplete
+			decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(issue, staleMergedPullRequestSummaryFromIssue(issue))
+			decision.Reason = implementMergedCompletionReason
+			return decision
 		}
 		attempts, err := o.recentImplementCompletionAttempts(ctx, issue, running)
 		if err != nil {
@@ -367,6 +391,36 @@ func implementProgressBlockedHumanAction(issue connector.Issue) (string, string)
 		return "", ""
 	}
 	return workpad.StatusBlocked, humanAction
+}
+
+func implementProgressMergedCompletion(issue connector.Issue, diffStats DiffStats) bool {
+	if !implementProgressMergedCompletionCandidate(issue, diffStats) {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if workAttemptPRNumber(issue) == nil || !pullRequestMerged(pullRequest) ||
+		pullRequestHydrationBlocksProgress(pullRequest) || strings.TrimSpace(pullRequest.HeadSHA) == "" {
+		return false
+	}
+	if pullRequest.CheckRunCount+pullRequest.StatusContextCount == 0 ||
+		len(pullRequest.RunningChecks) > 0 || len(pullRequest.UnstartedChecks) > 0 ||
+		len(pullRequest.RequiredCheckFailures) > 0 {
+		return false
+	}
+	return mergeWorkerCIGreen(pullRequest.CIStatus)
+}
+
+func implementProgressMergedCompletionCandidate(issue connector.Issue, diffStats DiffStats) bool {
+	if diffStats.UnpushedCommits > 0 || !implementProgressDiffStatsClean(diffStats) {
+		return false
+	}
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
+		strings.TrimSpace(signal.Status) != workpad.StatusComplete ||
+		strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 {
+		return false
+	}
+	return true
 }
 
 func latestImplementProgressSignature(attempts []store.WorkAttempt) (autoPromoteReworkSignature, bool) {

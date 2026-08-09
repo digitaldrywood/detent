@@ -514,6 +514,121 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 20, 40, 30, 0, time.UTC)
+	runningIssue := implementProgressIssueWithoutPR()
+	runningIssue.ID = "issue-1711"
+	runningIssue.Identifier = "digitaldrywood/detent#1711"
+	runningIssue.URL = "https://github.test/digitaldrywood/detent/issues/1711"
+	prNumber := 1708
+	refreshedIssue := cloneIssue(runningIssue)
+	refreshedIssue.PRNumber = &prNumber
+	refreshedIssue.PRRepository = "digitaldrywood/detent"
+	refreshedIssue.Comments = []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+		URL:  "https://github.test/digitaldrywood/detent/issues/1711#workpad",
+	}}
+	hydratedIssue := cloneIssue(refreshedIssue)
+	hydratedIssue.PullRequest = &connector.PullRequest{
+		Number:        prNumber,
+		URL:           "https://github.test/digitaldrywood/detent/pull/1708",
+		State:         "MERGED",
+		HeadSHA:       "b2c2639ba9d8dbaddda1dc6adc5fc7b77c0d2b1d",
+		CIStatus:      "success",
+		CheckRunCount: 2,
+	}
+	tracker := &implementProgressConnector{refreshed: refreshedIssue, hydrated: hydratedIssue}
+	attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{
+		implementProgressLegacyNoPRHistoryAttempt(3),
+		implementProgressLegacyNoPRHistoryAttempt(2),
+		implementProgressLegacyNoPRHistoryAttempt(1),
+	}}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			NoProgressLimit: 3,
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	running := Running{
+		Issue:         runningIssue,
+		Attempt:       4,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Running[runningIssue.ID] = running
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: running.StartedAt}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState: FinalStateCompleted,
+			DiffStats:  runpkg.DiffStats{Status: "clean"},
+		},
+	})
+
+	if len(attempts.completions) != 1 {
+		t.Fatalf("completions = %#v, want one", attempts.completions)
+	}
+	completion := attempts.completions[0]
+	if completion.TerminalState != store.WorkAttemptTerminalSuccess {
+		t.Fatalf("TerminalState = %q, want success", completion.TerminalState)
+	}
+	record := implementProgressRecordFromCompletion(t, completion)
+	if record.Reason != implementMergedCompletionReason {
+		t.Fatalf("Reason = %q, want %s", record.Reason, implementMergedCompletionReason)
+	}
+	if record.ConsecutiveNoProgress != 0 {
+		t.Fatalf("ConsecutiveNoProgress = %d, want 0", record.ConsecutiveNoProgress)
+	}
+	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present after accepted merged completion", runningIssue.ID)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no completion-time Blocked transition", tracker.updates)
+	}
+	if tracker.hydrations != 1 {
+		t.Fatalf("hydrations = %d, want tracker-discovered PR hydrated once", tracker.hydrations)
+	}
+	completed := state.Completed[runningIssue.ID]
+	if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
+		t.Fatalf("completed issue pull request = %#v, want refreshed merged PR", completed.Issue.PullRequest)
+	}
+
+	transitioned := orch.reconcileStaleLinkedPullRequestIssues(
+		context.Background(),
+		&state,
+		[]connector.Issue{hydratedIssue},
+		now.Add(time.Minute),
+	)
+	if _, ok := transitioned[runningIssue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want issue %q", transitioned, runningIssue.ID)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0] != (implementProgressUpdate{issueID: runningIssue.ID, state: "Done"}) {
+		t.Fatalf("updates = %#v, want Done reconciliation", tracker.updates)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "reason: pull_request_merged") {
+		t.Fatalf("comments = %#v, want merged PR reconciliation", tracker.comments)
+	}
+}
+
 func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	t.Parallel()
 
@@ -992,6 +1107,74 @@ func TestImplementProgressHelperBoundaries(t *testing.T) {
 	added, removed := implementProgressFailedCheckDelta([]string{"test", "lint"}, []string{"lint", "build"})
 	if !slicesEqual(added, []string{"build"}) || !slicesEqual(removed, []string{"test"}) {
 		t.Fatalf("implementProgressFailedCheckDelta() = %#v, %#v", added, removed)
+	}
+}
+
+func TestImplementProgressMergedCompletionQualification(t *testing.T) {
+	t.Parallel()
+
+	mergedIssue := func() connector.Issue {
+		prNumber := 1708
+		return connector.Issue{
+			PRNumber: &prNumber,
+			WorkpadSignal: &workpad.Signal{
+				Source: workpad.SourceStructured,
+				Status: workpad.StatusComplete,
+			},
+			PullRequest: &connector.PullRequest{
+				Number:        prNumber,
+				State:         "MERGED",
+				HeadSHA:       "current-head",
+				CIStatus:      "success",
+				CheckRunCount: 2,
+			},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*connector.Issue, *DiffStats)
+		qualifies bool
+	}{
+		{name: "complete merged green clean", qualifies: true},
+		{name: "missing workpad", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal = nil }},
+		{name: "workpad still in progress", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Status = workpad.StatusInProgress }},
+		{name: "prose workpad", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Source = workpad.SourceProse }},
+		{name: "human action remains", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.HumanAction = "approve release" }},
+		{name: "blocker remains", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.WorkpadSignal.Blockers = []workpad.Blocker{{Identifier: "digitaldrywood/detent#1700"}}
+		}},
+		{name: "pull request is open", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.State = "OPEN" }},
+		{name: "pull request link missing", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PRNumber = nil
+			issue.PullRequest.Number = 0
+		}},
+		{name: "head missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.HeadSHA = "" }},
+		{name: "check evidence missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CheckRunCount = 0 }},
+		{name: "ci pending", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "required check pending", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "in_progress"}}
+		}},
+		{name: "hydration degraded", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+		}},
+		{name: "workspace dirty", mutate: func(_ *connector.Issue, diffStats *DiffStats) { diffStats.FilesChanged = 1 }},
+		{name: "commit unpushed", mutate: func(_ *connector.Issue, diffStats *DiffStats) { diffStats.UnpushedCommits = 1 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := mergedIssue()
+			diffStats := DiffStats{Status: "clean"}
+			if tt.mutate != nil {
+				tt.mutate(&issue, &diffStats)
+			}
+			if got := implementProgressMergedCompletion(issue, diffStats); got != tt.qualifies {
+				t.Fatalf("implementProgressMergedCompletion() = %t, want %t", got, tt.qualifies)
+			}
+		})
 	}
 }
 
