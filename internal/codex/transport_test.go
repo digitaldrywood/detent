@@ -353,8 +353,9 @@ func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
 		_ = transport.Close(closeCtx)
 	})
 
-	writeObserver := newWriteObserver(local.stdin)
-	local.codec.writer = bufio.NewWriter(writeObserver)
+	stdin := newCloseWaitsForWriteCloser(local.stdin)
+	local.stdin = stdin
+	local.codec.writer = bufio.NewWriter(stdin)
 
 	sendDone := make(chan error, 1)
 	go func() {
@@ -366,7 +367,7 @@ func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
 	}()
 
 	select {
-	case <-writeObserver.started:
+	case <-stdin.writeStarted:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Send() did not start writing")
 	}
@@ -390,6 +391,18 @@ func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
 			t.Fatal("Send() error = nil, want blocked write interrupted by close")
 		}
 	case <-closeCtx.Done():
+		local.stopReading()
+		_ = procgroup.TerminateTree(local.cmd, local.processGroupID)
+		select {
+		case <-sendDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Send() could not be recovered after Close() blocked")
+		}
+		select {
+		case <-closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close() could not be recovered after blocked write")
+		}
 		t.Fatalf("Send() stayed blocked after Close(): %v", closeCtx.Err())
 	}
 
@@ -734,24 +747,36 @@ func (noopWriteCloser) Close() error {
 	return nil
 }
 
-type writeObserver struct {
-	writer  io.Writer
-	started chan struct{}
-	once    sync.Once
+type closeWaitsForWriteCloser struct {
+	writer       io.WriteCloser
+	writeStarted chan struct{}
+	writeDone    chan struct{}
+	startOnce    sync.Once
+	doneOnce     sync.Once
 }
 
-func newWriteObserver(writer io.Writer) *writeObserver {
-	return &writeObserver{
-		writer:  writer,
-		started: make(chan struct{}),
+func newCloseWaitsForWriteCloser(writer io.WriteCloser) *closeWaitsForWriteCloser {
+	return &closeWaitsForWriteCloser{
+		writer:       writer,
+		writeStarted: make(chan struct{}),
+		writeDone:    make(chan struct{}),
 	}
 }
 
-func (w *writeObserver) Write(p []byte) (int, error) {
-	w.once.Do(func() {
-		close(w.started)
+func (w *closeWaitsForWriteCloser) Write(p []byte) (int, error) {
+	w.startOnce.Do(func() {
+		close(w.writeStarted)
 	})
-	return w.writer.Write(p)
+	n, err := w.writer.Write(p)
+	w.doneOnce.Do(func() {
+		close(w.writeDone)
+	})
+	return n, err
+}
+
+func (w *closeWaitsForWriteCloser) Close() error {
+	<-w.writeDone
+	return w.writer.Close()
 }
 
 type capturingLocalTransportFactory struct {
