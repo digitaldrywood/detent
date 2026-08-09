@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,8 @@ const (
 	modelListRequestID    = 6
 	threadReadRequestID   = 7
 	methodNotFoundCode    = -32601
+	chromeDevToolsServer  = "chrome-devtools"
+	mcpToolApprovalKind   = "mcp_tool_call"
 
 	defaultClientName    = "detent-orchestrator"
 	defaultClientTitle   = "Detent Orchestrator"
@@ -144,6 +147,7 @@ func (e *TurnFailedError) BackendErrorMessage() string {
 type AppServer struct {
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
+	logger           *slog.Logger
 	readTimeout      time.Duration
 	turnTimeout      time.Duration
 }
@@ -297,6 +301,7 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 			Title:   defaultClientTitle,
 			Version: defaultClientVersion,
 		},
+		logger:      slog.Default(),
 		readTimeout: defaultReadTimeout,
 		turnTimeout: defaultTurnTimeout,
 	}
@@ -309,6 +314,9 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 	}
 	if server.clientInfo.Version == "" {
 		server.clientInfo.Version = defaultClientVersion
+	}
+	if server.logger == nil {
+		server.logger = slog.Default()
 	}
 	if server.readTimeout <= 0 {
 		server.readTimeout = defaultReadTimeout
@@ -323,6 +331,12 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 func WithClientInfo(info ClientInfo) AppServerOption {
 	return func(server *AppServer) {
 		server.clientInfo = info
+	}
+}
+
+func WithLogger(logger *slog.Logger) AppServerOption {
+	return func(server *AppServer) {
+		server.logger = logger
 	}
 }
 
@@ -940,7 +954,7 @@ func (s *AppServer) awaitResponse(
 			return msg.Result, nil
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg, toolHandler)
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, s.logger)
 		if err != nil {
 			return nil, err
 		}
@@ -974,7 +988,7 @@ func (s *AppServer) streamTurn(
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg, toolHandler)
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, s.logger)
 		if err != nil {
 			return err
 		}
@@ -1040,7 +1054,13 @@ func sendRequest(ctx context.Context, transport Transport, id int, method string
 	})
 }
 
-func handleServerRequest(ctx context.Context, transport Transport, msg Message, toolHandler DynamicToolHandler) (bool, error) {
+func handleServerRequest(
+	ctx context.Context,
+	transport Transport,
+	msg Message,
+	toolHandler DynamicToolHandler,
+	logger *slog.Logger,
+) (bool, error) {
 	if msg.Method == "" || len(msg.ID) == 0 {
 		return false, nil
 	}
@@ -1048,7 +1068,7 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message, 
 	response := Message{
 		ID: msg.ID,
 	}
-	result, ok, err := serverRequestResult(ctx, msg, toolHandler)
+	result, ok, err := serverRequestResult(ctx, msg, toolHandler, logger)
 	if err != nil {
 		return true, err
 	}
@@ -1067,7 +1087,12 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message, 
 	return true, nil
 }
 
-func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicToolHandler) (json.RawMessage, bool, error) {
+func serverRequestResult(
+	ctx context.Context,
+	msg Message,
+	toolHandler DynamicToolHandler,
+	logger *slog.Logger,
+) (json.RawMessage, bool, error) {
 	var result any
 	switch msg.Method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
@@ -1077,7 +1102,9 @@ func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicTo
 	case "item/tool/requestUserInput":
 		result = map[string]any{"answers": map[string]any{}}
 	case "mcpServer/elicitation/request":
-		result = map[string]any{"action": "decline", "content": nil}
+		response, decision := mcpElicitationResponse(msg.Params)
+		logMCPElicitationDecision(ctx, logger, decision)
+		result = response
 	case "item/tool/call":
 		if toolHandler == nil {
 			result = map[string]any{
@@ -1108,6 +1135,89 @@ func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicTo
 		return nil, true, fmt.Errorf("marshal %s server request response: %w", msg.Method, err)
 	}
 	return data, true, nil
+}
+
+type mcpElicitationDecision struct {
+	Server       string
+	Mode         string
+	ApprovalKind string
+	Action       string
+	Reason       string
+}
+
+func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitationDecision) {
+	decision := mcpElicitationDecision{
+		Action: "decline",
+		Reason: "invalid_request",
+	}
+	decline := func() (map[string]any, mcpElicitationDecision) {
+		return map[string]any{"action": "decline", "content": nil}, decision
+	}
+
+	var request struct {
+		ServerName      string          `json:"serverName"`
+		Mode            string          `json:"mode"`
+		Meta            json.RawMessage `json:"_meta"`
+		RequestedSchema struct {
+			Type       string                     `json:"type"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"requestedSchema"`
+	}
+	if err := json.Unmarshal(params, &request); err != nil {
+		return decline()
+	}
+
+	decision.Server = request.ServerName
+	decision.Mode = request.Mode
+	if request.ServerName != chromeDevToolsServer {
+		decision.Reason = "unsupported_server"
+		return decline()
+	}
+	if request.Mode != "form" {
+		decision.Reason = "unsupported_mode"
+		return decline()
+	}
+
+	var meta struct {
+		ApprovalKind string `json:"codex_approval_kind"`
+	}
+	if err := json.Unmarshal(request.Meta, &meta); err != nil {
+		decision.Reason = "invalid_metadata"
+		return decline()
+	}
+	decision.ApprovalKind = meta.ApprovalKind
+	if meta.ApprovalKind != mcpToolApprovalKind {
+		decision.Reason = "unsupported_approval_kind"
+		return decline()
+	}
+	if request.RequestedSchema.Type != "object" ||
+		request.RequestedSchema.Properties == nil ||
+		len(request.RequestedSchema.Properties) != 0 {
+		decision.Reason = "unsupported_schema"
+		return decline()
+	}
+
+	decision.Action = "accept"
+	decision.Reason = "supported_browser_tool_approval"
+	return map[string]any{"action": "accept", "content": map[string]any{}}, decision
+}
+
+func logMCPElicitationDecision(ctx context.Context, logger *slog.Logger, decision mcpElicitationDecision) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	level := slog.LevelInfo
+	if decision.Action != "accept" {
+		level = slog.LevelWarn
+	}
+	logger.LogAttrs(ctx, level, "codex MCP elicitation decision",
+		slog.String("method", "mcpServer/elicitation/request"),
+		slog.String("server", decision.Server),
+		slog.String("mode", decision.Mode),
+		slog.String("approval_kind", decision.ApprovalKind),
+		slog.String("action", decision.Action),
+		slog.String("reason", decision.Reason),
+	)
 }
 
 func dynamicToolResponse(content string, success bool) map[string]any {

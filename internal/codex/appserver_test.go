@@ -1,10 +1,12 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -985,6 +987,7 @@ func TestReceiveTurnMessageTimeoutSelection(t *testing.T) {
 func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	t.Parallel()
 
+	var logs bytes.Buffer
 	transport := newFakeAppServerTransport([]Message{
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
 		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
@@ -994,11 +997,29 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 		serverRequestMessage(t, 41, "item/commandExecution/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
 		serverRequestMessage(t, 42, "item/fileChange/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
 		serverRequestMessage(t, 43, "item/permissions/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
-		serverRequestMessage(t, 44, "mcpServer/elicitation/request", `{"threadId":"thread-1","turnId":"turn-1"}`),
-		serverRequestMessage(t, 45, "custom/request", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		serverRequestMessage(t, 44, "mcpServer/elicitation/request", `{
+			"threadId":"thread-1",
+			"turnId":"turn-1",
+			"serverName":"chrome-devtools",
+			"mode":"form",
+			"message":"Allow the chrome-devtools MCP server to run tool \"navigate_page\"?",
+			"requestedSchema":{"type":"object","properties":{}},
+			"_meta":{"codex_approval_kind":"mcp_tool_call"}
+		}`),
+		serverRequestMessage(t, 45, "mcpServer/elicitation/request", `{
+			"threadId":"thread-1",
+			"turnId":"turn-1",
+			"serverName":"other-server",
+			"mode":"form",
+			"message":"Allow another MCP tool call?",
+			"requestedSchema":{"type":"object","properties":{}},
+			"_meta":{"codex_approval_kind":"mcp_tool_call"}
+		}`),
+		serverRequestMessage(t, 46, "custom/request", `{"threadId":"thread-1","turnId":"turn-1"}`),
 		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 	})
 	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
 		WithReadTimeout(time.Second),
 		WithTurnTimeout(time.Second),
 	)
@@ -1015,8 +1036,8 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	}
 
 	sent := transport.sentMessages()
-	if len(sent) != 11 {
-		t.Fatalf("sent messages = %d, want 11: %#v", len(sent), sent)
+	if len(sent) != 12 {
+		t.Fatalf("sent messages = %d, want 12: %#v", len(sent), sent)
 	}
 
 	assertRequest(t, sent[3], 5, "config/read")
@@ -1024,9 +1045,117 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	assertResponseResultContains(t, sent[6], 41, "decision", "decline")
 	assertResponseResultContains(t, sent[7], 42, "decision", "decline")
 	assertResponseResultContains(t, sent[8], 43, "permissions", map[string]any{})
-	assertResponseResultContains(t, sent[9], 44, "action", "decline")
-	assertResponseResultContains(t, sent[9], 44, "content", nil)
-	assertErrorResponse(t, sent[10], 45, methodNotFoundCode, "unsupported server request: custom/request")
+	assertResponseResultContains(t, sent[9], 44, "action", "accept")
+	assertResponseResultContains(t, sent[9], 44, "content", map[string]any{})
+	assertResponseResultContains(t, sent[10], 45, "action", "decline")
+	assertResponseResultContains(t, sent[10], 45, "content", nil)
+	assertErrorResponse(t, sent[11], 46, methodNotFoundCode, "unsupported server request: custom/request")
+
+	for _, want := range []string{
+		"method=mcpServer/elicitation/request server=chrome-devtools mode=form approval_kind=mcp_tool_call action=accept reason=supported_browser_tool_approval",
+		"method=mcpServer/elicitation/request server=other-server mode=form approval_kind=\"\" action=decline reason=unsupported_server",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, missing %q", logs.String(), want)
+		}
+	}
+}
+
+func TestMCPElicitationResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		params     string
+		wantAction string
+		wantReason string
+	}{
+		{
+			name: "browser tool approval",
+			params: `{
+				"serverName":"chrome-devtools",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},
+				"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			wantAction: "accept",
+			wantReason: "supported_browser_tool_approval",
+		},
+		{
+			name: "unsupported server",
+			params: `{
+				"serverName":"filesystem",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},
+				"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			wantAction: "decline",
+			wantReason: "unsupported_server",
+		},
+		{
+			name: "browser URL elicitation",
+			params: `{
+				"serverName":"chrome-devtools",
+				"mode":"url",
+				"url":"https://example.com/authorize",
+				"elicitationId":"elicitation-1"
+			}`,
+			wantAction: "decline",
+			wantReason: "unsupported_mode",
+		},
+		{
+			name: "browser input form",
+			params: `{
+				"serverName":"chrome-devtools",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{"value":{"type":"string"}}},
+				"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			wantAction: "decline",
+			wantReason: "unsupported_schema",
+		},
+		{
+			name: "unsupported browser form",
+			params: `{
+				"serverName":"chrome-devtools",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},
+				"_meta":{"codex_approval_kind":"tool_suggestion"}
+			}`,
+			wantAction: "decline",
+			wantReason: "unsupported_approval_kind",
+		},
+		{
+			name:       "malformed request",
+			params:     `{`,
+			wantAction: "decline",
+			wantReason: "invalid_request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			response, decision := mcpElicitationResponse(json.RawMessage(tt.params))
+			if got := response["action"]; got != tt.wantAction {
+				t.Errorf("action = %v, want %q", got, tt.wantAction)
+			}
+			if decision.Action != tt.wantAction {
+				t.Errorf("decision action = %q, want %q", decision.Action, tt.wantAction)
+			}
+			if decision.Reason != tt.wantReason {
+				t.Errorf("decision reason = %q, want %q", decision.Reason, tt.wantReason)
+			}
+			if tt.wantAction == "accept" {
+				if got, ok := response["content"].(map[string]any); !ok || len(got) != 0 {
+					t.Errorf("content = %#v, want empty object", response["content"])
+				}
+			} else if response["content"] != nil {
+				t.Errorf("content = %#v, want nil", response["content"])
+			}
+		})
+	}
 }
 
 func TestAppServerRunTurnReportsResponseErrors(t *testing.T) {
