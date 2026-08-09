@@ -863,6 +863,7 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 	}
 
 	connectorConfigs := make(chan workflowconfig.Config, 2)
+	var logs lockedBuffer
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "pyroapex",
@@ -872,6 +873,7 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 		Workflow: workflow,
 	}, project.Dependencies{
 		GitHubToken: "global-token",
+		Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
 		ConnectorFactory: func(cfg workflowconfig.Config) (connector.Connector, error) {
 			connectorConfigs <- cfg
 			return provisioningConnector{}, nil
@@ -894,11 +896,10 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 		}
 	}()
 
-	watcherDelay := time.NewTimer(25 * time.Millisecond)
-	<-watcherDelay.C
+	waitForWorkflowWatcherArmed(t, got)
 
 	writeProjectGitHubWorkflow(t, workflowPath, 60000, "reloaded")
-	waitForWorkflowPrompt(t, got, "reloaded\n")
+	waitForProjectLog(t, &logs, "workflow reloaded")
 
 	reloaded := receiveConnectorConfig(t, connectorConfigs)
 	if reloaded.Tracker.APIKey != "global-token" {
@@ -911,10 +912,11 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 	if err := os.WriteFile(workflowPath, []byte("---\ntracker: [\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", workflowPath, err)
 	}
+	waitForProjectLog(t, &logs, "workflow reload failed")
 	select {
 	case extra := <-connectorConfigs:
 		t.Fatalf("connector rebuilt after invalid reload = %#v", extra)
-	case <-time.After(250 * time.Millisecond):
+	default:
 	}
 	if got.Workflow().Prompt != "reloaded\n" {
 		t.Fatalf("Workflow().Prompt after invalid reload = %q, want last valid workflow", got.Workflow().Prompt)
@@ -1566,8 +1568,27 @@ func waitForWorkflowWatcher(t *testing.T, ready <-chan struct{}) {
 
 	select {
 	case <-ready:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for workflow watcher")
+	}
+}
+
+func waitForProjectLog(t *testing.T, logs *lockedBuffer, want string) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(10 * time.Second)
+
+	for {
+		if strings.Contains(logs.String(), want) {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("timed out waiting for project log %q; logs = %q", want, logs.String())
+		}
 	}
 }
 
@@ -1576,7 +1597,7 @@ func waitForWorkflowWatcherArmed(t *testing.T, got *project.Project) {
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(time.Second)
+	deadline := time.After(10 * time.Second)
 
 	for {
 		if got.WorkflowSourceStatus().WatcherArmed {

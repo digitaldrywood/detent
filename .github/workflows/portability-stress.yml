@@ -1,0 +1,39 @@
+name: Portability Stress
+
+on:
+  schedule:
+    - cron: '41 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portability-stress:
+    name: Portability Stress (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Stress local SQLite artifact lifecycle
+        if: runner.os == 'Windows'
+        run: go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20
+
+      - name: Stress timing-sensitive packages
+        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m
+
+      - name: Race test
+        run: go test -race ./...
