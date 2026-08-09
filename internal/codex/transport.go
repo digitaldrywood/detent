@@ -264,8 +264,8 @@ func (t *localTransport) Receive(ctx context.Context) (Message, error) {
 func (t *localTransport) Close(ctx context.Context) error {
 	ctx = contextOrBackground(ctx)
 
-	closeErr := t.closeStdin()
 	t.stopReading()
+	closeErr := t.closeStdin()
 
 	select {
 	case <-t.done:
