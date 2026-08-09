@@ -51,7 +51,7 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		return
 	}
 	o.recordSchedulerDecision(ctx, state, now, decision, result, reason)
-	if o.logger == nil {
+	if o.logger == nil || reason == dispatchSkipCurrentHeadCIWait || reason == mergeWorkerCurrentHeadCIWaitExceededReason {
 		return
 	}
 	attrs := o.schedulerDecisionAttrs(state, now, decision.Issue,

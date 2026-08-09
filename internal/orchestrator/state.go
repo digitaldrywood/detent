@@ -216,6 +216,16 @@ type Retry struct {
 	ResumeState   store.AgentResumeState
 	MergePrecheck *runpkg.MergePrecheck
 	CIUnavailable bool
+	Wait          RetryWait
+}
+
+type RetryWait struct {
+	Kind                  string
+	StartedAt             time.Time
+	PollCount             int
+	PendingChecks         []string
+	WorkspaceCreateCount  int
+	WorkspaceDestroyCount int
 }
 
 type InstantFailure struct {
@@ -416,6 +426,7 @@ func (s State) clone() State {
 	for id, retry := range s.Retry {
 		retry.Issue = cloneIssue(retry.Issue)
 		retry.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
+		retry.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 		cloned.Retry[id] = retry
 	}
 	for id, failure := range s.InstantFailures {

@@ -64,7 +64,7 @@ type helpEntry struct {
 var helpDefinitions = map[helpTerm]helpEntry{
 	helpAgentActivity:       {Label: "Agent activity", Description: "A timeline of what running and recently completed agents are doing. Use it to spot stalls, bursts of work, or agents that are no longer moving."},
 	helpAgeTurn:             {Label: "Runtime / turns", Description: "How long the session has been running and how many Codex turns it has completed. Older sessions with few turns may be waiting or stuck."},
-	helpBackoffQueue:        {Label: "Backoff queue", Description: "Work that failed and is waiting to retry after a cooldown. It keeps transient errors or rate limits from dropping the task."},
+	helpBackoffQueue:        {Label: "Retry and wait queue", Description: "Work waiting for CI or scheduled to retry after a failure, cooldown, or rate limit."},
 	helpBlocked:             {Label: "Blocked", Description: "Issues Detent cannot continue without human help, such as missing dependencies, auth, approvals, or required actions."},
 	helpBoardHealth:         {Label: "Board health", Description: "A snapshot of where tracked issues sit across the workflow. Watch it to see whether work is flowing or piling up in a state."},
 	helpBudget:              {Label: "Budget", Description: "Optional USD spend guardrails for the active project. If a cap is hit, Detent refuses to start new work until the limit is raised or resets."},

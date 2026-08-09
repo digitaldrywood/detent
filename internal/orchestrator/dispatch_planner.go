@@ -24,6 +24,7 @@ type dispatchPlanHooks struct {
 	dispatch                func(dispatchAction) bool
 	dispatchFailed          func(connector.Issue) bool
 	retryDispatchFailed     func(connector.Issue, Retry)
+	pollRetryWait           func(connector.Issue, Retry) (Retry, bool, string)
 	preserveMissingDueRetry func(Retry) bool
 	decision                func(dispatchPlanDecision)
 }
@@ -97,6 +98,29 @@ func (p dispatchPlanner) plan(
 			continue
 		}
 		if retry, ok := dueRetries[issue.ID]; ok {
+			if retry.Wait.Kind == retryWaitCurrentHeadCI {
+				var handled bool
+				reason := ""
+				if hooks.pollRetryWait != nil {
+					retry, handled, reason = hooks.pollRetryWait(issue, retry)
+				} else {
+					retry, handled = p.previewCurrentHeadCIWait(state, issue, retry, now)
+					if handled {
+						reason = dispatchSkipCurrentHeadCIWait
+					}
+				}
+				if handled {
+					p.logDecision(hooks, dispatchPlanDecision{
+						Issue:         issue,
+						QueuePosition: queuePosition,
+						Attempt:       retry.Attempt,
+						WorkerHost:    retry.WorkerHost,
+						Retry:         true,
+						SkipReason:    reason,
+					})
+					continue
+				}
+			}
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
 				logDecision(dispatchPlanDecision{
@@ -535,7 +559,29 @@ const (
 	dispatchSkipCIUnavailable            = "ci_unavailable"
 	dispatchSkipProjectFailureBreaker    = projectFailureBreakerDispatchPaused
 	dispatchSkipRateWindowBackpressure   = "provider_rate_window_backpressure"
+	dispatchSkipCurrentHeadCIWait        = "current_head_ci_wait"
 )
+
+func (p dispatchPlanner) previewCurrentHeadCIWait(
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) (Retry, bool) {
+	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		retry.Attempt = nextAttempt(retry.Attempt)
+		retry.Wait = RetryWait{}
+		state.Retry[issue.ID] = retry
+		return retry, false
+	}
+	retry.Issue = cloneIssue(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	retry.Wait.PollCount++
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
+	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, p.cfg.ContinuationRetryDelay)
+	state.Retry[issue.ID] = retry
+	return retry, true
+}
 
 func (p dispatchPlanner) dispatchableIssueDecision(
 	issue connector.Issue,
