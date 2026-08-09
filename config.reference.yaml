@@ -513,6 +513,12 @@
 #   ssh_hosts: []
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
+#   # worker.github_token | type: string | default: none | required: No | validation: None
+#   github_token: null
+#   # worker.github_rest_min_remaining_reserve | type: integer | default: 1000 | required: No | validation: must be greater than 0
+#   github_rest_min_remaining_reserve: 1000
+#   # worker.github_rest_poll_interval_ms | type: integer | default: 60000 | required: No | validation: must be greater than or equal to 60000
+#   github_rest_poll_interval_ms: 60000
 # # agent | type: object | default: see child fields | required: No | validation: None
 # agent:
 #   # agent.max_concurrent_agents | type: integer | default: 10 | required: No | validation: must be greater than 0

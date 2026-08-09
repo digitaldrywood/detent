@@ -522,12 +522,11 @@ func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testin
 	searchReset := coreReset.Add(-45 * time.Minute)
 	limits := &telemetry.RateLimits{
 		GitHubRESTBudgets: []telemetry.RESTBudget{
-			{CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Remaining: 300, Limit: 5000, ResetAt: &coreReset},
-			{CredentialIdentity: "github-rest:app", EndpointFamily: "issue search", Resource: "search", Remaining: 20, Limit: 30, ResetAt: &searchReset},
+			{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Remaining: 300, Limit: 5000, ResetAt: &coreReset},
+			{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "github-rest:app", EndpointFamily: "worker credential", Resource: "core", Used: 4980, Remaining: 20, Limit: 5000, MinRemainingReserve: 1000, ResetAt: &searchReset},
 		},
 		RESTUsage: &telemetry.RESTUsage{Contributors: []telemetry.RESTUsageContributor{
-			{CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Count: 4, LastStatus: 200},
-			{CredentialIdentity: "github-rest:app", EndpointFamily: "issue search", Resource: "search", Count: 1, LastStatus: 200},
+			{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Count: 4, LastStatus: 200},
 		}},
 	}
 
@@ -537,19 +536,22 @@ func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testin
 	}
 	tests := []struct {
 		index      int
+		consumer   string
 		credential string
 		family     string
 		resource   string
+		count      string
+		status     string
 		remaining  string
 		resetAt    time.Time
 	}{
-		{index: 0, credential: "github-rest:user", family: "issues", resource: "core", remaining: "300 / 5,000", resetAt: coreReset},
-		{index: 1, credential: "github-rest:app", family: "issue search", resource: "search", remaining: "20 / 30", resetAt: searchReset},
+		{index: 0, consumer: telemetry.RESTConsumerOrchestrator, credential: "github-rest:user", family: "issues", resource: "core", count: "4 requests", status: "200", remaining: "300 / 5,000", resetAt: coreReset},
+		{index: 1, consumer: telemetry.RESTConsumerWorker, credential: "github-rest:app", family: "worker credential", resource: "core", count: "4,980 used", status: "reserved", remaining: "20 / 5,000", resetAt: searchReset},
 	}
 	for _, test := range tests {
 		t.Run(test.family, func(t *testing.T) {
 			row := rows[test.index]
-			if row.CredentialIdentity != test.credential || row.EndpointFamily != test.family || row.Resource != test.resource || row.Remaining != test.remaining || row.Reset != localTimeToken(test.resetAt, LocalTimeOnly) {
+			if row.Consumer != test.consumer || row.CredentialIdentity != test.credential || row.EndpointFamily != test.family || row.Resource != test.resource || row.Count != test.count || row.Status != test.status || row.Remaining != test.remaining || row.Reset != localTimeToken(test.resetAt, LocalTimeOnly) {
 				t.Fatalf("row = %#v, want credential %q family %q resource %q remaining %q reset %v", row, test.credential, test.family, test.resource, test.remaining, test.resetAt)
 			}
 		})

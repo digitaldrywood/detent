@@ -90,7 +90,7 @@ func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Tim
 		state.RateLimits = &telemetry.RateLimits{}
 	}
 	state.RateLimits.GitHubREST = bucket
-	state.RateLimits.GitHubRESTBudgets = budgets
+	state.RateLimits.GitHubRESTBudgets = replaceRESTConsumerBudgets(state.RateLimits.GitHubRESTBudgets, budgets, telemetry.RESTConsumerOrchestrator)
 	state.RateLimits.RESTUsage = summary
 	return restRateLimitCycle{
 		Bucket:     bucket,
@@ -98,6 +98,20 @@ func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Tim
 		Usage:      summary,
 		HasSummary: true,
 	}
+}
+
+func replaceRESTConsumerBudgets(current []telemetry.RESTBudget, replacement []telemetry.RESTBudget, consumer string) []telemetry.RESTBudget {
+	out := make([]telemetry.RESTBudget, 0, len(current)+len(replacement))
+	for _, budget := range current {
+		budgetConsumer := strings.TrimSpace(budget.Consumer)
+		if budgetConsumer == "" {
+			budgetConsumer = telemetry.RESTConsumerOrchestrator
+		}
+		if budgetConsumer != consumer {
+			out = append(out, budget)
+		}
+	}
+	return append(out, replacement...)
 }
 
 func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
@@ -119,6 +133,7 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 	}
 	for _, request := range usage.Requests {
 		contributor := telemetry.RESTUsageContributor{
+			Consumer:           telemetry.RESTConsumerOrchestrator,
 			CredentialIdentity: request.CredentialIdentity,
 			EndpointFamily:     request.EndpointFamily,
 			Count:              request.Count,
@@ -150,6 +165,7 @@ func restBudgetSummaries(budgets []connector.RESTRateLimitBudget) []telemetry.RE
 	out := make([]telemetry.RESTBudget, 0, len(budgets))
 	for _, budget := range budgets {
 		summary := telemetry.RESTBudget{
+			Consumer:           telemetry.RESTConsumerOrchestrator,
 			CredentialIdentity: budget.CredentialIdentity,
 			EndpointFamily:     budget.EndpointFamily,
 			Resource:           budget.RateLimit.Resource,
@@ -233,6 +249,7 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 
 	o.logger.Info(
 		"github rest budget summary",
+		"consumer", telemetry.RESTConsumerOrchestrator,
 		"request_count", totalRequests,
 		"billable_request_count", billableRequests,
 		"not_modified_request_count", notModifiedRequests,

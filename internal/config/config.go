@@ -277,6 +277,9 @@ type Deliverable struct {
 type Worker struct {
 	SSHHosts                   []string `yaml:"ssh_hosts"`
 	MaxConcurrentAgentsPerHost *int     `yaml:"max_concurrent_agents_per_host"`
+	GitHubToken                string   `yaml:"github_token,omitempty"`
+	GitHubRESTMinReserve       int      `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTPollIntervalMS   int      `yaml:"github_rest_poll_interval_ms"`
 }
 
 type Agent struct {
@@ -1297,7 +1300,9 @@ func Default() Config {
 			Source: DependencySourceMerged,
 		},
 		Worker: Worker{
-			SSHHosts: []string{},
+			SSHHosts:                 []string{},
+			GitHubRESTMinReserve:     1000,
+			GitHubRESTPollIntervalMS: 60000,
 		},
 		Agent: Agent{
 			MaxConcurrentAgents:         10,
@@ -1439,6 +1444,14 @@ func (c *Config) Validate() error {
 	c.Workspace.validate(&problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
+	}
+	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
+	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
+		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Worker.GitHubToken)) {
+	case "gh", "gh-auth", "${gh auth token}", "$(gh auth token)":
+		problems = append(problems, "worker.github_token must use a dedicated credential instead of ambient gh authentication")
 	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)

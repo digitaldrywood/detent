@@ -4392,7 +4392,7 @@ templ restBudgetCard(data DashboardData) {
 								<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
 									<span class="truncate font-mono font-medium text-text">{ row.EndpointFamily }</span>
 									<span class="font-mono text-sec">{ row.Remaining }</span>
-									<span class="truncate font-mono text-xs text-sec">{ row.CredentialIdentity }</span>
+									<span class="truncate font-mono text-xs text-sec">{ row.Consumer + " · " + row.CredentialIdentity }</span>
 									<span class="text-right font-mono text-xs text-sec">{ row.Reset }</span>
 									<span class="truncate font-mono text-xs text-sec">{ row.Resource }</span>
 									<span class="text-right font-mono text-xs text-sec">{ row.Count + " · " + row.Status }</span>

@@ -193,6 +193,7 @@ type graphQLBudgetContributorRow struct {
 }
 
 type restBudgetContributorRow struct {
+	Consumer           string
 	CredentialIdentity string
 	EndpointFamily     string
 	Resource           string
@@ -7206,20 +7207,22 @@ func restBudgetContributorRows(limits *telemetry.RateLimits) []restBudgetContrib
 		contributors := make(map[string]telemetry.RESTUsageContributor)
 		if limits.RESTUsage != nil {
 			for _, contributor := range limits.RESTUsage.Contributors {
-				contributors[restBudgetRowKey(contributor.CredentialIdentity, contributor.EndpointFamily, contributor.Resource)] = contributor
+				contributors[restBudgetRowKey(contributor.Consumer, contributor.CredentialIdentity, contributor.EndpointFamily, contributor.Resource)] = contributor
 			}
 		}
 		rows := make([]restBudgetContributorRow, 0, len(limits.GitHubRESTBudgets))
 		for _, budget := range limits.GitHubRESTBudgets {
-			contributor := contributors[restBudgetRowKey(budget.CredentialIdentity, budget.EndpointFamily, budget.Resource)]
+			consumer := restBudgetConsumerLabel(budget.Consumer)
+			contributor := contributors[restBudgetRowKey(consumer, budget.CredentialIdentity, budget.EndpointFamily, budget.Resource)]
 			rows = append(rows, restBudgetContributorRow{
+				Consumer:           consumer,
 				CredentialIdentity: strings.TrimSpace(budget.CredentialIdentity),
 				EndpointFamily:     strings.TrimSpace(budget.EndpointFamily),
 				Resource:           strings.TrimSpace(budget.Resource),
-				Count:              formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
+				Count:              restBudgetRowCount(budget, contributor),
 				Remaining:          restBudgetRowRemaining(budget),
 				Reset:              restBudgetRowReset(budget),
-				Status:             restContributorStatus(contributor),
+				Status:             restBudgetRowStatus(budget, contributor),
 			})
 		}
 		return rows
@@ -7230,6 +7233,7 @@ func restBudgetContributorRows(limits *telemetry.RateLimits) []restBudgetContrib
 	rows := make([]restBudgetContributorRow, 0, len(limits.RESTUsage.Contributors))
 	for _, contributor := range limits.RESTUsage.Contributors {
 		rows = append(rows, restBudgetContributorRow{
+			Consumer:           restBudgetConsumerLabel(contributor.Consumer),
 			CredentialIdentity: strings.TrimSpace(contributor.CredentialIdentity),
 			EndpointFamily:     strings.TrimSpace(contributor.EndpointFamily),
 			Resource:           strings.TrimSpace(contributor.Resource),
@@ -7242,8 +7246,33 @@ func restBudgetContributorRows(limits *telemetry.RateLimits) []restBudgetContrib
 	return rows
 }
 
-func restBudgetRowKey(credentialIdentity string, endpointFamily string, resource string) string {
-	return strings.TrimSpace(credentialIdentity) + "\x00" + strings.TrimSpace(endpointFamily) + "\x00" + strings.TrimSpace(resource)
+func restBudgetRowKey(consumer string, credentialIdentity string, endpointFamily string, resource string) string {
+	return restBudgetConsumerLabel(consumer) + "\x00" + strings.TrimSpace(credentialIdentity) + "\x00" + strings.TrimSpace(endpointFamily) + "\x00" + strings.TrimSpace(resource)
+}
+
+func restBudgetConsumerLabel(consumer string) string {
+	consumer = strings.TrimSpace(consumer)
+	if consumer == "" {
+		return telemetry.RESTConsumerOrchestrator
+	}
+	return consumer
+}
+
+func restBudgetRowCount(budget telemetry.RESTBudget, contributor telemetry.RESTUsageContributor) string {
+	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerWorker {
+		return formatInt(budget.Used) + " used"
+	}
+	return formatInt(contributor.Count) + " " + pluralize("request", contributor.Count)
+}
+
+func restBudgetRowStatus(budget telemetry.RESTBudget, contributor telemetry.RESTUsageContributor) string {
+	if budget.MinRemainingReserve > 0 && budget.Remaining <= budget.MinRemainingReserve {
+		return "reserved"
+	}
+	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerWorker {
+		return "governed"
+	}
+	return restContributorStatus(contributor)
 }
 
 func restBudgetRowRemaining(budget telemetry.RESTBudget) string {

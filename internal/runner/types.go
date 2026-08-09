@@ -170,6 +170,7 @@ type AgentTurnRequest struct {
 	Environment        procgroup.Environment
 	cacheStrategy      string
 	projectID          string
+	workerGitHub       workerGitHubPolicy
 }
 
 type AgentResume struct {

@@ -119,6 +119,69 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 	}
 }
 
+func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if workflow.Config.Worker.GitHubToken != "$DETENT_WORKER_GITHUB_TOKEN" {
+		t.Fatalf("Worker.GitHubToken = %q, want environment reference", workflow.Config.Worker.GitHubToken)
+	}
+	if workflow.Config.Worker.GitHubRESTMinReserve != 1250 {
+		t.Fatalf("Worker.GitHubRESTMinReserve = %d, want 1250", workflow.Config.Worker.GitHubRESTMinReserve)
+	}
+	if workflow.Config.Worker.GitHubRESTPollIntervalMS != 90000 {
+		t.Fatalf("Worker.GitHubRESTPollIntervalMS = %d, want 90000", workflow.Config.Worker.GitHubRESTPollIntervalMS)
+	}
+}
+
+func TestWorkerGitHubPolicyValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name: "reserve must be positive",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubRESTMinReserve = 0
+			},
+			want: "worker.github_rest_min_remaining_reserve must be greater than 0",
+		},
+		{
+			name: "poll interval protects REST budget",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubRESTPollIntervalMS = 59999
+			},
+			want: "worker.github_rest_poll_interval_ms must be greater than or equal to 60000",
+		},
+		{
+			name: "ambient gh credential rejected",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubToken = "gh"
+			},
+			want: "worker.github_token must use a dedicated credential instead of ambient gh authentication",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = TrackerMemory
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowActiveHours(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

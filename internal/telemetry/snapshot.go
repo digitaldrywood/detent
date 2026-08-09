@@ -862,7 +862,13 @@ type RESTUsage struct {
 	Contributors        []RESTUsageContributor `json:"contributors,omitempty"`
 }
 
+const (
+	RESTConsumerOrchestrator = "orchestrator"
+	RESTConsumerWorker       = "worker"
+)
+
 type RESTUsageContributor struct {
+	Consumer           string     `json:"consumer,omitempty"`
 	CredentialIdentity string     `json:"credential_identity,omitempty"`
 	EndpointFamily     string     `json:"endpoint_family"`
 	Count              int64      `json:"count"`
@@ -879,14 +885,16 @@ type RESTUsageContributor struct {
 }
 
 type RESTBudget struct {
-	CredentialIdentity string     `json:"credential_identity"`
-	EndpointFamily     string     `json:"endpoint_family"`
-	Resource           string     `json:"resource,omitempty"`
-	Remaining          int64      `json:"remaining,omitempty"`
-	Used               int64      `json:"used,omitempty"`
-	Limit              int64      `json:"limit,omitempty"`
-	ResetAt            *time.Time `json:"reset_at,omitempty"`
-	ObservedAt         *time.Time `json:"observed_at,omitempty"`
+	Consumer            string     `json:"consumer,omitempty"`
+	CredentialIdentity  string     `json:"credential_identity"`
+	EndpointFamily      string     `json:"endpoint_family"`
+	Resource            string     `json:"resource,omitempty"`
+	Remaining           int64      `json:"remaining,omitempty"`
+	Used                int64      `json:"used,omitempty"`
+	Limit               int64      `json:"limit,omitempty"`
+	MinRemainingReserve int64      `json:"min_remaining_reserve,omitempty"`
+	ResetAt             *time.Time `json:"reset_at,omitempty"`
+	ObservedAt          *time.Time `json:"observed_at,omitempty"`
 }
 
 type Tokens struct {
