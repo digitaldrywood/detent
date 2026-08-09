@@ -453,6 +453,7 @@ detent --format json config path`),
 		newDevRuntimeCommand(&host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
+		newRefreshProjectCommand(&configPath, opts),
 		newPauseProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
 			clearProjectPause(project)
