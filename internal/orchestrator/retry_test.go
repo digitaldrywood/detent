@@ -194,6 +194,149 @@ func TestDispatchReadyIssuesDefersNotReadyMergeRetryBehindReadyHead(t *testing.T
 	}
 }
 
+func TestDispatchReadyIssuesMergeFairnessReservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 9, 4, 20, 0, 0, time.UTC)
+	threshold := 2 * time.Hour
+	tests := []struct {
+		name             string
+		enteredAt        time.Time
+		wantReadyRunning bool
+		wantReadyReason  string
+	}{
+		{
+			name:             "non-aged retry yields to clean head",
+			enteredAt:        now.Add(-threshold + time.Second),
+			wantReadyRunning: true,
+			wantReadyReason:  mergeSelectionReasonClean,
+		},
+		{
+			name:            "aged retry reserves lane after invalidation",
+			enteredAt:       now.Add(-threshold),
+			wantReadyReason: dispatchSkipMergeFairnessReserved,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				MaxConcurrentAgentsByState: map[string]int{
+					"Merging": 1,
+				},
+				DispatchPriorityByState: []string{"Merging"},
+				ActiveStates:            []string{"Merging"},
+				TerminalStates:          []string{"Done"},
+				MergeFairnessAge:        threshold,
+			})
+			orch := Orchestrator{
+				cfg:        cfg,
+				supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+				runResults: make(chan runpkg.Completion, 1),
+			}
+			state := newState(cfg)
+			invalidated := nativeMergeQueueTestIssue(1748, "pending")
+			invalidated.ID = "issue-invalidated-aged-head"
+			invalidated.StageUpdatedAt = timePointer(tt.enteredAt)
+			invalidated.PullRequest.MergeableState = "behind"
+			ready := nativeMergeQueueTestIssue(1749, "success")
+			ready.ID = "issue-new-clean-head"
+			ready.Identifier = "digitaldrywood/pyroapex#1749"
+			ready.PRRepository = "digitaldrywood/pyroapex"
+			ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1749"
+			ready.StageUpdatedAt = timePointer(now.Add(-time.Minute))
+
+			state.Claimed[invalidated.ID] = Claimed{Issue: invalidated, ClaimedAt: now.Add(-time.Minute)}
+			state.Retry[invalidated.ID] = Retry{
+				Issue:   invalidated,
+				Attempt: 1,
+				DueAt:   now.Add(time.Minute),
+				Error:   "waiting for current-head CI",
+			}
+
+			orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{invalidated, ready}, now)
+
+			_, readyRunning := state.Running[ready.ID]
+			if readyRunning != tt.wantReadyRunning {
+				t.Fatalf("ready running = %t, want %t", readyRunning, tt.wantReadyRunning)
+			}
+			if _, ok := state.Retry[invalidated.ID]; !ok {
+				t.Fatalf("Retry[%q] missing", invalidated.ID)
+			}
+			gotReason := ""
+			for _, decision := range state.SchedulerDecisions {
+				if decision.IssueID == ready.ID {
+					gotReason = decision.Reason
+				}
+			}
+			if gotReason != tt.wantReadyReason {
+				t.Fatalf("ready decision reason = %q, want %q", gotReason, tt.wantReadyReason)
+			}
+		})
+	}
+}
+
+func TestDispatchReadyIssuesReleasesMissingAgedRetryBeforeFairnessReservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 9, 5, 0, 0, 0, time.UTC)
+	threshold := 2 * time.Hour
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		DispatchPriorityByState: []string{"Merging"},
+		ActiveStates:            []string{"Merging"},
+		TerminalStates:          []string{"Done"},
+		MergeFairnessAge:        threshold,
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	missing := nativeMergeQueueTestIssue(1748, "pending")
+	missing.ID = "issue-missing-aged-retry"
+	missing.StageUpdatedAt = timePointer(now.Add(-threshold))
+	ready := nativeMergeQueueTestIssue(1751, "success")
+	ready.ID = "issue-current-clean-head"
+	ready.Identifier = "digitaldrywood/pyroapex#1751"
+	ready.PRRepository = "digitaldrywood/pyroapex"
+	ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1751"
+	ready.StageUpdatedAt = timePointer(now.Add(-time.Minute))
+
+	state.Claimed[missing.ID] = Claimed{Issue: missing, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[missing.ID] = Retry{
+		Issue:   missing,
+		Attempt: 1,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "waiting for current-head CI",
+	}
+
+	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{ready}, now)
+
+	if _, ok := state.Retry[missing.ID]; ok {
+		t.Fatalf("Retry[%q] present after missing due retry cleanup", missing.ID)
+	}
+	if _, ok := state.Running[ready.ID]; !ok {
+		t.Fatalf("Running[%q] missing after stale reservation cleanup", ready.ID)
+	}
+	gotReason := ""
+	for _, decision := range state.SchedulerDecisions {
+		if decision.IssueID == ready.ID {
+			gotReason = decision.Reason
+		}
+	}
+	if gotReason != mergeSelectionReasonClean {
+		t.Fatalf("ready decision reason = %q, want %q", gotReason, mergeSelectionReasonClean)
+	}
+}
+
 func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *testing.T) {
 	t.Parallel()
 

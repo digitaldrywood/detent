@@ -4151,7 +4151,7 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 			issue := autoPromoteTickIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), []string{"bug"}, tt.pullRequest)
 			issue.State = "Merging"
 			issue.Closed = tt.closed
-			got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue})
+			got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue}, time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC))
 			if tt.want {
 				if len(got) != 1 || got[0].ID != issue.ID {
 					t.Fatalf("staleMergingQueueDispatchCandidates() = %#v, want %s", got, issue.ID)
@@ -4190,7 +4190,7 @@ func TestStaleMergingQueueDispatchCandidatesRequiresApprovalLabel(t *testing.T) 
 	orch := &Orchestrator{cfg: cfg}
 	state := newState(cfg)
 
-	if got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue}); len(got) != 0 {
+	if got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue}, time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)); len(got) != 0 {
 		t.Fatalf("staleMergingQueueDispatchCandidates() = %#v, want none without approval label", got)
 	}
 }
@@ -4287,6 +4287,157 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 	}
 }
 
+func TestMergeWorkerDispatchCandidatesAgesWaitingHeadAheadOfReadyHead(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 9, 4, 20, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		ActiveStates:   []string{"Merging"},
+		TerminalStates: []string{"Done"},
+	})
+	agedAt := now.Add(-3 * time.Hour)
+	recentAt := now.Add(-time.Minute)
+	aged := nativeMergeQueueTestIssue(1748, "pending")
+	aged.ID = "issue-aged-head"
+	aged.StageUpdatedAt = &agedAt
+	recent := nativeMergeQueueTestIssue(1749, "success")
+	recent.ID = "issue-recent-ready-head"
+	recent.Identifier = "digitaldrywood/pyroapex#1749"
+	recent.PRRepository = "digitaldrywood/pyroapex"
+	recent.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1749"
+	recent.StageUpdatedAt = &recentAt
+	state := newState(cfg)
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:    cfg,
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{aged, recent}, now)
+	if len(got) != 1 || got[0].ID != aged.ID {
+		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want aged issue %q", got, aged.ID)
+	}
+	for _, fragment := range []string{
+		"selection_position=1",
+		"selection_reason=aged_head",
+		"lane_age_seconds=10800",
+		"fairness_age_seconds=7200",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestPrioritizeReadyMergingIssuesFairness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 9, 4, 20, 0, 0, time.UTC)
+	threshold := 2 * time.Hour
+	issue := func(id string, number int, repository string, ciStatus string, enteredAt time.Time) connector.Issue {
+		value := nativeMergeQueueTestIssue(number, ciStatus)
+		value.ID = id
+		value.Identifier = fmt.Sprintf("%s#%d", repository, number)
+		value.PRRepository = repository
+		value.PullRequest.URL = fmt.Sprintf("https://github.test/%s/pull/%d", repository, number)
+		value.StageUpdatedAt = &enteredAt
+		return value
+	}
+	aged := issue("aged", 1748, "digitaldrywood/detent", "pending", now.Add(-threshold-time.Second))
+	oldestAged := issue("oldest-aged", 1747, "digitaldrywood/archive", "pending", now.Add(-threshold-time.Hour))
+	boundary := issue("boundary", 1749, "digitaldrywood/pyroapex", "pending", now.Add(-threshold))
+	cleanFirst := issue("clean-first", 1750, "digitaldrywood/phone", "success", now.Add(-time.Hour))
+	cleanSecond := issue("clean-second", 1751, "digitaldrywood/outlet", "success", now.Add(-time.Minute))
+	invalidated := cloneIssue(aged)
+	invalidated.ID = "invalidated"
+	invalidated.Identifier = "digitaldrywood/detent#1752"
+	invalidated.PullRequest.Number = 1752
+	invalidated.PullRequest.MergeableState = "behind"
+	invalidated.PullRequest.CIStatus = "pending"
+
+	tests := []struct {
+		name        string
+		issues      []connector.Issue
+		state       func() *State
+		wantOrder   []string
+		wantReasons map[string]string
+		wantSticky  string
+	}{
+		{
+			name:        "empty queue",
+			wantOrder:   []string{},
+			wantReasons: map[string]string{},
+		},
+		{
+			name:        "all clean queue preserves order",
+			issues:      []connector.Issue{cleanFirst, cleanSecond},
+			wantOrder:   []string{"clean-first", "clean-second"},
+			wantReasons: map[string]string{"clean-first": mergeSelectionReasonClean, "clean-second": mergeSelectionReasonClean},
+		},
+		{
+			name:        "aged head outranks clean head",
+			issues:      []connector.Issue{cleanSecond, aged},
+			wantOrder:   []string{"aged", "clean-second"},
+			wantReasons: map[string]string{"aged": mergeSelectionReasonAged, "clean-second": mergeSelectionReasonClean},
+		},
+		{
+			name:        "age boundary is inclusive",
+			issues:      []connector.Issue{cleanFirst, boundary},
+			wantOrder:   []string{"boundary", "clean-first"},
+			wantReasons: map[string]string{"boundary": mergeSelectionReasonAged, "clean-first": mergeSelectionReasonClean},
+		},
+		{
+			name:        "continuous clean arrivals stay behind oldest aged head",
+			issues:      []connector.Issue{cleanFirst, aged, cleanSecond, oldestAged},
+			wantOrder:   []string{"oldest-aged", "aged", "clean-first", "clean-second"},
+			wantReasons: map[string]string{"oldest-aged": mergeSelectionReasonAged, "aged": mergeSelectionReasonAged, "clean-first": mergeSelectionReasonClean, "clean-second": mergeSelectionReasonClean},
+		},
+		{
+			name:   "invalidated aged retry remains sticky",
+			issues: []connector.Issue{cleanFirst, invalidated},
+			state: func() *State {
+				state := State{Retry: map[string]Retry{
+					invalidated.ID: {Issue: invalidated, DueAt: now.Add(time.Minute)},
+				}}
+				return &state
+			},
+			wantOrder:   []string{"invalidated", "clean-first"},
+			wantReasons: map[string]string{"invalidated": mergeSelectionReasonStickyAged, "clean-first": mergeSelectionReasonClean},
+			wantSticky:  "invalidated",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issues := cloneIssues(tt.issues)
+			var state *State
+			if tt.state != nil {
+				state = tt.state()
+			}
+			priority := prioritizeReadyMergingIssues(issues, state, now, threshold)
+			gotOrder := make([]string, 0, len(issues))
+			for _, issue := range issues {
+				gotOrder = append(gotOrder, issue.ID)
+			}
+			if !reflect.DeepEqual(gotOrder, tt.wantOrder) {
+				t.Fatalf("order = %#v, want %#v", gotOrder, tt.wantOrder)
+			}
+			if !reflect.DeepEqual(priority.reasons, tt.wantReasons) {
+				t.Fatalf("reasons = %#v, want %#v", priority.reasons, tt.wantReasons)
+			}
+			if priority.stickyIssueID != tt.wantSticky {
+				t.Fatalf("sticky issue = %q, want %q", priority.stickyIssueID, tt.wantSticky)
+			}
+		})
+	}
+}
+
 func TestLogMergeWorkerQueueCycle(t *testing.T) {
 	t.Parallel()
 
@@ -4315,6 +4466,7 @@ func TestLogMergeWorkerQueueCycle(t *testing.T) {
 	occupant := readyIssue("issue-occupant", "digitaldrywood/detent#1540", 1550)
 	firstWaiting := readyIssue("issue-first-waiting", "digitaldrywood/detent#1541", 1551)
 	secondWaiting := readyIssue("issue-second-waiting", "digitaldrywood/detent#1542", 1552)
+	firstWaiting.StageUpdatedAt = timePointer(now.Add(-3 * time.Hour))
 
 	tests := []struct {
 		name        string
@@ -4337,6 +4489,9 @@ func TestLogMergeWorkerQueueCycle(t *testing.T) {
 			want: []string{
 				"queue_depth=3",
 				"ready_count=3",
+				"aged_count=1",
+				"oldest_lane_age_seconds=10800",
+				"fairness_age_seconds=7200",
 				"lane_occupied=true",
 				"lane_saturated=true",
 				"lane_occupant_count=1",
@@ -4354,6 +4509,9 @@ func TestLogMergeWorkerQueueCycle(t *testing.T) {
 			want: []string{
 				"queue_depth=0",
 				"ready_count=0",
+				"aged_count=0",
+				"oldest_lane_age_seconds=0",
+				"fairness_age_seconds=7200",
 				"lane_occupied=false",
 				"lane_saturated=false",
 				"lane_occupant_count=0",

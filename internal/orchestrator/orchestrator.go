@@ -74,6 +74,7 @@ type Config struct {
 	DispatchPriorityByLabel       []string
 	PrioritizeUnblockers          bool
 	MergeFastPathEnabled          bool
+	MergeFairnessAge              time.Duration
 	MergeMethod                   string
 	MergeWorkerStartupTimeout     time.Duration
 	MergeWorkerMaxDuration        time.Duration

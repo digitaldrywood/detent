@@ -41,14 +41,18 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		return out
 	}
 	pruneNativeMergeQueueEntries(state, out)
+	stickyIssueID := stickyMergingIssueID(state, out, now, o.cfg.MergeFairnessAge)
 
-	for _, candidate := range staleMergingQueueIssues(out, o.cfg) {
+	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
 		issueID := strings.TrimSpace(candidate.ID)
 		if !nativeMergeQueueCandidate(candidate, o.cfg) || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
 		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh {
 			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
+			continue
+		}
+		if stickyIssueID != "" && issueID != stickyIssueID {
 			continue
 		}
 

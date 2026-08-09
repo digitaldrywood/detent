@@ -1214,6 +1214,9 @@ func TestStateSnapshotIncludesMergeTimingTelemetry(t *testing.T) {
 	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].MergeTiming == nil {
 		t.Fatalf("Pipeline = %#v, want queued merge timing", snapshot.Pipeline)
 	}
+	if snapshot.Pipeline[0].CurrentLaneAgeSeconds != 540 {
+		t.Fatalf("Pipeline current lane age = %d, want 540 seconds", snapshot.Pipeline[0].CurrentLaneAgeSeconds)
+	}
 	queued := snapshot.Pipeline[0].MergeTiming
 	if queued.QueueWaitSeconds != 540 || queued.TotalMergingSeconds != 540 || queued.HeadSHA != "queued-head" || queued.BaseSHA != "queued-base" {
 		t.Fatalf("queued MergeTiming = %#v, want queue duration and PR SHAs", queued)

@@ -72,6 +72,76 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 	}
 }
 
+func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 9, 4, 20, 0, 0, time.UTC)
+	agedAt := now.Add(-3 * time.Hour)
+	aged := nativeMergeQueueTestIssue(1748, "pending")
+	aged.ID = "issue-aged-native-head"
+	aged.StageUpdatedAt = &agedAt
+	recent := nativeMergeQueueTestIssue(1749, "success")
+	recent.ID = "issue-recent-native-head"
+	recent.Identifier = "digitaldrywood/pyroapex#1749"
+	recent.PRRepository = "digitaldrywood/pyroapex"
+	recent.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1749"
+	recentAt := now.Add(-time.Minute)
+	recent.StageUpdatedAt = &recentAt
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgents:  1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		ActiveStates:   []string{"Merging"},
+		TerminalStates: []string{"Done"},
+	})
+
+	tests := []struct {
+		name  string
+		setup func(*State)
+	}{
+		{
+			name: "running aged head",
+			setup: func(state *State) {
+				state.Running[aged.ID] = Running{Issue: aged, StartedAt: now.Add(-time.Minute)}
+			},
+		},
+		{
+			name: "retrying aged head",
+			setup: func(state *State) {
+				state.Retry[aged.ID] = Retry{Issue: aged, DueAt: now.Add(time.Minute)}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &nativeMergeQueueConnector{
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+					autoPromoteTickConnector: &autoPromoteTickConnector{},
+				},
+			}
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			tt.setup(&state)
+
+			queued := orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{aged, recent}, now)
+
+			if len(tracker.enqueued) != 0 || tracker.inspections != 0 {
+				t.Fatalf("native queue activity = enqueued %#v, inspections %d; want none", tracker.enqueued, tracker.inspections)
+			}
+			for _, issue := range queued {
+				if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
+					t.Fatalf("issue %q merge queue entry = %#v, want none", issue.ID, issue.PullRequest.MergeQueueEntry)
+				}
+			}
+		})
+	}
+}
+
 func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
 	t.Parallel()
 
