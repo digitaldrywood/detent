@@ -36,7 +36,9 @@ func TestLocalTransportReapsChildAfterParentExits(t *testing.T) {
 	if err := transport.Close(closeCtx); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	waitForProcessExit(t, pid)
+	if processAlive(pid) {
+		t.Fatalf("Close() returned while child process %d was still alive", pid)
+	}
 }
 
 func TestLocalTransportCloseKillsChildProcessGroup(t *testing.T) {
