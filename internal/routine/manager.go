@@ -64,9 +64,10 @@ type RunRecord = routinemodel.RunRecord
 type IssueRecord = routinemodel.IssueRecord
 
 type Proposal struct {
-	DedupKey string `json:"dedup_key"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
+	DedupKey string   `json:"dedup_key"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
+	Labels   []string `json:"labels,omitempty"`
 }
 
 type Result struct {
@@ -124,7 +125,7 @@ func (m *Manager) Update(settings Settings) error {
 	defer m.processMu.Unlock()
 
 	settings = normalizeSettings(settings)
-	if problems := config.ValidateRoutines("routines", settings.Definitions); len(problems) > 0 {
+	if problems := config.ValidateRoutines("routines", settings.Definitions, settings.SearchStates); len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	if len(settings.Definitions) > 0 {
@@ -420,10 +421,11 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			continue
 		}
 		fileAttempts++
+		labels := proposalLabels(definition, proposal)
 		issue, createErr := settings.Issues.CreateIntakeIssue(ctx, intake.IssueDraft{
 			Title:  proposal.Title,
 			Body:   scopeMarker + "\n" + marker + "\n\n" + proposal.Body,
-			Labels: []string{IssueLabel},
+			Labels: labels,
 		})
 		openFindings++
 		openMarkers[marker] = struct{}{}
@@ -440,7 +442,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			runErr = errors.Join(runErr, fmt.Errorf("file routine issue %s: %w", proposal.DedupKey, createErr))
 			continue
 		}
-		if stateErr := settings.Issues.SetIntakeIssueState(ctx, issue.ID, IssueState); stateErr != nil {
+		if stateErr := settings.Issues.SetIntakeIssueState(ctx, issue.ID, definition.TargetState); stateErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("set routine issue %s state: %w", proposal.DedupKey, stateErr))
 			continue
 		}
@@ -451,7 +453,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 				Identifier: issue.Identifier,
 				URL:        issue.URL,
 			},
-			TargetState:  IssueState,
+			TargetState:  definition.TargetState,
 			At:           m.now().UTC(),
 			Reason:       "routine",
 			MetadataJSON: provenance.Apply("{}", provenance.Attribution{Origin: provenance.OriginRoutine}, nil),
@@ -530,7 +532,7 @@ func proposalTool() runner.AgentTool {
 	return runner.AgentTool{
 		Name:        ProposalToolName,
 		Description: "Record one actionable maintenance issue proposal for Detent to validate, deduplicate, and file after the routine finishes.",
-		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["dedup_key","title","body"],"properties":{"dedup_key":{"type":"string","minLength":1,"maxLength":256},"title":{"type":"string","minLength":1,"maxLength":256},"body":{"type":"string","minLength":1,"maxLength":262144}}}`),
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["dedup_key","title","body"],"properties":{"dedup_key":{"type":"string","minLength":1,"maxLength":256},"title":{"type":"string","minLength":1,"maxLength":256},"body":{"type":"string","minLength":1,"maxLength":262144},"labels":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}}`),
 	}
 }
 
@@ -624,6 +626,7 @@ func normalizeProposal(proposal Proposal) (Proposal, error) {
 	proposal.DedupKey = strings.TrimSpace(proposal.DedupKey)
 	proposal.Title = strings.TrimSpace(proposal.Title)
 	proposal.Body = strings.TrimSpace(proposal.Body)
+	proposal.Labels = normalizeLabels(proposal.Labels)
 	switch {
 	case proposal.DedupKey == "":
 		return Proposal{}, fmt.Errorf("%w: dedup_key is required", ErrInvalidProposal)
@@ -678,8 +681,45 @@ func normalizeSettings(settings Settings) Settings {
 
 func cloneSettings(settings Settings) Settings {
 	settings.Definitions = append([]config.Routine(nil), settings.Definitions...)
+	for index := range settings.Definitions {
+		settings.Definitions[index].Labels = append([]string(nil), settings.Definitions[index].Labels...)
+	}
 	settings.SearchStates = append([]string(nil), settings.SearchStates...)
 	return settings
+}
+
+func proposalLabels(definition config.Routine, proposal Proposal) []string {
+	allowed := make(map[string]struct{}, len(definition.Labels))
+	for _, label := range definition.Labels {
+		allowed[strings.ToLower(strings.TrimSpace(label))] = struct{}{}
+	}
+	labels := make([]string, 0, len(proposal.Labels)+1)
+	for _, label := range proposal.Labels {
+		if _, ok := allowed[strings.ToLower(strings.TrimSpace(label))]; ok {
+			labels = append(labels, label)
+		}
+	}
+	if strings.EqualFold(definition.TargetState, IssueState) && !containsFold(labels, IssueLabel) {
+		labels = append([]string{IssueLabel}, labels...)
+	}
+	return labels
+}
+
+func normalizeLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	seen := map[string]struct{}{}
+	for _, label := range labels {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
 
 func routineByName(definitions []config.Routine, name string) (config.Routine, bool) {

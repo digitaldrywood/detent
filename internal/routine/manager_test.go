@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -204,6 +207,92 @@ func TestManagerRunOnceFilesAndDeduplicatesOpenIssue(t *testing.T) {
 	}
 	if len(store.records) != 2 || store.records[0].Filed != 1 || store.records[1].Deduplicated != 1 {
 		t.Fatalf("run records = %#v", store.records)
+	}
+}
+
+func TestManagerRoutineProposalLabelAllowlist(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		allowed  []string
+		proposed []string
+		want     []string
+	}{
+		{name: "configured label is applied", allowed: []string{"bug"}, proposed: []string{"Bug"}, want: []string{IssueLabel, "bug"}},
+		{name: "label outside allowlist is dropped", allowed: []string{"bug"}, proposed: []string{"security"}, want: []string{IssueLabel}},
+		{name: "allowed subset is applied", allowed: []string{"bug"}, proposed: []string{"bug", "security"}, want: []string{IssueLabel, "bug"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issues := &fakeIssueStore{}
+			manager, err := New(Settings{
+				ProjectID: "detent",
+				Definitions: []config.Routine{{
+					Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect.", Labels: tt.allowed,
+				}},
+				SearchStates: []string{"Backlog", "Todo", "Done"},
+				Runner: fakeRunner{proposals: []Proposal{{
+					DedupKey: "finding", Title: "Finding", Body: "Evidence.", Labels: tt.proposed,
+				}}},
+				Issues: issues,
+			}, &fakeStore{}, nil, nil)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if _, err := manager.RunOnce(t.Context(), "maintenance"); err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if len(issues.drafts) != 1 || !reflect.DeepEqual(issues.drafts[0].Labels, tt.want) {
+				t.Fatalf("draft labels = %#v, want %#v", issues.drafts, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagerRoutineOptoutLabelPreventsAutoPromote(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	workflow := config.Default()
+	workflow.Agent.AutoPromote.Enabled = true
+	optoutLabel := workflow.Agent.AutoPromote.OptoutLabel
+	tracker := memory.New(memory.Config{Stateful: true, Now: func() time.Time { return now }})
+	manager, err := New(Settings{
+		ProjectID: "detent",
+		Definitions: []config.Routine{{
+			Name: "feature-sweep", Schedule: "0 * * * *", Prompt: "Inspect product intent.",
+			TargetState: "Backlog", Labels: []string{optoutLabel},
+		}},
+		SearchStates: workflow.KanbanStateNames(),
+		Runner: fakeRunner{proposals: []Proposal{{
+			DedupKey: "feature", Title: "Propose feature", Body: "Product evidence.", Labels: []string{optoutLabel},
+		}}},
+		Issues: tracker,
+	}, &fakeStore{}, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	result, err := manager.RunOnce(t.Context(), "feature-sweep")
+	if err != nil || len(result.Filed) != 1 {
+		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{result.Filed[0].ID})
+	if err != nil || len(issues) != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() = %#v, %v", issues, err)
+	}
+	if issues[0].State != "Backlog" || !containsFold(issues[0].Labels, optoutLabel) {
+		t.Fatalf("routine issue = %#v", issues[0])
+	}
+	decision := orchestrator.EvaluateAutoPromote(
+		issues[0],
+		orchestrator.AutoPromoteSummary{},
+		orchestrator.ConfigFromWorkflow(workflow).AutoPromote,
+		now,
+	)
+	if decision.Action != orchestrator.AutoPromoteActionAwaitReview || decision.Reason != orchestrator.AutoPromoteReasonOptoutLabel {
+		t.Fatalf("EvaluateAutoPromote() = %#v", decision)
 	}
 }
 

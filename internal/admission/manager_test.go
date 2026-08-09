@@ -724,6 +724,8 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 	tests := []struct {
 		name       string
 		enabled    bool
+		policies   map[string]bool
+		labels     []string
 		confidence float64
 		wantState  string
 		wantStatus admissionmodel.ProposalStatus
@@ -748,12 +750,38 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 			wantState:  "Todo",
 			wantStatus: admissionmodel.ProposalAccepted,
 		},
+		{
+			name:       "defect class is auto-admitted",
+			policies:   map[string]bool{"defect": true},
+			labels:     []string{"defect"},
+			confidence: 1,
+			wantState:  "Todo",
+			wantStatus: admissionmodel.ProposalAccepted,
+		},
+		{
+			name:       "feature class is proposed and held regardless of confidence",
+			enabled:    true,
+			policies:   map[string]bool{"feature": false},
+			labels:     []string{"feature"},
+			confidence: 1,
+			wantState:  "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
+		{
+			name:       "unknown label falls back to project default",
+			policies:   map[string]bool{"defect": true},
+			labels:     []string{"docs"},
+			confidence: 1,
+			wantState:  "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			issue.Labels = append([]string(nil), tt.labels...)
 			tracker := memory.New(memory.Config{
 				Issues:   []connector.Issue{issue},
 				Stateful: true,
@@ -763,6 +791,7 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidateAtConfidence(tt.confidence)}
 			settings := admissionTestSettings(tracker, agent)
 			settings.Config.AutoAdmit = tt.enabled
+			settings.Config.AutoAdmitByLabel = tt.policies
 			settings.Config.AutoAdmitMinConfidence = 0.9
 			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
 
@@ -857,6 +886,45 @@ Child issues decompose the implementation work. Marketing and operations staff m
 		if !strings.Contains(comment, want) {
 			t.Fatalf("proposal comment missing %q: %s", want, comment)
 		}
+	}
+}
+
+func TestManagerAutomaticAdmissionRechecksLabelPolicy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	issue.Labels = []string{"feature"}
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	backend := openManagerTestStore(t)
+	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitByLabel = map[string]bool{"feature": false}
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	proposal.Confidence = 1
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+
+	if err := manager.admitProposal(
+		t.Context(),
+		settings,
+		connector.Issue{ID: issue.ID, State: "Backlog"},
+		proposal,
+		automaticAdmissionDecision(tracker, proposal, now),
+	); err != nil {
+		t.Fatalf("admitProposal() error = %v", err)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+		t.Fatalf("issue state = %#v, %v", issues, err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalSuperseded ||
+		history[0].ResolutionReason != admissionResolutionAutoAdmitIneligible {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
 	}
 }
 

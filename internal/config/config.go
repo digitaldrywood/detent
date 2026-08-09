@@ -1493,7 +1493,7 @@ func (c *Config) Validate() error {
 	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for retro")
 	}
-	problems = append(problems, ValidateRoutines("routines", c.Routines)...)
+	problems = append(problems, ValidateRoutines("routines", c.Routines, states)...)
 	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
 		problems = append(problems, "routines requires tracker.kind github or memory")
 	}

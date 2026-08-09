@@ -1042,6 +1042,10 @@
 #     schedule: null
 #     # routines[].prompt | type: string | default: none | required: Conditional | validation: is required
 #     prompt: null
+#     # routines[].target_state | type: string | default: "Todo" when configured | required: No | validation: must name a configured workflow state
+#     target_state: "Todo"
+#     # routines[].labels | type: list<string> | default: [] | required: Conditional | validation: labels must not be blank
+#     labels: []
 #     # routines[].max_findings_per_run | type: integer | default: 3 when configured | required: No | validation: must be greater than 0
 #     max_findings_per_run: 3
 #     # routines[].max_open_findings | type: integer | default: 10 when configured | required: No | validation: must be greater than 0
@@ -1086,5 +1090,7 @@
 #   proposal_expiry_days: 7
 #   # backlog_admission.auto_admit | type: boolean | default: false | required: No | validation: None
 #   auto_admit: false
+#   # backlog_admission.auto_admit_by_label | type: mapping<string, boolean> | default: {} | required: No | validation: None
+#   auto_admit_by_label: {}
 #   # backlog_admission.auto_admit_min_confidence | type: number | default: 0.9 | required: No | validation: None
 #   auto_admit_min_confidence: 0.9
