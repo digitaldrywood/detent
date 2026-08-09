@@ -123,13 +123,6 @@ test("sidebar groups global navigation and hides a single project", async ({
   await expect
     .poll(() => sidebarSequence(content))
     .toEqual(groupedSidebarSequence);
-  expect(await waitForSidebarMorph(page)).toEqual({
-    preserved: true,
-    swap: "morph:innerHTML",
-  });
-  await expect
-    .poll(() => sidebarSequence(content))
-    .toEqual(groupedSidebarSequence);
 
   await sidebar.getByRole("button", { name: "Toggle sidebar" }).click();
   await expect(sidebar).toHaveAttribute("data-rail", "true");
@@ -185,7 +178,7 @@ test("sidebar groups global navigation and hides a single project", async ({
 
   const collapsedAnalytics = content.locator('[data-sidebar-nav-item="analytics"]');
   await collapsedAnalytics.hover();
-  await waitForSidebarMorph(page);
+  await waitForSnapshotWithoutSidebarMorph(page);
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText("Analytics");
 
@@ -206,6 +199,32 @@ test("sidebar groups global navigation and hides a single project", async ({
   const singleProjectContent = page.locator("#app-sidebar-content");
   await expect(singleProjectContent.locator('[data-sidebar-section="projects"]')).toHaveCount(0);
   await expect(singleProjectContent.locator("[data-sidebar-project]")).toHaveCount(0);
+});
+
+test("unchanged SSE inputs skip sidebar and health region morphs", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: sidebarRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const snapshot = page.locator("#snapshot");
+  const sidebar = page.locator("#app-sidebar-content");
+  await expect(snapshot).toHaveAttribute("hx-swap", "morph:innerHTML");
+  await expect(sidebar).toHaveAttribute("sse-swap", "sidebar-v2");
+  await expect(sidebar).toHaveAttribute("hx-swap", "morph:innerHTML");
+  await expect(page.locator('[sse-swap="sidebar"]')).toHaveCount(0);
+  await expect(page.locator("#github-api-health")).toHaveCount(0);
+
+  expect(await waitForSnapshotWithoutSidebarMorph(page)).toEqual({
+    healthSwaps: 0,
+    preserved: true,
+    sidebarSwaps: 0,
+  });
 });
 
 test("sidebar project badges keep load, activity, blocked tint, and breakdown distinct", async ({
@@ -265,7 +284,7 @@ test("sidebar project badges keep load, activity, blocked tint, and breakdown di
   await expect(tooltip).toContainText(
     "1 todo · 3 active · 0 waiting · 1 blocked",
   );
-  await waitForSidebarMorph(page);
+  await waitForSnapshotWithoutSidebarMorph(page);
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText(
     "1 todo · 3 active · 0 waiting · 1 blocked",
@@ -2102,27 +2121,35 @@ async function sidebarSequence(content) {
     );
 }
 
-async function waitForSidebarMorph(page) {
-  const swaps = await page.evaluate(() => {
+async function waitForSnapshotWithoutSidebarMorph(page) {
+  const baseline = await page.evaluate(() => {
     window.__detentSidebarNode = document.getElementById("app-sidebar-content");
-    return window.__detentSSEMetrics?.snapshot()?.["sidebar-v2"]?.swaps || 0;
+    const metrics = window.__detentSSEMetrics?.snapshot() || {};
+    return {
+      health: metrics["github-api-health"]?.swaps || 0,
+      sidebar: metrics["sidebar-v2"]?.swaps || 0,
+      snapshot: metrics.snapshot?.swaps || 0,
+    };
   });
   await expect
     .poll(
       () =>
         page.evaluate(
-          () => window.__detentSSEMetrics?.snapshot()?.["sidebar-v2"]?.swaps || 0,
+          () => window.__detentSSEMetrics?.snapshot()?.snapshot?.swaps || 0,
         ),
       { timeout: 15_000 },
     )
-    .toBeGreaterThan(swaps);
-  return page.evaluate(() => {
+    .toBeGreaterThan(baseline.snapshot);
+  return page.evaluate((baseline) => {
     const target = document.getElementById("app-sidebar-content");
+    const metrics = window.__detentSSEMetrics?.snapshot() || {};
     return {
+      healthSwaps:
+        (metrics["github-api-health"]?.swaps || 0) - baseline.health,
       preserved: target === window.__detentSidebarNode,
-      swap: target?.getAttribute("hx-swap"),
+      sidebarSwaps: (metrics["sidebar-v2"]?.swaps || 0) - baseline.sidebar,
     };
-  });
+  }, baseline);
 }
 
 async function startLaneHiddenRecorder(page, laneID) {

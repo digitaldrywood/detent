@@ -3,9 +3,12 @@ package templates
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -42,6 +45,154 @@ func TestAppShellScriptRefreshesOpenDetailCoreAfterSnapshotSettle(t *testing.T) 
 	if strings.Contains(html, `htmx.ajax("GET", host.dataset.detailSheetURL`) {
 		t.Fatalf("app shell script still refreshes the complete detail sheet:\n%s", html)
 	}
+}
+
+func TestSSEFingerprintsTrackRenderedComponentInputs(t *testing.T) {
+	t.Parallel()
+
+	type fingerprintCase struct {
+		name        string
+		component   func(DashboardShellData) templ.Component
+		fingerprint func(DashboardShellData) (SSEFingerprint, error)
+		mutate      func(*DashboardShellData)
+		wantChanged bool
+	}
+
+	tests := []fingerprintCase{
+		{
+			name:        "app sidebar ignores snapshot sequence",
+			component:   AppSidebarContent,
+			fingerprint: AppSidebarFingerprint,
+			mutate: func(data *DashboardShellData) {
+				data.Snapshot.Seq++
+			},
+		},
+		{
+			name:        "app sidebar tracks active navigation",
+			component:   AppSidebarContent,
+			fingerprint: AppSidebarFingerprint,
+			mutate: func(data *DashboardShellData) {
+				data.ActiveNav = "reports"
+			},
+			wantChanged: true,
+		},
+		{
+			name:        "app sidebar tracks project counts",
+			component:   AppSidebarContent,
+			fingerprint: AppSidebarFingerprint,
+			mutate: func(data *DashboardShellData) {
+				data.Projects[0].BoardActive++
+				data.Projects[0].BoardLoad++
+			},
+			wantChanged: true,
+		},
+		{
+			name:        "health item ignores snapshot sequence",
+			component:   GitHubAPIHealthSidebarItem,
+			fingerprint: GitHubAPIHealthSidebarFingerprint,
+			mutate: func(data *DashboardShellData) {
+				data.Snapshot.Seq++
+			},
+		},
+		{
+			name:        "health item tracks health state",
+			component:   GitHubAPIHealthSidebarItem,
+			fingerprint: GitHubAPIHealthSidebarFingerprint,
+			mutate: func(data *DashboardShellData) {
+				data.Snapshot.RateLimits.GitHubREST.Remaining = 100
+			},
+			wantChanged: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := DashboardShellData{
+				ActiveNav: "board",
+				Projects: []ProjectSmallMultiple{
+					{ID: "detent", Name: "Detent", BoardLoad: 1, BoardTodo: 1},
+					{ID: "docs", Name: "Docs"},
+				},
+				Snapshot: telemetry.Snapshot{
+					Seq: 1,
+					RateLimits: &telemetry.RateLimits{
+						GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4_000, Limit: 5_000},
+						GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4_000, Limit: 5_000},
+					},
+				},
+			}
+			beforeFingerprint, err := tt.fingerprint(data)
+			if err != nil {
+				t.Fatalf("fingerprint before mutation error = %v", err)
+			}
+			beforeHTML := renderSSEFingerprintComponent(t, tt.component(data))
+
+			tt.mutate(&data)
+			afterFingerprint, err := tt.fingerprint(data)
+			if err != nil {
+				t.Fatalf("fingerprint after mutation error = %v", err)
+			}
+			afterHTML := renderSSEFingerprintComponent(t, tt.component(data))
+
+			if got := beforeFingerprint != afterFingerprint; got != tt.wantChanged {
+				t.Fatalf("fingerprint changed = %t, want %t", got, tt.wantChanged)
+			}
+			if got := beforeHTML != afterHTML; got != tt.wantChanged {
+				t.Fatalf("rendered component changed = %t, want %t", got, tt.wantChanged)
+			}
+		})
+	}
+}
+
+func renderSSEFingerprintComponent(t *testing.T, component templ.Component) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := component.Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
+var benchmarkSSEFingerprint SSEFingerprint
+
+func BenchmarkAppSidebarChangeDetection(b *testing.B) {
+	data := DashboardShellData{
+		ActiveNav: "board",
+		Projects: []ProjectSmallMultiple{
+			{ID: "detent", Name: "Detent", BoardLoad: 5, BoardTodo: 2, BoardActive: 2, BoardWaiting: 1, Running: 1},
+			{ID: "docs", Name: "Docs", BoardLoad: 3, BoardTodo: 1, BoardActive: 1, BoardBlocked: 1},
+			{ID: "website", Name: "Website", BoardLoad: 1, BoardWaiting: 1},
+		},
+		Snapshot: telemetry.Snapshot{
+			RateLimits: &telemetry.RateLimits{
+				GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4_000, Limit: 5_000},
+				GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4_000, Limit: 5_000},
+			},
+		},
+	}
+	ctx := b.Context()
+	component := AppSidebarContent(data)
+
+	b.Run("render", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := component.Render(ctx, io.Discard); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("fingerprint", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			fingerprint, err := AppSidebarFingerprint(data)
+			if err != nil {
+				b.Fatal(err)
+			}
+			benchmarkSSEFingerprint = fingerprint
+		}
+	})
 }
 
 func TestAppShellRendersActionNotice(t *testing.T) {
