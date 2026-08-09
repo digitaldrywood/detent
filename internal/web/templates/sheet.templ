@@ -76,7 +76,6 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 			</div>
 			if sheetHasActions(data, card, boardActions) {
 				<footer class="flex flex-none flex-wrap items-center gap-2 border-t border-line px-4 py-3 md:flex-nowrap md:px-5">
-					<div id="kanban-feedback" role="status" aria-live="polite" hidden></div>
 					if projectKanbanCardCanMove(data, card) {
 						@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
 							<button
