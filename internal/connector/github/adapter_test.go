@@ -6096,6 +6096,7 @@ func newGitHubTestConnector(t *testing.T, server *graphqlTestServer, cfg Config)
 	if err != nil {
 		t.Fatalf("NewConnector() error = %v", err)
 	}
+	c.client.restBackoffs = newRESTBackoffRegistry()
 	return c
 }
 

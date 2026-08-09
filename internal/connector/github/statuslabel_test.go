@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -197,6 +199,98 @@ func TestConnectorFetchStatusDriftReportsUntrackedAndOpenTerminalIssues(t *testi
 	if len(server.requests()) != 1 {
 		t.Fatalf("request count = %d, want one open issue scan", len(server.requests()))
 	}
+}
+
+func TestConnectorRESTBackoffsAreIsolatedAcrossTestClients(t *testing.T) {
+	t.Parallel()
+
+	const sharedEndpoint = "http://github.test"
+	config := Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+	}
+	rateLimitedServer := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
+		status: http.StatusTooManyRequests,
+		headers: map[string]string{
+			"Retry-After":           "120",
+			"X-RateLimit-Remaining": "0",
+		},
+		body: `{"message":"rate limited"}`,
+	}})
+	rateLimited := newGitHubTestConnector(t, rateLimitedServer, config)
+	rateLimited.client.restEndpoint = sharedEndpoint
+	rateLimited.client.httpClient = routeGitHubTestRequests(t, rateLimitedServer)
+
+	ordinaryServer := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
+		body:   `[]`,
+	}})
+	ordinary := newGitHubTestConnector(t, ordinaryServer, config)
+	ordinary.client.restEndpoint = sharedEndpoint
+	ordinary.client.httpClient = routeGitHubTestRequests(t, ordinaryServer)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	rateLimitedDone := make(chan struct{})
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() {
+		_, err := rateLimited.FetchStatusDrift(ctx)
+		results <- result{name: "rate limited", err: err}
+		close(rateLimitedDone)
+	}()
+	go func() {
+		select {
+		case <-rateLimitedDone:
+			_, err := ordinary.FetchStatusDrift(ctx)
+			results <- result{name: "ordinary", err: err}
+		case <-ctx.Done():
+			results <- result{name: "ordinary", err: ctx.Err()}
+		}
+	}()
+
+	errs := make(map[string]error, 2)
+	for range 2 {
+		select {
+		case result := <-results:
+			errs[result.name] = result.err
+		case <-ctx.Done():
+			t.Fatal("concurrent status drift requests timed out")
+		}
+	}
+	if !errors.Is(errs["rate limited"], ErrRateLimited) {
+		t.Fatalf("rate-limited FetchStatusDrift() error = %v, want ErrRateLimited", errs["rate limited"])
+	}
+	if errs["ordinary"] != nil {
+		t.Fatalf("ordinary FetchStatusDrift() error = %v, want nil", errs["ordinary"])
+	}
+	if len(ordinaryServer.requests()) != 1 {
+		t.Fatalf("ordinary server request count = %d, want 1", len(ordinaryServer.requests()))
+	}
+}
+
+func routeGitHubTestRequests(t *testing.T, server *graphqlTestServer) HTTPClient {
+	t.Helper()
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", server.URL, err)
+	}
+	client := server.Client()
+	return staticHTTPClient{do: func(req *http.Request) (*http.Response, error) {
+		routed := req.Clone(req.Context())
+		routedURL := *req.URL
+		routedURL.Scheme = target.Scheme
+		routedURL.Host = target.Host
+		routed.URL = &routedURL
+		return client.Do(routed)
+	}}
 }
 
 func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(t *testing.T) {
