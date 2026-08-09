@@ -39,6 +39,7 @@ type Snapshot struct {
 	Completed               []Completed         `json:"completed"`
 	Budget                  Budget              `json:"budget"`
 	RateLimits              *RateLimits         `json:"rate_limits"`
+	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
@@ -52,6 +53,16 @@ type Snapshot struct {
 	CycleTime               CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics         WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
+}
+
+type CICondition struct {
+	ProjectID           string    `json:"project_id,omitempty"`
+	UnstartedCheckCount int       `json:"unstarted_check_count"`
+	PullRequestCount    int       `json:"pull_request_count"`
+	OldestQueueSeconds  int64     `json:"oldest_queue_seconds"`
+	DetectedAt          time.Time `json:"detected_at"`
+	LastObservedAt      time.Time `json:"last_observed_at"`
+	ParkedAttemptCount  int       `json:"parked_attempt_count,omitempty"`
 }
 
 type AdmissionProposal struct {
@@ -512,6 +523,7 @@ type PullRequest struct {
 	QuietWaitSeconds           int64                       `json:"quiet_wait_seconds,omitempty"`
 	SlowChecks                 []PullRequestCheck          `json:"slow_checks,omitempty"`
 	RunningChecks              []string                    `json:"running_checks,omitempty"`
+	UnstartedCheckCount        int                         `json:"unstarted_check_count,omitempty"`
 	UnstartedChecks            []PullRequestCheck          `json:"unstarted_checks,omitempty"`
 	RequiredCheckFailures      []PullRequestCheck          `json:"required_check_failures,omitempty"`
 	CodexReviewState           string                      `json:"codex_review_state,omitempty"`

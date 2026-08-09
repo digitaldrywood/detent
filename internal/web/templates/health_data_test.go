@@ -35,6 +35,17 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Waiting for the first health snapshot.",
 		},
 		{
+			name: "CI unavailability requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				CIUnavailable: []telemetry.CICondition{{
+					ProjectID: "detent", UnstartedCheckCount: 6, PullRequestCount: 2, OldestQueueSeconds: 2_820,
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "CI is unavailable.",
+		},
+		{
 			name: "backend capacity outage warns",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,

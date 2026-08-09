@@ -334,6 +334,7 @@ type pullRequestCI struct {
 	CIDurationSeconds     int64
 	SlowChecks            []connector.PullRequestCheck
 	RunningChecks         []string
+	UnstartedCheckCount   int
 	UnstartedChecks       []connector.PullRequestCheck
 	StaleSuccessfulChecks []connector.PullRequestCheck
 	RequiredFailures      []connector.PullRequestCheck

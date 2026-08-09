@@ -17,6 +17,7 @@ type checkRunTelemetrySummary struct {
 	DurationSeconds int64
 	SlowChecks      []connector.PullRequestCheck
 	RunningChecks   []string
+	UnstartedCount  int
 	UnstartedChecks []connector.PullRequestCheck
 }
 
@@ -69,6 +70,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		CIDurationSeconds:     telemetry.DurationSeconds,
 		SlowChecks:            telemetry.SlowChecks,
 		RunningChecks:         telemetry.RunningChecks,
+		UnstartedCheckCount:   telemetry.UnstartedCount,
 		UnstartedChecks:       telemetry.UnstartedChecks,
 		StaleSuccessfulChecks: staleSuccessfulChecks,
 		RequiredFailures:      requiredFailures,
@@ -482,6 +484,7 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun,
 		}
 		return unstartedChecks[i].Name < unstartedChecks[j].Name
 	})
+	unstartedCount := len(unstartedChecks)
 	if len(unstartedChecks) > pullRequestUnstartedCheckLimit {
 		unstartedChecks = unstartedChecks[:pullRequestUnstartedCheckLimit]
 	}
@@ -498,6 +501,7 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun,
 		DurationSeconds: durationSeconds,
 		SlowChecks:      slowChecks,
 		RunningChecks:   runningChecks,
+		UnstartedCount:  unstartedCount,
 		UnstartedChecks: unstartedChecks,
 	}
 }

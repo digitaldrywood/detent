@@ -2036,6 +2036,32 @@ func TestBoardAlertsCollapseStalenessWarnings(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsSurfaceCIUnavailableEvidence(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC),
+		CIUnavailable: []telemetry.CICondition{{
+			ProjectID:           "detent",
+			UnstartedCheckCount: 6,
+			PullRequestCount:    2,
+			OldestQueueSeconds:  47 * 60,
+			ParkedAttemptCount:  2,
+		}},
+	}
+
+	alerts := boardAlerts(snapshot)
+	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindCIUnavailable || alerts[0].Tone != primitives.KindErr {
+		t.Fatalf("boardAlerts() = %#v, want one CI-unavailable error", alerts)
+	}
+	for _, want := range []string{"6 queued checks", "2 PRs", "47m", "2 attempts parked"} {
+		combined := alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
+		if !strings.Contains(combined, want) {
+			t.Fatalf("CI alert detail = %q, want %q", combined, want)
+		}
+	}
+}
+
 func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	t.Parallel()
 

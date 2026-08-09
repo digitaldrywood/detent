@@ -154,6 +154,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.backoffDispatchRecovery(state, event.IssueID, event.CompletedAt, delay)
 	}
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
+	if o.handleCIUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
 	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
 		return
 	}

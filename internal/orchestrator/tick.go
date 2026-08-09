@@ -112,6 +112,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
+	if fetched.statusOK {
+		ciIssues := mergeIssueSlices(fetched.candidates, fetched.status)
+		for _, running := range state.Running {
+			ciIssues = mergeIssueSlices(ciIssues, []connector.Issue{running.Issue})
+		}
+		o.syncCIAvailability(state, ciIssues, now)
+	}
 	terminalRetryTransitions := o.reconcileTerminalAttemptRetryStates(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, terminalRetryTransitions)
 	fetched.status = overlayIssueStateSnapshots(fetched.status, terminalRetryTransitions)

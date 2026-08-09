@@ -23,6 +23,7 @@ const (
 	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
 	FinalStateOperatorStopped       = "operator_stopped"
 	FinalStateMergeRevoked          = "merge_revoked"
+	FinalStateCIUnavailable         = "ci_unavailable"
 	FinalStateMergeDurationExceeded = "merge_duration_exceeded"
 	TokenCeilingSourceAbsolute      = "max_session_tokens"
 	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
@@ -43,6 +44,7 @@ var (
 	ErrSessionDurationExceeded     = errors.New("agent session duration exceeded")
 	ErrOperatorStopped             = errors.New("operator stopped run")
 	ErrMergeRevoked                = errors.New("merge eligibility revoked")
+	ErrCIUnavailable               = errors.New("CI unavailable")
 	ErrMergeWorkerStartupTimeout   = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded = errors.New("merge worker duration exceeded")
 	ErrModelPermitUnavailable      = errors.New("provider model permit unavailable")
