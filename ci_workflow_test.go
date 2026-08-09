@@ -48,14 +48,14 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		budget:   "8m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]"},
+		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "go test ./..."},
 	},
 	{
 		name:     "Portability Verify (windows-latest)",
 		budget:   "8m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]"},
+		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "go test ./..."},
 	},
 	{
 		name:     "Windows Core",
@@ -178,6 +178,36 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 				t.Fatalf("required check %q contains green no-op marker %q", check.name, forbidden)
 			}
 		}
+	}
+}
+
+func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
+	t.Parallel()
+
+	requiredWorkflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	requiredJob := workflowBetween(t, requiredWorkflow, "  portability-verify:", "\n  windows-core:")
+	for _, forbidden := range []string{"go test -race", "-count=10", "-count=20"} {
+		if strings.Contains(requiredJob, forbidden) {
+			t.Fatalf("required portability job contains heavy coverage %q", forbidden)
+		}
+	}
+
+	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
+	for _, want := range []string{
+		"schedule:",
+		"workflow_dispatch:",
+		"timeout-minutes: 45",
+		"os: [macos-latest, windows-latest]",
+		"go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20",
+		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m",
+		"go test -race ./...",
+	} {
+		if !strings.Contains(stressWorkflow, want) {
+			t.Fatalf("portability stress workflow missing %q", want)
+		}
+	}
+	if strings.Contains(stressWorkflow, "pull_request:") {
+		t.Fatal("portability stress workflow must not run for every pull request")
 	}
 }
 

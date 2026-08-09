@@ -138,11 +138,29 @@ Required PR merge checks, branch protection/rulesets, and
 - `Installer Smoke (windows-latest)` - budget: `6m`
 - `GoReleaser Snapshot` - budget: `8m`
 
-Release and portability checks also run on `main`, on `v*` release tags, on the
-nightly CI schedule, and from manual workflow dispatch. They are still
-release-blocking for pull requests; Detent must not promote or merge a PR head
-where one of these checks is missing, skipped, failed, cancelled, neutral, or
-still running.
+The required portability checks are limited to build, vet, and the non-race
+test suite so each platform stays within its `8m` merge-path budget. Repeated
+race loops, the full race suite on macOS and Windows, and the Windows SQLite
+artifact lifecycle stress loop run nightly and on manual dispatch in
+`.github/workflows/portability-stress.yml`. That workflow has a `45m` ceiling;
+failures are surfaced as failed `Portability Stress` workflow runs with the
+failing command output in the job log.
+
+Release and required portability checks also run on `main`, on `v*` release
+tags, on the nightly CI schedule, and from manual workflow dispatch. They are
+still release-blocking for pull requests; Detent must not promote or merge a PR
+head where one of these checks is missing, skipped, failed, cancelled, neutral,
+or still running.
+
+GitHub merge queue adoption is deferred. Detent currently owns merge ordering,
+rebases each head onto current `main`, validates that exact head, and merges it
+through the REST API. GitHub merge queue would require Detent to enqueue rather
+than merge, validate `merge_group` commits, and reconcile queue ejections back
+to tracker state. That larger delivery-state change is not justified merely to
+remove the long portability checks from this critical path. The trade-off is
+that strict current-base validation still invalidates other open heads after a
+merge; keeping all required jobs within their written budgets bounds that cost
+without weakening `required_status_checks.strict: true`.
 
 The CI workflow keeps pull request runs cancellable by newer pushes to the same
 PR through `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
