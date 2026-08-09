@@ -294,6 +294,7 @@ func boundedRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 		return nil
 	}
 	result := *rateLimits
+	result.GitHubRESTBudgets = boundedClone(rateLimits.GitHubRESTBudgets, MaxItemLimit)
 	if rateLimits.GraphQLCost != nil {
 		graphql := *rateLimits.GraphQLCost
 		graphql.Contributors = boundedClone(graphql.Contributors, MaxItemLimit)

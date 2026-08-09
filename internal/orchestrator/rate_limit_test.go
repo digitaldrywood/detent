@@ -386,8 +386,12 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 				UpdatedAt:  now,
 			},
 			Requests: []connector.RESTEndpointUsage{
-				{EndpointFamily: "label issues", Count: 1, Conditional: 1, NotModified: 1, Remaining: 4879, Limit: 5000, Resource: "core"},
-				{EndpointFamily: "issue comments", Count: 1, Billable: 1, Remaining: 4878, Limit: 5000, Resource: "core", RateLimited: true},
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "label issues", Count: 1, Conditional: 1, NotModified: 1, Remaining: 4879, Limit: 5000, Resource: "core"},
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issue comments", Count: 1, Billable: 1, Remaining: 4878, Limit: 5000, Resource: "core", RateLimited: true},
+			},
+			Budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "label issues", RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4879, Resource: "core", ResetAt: now.Add(time.Hour), UpdatedAt: now}},
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4878, Resource: "core", ResetAt: now.Add(2 * time.Hour), UpdatedAt: now}},
 			},
 			TotalRequests:       2,
 			ConditionalRequests: 1,
@@ -421,6 +425,12 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	}
 	if len(state.RateLimits.RESTUsage.Contributors) != 2 || state.RateLimits.RESTUsage.Contributors[1].EndpointFamily != "issue comments" {
 		t.Fatalf("RESTUsage.Contributors = %#v, want issue comments contributor", state.RateLimits.RESTUsage.Contributors)
+	}
+	if len(state.RateLimits.GitHubRESTBudgets) != 2 || state.RateLimits.GitHubRESTBudgets[0].CredentialIdentity != "github-rest:shared" {
+		t.Fatalf("GitHubRESTBudgets = %#v, want attributed endpoint budgets", state.RateLimits.GitHubRESTBudgets)
+	}
+	if state.RateLimits.GitHubRESTBudgets[0].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[1].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[0].ResetAt.Equal(*state.RateLimits.GitHubRESTBudgets[1].ResetAt) {
+		t.Fatalf("GitHubRESTBudgets = %#v, want distinct endpoint reset windows", state.RateLimits.GitHubRESTBudgets)
 	}
 	if state.PollInterval != time.Minute {
 		t.Fatalf("PollInterval = %s, want REST retry-after pause 1m", state.PollInterval)

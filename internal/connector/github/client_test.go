@@ -1076,6 +1076,182 @@ func TestClientFlushRESTRateLimitUsagePrefersCoreBudget(t *testing.T) {
 	}
 }
 
+func TestClientFlushRESTRateLimitUsageAttributesEndpointBudgets(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	tests := []struct {
+		path      string
+		resource  string
+		remaining string
+		resetAt   time.Time
+	}{
+		{path: "/repos/digitaldrywood/detent/issues", resource: "core", remaining: "4800", resetAt: now.Add(time.Hour)},
+		{path: "/search/issues?q=repo%3Adigitaldrywood%2Fdetent", resource: "search", remaining: "20", resetAt: now.Add(2 * time.Minute)},
+	}
+	responses := make(map[string]struct {
+		resource  string
+		remaining string
+		resetAt   time.Time
+	}, len(tests))
+	for _, test := range tests {
+		responses[test.path] = struct {
+			resource  string
+			remaining string
+			resetAt   time.Time
+		}{resource: test.resource, remaining: test.remaining, resetAt: test.resetAt}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := responses[r.URL.RequestURI()]
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "200")
+		w.Header().Set("X-RateLimit-Remaining", response.remaining)
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(response.resetAt.Unix(), 10))
+		w.Header().Set("X-RateLimit-Resource", response.resource)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("attribution-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	for _, test := range tests {
+		if err := client.REST(context.Background(), http.MethodGet, test.path, nil, &[]json.RawMessage{}); err != nil {
+			t.Fatalf("REST(%q) error = %v", test.path, err)
+		}
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if len(usage.Budgets) != len(tests) {
+		t.Fatalf("Budgets len = %d, want %d: %#v", len(usage.Budgets), len(tests), usage.Budgets)
+	}
+	credentialIdentity := usage.Budgets[0].CredentialIdentity
+	if !strings.HasPrefix(credentialIdentity, "github-rest:") {
+		t.Fatalf("CredentialIdentity = %q, want redacted github-rest identity", credentialIdentity)
+	}
+	for _, test := range tests {
+		t.Run(test.resource, func(t *testing.T) {
+			family := restEndpointFamily(http.MethodGet, test.path)
+			for _, budget := range usage.Budgets {
+				if budget.EndpointFamily != family {
+					continue
+				}
+				if budget.CredentialIdentity != credentialIdentity || budget.RateLimit.Resource != test.resource || budget.RateLimit.ResetAt.Unix() != test.resetAt.Unix() {
+					t.Fatalf("budget = %#v, want credential %q resource %q reset %v", budget, credentialIdentity, test.resource, test.resetAt)
+				}
+				return
+			}
+			t.Fatalf("Budgets = %#v, want endpoint family %q", usage.Budgets, family)
+		})
+	}
+}
+
+func TestClientRESTCredentialIdentityStaysStableAcrossInstallationTokenRotation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source func(*InstallationTokenSource) TokenSource
+	}{
+		{name: "installation source", source: func(source *InstallationTokenSource) TokenSource { return source }},
+		{name: "token resolver", source: func(source *InstallationTokenSource) TokenSource { return &TokenResolver{app: source} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := &InstallationTokenSource{installationID: "4242", cachedToken: "first-token"}
+			client := &Client{restEndpoint: "https://api.github.com", tokenSource: test.source(source)}
+			first := client.restCredentialIdentity("first-token")
+			source.mu.Lock()
+			source.cachedToken = "second-token"
+			source.mu.Unlock()
+			second := client.restCredentialIdentity("second-token")
+			if first != "github-app-installation:4242" || second != first {
+				t.Fatalf("identities = %q, %q, want stable installation identity", first, second)
+			}
+		})
+	}
+}
+
+func TestClientWarnsOnUnexplainedRESTBudgetDivergence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		remaining       []string
+		wantWarning     bool
+		wantUnexplained string
+	}{
+		{name: "detent request explains drop", remaining: []string{"4999", "4998"}},
+		{name: "small external drop stays quiet", remaining: []string{"4999", "4990"}},
+		{name: "worker consumption emits warning", remaining: []string{"4999", "4988"}, wantWarning: true, wantUnexplained: "10"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			resetAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				index := int(calls.Add(1)) - 1
+				w.Header().Set("X-RateLimit-Limit", "5000")
+				w.Header().Set("X-RateLimit-Used", strconv.Itoa(5000-mustAtoi(t, test.remaining[index])))
+				w.Header().Set("X-RateLimit-Remaining", test.remaining[index])
+				w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+				w.Header().Set("X-RateLimit-Resource", "core")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			t.Cleanup(server.Close)
+
+			var logs bytes.Buffer
+			client, err := NewClient(ClientConfig{
+				Endpoint:    server.URL,
+				TokenSource: StaticTokenSource("divergence-" + test.name),
+				HTTPClient:  server.Client(),
+				Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			for range test.remaining {
+				if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &[]json.RawMessage{}); err != nil {
+					t.Fatalf("REST() error = %v", err)
+				}
+			}
+
+			output := logs.String()
+			warning := strings.Contains(output, "github rest observed usage diverged from detent requests")
+			if warning != test.wantWarning {
+				t.Fatalf("warning = %v, want %v; logs = %s", warning, test.wantWarning, output)
+			}
+			if test.wantWarning {
+				for _, want := range []string{"credential_identity=github-rest:", "unexplained_requests=" + test.wantUnexplained, `likely_external_consumer="worker gh subprocess sharing credential"`} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("logs = %s, want %q", output, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func mustAtoi(t *testing.T, value string) int {
+	t.Helper()
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		t.Fatalf("strconv.Atoi(%q) error = %v", value, err)
+	}
+	return parsed
+}
+
 func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
 	t.Parallel()
 

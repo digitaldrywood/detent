@@ -115,6 +115,15 @@ func (s *InstallationTokenSource) Token(ctx context.Context) (string, error) {
 	return details.Token, nil
 }
 
+func (s *InstallationTokenSource) CredentialIdentity(token string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(token) == "" || strings.TrimSpace(token) != strings.TrimSpace(s.cachedToken) {
+		return ""
+	}
+	return "github-app-installation:" + s.installationID
+}
+
 func (s *InstallationTokenSource) TokenDetails(ctx context.Context) (InstallationTokenDetails, error) {
 	if err := ctx.Err(); err != nil {
 		return InstallationTokenDetails{}, err
