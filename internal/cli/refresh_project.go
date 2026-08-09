@@ -877,14 +877,14 @@ func applyProjectRefreshWithRename(plan projectRefreshPlan, rename func(string, 
 		if err := file.Chmod(change.mode); err != nil {
 			return errors.Join(
 				fmt.Errorf("set refreshed file mode %s: %w", change.path, err),
-				discardProjectRefreshTemp(file, tempPath),
+				discardProjectRefreshTemp(file),
 				cleanup(),
 			)
 		}
 		if _, err := file.Write(change.after); err != nil {
 			return errors.Join(
 				fmt.Errorf("stage refreshed file %s: %w", change.path, err),
-				discardProjectRefreshTemp(file, tempPath),
+				discardProjectRefreshTemp(file),
 				cleanup(),
 			)
 		}
@@ -950,7 +950,7 @@ func reserveProjectRefreshBackupPath(target string) (string, error) {
 		return "", fmt.Errorf("reserve refresh backup for %s: %w", target, err)
 	}
 	path := file.Name()
-	if err := discardProjectRefreshTemp(file, path); err != nil {
+	if err := discardProjectRefreshTemp(file); err != nil {
 		return "", fmt.Errorf("reserve refresh backup for %s: %w", target, err)
 	}
 	return path, nil
@@ -981,8 +981,9 @@ func rollbackProjectRefresh(staged []projectRefreshStagedChange, rename func(str
 	return errors.Join(rollbackErrors...)
 }
 
-func discardProjectRefreshTemp(file *os.File, path string) error {
+func discardProjectRefreshTemp(file *os.File) error {
 	var cleanupErrors []error
+	path := filepath.Clean(file.Name())
 	if err := file.Close(); err != nil {
 		cleanupErrors = append(cleanupErrors, err)
 	}
