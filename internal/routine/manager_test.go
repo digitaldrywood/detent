@@ -581,7 +581,7 @@ func (s *fakeIssueStore) CreateIntakeIssue(_ context.Context, draft intake.Issue
 		return intake.Issue{}, s.createErr
 	}
 	s.drafts = append(s.drafts, draft)
-	id := "issue-" + time.Now().Format("150405.000000000")
+	id := fmt.Sprintf("issue-%d", s.createCalls)
 	s.issues = append(s.issues, connector.Issue{ID: id, Identifier: "DET-1", Description: draft.Body, Labels: append([]string(nil), draft.Labels...)})
 	issue := intake.Issue{ID: id, Identifier: "DET-1", URL: "https://example.test/issues/1", Body: draft.Body}
 	return issue, s.createErr
