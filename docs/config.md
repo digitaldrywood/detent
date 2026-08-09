@@ -462,6 +462,7 @@ rendering and fails on drift.
 | `backlog_admission.authors.allow` | `list<string>` | `[]` | No | None |
 | `backlog_admission.authors.allow_association` | `list<string>` | `[]` | No | requires author association, but tracker.kind memory cannot supply it<br>values must be one of OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE |
 | `backlog_admission.auto_admit` | `boolean` | `false` | No | None |
+| `backlog_admission.auto_admit_by_label` | `mapping<string, boolean>` | `{}` | No | None |
 | `backlog_admission.auto_admit_min_confidence` | `number` | `0.9` | No | None |
 | `backlog_admission.criteria_section` | `string` | `none` | Conditional | is required |
 | `backlog_admission.effort_section` | `string` | `none` | Conditional | is required when require_effort is true |
@@ -613,11 +614,13 @@ rendering and fails on drift.
 | `retro.single_occurrence_severity` | `string` | `"critical" when configured` | No | must be one of info, warning, high, critical |
 | `retro.target_state` | `string` | `"Backlog" when configured` | No | must name a configured tracker state |
 | `routines` | `list<object>` | `[]` | No | None |
+| `routines[].labels` | `list<string>` | `[]` | Conditional | labels must not be blank |
 | `routines[].max_findings_per_run` | `integer` | `3 when configured` | No | must be greater than 0 |
 | `routines[].max_open_findings` | `integer` | `10 when configured` | No | must be greater than 0 |
 | `routines[].name` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
 | `routines[].prompt` | `string` | `none` | Conditional | is required |
 | `routines[].schedule` | `string` | `none` | Conditional | is required<br>must be a valid five-field cron expression |
+| `routines[].target_state` | `string` | `"Todo" when configured` | No | must name a configured workflow state |
 | `server` | `object` | `see child fields` | No | None |
 | `server.board_snapshot_stale_after_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `server.host` | `string` | `"127.0.0.1"` | No | is required |

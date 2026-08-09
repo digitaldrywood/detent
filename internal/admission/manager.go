@@ -571,7 +571,7 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			continue
 		}
-		if !decided && autoAdmitProposal(settings.Config, settings.Criteria, proposal) {
+		if !decided && autoAdmitProposal(settings.Config, settings.Criteria, proposal, issue.Labels) {
 			recovered, err := m.recoverAutomaticAdmission(ctx, settings, issue, proposal)
 			if err != nil {
 				return commentsRemaining, autoAdmitsRemaining, err
@@ -650,7 +650,7 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			continue
 		}
-		if !decided && autoAdmitProposal(settings.Config, settings.Criteria, proposal) {
+		if !decided && autoAdmitProposal(settings.Config, settings.Criteria, proposal, issue.Labels) {
 			if !autoAdmitCandidateEligible(issue, settings.Config) {
 				decision := automaticAdmissionDecision(settings.Issues, proposal, at)
 				decision.Outcome = admissionmodel.ProposalSuperseded
@@ -909,7 +909,7 @@ func (m *Manager) executeProposals(
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal) {
+		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
 			if err := m.admitProposal(
 				ctx,
 				settings,
@@ -938,7 +938,7 @@ func (m *Manager) commentProposal(
 		proposalComment(
 			proposal,
 			settings.Criteria,
-			autoAdmitProposal(settings.Config, settings.Criteria, proposal),
+			autoAdmitProposal(settings.Config, settings.Criteria, proposal, issue.Labels),
 			untracked,
 			issue.State,
 		),
@@ -965,7 +965,8 @@ func (m *Manager) admitProposal(
 	current, found := issueMap(issues)[proposal.IssueID]
 	eligible := found && admissionSourceEligible(current, settings.Config)
 	if decision.Automatic {
-		eligible = found && autoAdmitCandidateEligible(current, settings.Config)
+		eligible = found && autoAdmitCandidateEligible(current, settings.Config) &&
+			autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels)
 	}
 	if !eligible {
 		decision.Outcome = admissionmodel.ProposalSuperseded
@@ -1157,8 +1158,9 @@ func autoAdmitProposal(
 	cfg config.BacklogAdmission,
 	criteria config.AdmissionCriteria,
 	proposal admissionmodel.Proposal,
+	labels []string,
 ) bool {
-	return cfg.AutoAdmit &&
+	return cfg.AutoAdmitForLabels(labels) &&
 		proposal.Confidence >= cfg.AutoAdmitMinConfidence &&
 		len(failedAdmissionDimensions(proposal.Findings, criteria)) == 0
 }
@@ -1761,6 +1763,7 @@ func cloneSettings(settings Settings) Settings {
 	settings.Config.Sources.States = append([]string(nil), settings.Config.Sources.States...)
 	settings.Config.Sources.Labels = append([]string(nil), settings.Config.Sources.Labels...)
 	settings.Config.ExcludeLabels = append([]string(nil), settings.Config.ExcludeLabels...)
+	settings.Config.AutoAdmitByLabel = cloneLabelPolicies(settings.Config.AutoAdmitByLabel)
 	settings.Config.Authors.Allow = append([]string(nil), settings.Config.Authors.Allow...)
 	settings.Config.Authors.AllowAssociation = append([]string(nil), settings.Config.Authors.AllowAssociation...)
 	settings.Criteria.Dimensions = append([]config.AdmissionDimension(nil), settings.Criteria.Dimensions...)
@@ -1770,6 +1773,14 @@ func cloneSettings(settings Settings) Settings {
 	settings.TerminalStates = append([]string(nil), settings.TerminalStates...)
 	settings.ProjectCandidate.ActiveHours = settings.ProjectCandidate.ActiveHours.Normalize()
 	return settings
+}
+
+func cloneLabelPolicies(policies map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(policies))
+	for label, enabled := range policies {
+		out[label] = enabled
+	}
+	return out
 }
 
 func normalizeStrings(values []string) []string {

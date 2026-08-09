@@ -36,6 +36,9 @@ backlog_admission:
   max_open_proposals: 8
   proposal_expiry_days: 5
   auto_admit: true
+  auto_admit_by_label:
+    Defect: true
+    Requires-Human-Review: false
   auto_admit_min_confidence: 0.95
 ---
 ## Admission criteria
@@ -63,6 +66,9 @@ backlog_admission:
 		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 || got.Sources.Untracked ||
 		!got.RequireEffort || got.EffortSection != "Issue effort selection" {
 		t.Fatalf("BacklogAdmission = %#v", got)
+	}
+	if len(got.AutoAdmitByLabel) != 2 || !got.AutoAdmitByLabel["defect"] || got.AutoAdmitByLabel["requires-human-review"] {
+		t.Fatalf("AutoAdmitByLabel = %#v", got.AutoAdmitByLabel)
 	}
 	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
 		len(got.ExcludeLabels) != 1 || got.ExcludeLabels[0] != "skip" ||
@@ -137,6 +143,16 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 			cfg.AutoAdmit = true
 			cfg.AutoAdmitMinConfidence = 1.1
 		}, want: "auto_admit_min_confidence must be between 0 and 1"},
+		{name: "label auto admit confidence outside range", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.AutoAdmitByLabel = map[string]bool{"defect": true}
+			cfg.AutoAdmitMinConfidence = -0.1
+		}, want: "auto_admit_min_confidence must be between 0 and 1"},
+		{name: "blank auto admit label", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.AutoAdmitByLabel = map[string]bool{" ": false}
+		}, want: "auto_admit_by_label labels must not be blank"},
+		{name: "project v2 label policy", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}, mutate: func(cfg *BacklogAdmission) {
+			cfg.AutoAdmitByLabel = map[string]bool{"feature": false}
+		}, want: "auto_admit_by_label requires complete issue labels"},
 		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "FetchIssuesByStates is not implemented"},
 		{name: "unsupported github source", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: "milestone"}, want: "tracker.kind github with github_status_source milestone does not declare it"},
 		{name: "unsupported tracker", tracker: Tracker{Kind: "gitlab"}, want: "tracker.kind gitlab does not declare it"},
@@ -163,6 +179,34 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 			}
 			if tt.want != "" && !strings.Contains(got, tt.want) {
 				t.Fatalf("Validate() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBacklogAdmissionAutoAdmitForLabels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		fallback bool
+		policies map[string]bool
+		labels   []string
+		want     bool
+	}{
+		{name: "defect override admits", policies: map[string]bool{"defect": true}, labels: []string{"Defect"}, want: true},
+		{name: "feature override holds", fallback: true, policies: map[string]bool{"feature": false}, labels: []string{"feature"}},
+		{name: "propose-only wins over admit class", fallback: true, policies: map[string]bool{"defect": true, "feature": false}, labels: []string{"defect", "feature"}},
+		{name: "unknown label uses enabled default", fallback: true, policies: map[string]bool{"defect": true}, labels: []string{"docs"}, want: true},
+		{name: "unknown label uses disabled default", policies: map[string]bool{"defect": true}, labels: []string{"docs"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := BacklogAdmission{AutoAdmit: tt.fallback, AutoAdmitByLabel: tt.policies}
+			cfg.Normalize()
+			if got := cfg.AutoAdmitForLabels(tt.labels); got != tt.want {
+				t.Fatalf("AutoAdmitForLabels(%#v) = %t, want %t", tt.labels, got, tt.want)
 			}
 		})
 	}

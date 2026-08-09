@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,8 @@ tracker:
 routines:
   - name: Dependency-Audit
     schedule: "0 3 * * 1"
+    target_state: Backlog
+    labels: [Feature, Requires-Human-Review, feature]
     max_findings_per_run: 2
     max_open_findings: 8
     prompt: |
@@ -33,6 +36,8 @@ Prompt
 	routine := workflow.Config.Routines[0]
 	if routine.Name != "dependency-audit" || routine.Schedule != "0 3 * * 1" ||
 		routine.Prompt != "Follow the dependency criteria in WORKFLOW.md." ||
+		routine.TargetState != "Backlog" ||
+		!reflect.DeepEqual(routine.Labels, []string{"feature", "requires-human-review"}) ||
 		routine.MaxFindingsPerRun != 2 || routine.MaxOpenFindings != 8 {
 		t.Fatalf("Routine = %#v", routine)
 	}
@@ -57,6 +62,9 @@ Prompt
 		t.Fatalf("Validate() error = %v", err)
 	}
 	routine := workflow.Config.Routines[0]
+	if routine.TargetState != DefaultRoutineTargetState || len(routine.Labels) != 0 {
+		t.Fatalf("Routine target = %q, labels = %#v", routine.TargetState, routine.Labels)
+	}
 	if routine.MaxFindingsPerRun != DefaultRoutineMaxFindingsPerRun || routine.MaxOpenFindings != DefaultRoutineMaxOpenFindings {
 		t.Fatalf("Routine limits = %d, %d", routine.MaxFindingsPerRun, routine.MaxOpenFindings)
 	}
@@ -104,6 +112,8 @@ func TestValidateRoutinesRejectsMalformedBlocks(t *testing.T) {
 		{name: "missing schedule", routines: []Routine{{Name: "audit", Prompt: "Inspect."}}, wantDetail: "routines[0].schedule is required"},
 		{name: "six field schedule", routines: []Routine{{Name: "audit", Schedule: "0 0 3 * * 1", Prompt: "Inspect."}}, wantDetail: "five-field cron"},
 		{name: "missing prompt", routines: []Routine{{Name: "audit", Schedule: "0 * * * *"}}, wantDetail: "routines[0].prompt is required"},
+		{name: "unknown target state", routines: []Routine{{Name: "audit", Schedule: "0 * * * *", Prompt: "Inspect.", TargetState: "Icebox"}}, wantDetail: "routines[0].target_state must name a configured workflow state"},
+		{name: "blank label", routines: []Routine{{Name: "audit", Schedule: "0 * * * *", Prompt: "Inspect.", Labels: []string{" "}}}, wantDetail: "routines[0].labels labels must not be blank"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
