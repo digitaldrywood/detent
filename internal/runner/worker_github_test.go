@@ -44,6 +44,7 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://api.github.com/graphql"
 			cfg.Tracker.APIKey = tt.orchestratorToken
 			cfg.Worker.GitHubToken = tt.workerToken
@@ -71,7 +72,38 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 			if tt.wantEnabled && (!strings.HasPrefix(policy.CredentialIdentity, "github-rest:") || policy.Token != "worker-token") {
 				t.Fatalf("policy = %#v, want redacted identity and resolved worker token", policy)
 			}
+			if tt.wantEnabled {
+				probeCtx, cancel := policy.ProbeContext(context.Background())
+				_, hasDeadline := probeCtx.Deadline()
+				cancel()
+				if !hasDeadline {
+					t.Fatal("worker github probe context has no deadline")
+				}
+			}
 		})
+	}
+}
+
+func TestNewWorkerGitHubPolicyUsesGitHubEndpointForNonGitHubTracker(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Tracker.Kind = config.TrackerLinear
+	cfg.Tracker.Endpoint = "https://api.linear.app/graphql"
+	cfg.Tracker.APIKey = "linear-secret"
+	cfg.Worker.GitHubToken = "worker-token"
+	policy, err := newWorkerGitHubPolicy(cfg, "detent", "digitaldrywood/detent#1724", func(string) string { return "" }, nil, nil)
+	if err != nil {
+		t.Fatalf("newWorkerGitHubPolicy() error = %v", err)
+	}
+	if policy.GraphQLURL != "https://api.github.com/graphql" {
+		t.Fatalf("GraphQLURL = %q, want public GitHub API", policy.GraphQLURL)
+	}
+	if policy.RateLimitURL != "https://api.github.com/rate_limit" {
+		t.Fatalf("RateLimitURL = %q, want public GitHub API", policy.RateLimitURL)
+	}
+	if policy.OrchestratorToken != "" {
+		t.Fatalf("OrchestratorToken = %q, want non-GitHub tracker credential excluded", policy.OrchestratorToken)
 	}
 }
 
@@ -260,6 +292,55 @@ func TestWorkerGitHubGovernorRejectsTokensForSameUser(t *testing.T) {
 	}
 }
 
+func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{}, 1)
+	cancelProbe := make(chan context.CancelFunc, 1)
+	policy := workerGitHubPolicy{
+		Enabled:      true,
+		Token:        "worker-token",
+		GraphQLURL:   "https://api.github.test/graphql",
+		RateLimitURL: "https://api.github.test/rate_limit",
+		HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+			requestStarted <- struct{}{}
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}),
+		ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+			probeCtx, cancel := context.WithCancel(ctx)
+			cancelProbe <- cancel
+			return probeCtx, cancel
+		},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
+		result <- err
+	}()
+
+	var cancel context.CancelFunc
+	select {
+	case cancel = <-cancelProbe:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe context was not created")
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe request did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("startWorkerGitHubGovernor() error = %v, want bounded canceled probe", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("governor did not return after the probe context was canceled")
+	}
+}
+
 func TestMergeAgentRateLimitsPreservesWorkerAndProviderBudgets(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +399,12 @@ func workerGitHubTestPolicy(server *httptest.Server, logs *bytes.Buffer) workerG
 
 type workerGitHubCaptureBackend struct {
 	request AgentTurnRequest
+}
+
+type workerGitHubHTTPClientFunc func(*http.Request) (*http.Response, error)
+
+func (f workerGitHubHTTPClientFunc) Do(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func (b *workerGitHubCaptureBackend) RunTurn(_ context.Context, request AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {

@@ -23,7 +23,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-const workerGitHubRateLimitBodyMaxBytes = 64 * 1024
+const (
+	workerGitHubRateLimitBodyMaxBytes = 64 * 1024
+	workerGitHubProbeTimeout          = 10 * time.Second
+)
 
 var (
 	ErrWorkerGitHubCredentialShared = errors.New("worker github credential shares the orchestrator credential")
@@ -36,6 +39,8 @@ type workerGitHubHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+type workerGitHubProbeContextFactory func(context.Context) (context.Context, context.CancelFunc)
+
 type workerGitHubPolicy struct {
 	Enabled            bool
 	Token              string
@@ -46,6 +51,7 @@ type workerGitHubPolicy struct {
 	MinRemaining       int64
 	PollInterval       time.Duration
 	HTTPClient         workerGitHubHTTPClient
+	ProbeContext       workerGitHubProbeContextFactory
 	Poll               <-chan time.Time
 	Logger             *slog.Logger
 	ProjectID          string
@@ -167,18 +173,21 @@ func newWorkerGitHubPolicy(cfg config.Config, projectID string, issueIdentifier 
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
-	orchestratorToken, err := resolveWorkerGitHubSecret(strings.TrimSpace(cfg.Tracker.APIKey), lookupEnv)
+	graphQLEndpoint := ""
+	orchestratorCredential := ""
+	if cfg.Tracker.Kind == config.TrackerGitHub || cfg.Tracker.Kind == config.TrackerGitHubLocal {
+		graphQLEndpoint = cfg.Tracker.Endpoint
+		orchestratorCredential = cfg.Tracker.APIKey
+	}
+	orchestratorToken, err := resolveWorkerGitHubSecret(strings.TrimSpace(orchestratorCredential), lookupEnv)
 	if err != nil {
 		return workerGitHubPolicy{}, fmt.Errorf("resolve orchestrator github credential for worker isolation: %w", err)
-	}
-	if orchestratorToken == "" {
-		orchestratorToken = strings.TrimSpace(lookupEnv("GITHUB_TOKEN"))
 	}
 	if orchestratorToken != "" && workerToken == orchestratorToken {
 		return workerGitHubPolicy{}, ErrWorkerGitHubCredentialShared
 	}
 
-	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(cfg.Tracker.Endpoint)
+	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(graphQLEndpoint)
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
@@ -193,10 +202,15 @@ func newWorkerGitHubPolicy(cfg config.Config, projectID string, issueIdentifier 
 		MinRemaining:       int64(cfg.Worker.GitHubRESTMinReserve),
 		PollInterval:       time.Duration(cfg.Worker.GitHubRESTPollIntervalMS) * time.Millisecond,
 		HTTPClient:         httpClient,
+		ProbeContext:       withWorkerGitHubProbeTimeout,
 		Logger:             logger,
 		ProjectID:          strings.TrimSpace(projectID),
 		IssueIdentifier:    strings.TrimSpace(issueIdentifier),
 	}, nil
+}
+
+func withWorkerGitHubProbeTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, workerGitHubProbeTimeout)
 }
 
 func resolveWorkerGitHubSecret(value string, lookupEnv func(string) string) (string, error) {
@@ -342,6 +356,8 @@ func (p workerGitHubPolicy) verifyDistinctPrincipal(ctx context.Context) error {
 }
 
 func (p workerGitHubPolicy) authenticatedUserID(ctx context.Context, token string) (int64, error) {
+	ctx, cancel := p.probeContext(ctx)
+	defer cancel()
 	body := bytes.NewBufferString(`{"query":"query WorkerCredentialIdentity { viewer { databaseId } }"}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.GraphQLURL, body)
 	if err != nil {
@@ -382,6 +398,8 @@ func (p workerGitHubPolicy) authenticatedUserID(ctx context.Context, token strin
 }
 
 func (p workerGitHubPolicy) probe(ctx context.Context) (workerGitHubBudget, error) {
+	ctx, cancel := p.probeContext(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.RateLimitURL, nil)
 	if err != nil {
 		return workerGitHubBudget{}, err
@@ -425,6 +443,13 @@ func (p workerGitHubPolicy) probe(ctx context.Context) (workerGitHubBudget, erro
 		ResetAt:    time.Unix(payload.Resources.Core.Reset, 0).UTC(),
 		ObservedAt: time.Now().UTC(),
 	}, nil
+}
+
+func (p workerGitHubPolicy) probeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if p.ProbeContext != nil {
+		return p.ProbeContext(ctx)
+	}
+	return withWorkerGitHubProbeTimeout(ctx)
 }
 
 func (p workerGitHubPolicy) observe(budget workerGitHubBudget, onUpdate AgentUpdateHandler) error {
