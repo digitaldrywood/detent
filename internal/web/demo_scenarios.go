@@ -849,7 +849,8 @@ func (s *Server) demoEvents(c echo.Context, scenario demoScenario) error {
 	res.Header().Set("Connection", "keep-alive")
 	res.Header().Set("X-Accel-Buffering", "no")
 	res.WriteHeader(http.StatusOK)
-	if err := s.writeDemoSSE(ctx, res, scenario, demoBaseTime, selectedProjectID, selectedNav, selectedView); err != nil {
+	stream := newSSEStream(s.logger, s.sseMetricsInterval)
+	if _, err := s.writeDemoSSE(ctx, res, stream, scenario, demoBaseTime, selectedProjectID, selectedNav, selectedView); err != nil {
 		return err
 	}
 	flusher.Flush()
@@ -861,25 +862,35 @@ func (s *Server) demoEvents(c echo.Context, scenario demoScenario) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			sent, err := stream.flushPending(ctx, res.Writer)
+			if err != nil {
+				return err
+			}
 			now := demoBaseTime
 			if s.demo.clock == DemoClockPlay || scenario.Variant == "play" {
 				now = demoBaseTime.Add(time.Duration(step) * time.Minute)
 				step++
 			}
-			if err := writeSSEComponent(ctx, res.Writer, sseEventTick, templates.LiveTick(now)); err != nil {
+			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventTick, templates.LiveTick(now), 0); err != nil {
 				return err
+			} else if ok {
+				sent = true
 			}
 			if s.demo.clock == DemoClockPlay || scenario.Variant == "play" {
-				if err := s.writeDemoSSE(ctx, res, scenario, now, selectedProjectID, selectedNav, selectedView); err != nil {
+				if ok, err := s.writeDemoSSE(ctx, res, stream, scenario, now, selectedProjectID, selectedNav, selectedView); err != nil {
 					return err
+				} else if ok {
+					sent = true
 				}
 			}
-			flusher.Flush()
+			if sent {
+				flusher.Flush()
+			}
 		}
 	}
 }
 
-func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario demoScenario, now time.Time, selectedProjectID string, selectedNav string, selectedView string) error {
+func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, stream *sseStream, scenario demoScenario, now time.Time, selectedProjectID string, selectedNav string, selectedView string) (bool, error) {
 	data := s.demoDashboardData(ctx, scenario)
 	if selectedProjectID == "" {
 		selectedProjectID = strings.TrimSpace(scenario.ProjectID)
@@ -938,16 +949,30 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	case sseViewConfiguration:
 		data.ActiveNav = "configuration"
 	}
-	if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, snapshotComponent); err != nil {
-		return err
+	sent, err := stream.sendComponent(ctx, res.Writer, sseEventSnapshot, snapshotComponent, 0)
+	if err != nil {
+		return false, err
 	}
-	if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
-		return err
+	shellData := templates.DashboardShellDataFromDashboard(data)
+	healthFingerprint, err := templates.GitHubAPIHealthSidebarFingerprint(shellData)
+	if err != nil {
+		return false, err
 	}
-	if err := writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data))); err != nil {
-		return err
+	if ok, err := stream.sendFingerprintedComponent(ctx, res.Writer, sseEventGitHubAPI, healthFingerprint, templates.GitHubAPIHealthSidebarItem(shellData), 0); err != nil {
+		return false, err
+	} else if ok {
+		sent = true
 	}
-	return writeSSEComponent(ctx, res.Writer, sseEventSidebarV2, templates.AppSidebarContent(templates.DashboardShellDataFromDashboard(data)))
+	sidebarFingerprint, err := templates.AppSidebarFingerprint(shellData)
+	if err != nil {
+		return false, err
+	}
+	if ok, err := stream.sendFingerprintedComponent(ctx, res.Writer, sseEventSidebarV2, sidebarFingerprint, templates.AppSidebarContent(shellData), 0); err != nil {
+		return false, err
+	} else if ok {
+		sent = true
+	}
+	return sent, nil
 }
 
 func demoSSEViewForScenario(scenario demoScenario) string {
