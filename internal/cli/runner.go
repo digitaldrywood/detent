@@ -71,6 +71,12 @@ func withRunnerFactory(
 			workflow.Config.Identity = cfg.Identity
 			workflow.Config.Identity.Normalize()
 		}
+		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
+			token := strings.TrimSpace(githubTokenSource[0]())
+			if token != "" && (workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
+				workflow.Config.Tracker.APIKey = token
+			}
+		}
 
 		run := deps.Runner
 		if run == nil {
@@ -1010,7 +1016,7 @@ func cloneFleetRateLimitBucket(bucket *telemetry.RateLimitBucket) *telemetry.Rat
 func mergeFleetRESTBudgets(current []telemetry.RESTBudget, incoming []telemetry.RESTBudget) []telemetry.RESTBudget {
 	byKey := make(map[string]telemetry.RESTBudget, len(current)+len(incoming))
 	for _, budget := range append(append([]telemetry.RESTBudget(nil), current...), incoming...) {
-		key := strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.EndpointFamily) + "\x00" + strings.TrimSpace(budget.Resource)
+		key := restBudgetConsumer(budget.Consumer) + "\x00" + strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.EndpointFamily) + "\x00" + strings.TrimSpace(budget.Resource)
 		existing, ok := byKey[key]
 		if !ok || restBudgetObservedAfter(budget, existing) {
 			byKey[key] = cloneFleetRESTBudget(budget)
@@ -1024,6 +1030,9 @@ func mergeFleetRESTBudgets(current []telemetry.RESTBudget, incoming []telemetry.
 		budgets = append(budgets, budget)
 	}
 	sort.Slice(budgets, func(i, j int) bool {
+		if restBudgetConsumer(budgets[i].Consumer) != restBudgetConsumer(budgets[j].Consumer) {
+			return restBudgetConsumer(budgets[i].Consumer) < restBudgetConsumer(budgets[j].Consumer)
+		}
 		if budgets[i].CredentialIdentity != budgets[j].CredentialIdentity {
 			return budgets[i].CredentialIdentity < budgets[j].CredentialIdentity
 		}
@@ -1054,6 +1063,9 @@ func cloneFleetRESTBudget(budget telemetry.RESTBudget) telemetry.RESTBudget {
 func fleetRESTBucketFromBudgets(budgets []telemetry.RESTBudget) *telemetry.RateLimitBucket {
 	currentByCredentialResource := make(map[string]telemetry.RESTBudget, len(budgets))
 	for _, budget := range budgets {
+		if restBudgetConsumer(budget.Consumer) != telemetry.RESTConsumerOrchestrator {
+			continue
+		}
 		key := strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.Resource)
 		existing, ok := currentByCredentialResource[key]
 		if !ok || restBudgetObservedAfter(budget, existing) || (restBudgetObservedTogether(budget, existing) && restBudgetRemainingRatio(budget) < restBudgetRemainingRatio(existing)) {
@@ -1088,6 +1100,14 @@ func fleetRESTBucketFromBudgets(budgets []telemetry.RESTBudget) *telemetry.RateL
 		ResetAt:    cloneTimePointer(selected.ResetAt),
 		ObservedAt: cloneTimePointer(selected.ObservedAt),
 	}
+}
+
+func restBudgetConsumer(consumer string) string {
+	consumer = strings.TrimSpace(consumer)
+	if consumer == "" {
+		return telemetry.RESTConsumerOrchestrator
+	}
+	return consumer
 }
 
 func restBudgetObservedTogether(left telemetry.RESTBudget, right telemetry.RESTBudget) bool {
@@ -1132,8 +1152,9 @@ func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTU
 			merged.BackoffUntil = &backoffUntil
 		}
 		for _, contributor := range usage.Contributors {
-			key := contributor.CredentialIdentity + "\x00" + contributor.EndpointFamily + "\x00" + contributor.Resource
+			key := restBudgetConsumer(contributor.Consumer) + "\x00" + contributor.CredentialIdentity + "\x00" + contributor.EndpointFamily + "\x00" + contributor.Resource
 			existing := contributors[key]
+			existing.Consumer = restBudgetConsumer(contributor.Consumer)
 			existing.CredentialIdentity = contributor.CredentialIdentity
 			existing.EndpointFamily = contributor.EndpointFamily
 			existing.Resource = contributor.Resource
@@ -1163,6 +1184,9 @@ func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTU
 		merged.Contributors = append(merged.Contributors, contributor)
 	}
 	sort.Slice(merged.Contributors, func(i, j int) bool {
+		if restBudgetConsumer(merged.Contributors[i].Consumer) != restBudgetConsumer(merged.Contributors[j].Consumer) {
+			return restBudgetConsumer(merged.Contributors[i].Consumer) < restBudgetConsumer(merged.Contributors[j].Consumer)
+		}
 		if merged.Contributors[i].CredentialIdentity != merged.Contributors[j].CredentialIdentity {
 			return merged.Contributors[i].CredentialIdentity < merged.Contributors[j].CredentialIdentity
 		}

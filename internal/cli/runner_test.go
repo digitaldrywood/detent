@@ -1358,6 +1358,15 @@ func TestFleetRESTBucketFromBudgetsUsesCurrentCredentialResourceSnapshot(t *test
 			wantRemaining: 4000,
 			wantReset:     newReset,
 		},
+		{
+			name: "exhausted worker budget does not constrain orchestrator dispatch",
+			budgets: []telemetry.RESTBudget{
+				{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "orchestrator", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4000, ResetAt: &newReset, ObservedAt: &newObserved},
+				{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "worker", EndpointFamily: "worker credential", Resource: "core", Limit: 5000, Remaining: 0, ResetAt: &newReset, ObservedAt: &newObserved},
+			},
+			wantRemaining: 4000,
+			wantReset:     newReset,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

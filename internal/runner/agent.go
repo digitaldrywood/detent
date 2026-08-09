@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,7 @@ type Dependencies struct {
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
+	lookupEnv           func(string) string
 }
 
 type Runner struct {
@@ -135,6 +137,7 @@ type Runner struct {
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
 	admissionLeaks      admissionWorkspaceLeakTracker
+	lookupEnv           func(string) string
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -158,6 +161,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.progressTicker == nil {
 		deps.progressTicker = newSessionProgressTicker
+	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = os.Getenv
 	}
 	projectID := strings.TrimSpace(deps.ProjectID)
 	if projectID == "" {
@@ -204,6 +210,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		sessionLimit:        deps.sessionLimit,
 		turnLimit:           deps.turnLimit,
 		progressTicker:      deps.progressTicker,
+		lookupEnv:           deps.lookupEnv,
 	}, nil
 }
 
@@ -707,26 +714,34 @@ func runAgentBackendTurnWithToolsUsingLimit(
 		defer cancel()
 
 		var boundedUpdateHandler AgentUpdateHandler
+		var updateMu sync.Mutex
 		if onUpdate != nil {
 			boundedUpdateHandler = func(update AgentUpdate) error {
+				updateMu.Lock()
+				defer updateMu.Unlock()
 				return onUpdate(turnCtx, update)
 			}
 		}
+		governedCtx, stopGovernor, err := startWorkerGitHubGovernor(turnCtx, request.workerGitHub, boundedUpdateHandler)
+		if err != nil {
+			return AgentTurnResult{}, err
+		}
 		var result AgentTurnResult
-		var err error
+		var runErr error
 		if len(tools) > 0 {
 			if toolBackend, ok := backend.(AgentToolBackend); ok {
-				result, err = toolBackend.RunTurnWithTools(turnCtx, request, tools, toolHandler, boundedUpdateHandler)
+				result, runErr = toolBackend.RunTurnWithTools(governedCtx, request, tools, toolHandler, boundedUpdateHandler)
 			} else {
-				result, err = backend.RunTurn(turnCtx, request, boundedUpdateHandler)
+				result, runErr = backend.RunTurn(governedCtx, request, boundedUpdateHandler)
 			}
 		} else {
-			result, err = backend.RunTurn(turnCtx, request, boundedUpdateHandler)
+			result, runErr = backend.RunTurn(governedCtx, request, boundedUpdateHandler)
 		}
+		runErr = errors.Join(runErr, stopGovernor())
 		if cause := context.Cause(turnCtx); errors.Is(cause, ErrTurnDurationExceeded) {
-			return result, errors.Join(cause, err)
+			return result, errors.Join(cause, runErr)
 		}
-		return result, err
+		return result, runErr
 	}
 	workspacePath := strings.TrimSpace(request.Workspace)
 	if workspacePath == "" {
@@ -743,6 +758,10 @@ func runAgentBackendTurnWithToolsUsingLimit(
 		return AgentTurnResult{}, fmt.Errorf("prepare worker scratch: %w", err), nil
 	}
 	request.TempDir = tempDir
+	if err := configureWorkerGitHubEnvironment(&request); err != nil {
+		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
+		return AgentTurnResult{}, fmt.Errorf("prepare worker github environment: %w", err), cleanupErr
+	}
 	if err := configureWorkerCache(&request); err != nil {
 		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
 		return AgentTurnResult{}, fmt.Errorf("prepare worker cache: %w", err), cleanupErr
@@ -1000,6 +1019,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			Output:     RunOutputMergeFastPathCheckedHead,
 		}, nil
 	}
+	workerGitHub, err := r.workerGitHubPolicy(workflow.Config, req.Issue.Identifier)
+	if err != nil {
+		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
+		return RunResult{}, err
+	}
 
 	runWorkspace := r.workspace
 	if req.Admission != nil {
@@ -1232,6 +1256,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"work_attempt_id", req.WorkAttemptID,
 		"detent_session_id", sessionID,
 		"mode", mode,
+		"github_credential_policy", workerGitHubPolicyName(workerGitHub),
+		"github_credential_identity", workerGitHub.CredentialIdentity,
 	}
 	commandStartedAttrs = append(commandStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_command_started", commandStartedAttrs...)
@@ -1257,6 +1283,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ExtraWritableRoots: extraWritableRoots,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
 		projectID:          r.projectID,
+		workerGitHub:       workerGitHub,
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
@@ -1488,6 +1515,11 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
+	workerGitHub, err := r.workerGitHubPolicy(workflow.Config, req.Issue.Identifier)
+	if err != nil {
+		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
+		return gate.ValidatorResult{}, err
+	}
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	r.logWorkerEvent(req.Issue, "worker_check_workspace_create_started")
@@ -1574,6 +1606,8 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	checkStartedAttrs := []any{
 		"workspace_path", info.Path,
 		"detent_session_id", sessionID,
+		"github_credential_policy", workerGitHubPolicyName(workerGitHub),
+		"github_credential_identity", workerGitHub.CredentialIdentity,
 	}
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
@@ -1600,6 +1634,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
 		projectID:          r.projectID,
+		workerGitHub:       workerGitHub,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
@@ -2412,7 +2447,7 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 		result.Tokens.Last = cloneAgentTokenCounts(update.Tokens.Last)
 		result.Tokens.ModelContextWindow = update.Tokens.ModelContextWindow
 	case AgentUpdateRateLimits:
-		result.RateLimits = update.RateLimits
+		result.RateLimits = mergeAgentRateLimits(result.RateLimits, update.RateLimits)
 	}
 }
 

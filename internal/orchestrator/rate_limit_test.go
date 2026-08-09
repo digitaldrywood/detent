@@ -437,6 +437,29 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	}
 }
 
+func TestReplaceRESTConsumerBudgetsPreservesWorkerBudget(t *testing.T) {
+	t.Parallel()
+
+	current := []telemetry.RESTBudget{
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "orchestrator-old", Remaining: 100},
+		{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "worker", Remaining: 3000},
+	}
+	replacement := []telemetry.RESTBudget{
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "orchestrator-new", Remaining: 4000},
+	}
+
+	got := replaceRESTConsumerBudgets(current, replacement, telemetry.RESTConsumerOrchestrator)
+	if len(got) != 2 {
+		t.Fatalf("replaceRESTConsumerBudgets() = %#v, want two budgets", got)
+	}
+	if got[0].Consumer != telemetry.RESTConsumerWorker || got[0].CredentialIdentity != "worker" {
+		t.Fatalf("preserved budget = %#v, want worker budget", got[0])
+	}
+	if got[1].Consumer != telemetry.RESTConsumerOrchestrator || got[1].CredentialIdentity != "orchestrator-new" {
+		t.Fatalf("replacement budget = %#v, want new orchestrator budget", got[1])
+	}
+}
+
 func TestTickSkipsConnectorPollingDuringGitHubRESTBackoff(t *testing.T) {
 	t.Parallel()
 

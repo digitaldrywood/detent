@@ -15794,9 +15794,9 @@ func restBudgetCard(data DashboardData) templ.Component {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var766 string
-					templ_7745c5c3_Var766, templ_7745c5c3_Err = templ.JoinStringErrs(row.CredentialIdentity)
+					templ_7745c5c3_Var766, templ_7745c5c3_Err = templ.JoinStringErrs(row.Consumer + " · " + row.CredentialIdentity)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 4395, Col: 83}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 4395, Col: 107}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var766))
 					if templ_7745c5c3_Err != nil {

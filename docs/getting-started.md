@@ -159,6 +159,11 @@ tracker:
     target_state: Todo
 polling:
   interval_ms: 120000
+worker:
+  # Put the environment reference in detent.local.yaml for a dedicated bot user.
+  github_token: $DETENT_WORKER_GITHUB_TOKEN
+  github_rest_min_remaining_reserve: 1000
+  github_rest_poll_interval_ms: 60000
 workspace:
   root: /absolute/path/to/detent-workspaces
   source_root: /absolute/path/to/project-checkout
