@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -267,6 +268,7 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := t.TempDir()
+	t.Cleanup(func() { cleanupDoctorWorkflowSourceRepository(t, root) })
 	remote := filepath.Join(root, "remote.git")
 	seed := filepath.Join(root, "seed")
 	repo := filepath.Join(root, "checkout")
@@ -286,6 +288,37 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	return repo, remote
 }
 
+func cleanupDoctorWorkflowSourceRepository(t *testing.T, root string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var err error
+	for {
+		err = os.RemoveAll(root)
+		if err == nil {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	remaining := make([]string, 0)
+	walkErr := filepath.WalkDir(root, func(path string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, relativeErr := filepath.Rel(root, path)
+		if relativeErr != nil {
+			return relativeErr
+		}
+		remaining = append(remaining, relative)
+		return nil
+	})
+	t.Errorf("RemoveAll(%s) error = %v; remaining paths = %q; inspect error = %v", root, err, remaining, walkErr)
+}
+
 func writeDoctorWorkflowSourceFile(t *testing.T, path string, content string) {
 	t.Helper()
 
@@ -297,7 +330,8 @@ func writeDoctorWorkflowSourceFile(t *testing.T, path string, content string) {
 func runDoctorWorkflowSourceGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	gitArgs := append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)
+	cmd := exec.Command("git", gitArgs...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
