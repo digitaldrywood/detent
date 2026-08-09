@@ -375,6 +375,17 @@ func TestDispatchAcceptedStateChange(t *testing.T) {
 	}
 }
 
+func TestImplementAcceptedStateChangeAcceptsMergedCompletion(t *testing.T) {
+	t.Parallel()
+
+	accepted, reason := implementAcceptedStateChange(Running{}, implementCompletionProgressDecision{
+		Reason: implementMergedCompletionReason,
+	})
+	if !accepted || reason != implementMergedCompletionReason {
+		t.Fatalf("implementAcceptedStateChange() = %t, %q, want true, %q", accepted, reason, implementMergedCompletionReason)
+	}
+}
+
 func TestHandleRunResultTripsTokenProgressBreakerOnSubscription(t *testing.T) {
 	t.Parallel()
 
