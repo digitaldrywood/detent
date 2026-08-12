@@ -695,6 +695,7 @@ const (
 	BlockedSourceMergeDuration BlockedSource = "merge_duration_reconciliation"
 	BlockedSourceProjectStatus BlockedSource = "project_status"
 	BlockedSourceOperatorStop  BlockedSource = "operator_stop_reconciliation"
+	BlockedSourceOwnership     BlockedSource = "ownership"
 )
 
 type Blocked struct {

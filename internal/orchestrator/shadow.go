@@ -63,6 +63,9 @@ func (s *State) ensureInitialized(cfg Config) {
 	if s.Blocked == nil {
 		s.Blocked = map[string]Blocked{}
 	}
+	if s.DispatchEscalations == nil {
+		s.DispatchEscalations = map[string]time.Time{}
+	}
 	if s.Completed == nil {
 		s.Completed = map[string]Completed{}
 	}

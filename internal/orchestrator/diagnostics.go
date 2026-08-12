@@ -23,7 +23,8 @@ const (
 	workerOutcomeCancelled = "cancelled"
 	workerOutcomeTimedOut  = "timed_out"
 
-	dispatchGateSampleInterval = 5 * time.Minute
+	dispatchGateSampleInterval                  = 5 * time.Minute
+	defaultCorrectableDispatchDecisionThreshold = 20
 )
 
 type dispatchGateSampleKey struct {
@@ -50,7 +51,13 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 	if o == nil {
 		return
 	}
+	if reason == dispatchSkipOwnershipAssigneeRequired && correctableDispatchEscalated(state, decision.Issue.ID, reason) {
+		return
+	}
 	o.recordSchedulerDecision(ctx, state, now, decision, result, reason)
+	if reason == dispatchSkipOwnershipAssigneeRequired && o.escalateCorrectableDispatchDecision(state, now, decision.Issue, reason) {
+		return
+	}
 	if o.logger == nil || reason == dispatchSkipCurrentHeadCIWait || reason == mergeWorkerCurrentHeadCIWaitExceededReason {
 		return
 	}
@@ -65,6 +72,64 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		"unblocker_count", decision.UnblockerCount,
 	)
 	telemetry.LogLifecycle(o.logger, slog.LevelDebug, telemetry.LifecycleDispatch, "scheduler_dispatch_decision", o.issueLifecycleCorrelation(decision.Issue), attrs...)
+}
+
+func correctableDispatchEscalationKey(issueID string, reason string) string {
+	return strings.TrimSpace(issueID) + "\x00" + strings.TrimSpace(reason)
+}
+
+func correctableDispatchEscalated(state *State, issueID string, reason string) bool {
+	if state == nil {
+		return false
+	}
+	_, ok := state.DispatchEscalations[correctableDispatchEscalationKey(issueID, reason)]
+	return ok
+}
+
+func (o *Orchestrator) escalateCorrectableDispatchDecision(state *State, now time.Time, issue connector.Issue, reason string) bool {
+	if state == nil {
+		return false
+	}
+	threshold := o.cfg.Staleness.RepeatedDecisionCount
+	if threshold <= 0 {
+		threshold = defaultCorrectableDispatchDecisionThreshold
+	}
+	incidentStartedAt := time.Time{}
+	if blocked, ok := state.Blocked[issue.ID]; ok && blocked.Source == BlockedSourceOwnership {
+		incidentStartedAt = blocked.BlockedAt
+	}
+	if window := o.cfg.Staleness.RepeatedDecisionWindow; window > 0 {
+		windowStartedAt := now.Add(-window)
+		if incidentStartedAt.Before(windowStartedAt) {
+			incidentStartedAt = windowStartedAt
+		}
+	}
+	count := 0
+	for _, decision := range state.SchedulerDecisions {
+		inCurrentIncident := !decision.DecisionAt.Before(incidentStartedAt)
+		sameIssue := strings.TrimSpace(decision.IssueID) == strings.TrimSpace(issue.ID)
+		sameReason := strings.TrimSpace(decision.Reason) == strings.TrimSpace(reason)
+		if inCurrentIncident && sameIssue && sameReason {
+			count++
+		}
+	}
+	if count < threshold {
+		return false
+	}
+	key := correctableDispatchEscalationKey(issue.ID, reason)
+	if _, ok := state.DispatchEscalations[key]; ok {
+		return true
+	}
+	state.DispatchEscalations[key] = now.UTC()
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now.UTC(),
+		Event:   "scheduler_dispatch_needs_human_attention",
+		Message: strings.TrimSpace(issue.Identifier) + " needs an assignee under ownership_mode: assignee",
+	})
+	if o.logger != nil {
+		o.logger.Warn("scheduler dispatch needs human attention", "issue_id", issue.ID, "identifier", issue.Identifier, "reason", reason, "remedy", "assign the issue", "decision_count", count)
+	}
+	return true
 }
 
 func unblockerDecisionReason(count int) string {
