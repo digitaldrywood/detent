@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,6 +70,12 @@ func withRunnerFactory(
 		if cfg.Identity.Configured() {
 			workflow.Config.Identity = cfg.Identity
 			workflow.Config.Identity.Normalize()
+		}
+		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
+			token := strings.TrimSpace(githubTokenSource[0]())
+			if token != "" && (workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
+				workflow.Config.Tracker.APIKey = token
+			}
 		}
 
 		run := deps.Runner
@@ -902,6 +909,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.TrackerDrift.UntrackedOpen = append(current.TrackerDrift.UntrackedOpen, next.TrackerDrift.UntrackedOpen...)
 	current.TrackerDrift.OpenTerminal = append(current.TrackerDrift.OpenTerminal, next.TrackerDrift.OpenTerminal...)
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
+	current.CIUnavailable = append(current.CIUnavailable, next.CIUnavailable...)
 	current.BackendOutages = append(current.BackendOutages, next.BackendOutages...)
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
 	current.DispatchRecoveries = append(current.DispatchRecoveries, next.DispatchRecoveries...)
@@ -920,10 +928,271 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Tokens.Total += next.Tokens.Total
 	current.Tokens.RuntimeSeconds += next.Tokens.RuntimeSeconds
 
-	if current.RateLimits == nil && next.RateLimits != nil {
-		current.RateLimits = next.RateLimits
-	}
+	current.RateLimits = mergeFleetRateLimits(current.RateLimits, next.RateLimits)
 	return current
+}
+
+func mergeFleetRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimits) *telemetry.RateLimits {
+	if incoming == nil {
+		return current
+	}
+	if current == nil {
+		cloned := *incoming
+		cloned.GitHubREST = cloneFleetRateLimitBucket(incoming.GitHubREST)
+		cloned.GitHubRESTBudgets = mergeFleetRESTBudgets(nil, incoming.GitHubRESTBudgets)
+		cloned.RESTUsage = mergeFleetRESTUsage(nil, incoming.RESTUsage)
+		return &cloned
+	}
+
+	merged := *current
+	merged.GitHubRESTBudgets = mergeFleetRESTBudgets(current.GitHubRESTBudgets, incoming.GitHubRESTBudgets)
+	merged.GitHubREST = mergeFleetRESTBucket(current.GitHubREST, incoming.GitHubREST)
+	if bucket := fleetRESTBucketFromBudgets(merged.GitHubRESTBudgets); bucket != nil {
+		bucket.Cost = rateLimitBucketCost(current.GitHubREST) + rateLimitBucketCost(incoming.GitHubREST)
+		merged.GitHubREST = bucket
+	}
+	merged.RESTUsage = mergeFleetRESTUsage(current.RESTUsage, incoming.RESTUsage)
+	if merged.GitHubGraphQL == nil {
+		merged.GitHubGraphQL = incoming.GitHubGraphQL
+	}
+	if merged.GraphQLCost == nil {
+		merged.GraphQLCost = incoming.GraphQLCost
+	}
+	return &merged
+}
+
+func rateLimitBucketCost(bucket *telemetry.RateLimitBucket) int64 {
+	if bucket == nil {
+		return 0
+	}
+	return bucket.Cost
+}
+
+func mergeFleetRESTBucket(current *telemetry.RateLimitBucket, incoming *telemetry.RateLimitBucket) *telemetry.RateLimitBucket {
+	if current == nil {
+		return cloneFleetRateLimitBucket(incoming)
+	}
+	if incoming == nil {
+		return cloneFleetRateLimitBucket(current)
+	}
+	chosen := current
+	if rateLimitRemainingRatio(incoming) < rateLimitRemainingRatio(current) {
+		chosen = incoming
+	} else if rateLimitRemainingRatio(incoming) == rateLimitRemainingRatio(current) && rateLimitObservedAfter(incoming, current) {
+		chosen = incoming
+	}
+	merged := cloneFleetRateLimitBucket(chosen)
+	merged.Cost = current.Cost + incoming.Cost
+	return merged
+}
+
+func rateLimitRemainingRatio(bucket *telemetry.RateLimitBucket) float64 {
+	if bucket == nil || bucket.Limit <= 0 {
+		return 2
+	}
+	return float64(bucket.Remaining) / float64(bucket.Limit)
+}
+
+func rateLimitObservedAfter(left *telemetry.RateLimitBucket, right *telemetry.RateLimitBucket) bool {
+	return left != nil && left.ObservedAt != nil && (right == nil || right.ObservedAt == nil || left.ObservedAt.After(*right.ObservedAt))
+}
+
+func cloneFleetRateLimitBucket(bucket *telemetry.RateLimitBucket) *telemetry.RateLimitBucket {
+	if bucket == nil {
+		return nil
+	}
+	cloned := *bucket
+	if bucket.ResetAt != nil {
+		resetAt := *bucket.ResetAt
+		cloned.ResetAt = &resetAt
+	}
+	if bucket.ObservedAt != nil {
+		observedAt := *bucket.ObservedAt
+		cloned.ObservedAt = &observedAt
+	}
+	return &cloned
+}
+
+func mergeFleetRESTBudgets(current []telemetry.RESTBudget, incoming []telemetry.RESTBudget) []telemetry.RESTBudget {
+	byKey := make(map[string]telemetry.RESTBudget, len(current)+len(incoming))
+	for _, budget := range append(append([]telemetry.RESTBudget(nil), current...), incoming...) {
+		key := restBudgetConsumer(budget.Consumer) + "\x00" + strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.EndpointFamily) + "\x00" + strings.TrimSpace(budget.Resource)
+		existing, ok := byKey[key]
+		if !ok || restBudgetObservedAfter(budget, existing) {
+			byKey[key] = cloneFleetRESTBudget(budget)
+		}
+	}
+	if len(byKey) == 0 {
+		return nil
+	}
+	budgets := make([]telemetry.RESTBudget, 0, len(byKey))
+	for _, budget := range byKey {
+		budgets = append(budgets, budget)
+	}
+	sort.Slice(budgets, func(i, j int) bool {
+		if restBudgetConsumer(budgets[i].Consumer) != restBudgetConsumer(budgets[j].Consumer) {
+			return restBudgetConsumer(budgets[i].Consumer) < restBudgetConsumer(budgets[j].Consumer)
+		}
+		if budgets[i].CredentialIdentity != budgets[j].CredentialIdentity {
+			return budgets[i].CredentialIdentity < budgets[j].CredentialIdentity
+		}
+		if budgets[i].EndpointFamily != budgets[j].EndpointFamily {
+			return budgets[i].EndpointFamily < budgets[j].EndpointFamily
+		}
+		return budgets[i].Resource < budgets[j].Resource
+	})
+	return budgets
+}
+
+func restBudgetObservedAfter(left telemetry.RESTBudget, right telemetry.RESTBudget) bool {
+	return left.ObservedAt != nil && (right.ObservedAt == nil || left.ObservedAt.After(*right.ObservedAt))
+}
+
+func cloneFleetRESTBudget(budget telemetry.RESTBudget) telemetry.RESTBudget {
+	if budget.ResetAt != nil {
+		resetAt := *budget.ResetAt
+		budget.ResetAt = &resetAt
+	}
+	if budget.ObservedAt != nil {
+		observedAt := *budget.ObservedAt
+		budget.ObservedAt = &observedAt
+	}
+	return budget
+}
+
+func fleetRESTBucketFromBudgets(budgets []telemetry.RESTBudget) *telemetry.RateLimitBucket {
+	currentByCredentialResource := make(map[string]telemetry.RESTBudget, len(budgets))
+	for _, budget := range budgets {
+		if restBudgetConsumer(budget.Consumer) != telemetry.RESTConsumerOrchestrator {
+			continue
+		}
+		key := strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.Resource)
+		existing, ok := currentByCredentialResource[key]
+		if !ok || restBudgetObservedAfter(budget, existing) || (restBudgetObservedTogether(budget, existing) && restBudgetRemainingRatio(budget) < restBudgetRemainingRatio(existing)) {
+			currentByCredentialResource[key] = budget
+		}
+	}
+	candidates := make([]telemetry.RESTBudget, 0, len(currentByCredentialResource))
+	hasCore := false
+	for _, budget := range currentByCredentialResource {
+		if strings.EqualFold(strings.TrimSpace(budget.Resource), "core") {
+			hasCore = true
+		}
+		candidates = append(candidates, budget)
+	}
+	var selected *telemetry.RESTBudget
+	for index := range candidates {
+		candidate := &candidates[index]
+		if hasCore && !strings.EqualFold(strings.TrimSpace(candidate.Resource), "core") {
+			continue
+		}
+		if selected == nil || restBudgetRemainingRatio(*candidate) < restBudgetRemainingRatio(*selected) {
+			selected = candidate
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	return &telemetry.RateLimitBucket{
+		Remaining:  selected.Remaining,
+		Used:       selected.Used,
+		Limit:      selected.Limit,
+		ResetAt:    cloneTimePointer(selected.ResetAt),
+		ObservedAt: cloneTimePointer(selected.ObservedAt),
+	}
+}
+
+func restBudgetConsumer(consumer string) string {
+	consumer = strings.TrimSpace(consumer)
+	if consumer == "" {
+		return telemetry.RESTConsumerOrchestrator
+	}
+	return consumer
+}
+
+func restBudgetObservedTogether(left telemetry.RESTBudget, right telemetry.RESTBudget) bool {
+	if left.ObservedAt == nil || right.ObservedAt == nil {
+		return left.ObservedAt == nil && right.ObservedAt == nil
+	}
+	return left.ObservedAt.Equal(*right.ObservedAt)
+}
+
+func restBudgetRemainingRatio(budget telemetry.RESTBudget) float64 {
+	if budget.Limit <= 0 {
+		return 2
+	}
+	return float64(budget.Remaining) / float64(budget.Limit)
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTUsage) *telemetry.RESTUsage {
+	if current == nil && incoming == nil {
+		return nil
+	}
+	merged := &telemetry.RESTUsage{}
+	contributors := make(map[string]telemetry.RESTUsageContributor)
+	for _, usage := range []*telemetry.RESTUsage{current, incoming} {
+		if usage == nil {
+			continue
+		}
+		merged.TotalRequests += usage.TotalRequests
+		merged.ConditionalRequests += usage.ConditionalRequests
+		merged.NotModifiedRequests += usage.NotModifiedRequests
+		merged.BillableRequests += usage.BillableRequests
+		merged.RateLimited = merged.RateLimited || usage.RateLimited
+		if usage.BackoffUntil != nil && (merged.BackoffUntil == nil || usage.BackoffUntil.After(*merged.BackoffUntil)) {
+			backoffUntil := *usage.BackoffUntil
+			merged.BackoffUntil = &backoffUntil
+		}
+		for _, contributor := range usage.Contributors {
+			key := restBudgetConsumer(contributor.Consumer) + "\x00" + contributor.CredentialIdentity + "\x00" + contributor.EndpointFamily + "\x00" + contributor.Resource
+			existing := contributors[key]
+			existing.Consumer = restBudgetConsumer(contributor.Consumer)
+			existing.CredentialIdentity = contributor.CredentialIdentity
+			existing.EndpointFamily = contributor.EndpointFamily
+			existing.Resource = contributor.Resource
+			existing.Count += contributor.Count
+			existing.Conditional += contributor.Conditional
+			existing.NotModified += contributor.NotModified
+			existing.Billable += contributor.Billable
+			existing.RateLimited = existing.RateLimited || contributor.RateLimited
+			if contributor.LastStatus != 0 {
+				existing.LastStatus = contributor.LastStatus
+			}
+			if contributor.Limit > 0 || contributor.Remaining > 0 {
+				existing.Limit = contributor.Limit
+				existing.Remaining = contributor.Remaining
+			}
+			if contributor.ResetAt != nil {
+				resetAt := *contributor.ResetAt
+				existing.ResetAt = &resetAt
+			}
+			if contributor.RetryAfterMS > existing.RetryAfterMS {
+				existing.RetryAfterMS = contributor.RetryAfterMS
+			}
+			contributors[key] = existing
+		}
+	}
+	for _, contributor := range contributors {
+		merged.Contributors = append(merged.Contributors, contributor)
+	}
+	sort.Slice(merged.Contributors, func(i, j int) bool {
+		if restBudgetConsumer(merged.Contributors[i].Consumer) != restBudgetConsumer(merged.Contributors[j].Consumer) {
+			return restBudgetConsumer(merged.Contributors[i].Consumer) < restBudgetConsumer(merged.Contributors[j].Consumer)
+		}
+		if merged.Contributors[i].CredentialIdentity != merged.Contributors[j].CredentialIdentity {
+			return merged.Contributors[i].CredentialIdentity < merged.Contributors[j].CredentialIdentity
+		}
+		return merged.Contributors[i].EndpointFamily < merged.Contributors[j].EndpointFamily
+	})
+	return merged
 }
 
 func issueKey(issue telemetry.Issue) string {
@@ -1059,6 +1328,11 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	for i := range snapshot.BackendOutages {
 		if strings.TrimSpace(snapshot.BackendOutages[i].ProjectID) == "" {
 			snapshot.BackendOutages[i].ProjectID = projectID
+		}
+	}
+	for i := range snapshot.CIUnavailable {
+		if strings.TrimSpace(snapshot.CIUnavailable[i].ProjectID) == "" {
+			snapshot.CIUnavailable[i].ProjectID = projectID
 		}
 	}
 	for i := range snapshot.FailureBreakers {

@@ -39,6 +39,7 @@ type Snapshot struct {
 	Completed               []Completed         `json:"completed"`
 	Budget                  Budget              `json:"budget"`
 	RateLimits              *RateLimits         `json:"rate_limits"`
+	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
@@ -52,6 +53,16 @@ type Snapshot struct {
 	CycleTime               CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics         WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
+}
+
+type CICondition struct {
+	ProjectID           string    `json:"project_id,omitempty"`
+	UnstartedCheckCount int       `json:"unstarted_check_count"`
+	PullRequestCount    int       `json:"pull_request_count"`
+	OldestQueueSeconds  int64     `json:"oldest_queue_seconds"`
+	DetectedAt          time.Time `json:"detected_at"`
+	LastObservedAt      time.Time `json:"last_observed_at"`
+	ParkedAttemptCount  int       `json:"parked_attempt_count,omitempty"`
 }
 
 type AdmissionProposal struct {
@@ -512,6 +523,8 @@ type PullRequest struct {
 	QuietWaitSeconds           int64                       `json:"quiet_wait_seconds,omitempty"`
 	SlowChecks                 []PullRequestCheck          `json:"slow_checks,omitempty"`
 	RunningChecks              []string                    `json:"running_checks,omitempty"`
+	UnstartedCheckCount        int                         `json:"unstarted_check_count,omitempty"`
+	UnstartedChecks            []PullRequestCheck          `json:"unstarted_checks,omitempty"`
 	RequiredCheckFailures      []PullRequestCheck          `json:"required_check_failures,omitempty"`
 	CodexReviewState           string                      `json:"codex_review_state,omitempty"`
 	MergeQueueEntry            *PullRequestMergeQueueEntry `json:"merge_queue_entry,omitempty"`
@@ -655,14 +668,25 @@ type SchedulerDecision struct {
 
 type Queued struct {
 	Issue
-	Attempt        int        `json:"attempt"`
-	DueAt          *time.Time `json:"due_at,omitempty"`
-	DueInMillis    int64      `json:"due_in_ms,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	WorkerHost     string     `json:"worker_host,omitempty"`
-	WorkspacePath  string     `json:"workspace_path,omitempty"`
-	ProjectedSpend float64    `json:"projected_spend_usd,omitempty"`
+	Attempt               int        `json:"attempt"`
+	DueAt                 *time.Time `json:"due_at,omitempty"`
+	DueInMillis           int64      `json:"due_in_ms,omitempty"`
+	Error                 string     `json:"error,omitempty"`
+	WorkerHost            string     `json:"worker_host,omitempty"`
+	WorkspacePath         string     `json:"workspace_path,omitempty"`
+	ProjectedSpend        float64    `json:"projected_spend_usd,omitempty"`
+	QueueState            string     `json:"queue_state,omitempty"`
+	WaitStartedAt         *time.Time `json:"wait_started_at,omitempty"`
+	PollCount             int        `json:"poll_count,omitempty"`
+	PendingChecks         []string   `json:"pending_checks,omitempty"`
+	WorkspaceCreateCount  int        `json:"workspace_create_count,omitempty"`
+	WorkspaceDestroyCount int        `json:"workspace_destroy_count,omitempty"`
 }
+
+const (
+	QueueStateRetrying    = "retrying"
+	QueueStateWaitingOnCI = "waiting_on_ci"
+)
 
 type BlockedSource string
 
@@ -719,7 +743,16 @@ type Budget struct {
 	PeriodEnd         time.Time          `json:"period_end,omitzero"`
 	SpendPoints       []BudgetSpendPoint `json:"spend_points,omitempty"`
 	Days              []BudgetDay        `json:"days,omitempty"`
+	SpendRegression   *SpendRegression   `json:"spend_regression,omitempty"`
 	Refusals          []BudgetRefusal    `json:"refusals,omitempty"`
+}
+
+type SpendRegression struct {
+	Date              string  `json:"date"`
+	PreviousSpendUSD  float64 `json:"previous_spend_usd"`
+	ProjectedSpendUSD float64 `json:"projected_spend_usd"`
+	DropPercent       float64 `json:"drop_percent"`
+	ThresholdPercent  float64 `json:"threshold_percent"`
 }
 
 type BudgetOverride struct {
@@ -755,16 +788,17 @@ type BudgetRefusal struct {
 }
 
 type RateLimits struct {
-	LimitID       string           `json:"limit_id,omitempty"`
-	LimitName     string           `json:"limit_name,omitempty"`
-	ReachedType   string           `json:"reached_type,omitempty"`
-	Primary       *RateLimitBucket `json:"primary,omitempty"`
-	Secondary     *RateLimitBucket `json:"secondary,omitempty"`
-	Credits       *RateLimitBucket `json:"credits,omitempty"`
-	GitHubGraphQL *RateLimitBucket `json:"github_graphql,omitempty"`
-	GitHubREST    *RateLimitBucket `json:"github_rest,omitempty"`
-	GraphQLCost   *GraphQLCost     `json:"graphql_cost,omitempty"`
-	RESTUsage     *RESTUsage       `json:"rest_usage,omitempty"`
+	LimitID           string           `json:"limit_id,omitempty"`
+	LimitName         string           `json:"limit_name,omitempty"`
+	ReachedType       string           `json:"reached_type,omitempty"`
+	Primary           *RateLimitBucket `json:"primary,omitempty"`
+	Secondary         *RateLimitBucket `json:"secondary,omitempty"`
+	Credits           *RateLimitBucket `json:"credits,omitempty"`
+	GitHubGraphQL     *RateLimitBucket `json:"github_graphql,omitempty"`
+	GitHubREST        *RateLimitBucket `json:"github_rest,omitempty"`
+	GitHubRESTBudgets []RESTBudget     `json:"github_rest_budgets,omitempty"`
+	GraphQLCost       *GraphQLCost     `json:"graphql_cost,omitempty"`
+	RESTUsage         *RESTUsage       `json:"rest_usage,omitempty"`
 }
 
 type BackendOutage struct {
@@ -828,29 +862,58 @@ type RESTUsage struct {
 	Contributors        []RESTUsageContributor `json:"contributors,omitempty"`
 }
 
+const (
+	RESTConsumerOrchestrator = "orchestrator"
+	RESTConsumerWorker       = "worker"
+)
+
 type RESTUsageContributor struct {
-	EndpointFamily string     `json:"endpoint_family"`
-	Count          int64      `json:"count"`
-	Conditional    int64      `json:"conditional,omitempty"`
-	NotModified    int64      `json:"not_modified,omitempty"`
-	Billable       int64      `json:"billable,omitempty"`
-	Remaining      int64      `json:"remaining,omitempty"`
-	Limit          int64      `json:"limit,omitempty"`
-	Resource       string     `json:"resource,omitempty"`
-	ResetAt        *time.Time `json:"reset_at,omitempty"`
-	RetryAfterMS   int64      `json:"retry_after_ms,omitempty"`
-	RateLimited    bool       `json:"rate_limited,omitempty"`
-	LastStatus     int        `json:"last_status,omitempty"`
+	Consumer           string     `json:"consumer,omitempty"`
+	CredentialIdentity string     `json:"credential_identity,omitempty"`
+	EndpointFamily     string     `json:"endpoint_family"`
+	Count              int64      `json:"count"`
+	Conditional        int64      `json:"conditional,omitempty"`
+	NotModified        int64      `json:"not_modified,omitempty"`
+	Billable           int64      `json:"billable,omitempty"`
+	Remaining          int64      `json:"remaining,omitempty"`
+	Limit              int64      `json:"limit,omitempty"`
+	Resource           string     `json:"resource,omitempty"`
+	ResetAt            *time.Time `json:"reset_at,omitempty"`
+	RetryAfterMS       int64      `json:"retry_after_ms,omitempty"`
+	RateLimited        bool       `json:"rate_limited,omitempty"`
+	LastStatus         int        `json:"last_status,omitempty"`
+}
+
+type RESTBudget struct {
+	Consumer            string     `json:"consumer,omitempty"`
+	CredentialIdentity  string     `json:"credential_identity"`
+	EndpointFamily      string     `json:"endpoint_family"`
+	Resource            string     `json:"resource,omitempty"`
+	Remaining           int64      `json:"remaining,omitempty"`
+	Used                int64      `json:"used,omitempty"`
+	Limit               int64      `json:"limit,omitempty"`
+	MinRemainingReserve int64      `json:"min_remaining_reserve,omitempty"`
+	ResetAt             *time.Time `json:"reset_at,omitempty"`
+	ObservedAt          *time.Time `json:"observed_at,omitempty"`
 }
 
 type Tokens struct {
-	Input              int64   `json:"input_tokens"`
-	CachedInput        int64   `json:"cached_input_tokens,omitempty"`
-	Output             int64   `json:"output_tokens"`
-	ReasoningOutput    int64   `json:"reasoning_output_tokens,omitempty"`
-	Total              int64   `json:"total_tokens"`
-	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
-	RuntimeSeconds     float64 `json:"seconds_running,omitempty"`
+	Input              int64           `json:"input_tokens"`
+	CachedInput        int64           `json:"cached_input_tokens,omitempty"`
+	Output             int64           `json:"output_tokens"`
+	ReasoningOutput    int64           `json:"reasoning_output_tokens,omitempty"`
+	Total              int64           `json:"total_tokens"`
+	Last               *TokenBreakdown `json:"last,omitempty"`
+	ModelContextWindow *int64          `json:"model_context_window,omitempty"`
+	RuntimeSeconds     float64         `json:"seconds_running,omitempty"`
+}
+
+type TokenBreakdown struct {
+	Input           int64 `json:"input_tokens"`
+	CachedInput     int64 `json:"cached_input_tokens,omitempty"`
+	Output          int64 `json:"output_tokens"`
+	ReasoningOutput int64 `json:"reasoning_output_tokens,omitempty"`
+	Total           int64 `json:"total_tokens"`
 }
 
 type ContextPressureState string
@@ -876,6 +939,7 @@ func (t Tokens) MarshalJSON() ([]byte, error) {
 		Output             int64            `json:"output_tokens"`
 		ReasoningOutput    int64            `json:"reasoning_output_tokens,omitempty"`
 		Total              int64            `json:"total_tokens"`
+		Last               *TokenBreakdown  `json:"last,omitempty"`
 		ModelContextWindow *int64           `json:"model_context_window,omitempty"`
 		ContextPressure    *ContextPressure `json:"context_pressure,omitempty"`
 		CacheReadFraction  float64          `json:"cache_read_fraction,omitempty"`
@@ -894,6 +958,7 @@ func (t Tokens) MarshalJSON() ([]byte, error) {
 		Output:             t.Output,
 		ReasoningOutput:    t.ReasoningOutput,
 		Total:              t.Total,
+		Last:               t.Last,
 		ModelContextWindow: t.ModelContextWindow,
 		ContextPressure:    pressure,
 		CacheReadFraction:  cacheReadFraction,
@@ -907,6 +972,9 @@ func (t Tokens) ContextPressure() (ContextPressure, bool) {
 	}
 	limit := *t.ModelContextWindow
 	total := t.Total
+	if t.Last != nil {
+		total = t.Last.Total
+	}
 	if total < 0 {
 		total = 0
 	}

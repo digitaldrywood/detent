@@ -1,0 +1,88 @@
+schema: 1
+
+# Repository labels keep this project independent of a shared ProjectV2 board.
+# Auto-provisioning creates any missing detent:* status labels at startup.
+tracker:
+  kind: github
+  github_status_source: label
+  repository: example-org/orders-api
+  status_label_prefix: "detent:"
+  auto_provision: true
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Backlog
+    - Human Review
+    - Blocked
+  terminal_states:
+    - Done
+    - Cancelled
+  state_map:
+    Cancelled: Done
+  priority_map:
+    Urgent: 1
+    High: 2
+    Medium: 3
+    Low: 4
+    No priority: null
+
+# Conditional polling preserves REST budget when GitHub reports no changes.
+polling:
+  interval_ms: 60000
+  conditional: true
+
+# Source and worktree roots are separate. Every dispatched issue receives an
+# isolated checkout beneath this project-specific worktree directory.
+workspace:
+  root: /srv/detent/worktrees/orders-api
+  source_root: /srv/detent/repos/orders-api
+  cache_strategy: isolated
+  auto_branch: true
+
+deliverable:
+  merge_method: squash
+
+agent:
+  # This cap matches the larger share assigned in global.yaml. Merges stay
+  # serialized even when implementation work runs concurrently.
+  max_concurrent_agents: 3
+  max_concurrent_agents_by_state:
+    Merging: 1
+  dispatch_priority_by_state:
+    - Merging
+    - Rework
+    - In Progress
+    - Todo
+  auto_promote:
+    enabled: true
+    quiet_seconds: 600
+    optout_label: requires-human-review
+    source_state: Human Review
+    pass_state: Merging
+    rework_state: Rework
+
+codex:
+  command: codex app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+
+# The same local command gates agent completion and pull-request promotion.
+gate:
+  kind: command
+  run: make check
+  require_automated_review: true
+  ci_failure_action: rework
+
+# Loopback binding keeps the operator dashboard private unless it is
+# deliberately exposed through a trusted tunnel or reverse proxy.
+server:
+  host: 127.0.0.1
+  port: 4000
+  kanban:
+    mode: integration

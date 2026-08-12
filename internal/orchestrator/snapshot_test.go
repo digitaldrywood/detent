@@ -890,7 +890,10 @@ func TestStateSnapshotPopulated(t *testing.T) {
 				SlowChecks: []connector.PullRequestCheck{
 					{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 				},
-				RunningChecks:    []string{"Test Coverage"},
+				RunningChecks: []string{"Test Coverage"},
+				UnstartedChecks: []connector.PullRequestCheck{
+					{Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+				},
 				CodexReviewState: "P2",
 			},
 		},
@@ -992,6 +995,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if len(pipeline.PullRequest.RunningChecks) != 1 || pipeline.PullRequest.RunningChecks[0] != "Test Coverage" {
 		t.Fatalf("Pipeline[0].PullRequest.RunningChecks = %#v", pipeline.PullRequest.RunningChecks)
+	}
+	if len(pipeline.PullRequest.UnstartedChecks) != 1 || pipeline.PullRequest.UnstartedChecks[0].Name != "Portability Verify" || pipeline.PullRequest.UnstartedChecks[0].QueueSeconds != 47*60 {
+		t.Fatalf("Pipeline[0].PullRequest.UnstartedChecks = %#v", pipeline.PullRequest.UnstartedChecks)
 	}
 
 	if len(snapshot.Running) != 2 {
@@ -1208,6 +1214,9 @@ func TestStateSnapshotIncludesMergeTimingTelemetry(t *testing.T) {
 	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].MergeTiming == nil {
 		t.Fatalf("Pipeline = %#v, want queued merge timing", snapshot.Pipeline)
 	}
+	if snapshot.Pipeline[0].CurrentLaneAgeSeconds != 540 {
+		t.Fatalf("Pipeline current lane age = %d, want 540 seconds", snapshot.Pipeline[0].CurrentLaneAgeSeconds)
+	}
 	queued := snapshot.Pipeline[0].MergeTiming
 	if queued.QueueWaitSeconds != 540 || queued.TotalMergingSeconds != 540 || queued.HeadSHA != "queued-head" || queued.BaseSHA != "queued-base" {
 		t.Fatalf("queued MergeTiming = %#v, want queue duration and PR SHAs", queued)
@@ -1216,14 +1225,14 @@ func TestStateSnapshotIncludesMergeTimingTelemetry(t *testing.T) {
 		t.Fatalf("Running = %#v, want active merge timing", snapshot.Running)
 	}
 	active := snapshot.Running[0].MergeTiming
-	if active.QueueWaitSeconds != 120 || active.ActiveMergeDurationSeconds != 360 || active.TotalMergingSeconds != 540 {
+	if active.QueueWaitSeconds != 120 || active.ActiveMergeDurationSeconds != 420 || active.TotalMergingSeconds != 540 {
 		t.Fatalf("active MergeTiming = %#v, want live active durations", active)
 	}
 	if len(snapshot.Completed) != 1 || snapshot.Completed[0].MergeTiming == nil {
 		t.Fatalf("Completed = %#v, want completed merge timing", snapshot.Completed)
 	}
 	done := snapshot.Completed[0].MergeTiming
-	if done.QueueWaitSeconds != 120 || done.ActiveMergeDurationSeconds != 240 || done.TotalMergingSeconds != 420 || done.MergedAt == nil {
+	if done.QueueWaitSeconds != 120 || done.ActiveMergeDurationSeconds != 300 || done.TotalMergingSeconds != 420 || done.MergedAt == nil {
 		t.Fatalf("completed MergeTiming = %#v, want terminal durations", done)
 	}
 }

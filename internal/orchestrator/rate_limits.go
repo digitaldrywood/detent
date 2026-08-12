@@ -26,6 +26,7 @@ type graphQLRateLimitCycle struct {
 
 type restRateLimitCycle struct {
 	Bucket     *telemetry.RateLimitBucket
+	Budgets    []telemetry.RESTBudget
 	Usage      *telemetry.RESTUsage
 	HasSummary bool
 }
@@ -83,17 +84,34 @@ func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Tim
 	}
 
 	bucket := gitHubRESTBucket(usage, now)
+	budgets := restBudgetSummaries(usage.Budgets)
 	summary := restUsageSummary(usage)
 	if state.RateLimits == nil {
 		state.RateLimits = &telemetry.RateLimits{}
 	}
 	state.RateLimits.GitHubREST = bucket
+	state.RateLimits.GitHubRESTBudgets = replaceRESTConsumerBudgets(state.RateLimits.GitHubRESTBudgets, budgets, telemetry.RESTConsumerOrchestrator)
 	state.RateLimits.RESTUsage = summary
 	return restRateLimitCycle{
 		Bucket:     bucket,
+		Budgets:    budgets,
 		Usage:      summary,
 		HasSummary: true,
 	}
+}
+
+func replaceRESTConsumerBudgets(current []telemetry.RESTBudget, replacement []telemetry.RESTBudget, consumer string) []telemetry.RESTBudget {
+	out := make([]telemetry.RESTBudget, 0, len(current)+len(replacement))
+	for _, budget := range current {
+		budgetConsumer := strings.TrimSpace(budget.Consumer)
+		if budgetConsumer == "" {
+			budgetConsumer = telemetry.RESTConsumerOrchestrator
+		}
+		if budgetConsumer != consumer {
+			out = append(out, budget)
+		}
+	}
+	return append(out, replacement...)
 }
 
 func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
@@ -115,16 +133,18 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 	}
 	for _, request := range usage.Requests {
 		contributor := telemetry.RESTUsageContributor{
-			EndpointFamily: request.EndpointFamily,
-			Count:          request.Count,
-			Conditional:    request.Conditional,
-			NotModified:    request.NotModified,
-			Billable:       request.Billable,
-			Remaining:      request.Remaining,
-			Limit:          request.Limit,
-			Resource:       request.Resource,
-			RateLimited:    request.RateLimited,
-			LastStatus:     request.LastStatus,
+			Consumer:           telemetry.RESTConsumerOrchestrator,
+			CredentialIdentity: request.CredentialIdentity,
+			EndpointFamily:     request.EndpointFamily,
+			Count:              request.Count,
+			Conditional:        request.Conditional,
+			NotModified:        request.NotModified,
+			Billable:           request.Billable,
+			Remaining:          request.Remaining,
+			Limit:              request.Limit,
+			Resource:           request.Resource,
+			RateLimited:        request.RateLimited,
+			LastStatus:         request.LastStatus,
 		}
 		if !request.ResetAt.IsZero() {
 			resetAt := request.ResetAt
@@ -134,6 +154,34 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 			contributor.RetryAfterMS = request.RetryAfter.Milliseconds()
 		}
 		out.Contributors = append(out.Contributors, contributor)
+	}
+	return out
+}
+
+func restBudgetSummaries(budgets []connector.RESTRateLimitBudget) []telemetry.RESTBudget {
+	if len(budgets) == 0 {
+		return nil
+	}
+	out := make([]telemetry.RESTBudget, 0, len(budgets))
+	for _, budget := range budgets {
+		summary := telemetry.RESTBudget{
+			Consumer:           telemetry.RESTConsumerOrchestrator,
+			CredentialIdentity: budget.CredentialIdentity,
+			EndpointFamily:     budget.EndpointFamily,
+			Resource:           budget.RateLimit.Resource,
+			Remaining:          budget.RateLimit.Remaining,
+			Used:               budget.RateLimit.Used,
+			Limit:              budget.RateLimit.Limit,
+		}
+		if !budget.RateLimit.ResetAt.IsZero() {
+			resetAt := budget.RateLimit.ResetAt
+			summary.ResetAt = &resetAt
+		}
+		if !budget.RateLimit.UpdatedAt.IsZero() {
+			observedAt := budget.RateLimit.UpdatedAt
+			summary.ObservedAt = &observedAt
+		}
+		out = append(out, summary)
 	}
 	return out
 }
@@ -201,6 +249,7 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 
 	o.logger.Info(
 		"github rest budget summary",
+		"consumer", telemetry.RESTConsumerOrchestrator,
 		"request_count", totalRequests,
 		"billable_request_count", billableRequests,
 		"not_modified_request_count", notModifiedRequests,
@@ -208,6 +257,7 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 		"remaining", cycle.Bucket.Remaining,
 		"limit", cycle.Bucket.Limit,
 		"reset_at", resetAt,
+		"credential_budgets", cycle.Budgets,
 		"contributors", contributors,
 	)
 }

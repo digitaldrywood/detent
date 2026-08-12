@@ -20,7 +20,6 @@ import (
 const (
 	sseEventBuild        = "build"
 	sseEventSnapshot     = "snapshot"
-	sseEventSidebar      = "sidebar"
 	sseEventGitHubAPI    = "github-api-health"
 	sseEventTick         = "tick"
 	sseEventLiveStatus   = "live-status"
@@ -156,22 +155,26 @@ func (s *Server) events(c echo.Context) error {
 			if err != nil {
 				return err
 			}
-			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data)), s.sseFragmentInterval); err != nil {
+			shellData := templates.DashboardShellDataFromDashboard(data)
+			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventLiveStatus, templates.LiveStatus(shellData), s.sseFragmentInterval); err != nil {
 				return err
 			} else if ok {
 				sent = true
 			}
-			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventLiveStatus, templates.LiveStatus(templates.DashboardShellDataFromDashboard(data)), s.sseFragmentInterval); err != nil {
+			healthFingerprint, err := templates.GitHubAPIHealthSidebarFingerprint(shellData)
+			if err != nil {
+				return err
+			}
+			if ok, err := stream.sendFingerprintedComponent(ctx, res.Writer, sseEventGitHubAPI, healthFingerprint, templates.GitHubAPIHealthSidebarItem(shellData), s.sseHealthInterval); err != nil {
 				return err
 			} else if ok {
 				sent = true
 			}
-			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data)), s.sseHealthInterval); err != nil {
+			sidebarFingerprint, err := templates.AppSidebarFingerprint(shellData)
+			if err != nil {
 				return err
-			} else if ok {
-				sent = true
 			}
-			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventSidebarV2, templates.AppSidebarContent(templates.DashboardShellDataFromDashboard(data)), s.sseFragmentInterval); err != nil {
+			if ok, err := stream.sendFingerprintedComponent(ctx, res.Writer, sseEventSidebarV2, sidebarFingerprint, templates.AppSidebarContent(shellData), s.sseFragmentInterval); err != nil {
 				return err
 			} else if ok {
 				sent = true
@@ -250,6 +253,7 @@ type sseStream struct {
 	startedAt         time.Time
 	nextMetricsAt     time.Time
 	last              map[string]sseSentEvent
+	lastFingerprint   map[string]templates.SSEFingerprint
 	pending           map[string]ssePendingEvent
 	metrics           map[string]*sseEventMetrics
 	pendingFlushOrder []string
@@ -274,13 +278,14 @@ type ssePendingEvent struct {
 }
 
 type sseEventMetrics struct {
-	rendered         int64
-	renderedBytes    int64
-	renderDuration   time.Duration
-	sent             int64
-	sentBytes        int64
-	skippedUnchanged int64
-	coalesced        int64
+	rendered           int64
+	renderedBytes      int64
+	renderDuration     time.Duration
+	sent               int64
+	sentBytes          int64
+	skippedUnchanged   int64
+	skippedFingerprint int64
+	coalesced          int64
 }
 
 func newSSEStream(logger *slog.Logger, metricsEvery time.Duration) *sseStream {
@@ -295,9 +300,10 @@ func newSSEStream(logger *slog.Logger, metricsEvery time.Duration) *sseStream {
 		startedAt:         now,
 		nextMetricsAt:     now.Add(metricsEvery),
 		last:              make(map[string]sseSentEvent),
+		lastFingerprint:   make(map[string]templates.SSEFingerprint),
 		pending:           make(map[string]ssePendingEvent),
 		metrics:           make(map[string]*sseEventMetrics),
-		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventLiveStatus, sseEventGitHubAPI, sseEventSidebarV2},
+		pendingFlushOrder: []string{sseEventSnapshot, sseEventLiveStatus, sseEventGitHubAPI, sseEventSidebarV2},
 	}
 }
 
@@ -307,6 +313,25 @@ func (s *sseStream) sendComponent(ctx context.Context, w io.Writer, name string,
 		return false, err
 	}
 	return s.sendRendered(ctx, w, event, minInterval)
+}
+
+func (s *sseStream) sendFingerprintedComponent(ctx context.Context, w io.Writer, name string, fingerprint templates.SSEFingerprint, component templ.Component, minInterval time.Duration) (bool, error) {
+	if last, ok := s.lastFingerprint[name]; ok && fingerprint == last {
+		now := s.currentTime()
+		s.metricsFor(name).skippedFingerprint++
+		s.logMetricsIfDue(now)
+		return false, nil
+	}
+	event, err := renderSSEComponent(ctx, name, component)
+	if err != nil {
+		return false, err
+	}
+	sent, err := s.sendRendered(ctx, w, event, minInterval)
+	if err != nil {
+		return false, err
+	}
+	s.lastFingerprint[name] = fingerprint
+	return sent, nil
 }
 
 func (s *sseStream) sendRendered(ctx context.Context, w io.Writer, event sseRenderedEvent, minInterval time.Duration) (bool, error) {
@@ -415,11 +440,24 @@ func (s *sseStream) logMetricsIfDue(now time.Time) {
 			"sent_payload_bytes", metrics.sentBytes,
 			"render_duration", metrics.renderDuration,
 			"skipped_unchanged", metrics.skippedUnchanged,
+			"skipped_fingerprint", metrics.skippedFingerprint,
+			"discard_ratio", metrics.discardRatio(),
 			"coalesced", metrics.coalesced,
 			"pending", s.pendingEventQueued(name),
 		)
 	}
 	s.nextMetricsAt = now.Add(s.metricsEvery)
+}
+
+func (m *sseEventMetrics) discardRatio() float64 {
+	if m == nil || m.rendered == 0 {
+		return 0
+	}
+	discarded := m.rendered - m.sent
+	if discarded <= 0 {
+		return 0
+	}
+	return float64(discarded) / float64(m.rendered)
 }
 
 func (s *sseStream) pendingEventQueued(name string) bool {

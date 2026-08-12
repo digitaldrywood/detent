@@ -15,8 +15,11 @@ import (
 )
 
 const (
-	budgetHistoryWindowDays      = 7
-	budgetSpendQueryFailedReason = "budget spend query failed"
+	budgetHistoryWindowDays                = 7
+	budgetSpendQueryFailedReason           = "budget spend query failed"
+	dailySpendRegressionThresholdPercent   = 90.0
+	dailySpendRegressionMinimumBaselineUSD = 1.0
+	dailySpendRegressionMinimumElapsed     = 6 * time.Hour
 )
 
 type configuredBudget struct {
@@ -32,6 +35,15 @@ type snapshotEnrichmentCache struct {
 	raw      telemetry.Snapshot
 	enriched telemetry.Snapshot
 	loading  bool
+}
+
+type spendRegressionMonitor struct {
+	mu         sync.Mutex
+	warnedDate string
+}
+
+func newSpendRegressionMonitor() *spendRegressionMonitor {
+	return &spendRegressionMonitor{}
 }
 
 func newSnapshotEnrichmentCache() *snapshotEnrichmentCache {
@@ -158,9 +170,11 @@ func admissionProposalTelemetry(proposal admissionmodel.Proposal) telemetry.Admi
 
 func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.Budget, bool) {
 	projects := s.configuredBudgets()
-	if len(projects) == 0 {
+	projectIDs := s.configuredProjectIDs()
+	if len(projectIDs) == 0 {
 		return telemetry.Budget{}, false
 	}
+	enabled := len(projects) > 0
 	if now.IsZero() {
 		now = time.Now().UTC().Truncate(time.Second)
 	}
@@ -169,14 +183,14 @@ func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.B
 	queryFrom := periodStart.AddDate(0, 0, -(budgetHistoryWindowDays - 1))
 
 	events, err := s.store.BudgetCostEvents(ctx, store.BudgetCostQuery{
-		ProjectIDs: budgetProjectIDs(projects),
+		ProjectIDs: projectIDs,
 		From:       queryFrom,
 		To:         periodEnd,
 	})
 	if err != nil {
 		s.logger.Warn("budget spend query failed", slog.Any("error", err))
 		return telemetry.Budget{
-			Enabled:        true,
+			Enabled:        enabled,
 			DegradedReason: budgetSpendQueryFailedReason,
 			PerDayMaxUSD:   positiveFloatPtr(totalDailyBudgetCap(projects)),
 			PerIssueMaxUSD: issueBudgetCap(projects),
@@ -187,7 +201,7 @@ func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.B
 
 	points, currentSpend := currentBudgetSpendPoints(events, periodStart, periodEnd)
 	budget := telemetry.Budget{
-		Enabled:           true,
+		Enabled:           enabled,
 		PerDayMaxUSD:      positiveFloatPtr(totalDailyBudgetCap(projects)),
 		PerIssueMaxUSD:    issueBudgetCap(projects),
 		CurrentSpendUSD:   currentSpend,
@@ -197,7 +211,60 @@ func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.B
 		SpendPoints:       points,
 		Days:              budgetSpendDays(events),
 	}
+	budget.SpendRegression = budgetSpendRegression(budget, now)
+	s.logSpendRegression(budget.SpendRegression)
 	return budget, true
+}
+
+func budgetSpendRegression(budget telemetry.Budget, now time.Time) *telemetry.SpendRegression {
+	periodStart := budget.PeriodStart.UTC()
+	if periodStart.IsZero() || now.UTC().Sub(periodStart) < dailySpendRegressionMinimumElapsed {
+		return nil
+	}
+	previousDate := periodStart.AddDate(0, 0, -1).Format("2006-01-02")
+	previousSpend := 0.0
+	for _, day := range budget.Days {
+		if day.Date == previousDate {
+			previousSpend = day.SpendUSD
+			break
+		}
+	}
+	if previousSpend < dailySpendRegressionMinimumBaselineUSD {
+		return nil
+	}
+	projectedSpend := max(0, budget.ProjectedSpendUSD)
+	dropPercent := (previousSpend - projectedSpend) / previousSpend * 100
+	if dropPercent < dailySpendRegressionThresholdPercent {
+		return nil
+	}
+	return &telemetry.SpendRegression{
+		Date:              periodStart.Format("2006-01-02"),
+		PreviousSpendUSD:  previousSpend,
+		ProjectedSpendUSD: projectedSpend,
+		DropPercent:       dropPercent,
+		ThresholdPercent:  dailySpendRegressionThresholdPercent,
+	}
+}
+
+func (s *Server) logSpendRegression(regression *telemetry.SpendRegression) {
+	if s == nil || s.logger == nil || s.spendRegressions == nil || regression == nil {
+		return
+	}
+	s.spendRegressions.mu.Lock()
+	if s.spendRegressions.warnedDate == regression.Date {
+		s.spendRegressions.mu.Unlock()
+		return
+	}
+	s.spendRegressions.warnedDate = regression.Date
+	s.spendRegressions.mu.Unlock()
+	s.logger.Warn("fleet daily spend regression",
+		slog.String("event", "fleet_daily_spend_regression"),
+		slog.String("date", regression.Date),
+		slog.Float64("previous_spend_usd", regression.PreviousSpendUSD),
+		slog.Float64("projected_spend_usd", regression.ProjectedSpendUSD),
+		slog.Float64("drop_percent", regression.DropPercent),
+		slog.Float64("threshold_percent", regression.ThresholdPercent),
+	)
 }
 
 func degradedSnapshotBudget(snapshotBudget telemetry.Budget, degradedBudget telemetry.Budget) telemetry.Budget {
@@ -249,18 +316,27 @@ func (s *Server) configuredBudgets() []configuredBudget {
 	return budgets
 }
 
+func (s *Server) configuredProjectIDs() []string {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	projects := s.registry.List()
+	ids := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if project == nil {
+			continue
+		}
+		if projectID := strings.TrimSpace(string(project.ID())); projectID != "" {
+			ids = append(ids, projectID)
+		}
+	}
+	return ids
+}
+
 func dailyBudgetPeriod(now time.Time) (time.Time, time.Time) {
 	year, month, day := now.UTC().Date()
 	start := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 	return start, start.AddDate(0, 0, 1)
-}
-
-func budgetProjectIDs(projects []configuredBudget) []string {
-	ids := make([]string, 0, len(projects))
-	for _, project := range projects {
-		ids = append(ids, project.ProjectID)
-	}
-	return ids
 }
 
 func totalDailyBudgetCap(projects []configuredBudget) float64 {

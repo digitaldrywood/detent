@@ -420,6 +420,7 @@ func TestOnboardingExplainAnswersCommandSummarizesFullAutopilot(t *testing.T) {
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
 		"DELIVERY_PROFILE=full_autopilot",
+		"INTAKE_PROFILE=assisted_intake",
 		"",
 	}, "\n"))
 	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
@@ -449,11 +450,16 @@ func TestOnboardingExplainAnswersCommandSummarizesFullAutopilot(t *testing.T) {
 		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
 		"`Merging` remains serialized for this project.",
 		"Existing validation, CI, unresolved review feedback, dependency blockers, mergeability, and gate failures still stop progress.",
+		"Effective intake profile: Assisted intake (`assisted_intake`).",
+		"Detent evaluates Backlog work and proposes promotion to Todo for operator approval.",
 		"DELIVERY_PROFILE=full_autopilot",
 		"AUTO_PROMOTE_QUIET_SECONDS=0",
 		"AUTO_PROMOTE_GATE_WAIT_STATE=source",
 		"GATE_REQUIRE_AUTOMATED_REVIEW=false",
 		"MERGING_CONCURRENCY=1",
+		"Canonical intake answer keys:",
+		"INTAKE_PROFILE=assisted_intake",
+		"BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN=50",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
@@ -621,6 +627,60 @@ func TestOnboardingNormalizeAnswersCommandWritesFullAutopilotProfileExpansion(t 
 	}
 	if strings.Contains(content, "MUTATION_CONFIRMED=true") {
 		t.Fatalf("normalization must not add mutation confirmation:\n%s", content)
+	}
+}
+
+func TestOnboardingNormalizeAnswersCommandWritesAutonomousIntakeProfileExpansion(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"INTAKE_PROFILE=autonomous_intake",
+		"STATUS_LABEL_PREFIX=detent:",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "onboarding", "normalize-answers", "--answers", answersPath, "--write"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\nstdout:\n%s", err, stdout.String())
+	}
+
+	var got struct {
+		IntakeProfile        string            `json:"intake_profile"`
+		IntakeProfileAnswers map[string]string `json:"intake_profile_answers"`
+		Changed              bool              `json:"changed"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.IntakeProfile != "autonomous_intake" || !got.Changed {
+		t.Fatalf("normalization result = %#v, want autonomous intake expansion", got)
+	}
+	raw, err := os.ReadFile(answersPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"FOLLOWUPS_ENABLED=true",
+		"BACKLOG_ADMISSION_ENABLED=true",
+		"BACKLOG_ADMISSION_AUTO_ADMIT=true",
+		"BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE=0.9",
+		"BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION=OWNER,MEMBER,COLLABORATOR",
+		"BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN=50",
+		"BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN=3",
+		"BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS=10",
+		"BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS=7",
+		"ROUTINES_ENABLED=true",
+		"STALE_TODOS_ENABLED=true",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("answers.env missing %q:\n%s", want, content)
+		}
 	}
 }
 
@@ -1663,6 +1723,14 @@ func validIdentityOnboardingAnswers(t *testing.T) string {
 		"REFERENCE_REPOSITORIES=digitaldrywood/detent-orchestration,corylanou/website-template",
 		"DETENT_ONBOARDING_MODE=add-project",
 		"IDENTITY_CONFIRMED=true",
+		"ADMISSION_ALIGNMENT_CRITERIA=Repairs customer-visible defects and advances documented product goals.",
+		"ADMISSION_READINESS_CRITERIA=Requires repository evidence, resolved dependencies, and checkable completion criteria.",
+		"ADMISSION_SIZE_CRITERIA=Fits implementation and validation within one agent run.",
+		"ADMISSION_SAFETY_GATES=Requires credentials and destructive actions to be explicitly authorized before admission.",
+		"EFFORT_MEDIUM_CRITERIA=Small mechanical work with exact acceptance criteria.",
+		"EFFORT_HIGH_CRITERIA=Standard features and fixes with some ambiguity or cross-cutting impact.",
+		"EFFORT_XHIGH_CRITERIA=New subsystems or tricky state, concurrency, restart, recovery, or interaction work.",
+		"EFFORT_MAX_CRITERIA=Exceptional operator-designated work that must never be selected automatically.",
 		"",
 	}, "\n")
 }

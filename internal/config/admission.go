@@ -43,6 +43,7 @@ type BacklogAdmission struct {
 	MaxOpenProposals       int                     `yaml:"max_open_proposals"`
 	ProposalExpiryDays     int                     `yaml:"proposal_expiry_days"`
 	AutoAdmit              bool                    `yaml:"auto_admit"`
+	AutoAdmitByLabel       map[string]bool         `yaml:"auto_admit_by_label,omitempty"`
 	AutoAdmitMinConfidence float64                 `yaml:"auto_admit_min_confidence"`
 }
 
@@ -92,6 +93,7 @@ func (a *BacklogAdmission) Normalize() {
 	a.CriteriaSection = strings.TrimSpace(a.CriteriaSection)
 	a.EffortSection = strings.TrimSpace(a.EffortSection)
 	a.ExcludeLabels = normalizeLabels(a.ExcludeLabels)
+	a.AutoAdmitByLabel = normalizeAdmissionLabelPolicies(a.AutoAdmitByLabel)
 	a.Authors.Allow = normalizeAdmissionAuthors(a.Authors.Allow)
 	a.Authors.AllowAssociation = normalizeAdmissionAssociations(a.Authors.AllowAssociation)
 }
@@ -138,8 +140,14 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	validatePositive(prefix+".max_proposals_per_run", a.MaxProposalsPerRun, &problems)
 	validatePositive(prefix+".max_open_proposals", a.MaxOpenProposals, &problems)
 	validatePositive(prefix+".proposal_expiry_days", a.ProposalExpiryDays, &problems)
-	if a.AutoAdmit && (a.AutoAdmitMinConfidence < 0 || a.AutoAdmitMinConfidence > 1) {
+	if a.autoAdmitEnabled() && (a.AutoAdmitMinConfidence < 0 || a.AutoAdmitMinConfidence > 1) {
 		problems = append(problems, prefix+".auto_admit_min_confidence must be between 0 and 1")
+	}
+	for label := range a.AutoAdmitByLabel {
+		if strings.TrimSpace(label) == "" {
+			problems = append(problems, prefix+".auto_admit_by_label labels must not be blank")
+			break
+		}
 	}
 	capabilities := connector.CandidateCapabilitiesFor(connector.Backend(tracker.Kind), tracker.GitHubStatusSource)
 	for index, association := range a.Authors.AllowAssociation {
@@ -192,6 +200,9 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	if len(a.ExcludeLabels) > 0 && tracker.Kind == TrackerGitHub && tracker.GitHubStatusSource == GitHubStatusSourceProjectV2 {
 		problems = append(problems, prefix+".exclude_labels requires complete issue labels, but tracker.kind github with github_status_source project_v2 fetches only the first 20 labels")
 	}
+	if len(a.AutoAdmitByLabel) > 0 && tracker.Kind == TrackerGitHub && tracker.GitHubStatusSource == GitHubStatusSourceProjectV2 {
+		problems = append(problems, prefix+".auto_admit_by_label requires complete issue labels, but tracker.kind github with github_status_source project_v2 fetches only the first 20 labels")
+	}
 	if a.Sources.Untracked && !capabilities.Supports(connector.CandidateSelectorUntracked) {
 		gap := prefix + ".sources.untracked requires candidate selector untracked, but tracker.kind " + tracker.Kind
 		switch tracker.Kind {
@@ -206,6 +217,36 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 		problems = append(problems, gap)
 	}
 	return problems
+}
+
+func (a BacklogAdmission) AutoAdmitForLabels(labels []string) bool {
+	matched := false
+	for _, label := range labels {
+		value, ok := a.AutoAdmitByLabel[normalizeLabel(label)]
+		if !ok {
+			continue
+		}
+		if !value {
+			return false
+		}
+		matched = true
+	}
+	if matched {
+		return true
+	}
+	return a.AutoAdmit
+}
+
+func (a BacklogAdmission) autoAdmitEnabled() bool {
+	if a.AutoAdmit {
+		return true
+	}
+	for _, enabled := range a.AutoAdmitByLabel {
+		if enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func BacklogAdmissionWarnings(admission BacklogAdmission, tracker Tracker) []string {
@@ -235,6 +276,18 @@ func normalizeAdmissionSourceLabels(labels []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeAdmissionLabelPolicies(policies map[string]bool) map[string]bool {
+	normalized := make(map[string]bool, len(policies))
+	for label, enabled := range policies {
+		label = normalizeLabel(label)
+		current, exists := normalized[label]
+		if !exists || current {
+			normalized[label] = enabled
+		}
+	}
+	return normalized
 }
 
 func BacklogAdmissionPublicExposureWarning(admission BacklogAdmission, visibility string) string {

@@ -18,6 +18,8 @@ import (
 const (
 	implementProgressMetadataKey       = "completion_progress"
 	implementProgressOutcomeNoProgress = "no_progress"
+	implementDependencyDeferralReason  = "dependency_deferral"
+	implementMergedCompletionReason    = "merged_pull_request_completion"
 	noProgressLimitReason              = "no_progress_limit"
 	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
@@ -43,6 +45,9 @@ type implementCompletionProgressDecision struct {
 	BlockReason            string
 	Block                  bool
 	Warning                string
+	DependencyDeferral     bool
+	DependencyBlockers     []implementDependencyBlocker
+	RejectedBlockerRefs    []string
 }
 
 type implementProgressRecord struct {
@@ -63,6 +68,15 @@ type implementProgressRecord struct {
 	NoProgressLimit        int                               `json:"no_progress_limit,omitempty"`
 	BlockReason            string                            `json:"block_reason,omitempty"`
 	Warning                string                            `json:"warning,omitempty"`
+	DependencyDeferral     bool                              `json:"dependency_deferral,omitempty"`
+	DependencyBlockers     []implementDependencyBlocker      `json:"dependency_blockers,omitempty"`
+	RejectedBlockerRefs    []string                          `json:"rejected_blocker_refs,omitempty"`
+}
+
+type implementDependencyBlocker struct {
+	ID         string `json:"id,omitempty"`
+	Identifier string `json:"identifier"`
+	State      string `json:"state,omitempty"`
 }
 
 type implementProgressSignatureRecord struct {
@@ -109,6 +123,29 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		if workpadCurrent {
 			decision.WorkpadStatus, decision.HumanAction = implementProgressBlockedHumanAction(issue)
 		}
+		if workpadCurrent && implementProgressMergedCompletionCandidate(issue, running.DiffStats) &&
+			implementProgressLinkedPullRequest(issue) && issue.PullRequest == nil {
+			hydrator, ok := o.connector.(connector.PullRequestHydrator)
+			if !ok {
+				decision.Warning = "pull request hydrator unavailable"
+				o.warnImplementProgressHydration(issue, decision.Warning, nil)
+			} else {
+				hydrated, err := hydrator.HydratePullRequest(ctx, issue)
+				if err != nil {
+					decision.Warning = err.Error()
+					o.warnImplementProgressHydration(issue, "pull request hydration failed", err)
+				} else {
+					issue = hydrated
+					decision.Issue = issue
+				}
+			}
+		}
+		if workpadCurrent && implementProgressMergedCompletion(issue, running.DiffStats) {
+			decision.WorkpadStatus = workpad.StatusComplete
+			decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(issue, staleMergedPullRequestSummaryFromIssue(issue))
+			decision.Reason = implementMergedCompletionReason
+			return decision
+		}
 		attempts, err := o.recentImplementCompletionAttempts(ctx, issue, running)
 		if err != nil {
 			decision.Reason = "attempt_history_lookup_failed"
@@ -150,6 +187,18 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		if !diffStatsPresent(running.DiffStats) {
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
 			return decision
+		}
+		if implementProgressDiffStatsClean(running.DiffStats) {
+			blockers, rejected, deferred := o.evaluateImplementDependencyDeferral(ctx, issue)
+			decision.DependencyBlockers = blockers
+			decision.RejectedBlockerRefs = rejected
+			if deferred {
+				decision.Outcome = store.WorkAttemptTerminalSuccess
+				decision.Reason = implementDependencyDeferralReason
+				decision.DependencyDeferral = true
+				decision.WorkpadStatus = workpad.StatusBlocked
+				return decision
+			}
 		}
 		if !implementProgressDiffStatsClean(running.DiffStats) {
 			if strings.TrimSpace(running.DiffStats.Fingerprint) == "" {
@@ -344,6 +393,36 @@ func implementProgressBlockedHumanAction(issue connector.Issue) (string, string)
 	return workpad.StatusBlocked, humanAction
 }
 
+func implementProgressMergedCompletion(issue connector.Issue, diffStats DiffStats) bool {
+	if !implementProgressMergedCompletionCandidate(issue, diffStats) {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if workAttemptPRNumber(issue) == nil || !pullRequestMerged(pullRequest) ||
+		pullRequestHydrationBlocksProgress(pullRequest) || strings.TrimSpace(pullRequest.HeadSHA) == "" {
+		return false
+	}
+	if pullRequest.CheckRunCount+pullRequest.StatusContextCount == 0 ||
+		len(pullRequest.RunningChecks) > 0 || len(pullRequest.UnstartedChecks) > 0 ||
+		len(pullRequest.RequiredCheckFailures) > 0 {
+		return false
+	}
+	return mergeWorkerCIGreen(pullRequest.CIStatus)
+}
+
+func implementProgressMergedCompletionCandidate(issue connector.Issue, diffStats DiffStats) bool {
+	if diffStats.UnpushedCommits > 0 || !implementProgressDiffStatsClean(diffStats) {
+		return false
+	}
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
+		strings.TrimSpace(signal.Status) != workpad.StatusComplete ||
+		strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 {
+		return false
+	}
+	return true
+}
+
 func latestImplementProgressSignature(attempts []store.WorkAttempt) (autoPromoteReworkSignature, bool) {
 	for _, attempt := range attempts {
 		record, ok := implementProgressRecordFromAttempt(attempt)
@@ -483,6 +562,9 @@ func implementCompletionProgressMetadata(decision implementCompletionProgressDec
 		NoProgressLimit:        decision.NoProgressLimit,
 		BlockReason:            strings.TrimSpace(decision.BlockReason),
 		Warning:                strings.TrimSpace(decision.Warning),
+		DependencyDeferral:     decision.DependencyDeferral,
+		DependencyBlockers:     append([]implementDependencyBlocker(nil), decision.DependencyBlockers...),
+		RejectedBlockerRefs:    append([]string(nil), decision.RejectedBlockerRefs...),
 	}
 	if decision.PreviousSignatureFound {
 		previous := implementProgressSignatureRecordFromSignature(decision.PreviousSignature)
@@ -687,6 +769,23 @@ func (o *Orchestrator) blockImplementProgress(
 		"no_progress_limit", decision.NoProgressLimit,
 	)
 	return true
+}
+
+func (o *Orchestrator) finishImplementDependencyDeferral(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	completedAt time.Time,
+) {
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Warn("implement dependency deferral claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	o.releaseClaim(state, issue.ID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      completedAt,
+		Event:   "implement_dependency_deferred",
+		Message: "deferred " + issueLabel(issue) + " while declared dependencies remain unresolved",
+	})
 }
 
 func implementProgressRecoveryReason(decision implementCompletionProgressDecision) string {

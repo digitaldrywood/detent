@@ -380,7 +380,7 @@ func implementAcceptedStateChange(running Running, decision implementCompletionP
 		return true, reason
 	}
 	switch strings.TrimSpace(decision.Reason) {
-	case "pull_request_created_or_updated", "signature_changed":
+	case "pull_request_created_or_updated", "signature_changed", implementMergedCompletionReason:
 		return true, decision.Reason
 	default:
 		return false, ""

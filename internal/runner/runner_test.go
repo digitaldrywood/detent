@@ -1168,6 +1168,8 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		"Issue effort selection",
 		"recommended_effort",
 		"standard feature work",
+		"exactly one finding for every configured dimension",
+		"Confidence is telemetry only and cannot override a failed dimension",
 	} {
 		if !strings.Contains(agentBackend.request.Prompt, want) {
 			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
@@ -1295,6 +1297,184 @@ func TestRunnerRunRetryResumeUsesRequestedState(t *testing.T) {
 	}
 	if sessionStore.finished.ResumedFromSessionID != 979 {
 		t.Fatalf("SessionFinish.ResumedFromSessionID = %d, want selected session", sessionStore.finished.ResumedFromSessionID)
+	}
+}
+
+func TestSessionTokenUsageNormalizesFreshAndResumedThreads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		resumed bool
+		updates []AgentTokenUsage
+		want    AgentTokenCounts
+	}{
+		{
+			name: "fresh session uses cumulative thread total",
+			updates: []AgentTokenUsage{{
+				ThreadTotal: &AgentTokenCounts{InputTokens: 20, CachedInputTokens: 5, OutputTokens: 7, TotalTokens: 27},
+				Last:        &AgentTokenCounts{InputTokens: 2, CachedInputTokens: 1, OutputTokens: 3, TotalTokens: 5},
+			}},
+			want: AgentTokenCounts{InputTokens: 20, CachedInputTokens: 5, OutputTokens: 7, TotalTokens: 27},
+		},
+		{
+			name:    "resumed session establishes baseline from first last call",
+			resumed: true,
+			updates: []AgentTokenUsage{{
+				ThreadTotal: &AgentTokenCounts{InputTokens: 1000, CachedInputTokens: 800, OutputTokens: 100, TotalTokens: 1100},
+				Last:        &AgentTokenCounts{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 10, TotalTokens: 110},
+			}},
+			want: AgentTokenCounts{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 10, TotalTokens: 110},
+		},
+		{
+			name:    "resumed session accumulates later calls without prior thread usage",
+			resumed: true,
+			updates: []AgentTokenUsage{
+				{
+					ThreadTotal: &AgentTokenCounts{InputTokens: 1000, CachedInputTokens: 800, OutputTokens: 100, TotalTokens: 1100},
+					Last:        &AgentTokenCounts{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 10, TotalTokens: 110},
+				},
+				{
+					ThreadTotal: &AgentTokenCounts{InputTokens: 1200, CachedInputTokens: 900, OutputTokens: 130, TotalTokens: 1330},
+					Last:        &AgentTokenCounts{InputTokens: 200, CachedInputTokens: 150, OutputTokens: 30, TotalTokens: 230},
+				},
+			},
+			want: AgentTokenCounts{InputTokens: 300, CachedInputTokens: 180, OutputTokens: 40, TotalTokens: 340},
+		},
+		{
+			name:    "legacy backend usage remains unchanged",
+			resumed: true,
+			updates: []AgentTokenUsage{{InputTokens: 70, OutputTokens: 9, TotalTokens: 79}},
+			want:    AgentTokenCounts{InputTokens: 70, OutputTokens: 9, TotalTokens: 79},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			usage := newSessionTokenUsage(tt.resumed)
+			var got AgentTokenUsage
+			for _, update := range tt.updates {
+				got = usage.normalize(update)
+			}
+			gotCounts := AgentTokenCounts{
+				InputTokens:           got.InputTokens,
+				CachedInputTokens:     got.CachedInputTokens,
+				OutputTokens:          got.OutputTokens,
+				ReasoningOutputTokens: got.ReasoningOutputTokens,
+				TotalTokens:           got.TotalTokens,
+			}
+			if gotCounts != tt.want {
+				t.Fatalf("normalize() = %#v, want %#v", gotCounts, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerRunPersistsResumedSessionDeltaAndCumulativeCost(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 8, 8, 15, 8, 7, 0, time.UTC)
+	contextWindow := int64(200)
+	agentBackend := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateTurnStarted, ThreadID: "thread-1716", TurnID: "turn-2"},
+			{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-1716",
+				TurnID:   "turn-2",
+				Tokens: AgentTokenUsage{
+					InputTokens:        1000,
+					CachedInputTokens:  800,
+					OutputTokens:       100,
+					TotalTokens:        1100,
+					ThreadTotal:        &AgentTokenCounts{InputTokens: 1000, CachedInputTokens: 800, OutputTokens: 100, TotalTokens: 1100},
+					Last:               &AgentTokenCounts{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 10, TotalTokens: 110},
+					ModelContextWindow: &contextWindow,
+				},
+			},
+			{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-1716",
+				TurnID:   "turn-2",
+				Tokens: AgentTokenUsage{
+					InputTokens:        1200,
+					CachedInputTokens:  900,
+					OutputTokens:       130,
+					TotalTokens:        1330,
+					ThreadTotal:        &AgentTokenCounts{InputTokens: 1200, CachedInputTokens: 900, OutputTokens: 130, TotalTokens: 1330},
+					Last:               &AgentTokenCounts{InputTokens: 200, CachedInputTokens: 150, OutputTokens: 30, TotalTokens: 230},
+					ModelContextWindow: &contextWindow,
+				},
+			},
+		},
+		result: AgentTurnResult{ThreadID: "thread-1716", TurnID: "turn-2", SessionID: "thread-1716-turn-2"},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 1716}
+	runner, err := NewRunner(Dependencies{
+		ProjectID: "detent",
+		Workflow:  config.Workflow{Config: config.Config{}, Prompt: "Work"},
+		Workspace: &fakeWorkspaceBackend{
+			info: workspace.Info{Path: t.TempDir(), Key: "issue-1716", Branch: "detent/issue-1716"},
+		},
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Pricing: budget.PricingTable{
+			"gpt-priced": {
+				USDPerInputToken:       0.001,
+				USDPerCachedInputToken: 0.0001,
+				USDPerOutputToken:      0.01,
+			},
+		},
+		Now: newFakeClock(
+			startedAt,
+			startedAt.Add(time.Second),
+			startedAt.Add(2*time.Second),
+			startedAt.Add(3*time.Second),
+			startedAt.Add(4*time.Second),
+			startedAt.Add(5*time.Second),
+			startedAt.Add(6*time.Second),
+		).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-1716",
+			Identifier:    "digitaldrywood/detent#1716",
+			Title:         "Restore cumulative usage",
+			ModelOverride: "gpt-priced",
+		},
+		StartedAt: startedAt,
+		RetryMode: RetryModeResume,
+		ResumeState: store.AgentResumeState{
+			DetentSessionID:   1700,
+			ProviderThreadID:  "thread-1716",
+			ProviderSessionID: "thread-1716-turn-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Tokens.InputTokens != 300 || result.Tokens.CachedInputTokens != 180 || result.Tokens.OutputTokens != 40 || result.Tokens.TotalTokens != 340 {
+		t.Fatalf("RunResult.Tokens = %#v, want resumed session delta", result.Tokens)
+	}
+	if result.Tokens.Last == nil || result.Tokens.Last.TotalTokens != 230 {
+		t.Fatalf("RunResult.Tokens.Last = %#v, want last-call usage", result.Tokens.Last)
+	}
+	if sessionStore.finished.TotalTokens != 340 || sessionStore.finished.InputTokens != 300 || sessionStore.finished.OutputTokens != 40 {
+		t.Fatalf("SessionFinish = %#v, want cumulative resumed session usage", sessionStore.finished)
+	}
+	if sessionStore.usage.TotalTokens != 340 || sessionStore.usage.InputTokens != 300 || sessionStore.usage.OutputTokens != 40 {
+		t.Fatalf("UsageEvent = %#v, want cumulative resumed session usage", sessionStore.usage)
+	}
+	if math.Abs(sessionStore.usage.CostUSD-0.538) > 0.000001 {
+		t.Fatalf("UsageEvent.CostUSD = %f, want 0.538", sessionStore.usage.CostUSD)
+	}
+	if sessionStore.finished.ResumedFromSessionID != 1700 {
+		t.Fatalf("ResumedFromSessionID = %d, want 1700", sessionStore.finished.ResumedFromSessionID)
 	}
 }
 
@@ -1984,6 +2164,69 @@ func TestSessionTokenCeilingForUsageUsesTightestConfiguredLimit(t *testing.T) {
 	}
 }
 
+func TestSessionTokenCeilingUsesCumulativeSessionAndLastCallSemantics(t *testing.T) {
+	t.Parallel()
+
+	contextWindow := int64(100)
+	tests := []struct {
+		name         string
+		cfg          config.Agent
+		tokens       AgentTokenUsage
+		wantSource   string
+		wantObserved int64
+		wantBreached bool
+	}{
+		{
+			name:         "absolute ceiling uses cumulative session total",
+			cfg:          config.Agent{MaxSessionTokens: 300},
+			tokens:       AgentTokenUsage{TotalTokens: 340, Last: &AgentTokenCounts{TotalTokens: 150}, ModelContextWindow: &contextWindow},
+			wantSource:   TokenCeilingSourceAbsolute,
+			wantObserved: 340,
+			wantBreached: true,
+		},
+		{
+			name:         "context ceiling stays below on small last call",
+			cfg:          config.Agent{MaxSessionContextMultiplier: 2},
+			tokens:       AgentTokenUsage{TotalTokens: 340, Last: &AgentTokenCounts{TotalTokens: 150}, ModelContextWindow: &contextWindow},
+			wantSource:   TokenCeilingSourceContextWindow,
+			wantObserved: 150,
+		},
+		{
+			name:         "context ceiling blocks large last call",
+			cfg:          config.Agent{MaxSessionContextMultiplier: 2},
+			tokens:       AgentTokenUsage{TotalTokens: 340, Last: &AgentTokenCounts{TotalTokens: 230}, ModelContextWindow: &contextWindow},
+			wantSource:   TokenCeilingSourceContextWindow,
+			wantObserved: 230,
+			wantBreached: true,
+		},
+		{
+			name:         "breached absolute ceiling wins over tighter unbreached context ceiling",
+			cfg:          config.Agent{MaxSessionTokens: 300, MaxSessionContextMultiplier: 2},
+			tokens:       AgentTokenUsage{TotalTokens: 340, Last: &AgentTokenCounts{TotalTokens: 150}, ModelContextWindow: &contextWindow},
+			wantSource:   TokenCeilingSourceAbsolute,
+			wantObserved: 340,
+			wantBreached: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ceiling, ok := sessionTokenCeilingForUsage(tt.cfg, tt.tokens)
+			if !ok {
+				t.Fatal("sessionTokenCeilingForUsage() ok = false, want true")
+			}
+			observed := sessionTokenCeilingObservedTokens(ceiling, tt.tokens)
+			if ceiling.source != tt.wantSource || observed != tt.wantObserved {
+				t.Fatalf("ceiling = %#v observed = %d, want source %q observed %d", ceiling, observed, tt.wantSource, tt.wantObserved)
+			}
+			if breached := observed > ceiling.tokens; breached != tt.wantBreached {
+				t.Fatalf("breached = %t, want %t", breached, tt.wantBreached)
+			}
+		})
+	}
+}
+
 func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	t.Parallel()
 
@@ -2047,7 +2290,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 
 	base := connector.PullRequest{
 		State:          "open",
-		MergeableState: "behind",
+		MergeableState: "clean",
 		CIStatus:       "success",
 		HeadSHA:        "checked-head",
 	}
@@ -2056,8 +2299,9 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 		mutate func(*connector.PullRequest)
 		want   bool
 	}{
-		{name: "behind green head", want: true},
-		{name: "current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = " CLEAN " }, want: true},
+		{name: "current green head", want: true},
+		{name: "normalized current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = " CLEAN " }, want: true},
+		{name: "behind green head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "behind" }},
 		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
 		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
 		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},
@@ -2078,7 +2322,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 	}
 }
 
-func TestRunnerMergeCheckedHeadSkipsWorkspace(t *testing.T) {
+func TestRunnerMergeCurrentHeadSkipsWorkspace(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeMergeWorkspaceBackend{}
@@ -2098,7 +2342,7 @@ func TestRunnerMergeCheckedHeadSkipsWorkspace(t *testing.T) {
 			BranchName: "detent/checked-head",
 			PullRequest: &connector.PullRequest{
 				State:          "open",
-				MergeableState: "behind",
+				MergeableState: "clean",
 				CIStatus:       "success",
 				HeadSHA:        "checked-head",
 			},
@@ -2402,7 +2646,18 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 				RuntimeIdentity: agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{}),
 			},
 			{Type: AgentUpdateMessageDelta, Delta: "do not log this message body"},
-			{Type: AgentUpdateTokenUsage, ThreadID: "thread-1", TurnID: "turn-1", Tokens: AgentTokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}},
+			{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-1",
+				TurnID:   "turn-1",
+				Tokens: AgentTokenUsage{
+					InputTokens:  10,
+					OutputTokens: 5,
+					TotalTokens:  15,
+					ThreadTotal:  &AgentTokenCounts{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 25, TotalTokens: 125},
+					Last:         &AgentTokenCounts{InputTokens: 10, CachedInputTokens: 8, OutputTokens: 5, TotalTokens: 15},
+				},
+			},
 			{Type: AgentUpdateTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
 		},
 		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"},
@@ -2447,6 +2702,10 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 		"worker_process_started",
 		"worker_turn_started",
 		"worker_usage_updated",
+		"thread_total_tokens=125",
+		"thread_cached_input_tokens=80",
+		"last_total_tokens=15",
+		"last_cached_input_tokens=8",
 		"worker_turn_finished",
 		"worker_command_finished",
 		"worker_after_run_finished",
@@ -2471,6 +2730,74 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 		if strings.Contains(logText, leaked) {
 			t.Fatalf("logs leaked %q:\n%s", leaked, logText)
 		}
+	}
+}
+
+func TestRunnerFinishSessionWarnsOnImplausibleCompletedUsage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		finalState string
+		runtime    float64
+		output     int64
+		wantWarn   bool
+	}{
+		{name: "long completed session with low output", finalState: FinalStateCompleted, runtime: 3600, output: 391, wantWarn: true},
+		{name: "short completed session", finalState: FinalStateCompleted, runtime: 120, output: 391},
+		{name: "long completed session at output threshold", finalState: FinalStateCompleted, runtime: 3600, output: implausibleUsageOutputTokens},
+		{name: "failed session", finalState: FinalStateFailed, runtime: 3600, output: 391},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			sessionStore := &fakeSessionStore{sessionID: 1716}
+			r := &Runner{
+				projectID: "detent",
+				store:     sessionStore,
+				logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			startedAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+			err := r.finishSession(
+				context.Background(),
+				1716,
+				true,
+				88,
+				connector.Issue{ID: "issue-1716", Identifier: "digitaldrywood/detent#1716"},
+				startedAt,
+				startedAt.Add(time.Duration(tt.runtime)*time.Second),
+				RunResult{
+					FinalState: tt.finalState,
+					Tokens: TokenTotals{
+						InputTokens:    113_000,
+						OutputTokens:   tt.output,
+						TotalTokens:    113_000 + tt.output,
+						RuntimeSeconds: tt.runtime,
+					},
+				},
+				"gpt-test",
+				"codex",
+				1,
+				AgentTurnResult{ThreadID: "thread-1716", TurnID: "turn-1", SessionID: "thread-1716-turn-1"},
+				0,
+			)
+			if err != nil {
+				t.Fatalf("finishSession() error = %v", err)
+			}
+			gotWarn := strings.Contains(logs.String(), "worker_session_usage_implausible")
+			if gotWarn != tt.wantWarn {
+				t.Fatalf("warning present = %t, want %t\n%s", gotWarn, tt.wantWarn, logs.String())
+			}
+			if tt.wantWarn {
+				for _, want := range []string{"runtime_seconds=3600", "turns=1", "output_tokens=391", "total_tokens=113391"} {
+					if !strings.Contains(logs.String(), want) {
+						t.Fatalf("warning missing %q:\n%s", want, logs.String())
+					}
+				}
+			}
+		})
 	}
 }
 

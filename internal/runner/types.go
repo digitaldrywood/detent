@@ -23,6 +23,7 @@ const (
 	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
 	FinalStateOperatorStopped       = "operator_stopped"
 	FinalStateMergeRevoked          = "merge_revoked"
+	FinalStateCIUnavailable         = "ci_unavailable"
 	FinalStateMergeDurationExceeded = "merge_duration_exceeded"
 	TokenCeilingSourceAbsolute      = "max_session_tokens"
 	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
@@ -43,6 +44,7 @@ var (
 	ErrSessionDurationExceeded     = errors.New("agent session duration exceeded")
 	ErrOperatorStopped             = errors.New("operator stopped run")
 	ErrMergeRevoked                = errors.New("merge eligibility revoked")
+	ErrCIUnavailable               = errors.New("CI unavailable")
 	ErrMergeWorkerStartupTimeout   = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded = errors.New("merge worker duration exceeded")
 	ErrModelPermitUnavailable      = errors.New("provider model permit unavailable")
@@ -168,6 +170,7 @@ type AgentTurnRequest struct {
 	Environment        procgroup.Environment
 	cacheStrategy      string
 	projectID          string
+	workerGitHub       workerGitHubPolicy
 }
 
 type AgentResume struct {
@@ -255,7 +258,17 @@ type AgentTokenUsage struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	ThreadTotal           *AgentTokenCounts
+	Last                  *AgentTokenCounts
 	ModelContextWindow    *int64
+}
+
+type AgentTokenCounts struct {
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
 }
 
 type SessionTokenCeilingError struct {
@@ -473,6 +486,7 @@ type TokenTotals struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	Last                  *AgentTokenCounts
 	ModelContextWindow    *int64
 	RuntimeSeconds        float64
 }

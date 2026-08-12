@@ -146,6 +146,58 @@ func TestMergeWorkerDurationExceededFinalState(t *testing.T) {
 	}
 }
 
+func TestCIUnavailableIsCooperativeStop(t *testing.T) {
+	t.Parallel()
+
+	if !cooperativeStopError(ErrCIUnavailable) {
+		t.Fatal("cooperativeStopError(ErrCIUnavailable) = false, want true")
+	}
+	if got := finalStateForTurnError(ErrCIUnavailable); got != FinalStateCIUnavailable {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateCIUnavailable)
+	}
+}
+
+func TestSupervisorPropagatesCancellationCause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		cause         error
+		wantCI        bool
+		wantRetryable bool
+	}{
+		{name: "CI unavailable remains cooperative", cause: ErrCIUnavailable, wantCI: true},
+		{name: "ordinary cancellation remains retryable", cause: context.Canceled, wantRetryable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(tt.cause)
+			supervisor, err := NewSupervisor(contextErrorBackend{}, SupervisorConfig{})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+
+			completion := supervisor.Run(ctx, RunRequest{
+				Issue:   connector.Issue{ID: "issue-canceled"},
+				Attempt: 3,
+			})
+			if got := errors.Is(completion.Err, ErrCIUnavailable); got != tt.wantCI {
+				t.Fatalf("errors.Is(Err, ErrCIUnavailable) = %v, want %v; Err = %v", got, tt.wantCI, completion.Err)
+			}
+			if completion.Retryable != tt.wantRetryable {
+				t.Fatalf("Retryable = %v, want %v", completion.Retryable, tt.wantRetryable)
+			}
+			if !tt.wantRetryable && (completion.RetryAttempt != 0 || completion.RetryDelay != 0) {
+				t.Fatalf("retry state = attempt %d delay %s, want no retry", completion.RetryAttempt, completion.RetryDelay)
+			}
+		})
+	}
+}
+
 func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	t.Parallel()
 
@@ -473,6 +525,12 @@ type mergeRevokedBackend struct{}
 
 func (mergeRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{FinalState: FinalStateMergeRevoked}, ErrMergeRevoked
+}
+
+type contextErrorBackend struct{}
+
+func (contextErrorBackend) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	return RunResult{}, ctx.Err()
 }
 
 type capacityBackend struct {

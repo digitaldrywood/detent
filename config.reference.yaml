@@ -42,6 +42,8 @@
 #   github_rest_fanout_max_requests: 80
 #   # tracker.github_rest_debug_logging | type: boolean | default: false | required: No | validation: None
 #   github_rest_debug_logging: false
+#   # tracker.github_unstarted_check_threshold_seconds | type: integer | default: 900 | required: No | validation: must be greater than 0
+#   github_unstarted_check_threshold_seconds: 900
 #   # tracker.github_app_id | type: string | default: none | required: Conditional | validation: is required for github app
 #   github_app_id: null
 #   # tracker.github_app_private_key | type: string | default: none | required: Conditional | validation: or tracker.github_app_private_key_path is required for github app
@@ -247,6 +249,27 @@
 #             duration_seconds: 0
 #         # tracker.issues[].pull_request.running_checks | type: list<string> | default: [] | required: No | validation: None
 #         running_checks: []
+#         # tracker.issues[].pull_request.unstarted_check_count | type: integer | default: 0 when configured | required: No | validation: None
+#         unstarted_check_count: 0
+#         # tracker.issues[].pull_request.unstarted_checks | type: list<object> | default: [] | required: No | validation: None
+#         unstarted_checks:
+#           -
+#             # tracker.issues[].pull_request.unstarted_checks[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.unstarted_checks[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.unstarted_checks[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.unstarted_checks[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.unstarted_checks[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.unstarted_checks[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.unstarted_checks[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.unstarted_checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
 #         # tracker.issues[].pull_request.stale_successful_checks | type: list<object> | default: [] | required: No | validation: None
 #         stale_successful_checks:
 #           -
@@ -490,6 +513,12 @@
 #   ssh_hosts: []
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
+#   # worker.github_token | type: string | default: none | required: No | validation: None
+#   github_token: null
+#   # worker.github_rest_min_remaining_reserve | type: integer | default: 1000 | required: No | validation: must be greater than 0
+#   github_rest_min_remaining_reserve: 1000
+#   # worker.github_rest_poll_interval_ms | type: integer | default: 60000 | required: No | validation: must be greater than or equal to 60000
+#   github_rest_poll_interval_ms: 60000
 # # agent | type: object | default: see child fields | required: No | validation: None
 # agent:
 #   # agent.max_concurrent_agents | type: integer | default: 10 | required: No | validation: must be greater than 0
@@ -562,6 +591,8 @@
 #   merge_fast_path:
 #     # agent.merge_fast_path.enabled | type: boolean | default: true | required: No | validation: None
 #     enabled: true
+#     # agent.merge_fast_path.fairness_age_seconds | type: integer | default: 7200 | required: No | validation: must be greater than 0
+#     fairness_age_seconds: 7200
 #   # agent.auto_promote | type: object | default: see child fields | required: No | validation: None
 #   auto_promote:
 #     # agent.auto_promote.enabled | type: boolean | default: false | required: No | validation: None
@@ -1011,6 +1042,14 @@
 #     schedule: null
 #     # routines[].prompt | type: string | default: none | required: Conditional | validation: is required
 #     prompt: null
+#     # routines[].target_state | type: string | default: "Todo" when configured | required: No | validation: must name a configured workflow state
+#     target_state: "Todo"
+#     # routines[].labels | type: list<string> | default: [] | required: Conditional | validation: labels must not be blank
+#     labels: []
+#     # routines[].max_findings_per_run | type: integer | default: 3 when configured | required: No | validation: must be greater than 0
+#     max_findings_per_run: 3
+#     # routines[].max_open_findings | type: integer | default: 10 when configured | required: No | validation: must be greater than 0
+#     max_open_findings: 10
 # # backlog_admission | type: object | default: see child fields | required: No | validation: None
 # backlog_admission:
 #   # backlog_admission.enabled | type: boolean | default: false | required: No | validation: None
@@ -1051,5 +1090,7 @@
 #   proposal_expiry_days: 7
 #   # backlog_admission.auto_admit | type: boolean | default: false | required: No | validation: None
 #   auto_admit: false
+#   # backlog_admission.auto_admit_by_label | type: mapping<string, boolean> | default: {} | required: No | validation: None
+#   auto_admit_by_label: {}
 #   # backlog_admission.auto_admit_min_confidence | type: number | default: 0.9 | required: No | validation: None
 #   auto_admit_min_confidence: 0.9

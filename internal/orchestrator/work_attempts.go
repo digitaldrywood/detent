@@ -392,9 +392,9 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 	phase string,
 	statusMessage string,
 	metadata map[string]any,
-) {
+) bool {
 	if o == nil || o.workAttempts == nil || running.WorkAttemptID <= 0 {
-		return
+		return false
 	}
 	if completedAt.IsZero() {
 		completedAt = time.Now()
@@ -431,9 +431,10 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 		if o.logger != nil {
 			o.logger.Warn("complete work attempt failed", "attempt_id", running.WorkAttemptID, "issue_id", running.Issue.ID, "error", err)
 		}
-		return
+		return false
 	}
 	o.applyWorkAttemptCompletionSnapshot(state, running, completion)
+	return true
 }
 
 func (o *Orchestrator) runningWorkAttemptHeartbeat(state *State, running Running, now time.Time) store.WorkAttemptHeartbeat {
@@ -778,6 +779,9 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	}
 	if state != nil && len(state.BackendOutages) > 0 {
 		snapshot["backend_outages"] = backendOutagesCapacitySnapshot(state.BackendOutages)
+	}
+	if state != nil && state.CIUnavailable != nil {
+		snapshot["ci_unavailable"] = *state.CIUnavailable
 	}
 	if state != nil && len(state.DispatchRecoveries) > 0 {
 		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, pool.Name, pool.Capacity)

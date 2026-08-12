@@ -67,6 +67,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{Issue: telemetry.Issue{ID: "detent-completed", Identifier: "digitaldrywood/detent#5", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-completed", Identifier: "digitaldrywood/pyroapex#5", ProjectID: "pyroapex"}},
 		},
+		CIUnavailable: []telemetry.CICondition{
+			{ProjectID: "detent", UnstartedCheckCount: 4, PullRequestCount: 2},
+			{ProjectID: "pyroapex", UnstartedCheckCount: 3, PullRequestCount: 2},
+		},
 		FailureBreakers: []telemetry.FailureBreaker{
 			{ProjectID: "detent", Class: "session_token_ceiling"},
 			{ProjectID: "pyroapex", Class: "deliverable_command_failure"},
@@ -129,6 +133,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.AdmissionProposals) != 1 || got.AdmissionProposals[0].ID != "detent-proposal" {
 		t.Fatalf("AdmissionProposals = %#v, want only detent proposal", got.AdmissionProposals)
+	}
+	if len(got.CIUnavailable) != 1 || got.CIUnavailable[0].ProjectID != "detent" {
+		t.Fatalf("CIUnavailable = %#v, want only detent condition", got.CIUnavailable)
 	}
 	if len(got.FailureBreakers) != 1 || got.FailureBreakers[0].Class != "session_token_ceiling" {
 		t.Fatalf("FailureBreakers = %#v, want only detent row", got.FailureBreakers)

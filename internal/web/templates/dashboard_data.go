@@ -193,11 +193,14 @@ type graphQLBudgetContributorRow struct {
 }
 
 type restBudgetContributorRow struct {
-	EndpointFamily string
-	Count          string
-	Remaining      string
-	Reset          string
-	Status         string
+	Consumer           string
+	CredentialIdentity string
+	EndpointFamily     string
+	Resource           string
+	Count              string
+	Remaining          string
+	Reset              string
+	Status             string
 }
 
 type gitHubAPIHealthState string
@@ -4079,6 +4082,7 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
 	parts := []string{}
+	mergeDetail := prPipelineMergeWaitDetail(issue)
 	if reason := prPipelineDispatchSkipWaitReason(issue); reason != "" {
 		parts = append(parts, reason)
 	} else if reason := prPipelineAutoPromoteWaitReason(issue); reason != "" {
@@ -4109,12 +4113,15 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		if slowChecks := prPipelineSlowChecks(issue.PullRequest.SlowChecks); slowChecks != "" {
 			parts = append(parts, "slow "+slowChecks)
 		}
-		if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" {
+		if unstartedChecks := prPipelineUnstartedChecks(issue.PullRequest.UnstartedChecks); unstartedChecks != "" && mergeDetail == "" {
+			parts = append(parts, "unstarted "+unstartedChecks)
+		}
+		if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" && mergeDetail == "" {
 			parts = append(parts, "running "+runningChecks)
 		}
 	}
-	if merge := prPipelineMergeWaitDetail(issue.MergeTiming); merge != "" {
-		parts = append(parts, merge)
+	if mergeDetail != "" {
+		parts = append(parts, mergeDetail)
 	}
 	return strings.Join(parts, " / ")
 }
@@ -4190,9 +4197,40 @@ func prPipelineHumanReviewWaitReason(issue telemetry.Issue) string {
 	return "waiting for auto-promote"
 }
 
-func prPipelineMergeWaitDetail(timing *telemetry.MergeTiming) string {
+func prPipelineMergeWaitDetail(issue telemetry.Issue) string {
+	timing := issue.MergeTiming
 	if timing == nil {
 		return ""
+	}
+	if timing.MergedAt == nil && timing.MergeFailedAt == nil && prPipelineLaneID(issue.State) == "merging" {
+		if timing.MergeWorkerSlotAcquiredAt == nil {
+			return prPipelineMergeSubstate("waiting for merge worker slot", timing.EnteredMergingAt)
+		}
+		checks := prPipelineMergeBlockingChecks(issue.PullRequest)
+		if checks != "" || issue.PullRequest != nil && prPipelineCIStatus(issue, "merging") == "pending" {
+			state := prPipelineMergeSubstate(
+				"waiting on current-head CI",
+				timing.CIWaitStartedAt,
+				timing.MergeStartedAt,
+				timing.MergeWorkerSlotAcquiredAt,
+			)
+			if checks == "" {
+				checks = "check name unavailable"
+			}
+			return state + ": " + checks
+		}
+		if issue.PullRequest != nil {
+			switch strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)) {
+			case "", "unknown":
+				return prPipelineMergeSubstate(
+					"waiting for GitHub mergeability",
+					timing.CIWaitStartedAt,
+					timing.MergeStartedAt,
+					timing.MergeWorkerSlotAcquiredAt,
+				)
+			}
+		}
+		return prPipelineMergeSubstate("active merge", timing.MergeWorkerSlotAcquiredAt)
 	}
 	parts := []string{}
 	if timing.QueueWaitSeconds > 0 {
@@ -4205,6 +4243,55 @@ func prPipelineMergeWaitDetail(timing *telemetry.MergeTiming) string {
 		parts = append(parts, "total Merging "+formatDuration(float64(timing.TotalMergingSeconds)))
 	}
 	return strings.Join(parts, " / ")
+}
+
+func prPipelineMergeSubstate(state string, sinceCandidates ...*time.Time) string {
+	for _, since := range sinceCandidates {
+		if since != nil && !since.IsZero() {
+			return state + " since " + localTimeToken(*since, LocalTimeOnly)
+		}
+	}
+	return state
+}
+
+func prPipelineMergeBlockingChecks(pullRequest *telemetry.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	unstartedNames := make(map[string]struct{}, len(pullRequest.UnstartedChecks))
+	for _, check := range pullRequest.UnstartedChecks {
+		if name := strings.ToLower(strings.TrimSpace(check.Name)); name != "" {
+			unstartedNames[name] = struct{}{}
+		}
+	}
+	checks := make([]string, 0, len(pullRequest.UnstartedChecks)+len(pullRequest.RequiredCheckFailures)+len(pullRequest.RunningChecks))
+	if unstartedChecks := prPipelineUnstartedChecks(pullRequest.UnstartedChecks); unstartedChecks != "" {
+		checks = append(checks, unstartedChecks)
+	}
+	for _, check := range pullRequest.RequiredCheckFailures {
+		_, unstarted := unstartedNames[strings.ToLower(strings.TrimSpace(check.Name))]
+		if prPipelineCheckPending(check) && !unstarted {
+			checks = append(checks, check.Name)
+		}
+	}
+	for _, check := range pullRequest.RunningChecks {
+		if _, unstarted := unstartedNames[strings.ToLower(strings.TrimSpace(check))]; !unstarted {
+			checks = append(checks, check)
+		}
+	}
+	return strings.Join(uniqueStrings(checks), ", ")
+}
+
+func prPipelineCheckPending(check telemetry.PullRequestCheck) bool {
+	if strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(check.Status)) {
+	case "missing", "pending", "queued", "waiting", "in_progress", "in progress", "requested", "expected":
+		return true
+	default:
+		return false
+	}
 }
 
 func pullRequestHydrationWaitDetail(unavailableReason string, degradedReason string, nextRetryAt *time.Time) string {
@@ -4251,6 +4338,21 @@ func prPipelineSlowChecks(checks []telemetry.PullRequestCheck) string {
 
 func prPipelineRunningChecks(checks []string) string {
 	return strings.Join(uniqueStrings(checks), ", ")
+}
+
+func prPipelineUnstartedChecks(checks []telemetry.PullRequestCheck) string {
+	labels := make([]string, 0, len(checks))
+	for _, check := range checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			continue
+		}
+		if check.QueueSeconds > 0 {
+			name += " queued " + formatDuration(float64(check.QueueSeconds))
+		}
+		labels = append(labels, name+", never started")
+	}
+	return strings.Join(labels, "; ")
 }
 
 func uniqueStrings(values []string) []string {
@@ -4472,6 +4574,21 @@ func queuedDueLabel(row telemetry.Queued) string {
 		return "in " + formatDuration(float64(row.DueInMillis)/1000)
 	}
 	return "n/a"
+}
+
+func queuedStateLabel(row telemetry.Queued) string {
+	if row.QueueState == telemetry.QueueStateWaitingOnCI {
+		return "Waiting on CI"
+	}
+	return "Retrying"
+}
+
+func queuedStateClass(row telemetry.Queued) string {
+	base := "inline-flex rounded-full px-2 py-1 font-medium "
+	if row.QueueState == telemetry.QueueStateWaitingOnCI {
+		return base + "bg-accent/15 text-accent"
+	}
+	return base + "bg-warn/15 text-warn"
 }
 
 func rowError(value string) string {
@@ -6964,7 +7081,7 @@ func hasGraphQLBudget(limits *telemetry.RateLimits) bool {
 }
 
 func hasRESTBudget(limits *telemetry.RateLimits) bool {
-	return limits != nil && (limits.GitHubREST != nil || limits.RESTUsage != nil)
+	return limits != nil && (limits.GitHubREST != nil || len(limits.GitHubRESTBudgets) > 0 || limits.RESTUsage != nil)
 }
 
 func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
@@ -7086,20 +7203,101 @@ func restBudgetRequestCount(limits *telemetry.RateLimits) string {
 }
 
 func restBudgetContributorRows(limits *telemetry.RateLimits) []restBudgetContributorRow {
+	if limits != nil && len(limits.GitHubRESTBudgets) > 0 {
+		contributors := make(map[string]telemetry.RESTUsageContributor)
+		if limits.RESTUsage != nil {
+			for _, contributor := range limits.RESTUsage.Contributors {
+				contributors[restBudgetRowKey(contributor.Consumer, contributor.CredentialIdentity, contributor.EndpointFamily, contributor.Resource)] = contributor
+			}
+		}
+		rows := make([]restBudgetContributorRow, 0, len(limits.GitHubRESTBudgets))
+		for _, budget := range limits.GitHubRESTBudgets {
+			consumer := restBudgetConsumerLabel(budget.Consumer)
+			contributor := contributors[restBudgetRowKey(consumer, budget.CredentialIdentity, budget.EndpointFamily, budget.Resource)]
+			rows = append(rows, restBudgetContributorRow{
+				Consumer:           consumer,
+				CredentialIdentity: strings.TrimSpace(budget.CredentialIdentity),
+				EndpointFamily:     strings.TrimSpace(budget.EndpointFamily),
+				Resource:           strings.TrimSpace(budget.Resource),
+				Count:              restBudgetRowCount(budget, contributor),
+				Remaining:          restBudgetRowRemaining(budget),
+				Reset:              restBudgetRowReset(budget),
+				Status:             restBudgetRowStatus(budget, contributor),
+			})
+		}
+		return rows
+	}
 	if limits == nil || limits.RESTUsage == nil || len(limits.RESTUsage.Contributors) == 0 {
 		return nil
 	}
 	rows := make([]restBudgetContributorRow, 0, len(limits.RESTUsage.Contributors))
 	for _, contributor := range limits.RESTUsage.Contributors {
 		rows = append(rows, restBudgetContributorRow{
-			EndpointFamily: strings.TrimSpace(contributor.EndpointFamily),
-			Count:          formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
-			Remaining:      restContributorRemaining(contributor),
-			Reset:          restContributorReset(contributor),
-			Status:         restContributorStatus(contributor),
+			Consumer:           restBudgetConsumerLabel(contributor.Consumer),
+			CredentialIdentity: strings.TrimSpace(contributor.CredentialIdentity),
+			EndpointFamily:     strings.TrimSpace(contributor.EndpointFamily),
+			Resource:           strings.TrimSpace(contributor.Resource),
+			Count:              formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
+			Remaining:          restContributorRemaining(contributor),
+			Reset:              restContributorReset(contributor),
+			Status:             restContributorStatus(contributor),
 		})
 	}
 	return rows
+}
+
+func restBudgetRowKey(consumer string, credentialIdentity string, endpointFamily string, resource string) string {
+	return restBudgetConsumerLabel(consumer) + "\x00" + strings.TrimSpace(credentialIdentity) + "\x00" + strings.TrimSpace(endpointFamily) + "\x00" + strings.TrimSpace(resource)
+}
+
+func restBudgetConsumerLabel(consumer string) string {
+	consumer = strings.TrimSpace(consumer)
+	if consumer == "" {
+		return telemetry.RESTConsumerOrchestrator
+	}
+	return consumer
+}
+
+func restBudgetRowCount(budget telemetry.RESTBudget, contributor telemetry.RESTUsageContributor) string {
+	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerWorker {
+		return formatInt(budget.Used) + " used"
+	}
+	return formatInt(contributor.Count) + " " + pluralize("request", contributor.Count)
+}
+
+func restBudgetRowStatus(budget telemetry.RESTBudget, contributor telemetry.RESTUsageContributor) string {
+	if budget.MinRemainingReserve > 0 && budget.Remaining <= budget.MinRemainingReserve {
+		return "reserved"
+	}
+	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerWorker {
+		return "governed"
+	}
+	return restContributorStatus(contributor)
+}
+
+func restBudgetRowRemaining(budget telemetry.RESTBudget) string {
+	if budget.Limit > 0 {
+		return formatInt(budget.Remaining) + " / " + formatInt(budget.Limit)
+	}
+	return formatInt(budget.Remaining) + " left"
+}
+
+func restBudgetRowReset(budget telemetry.RESTBudget) string {
+	if budget.ResetAt == nil {
+		return "reset n/a"
+	}
+	return localTimeToken(*budget.ResetAt, LocalTimeOnly)
+}
+
+func restBudgetCredentialCount(limits *telemetry.RateLimits) int64 {
+	if limits == nil {
+		return 0
+	}
+	identities := make(map[string]struct{}, len(limits.GitHubRESTBudgets))
+	for _, budget := range limits.GitHubRESTBudgets {
+		identities[strings.TrimSpace(budget.CredentialIdentity)] = struct{}{}
+	}
+	return int64(len(identities))
 }
 
 func restContributorRemaining(contributor telemetry.RESTUsageContributor) string {

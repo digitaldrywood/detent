@@ -51,6 +51,30 @@ func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	}
 }
 
+func TestQueuedStateLabelDistinguishesCIWaitFromRetry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		row  telemetry.Queued
+		want string
+	}{
+		{name: "current-head CI wait", row: telemetry.Queued{QueueState: telemetry.QueueStateWaitingOnCI}, want: "Waiting on CI"},
+		{name: "failure retry", row: telemetry.Queued{QueueState: telemetry.QueueStateRetrying}, want: "Retrying"},
+		{name: "legacy retry", row: telemetry.Queued{}, want: "Retrying"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := queuedStateLabel(tt.row); got != tt.want {
+				t.Fatalf("queuedStateLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLifetimeOrphanRecoveryLabels(t *testing.T) {
 	t.Parallel()
 
@@ -488,6 +512,52 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 				t.Fatalf("gitHubAPIHealth().Endpoints = %#v, want no active endpoint backoff rows", got.Endpoints)
 			}
 		})
+	}
+}
+
+func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testing.T) {
+	t.Parallel()
+
+	coreReset := time.Date(2026, 8, 8, 19, 0, 0, 0, time.UTC)
+	searchReset := coreReset.Add(-45 * time.Minute)
+	limits := &telemetry.RateLimits{
+		GitHubRESTBudgets: []telemetry.RESTBudget{
+			{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Remaining: 300, Limit: 5000, ResetAt: &coreReset},
+			{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "github-rest:app", EndpointFamily: "worker credential", Resource: "core", Used: 4980, Remaining: 20, Limit: 5000, MinRemainingReserve: 1000, ResetAt: &searchReset},
+		},
+		RESTUsage: &telemetry.RESTUsage{Contributors: []telemetry.RESTUsageContributor{
+			{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Count: 4, LastStatus: 200},
+		}},
+	}
+
+	rows := restBudgetContributorRows(limits)
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want 2: %#v", len(rows), rows)
+	}
+	tests := []struct {
+		index      int
+		consumer   string
+		credential string
+		family     string
+		resource   string
+		count      string
+		status     string
+		remaining  string
+		resetAt    time.Time
+	}{
+		{index: 0, consumer: telemetry.RESTConsumerOrchestrator, credential: "github-rest:user", family: "issues", resource: "core", count: "4 requests", status: "200", remaining: "300 / 5,000", resetAt: coreReset},
+		{index: 1, consumer: telemetry.RESTConsumerWorker, credential: "github-rest:app", family: "worker credential", resource: "core", count: "4,980 used", status: "reserved", remaining: "20 / 5,000", resetAt: searchReset},
+	}
+	for _, test := range tests {
+		t.Run(test.family, func(t *testing.T) {
+			row := rows[test.index]
+			if row.Consumer != test.consumer || row.CredentialIdentity != test.credential || row.EndpointFamily != test.family || row.Resource != test.resource || row.Count != test.count || row.Status != test.status || row.Remaining != test.remaining || row.Reset != localTimeToken(test.resetAt, LocalTimeOnly) {
+				t.Fatalf("row = %#v, want credential %q family %q resource %q remaining %q reset %v", row, test.credential, test.family, test.resource, test.remaining, test.resetAt)
+			}
+		})
+	}
+	if got := restBudgetCredentialCount(limits); got != 2 {
+		t.Fatalf("restBudgetCredentialCount() = %d, want 2", got)
 	}
 }
 
@@ -2687,7 +2757,10 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 							SlowChecks: []telemetry.PullRequestCheck{
 								{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 							},
-							RunningChecks:    []string{"Test Coverage"},
+							RunningChecks: []string{"Test Coverage"},
+							UnstartedChecks: []telemetry.PullRequestCheck{
+								{Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+							},
 							CodexReviewState: "P2",
 						},
 					},
@@ -2737,7 +2810,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 			},
 			want: []pipelineCardSnapshot{
 				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until " + localTimeToken(retryAt, LocalTimeOnly)},
-				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / running Test Coverage", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
+				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / unstarted Portability Verify queued 47m 0s, never started / running Test Coverage", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#146", Title: "Cancelled today PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "45m 0s"},
@@ -2957,6 +3030,140 @@ func TestPRPipelineWaitDetailIncludesDispatchSkipReason(t *testing.T) {
 
 	if got := prPipelineWaitDetail(issue); got != "waiting on artifact gate status ('queued')" {
 		t.Fatalf("prPipelineWaitDetail() = %q, want artifact gate status", got)
+	}
+}
+
+func TestPRPipelineWaitDetailShowsCurrentMergeSubstate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 22, 13, 0, 0, time.UTC)
+	enteredAt := now.Add(-10 * time.Minute)
+	acquiredAt := now.Add(-9 * time.Minute)
+	ciWaitStartedAt := now.Add(-8 * time.Minute)
+	completedAt := now.Add(-time.Minute)
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  string
+	}{
+		{
+			name: "waiting for merge worker slot",
+			issue: telemetry.Issue{
+				State:       "Merging",
+				MergeTiming: &telemetry.MergeTiming{EnteredMergingAt: &enteredAt},
+			},
+			want: "waiting for merge worker slot since " + localTimeToken(enteredAt, LocalTimeOnly),
+		},
+		{
+			name: "waiting on named current-head checks",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					RunningChecks: []string{"Test Coverage", "Release"},
+					RequiredCheckFailures: []telemetry.PullRequestCheck{
+						{Name: "Test Coverage", Status: "in_progress"},
+						{Name: "Release", Status: "queued"},
+					},
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					CIWaitStartedAt:           &ciWaitStartedAt,
+				},
+			},
+			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": Test Coverage, Release",
+		},
+		{
+			name: "waiting on unstarted current-head check",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus: "pending",
+					UnstartedChecks: []telemetry.PullRequestCheck{
+						{Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+					},
+					RequiredCheckFailures: []telemetry.PullRequestCheck{
+						{Name: "Portability Verify", Status: "queued"},
+					},
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					CIWaitStartedAt:           &ciWaitStartedAt,
+				},
+			},
+			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": Portability Verify queued 47m 0s, never started",
+		},
+		{
+			name: "active merge without a blocking check",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:       "success",
+					MergeableState: "clean",
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+				},
+			},
+			want: "active merge since " + localTimeToken(acquiredAt, LocalTimeOnly),
+		},
+		{
+			name: "pending ci without a named check",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:       "pending",
+					MergeableState: "clean",
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					CIWaitStartedAt:           &ciWaitStartedAt,
+				},
+			},
+			want: "waiting on current-head CI since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly) + ": check name unavailable",
+		},
+		{
+			name: "waiting for mergeability computation",
+			issue: telemetry.Issue{
+				State: "Merging",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:       "success",
+					MergeableState: "unknown",
+				},
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &enteredAt,
+					MergeWorkerSlotAcquiredAt: &acquiredAt,
+					MergeStartedAt:            &ciWaitStartedAt,
+				},
+			},
+			want: "waiting for GitHub mergeability since " + localTimeToken(ciWaitStartedAt, LocalTimeOnly),
+		},
+		{
+			name: "terminal merge retains duration detail",
+			issue: telemetry.Issue{
+				State: "Done",
+				MergeTiming: &telemetry.MergeTiming{
+					MergedAt:                   &completedAt,
+					QueueWaitSeconds:           60,
+					ActiveMergeDurationSeconds: 480,
+					TotalMergingSeconds:        540,
+				},
+			},
+			want: "merge queue 1m 0s / active merge 8m 0s / total Merging 9m 0s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := prPipelineWaitDetail(tt.issue); got != tt.want {
+				t.Fatalf("prPipelineWaitDetail() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

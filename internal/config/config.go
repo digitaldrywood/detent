@@ -73,6 +73,7 @@ const (
 	DefaultOverloadRetryDelayMS              = 45000
 	DefaultMergeWorkerStartupTimeoutMS       = 4 * 60 * 1000
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
+	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
 
@@ -86,6 +87,7 @@ const (
 	DefaultStalenessRepeatedWindowHours   = 24
 	DefaultStalenessWebhookTimeoutMS      = 5000
 	DefaultStrandedActiveThresholdSeconds = 10 * 60
+	DefaultGitHubUnstartedSeconds         = 15 * 60
 	MaxStalenessRepeatedCount             = 500
 
 	defaultCodexProtocol                      = "app-server"
@@ -170,6 +172,7 @@ type Tracker struct {
 	GitHubRESTMinReserve        int                   `yaml:"github_rest_min_remaining_reserve"`
 	GitHubRESTFanoutMaxRequests int                   `yaml:"github_rest_fanout_max_requests"`
 	GitHubRESTDebugLogging      bool                  `yaml:"github_rest_debug_logging,omitempty"`
+	GitHubUnstartedSeconds      int                   `yaml:"github_unstarted_check_threshold_seconds"`
 	GitHubAppID                 string                `yaml:"github_app_id"`
 	GitHubAppPrivateKey         string                `yaml:"github_app_private_key"`
 	GitHubAppPrivateKeyPath     string                `yaml:"github_app_private_key_path"`
@@ -274,6 +277,9 @@ type Deliverable struct {
 type Worker struct {
 	SSHHosts                   []string `yaml:"ssh_hosts"`
 	MaxConcurrentAgentsPerHost *int     `yaml:"max_concurrent_agents_per_host"`
+	GitHubToken                string   `yaml:"github_token,omitempty"`
+	GitHubRESTMinReserve       int      `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTPollIntervalMS   int      `yaml:"github_rest_poll_interval_ms"`
 }
 
 type Agent struct {
@@ -351,7 +357,8 @@ type Shutdown struct {
 }
 
 type MergeFastPath struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled            bool `yaml:"enabled"`
+	FairnessAgeSeconds int  `yaml:"fairness_age_seconds"`
 }
 
 type Agents struct {
@@ -1248,6 +1255,7 @@ func Default() Config {
 			GitHubGraphQLMinReserve:     1000,
 			GitHubRESTMinReserve:        1000,
 			GitHubRESTFanoutMaxRequests: 80,
+			GitHubUnstartedSeconds:      DefaultGitHubUnstartedSeconds,
 			GitHubStatusSource:          GitHubStatusSourceProjectV2,
 			StatusField:                 "Status",
 			StatusLabelPrefix:           "detent:",
@@ -1292,7 +1300,9 @@ func Default() Config {
 			Source: DependencySourceMerged,
 		},
 		Worker: Worker{
-			SSHHosts: []string{},
+			SSHHosts:                 []string{},
+			GitHubRESTMinReserve:     1000,
+			GitHubRESTPollIntervalMS: 60000,
 		},
 		Agent: Agent{
 			MaxConcurrentAgents:         10,
@@ -1306,7 +1316,10 @@ func Default() Config {
 			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
 			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
 			StopRun:                     StopRun{TargetState: "Blocked"},
-			MergeFastPath:               MergeFastPath{Enabled: true},
+			MergeFastPath: MergeFastPath{
+				Enabled:            true,
+				FairnessAgeSeconds: DefaultMergeFairnessAgeSeconds,
+			},
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
@@ -1432,6 +1445,14 @@ func (c *Config) Validate() error {
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
+	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
+	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
+		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Worker.GitHubToken)) {
+	case "gh", "gh-auth", "${gh auth token}", "$(gh auth token)":
+		problems = append(problems, "worker.github_token must use a dedicated credential instead of ambient gh authentication")
+	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)
 	c.validateAgentInstructions(&problems)
@@ -1472,7 +1493,7 @@ func (c *Config) Validate() error {
 	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for retro")
 	}
-	problems = append(problems, ValidateRoutines("routines", c.Routines)...)
+	problems = append(problems, ValidateRoutines("routines", c.Routines, states)...)
 	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
 		problems = append(problems, "routines requires tracker.kind github or memory")
 	}
@@ -1622,6 +1643,9 @@ func (c *Config) normalize() {
 	if c.Agent.MergeWorkerMaxDurationMS == 0 {
 		c.Agent.MergeWorkerMaxDurationMS = DefaultMergeWorkerMaxDurationMS
 	}
+	if c.Agent.MergeFastPath.FairnessAgeSeconds == 0 {
+		c.Agent.MergeFastPath.FairnessAgeSeconds = DefaultMergeFairnessAgeSeconds
+	}
 	if c.Agent.FailureBreaker.SameClassLimit == 0 {
 		c.Agent.FailureBreaker.SameClassLimit = DefaultFailureBreakerSameClassLimit
 	}
@@ -1717,6 +1741,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_graphql_min_remaining_reserve", c.Tracker.GitHubGraphQLMinReserve, problems)
 	validatePositive("tracker.github_rest_min_remaining_reserve", c.Tracker.GitHubRESTMinReserve, problems)
 	validateNonNegative("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
+	validatePositive("tracker.github_unstarted_check_threshold_seconds", c.Tracker.GitHubUnstartedSeconds, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }
@@ -2022,6 +2047,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
 	validateLabelList(prefix+".dispatch_priority_by_label", a.DispatchPriorityByLabel, problems)
+	validatePositive(prefix+".merge_fast_path.fairness_age_seconds", a.MergeFastPath.FairnessAgeSeconds, problems)
 	a.AutoPromote.validate(prefix+".auto_promote", problems)
 	a.OutputTruncation.validate(prefix+".output_truncation", problems)
 	a.Budget.validate(prefix+".budget", problems)

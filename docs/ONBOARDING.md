@@ -482,9 +482,9 @@ git -C <source-root> rev-parse --show-toplevel
 ```
 
 Do not use a reference or tooling repository as the target. A wrong target repository failure example looks like this: the operator mentions
-`digitaldrywood/detent-orchestration` as an example config and
+`example/reference-config` as an example config and
 `customer/api` as the actual project, but the agent runs issue, label, board,
-or validation discovery against `digitaldrywood/detent-orchestration`. Stop,
+or validation discovery against `example/reference-config`. Stop,
 rewrite `TARGET_REPOSITORY=customer/api`, verify `TARGET_SOURCE_ROOT` points to
 that checkout, and rerun `detent onboarding validate-answers --phase identity`
 before discovery resumes.
@@ -729,7 +729,7 @@ recommendations before asking what to change.
    ```
 
 5. **Inspect open issue distribution.** Count candidate issues by label,
-   assignee, author, and milestone before recommending authorization and intake
+   assignee, author, and milestone before recommending authorization and backfill
    filters. Verify:
 
    ```sh
@@ -826,7 +826,34 @@ recommendations before asking what to change.
    jq -e 'type == "array"' "$ONBOARDING_DIR/priority-counts.json"
    ```
 
-8. **Record recommendations before the interview.** The recommendation must
+8. **Inspect repository merge settings.** Read the target repository's enabled
+   pull request merge methods and save them with the other discovery artifacts.
+   For an existing project definition, use the effective
+   `deliverable.merge_method`, including any `detent.local.yaml` override;
+   otherwise use the maintained template default of `squash`. The artifact
+   records whether the selected method is disabled or whether additional
+   methods remain enabled, either of which would make the repository fail the
+   merge-policy doctor check. Verify:
+
+   ```sh
+   TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+   TARGET_SOURCE_ROOT="$(awk -F= '/^TARGET_SOURCE_ROOT=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+   detent --format json onboarding inspect-merge-policy \
+     --source-root "$TARGET_SOURCE_ROOT" \
+     --repository "$TARGET_REPOSITORY" \
+     > "$ONBOARDING_DIR/repository-merge-policy.json"
+   jq -e '
+     (.selected_merge_method == "squash" or .selected_merge_method == "merge" or .selected_merge_method == "rebase")
+     and (.selection_source == "template_default" or .selection_source == "effective_project_definition")
+     and (.selected_method_enabled | type == "boolean")
+     and (.additional_methods_enabled | type == "boolean")
+     and (.allow_merge_commit | type == "boolean")
+     and (.allow_squash_merge | type == "boolean")
+     and (.allow_rebase_merge | type == "boolean")
+   ' "$ONBOARDING_DIR/repository-merge-policy.json"
+   ```
+
+9. **Record recommendations before the interview.** The recommendation must
    cite the discovery artifact that produced it. Verify:
 
    ```sh
@@ -840,12 +867,13 @@ recommendations before asking what to change.
      'gate: <gate recommendation, from gate-diagnostic.json and gate.txt>' \
      'concurrency: <max agents and Merging cap recommendation>' \
      'review_policy: <hard stop or auto-promote recommendation>' \
+     'merge_policy: <align-or-leave recommendation, from repository-merge-policy.json>' \
      'prompt: <template or repo-specific recommendation, from repo docs>' \
-     'intake: <bulk-add filter and initial Status recommendation>' \
+     'backfill: <bulk-add filter and initial Status recommendation>' \
      > "$ONBOARDING_DIR/recommendations.md"
    rg -n '^(mode|board|rate_budget|scheduling|authorization|dashboard_bind):' \
      "$ONBOARDING_DIR/recommendations.md"
-   rg -n '^(gate|concurrency|review_policy|prompt|intake):' \
+   rg -n '^(gate|concurrency|review_policy|merge_policy|prompt|backfill):' \
      "$ONBOARDING_DIR/recommendations.md"
    ```
 
@@ -862,7 +890,8 @@ human intent profile can explain the operating effect. After a named delivery
 profile supplies a field, skip the duplicate low-level question unless the
 operator asks for an advanced override.
 Ask or select the delivery profile before emitting low-level `KANBAN_MODE`
-defaults. For `GITHUB_MODE=label` add-project onboarding on an operator-owned
+defaults. Ask or select the work-intake profile before emitting its low-level
+fields. For `GITHUB_MODE=label` add-project onboarding on an operator-owned
 local or private Detent instance, recommend `KANBAN_MODE=integration` even when
 the pre-mutation `detent doctor --port 0` skipped write probes. Skipped
 pre-mutation write probes must not become a `read_only` recommendation;
@@ -1066,7 +1095,139 @@ probes.
    For Custom/advanced, do not write `DELIVERY_PROFILE`; continue through the
    lower-level fields below and record the operator's explicit mixed policy.
 
-6. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
+6. **Work intake policy.** Ask how work should enter the board immediately
+   after the delivery-policy question so the operator sees the inbound and
+   outbound automation choices together. Present the operating model before
+   showing any `answers.env` keys:
+
+   ```text
+   How should new work enter Detent's board?
+
+   1. Manual intake: humans file planned work, and implementer agents preserve out-of-scope discoveries in Backlog; Detent does not scan or promote that work automatically.
+   2. Assisted intake: Detent evaluates Backlog work against the project's admission criteria and proposes promotion to Todo for human approval.
+   3. Autonomous intake: Detent scans for stale TODOs, runs a scheduled repository-maintenance sweep, and automatically admits qualifying Backlog work at or above an explicit confidence floor.
+   ```
+
+   These profiles use only built-in Detent mechanisms. Do not configure Sentry,
+   Datadog, Slack, or generic webhook receivers as part of this question. The
+   built-in `stale-todos` scheduled scanner is included in autonomous intake.
+
+   Write the selected profile first:
+
+   ```sh
+   printf '%s\n' \
+     'INTAKE_PROFILE=<manual_intake|assisted_intake|autonomous_intake>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^INTAKE_PROFILE=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Then show the canonical keys as a secondary implementation mapping. Manual
+   intake expands to:
+
+   ```sh
+   printf '%s\n' \
+     'FOLLOWUPS_ENABLED=true' \
+     'BACKLOG_ADMISSION_ENABLED=false' \
+     'ROUTINES_ENABLED=false' \
+     'STALE_TODOS_ENABLED=false' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Assisted intake expands to:
+
+   ```sh
+   printf '%s\n' \
+     'FOLLOWUPS_ENABLED=true' \
+     'BACKLOG_ADMISSION_ENABLED=true' \
+     'BACKLOG_ADMISSION_SCHEDULE=*/15 * * * *' \
+     'BACKLOG_ADMISSION_SOURCE_STATE=Backlog' \
+     'BACKLOG_ADMISSION_TARGET_STATE=Todo' \
+     'BACKLOG_ADMISSION_CRITERIA_SECTION=Admission Criteria' \
+     'BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN=50' \
+     'BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN=3' \
+     'BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS=10' \
+     'BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS=7' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT=false' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE=0.9' \
+     'ROUTINES_ENABLED=false' \
+     'STALE_TODOS_ENABLED=false' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Autonomous intake expands to the same bounded admission settings, with
+   `BACKLOG_ADMISSION_AUTO_ADMIT=true`, plus:
+
+   ```sh
+   printf '%s\n' \
+     'FOLLOWUPS_ENABLED=true' \
+     'BACKLOG_ADMISSION_ENABLED=true' \
+     'BACKLOG_ADMISSION_SCHEDULE=*/15 * * * *' \
+     'BACKLOG_ADMISSION_SOURCE_STATE=Backlog' \
+     'BACKLOG_ADMISSION_TARGET_STATE=Todo' \
+     'BACKLOG_ADMISSION_CRITERIA_SECTION=Admission Criteria' \
+     'BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN=50' \
+     'BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN=3' \
+     'BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS=10' \
+     'BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS=7' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT=true' \
+     'BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE=0.9' \
+     'BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION=OWNER,MEMBER,COLLABORATOR' \
+     'ROUTINES_ENABLED=true' \
+     'ROUTINE_NAME=repository-maintenance' \
+     'ROUTINE_SCHEDULE=0 6 * * 1' \
+     'ROUTINE_PROMPT=Review the repository against the Admission Criteria in WORKFLOW.md. File only scoped findings with repository evidence and explicit acceptance criteria. Each issue body must include a fenced `detent-agent` block with `schema: 1` and a best-guess `effort` selected from the project rubric.' \
+     'STALE_TODOS_ENABLED=true' \
+     'STALE_TODOS_SCHEDULE=0 6 * * 1' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Admission-enabled profiles require the named shared `WORKFLOW.md` criteria
+   section. For Custom/advanced, omit `INTAKE_PROFILE` and record the
+   underlying keys directly.
+
+   Before leaving the work-intake interview, collect the project-owned prose
+   that onboarding will generate. For assisted or autonomous intake, ask the
+   operator what makes work aligned, ready, small enough for one agent run, and
+   safe to admit. Offer the repository discovery evidence as a starting point,
+   but require the operator to adapt or approve each criterion. Record each
+   answer as one sentence:
+
+   ```sh
+   printf '%s\n' \
+     'ADMISSION_ALIGNMENT_CRITERIA=<project goals, supported work, and explicit exclusions>' \
+     'ADMISSION_READINESS_CRITERIA=<required evidence and checkable completion conditions>' \
+     'ADMISSION_SIZE_CRITERIA=<largest acceptable single-agent change>' \
+     'ADMISSION_SAFETY_GATES=<dependencies, credentials, destructive actions, and project-specific safety checks>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^ADMISSION_(ALIGNMENT_CRITERIA|READINESS_CRITERIA|SIZE_CRITERIA|SAFETY_GATES)=' \
+     "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Ask every project, including manual-intake projects, how issue authors
+   should select reasoning effort. Calibrate the four tiers against concrete
+   repository examples and reserve `max` for explicit operator designation.
+   Record the operator-approved rubric:
+
+   ```sh
+   printf '%s\n' \
+     'EFFORT_MEDIUM_CRITERIA=<small, mechanical, tightly specified work>' \
+     'EFFORT_HIGH_CRITERIA=<standard feature or fix with ambiguity or cross-cutting impact>' \
+     'EFFORT_XHIGH_CRITERIA=<new subsystem or tricky state, concurrency, restart, recovery, or interaction work>' \
+     'EFFORT_MAX_CRITERIA=<exceptional work that only an operator may designate>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^EFFORT_(MEDIUM|HIGH|XHIGH|MAX)_CRITERIA=' \
+     "$ONBOARDING_DIR/answers.env"
+   ```
+
+   The workflow builder turns the admission answers into `## Admission
+   Criteria` with `### Alignment`, `### Readiness`, `### Size`, and `### Safety
+   Gates`, and sets `criteria_section` to the exact heading. It writes no
+   admission heading or dangling `criteria_section` key when admission is off.
+   It always creates or appends the operator-approved four-tier rubric in
+   `AGENTS.md`, without replacing existing content, and leaves `model` unset.
+   The four admission run ceilings are always written explicitly.
+
+7. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
    wants to override a selected profile's `KANBAN_MODE`, switch to
    Custom/advanced and remove or omit `DELIVERY_PROFILE` before recording the
    mixed policy: "Should Detent's project Kanban be read-only or allow GitHub
@@ -1090,7 +1251,7 @@ probes.
    rg '^KANBAN_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Scheduling.** Ask: "What `global.yaml` `priority` from 0-4 and `weight`
+8. **Scheduling.** Ask: "What `global.yaml` `priority` from 0-4 and `weight`
    should this project receive?" Show `$ONBOARDING_DIR/global-projects.txt`.
    Disambiguate this from the board `Priority` field: `global.yaml` `priority`
    ranks projects on the host; the board `Priority` field ranks issues inside
@@ -1106,7 +1267,7 @@ probes.
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Project color.** Ask: "Should this project have a fixed dashboard color,
+9. **Project color.** Ask: "Should this project have a fixed dashboard color,
    or should Detent assign one automatically?" Show
    `$ONBOARDING_DIR/global-projects.txt` so existing colors are discoverable.
    Explain that `projects[].color` is optional, accepts opaque CSS hex values
@@ -1121,7 +1282,7 @@ probes.
    rg '^PROJECT_COLOR=' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Dispatch label ordering.** Ask: "When two issues have the same configured
+10. **Dispatch label ordering.** Ask: "When two issues have the same configured
    `Priority`, should labels break the tie before age?" Show the label counts
    from `$ONBOARDING_DIR/issue-counts.json` and recommend an ordered list from
    labels that represent work type or risk, such as `bug`, `regression`, then
@@ -1138,7 +1299,7 @@ probes.
    rg '^DISPATCH_PRIORITY_BY_LABEL=' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Instance name.** Ask: "What optional instance name should appear in
+11. **Instance name.** Ask: "What optional instance name should appear in
    Detent browser tabs and the navbar?" Recommendation source: the short
    hostname, existing `global.identity.name`, and any operator naming
    convention for this host. Default if silent: the short hostname. Verify:
@@ -1151,7 +1312,7 @@ probes.
    rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
    ```
 
-11. **Authorization filters.** Ask: "Should Detent consider all board items or
+12. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -1191,7 +1352,7 @@ probes.
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-12. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+13. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -1208,7 +1369,7 @@ probes.
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-13. **Validation gate.** Ask for the gate kind and command: "Use the detected
+14. **Validation gate.** Ask for the gate kind and command: "Use the detected
    command, a custom command, or a human review label gate?" Ask the automated
    review subquestion only for Custom/advanced. If the operator wants to
    override a selected profile's `GATE_REQUIRE_AUTOMATED_REVIEW`, switch to
@@ -1242,7 +1403,7 @@ probes.
    behavior or cost control, but it must be reviewed and updated before the
    provider retires that model generation.
 
-14. **Worker model.** Ask: "Should Codex workers follow the provider default,
+15. **Worker model.** Ask: "Should Codex workers follow the provider default,
    or pin a specific model for this project?" Recommend provider default. It
    follows generation upgrades automatically, survives model retirements, and
    still produces accurate model telemetry from the Codex session. A pin is a
@@ -1274,7 +1435,7 @@ probes.
    accepts it. Treat it as an optional per-project Codex config override only
    after confirming the selected model supports the requested effort.
 
-15. **Concurrency.** Ask: "How many agents may this project run at once?"
+16. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -1318,7 +1479,7 @@ probes.
    roughly how many full-context turns fit; record it only when the operator
    explicitly requests that additional ceiling.
 
-16. **Review policy.** Ask this only for Custom/advanced. If the operator wants
+17. **Review policy.** Ask this only for Custom/advanced. If the operator wants
    to override a selected profile's `AUTO_PROMOTE_*`, switch to Custom/advanced
    and remove or omit `DELIVERY_PROFILE` before recording the mixed policy:
    "Should Detent hard-stop at `Human Review`, or may it auto-promote to
@@ -1358,7 +1519,7 @@ probes.
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-17. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
+18. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
    operator wants to override a selected profile's
    `DEPENDENCY_AUTO_UNBLOCK_ENABLED`, switch to Custom/advanced and remove or
    omit `DELIVERY_PROFILE` before recording the mixed policy: "Should
@@ -1385,7 +1546,7 @@ probes.
    rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
    ```
 
-18. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+19. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, manifests, and CI workflows
    in `<source-root>`. Default if silent: template prompt plus any repo
@@ -1411,20 +1572,46 @@ probes.
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-19. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+18a. **Repository merge settings.** Read the selected method and mismatch flags
+   from `$ONBOARDING_DIR/repository-merge-policy.json`. When additional methods
+   are enabled, ask: "GitHub currently permits methods beyond the selected
+   `<merge-method>` strategy. Agent-side auto-detection can choose different
+   methods and produce mixed history. Should onboarding align the repository so
+   only `<merge-method>` is enabled?" When the selected method itself is
+   disabled, explain that agents cannot complete the configured delivery
+   strategy and ask the same alignment question. Recommend alignment so the
+   first post-onboarding `detent doctor` run is clean, but make clear that this
+   changes repository settings and still requires Phase 2.5 mutation approval.
+   Declining is valid and does not block onboarding. Ask no question when the
+   repository already enables exactly the selected method. Record every
+   operator answer when a mismatch exists:
+
+   ```sh
+   jq '{selected_merge_method,selected_method_enabled,additional_methods_enabled}' \
+     "$ONBOARDING_DIR/repository-merge-policy.json"
+   printf '%s\n' \
+     'ALIGN_REPOSITORY_MERGE_SETTINGS=<true|false>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^ALIGN_REPOSITORY_MERGE_SETTINGS=(true|false)$' "$ONBOARDING_DIR/answers.env"
+   ```
+
+20. **Issue backfill.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
    filter to `Backlog`, then move one known issue to `Todo` for the smoke test.
+   This one-time backfill adds existing issues; it is separate from the ongoing
+   [`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake) feature,
+   which creates issues from external signals and scheduled scans.
    Verify:
 
    ```sh
    printf '%s\n' \
-     'INTAKE_GH_FLAGS=<gh-issue-list-flags>' \
+     'ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>' \
      'INITIAL_STATUS=<Backlog|Todo>' \
      'ENABLE_AUTO_ADD=<true|false>' \
      >> "$ONBOARDING_DIR/answers.env"
-   rg '^(INTAKE_GH_FLAGS|INITIAL_STATUS|ENABLE_AUTO_ADD)=' "$ONBOARDING_DIR/answers.env"
+   rg '^(ISSUE_BACKFILL_GH_FLAGS|INITIAL_STATUS|ENABLE_AUTO_ADD)=' "$ONBOARDING_DIR/answers.env"
    ```
 
 ## Phase 2.5 — Mutation Authorization
@@ -1437,6 +1624,10 @@ values mutation steps will read:
 
 ```sh
 detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write
+if jq -e '.selected_method_enabled == false or .additional_methods_enabled == true' \
+  "$ONBOARDING_DIR/repository-merge-policy.json" >/dev/null; then
+  rg '^ALIGN_REPOSITORY_MERGE_SETTINGS=(true|false)$' "$ONBOARDING_DIR/answers.env"
+fi
 ```
 
 Show the operator `$ONBOARDING_DIR/recommendations.md`, the plain-English
@@ -1513,6 +1704,45 @@ case "$GITHUB_MODE" in
 esac
 ```
 
+If the interview found repository merge-policy drift and the operator selected
+`ALIGN_REPOSITORY_MERGE_SETTINGS=true`, apply the alignment only after the gate
+above passes. These are the same three-flag PATCH forms that `detent doctor`
+recommends. Save the resulting settings as a post-mutation artifact. A recorded
+`false` answer skips this mutation and does not block the remaining onboarding
+steps:
+
+```sh
+ALIGN_REPOSITORY_MERGE_SETTINGS="$(awk -F= '/^ALIGN_REPOSITORY_MERGE_SETTINGS=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+if test "$ALIGN_REPOSITORY_MERGE_SETTINGS" = "true"; then
+  detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
+  rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+  awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+  TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+  DELIVERABLE_MERGE_METHOD="$(jq -r '.selected_merge_method' "$ONBOARDING_DIR/repository-merge-policy.json")"
+  case "$DELIVERABLE_MERGE_METHOD" in
+    merge)
+      gh api --method PATCH "repos/$TARGET_REPOSITORY" -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false
+      ;;
+    squash)
+      gh api --method PATCH "repos/$TARGET_REPOSITORY" -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false
+      ;;
+    rebase)
+      gh api --method PATCH "repos/$TARGET_REPOSITORY" -F allow_merge_commit=false -F allow_squash_merge=false -F allow_rebase_merge=true
+      ;;
+    *)
+      printf 'invalid selected merge method: %s\n' "$DELIVERABLE_MERGE_METHOD" >&2
+      exit 1
+      ;;
+  esac
+  gh api "repos/$TARGET_REPOSITORY" \
+    --jq '{allow_merge_commit,allow_squash_merge,allow_rebase_merge}' \
+    > "$ONBOARDING_DIR/repository-merge-settings.after.json"
+else
+  printf '{"applied":false,"reason":"operator declined or alignment was not needed"}\n' \
+    > "$ONBOARDING_DIR/repository-merge-settings.after.json"
+fi
+```
+
 Only after this gate passes and the operator has confirmed mutation may doctor
 run configured write probes. Use `--port 0` when an existing service already
 owns the dashboard port:
@@ -1537,6 +1767,40 @@ rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
 detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
+
+Create the repository labels referenced by the generated escape-hatch config
+for every GitHub status-source mode. Read the existing inventory first and do
+not pass `--force`: an existing label with the same case-insensitive name must
+be left unchanged. The helper also remains available for the status-label step
+below when `GITHUB_MODE=label`:
+
+```sh
+TARGET_REPOSITORY="$(awk -F= '/^TARGET_REPOSITORY=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+AUTO_PROMOTE_OPTOUT_LABEL="$(awk -F= '/^AUTO_PROMOTE_OPTOUT_LABEL=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+MAX_SESSION_TOKEN_OVERRIDE_LABEL="$(awk -F= '/^MAX_SESSION_TOKEN_OVERRIDE_LABEL=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+test -n "$AUTO_PROMOTE_OPTOUT_LABEL" || AUTO_PROMOTE_OPTOUT_LABEL=requires-human-review
+test -n "$MAX_SESSION_TOKEN_OVERRIDE_LABEL" || MAX_SESSION_TOKEN_OVERRIDE_LABEL=allow-large-session
+
+gh api "repos/$TARGET_REPOSITORY/labels" --paginate --jq '.[].name' \
+  > "$ONBOARDING_DIR/repo-labels.txt"
+
+create_label_if_missing() {
+  label_name="$1"
+  label_color="$2"
+  label_description="$3"
+  if rg -Fxi -- "$label_name" "$ONBOARDING_DIR/repo-labels.txt" >/dev/null; then
+    return
+  fi
+  gh label create "$label_name" --repo "$TARGET_REPOSITORY" \
+    --color "$label_color" --description "$label_description"
+  printf '%s\n' "$label_name" >> "$ONBOARDING_DIR/repo-labels.txt"
+}
+
+create_label_if_missing "$AUTO_PROMOTE_OPTOUT_LABEL" b60205 \
+  "Excludes an issue from Detent auto-promotion."
+create_label_if_missing "$MAX_SESSION_TOKEN_OVERRIDE_LABEL" fbca04 \
+  "Allows an issue to exceed the configured agent session token ceiling."
 ```
 
 Before any ProjectV2 board mutation such as `gh project create`, `gh project
@@ -1841,26 +2105,27 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      "$ONBOARDING_DIR/repo-labels.sorted.txt"
    ```
 
-   If `comm` prints missing labels and you are using the default prefix, create
-   them before starting Detent:
+   If `comm` prints missing labels, create them before starting Detent. Reuse
+   the idempotent `create_label_if_missing` helper defined above so existing
+   labels are not overwritten:
 
    ```sh
-   gh label create detent:backlog --repo <repo-owner>/<repo-name> \
-     --color cfd3d7 --description "Not ready for Detent dispatch."
-   gh label create detent:todo --repo <repo-owner>/<repo-name> \
-     --color cfd3d7 --description "Ready for Detent dispatch."
-   gh label create detent:in-progress --repo <repo-owner>/<repo-name> \
-     --color fbca04 --description "Work is currently active."
-   gh label create detent:blocked --repo <repo-owner>/<repo-name> \
-     --color d73a4a --description "Cannot continue without human input."
-   gh label create detent:human-review --repo <repo-owner>/<repo-name> \
-     --color 6f42c1 --description "Waiting for human review."
-   gh label create detent:rework --repo <repo-owner>/<repo-name> \
-     --color d93f0b --description "Changes are requested before review can continue."
-   gh label create detent:merging --repo <repo-owner>/<repo-name> \
-     --color 6f42c1 --description "Approved work is being integrated."
-   gh label create detent:done --repo <repo-owner>/<repo-name> \
-     --color 0e8a16 --description "Work is complete."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}backlog" cfd3d7 \
+     "Not ready for Detent dispatch."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}todo" cfd3d7 \
+     "Ready for Detent dispatch."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}in-progress" fbca04 \
+     "Work is currently active."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}blocked" d73a4a \
+     "Cannot continue without human input."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}human-review" 6f42c1 \
+     "Waiting for human review."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}rework" d93f0b \
+     "Changes are requested before review can continue."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}merging" 6f42c1 \
+     "Approved work is being integrated."
+   create_label_if_missing "${STATUS_LABEL_PREFIX}done" 0e8a16 \
+     "Work is complete."
    ```
 
    For a custom `STATUS_LABEL_PREFIX` or custom workflow states, generate the
@@ -1870,8 +2135,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
 ## Phase 4 — Author detent.yaml And WORKFLOW.md
 
-Before writing, overwriting, or editing `<source-root>/detent.yaml` or
-`<source-root>/WORKFLOW.md`, rerun:
+Before writing, overwriting, or editing `<source-root>/detent.yaml`,
+`<source-root>/WORKFLOW.md`, or `<source-root>/AGENTS.md`, rerun:
 
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
@@ -1881,8 +2146,8 @@ rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
 
-1. **Fetch the selected mode template pair.** Read both existing files first if
-   either is
+1. **Build from the selected mode template pair.** Read all three existing files
+   first if any are
    present; this runbook is for from-zero repositories, so do not overwrite a
    human-authored contract without explicit approval. The maintained templates
    are paired `docs/templates/detent.project_v2.yaml` and
@@ -1910,13 +2175,25 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      project_v2|issue_field|label) ;;
      *) printf 'invalid GITHUB_MODE: %s\n' "$GITHUB_MODE" >&2; exit 1 ;;
    esac
-   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/WORKFLOW.${GITHUB_MODE}.md" \
-     -o <source-root>/WORKFLOW.md
-   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/detent.${GITHUB_MODE}.yaml" \
-     -o <source-root>/detent.yaml
+   detent onboarding build-workflow \
+     --answers "$ONBOARDING_DIR/answers.env" \
+     --target-source-root <source-root> \
+     --output <source-root>/WORKFLOW.md
+   detent onboarding build-workflow \
+     --answers "$ONBOARDING_DIR/answers.env" \
+     --target-source-root <source-root> \
+     --output <source-root>/WORKFLOW.md \
+     --write
    rg -n "github_status_source: ${GITHUB_MODE}|^tracker:|^workspace:|^agent:" <source-root>/detent.yaml
    test -s <source-root>/WORKFLOW.md
+   test -s <source-root>/AGENTS.md
    ```
+
+   The preview shows all three generated artifacts. With `--write`, the builder
+   creates `detent.yaml` and `WORKFLOW.md`, creates `AGENTS.md` when absent, or
+   appends the effort section to the existing file after reading it. Do not use
+   the raw template download path for mutation because it omits the
+   operator-owned generated sections.
 
    When adding Detent to a repository that already has a `WORKFLOW.md`, audit
    the existing prompt body instead of replacing it blindly. Add or tighten the
@@ -2294,7 +2571,18 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an
    additional token-consumption backstop because cached context is counted
    again on every Codex turn. A small multiplier can terminate otherwise
-   healthy sessions after only a few full-context turns. Keep
+   healthy sessions after only a few full-context turns. Whenever
+   `MAX_SESSION_TOKENS` is positive, record the per-issue escape hatch that the
+   generated config will reference:
+
+   ```sh
+   printf '%s\n' \
+     'MAX_SESSION_TOKEN_OVERRIDE_LABEL=allow-large-session' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^MAX_SESSION_TOKEN_OVERRIDE_LABEL=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Keep
    `agent.no_progress_token_limit` positive as the cross-session brake,
    especially when `budget.billing_mode: subscription` makes USD controls
    inert.
@@ -2582,11 +2870,32 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    issue by default. Set `tracker.write_probe_issue` in label mode only for
    legacy/deep issue-object proof; after switching away from an old scratch
    issue, remove its Detent status label or close it so it stops appearing as
-   board work.
+   board work. Before doctor, verify the generated project guidance. Admission
+   must name the exact generated heading and all four subsections when enabled;
+   admission-disabled projects must not retain a dangling `criteria_section`.
+   Every project must carry the four-tier effort rubric in `AGENTS.md`.
    Verify:
 
    ```sh
-   detent doctor --allow-write-probes
+   test -s <source-root>/AGENTS.md
+   rg -n '^## Issue effort selection$|^```detent-agent$|^- `(medium|high|xhigh|max)`' \
+     <source-root>/AGENTS.md
+   if rg -q '^backlog_admission:' <source-root>/detent.yaml; then
+     CRITERIA_SECTION="$(
+       sed -n 's/^[[:space:]]*criteria_section:[[:space:]]*//p' \
+         <source-root>/detent.yaml | head -n 1 | tr -d '"'
+     )"
+     test -n "$CRITERIA_SECTION"
+     rg -Fx "## $CRITERIA_SECTION" <source-root>/WORKFLOW.md
+     rg -n '^### (Alignment|Readiness|Size|Safety Gates)$' \
+       <source-root>/WORKFLOW.md
+   else
+     ! rg -q '^[[:space:]]*criteria_section:' <source-root>/detent.yaml
+   fi
+   detent doctor --allow-write-probes \
+     | tee "$ONBOARDING_DIR/doctor-preflight.txt"
+   ! rg -q 'contain no detent-agent guidance' \
+     "$ONBOARDING_DIR/doctor-preflight.txt"
    ```
 
 5. **Verify the systemd service PATH when Detent runs as a user service.**
@@ -2630,7 +2939,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    throwaway worktree with the same service PATH before moving an issue to
    `Todo`.
 
-## Phase 6 — Issue Intake
+## Phase 6 — Issue Backfill
 
 Before adding issues to a ProjectV2 board, setting issue-field values, changing
 status labels, or enabling ProjectV2 auto-add, rerun:
@@ -2638,7 +2947,7 @@ status labels, or enabling ProjectV2 auto-add, rerun:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
-rg '^INTAKE_GH_FLAGS=' "$ONBOARDING_DIR/answers.env"
+rg '^ISSUE_BACKFILL_GH_FLAGS=' "$ONBOARDING_DIR/answers.env"
 rg '^INITIAL_STATUS=' "$ONBOARDING_DIR/answers.env"
 detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
@@ -2664,14 +2973,14 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      "$ONBOARDING_DIR/repo-labels.txt"
    ```
 
-2. **ProjectV2 intake: bulk-add issues by the selected filter and set initial
+2. **ProjectV2 backfill: bulk-add issues by the selected filter and set initial
    `Status`.** Run only when `GITHUB_MODE=project_v2`. Use the exact
-   `gh issue list` flags from the intake answer. Use `Backlog` for broad intake
+   `gh issue list` flags from the backfill answer. Use `Backlog` for broad backfill
    and `Todo` only for work that should dispatch immediately. This verifies the
    write `project` scope if no earlier board creation, linking, field creation,
    or item edit has already done so.
    `gh project item-add` and `gh project item-edit` are GraphQL mutations, so
-   do not start a broad intake when the budget warning from Phase 1 is still
+   do not start a broad backfill when the budget warning from Phase 1 is still
    unresolved. Verify with one cached inventory after the mutations finish:
 
    ```sh
@@ -2682,9 +2991,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
    gh project field-list <project-number> --owner <project-owner> --format json \
-     > "$ONBOARDING_DIR/project-fields.intake.json"
-   STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.intake.json")"
-   STATUS_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "<initial-status>") | .id' "$ONBOARDING_DIR/project-fields.intake.json")"
+     > "$ONBOARDING_DIR/project-fields.backfill.json"
+   STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.backfill.json")"
+   STATUS_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "<initial-status>") | .id' "$ONBOARDING_DIR/project-fields.backfill.json")"
 
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
      --limit 1000 --json url --jq '.[].url' |
@@ -2698,13 +3007,13 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    done
 
    gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
-     > "$ONBOARDING_DIR/project-items.after-intake.json"
+     > "$ONBOARDING_DIR/project-items.after-backfill.json"
    jq '[.items[] | select(.content.repository == "<repo-owner>/<repo-name>" and .status == "<initial-status>")] | length' \
-     "$ONBOARDING_DIR/project-items.after-intake.json"
+     "$ONBOARDING_DIR/project-items.after-backfill.json"
    ```
 
-3. **Issue-field intake: set initial issue-field Status on selected issues.**
-   Run only when `GITHUB_MODE=issue_field`. Use `Backlog` for broad intake and
+3. **Issue-field backfill: set initial issue-field Status on selected issues.**
+   Run only when `GITHUB_MODE=issue_field`. Use `Backlog` for broad backfill and
    `Todo` only for work that should dispatch immediately. Issue-field writes
    can trigger notifications and secondary rate limits, so keep broad edits
    deliberate and use `detent doctor --allow-write-probes` to prove the write
@@ -2729,12 +3038,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    done
 
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
-     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-intake.json"
-   jq '. | length' "$ONBOARDING_DIR/issues.after-intake.json"
+     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-backfill.json"
+   jq '. | length' "$ONBOARDING_DIR/issues.after-backfill.json"
    ```
 
-4. **Label intake: set the initial status label on selected issues.** Run only
-   when `GITHUB_MODE=label`. Use `Backlog` for broad intake and `Todo` only for
+4. **Label backfill: set the initial status label on selected issues.** Run only
+   when `GITHUB_MODE=label`. Use `Backlog` for broad backfill and `Todo` only for
    work that should dispatch immediately. Each issue should have exactly one
    configured status label with the selected prefix. Preserve ordinary labels
    such as `documentation`, `bug`, or `enhancement`; remove only labels that
@@ -2772,8 +3081,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    gh issue list --repo <repo-owner>/<repo-name> --state open \
      --label "$STATUS_LABEL" <chosen-gh-issue-list-flags> \
-     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-intake.json"
-   jq '. | length' "$ONBOARDING_DIR/issues.after-intake.json"
+     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-backfill.json"
+   jq '. | length' "$ONBOARDING_DIR/issues.after-backfill.json"
    ```
 
 5. **Optionally enable ProjectV2 auto-add.** Run only when
@@ -2886,7 +3195,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    TODO_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
    STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
-   ITEMS_JSON="$ONBOARDING_DIR/project-items.after-intake.json"
+   ITEMS_JSON="$ONBOARDING_DIR/project-items.after-backfill.json"
    if ! test -f "$ITEMS_JSON"; then
      gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
        > "$ONBOARDING_DIR/project-items.smoke.json"
@@ -3146,13 +3455,23 @@ the card instead of auto-resolving it.
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `detent.yaml`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `detent.yaml`. |
 | Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `detent.yaml`. |
-| Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. |
+| Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. Onboarding records the repository's enabled methods and, with explicit interview and mutation approval, aligns GitHub to the selected method. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `detent.yaml`. |
 | Session catastrophe bounds | `agent.max_turns`, `agent.max_session_duration_ms`, and `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
+| Work-intake profile | `INTAKE_PROFILE` selects `manual_intake`, `assisted_intake`, or `autonomous_intake`. |
+| Implementer follow-ups | `FOLLOWUPS_ENABLED` maps to `agent.followups.enabled`. |
+| Backlog admission switch and cadence | `BACKLOG_ADMISSION_ENABLED` and `BACKLOG_ADMISSION_SCHEDULE` map to `backlog_admission.enabled` and `backlog_admission.schedule`. |
+| Backlog admission path | `BACKLOG_ADMISSION_SOURCE_STATE`, `BACKLOG_ADMISSION_TARGET_STATE`, and `BACKLOG_ADMISSION_CRITERIA_SECTION` map to `backlog_admission.sources.states`, `target_state`, and `criteria_section`. |
+| Backlog admission ceilings | `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN`, `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN`, `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS`, and `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` map to the same-named lower-case `backlog_admission` keys. |
+| Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`; `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` maps to the trusted `backlog_admission.authors.allow_association` scopes. |
+| Admission criteria prose | `ADMISSION_ALIGNMENT_CRITERIA`, `ADMISSION_READINESS_CRITERIA`, `ADMISSION_SIZE_CRITERIA`, and `ADMISSION_SAFETY_GATES` generate the matching `WORKFLOW.md` subsections when admission is enabled. |
+| Issue effort rubric | `EFFORT_MEDIUM_CRITERIA`, `EFFORT_HIGH_CRITERIA`, `EFFORT_XHIGH_CRITERIA`, and `EFFORT_MAX_CRITERIA` generate the four-tier `detent-agent` rubric in `AGENTS.md`; `model` remains unset. |
+| Scheduled repository routine | `ROUTINES_ENABLED`, `ROUTINE_NAME`, `ROUTINE_SCHEDULE`, and `ROUTINE_PROMPT` control the generated `routines` entry. |
+| Built-in stale-TODO intake | `STALE_TODOS_ENABLED` and `STALE_TODOS_SCHEDULE` control the generated scheduled `intake.sources` scanner. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |
-| Intake filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
+| Backfill filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
 | Initial issue status | ProjectV2 or issue-field `Status` value, or one status label in label mode, usually `Backlog` or `Todo`. |
 
 ### What A Good Detent Issue Looks Like

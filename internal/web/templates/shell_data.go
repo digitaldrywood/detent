@@ -1,6 +1,9 @@
 package templates
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +28,57 @@ type appNavGroup struct {
 	ID    string
 	Label string
 	Items []appNavItem
+}
+
+type SSEFingerprint [sha256.Size]byte
+
+type appSidebarFingerprint struct {
+	NavGroups  []appNavGroup
+	HealthKind primitives.Kind
+	Projects   []appShellProject
+}
+
+type gitHubAPIHealthSidebarFingerprint struct {
+	State  gitHubAPIHealthState
+	Label  string
+	Active bool
+}
+
+func AppSidebarFingerprint(data DashboardShellData) (SSEFingerprint, error) {
+	projects := appShellProjects(data)
+	if len(projects) <= 1 {
+		projects = nil
+	}
+	fingerprint, err := sseFingerprint(appSidebarFingerprint{
+		NavGroups:  appShellNavGroups(data),
+		HealthKind: appShellHealthKind(data),
+		Projects:   projects,
+	})
+	if err != nil {
+		return SSEFingerprint{}, fmt.Errorf("fingerprint app sidebar: %w", err)
+	}
+	return fingerprint, nil
+}
+
+func GitHubAPIHealthSidebarFingerprint(data DashboardShellData) (SSEFingerprint, error) {
+	health := gitHubAPIHealth(data.Snapshot)
+	fingerprint, err := sseFingerprint(gitHubAPIHealthSidebarFingerprint{
+		State:  health.State,
+		Label:  health.Label,
+		Active: sidebarStaticNavActive(data, "health"),
+	})
+	if err != nil {
+		return SSEFingerprint{}, fmt.Errorf("fingerprint GitHub API health sidebar item: %w", err)
+	}
+	return fingerprint, nil
+}
+
+func sseFingerprint(value any) (SSEFingerprint, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return SSEFingerprint{}, fmt.Errorf("marshal component view: %w", err)
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 func appShellNavGroups(data DashboardShellData) []appNavGroup {

@@ -70,6 +70,10 @@ instead of built-in Go behavior.
 routines:
   - name: dependency-audit
     schedule: "0 3 * * 1"
+    target_state: Todo
+    labels: [dependency, bug]
+    max_findings_per_run: 3
+    max_open_findings: 10
     prompt: |
       Apply the dependency-audit criteria in the Maintenance section below.
       Propose only actionable upgrades with repository evidence and explicit
@@ -79,6 +83,13 @@ routines:
     prompt: |
       Inspect the configured test history and repository guidance for repeatable
       flaky-test findings. Ignore isolated failures without supporting evidence.
+  - name: feature-sweep
+    schedule: "0 5 * * 1"
+    target_state: Backlog
+    labels: [feature, requires-human-review]
+    prompt: |
+      Propose only features supported by the configured product-intent source.
+      Label each proposal feature and requires-human-review.
 ```
 
 Names are normalized labels and must be unique. Schedules are standard
@@ -88,12 +99,36 @@ directly or point the agent to a named section or file in the repository.
 Invalid blocks fail workflow validation and appear as `detent doctor` workflow
 errors.
 
+`max_findings_per_run` defaults to `3` and is the hard maximum Detent will file
+from one run. `max_open_findings` defaults to `10` and stops a routine from
+filing more work when that many issues filed by the same routine remain open.
+Both values must be greater than zero. These limits are enforced after proposal
+validation and deduplication and immediately before issue creation, regardless
+of what the routine prompt asks the agent to do.
+
+`target_state` names any configured workflow state and defaults to `Todo`.
+`labels` is the allowlist for labels requested by that routine's agent
+proposals. Detent normalizes and deduplicates the configured labels, intersects
+each proposal's labels with that allowlist, and drops labels the agent was not
+authorized to grant itself. An empty allowlist therefore permits no
+agent-supplied labels. A routine that targets `Todo` retains the existing
+`detent:todo` filing behavior when both fields are omitted.
+
 When a routine is enabled or its schedule changes, its first run is the next
 scheduled occurrence; Detent does not replay missed occurrences. Each run uses
 a fresh read-only agent session. The agent proposes zero or more findings with
-a stable `dedup_key`, title, and issue body. Detent validates those proposals,
-files accepted findings with the `detent:todo` label in `Todo`, and leaves
-normal onboarding to the existing board loop.
+a stable `dedup_key`, title, issue body, and optional labels. Detent validates
+those proposals, files accepted findings in the configured target state with
+only allowed labels, and leaves normal onboarding to the existing board loop.
+
+The default `Todo` target bypasses Backlog and backlog admission, including
+admission's author allowlist and proposal decision step, exactly as before.
+A routine targeting `Backlog` instead enters the normal admission path. For a
+feature routine, allowlist the project's `agent.auto_promote.optout_label`,
+require proposals to request it, and keep the admission default propose-only so
+an omitted or unknown label also remains held. The opt-out label stays on an
+accepted issue and makes `agent.auto_promote` wait for human review later in the
+delivery flow.
 
 Filed issue bodies carry a project/routine/key fingerprint. A later run with the
 same fingerprint skips filing while the matching issue is open, including when
@@ -101,10 +136,11 @@ that issue has moved to another configured board state. Closing the issue allows
 a future recurrence to file a new issue. Multiple identical proposals in one
 run are also collapsed.
 
-The runtime store records the scheduled, started, and completed times, filed
-and deduplicated counts, issue references, and any failure for every run.
-`detent doctor` shows the latest result for each configured routine, warns when
-a routine has never run, and flags three consecutive failures. ProjectV2
+The runtime store records the scheduled, started, and completed times; proposed,
+filed, deduplicated, and safety-limited counts; issue references; and any failure
+for every run. `detent doctor` shows the latest result for each configured
+routine, warns when a routine has never run, and flags three consecutive
+failures or three consecutive runs that hit a finding ceiling. ProjectV2
 trackers must set `tracker.repository` so Detent can create the repository issue
 before adding it to the board.
 
@@ -143,6 +179,9 @@ backlog_admission:
   max_open_proposals: 10
   proposal_expiry_days: 7
   auto_admit: false
+  auto_admit_by_label:
+    evidenced-defect: true
+    requires-human-review: false
   auto_admit_min_confidence: 0.90
 ```
 
@@ -157,6 +196,24 @@ Sentry or Dependabot even when no repository labeling action runs. It is
 unsupported for `project_v2`, `issue_field`, `github_local`, and non-GitHub
 trackers because those status models do not define the same missing-label
 condition.
+
+`auto_admit` remains the project default and accepts the same boolean form as
+before. `auto_admit_by_label` optionally overrides that default for issues
+carrying a configured label. A matching `true` rule enables automatic admission
+when the proposal also meets `auto_admit_min_confidence`; a matching `false`
+rule always holds the proposal regardless of confidence. If several rules
+match, any `false` rule wins. Issues with only unknown labels use the project
+default. Label policies require a tracker mode that supplies complete issue
+labels, so GitHub ProjectV2 rejects this configuration rather than evaluating a
+partial label set.
+
+Use automatic admission only for classes whose evidence is contained in the
+artifact and can be falsified during implementation, such as reproducible bugs
+or bounded technical debt. Keep feature and product-direction classes
+propose-only: their legitimacy depends on user needs, roadmap, support signal,
+or other product intent that source code and model confidence cannot establish.
+The safest mixed policy is `auto_admit: false` with explicit `true` overrides
+for evidenced classes and explicit `false` rules for product-decision labels.
 
 Admission reads every enabled selector through the candidate-reader contract.
 The tracker declares selector support, reads pages inside a hard per-run bound,

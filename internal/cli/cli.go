@@ -128,17 +128,18 @@ type configPathResult struct {
 }
 
 type projectResult struct {
-	ID               string `json:"id"`
-	Workflow         string `json:"workflow"`
-	WorkflowRef      string `json:"workflow_ref,omitempty"`
-	Workdir          string `json:"workdir"`
-	Weight           int    `json:"weight"`
-	Priority         int    `json:"priority"`
-	Paused           bool   `json:"paused"`
-	PausedReason     string `json:"paused_reason,omitempty"`
-	PausedUntilIssue string `json:"paused_until_issue,omitempty"`
-	PausedUntil      string `json:"paused_until,omitempty"`
-	CredentialRef    string `json:"credential_ref,omitempty"`
+	ID                    string                 `json:"id"`
+	Workflow              string                 `json:"workflow"`
+	WorkflowRef           string                 `json:"workflow_ref,omitempty"`
+	Workdir               string                 `json:"workdir"`
+	Weight                int                    `json:"weight"`
+	Priority              int                    `json:"priority"`
+	Paused                bool                   `json:"paused"`
+	PausedReason          string                 `json:"paused_reason,omitempty"`
+	PausedUntilIssue      string                 `json:"paused_until_issue,omitempty"`
+	PausedUntil           string                 `json:"paused_until,omitempty"`
+	CredentialRef         string                 `json:"credential_ref,omitempty"`
+	GlobalConfigGitStatus *globalConfigGitStatus `json:"global_config_git,omitempty"`
 }
 
 type projectPausedResult struct {
@@ -452,6 +453,7 @@ detent --format json config path`),
 		newDevRuntimeCommand(&host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
+		newRefreshProjectCommand(&configPath, opts),
 		newPauseProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
 			clearProjectPause(project)
@@ -786,6 +788,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 			if err := opts.write(path, global); err != nil {
 				return err
 			}
+			gitStatus := inspectGlobalConfigGit(cmd.Context(), path, opts.runCommand)
 			if err := opts.signal(cmd.Context(), Signal{
 				Operation: OperationAddProject,
 				ProjectID: cfg.ID,
@@ -793,7 +796,11 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			return out.Write(nil, newProjectResult(cfg))
+			result := newProjectResult(cfg)
+			result.GlobalConfigGitStatus = gitStatus
+			return out.Write(func(w io.Writer) error {
+				return writeProjectRegistrationPretty(w, path, result)
+			}, result)
 		},
 	}
 	cmd.Flags().StringVar(&cfg.ID, "id", "", "project id")
@@ -1158,6 +1165,23 @@ func newProjectResult(project globalconfig.Project) projectResult {
 		PausedUntil:      project.PausedUntil,
 		CredentialRef:    project.CredentialRef,
 	}
+}
+
+func writeProjectRegistrationPretty(w io.Writer, path string, result projectResult) error {
+	if result.GlobalConfigGitStatus == nil {
+		return nil
+	}
+	status := result.GlobalConfigGitStatus
+	lines := []string{
+		fmt.Sprintf("project %s registered in %s", result.ID, path),
+		"global_config_repository: " + status.RepositoryRoot,
+		"global_config_status: " + status.trackedStatus(),
+	}
+	if status.Dirty {
+		lines = append(lines, "warning: "+globalConfigGitDurabilityWarning(status.RepositoryRoot))
+	}
+	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
+	return err
 }
 
 func projectEditResult(operation Operation, project globalconfig.Project) any {

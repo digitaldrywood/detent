@@ -50,7 +50,12 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		wantFailedRemoved  []string
 		wantConsecutive    int
 		wantBlockReason    string
+		wantRejectedRef    string
 		workpadHumanAction string
+		workpadBlockerRef  string
+		resolvedBlockers   []connector.Issue
+		completionErr      error
+		wantClaimed        bool
 		refreshedState     string
 		pullRequestUpdated bool
 	}{
@@ -171,6 +176,75 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:       true,
 		},
 		{
+			name:         "third clean dependency wait defers without tripping limit",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressDependencyDeferralHistoryAttempt(2, "digitaldrywood/detent#134", "Todo"),
+				implementProgressDependencyDeferralHistoryAttempt(1, "digitaldrywood/detent#134", "Todo"),
+			},
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalSuccess,
+			wantReason:        "dependency_deferral",
+			workpadBlockerRef: "digitaldrywood/detent#134",
+			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Todo"}},
+			wantLogContains:   "",
+			wantConsecutive:   0,
+			wantBlocked:       false,
+			wantRetry:         false,
+		},
+		{
+			name:              "dependency deferral persistence failure retains claim",
+			runningIssue:      implementProgressIssueWithoutPR(),
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalSuccess,
+			wantReason:        "dependency_deferral",
+			workpadBlockerRef: "digitaldrywood/detent#134",
+			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Todo"}},
+			completionErr:     errors.New("attempt store unavailable"),
+			wantClaimed:       true,
+			wantLogContains:   "complete work attempt failed",
+		},
+		{
+			name:              "malformed blocker ref counts as no progress",
+			runningIssue:      implementProgressIssueWithoutPR(),
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalNoProgress,
+			wantReason:        "completed_clean_diff_without_pull_request",
+			wantConsecutive:   1,
+			workpadBlockerRef: "fabricated-ref",
+			wantRejectedRef:   "fabricated-ref",
+			wantLogContains:   "fabricated-ref",
+			wantRetry:         true,
+		},
+		{
+			name:              "unresolvable blocker ref counts as no progress",
+			runningIssue:      implementProgressIssueWithoutPR(),
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalNoProgress,
+			wantReason:        "completed_clean_diff_without_pull_request",
+			wantConsecutive:   1,
+			workpadBlockerRef: "digitaldrywood/detent#9999",
+			wantRejectedRef:   "digitaldrywood/detent#9999",
+			wantLogContains:   "digitaldrywood/detent#9999",
+			wantRetry:         true,
+		},
+		{
+			name:              "already terminal blocker does not defer empty attempt",
+			runningIssue:      implementProgressIssueWithoutPR(),
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalNoProgress,
+			wantReason:        "completed_clean_diff_without_pull_request",
+			wantConsecutive:   1,
+			workpadBlockerRef: "digitaldrywood/detent#134",
+			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Done"}},
+			wantRetry:         true,
+		},
+		{
 			name:         "July telemetry replay trips third clean completion without linked PR",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
@@ -245,6 +319,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantBlockReason:    "workpad_blocked_unactioned",
 			wantComment:        "> Choose the exhaustive review path.",
 			workpadHumanAction: "Choose the exhaustive review path.",
+			workpadBlockerRef:  "digitaldrywood/detent#134",
 		},
 		{
 			name:         "changing blocked human action does not trip",
@@ -328,14 +403,19 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
 			}
-			if tt.workpadHumanAction != "" {
+			if tt.workpadHumanAction != "" || tt.workpadBlockerRef != "" {
 				refreshed.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"" + tt.workpadHumanAction + "\"\n```",
+					Body: implementProgressWorkpadComment(tt.workpadBlockerRef, tt.workpadHumanAction),
 					URL:  "https://github.test/workpad",
 				}}
 			}
-			tracker := &implementProgressConnector{hydrated: tt.hydratedIssue, refreshed: refreshed, hydrateErr: tt.hydrateErr}
-			attempts := &implementProgressAttemptStore{history: tt.history}
+			tracker := &implementProgressConnector{
+				hydrated:         tt.hydratedIssue,
+				refreshed:        refreshed,
+				hydrateErr:       tt.hydrateErr,
+				resolvedBlockers: tt.resolvedBlockers,
+			}
+			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote:            AutoPromoteConfig{NoProgressLimit: tt.noProgressLimit},
@@ -396,6 +476,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if record.BlockReason != tt.wantBlockReason {
 				t.Fatalf("block reason = %q, want %q", record.BlockReason, tt.wantBlockReason)
 			}
+			if tt.wantRejectedRef != "" && !strings.Contains(strings.Join(record.RejectedBlockerRefs, ","), tt.wantRejectedRef) {
+				t.Fatalf("rejected blocker refs = %#v, want %q", record.RejectedBlockerRefs, tt.wantRejectedRef)
+			}
 			if !slicesEqual(record.FailedChecksAdded, tt.wantFailedAdded) {
 				t.Fatalf("failed checks added = %#v, want %#v", record.FailedChecksAdded, tt.wantFailedAdded)
 			}
@@ -421,10 +504,128 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			} else if _, ok := state.Retry[tt.runningIssue.ID]; ok != tt.wantRetry {
 				t.Fatalf("retry present = %v, want %v", ok, tt.wantRetry)
 			}
+			if _, ok := state.Claimed[tt.runningIssue.ID]; ok != tt.wantClaimed {
+				t.Fatalf("claimed present = %v, want %v", ok, tt.wantClaimed)
+			}
 			if tt.wantLogContains != "" && !strings.Contains(logs.String(), tt.wantLogContains) {
 				t.Fatalf("logs did not contain %q:\n%s", tt.wantLogContains, logs.String())
 			}
 		})
+	}
+}
+
+func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 20, 40, 30, 0, time.UTC)
+	runningIssue := implementProgressIssueWithoutPR()
+	runningIssue.ID = "issue-1711"
+	runningIssue.Identifier = "digitaldrywood/detent#1711"
+	runningIssue.URL = "https://github.test/digitaldrywood/detent/issues/1711"
+	prNumber := 1708
+	refreshedIssue := cloneIssue(runningIssue)
+	refreshedIssue.PRNumber = &prNumber
+	refreshedIssue.PRRepository = "digitaldrywood/detent"
+	refreshedIssue.Comments = []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+		URL:  "https://github.test/digitaldrywood/detent/issues/1711#workpad",
+	}}
+	hydratedIssue := cloneIssue(refreshedIssue)
+	hydratedIssue.PullRequest = &connector.PullRequest{
+		Number:        prNumber,
+		URL:           "https://github.test/digitaldrywood/detent/pull/1708",
+		State:         "MERGED",
+		HeadSHA:       "b2c2639ba9d8dbaddda1dc6adc5fc7b77c0d2b1d",
+		CIStatus:      "success",
+		CheckRunCount: 2,
+	}
+	tracker := &implementProgressConnector{refreshed: refreshedIssue, hydrated: hydratedIssue}
+	attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{
+		implementProgressLegacyNoPRHistoryAttempt(3),
+		implementProgressLegacyNoPRHistoryAttempt(2),
+		implementProgressLegacyNoPRHistoryAttempt(1),
+	}}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			NoProgressLimit: 3,
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	running := Running{
+		Issue:         runningIssue,
+		Attempt:       4,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Running[runningIssue.ID] = running
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: running.StartedAt}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState: FinalStateCompleted,
+			DiffStats:  runpkg.DiffStats{Status: "clean"},
+		},
+	})
+
+	if len(attempts.completions) != 1 {
+		t.Fatalf("completions = %#v, want one", attempts.completions)
+	}
+	completion := attempts.completions[0]
+	if completion.TerminalState != store.WorkAttemptTerminalSuccess {
+		t.Fatalf("TerminalState = %q, want success", completion.TerminalState)
+	}
+	record := implementProgressRecordFromCompletion(t, completion)
+	if record.Reason != implementMergedCompletionReason {
+		t.Fatalf("Reason = %q, want %s", record.Reason, implementMergedCompletionReason)
+	}
+	if record.ConsecutiveNoProgress != 0 {
+		t.Fatalf("ConsecutiveNoProgress = %d, want 0", record.ConsecutiveNoProgress)
+	}
+	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present after accepted merged completion", runningIssue.ID)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no completion-time Blocked transition", tracker.updates)
+	}
+	if tracker.hydrations != 1 {
+		t.Fatalf("hydrations = %d, want tracker-discovered PR hydrated once", tracker.hydrations)
+	}
+	completed := state.Completed[runningIssue.ID]
+	if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
+		t.Fatalf("completed issue pull request = %#v, want refreshed merged PR", completed.Issue.PullRequest)
+	}
+
+	transitioned := orch.reconcileStaleLinkedPullRequestIssues(
+		context.Background(),
+		&state,
+		[]connector.Issue{hydratedIssue},
+		now.Add(time.Minute),
+	)
+	if _, ok := transitioned[runningIssue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want issue %q", transitioned, runningIssue.ID)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0] != (implementProgressUpdate{issueID: runningIssue.ID, state: "Done"}) {
+		t.Fatalf("updates = %#v, want Done reconciliation", tracker.updates)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "reason: pull_request_merged") {
+		t.Fatalf("comments = %#v, want merged PR reconciliation", tracker.comments)
 	}
 }
 
@@ -909,6 +1110,74 @@ func TestImplementProgressHelperBoundaries(t *testing.T) {
 	}
 }
 
+func TestImplementProgressMergedCompletionQualification(t *testing.T) {
+	t.Parallel()
+
+	mergedIssue := func() connector.Issue {
+		prNumber := 1708
+		return connector.Issue{
+			PRNumber: &prNumber,
+			WorkpadSignal: &workpad.Signal{
+				Source: workpad.SourceStructured,
+				Status: workpad.StatusComplete,
+			},
+			PullRequest: &connector.PullRequest{
+				Number:        prNumber,
+				State:         "MERGED",
+				HeadSHA:       "current-head",
+				CIStatus:      "success",
+				CheckRunCount: 2,
+			},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*connector.Issue, *DiffStats)
+		qualifies bool
+	}{
+		{name: "complete merged green clean", qualifies: true},
+		{name: "missing workpad", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal = nil }},
+		{name: "workpad still in progress", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Status = workpad.StatusInProgress }},
+		{name: "prose workpad", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Source = workpad.SourceProse }},
+		{name: "human action remains", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.HumanAction = "approve release" }},
+		{name: "blocker remains", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.WorkpadSignal.Blockers = []workpad.Blocker{{Identifier: "digitaldrywood/detent#1700"}}
+		}},
+		{name: "pull request is open", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.State = "OPEN" }},
+		{name: "pull request link missing", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PRNumber = nil
+			issue.PullRequest.Number = 0
+		}},
+		{name: "head missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.HeadSHA = "" }},
+		{name: "check evidence missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CheckRunCount = 0 }},
+		{name: "ci pending", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "required check pending", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "in_progress"}}
+		}},
+		{name: "hydration degraded", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+		}},
+		{name: "workspace dirty", mutate: func(_ *connector.Issue, diffStats *DiffStats) { diffStats.FilesChanged = 1 }},
+		{name: "commit unpushed", mutate: func(_ *connector.Issue, diffStats *DiffStats) { diffStats.UnpushedCommits = 1 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := mergedIssue()
+			diffStats := DiffStats{Status: "clean"}
+			if tt.mutate != nil {
+				tt.mutate(&issue, &diffStats)
+			}
+			if got := implementProgressMergedCompletion(issue, diffStats); got != tt.qualifies {
+				t.Fatalf("implementProgressMergedCompletion() = %t, want %t", got, tt.qualifies)
+			}
+		})
+	}
+}
+
 func TestImplementProgressBlockCommentIncludesBoundaryEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -1017,6 +1286,26 @@ func implementProgressIssueWithoutPR() connector.Issue {
 	}
 }
 
+func implementProgressWorkpadComment(blockerRef string, humanAction string) string {
+	var body strings.Builder
+	body.WriteString("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\n")
+	if strings.TrimSpace(blockerRef) == "" {
+		body.WriteString("blockers: []\n")
+	} else {
+		body.WriteString("blockers:\n  - ref: \"")
+		body.WriteString(blockerRef)
+		body.WriteString("\"\n    reason: \"waiting for dependency\"\n")
+	}
+	if strings.TrimSpace(humanAction) == "" {
+		body.WriteString("human_action: null\n```")
+	} else {
+		body.WriteString("human_action: \"")
+		body.WriteString(humanAction)
+		body.WriteString("\"\n```")
+	}
+	return body.String()
+}
+
 func implementProgressHistoryAttempt(id int64, signature autoPromoteReworkSignature, terminal store.WorkAttemptTerminalState) store.WorkAttempt {
 	return store.WorkAttempt{
 		ID:                 id,
@@ -1048,6 +1337,30 @@ func implementProgressLegacyNoPRHistoryAttempt(id int64) store.WorkAttempt {
 			implementProgressMetadataKey: implementProgressRecord{
 				Outcome:            string(store.WorkAttemptTerminalSuccess),
 				Reason:             "no_linked_pull_request",
+				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
+			},
+		}),
+	}
+}
+
+func implementProgressDependencyDeferralHistoryAttempt(id int64, identifier string, state string) store.WorkAttempt {
+	return store.WorkAttempt{
+		ID:            id,
+		ProjectID:     "detent",
+		IssueID:       "issue-plan",
+		Identifier:    "digitaldrywood/detent#1200",
+		IssueURL:      "https://github.test/digitaldrywood/detent/issues/1200",
+		WorkerType:    "agent",
+		Status:        store.WorkAttemptStatusTerminal,
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		CompletedAt:   time.Date(2026, 8, 8, 18, int(id), 0, 0, time.UTC),
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"run_mode": runpkg.RunModeImplement,
+			implementProgressMetadataKey: implementProgressRecord{
+				Outcome:            string(store.WorkAttemptTerminalSuccess),
+				Reason:             implementDependencyDeferralReason,
+				DependencyDeferral: true,
+				DependencyBlockers: []implementDependencyBlocker{{ID: "blocker", Identifier: identifier, State: state}},
 				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
 			},
 		}),
@@ -1134,16 +1447,17 @@ func implementProgressRecordFromCompletion(t *testing.T, completion store.WorkAt
 }
 
 type implementProgressConnector struct {
-	hydrated       connector.Issue
-	refreshed      connector.Issue
-	hydrateErr     error
-	hydrateErrs    []error
-	refreshErr     error
-	hydrations     int
-	updates        []implementProgressUpdate
-	comments       []implementProgressComment
-	relabelStarted chan autoPromoteTickRelabel
-	relabelRelease chan struct{}
+	hydrated         connector.Issue
+	refreshed        connector.Issue
+	hydrateErr       error
+	hydrateErrs      []error
+	refreshErr       error
+	hydrations       int
+	updates          []implementProgressUpdate
+	comments         []implementProgressComment
+	relabelStarted   chan autoPromoteTickRelabel
+	relabelRelease   chan struct{}
+	resolvedBlockers []connector.Issue
 }
 
 type implementProgressUpdate struct {
@@ -1180,6 +1494,10 @@ func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []st
 
 func (c *implementProgressConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
 	return cloneIssueComments(c.refreshed.Comments), nil
+}
+
+func (c *implementProgressConnector) FetchIssueStatesByIdentifiers(context.Context, []string) ([]connector.Issue, error) {
+	return cloneIssues(c.resolvedBlockers), nil
 }
 
 func (c *implementProgressConnector) CreateComment(_ context.Context, issueID string, body string) error {
@@ -1227,11 +1545,12 @@ func (c *implementProgressConnector) ReapplyPullRequestLabel(ctx context.Context
 }
 
 type implementProgressAttemptStore struct {
-	history      []store.WorkAttempt
-	historyErr   error
-	completions  []store.WorkAttemptCompletion
-	historyCalls int
-	queries      []store.WorkAttemptHistoryQuery
+	history       []store.WorkAttempt
+	historyErr    error
+	completionErr error
+	completions   []store.WorkAttemptCompletion
+	historyCalls  int
+	queries       []store.WorkAttemptHistoryQuery
 }
 
 func (s *implementProgressAttemptStore) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
@@ -1248,7 +1567,7 @@ func (s *implementProgressAttemptStore) RecordWorkAttemptHeartbeat(context.Conte
 
 func (s *implementProgressAttemptStore) CompleteWorkAttempt(_ context.Context, attrs store.WorkAttemptCompletion) error {
 	s.completions = append(s.completions, attrs)
-	return nil
+	return s.completionErr
 }
 
 func (s *implementProgressAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {

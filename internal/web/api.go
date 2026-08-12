@@ -481,6 +481,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		WorkflowMetrics:    snapshot.WorkflowMetrics,
 		RecentSessions:     recentSessionEntries(snapshot.Completed),
 		RateLimits:         snapshot.RateLimits,
+		CIUnavailable:      append([]telemetry.CICondition(nil), snapshot.CIUnavailable...),
 		BackendOutages:     append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
 		FailureBreakers:    append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
 		DispatchRecoveries: append([]telemetry.DispatchRecovery(nil), snapshot.DispatchRecoveries...),
@@ -965,6 +966,7 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 		PeriodEnd:         optionalTime(budget.PeriodEnd),
 		SpendPoints:       budget.SpendPoints,
 		Days:              days,
+		SpendRegression:   budget.SpendRegression,
 		Refusals:          budget.Refusals,
 	}
 }
@@ -1407,6 +1409,7 @@ type stateAPIResponse struct {
 	WorkflowMetrics    telemetry.WorkflowMetrics    `json:"workflow_metrics"`
 	RecentSessions     []recentSessionAPIResponse   `json:"recent_sessions"`
 	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
+	CIUnavailable      []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
 	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
 	DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries,omitempty"`
@@ -1612,6 +1615,7 @@ type budgetAPIResponse struct {
 	PeriodEnd         *time.Time                   `json:"period_end,omitempty"`
 	SpendPoints       []telemetry.BudgetSpendPoint `json:"spend_points,omitempty"`
 	Days              []telemetry.BudgetDay        `json:"days"`
+	SpendRegression   *telemetry.SpendRegression   `json:"spend_regression,omitempty"`
 	Refusals          []telemetry.BudgetRefusal    `json:"refusals,omitempty"`
 }
 

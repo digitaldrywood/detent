@@ -33,6 +33,7 @@ type Config struct {
 	GitHubRESTMinReserve        int
 	GitHubRESTFanoutMaxRequests int
 	GitHubRESTDebugLogging      bool
+	GitHubUnstartedSeconds      int
 	ConditionalRequests         *bool
 	GitHubAppID                 string
 	GitHubAppPrivateKey         string
@@ -85,6 +86,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			RESTMinRemainingReserve:    cfg.GitHubRESTMinReserve,
 			RESTFanoutMaxRequests:      cfg.GitHubRESTFanoutMaxRequests,
 			RESTDebugLogging:           cfg.GitHubRESTDebugLogging,
+			UnstartedThreshold:         time.Duration(cfg.GitHubUnstartedSeconds) * time.Second,
 			DisableConditionalRequests: conditionalRequestsDisabled(cfg.ConditionalRequests),
 			GitHubAppID:                cfg.GitHubAppID,
 			GitHubAppPrivateKey:        cfg.GitHubAppPrivateKey,
@@ -132,6 +134,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				RESTMinRemainingReserve:    cfg.GitHubRESTMinReserve,
 				RESTFanoutMaxRequests:      cfg.GitHubRESTFanoutMaxRequests,
 				RESTDebugLogging:           cfg.GitHubRESTDebugLogging,
+				UnstartedThreshold:         time.Duration(cfg.GitHubUnstartedSeconds) * time.Second,
 				DisableConditionalRequests: conditionalRequestsDisabled(cfg.ConditionalRequests),
 				GitHubAppID:                cfg.GitHubAppID,
 				GitHubAppPrivateKey:        cfg.GitHubAppPrivateKey,

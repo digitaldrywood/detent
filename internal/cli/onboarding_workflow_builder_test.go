@@ -141,7 +141,7 @@ func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
 	t.Parallel()
 
 	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/artifacts.git")
-	answersPath := writeOnboardingWorkflowBuilderAnswers(t, strings.Join([]string{
+	answerLines := []string{
 		"CUSTOMER_ID=acme",
 		"DETENT_PROJECT_ID=artifact-production",
 		"TARGET_REPOSITORY=acme/artifacts",
@@ -150,8 +150,9 @@ func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
 		"DETENT_ONBOARDING_MODE=add-project",
 		"IDENTITY_CONFIRMED=true",
 		"WORKFLOW_PRESET=non_code_artifact",
-		"",
-	}, "\n"))
+	}
+	answerLines = append(answerLines, onboardingWorkflowGuidanceAnswerLines()...)
+	answersPath := writeOnboardingWorkflowBuilderAnswers(t, strings.Join(append(answerLines, ""), "\n"))
 
 	result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
 		AnswersPath: answersPath,
@@ -484,6 +485,206 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 	}
 }
 
+func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		profile            string
+		wantAdmission      bool
+		wantAutoAdmit      bool
+		wantRoutines       int
+		wantIntakeSources  int
+		wantTrustedAuthors bool
+	}{
+		{profile: "manual_intake"},
+		{profile: "assisted_intake", wantAdmission: true},
+		{profile: "autonomous_intake", wantAdmission: true, wantAutoAdmit: true, wantRoutines: 1, wantIntakeSources: 1, wantTrustedAuthors: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.profile, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "label", "review_gate", "INTAKE_PROFILE="+tt.profile))
+			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       false,
+			})
+			if err != nil {
+				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
+			}
+			workflow, err := parseOnboardingBuildWorkflowResult(result)
+			if err != nil {
+				t.Fatalf("ParseProjectDefinition() error = %v\nconfig:\n%s\nworkflow:\n%s", err, result.Config, result.Workflow)
+			}
+			if !workflow.Config.Agent.Followups.Enabled {
+				t.Fatal("Agent.Followups.Enabled = false, want true")
+			}
+			if workflow.Config.BacklogAdmission.Enabled != tt.wantAdmission {
+				t.Fatalf("BacklogAdmission.Enabled = %t, want %t", workflow.Config.BacklogAdmission.Enabled, tt.wantAdmission)
+			}
+			if workflow.Config.BacklogAdmission.AutoAdmit != tt.wantAutoAdmit {
+				t.Fatalf("BacklogAdmission.AutoAdmit = %t, want %t", workflow.Config.BacklogAdmission.AutoAdmit, tt.wantAutoAdmit)
+			}
+			if got := len(workflow.Config.BacklogAdmission.Authors.AllowAssociation) > 0; got != tt.wantTrustedAuthors {
+				t.Fatalf("BacklogAdmission.Authors.AllowAssociation configured = %t, want %t", got, tt.wantTrustedAuthors)
+			}
+			if tt.wantAutoAdmit {
+				if warning := workflowconfig.BacklogAdmissionPublicExposureWarning(workflow.Config.BacklogAdmission, "public"); warning != "" {
+					t.Fatalf("autonomous intake public exposure warning = %q", warning)
+				}
+			}
+			if len(workflow.Config.Routines) != tt.wantRoutines {
+				t.Fatalf("len(Routines) = %d, want %d", len(workflow.Config.Routines), tt.wantRoutines)
+			}
+			if len(workflow.Config.Intake.Sources) != tt.wantIntakeSources {
+				t.Fatalf("len(Intake.Sources) = %d, want %d", len(workflow.Config.Intake.Sources), tt.wantIntakeSources)
+			}
+			for _, want := range []string{"## Issue effort selection", "```detent-agent", "`medium`", "`high`", "`xhigh`", "`max`", "Leave `model` unset"} {
+				if !strings.Contains(result.Agents, want) {
+					t.Fatalf("generated AGENTS.md missing %q:\n%s", want, result.Agents)
+				}
+			}
+			assertOnboardingWorkflowDecision(t, result.Decisions, "answers.intake_profile", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "agent.followups.enabled", "answer")
+			if !tt.wantAdmission {
+				if strings.Contains(result.Config, "backlog_admission:") {
+					t.Fatalf("manual intake emitted backlog_admission block:\n%s", result.Config)
+				}
+				if strings.Contains(result.Workflow, "## Admission Criteria") {
+					t.Fatalf("manual intake emitted admission criteria:\n%s", result.Workflow)
+				}
+				if strings.Contains(result.Config, "criteria_section:") {
+					t.Fatalf("manual intake emitted dangling criteria_section:\n%s", result.Config)
+				}
+				assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission", "answer")
+				return
+			}
+			for _, want := range []string{
+				"max_candidates_per_run: 50",
+				"max_proposals_per_run: 3",
+				"max_open_proposals: 10",
+				"proposal_expiry_days: 7",
+				"## Admission Criteria",
+				"### Alignment",
+				"### Readiness",
+				"### Size",
+				"### Safety Gates",
+				"Repairs customer-visible defects and advances documented product goals.",
+			} {
+				if !strings.Contains(result.Config+result.Workflow, want) {
+					t.Fatalf("generated output missing %q\nconfig:\n%s\nworkflow:\n%s", want, result.Config, result.Workflow)
+				}
+			}
+			if workflow.Config.BacklogAdmission.CriteriaSection != onboardingAdmissionCriteriaHeading {
+				t.Fatalf("CriteriaSection = %q, want exact generated heading %q", workflow.Config.BacklogAdmission.CriteriaSection, onboardingAdmissionCriteriaHeading)
+			}
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.enabled", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.max_candidates_per_run", "answer")
+		})
+	}
+}
+
+func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		existing         string
+		wantHeadingCount int
+		wantUnchanged    bool
+	}{
+		{name: "creates AGENTS.md when absent", wantHeadingCount: 1},
+		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n", wantHeadingCount: 1},
+		{
+			name:             "appends when matching heading lacks guidance",
+			existing:         "# Repository agent guidance\n\n## Issue effort selection\n\nRecord estimates here.\n",
+			wantHeadingCount: 2,
+		},
+		{
+			name: "preserves complete existing guidance",
+			existing: strings.Join([]string{
+				"# Repository agent guidance",
+				"",
+				"## Issue effort selection",
+				"",
+				"```detent-agent",
+				"schema: 1",
+				"effort: high",
+				"```",
+				"",
+				"- `medium` — Small work.",
+				"- `high` — Standard work.",
+				"- `xhigh` — Complex work.",
+				"- `max` — Operator-designated work.",
+				"",
+				"Leave `model` unset.",
+				"",
+			}, "\n"),
+			wantHeadingCount: 1,
+			wantUnchanged:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			agentsPath := filepath.Join(root, "AGENTS.md")
+			if tt.existing != "" {
+				writeOnboardingWorkflowBuilderFile(t, agentsPath, tt.existing)
+			}
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "github_local", "review_gate", "INTAKE_PROFILE=manual_intake"))
+
+			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       true,
+			})
+			if err != nil {
+				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
+			}
+			if result.AgentsPath != agentsPath {
+				t.Fatalf("AgentsPath = %q, want %q", result.AgentsPath, agentsPath)
+			}
+			raw, err := os.ReadFile(agentsPath)
+			if err != nil {
+				t.Fatalf("ReadFile(AGENTS.md) error = %v", err)
+			}
+			got := string(raw)
+			if tt.wantUnchanged && got != tt.existing {
+				t.Fatalf("AGENTS.md changed complete existing guidance:\n%s", got)
+			}
+			if tt.existing != "" && !strings.HasPrefix(got, strings.TrimRight(tt.existing, "\n")) {
+				t.Fatalf("AGENTS.md did not preserve existing content:\n%s", got)
+			}
+			if count := strings.Count(got, "## Issue effort selection"); count != tt.wantHeadingCount {
+				t.Fatalf("effort heading count = %d, want %d:\n%s", count, tt.wantHeadingCount, got)
+			}
+			for _, want := range []string{"```detent-agent", "effort: high", "`medium`", "`high`", "`xhigh`", "`max`", "Leave `model` unset"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("AGENTS.md missing %q:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildOnboardingWorkflowRejectsInvalidIntakeProfile(t *testing.T) {
+	t.Parallel()
+
+	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+	answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "label", "review_gate", "INTAKE_PROFILE=unbounded_intake"))
+	_, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+		AnswersPath: answersPath,
+		Write:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "INTAKE_PROFILE must be manual_intake, assisted_intake, or autonomous_intake") {
+		t.Fatalf("buildOnboardingWorkflow() error = %v, want invalid intake profile error", err)
+	}
+}
+
 func TestRenderOnboardingWorkflowPromptReplacesCRLFExecutionFlow(t *testing.T) {
 	t.Parallel()
 
@@ -533,7 +734,7 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
 	writeOnboardingWorkflowBuilderFile(t, filepath.Join(root, "go.mod"), "module example.com/api\n\ngo 1.26\n")
 	writeOnboardingWorkflowBuilderFile(t, filepath.Join(root, "Makefile"), ".PHONY: check\ncheck:\n\tgo test ./...\n")
-	answersPath := writeOnboardingWorkflowBuilderAnswers(t, strings.Join([]string{
+	answerLines := []string{
 		"CUSTOMER_ID=acme",
 		"DETENT_PROJECT_ID=api",
 		"TARGET_REPOSITORY=acme/api",
@@ -543,8 +744,9 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 		"IDENTITY_CONFIRMED=true",
 		"WORKFLOW_PRESET=github_local",
 		"DELIVERY_PROFILE=review_gate",
-		"",
-	}, "\n"))
+	}
+	answerLines = append(answerLines, onboardingWorkflowGuidanceAnswerLines()...)
+	answersPath := writeOnboardingWorkflowBuilderAnswers(t, strings.Join(append(answerLines, ""), "\n"))
 	outputPath := filepath.Join(root, "WORKFLOW.md")
 
 	result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
@@ -557,6 +759,13 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	}
 	if !result.Written || result.Path != outputPath {
 		t.Fatalf("result = %#v, want written workflow at %s", result, outputPath)
+	}
+	agentsRaw, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(AGENTS.md) error = %v", err)
+	}
+	if !strings.Contains(string(agentsRaw), "## Issue effort selection") {
+		t.Fatalf("AGENTS.md missing generated effort rubric:\n%s", string(agentsRaw))
 	}
 	raw, err := os.ReadFile(outputPath)
 	if err != nil {
@@ -692,8 +901,22 @@ func onboardingWorkflowBuilderVariantAnswers(root string, preset string, profile
 	if preset == "project_v2" {
 		lines = append(lines, "PROJECT_SLUG=PVT_test")
 	}
+	lines = append(lines, onboardingWorkflowGuidanceAnswerLines()...)
 	lines = append(lines, extra...)
 	return strings.Join(append(lines, ""), "\n")
+}
+
+func onboardingWorkflowGuidanceAnswerLines() []string {
+	return []string{
+		"ADMISSION_ALIGNMENT_CRITERIA=Repairs customer-visible defects and advances documented product goals.",
+		"ADMISSION_READINESS_CRITERIA=Requires repository evidence, resolved dependencies, and checkable completion criteria.",
+		"ADMISSION_SIZE_CRITERIA=Fits implementation and validation within one agent run.",
+		"ADMISSION_SAFETY_GATES=Requires credentials and destructive actions to be explicitly authorized before admission.",
+		"EFFORT_MEDIUM_CRITERIA=Small mechanical work with exact acceptance criteria.",
+		"EFFORT_HIGH_CRITERIA=Standard features and fixes with some ambiguity or cross-cutting impact.",
+		"EFFORT_XHIGH_CRITERIA=New subsystems or tricky state, concurrency, restart, recovery, or interaction work.",
+		"EFFORT_MAX_CRITERIA=Exceptional operator-designated work that must never be selected automatically.",
+	}
 }
 
 func initOnboardingWorkflowBuilderGitRepository(t *testing.T, remote string) string {

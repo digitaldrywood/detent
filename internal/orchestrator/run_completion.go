@@ -25,6 +25,7 @@ import (
 const (
 	mergeWorkerRequiredChecksMissingReason = "required_checks_missing_after_head_update"
 	mergeWorkerFastPathNotReadyReason      = "merge_fast_path_head_not_ready"
+	retryWaitCurrentHeadCI                 = "current_head_ci"
 )
 
 func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
@@ -154,6 +155,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.backoffDispatchRecovery(state, event.IssueID, event.CompletedAt, delay)
 	}
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
+	if o.handleCIUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
 	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
 		return
 	}
@@ -409,7 +413,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		statusMessage = "artifact gate convergence breaker tripped"
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
 		implementCompletionProgressMetadata(progress),
 		spendProgressMetadata(spendProgress),
 		artifactGateConvergenceMetadata(artifactConvergence),
@@ -458,6 +462,18 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if o.blockImplementProgress(ctx, state, running, progress, event.CompletedAt) {
 			return
 		}
+	}
+	if progress.DependencyDeferral {
+		if attemptCompleted {
+			o.finishImplementDependencyDeferral(ctx, state, running.Issue, event.CompletedAt)
+		} else {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "implement_dependency_deferral_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dependency deferral persistence failed",
+			})
+		}
+		return
 	}
 	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
 		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
@@ -1210,25 +1226,129 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	running Running,
 	issue connector.Issue,
 ) {
-	attempt := nextAttempt(running.Attempt)
+	attempt := running.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
 	retryError := mergeWorkerCurrentHeadCIWaitReason(issue)
-	if o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue.ID, event.CompletedAt) {
+	exceeded := o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue.ID, event.CompletedAt)
+	running.Issue = issue
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError)
+	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
+	retry := state.Retry[issue.ID]
+	retry.Wait = RetryWait{
+		Kind:                  retryWaitCurrentHeadCI,
+		StartedAt:             state.MergeTimings[strings.TrimSpace(issue.ID)].CIWaitStartedAt,
+		PollCount:             1,
+		PendingChecks:         mergeWorkerCurrentHeadCIPendingChecks(issue),
+		WorkspaceCreateCount:  1,
+		WorkspaceDestroyCount: 1,
+	}
+	state.Retry[issue.ID] = retry
+	o.logMergeWorkerCurrentHeadCIWait(state, issue, retry, event.CompletedAt)
+	if exceeded {
 		err := fmt.Errorf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retryError)
 		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerCurrentHeadCIWaitExceededReason, attempt, err) {
 			return
 		}
 	}
-	o.waitForMergeWorkerRetry(
-		ctx,
-		state,
-		event,
-		running,
-		issue,
-		attempt,
-		retryError,
-		"merge_worker_waiting_current_head_ci",
-		"merge worker is waiting for current-head CI for ",
-	)
+}
+
+func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) (Retry, bool, string) {
+	if retry.Wait.Kind != retryWaitCurrentHeadCI {
+		return retry, false, ""
+	}
+	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		retry.Attempt = nextAttempt(retry.Attempt)
+		retry.Wait = RetryWait{}
+		state.Retry[issue.ID] = retry
+		return retry, false, ""
+	}
+
+	retry.Issue = cloneIssue(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	if retry.Wait.StartedAt.IsZero() {
+		retry.Wait.StartedAt = state.MergeTimings[strings.TrimSpace(issue.ID)].CIWaitStartedAt
+		if retry.Wait.StartedAt.IsZero() {
+			retry.Wait.StartedAt = now.UTC()
+		}
+	}
+	retry.Wait.PollCount++
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
+	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, o.cfg.ContinuationRetryDelay)
+	state.Retry[issue.ID] = retry
+	o.logMergeWorkerCurrentHeadCIWait(state, issue, retry, now)
+
+	if !now.Before(retry.Wait.StartedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout)) {
+		err := fmt.Errorf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retry.Error)
+		running := Running{
+			Issue:      cloneIssue(issue),
+			Attempt:    retry.Attempt,
+			WorkerHost: retry.WorkerHost,
+			DiffStats:  state.DiffStats[issue.ID],
+		}
+		if o.blockExhaustedMergeWorker(ctx, state, running, now, mergeWorkerCurrentHeadCIWaitExceededReason, retry.Attempt, err) {
+			return retry, true, mergeWorkerCurrentHeadCIWaitExceededReason
+		}
+	}
+	return retry, true, dispatchSkipCurrentHeadCIWait
+}
+
+func mergeWorkerCurrentHeadCINextPollAt(startedAt, now time.Time, delay time.Duration) time.Time {
+	if delay < 0 {
+		delay = 0
+	}
+	next := now.Add(delay)
+	if !startedAt.IsZero() {
+		deadline := startedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout)
+		if deadline.Before(next) {
+			next = deadline
+		}
+	}
+	if next.Before(now) {
+		return now
+	}
+	return next
+}
+
+func (o *Orchestrator) logMergeWorkerCurrentHeadCIWait(
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) {
+	elapsed := now.Sub(retry.Wait.StartedAt)
+	if retry.Wait.StartedAt.IsZero() || elapsed < 0 {
+		elapsed = 0
+	}
+	if o.logger != nil {
+		o.logger.Info(
+			"merge_worker_waiting_current_head_ci",
+			mergeWorkerLogAttrs(
+				issue,
+				"attempt", retry.Attempt,
+				"poll_count", retry.Wait.PollCount,
+				"elapsed_wait", elapsed.String(),
+				"elapsed_wait_seconds", int64(elapsed/time.Second),
+				"pending_checks", strings.Join(retry.Wait.PendingChecks, ", "),
+				"workspace_create_count", retry.Wait.WorkspaceCreateCount,
+				"workspace_destroy_count", retry.Wait.WorkspaceDestroyCount,
+				"reason", retry.Error,
+			)...,
+		)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_waiting_current_head_ci",
+		Message: fmt.Sprintf("waiting on current-head CI for %s (poll %d)", issueLabel(issue), retry.Wait.PollCount),
+	})
 }
 
 func (o *Orchestrator) waitForMergeWorkerMergeability(
@@ -1358,6 +1478,9 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 	if issue.PullRequest == nil {
 		return reason
 	}
+	if unstartedChecks := pullRequestCheckNames(issue.PullRequest.UnstartedChecks); len(unstartedChecks) > 0 {
+		return reason + ": unstarted checks: " + strings.Join(unstartedChecks, ", ")
+	}
 	pendingRequiredChecks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
 	for _, check := range issue.PullRequest.RequiredCheckFailures {
 		if autoPromoteCheckPending(check) && strings.TrimSpace(check.Name) != "" {
@@ -1371,6 +1494,10 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 		return reason + ": pending checks: " + strings.Join(runningChecks, ", ")
 	}
 	return reason
+}
+
+func mergeWorkerCurrentHeadCIPendingChecks(issue connector.Issue) []string {
+	return autoPromotePendingChecksFromPullRequest(issue.PullRequest)
 }
 
 func (o *Orchestrator) failProgrammaticMergeWorkerResult(
@@ -1486,7 +1613,7 @@ func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
 	if mergeable != "" && mergeable != "clean" && mergeable != "unknown" && mergeable != "behind" && mergeable != "blocked" {
 		return false
 	}
-	if mergeable == "blocked" && len(pullRequest.RunningChecks) == 0 {
+	if mergeable == "blocked" && len(pullRequest.RunningChecks) == 0 && len(pullRequest.UnstartedChecks) == 0 {
 		return false
 	}
 	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {

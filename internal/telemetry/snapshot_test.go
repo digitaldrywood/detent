@@ -394,7 +394,7 @@ func TestSnapshotOmitsUnavailableRuntimeIdentityFields(t *testing.T) {
 	}
 }
 
-func TestTokensJSONIncludesContextPressureWhenWindowKnown(t *testing.T) {
+func TestTokensJSONUsesLastCallForContextPressureWhenWindowKnown(t *testing.T) {
 	t.Parallel()
 
 	contextWindow := int64(200)
@@ -403,6 +403,7 @@ func TestTokensJSONIncludesContextPressureWhenWindowKnown(t *testing.T) {
 		CachedInput:        25,
 		Output:             40,
 		Total:              170,
+		Last:               &telemetry.TokenBreakdown{Input: 75, CachedInput: 20, Output: 15, Total: 90},
 		ModelContextWindow: &contextWindow,
 	}
 
@@ -417,14 +418,30 @@ func TestTokensJSONIncludesContextPressureWhenWindowKnown(t *testing.T) {
 	}
 
 	pressure := got["context_pressure"].(map[string]any)
-	if pressure["total_tokens"] != float64(170) || pressure["context_limit_tokens"] != float64(200) {
+	if pressure["total_tokens"] != float64(90) || pressure["context_limit_tokens"] != float64(200) {
 		t.Fatalf("context_pressure token fields = %#v", pressure)
 	}
-	if pressure["percent_used"] != 85.0 || pressure["threshold_state"] != string(telemetry.ContextPressureWarning) {
+	if pressure["percent_used"] != 45.0 || pressure["threshold_state"] != string(telemetry.ContextPressureNormal) {
 		t.Fatalf("context_pressure threshold fields = %#v", pressure)
+	}
+	last := got["last"].(map[string]any)
+	if last["total_tokens"] != float64(90) || last["cached_input_tokens"] != float64(20) {
+		t.Fatalf("last token fields = %#v", last)
 	}
 	if got["cache_read_fraction"] != 0.25 {
 		t.Fatalf("cache_read_fraction = %#v, want 0.25", got["cache_read_fraction"])
+	}
+
+	var restored telemetry.Tokens
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("Unmarshal(Tokens) error = %v", err)
+	}
+	if restored.Last == nil || restored.Last.Total != 90 || restored.Last.CachedInput != 20 {
+		t.Fatalf("restored Last = %#v, want last-call token fields", restored.Last)
+	}
+	restoredPressure, ok := restored.ContextPressure()
+	if !ok || restoredPressure.TotalTokens != 90 || restoredPressure.PercentUsed != 45 {
+		t.Fatalf("restored ContextPressure() = %#v, %t; want last-call pressure", restoredPressure, ok)
 	}
 }
 

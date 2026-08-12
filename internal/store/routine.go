@@ -14,7 +14,8 @@ import (
 func (s *sqliteStore) LatestRoutineRun(ctx context.Context, projectID string, routineName string) (routinemodel.RunRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT project_id, routine_name, scheduled_for, started_at, completed_at,
-       filed_count, deduplicated_count, issues_json, COALESCE(error, '')
+       proposed_count, filed_count, deduplicated_count, limited_count,
+       issues_json, COALESCE(error, '')
 FROM routine_runs
 WHERE project_id = ? AND routine_name = ?
 ORDER BY completed_at DESC, id DESC
@@ -53,13 +54,74 @@ func (s *sqliteStore) RecordRoutineRun(ctx context.Context, record routinemodel.
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO routine_runs (
   project_id, routine_name, scheduled_for, started_at, completed_at,
-  filed_count, deduplicated_count, issues_json, error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  proposed_count, filed_count, deduplicated_count, limited_count, issues_json, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(record.ProjectID), strings.TrimSpace(record.RoutineName), scheduledFor, startedAt,
-		completedAt, nonNegative(int64(record.Filed)), nonNegative(int64(record.Deduplicated)), string(issuesJSON),
-		nullString(record.Error))
+		completedAt, nonNegative(int64(record.Proposed)), nonNegative(int64(record.Filed)),
+		nonNegative(int64(record.Deduplicated)), nonNegative(int64(record.Limited)), string(issuesJSON), nullString(record.Error))
 	if err != nil {
 		return fmt.Errorf("recording routine run: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) OpenRoutineIssueIDs(ctx context.Context, projectID string, routineName string) (_ []string, resultErr error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT issue_id
+FROM routine_findings
+WHERE project_id = ? AND routine_name = ? AND open = 1
+ORDER BY issue_id`, strings.TrimSpace(projectID), strings.TrimSpace(routineName))
+	if err != nil {
+		return nil, fmt.Errorf("reading routine issue ids: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, rows.Close())
+	}()
+	var issueIDs []string
+	for rows.Next() {
+		var issueID string
+		if err := rows.Scan(&issueID); err != nil {
+			return nil, err
+		}
+		issueIDs = append(issueIDs, issueID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return issueIDs, nil
+}
+
+func (s *sqliteStore) RecordRoutineIssue(ctx context.Context, projectID string, routineName string, issue routinemodel.IssueRecord) error {
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return errors.New("routine issue id is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO routine_findings (project_id, routine_name, issue_id, identifier, url, open)
+VALUES (?, ?, ?, ?, ?, 1)
+ON CONFLICT(project_id, routine_name, issue_id) DO UPDATE SET
+  identifier = excluded.identifier,
+  url = excluded.url,
+  open = 1`, strings.TrimSpace(projectID), strings.TrimSpace(routineName), issueID,
+		strings.TrimSpace(issue.Identifier), strings.TrimSpace(issue.URL))
+	if err != nil {
+		return fmt.Errorf("recording routine issue: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) CloseRoutineIssues(ctx context.Context, projectID string, routineName string, issueIDs []string) error {
+	for _, issueID := range issueIDs {
+		if strings.TrimSpace(issueID) == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `
+UPDATE routine_findings
+SET open = 0
+WHERE project_id = ? AND routine_name = ? AND issue_id = ?`,
+			strings.TrimSpace(projectID), strings.TrimSpace(routineName), strings.TrimSpace(issueID)); err != nil {
+			return fmt.Errorf("closing routine issue: %w", err)
+		}
 	}
 	return nil
 }
@@ -74,7 +136,7 @@ func scanRoutineRun(scan routineRunScan) (routinemodel.RunRecord, error) {
 	var issuesJSON string
 	if err := scan(
 		&record.ProjectID, &record.RoutineName, &scheduledFor, &startedAt, &completedAt,
-		&record.Filed, &record.Deduplicated, &issuesJSON, &record.Error,
+		&record.Proposed, &record.Filed, &record.Deduplicated, &record.Limited, &issuesJSON, &record.Error,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return routinemodel.RunRecord{}, ErrNotFound

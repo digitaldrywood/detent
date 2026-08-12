@@ -724,6 +724,8 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 	tests := []struct {
 		name       string
 		enabled    bool
+		policies   map[string]bool
+		labels     []string
 		confidence float64
 		wantState  string
 		wantStatus admissionmodel.ProposalStatus
@@ -748,12 +750,38 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 			wantState:  "Todo",
 			wantStatus: admissionmodel.ProposalAccepted,
 		},
+		{
+			name:       "defect class is auto-admitted",
+			policies:   map[string]bool{"defect": true},
+			labels:     []string{"defect"},
+			confidence: 1,
+			wantState:  "Todo",
+			wantStatus: admissionmodel.ProposalAccepted,
+		},
+		{
+			name:       "feature class is proposed and held regardless of confidence",
+			enabled:    true,
+			policies:   map[string]bool{"feature": false},
+			labels:     []string{"feature"},
+			confidence: 1,
+			wantState:  "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
+		{
+			name:       "unknown label falls back to project default",
+			policies:   map[string]bool{"defect": true},
+			labels:     []string{"docs"},
+			confidence: 1,
+			wantState:  "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			issue.Labels = append([]string(nil), tt.labels...)
 			tracker := memory.New(memory.Config{
 				Issues:   []connector.Issue{issue},
 				Stateful: true,
@@ -763,6 +791,7 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidateAtConfidence(tt.confidence)}
 			settings := admissionTestSettings(tracker, agent)
 			settings.Config.AutoAdmit = tt.enabled
+			settings.Config.AutoAdmitByLabel = tt.policies
 			settings.Config.AutoAdmitMinConfidence = 0.9
 			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
 
@@ -783,6 +812,119 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 				t.Fatalf("auto-admitted proposal = %#v", history[0])
 			}
 		})
+	}
+}
+
+func TestManagerAutoAdmissionRequiresEveryConfiguredDimension(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-590", "DD-590", 1, now)
+	issue.Title = "Launch the complete marketing program"
+	issue.Description = `Coordinate the website, campaign assets, launch emails, analytics, and partner outreach.
+
+Child issues decompose the implementation work. Marketing and operations staff must approve copy, contact partners, and schedule the launch.`
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{issue},
+		Stateful: true,
+		Now:      func() time.Time { return now },
+	})
+	criteria := config.AdmissionCriteria{
+		Section: "Admission criteria",
+		Text: "- **Alignment** — serves a stated priority.\n" +
+			"- **Readiness** — is a startable implementation unit.\n" +
+			"- **Size** — fits in one pull request.\n" +
+			"- **Safety Gates** — identifies required human actions.",
+		Dimensions: []config.AdmissionDimension{
+			{Name: "Alignment", Text: "- **Alignment** — serves a stated priority."},
+			{Name: "Readiness", Text: "- **Readiness** — is a startable implementation unit."},
+			{Name: "Size", Text: "- **Size** — fits in one pull request."},
+			{Name: "Safety Gates", Text: "- **Safety Gates** — identifies required human actions."},
+		},
+	}
+	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
+		return []AgentProposal{{
+			IssueID: request.Admission.Candidates[0].ID,
+			Findings: []admissionmodel.Finding{
+				{Dimension: "Alignment", CriterionQuote: "serves a stated priority", Matched: true, Rationale: "The marketing launch supports a stated priority."},
+				{Dimension: "Readiness", CriterionQuote: "is a startable implementation unit", Matched: false, Rationale: "The epic delegates implementation to child issues and has no PR-sized acceptance criteria."},
+				{Dimension: "Size", CriterionQuote: "fits in one pull request", Matched: false, Rationale: "The website, campaign, email, analytics, and partner deliverables require separate changes."},
+				{Dimension: "Safety Gates", CriterionQuote: "identifies required human actions", Matched: true, Rationale: "Copy approval, partner contact, and launch scheduling are explicit human actions."},
+			},
+			Confidence: float64Pointer(0.99),
+		}}
+	}}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Criteria = criteria
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 {
+		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+	if result.Proposals[0].Confidence != 0.99 || result.Proposals[0].Status != admissionmodel.ProposalOpen {
+		t.Fatalf("proposal = %#v, want high-confidence open proposal", result.Proposals[0])
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+		t.Fatalf("issue = %#v, %v, want Backlog", issues, err)
+	}
+	var comment string
+	for _, event := range tracker.Events() {
+		if event.Kind == memory.EventKindComment {
+			comment = event.Body
+		}
+	}
+	for _, want := range []string{
+		"**Readiness** — **Failed.**",
+		"**Size** — **Failed.**",
+		"following required admission dimensions failed: **Readiness**, **Size**",
+		"remains in **Backlog**",
+	} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("proposal comment missing %q: %s", want, comment)
+		}
+	}
+}
+
+func TestManagerAutomaticAdmissionRechecksLabelPolicy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	issue.Labels = []string{"feature"}
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	backend := openManagerTestStore(t)
+	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitByLabel = map[string]bool{"feature": false}
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	proposal.Confidence = 1
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+
+	if err := manager.admitProposal(
+		t.Context(),
+		settings,
+		connector.Issue{ID: issue.ID, State: "Backlog"},
+		proposal,
+		automaticAdmissionDecision(tracker, proposal, now),
+	); err != nil {
+		t.Fatalf("admitProposal() error = %v", err)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+		t.Fatalf("issue state = %#v, %v", issues, err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalSuperseded ||
+		history[0].ResolutionReason != admissionResolutionAutoAdmitIneligible {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
 	}
 }
 
@@ -1958,6 +2100,13 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 	if _, err := validateFindings([]admissionmodel.Finding{unmatched}, criteria); !errors.Is(err, ErrInvalidProposal) {
 		t.Fatalf("validateFindings(unmatched) error = %v", err)
 	}
+	complete := []admissionmodel.Finding{
+		duplicate,
+		{Dimension: "Readiness", CriterionQuote: "has an actionable problem statement", Matched: true, Rationale: "valid"},
+	}
+	if _, err := validateFindings(complete, criteria); err != nil {
+		t.Fatalf("validateFindings(complete) error = %v", err)
+	}
 	if _, _, err := validateRecommendedEffort("high", "valid", config.AdmissionEffortRubric{}, true); !errors.Is(err, ErrInvalidProposal) {
 		t.Fatalf("validateRecommendedEffort(required without rubric) error = %v", err)
 	}
@@ -2008,7 +2157,7 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 		t.Fatalf("proposalDecision() = %#v, %t, %v", decision, found, err)
 	}
 
-	comment := proposalComment(admissionmodel.Proposal{TargetState: "Todo"}, true, true)
+	comment := proposalComment(admissionmodel.Proposal{TargetState: "Todo"}, config.AdmissionCriteria{}, true, true, "")
 	if !strings.Contains(comment, "Automatic admission is a two-part change") {
 		t.Fatalf("proposalComment(auto admit) = %q", comment)
 	}
@@ -2794,12 +2943,20 @@ func proposeEveryCandidateAtConfidence(confidence float64) func(runner.RunReques
 		for _, candidate := range request.Admission.Candidates {
 			proposals = append(proposals, AgentProposal{
 				IssueID: candidate.ID,
-				Findings: []admissionmodel.Finding{{
-					Dimension:      "Alignment",
-					CriterionQuote: "serves a stated current priority",
-					Matched:        true,
-					Rationale:      "The issue directly supports the stated priority.",
-				}},
+				Findings: []admissionmodel.Finding{
+					{
+						Dimension:      "Alignment",
+						CriterionQuote: "serves a stated current priority",
+						Matched:        true,
+						Rationale:      "The issue directly supports the stated priority.",
+					},
+					{
+						Dimension:      "Readiness",
+						CriterionQuote: "has an actionable problem statement",
+						Matched:        true,
+						Rationale:      "The issue has an actionable problem statement.",
+					},
+				},
 				Confidence: float64Pointer(confidence),
 			})
 		}
@@ -2873,12 +3030,20 @@ func admissionTestProposalForIssue(id string, issue connector.Issue, now time.Ti
 		Fingerprint:     issueFingerprint(issue),
 		CriteriaSection: "Admission criteria",
 		CriteriaText:    admissionTestCriteria().Text,
-		Findings: []admissionmodel.Finding{{
-			Dimension:      "Alignment",
-			CriterionQuote: "serves a stated current priority",
-			Matched:        true,
-			Rationale:      "Supports the priority.",
-		}},
+		Findings: []admissionmodel.Finding{
+			{
+				Dimension:      "Alignment",
+				CriterionQuote: "serves a stated current priority",
+				Matched:        true,
+				Rationale:      "Supports the priority.",
+			},
+			{
+				Dimension:      "Readiness",
+				CriterionQuote: "has an actionable problem statement",
+				Matched:        true,
+				Rationale:      "The issue has an actionable problem statement.",
+			},
+		},
 		Confidence: 0.8,
 		Status:     admissionmodel.ProposalOpen,
 		CreatedAt:  now,
@@ -3000,6 +3165,7 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 		Findings: []admissionmodel.Finding{{
 			Dimension:      "Alignment",
 			CriterionQuote: "serves a stated current priority",
+			Matched:        true,
 			Rationale:      "Supports the release.",
 		}},
 		Confidence:        0.8,
@@ -3007,7 +3173,8 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 		EffortRationale:   "The change crosses admission and dispatch.",
 		ExpiresAt:         time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
 	}
-	comment := proposalComment(proposal, false, false)
+	criteria := config.AdmissionCriteria{Dimensions: []config.AdmissionDimension{{Name: "Alignment"}}}
+	comment := proposalComment(proposal, criteria, false, false, "Backlog")
 	for _, want := range []string{"serves a stated current priority", "have Detent move the issue", "admission-1", "Recommended effort: `high`", "crosses admission and dispatch"} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("proposalComment() missing %q: %s", want, comment)
@@ -3019,7 +3186,7 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 	if strings.Contains(comment, "detent:admission") {
 		t.Fatalf("proposalComment() introduced a status-prefixed label: %s", comment)
 	}
-	untrackedComment := proposalComment(proposal, false, true)
+	untrackedComment := proposalComment(proposal, criteria, false, true, "")
 	for _, want := range []string{"no configured status label", "Acceptance is a two-part change", "assigning **Todo** status", "admitting the work for dispatch"} {
 		if !strings.Contains(untrackedComment, want) {
 			t.Fatalf("proposalComment(untracked) missing %q: %s", want, untrackedComment)

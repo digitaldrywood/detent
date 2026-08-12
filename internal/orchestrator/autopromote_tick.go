@@ -29,6 +29,13 @@ const (
 	autoPromoteGateWaitTimeoutHumanReview = "human_review"
 	defaultAutoPromoteGateWaitTimeout     = time.Hour
 	mergeWorkerProjectStateFull           = "project_state_capacity_full"
+	mergeBaseRefreshRequiredChecksPending = "required_checks_pending"
+	mergeBaseRefreshLaneUnavailable       = "merge_lane_capacity_unavailable"
+	mergeBaseRefreshGlobalUnavailable     = "global_capacity_unavailable"
+	mergeSelectionReasonStickyAged        = "sticky_aged_head"
+	mergeSelectionReasonAged              = "aged_head"
+	mergeSelectionReasonClean             = "clean_head"
+	mergeSelectionReasonQueue             = "queue_order"
 )
 
 type autoPromoteTickResult struct {
@@ -39,6 +46,17 @@ type autoPromoteTickResult struct {
 type staleMergingPullRequestDecision struct {
 	targetState string
 	reason      string
+}
+
+type mergeBaseRefreshDecision struct {
+	applicable bool
+	proceed    bool
+	reason     string
+}
+
+type mergingIssuePriority struct {
+	reasons       map[string]string
+	stickyIssueID string
 }
 
 type autoPromoteReworkLimitSummary struct {
@@ -708,7 +726,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 	transitioned := map[string]struct{}{}
 	o.recordMergeQueueEntries(state, issues, now, "tracker")
 	consumedRepositories := activeMergeWorkerRepositories(state)
-	for _, issue := range staleMergingQueueIssues(issues, o.cfg) {
+	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
@@ -886,7 +904,7 @@ func (o *Orchestrator) logStaleMergingPullRequestDeferred(issue connector.Issue,
 	o.logger.Info("stale_merging_pr_reconciliation_deferred", attrs...)
 }
 
-func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string) {
+func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string, attrs ...any) {
 	if !o.beginDispatchStart() {
 		return
 	}
@@ -894,8 +912,9 @@ func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string
 	if o.logger == nil || !mergeWorkerIssue(issue) {
 		return
 	}
-	attrs := mergeWorkerLogAttrs(issue, "source", strings.TrimSpace(source))
-	o.logger.Info("merge_worker_pickup", attrs...)
+	values := mergeWorkerLogAttrs(issue, "source", strings.TrimSpace(source))
+	values = append(values, attrs...)
+	o.logger.Info("merge_worker_pickup", values...)
 }
 
 func (o *Orchestrator) logMergeWorkerAttempt(issue connector.Issue, attempt int, workerHost string) {
@@ -1097,10 +1116,10 @@ func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
 	return false
 }
 
-func staleMergingQueueIssues(issues []connector.Issue, cfg Config) []connector.Issue {
+func staleMergingQueueIssues(issues []connector.Issue, cfg Config, state *State, now time.Time) []connector.Issue {
 	queue := issuesInStates(issues, []string{autoPromoteMergingState})
 	sortIssuesForDispatch(queue, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
-	prioritizeReadyMergingIssues(queue)
+	prioritizeReadyMergingIssues(queue, state, now, cfg.MergeFairnessAge)
 	return queue
 }
 
@@ -1160,7 +1179,10 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		return nil
 	}
 	o.logMergeWorkerQueueCycle(state, issues, now)
-	candidates := o.staleMergingQueueDispatchCandidates(state, issues)
+	if stickyMergingIssueID(state, issues, now, o.cfg.MergeFairnessAge) != "" {
+		return nil
+	}
+	candidates := o.staleMergingQueueDispatchCandidates(state, issues, now)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -1188,6 +1210,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 			}
 		}
 		if projectStats.available <= 0 {
+			o.logMergeBaseRefreshDeferred(issue, mergeBaseRefreshLaneUnavailable)
 			o.logMergeWorkerSlotWait(
 				issue,
 				scheduler.DispatchGateDecision{Reason: mergeWorkerProjectStateFull},
@@ -1197,7 +1220,13 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		}
 		selectedByState[stateKey] = selected + 1
 		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
-		o.logMergeWorkerPickup(issue, "stale_merging")
+		laneAge := mergeWorkerIssueLaneAge(issue, now)
+		o.logMergeWorkerPickup(issue, "stale_merging",
+			"selection_position", len(out)+1,
+			"selection_reason", mergeWorkerSelectionReason(issue, state, now, o.cfg.MergeFairnessAge),
+			"lane_age_seconds", int64(laneAge/time.Second),
+			"fairness_age_seconds", int64(o.cfg.MergeFairnessAge/time.Second),
+		)
 		out = append(out, issue)
 	}
 	return out
@@ -1209,6 +1238,8 @@ func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector
 	}
 	queueDepth := 0
 	readyCount := 0
+	agedCount := 0
+	oldestLaneAge := time.Duration(0)
 	queueIssueIDs := map[string]struct{}{}
 	for _, issue := range issues {
 		if !mergeWorkerIssue(issue) {
@@ -1218,6 +1249,13 @@ func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector
 		queueIssueIDs[strings.TrimSpace(issue.ID)] = struct{}{}
 		if mergeWorkerHeadReady(issue) {
 			readyCount++
+		}
+		laneAge := mergeWorkerIssueLaneAge(issue, now)
+		if laneAge > oldestLaneAge {
+			oldestLaneAge = laneAge
+		}
+		if mergeWorkerIssueAged(issue, now, o.cfg.MergeFairnessAge) {
+			agedCount++
 		}
 	}
 	projectStats := o.projectStateSlotStats(connector.Issue{State: autoPromoteMergingState}, state)
@@ -1234,6 +1272,9 @@ func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector
 	attrs := []any{
 		"queue_depth", queueDepth,
 		"ready_count", readyCount,
+		"aged_count", agedCount,
+		"oldest_lane_age_seconds", int64(oldestLaneAge / time.Second),
+		"fairness_age_seconds", int64(o.cfg.MergeFairnessAge / time.Second),
 		"lane_occupied", occupantCount > 0,
 		"lane_saturated", projectStats.available <= 0,
 		"lane_occupant_count", occupantCount,
@@ -1250,6 +1291,9 @@ func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector
 			"occupying_issue_number", issueNumberFromIdentifier(occupant.Issue.Identifier),
 			"occupancy_seconds", occupancySeconds,
 		)
+	}
+	if stickyIssueID := stickyMergingIssueID(state, issues, now, o.cfg.MergeFairnessAge); stickyIssueID != "" {
+		attrs = append(attrs, "sticky_issue_id", stickyIssueID)
 	}
 	o.logger.Info("merge_worker_queue_cycle", attrs...)
 }
@@ -1273,37 +1317,75 @@ func mergeWorkerLaneOccupant(state *State) (Running, int) {
 	return occupant, count
 }
 
-func prioritizeReadyMergingIssues(issues []connector.Issue) {
+func prioritizeReadyMergingIssues(issues []connector.Issue, state *State, now time.Time, fairnessAge time.Duration) mergingIssuePriority {
+	priority := mergingIssuePriority{
+		reasons:       map[string]string{},
+		stickyIssueID: stickyMergingIssueID(state, issues, now, fairnessAge),
+	}
 	ordered := make([]connector.Issue, 0, len(issues))
-	readyHeads := make(map[string]struct{})
-	seenRepositories := make(map[string]struct{})
-	for _, issue := range issues {
+	appended := make([]bool, len(issues))
+	repositoryHeads := make(map[string]int)
+	for index, issue := range issues {
 		if !mergeWorkerIssue(issue) {
 			continue
 		}
 		repository := mergeWorkerRepositoryKey(issue)
-		if repository != "" {
-			if _, seen := seenRepositories[repository]; seen {
+		if repository == "" {
+			continue
+		}
+		if _, seen := repositoryHeads[repository]; !seen {
+			repositoryHeads[repository] = index
+		}
+	}
+	appendMatching := func(reason string, matches func(int, connector.Issue) bool) {
+		for index, issue := range issues {
+			if appended[index] || !mergeWorkerIssue(issue) || !matches(index, issue) {
 				continue
 			}
-			seenRepositories[repository] = struct{}{}
-		}
-		if mergeWorkerHeadReady(issue) {
-			readyHeads[issue.ID] = struct{}{}
+			appended[index] = true
 			ordered = append(ordered, issue)
+			if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+				priority.reasons[issueID] = reason
+			}
 		}
 	}
-	for _, issue := range issues {
-		if !mergeWorkerIssue(issue) {
-			continue
+	appendMatching(mergeSelectionReasonStickyAged, func(_ int, issue connector.Issue) bool {
+		return strings.TrimSpace(issue.ID) == priority.stickyIssueID
+	})
+	agedIssues := make([]connector.Issue, 0, len(issues))
+	for index, issue := range issues {
+		if !appended[index] && mergeWorkerIssueAged(issue, now, fairnessAge) {
+			appended[index] = true
+			agedIssues = append(agedIssues, issue)
 		}
-		if _, ready := readyHeads[issue.ID]; ready {
-			continue
+	}
+	slices.SortStableFunc(agedIssues, func(leftIssue connector.Issue, rightIssue connector.Issue) int {
+		left := mergeQueueEnteredAt(leftIssue, time.Time{})
+		right := mergeQueueEnteredAt(rightIssue, time.Time{})
+		if left.Before(right) {
+			return -1
 		}
+		if left.After(right) {
+			return 1
+		}
+		return 0
+	})
+	for _, issue := range agedIssues {
 		ordered = append(ordered, issue)
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			priority.reasons[issueID] = mergeSelectionReasonAged
+		}
 	}
+	appendMatching(mergeSelectionReasonClean, func(index int, issue connector.Issue) bool {
+		repository := mergeWorkerRepositoryKey(issue)
+		if repository != "" && repositoryHeads[repository] != index {
+			return false
+		}
+		return mergeWorkerHeadReady(issue)
+	})
+	appendMatching(mergeSelectionReasonQueue, func(_ int, _ connector.Issue) bool { return true })
 	if len(ordered) == 0 {
-		return
+		return priority
 	}
 	next := 0
 	for index := range issues {
@@ -1313,6 +1395,70 @@ func prioritizeReadyMergingIssues(issues []connector.Issue) {
 		issues[index] = ordered[next]
 		next++
 	}
+	return priority
+}
+
+func stickyMergingIssueID(state *State, issues []connector.Issue, now time.Time, fairnessAge time.Duration) string {
+	if state == nil || (len(state.Retry) == 0 && len(state.Running) == 0) {
+		return ""
+	}
+	current := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			current[issueID] = issue
+		}
+	}
+	selectedID := ""
+	selectedEnteredAt := time.Time{}
+	consider := func(issueID string, issue connector.Issue) {
+		issueID = strings.TrimSpace(issueID)
+		if refreshed, ok := current[issueID]; ok {
+			issue = refreshed
+		}
+		if !mergeWorkerIssueAged(issue, now, fairnessAge) {
+			return
+		}
+		enteredAt := mergeQueueEnteredAt(issue, time.Time{})
+		if selectedID == "" || enteredAt.Before(selectedEnteredAt) || enteredAt.Equal(selectedEnteredAt) && issueID < selectedID {
+			selectedID = issueID
+			selectedEnteredAt = enteredAt
+		}
+	}
+	for issueID, running := range state.Running {
+		consider(issueID, running.Issue)
+	}
+	for issueID, retry := range state.Retry {
+		consider(issueID, retry.Issue)
+	}
+	return selectedID
+}
+
+func mergeWorkerSelectionReason(issue connector.Issue, state *State, now time.Time, fairnessAge time.Duration) string {
+	if strings.TrimSpace(issue.ID) == stickyMergingIssueID(state, []connector.Issue{issue}, now, fairnessAge) {
+		return mergeSelectionReasonStickyAged
+	}
+	if mergeWorkerIssueAged(issue, now, fairnessAge) {
+		return mergeSelectionReasonAged
+	}
+	if mergeWorkerHeadReady(issue) {
+		return mergeSelectionReasonClean
+	}
+	return mergeSelectionReasonQueue
+}
+
+func mergeWorkerIssueAged(issue connector.Issue, now time.Time, fairnessAge time.Duration) bool {
+	return mergeWorkerIssue(issue) && fairnessAge > 0 && mergeWorkerIssueLaneAge(issue, now) >= fairnessAge
+}
+
+func mergeWorkerIssueLaneAge(issue connector.Issue, now time.Time) time.Duration {
+	if now.IsZero() {
+		return 0
+	}
+	enteredAt := mergeQueueEnteredAt(issue, time.Time{})
+	if enteredAt.IsZero() || now.Before(enteredAt) {
+		return 0
+	}
+	return now.Sub(enteredAt)
 }
 
 func mergeWorkerHeadReady(issue connector.Issue) bool {
@@ -1324,10 +1470,10 @@ func mergeWorkerHeadReady(issue connector.Issue) bool {
 		len(issue.PullRequest.RequiredCheckFailures) == 0
 }
 
-func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
+func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	candidates := []connector.Issue{}
 	consumedRepositories := activeMergeWorkerRepositories(state)
-	for _, issue := range staleMergingQueueIssues(issues, o.cfg) {
+	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
 		repository := mergeWorkerRepositoryKey(issue)
 		if staleMergingPullRequestDispatchActive(state, issueID) {
@@ -1338,6 +1484,10 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			continue
 		}
 		if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
+			decision := decideMergeBaseRefresh(issue, true, true)
+			if decision.applicable && !decision.proceed {
+				o.logMergeBaseRefreshDeferred(issue, decision.reason)
+			}
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
@@ -1370,7 +1520,35 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue, cfg Config) bool {
 	if pullRequest.Draft {
 		return false
 	}
-	return !staleMergingCIRed(pullRequest.CIStatus)
+	if staleMergingCIRed(pullRequest.CIStatus) {
+		return false
+	}
+	decision := decideMergeBaseRefresh(issue, true, true)
+	return !decision.applicable || decision.proceed
+}
+
+func decideMergeBaseRefresh(issue connector.Issue, laneAvailable bool, globalAvailable bool) mergeBaseRefreshDecision {
+	if issue.PullRequest == nil || !strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") {
+		return mergeBaseRefreshDecision{}
+	}
+	if len(issue.PullRequest.RequiredCheckFailures) > 0 {
+		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshRequiredChecksPending}
+	}
+	if !laneAvailable {
+		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshLaneUnavailable}
+	}
+	if !globalAvailable {
+		return mergeBaseRefreshDecision{applicable: true, reason: mergeBaseRefreshGlobalUnavailable}
+	}
+	return mergeBaseRefreshDecision{applicable: true, proceed: true}
+}
+
+func (o *Orchestrator) logMergeBaseRefreshDeferred(issue connector.Issue, reason string) {
+	if o.logger == nil || issue.PullRequest == nil ||
+		!strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") {
+		return
+	}
+	o.logger.Info("merge_base_refresh_deferred", mergeWorkerLogAttrs(issue, "reason", strings.TrimSpace(reason))...)
 }
 
 func staleMergingCIRed(status string) bool {
@@ -2354,6 +2532,7 @@ func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest)
 		return nil
 	}
 	checks := append([]string(nil), pullRequest.RunningChecks...)
+	checks = append(checks, pullRequestCheckNames(pullRequest.UnstartedChecks)...)
 	for _, check := range pullRequest.RequiredCheckFailures {
 		if !autoPromoteCheckPending(check) {
 			continue
@@ -2361,6 +2540,14 @@ func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest)
 		checks = append(checks, check.Name)
 	}
 	return uniqueStrings(checks)
+}
+
+func pullRequestCheckNames(checks []connector.PullRequestCheck) []string {
+	names := make([]string, 0, len(checks))
+	for _, check := range checks {
+		names = append(names, check.Name)
+	}
+	return uniqueStrings(names)
 }
 
 func autoPromoteCheckPending(check connector.PullRequestCheck) bool {

@@ -102,6 +102,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:                 blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
 		Completed:               completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
 		RateLimits:              cloneRateLimits(s.RateLimits),
+		CIUnavailable:           ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s.FailureBreaker),
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
@@ -121,6 +122,13 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	}
 	applySnapshotLaneProvenance(&snapshot, s.laneProvenance)
 	return snapshot
+}
+
+func ciUnavailableSnapshots(condition *CICondition) []telemetry.CICondition {
+	if condition == nil {
+		return nil
+	}
+	return []telemetry.CICondition{*condition}
 }
 
 func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution) {
@@ -512,6 +520,15 @@ func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, mergeTimi
 			Attempt:    entry.Attempt,
 			Error:      entry.Error,
 			WorkerHost: entry.WorkerHost,
+			QueueState: telemetry.QueueStateRetrying,
+		}
+		if entry.Wait.Kind == retryWaitCurrentHeadCI {
+			queued.QueueState = telemetry.QueueStateWaitingOnCI
+			queued.WaitStartedAt = timePointer(entry.Wait.StartedAt)
+			queued.PollCount = entry.Wait.PollCount
+			queued.PendingChecks = append([]string(nil), entry.Wait.PendingChecks...)
+			queued.WorkspaceCreateCount = entry.Wait.WorkspaceCreateCount
+			queued.WorkspaceDestroyCount = entry.Wait.WorkspaceDestroyCount
 		}
 		if !entry.DueAt.IsZero() {
 			dueAt := entry.DueAt
@@ -822,6 +839,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		QuietWaitSeconds:           pullRequestQuietWaitSeconds(issue, quietDuration, pollInterval),
 		SlowChecks:                 telemetryPullRequestChecks(pullRequest.SlowChecks),
 		RunningChecks:              append([]string(nil), pullRequest.RunningChecks...),
+		UnstartedCheckCount:        pullRequest.UnstartedCheckCount,
+		UnstartedChecks:            telemetryPullRequestChecks(pullRequest.UnstartedChecks),
 		RequiredCheckFailures:      telemetryPullRequestChecks(pullRequest.RequiredCheckFailures),
 		CodexReviewState:           pullRequest.CodexReviewState,
 	}
@@ -903,12 +922,23 @@ func latestBefore(current *time.Time, candidate *time.Time, before time.Time) *t
 }
 
 func tokensFromTokenTotals(totals TokenTotals) telemetry.Tokens {
+	var last *telemetry.TokenBreakdown
+	if totals.Last != nil {
+		last = &telemetry.TokenBreakdown{
+			Input:           totals.Last.InputTokens,
+			CachedInput:     totals.Last.CachedInputTokens,
+			Output:          totals.Last.OutputTokens,
+			ReasoningOutput: totals.Last.ReasoningOutputTokens,
+			Total:           totals.Last.TotalTokens,
+		}
+	}
 	return telemetry.Tokens{
 		Input:              totals.InputTokens,
 		CachedInput:        totals.CachedInputTokens,
 		Output:             totals.OutputTokens,
 		ReasoningOutput:    totals.ReasoningOutputTokens,
 		Total:              totals.TotalTokens,
+		Last:               last,
 		ModelContextWindow: totals.ModelContextWindow,
 		RuntimeSeconds:     totals.RuntimeSeconds,
 	}

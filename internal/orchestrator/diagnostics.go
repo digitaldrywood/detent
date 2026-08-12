@@ -41,6 +41,8 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		result = "selected"
 		if decision.UnblockerCount > 0 {
 			reason = unblockerDecisionReason(decision.UnblockerCount)
+		} else if strings.TrimSpace(decision.SelectionReason) != "" {
+			reason = strings.TrimSpace(decision.SelectionReason)
 		} else if reason == "" {
 			reason = "selected"
 		}
@@ -49,12 +51,13 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		return
 	}
 	o.recordSchedulerDecision(ctx, state, now, decision, result, reason)
-	if o.logger == nil {
+	if o.logger == nil || reason == dispatchSkipCurrentHeadCIWait || reason == mergeWorkerCurrentHeadCIWaitExceededReason {
 		return
 	}
 	attrs := o.schedulerDecisionAttrs(state, now, decision.Issue,
 		"result", result,
 		"skip_reason", reason,
+		"selection_reason", strings.TrimSpace(decision.SelectionReason),
 		"queue_position", decision.QueuePosition,
 		"retry", decision.Retry,
 		"attempt", decision.Attempt,
@@ -372,6 +375,7 @@ func pullRequestDiagnosticAttrs(issue connector.Issue, now time.Time) []any {
 		"pr_check_run_count", pr.CheckRunCount,
 		"pr_status_context_count", pr.StatusContextCount,
 		"pr_running_check_count", len(pr.RunningChecks),
+		"pr_unstarted_check_count", len(pr.UnstartedChecks),
 		"pr_slow_check_count", len(pr.SlowChecks),
 		"pr_codex_review_state", strings.TrimSpace(pr.CodexReviewState),
 		"pr_latest_codex_review_state", strings.TrimSpace(pr.LatestCodexReviewState),

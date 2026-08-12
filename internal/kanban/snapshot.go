@@ -147,6 +147,7 @@ func clonePullRequest(pr *telemetry.PullRequest) *telemetry.PullRequest {
 	out.HydrationNextRetryAt = CloneTimePointer(pr.HydrationNextRetryAt)
 	out.SlowChecks = append([]telemetry.PullRequestCheck(nil), pr.SlowChecks...)
 	out.RunningChecks = append([]string(nil), pr.RunningChecks...)
+	out.UnstartedChecks = append([]telemetry.PullRequestCheck(nil), pr.UnstartedChecks...)
 	out.RequiredCheckFailures = append([]telemetry.PullRequestCheck(nil), pr.RequiredCheckFailures...)
 	return &out
 }

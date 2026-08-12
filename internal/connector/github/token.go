@@ -15,6 +15,10 @@ type TokenSource interface {
 	Token(context.Context) (string, error)
 }
 
+type CredentialIdentitySource interface {
+	CredentialIdentity(string) string
+}
+
 type RefreshableTokenSource interface {
 	TokenSource
 	RefreshToken(context.Context) (string, error)
@@ -150,6 +154,15 @@ func (r *TokenResolver) Token(ctx context.Context) (string, error) {
 		return "", appErr
 	}
 	return "", ErrMissingToken
+}
+
+func (r *TokenResolver) CredentialIdentity(token string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.app == nil {
+		return ""
+	}
+	return r.app.CredentialIdentity(token)
 }
 
 func (r *TokenResolver) gitHubAppToken(ctx context.Context) (string, error) {

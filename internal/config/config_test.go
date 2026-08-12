@@ -119,6 +119,69 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 	}
 }
 
+func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if workflow.Config.Worker.GitHubToken != "$DETENT_WORKER_GITHUB_TOKEN" {
+		t.Fatalf("Worker.GitHubToken = %q, want environment reference", workflow.Config.Worker.GitHubToken)
+	}
+	if workflow.Config.Worker.GitHubRESTMinReserve != 1250 {
+		t.Fatalf("Worker.GitHubRESTMinReserve = %d, want 1250", workflow.Config.Worker.GitHubRESTMinReserve)
+	}
+	if workflow.Config.Worker.GitHubRESTPollIntervalMS != 90000 {
+		t.Fatalf("Worker.GitHubRESTPollIntervalMS = %d, want 90000", workflow.Config.Worker.GitHubRESTPollIntervalMS)
+	}
+}
+
+func TestWorkerGitHubPolicyValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name: "reserve must be positive",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubRESTMinReserve = 0
+			},
+			want: "worker.github_rest_min_remaining_reserve must be greater than 0",
+		},
+		{
+			name: "poll interval protects REST budget",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubRESTPollIntervalMS = 59999
+			},
+			want: "worker.github_rest_poll_interval_ms must be greater than or equal to 60000",
+		},
+		{
+			name: "ambient gh credential rejected",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubToken = "gh"
+			},
+			want: "worker.github_token must use a dedicated credential instead of ambient gh authentication",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = TrackerMemory
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowActiveHours(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -666,6 +729,50 @@ func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 			}
 			if workflow.Config.Tracker.GitHubRESTFanoutMaxRequests != tt.value {
 				t.Fatalf("GitHubRESTFanoutMaxRequests = %d, want %d", workflow.Config.Tracker.GitHubRESTFanoutMaxRequests, tt.value)
+			}
+		})
+	}
+}
+
+func TestGitHubUnstartedCheckThresholdConfiguration(t *testing.T) {
+	t.Parallel()
+
+	intPointer := func(value int) *int { return &value }
+	tests := []struct {
+		name    string
+		value   *int
+		want    int
+		wantErr string
+	}{
+		{name: "default", want: DefaultGitHubUnstartedSeconds},
+		{name: "custom", value: intPointer(300), want: 300},
+		{name: "zero rejected", value: intPointer(0), wantErr: "tracker.github_unstarted_check_threshold_seconds must be greater than 0"},
+		{name: "negative rejected", value: intPointer(-1), wantErr: "tracker.github_unstarted_check_threshold_seconds must be greater than 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := "---\ntracker:\n  kind: memory\n"
+			if tt.value != nil {
+				raw += "  github_unstarted_check_threshold_seconds: " + strconv.Itoa(*tt.value) + "\n"
+			}
+			raw += "---\nPrompt\n"
+			workflow, err := ParseWorkflow([]byte(raw))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.Tracker.GitHubUnstartedSeconds; got != tt.want {
+				t.Fatalf("GitHubUnstartedSeconds = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -1423,6 +1530,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if !cfg.Agent.MergeFastPath.Enabled {
 		t.Fatal("Agent.MergeFastPath.Enabled = false, want true default")
 	}
+	if cfg.Agent.MergeFastPath.FairnessAgeSeconds != DefaultMergeFairnessAgeSeconds {
+		t.Fatalf("Agent.MergeFastPath.FairnessAgeSeconds = %d, want %d", cfg.Agent.MergeFastPath.FairnessAgeSeconds, DefaultMergeFairnessAgeSeconds)
+	}
 	if cfg.Agent.ExperimentalThreadResume {
 		t.Fatal("Agent.ExperimentalThreadResume = true, want disabled default")
 	}
@@ -1720,12 +1830,13 @@ func TestParseWorkflowAgentMergeFastPath(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
-		name    string
-		enabled string
-		want    bool
+		name               string
+		enabled            string
+		fairnessAgeSeconds int
+		want               bool
 	}{
-		{name: "enabled", enabled: "true", want: true},
-		{name: "disabled", enabled: "false", want: false},
+		{name: "enabled", enabled: "true", fairnessAgeSeconds: 5400, want: true},
+		{name: "disabled", enabled: "false", fairnessAgeSeconds: 900, want: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -1734,6 +1845,7 @@ func TestParseWorkflowAgentMergeFastPath(t *testing.T) {
 agent:
   merge_fast_path:
     enabled: ` + tt.enabled + `
+    fairness_age_seconds: ` + strconv.Itoa(tt.fairnessAgeSeconds) + `
 ---
 Body
 `))
@@ -1743,7 +1855,22 @@ Body
 			if workflow.Config.Agent.MergeFastPath.Enabled != tt.want {
 				t.Fatalf("Agent.MergeFastPath.Enabled = %t, want %t", workflow.Config.Agent.MergeFastPath.Enabled, tt.want)
 			}
+			if workflow.Config.Agent.MergeFastPath.FairnessAgeSeconds != tt.fairnessAgeSeconds {
+				t.Fatalf("Agent.MergeFastPath.FairnessAgeSeconds = %d, want %d", workflow.Config.Agent.MergeFastPath.FairnessAgeSeconds, tt.fairnessAgeSeconds)
+			}
 		})
+	}
+}
+
+func TestValidateMergeFastPathRejectsNegativeFairnessAge(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Agent.MergeFastPath.FairnessAgeSeconds = -1
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "agent.merge_fast_path.fairness_age_seconds must be greater than 0") {
+		t.Fatalf("Validate() error = %v, want fairness age validation", err)
 	}
 }
 

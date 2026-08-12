@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2313,7 +2314,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/commits/sha-190/check-runs?per_page=100",
-			body:   `{"check_runs":[{"name":"Verify (ubuntu-latest)","status":"completed","conclusion":"success","created_at":"2026-06-05T10:59:00Z","started_at":"2026-06-05T11:00:00Z","completed_at":"2026-06-05T11:03:00Z"},{"name":"GoReleaser Snapshot","status":"completed","conclusion":"failure","created_at":"2026-06-05T11:00:30Z","started_at":"2026-06-05T11:03:30Z","completed_at":"2026-06-05T11:11:30Z"},{"name":"Windows Core","status":"in_progress","conclusion":"","created_at":"2026-06-05T11:04:00Z","started_at":"2026-06-05T11:05:00Z","completed_at":null}]}`,
+			body:   `{"check_runs":[{"name":"Verify (ubuntu-latest)","status":"completed","conclusion":"success","created_at":"2026-06-05T10:59:00Z","started_at":"2026-06-05T11:00:00Z","completed_at":"2026-06-05T11:03:00Z"},{"name":"GoReleaser Snapshot","status":"completed","conclusion":"failure","created_at":"2026-06-05T11:00:30Z","started_at":"2026-06-05T11:03:30Z","completed_at":"2026-06-05T11:11:30Z"},{"name":"Portability Verify","status":"queued","conclusion":"","created_at":"2026-06-05T11:04:00Z","started_at":null,"completed_at":null},{"name":"Windows Core","status":"in_progress","conclusion":"","created_at":"2026-06-05T11:04:00Z","started_at":"2026-06-05T11:05:00Z","completed_at":null}]}`,
 		},
 		{
 			method: http.MethodGet,
@@ -2329,6 +2330,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 
 	c := newGitHubTestConnector(t, server, Config{
 		ProjectSlug: "PVT_1",
+		Now:         func() time.Time { return time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC) },
 		StateMap: map[string]string{
 			"Human Review": "Reviewing",
 		},
@@ -2366,6 +2368,12 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	if len(pr.RunningChecks) != 1 || pr.RunningChecks[0] != "Windows Core" {
 		t.Fatalf("RunningChecks = %#v, want Windows Core", pr.RunningChecks)
 	}
+	if len(pr.UnstartedChecks) != 1 || pr.UnstartedChecks[0].Name != "Portability Verify" || pr.UnstartedChecks[0].QueueSeconds != 56*60 {
+		t.Fatalf("UnstartedChecks = %#v, want Portability Verify queued 56 minutes", pr.UnstartedChecks)
+	}
+	if pr.UnstartedCheckCount != 1 {
+		t.Fatalf("UnstartedCheckCount = %d, want 1", pr.UnstartedCheckCount)
+	}
 	if len(pr.CodexReviewFindings) != 1 ||
 		pr.CodexReviewFindings[0].Body != "[P1] Unsafe migration." ||
 		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2" {
@@ -2386,7 +2394,7 @@ func TestCheckRunTelemetryReportsQueueAndCompletedSpan(t *testing.T) {
 	summary := checkRunTelemetry([]restCheckRun{
 		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", CreatedAt: &created, StartedAt: &start, CompletedAt: &verifyDone},
 		{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "success", CreatedAt: &snapshotCreated, StartedAt: &snapshotStart, CompletedAt: &snapshotDone},
-	}, nil)
+	}, nil, time.Time{}, defaultUnstartedCheckThreshold)
 
 	if summary.QueueSeconds != 120 {
 		t.Fatalf("QueueSeconds = %d, want 120", summary.QueueSeconds)
@@ -2399,6 +2407,106 @@ func TestCheckRunTelemetryReportsQueueAndCompletedSpan(t *testing.T) {
 	}
 	if len(summary.RunningChecks) != 0 {
 		t.Fatalf("RunningChecks = %#v, want none", summary.RunningChecks)
+	}
+}
+
+func TestCheckRunTelemetryDistinguishesUnstartedChecks(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
+	threshold := 15 * time.Minute
+	oldQueuedAt := now.Add(-47 * time.Minute)
+	recentQueuedAt := now.Add(-5 * time.Minute)
+	oldStartedAt := now.Add(-2 * time.Hour)
+	recentStartedAt := now.Add(-time.Minute)
+	tests := []struct {
+		name          string
+		checkRuns     []restCheckRun
+		wantRunning   []string
+		wantUnstarted []connector.PullRequestCheck
+		wantCount     int
+	}{
+		{
+			name: "all checks in progress",
+			checkRuns: []restCheckRun{
+				{Name: "Portability Verify", Status: "in_progress", CreatedAt: &oldQueuedAt, StartedAt: &oldStartedAt},
+				{Name: "Test", Status: "in_progress", CreatedAt: &oldQueuedAt, StartedAt: &recentStartedAt},
+			},
+			wantRunning: []string{"Portability Verify", "Test"},
+		},
+		{
+			name: "all checks queued past threshold",
+			checkRuns: []restCheckRun{
+				{ID: 1, Name: "Portability Verify", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 2, Name: "Test", Status: "queued", CreatedAt: &oldQueuedAt},
+			},
+			wantUnstarted: []connector.PullRequestCheck{
+				{ID: 1, Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 2, Name: "Test", Status: "queued", QueueSeconds: 47 * 60},
+			},
+		},
+		{
+			name:        "queued under threshold",
+			checkRuns:   []restCheckRun{{Name: "Portability Verify", Status: "queued", CreatedAt: &recentQueuedAt}},
+			wantRunning: []string{"Portability Verify"},
+		},
+		{
+			name: "mixed queued and running",
+			checkRuns: []restCheckRun{
+				{ID: 1, Name: "Portability Verify", Status: "queued", CreatedAt: &oldQueuedAt},
+				{Name: "Test", Status: "in_progress", CreatedAt: &oldQueuedAt, StartedAt: &recentStartedAt},
+			},
+			wantRunning: []string{"Test"},
+			wantUnstarted: []connector.PullRequestCheck{
+				{ID: 1, Name: "Portability Verify", Status: "queued", QueueSeconds: 47 * 60},
+			},
+		},
+		{
+			name:        "queued check that later starts",
+			checkRuns:   []restCheckRun{{Name: "Portability Verify", Status: "in_progress", CreatedAt: &oldQueuedAt, StartedAt: &recentStartedAt}},
+			wantRunning: []string{"Portability Verify"},
+		},
+		{
+			name: "unstarted checks are sorted and limited",
+			checkRuns: []restCheckRun{
+				{ID: 6, Name: "F", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 1, Name: "A", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 5, Name: "E", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 2, Name: "B", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 4, Name: "D", Status: "queued", CreatedAt: &oldQueuedAt},
+				{ID: 3, Name: "C", Status: "queued", CreatedAt: &oldQueuedAt},
+			},
+			wantUnstarted: []connector.PullRequestCheck{
+				{ID: 1, Name: "A", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 2, Name: "B", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 3, Name: "C", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 4, Name: "D", Status: "queued", QueueSeconds: 47 * 60},
+				{ID: 5, Name: "E", Status: "queued", QueueSeconds: 47 * 60},
+			},
+			wantCount: 6,
+		},
+		{name: "empty check run list"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			summary := checkRunTelemetry(tt.checkRuns, nil, now, threshold)
+			if !slices.Equal(summary.RunningChecks, tt.wantRunning) {
+				t.Fatalf("RunningChecks = %#v, want %#v", summary.RunningChecks, tt.wantRunning)
+			}
+			if !slices.Equal(summary.UnstartedChecks, tt.wantUnstarted) {
+				t.Fatalf("UnstartedChecks = %#v, want %#v", summary.UnstartedChecks, tt.wantUnstarted)
+			}
+			wantCount := tt.wantCount
+			if wantCount == 0 {
+				wantCount = len(tt.wantUnstarted)
+			}
+			if summary.UnstartedCount != wantCount {
+				t.Fatalf("UnstartedCount = %d, want %d", summary.UnstartedCount, wantCount)
+			}
+		})
 	}
 }
 
@@ -2419,7 +2527,7 @@ func TestCheckRunsStateTreatsStaleSuccessfulCheckRunAsSuccess(t *testing.T) {
 	if got := checkRunsState(checkRuns); got != "success" {
 		t.Fatalf("checkRunsState() = %q, want success", got)
 	}
-	telemetry := checkRunTelemetry(checkRuns, nil)
+	telemetry := checkRunTelemetry(checkRuns, nil, time.Time{}, defaultUnstartedCheckThreshold)
 	if len(telemetry.RunningChecks) != 0 {
 		t.Fatalf("RunningChecks = %#v, want none", telemetry.RunningChecks)
 	}
@@ -2583,7 +2691,7 @@ func TestCheckRunTelemetryExcludesSupersededFailures(t *testing.T) {
 	summary := checkRunTelemetry([]restCheckRun{
 		{ID: 1, Name: "Checks", Status: "completed", Conclusion: "failure", StartedAt: &older, CompletedAt: &olderDone},
 		{ID: 2, Name: "Checks", Status: "completed", Conclusion: "success", StartedAt: &newer, CompletedAt: &newerDone},
-	}, nil)
+	}, nil, time.Time{}, defaultUnstartedCheckThreshold)
 
 	if len(summary.SlowChecks) != 1 || summary.SlowChecks[0].Conclusion != "success" {
 		t.Fatalf("SlowChecks = %#v, want only latest settled success", summary.SlowChecks)
@@ -2622,7 +2730,7 @@ func TestCheckRunTelemetryUsesWorkflowRunTimingForQueue(t *testing.T) {
 		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", StartedAt: &checkStarted, CompletedAt: &checkCompleted},
 	}, []restWorkflowRun{
 		{ID: 28196652213, CreatedAt: &runCreated, RunStartedAt: &runStarted},
-	})
+	}, time.Time{}, defaultUnstartedCheckThreshold)
 
 	if summary.QueueSeconds != 90 {
 		t.Fatalf("QueueSeconds = %d, want 90", summary.QueueSeconds)
@@ -6000,6 +6108,7 @@ func newGitHubTestConnector(t *testing.T, server *graphqlTestServer, cfg Config)
 	if err != nil {
 		t.Fatalf("NewConnector() error = %v", err)
 	}
+	c.client.restBackoffs = newRESTBackoffRegistry()
 	return c
 }
 

@@ -2,10 +2,12 @@ package detent
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
@@ -42,6 +44,44 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, readme, "Do not pass `--allow-write-probes` until the mutation gate passes")
 	assertContains(t, readme, "detent onboarding validate-answers")
 	assertContains(t, readme, "Defaults are recommendations only")
+}
+
+func TestOnboardingDocsDistinguishIssueBackfillFromIntakeSources(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"20. **Issue backfill.**",
+		"## Phase 6 — Issue Backfill",
+		"ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>",
+		"[`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake)",
+		"backfill: <bulk-add filter and initial Status recommendation>",
+		"**ProjectV2 backfill:",
+		"**Issue-field backfill:",
+		"**Label backfill:",
+		"project-items.after-backfill.json",
+		"issues.after-backfill.json",
+		"| Backfill filter |",
+	} {
+		assertContains(t, onboarding, want)
+	}
+	staleKey := "INTAKE_" + "GH_FLAGS"
+	if strings.Contains(onboarding, staleKey) {
+		t.Fatalf("docs/ONBOARDING.md contains stale %s key", staleKey)
+	}
+	for _, stale := range []string{
+		"ProjectV2 intake:",
+		"Issue-field intake:",
+		"Label intake:",
+		"after-intake",
+		"project-fields.intake",
+		"| Intake filter |",
+	} {
+		if strings.Contains(onboarding, stale) {
+			t.Fatalf("docs/ONBOARDING.md contains stale %q wording", stale)
+		}
+	}
 }
 
 func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
@@ -107,6 +147,27 @@ func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
 	if strings.Contains(template, "write_probe_issue:") {
 		t.Fatalf("WORKFLOW.label.md contains write_probe_issue default:\n%s", template)
 	}
+}
+
+func TestOnboardingDocsCreateEscapeHatchLabelsIdempotently(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"AUTO_PROMOTE_OPTOUT_LABEL",
+		"MAX_SESSION_TOKEN_OVERRIDE_LABEL",
+		"create_label_if_missing",
+		`rg -Fxi -- "$label_name" "$ONBOARDING_DIR/repo-labels.txt"`,
+		`gh label create "$label_name" --repo "$TARGET_REPOSITORY"`,
+		"Excludes an issue from Detent auto-promotion.",
+		"Allows an issue to exceed the configured agent session token ceiling.",
+	} {
+		assertContains(t, onboarding, want)
+	}
+
+	assertOrder(t, onboarding, "## Phase 2.5", "create_label_if_missing")
+	assertOrder(t, onboarding, "create_label_if_missing", "## Phase 4")
 }
 
 func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
@@ -385,6 +446,39 @@ func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.
 	assertOrder(t, onboarding, "Conservative/manual expands to:", "GATE_REQUIRE_AUTOMATED_REVIEW=true")
 }
 
+func TestOnboardingDocsGenerateAdmissionAndEffortGuidance(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"ADMISSION_ALIGNMENT_CRITERIA",
+		"ADMISSION_READINESS_CRITERIA",
+		"ADMISSION_SIZE_CRITERIA",
+		"ADMISSION_SAFETY_GATES",
+		"EFFORT_MEDIUM_CRITERIA",
+		"EFFORT_HIGH_CRITERIA",
+		"EFFORT_XHIGH_CRITERIA",
+		"EFFORT_MAX_CRITERIA",
+		"## Admission Criteria",
+		"### Alignment",
+		"### Readiness",
+		"### Size",
+		"### Safety Gates",
+		"creates or appends the operator-approved four-tier rubric in `AGENTS.md`",
+		"leaves `model` unset",
+		`detent onboarding build-workflow`,
+		"contain no detent-agent guidance",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	assertOrder(t, onboarding, "For assisted or autonomous intake", "ADMISSION_ALIGNMENT_CRITERIA")
+	assertOrder(t, onboarding, "Ask every project", "EFFORT_MEDIUM_CRITERIA")
+	assertOrder(t, onboarding, "## Phase 4", "detent onboarding build-workflow")
+	assertOrder(t, onboarding, "detent onboarding build-workflow", "## Phase 5")
+}
+
 func TestOnboardingDocsSkipDuplicateProfileSuppliedQuestions(t *testing.T) {
 	t.Parallel()
 
@@ -512,6 +606,48 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			}
 			if !tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) != "" {
 				t.Fatalf("WriteProbeIssue = %q, want blank", cfg.Tracker.WriteProbeIssue)
+			}
+		})
+	}
+}
+
+func TestWorkedMultiProjectConfigsLoadAndValidate(t *testing.T) {
+	t.Parallel()
+
+	globalPath := "docs/examples/multi-project/global.yaml"
+	globalRaw, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", globalPath, err)
+	}
+	repositoryRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	localGlobal := strings.ReplaceAll(string(globalRaw), "/srv/detent/repos/orders-api", repositoryRoot)
+	localGlobal = strings.ReplaceAll(localGlobal, "/srv/detent/repos/storefront", repositoryRoot)
+	if _, err := globalconfig.Parse([]byte(localGlobal), globalPath, globalconfig.WithMissingWorkflowFiles()); err != nil {
+		t.Fatalf("globalconfig.Parse() error = %v", err)
+	}
+
+	for _, project := range []string{"orders-api", "storefront"} {
+		project := project
+		t.Run(project, func(t *testing.T) {
+			t.Parallel()
+
+			configPath := filepath.Join("docs", "examples", "multi-project", project, "detent.yaml")
+			configRaw, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
+			}
+			_, err = workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				WorkflowPath: filepath.Join(filepath.Dir(configPath), "WORKFLOW.md"),
+				Workflow:     []byte("# Example workflow\n"),
+				ConfigPath:   configPath,
+				Config:       configRaw,
+				HasConfig:    true,
+			})
+			if err != nil {
+				t.Fatalf("ParseProjectDefinition() error = %v", err)
 			}
 		})
 	}

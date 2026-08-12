@@ -131,6 +131,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
 	var lastDispatchFailure string
@@ -157,12 +158,15 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return !mergeWorkerIssue(issue) || lastDispatchFailure != dispatchIssueFailureGlobalSlotUnavailable
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
-			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
+			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
 			state.Retry[issue.ID] = rescheduled
+		},
+		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+			return o.pollMergeWorkerCurrentHeadCI(ctx, state, issue, retry, now)
 		},
 		preserveMissingDueRetry: func(retry Retry) bool {
 			return o.preserveMissingDueRetry(state, retry)
@@ -171,6 +175,17 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			o.logDispatchPlanDecision(ctx, state, now, decision)
 		},
 	})
+}
+
+func dispatchFailureRetryReason(reason string) string {
+	switch reason {
+	case dispatchIssueFailureClaimFailed:
+		return "claim verification failed"
+	case dispatchIssueFailureGlobalSlotUnavailable:
+		return dispatchSkipGlobalCapacityFull
+	default:
+		return reason
+	}
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
@@ -205,6 +220,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	for _, issue := range issues {
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 			return
@@ -245,6 +261,7 @@ const (
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
 	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
 	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
+	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
 )
 
@@ -319,6 +336,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	if state.Draining {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
 	}
+	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || ciUnavailableRetry(state, issue.ID)) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureCIUnavailable}
+	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
@@ -362,6 +382,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		o.recordDispatchGateRefusal(ctx, state, issue, attempt, workerHost, now, decision, projectStats)
 		o.logSchedulerSlotDecision(issue, "waiting", decision, projectStats)
 		if mergeWorkerIssue(issue) {
+			o.logMergeBaseRefreshDeferred(issue, mergeBaseRefreshGlobalUnavailable)
 			o.logMergeWorkerSlotWait(issue, decision, projectStats)
 		} else {
 			o.logDispatchSlotWait(issue, decision, projectStats)

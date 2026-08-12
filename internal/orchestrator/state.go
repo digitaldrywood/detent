@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"maps"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -80,6 +82,7 @@ type State struct {
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
+	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
 	DiffStats                map[string]DiffStats
@@ -133,6 +136,7 @@ type Running struct {
 	CapacityScope         backendcapacity.Scope
 	CapacityProbe         bool
 	ModelPermitExempt     bool
+	CIStopRequested       bool
 	StopDestination       string
 	StopPriorityOptions   []telemetry.StopRunPriorityOption
 	globalSlot            scheduler.Slot
@@ -213,6 +217,17 @@ type Retry struct {
 	RetryMode     runpkg.RetryMode
 	ResumeState   store.AgentResumeState
 	MergePrecheck *runpkg.MergePrecheck
+	CIUnavailable bool
+	Wait          RetryWait
+}
+
+type RetryWait struct {
+	Kind                  string
+	StartedAt             time.Time
+	PollCount             int
+	PendingChecks         []string
+	WorkspaceCreateCount  int
+	WorkspaceDestroyCount int
 }
 
 type InstantFailure struct {
@@ -373,6 +388,7 @@ func (s State) clone() State {
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
+		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
@@ -412,6 +428,7 @@ func (s State) clone() State {
 	for id, retry := range s.Retry {
 		retry.Issue = cloneIssue(retry.Issue)
 		retry.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
+		retry.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 		cloned.Retry[id] = retry
 	}
 	for id, failure := range s.InstantFailures {
@@ -561,6 +578,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		}
 		pullRequest.SlowChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.SlowChecks...)
 		pullRequest.RunningChecks = append([]string(nil), issue.PullRequest.RunningChecks...)
+		pullRequest.UnstartedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.UnstartedChecks...)
 		pullRequest.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.StaleSuccessfulChecks...)
 		pullRequest.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), issue.PullRequest.RequiredCheckFailures...)
 		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)
@@ -687,6 +705,7 @@ func cloneRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 	cloned.Credits = cloneRateLimitBucket(rateLimits.Credits)
 	cloned.GitHubGraphQL = cloneRateLimitBucket(rateLimits.GitHubGraphQL)
 	cloned.GitHubREST = cloneRateLimitBucket(rateLimits.GitHubREST)
+	cloned.GitHubRESTBudgets = cloneRESTBudgets(rateLimits.GitHubRESTBudgets)
 	cloned.GraphQLCost = cloneGraphQLCost(rateLimits.GraphQLCost)
 	cloned.RESTUsage = cloneRESTUsage(rateLimits.RESTUsage)
 	return &cloned
@@ -705,6 +724,9 @@ func mergeRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimi
 	}
 	if current != nil && current.GitHubREST != nil && merged.GitHubREST == nil {
 		merged.GitHubREST = cloneRateLimitBucket(current.GitHubREST)
+	}
+	if current != nil {
+		merged.GitHubRESTBudgets = mergeRESTBudgets(current.GitHubRESTBudgets, merged.GitHubRESTBudgets)
 	}
 	if current != nil && current.RESTUsage != nil && merged.RESTUsage == nil {
 		merged.RESTUsage = cloneRESTUsage(current.RESTUsage)
@@ -762,6 +784,63 @@ func cloneRESTUsage(usage *telemetry.RESTUsage) *telemetry.RESTUsage {
 		}
 	}
 	return &cloned
+}
+
+func cloneRESTBudgets(budgets []telemetry.RESTBudget) []telemetry.RESTBudget {
+	if len(budgets) == 0 {
+		return nil
+	}
+	cloned := append([]telemetry.RESTBudget(nil), budgets...)
+	for index := range cloned {
+		cloned[index] = cloneRESTBudget(budgets[index])
+	}
+	return cloned
+}
+
+func cloneRESTBudget(budget telemetry.RESTBudget) telemetry.RESTBudget {
+	if budget.ResetAt != nil {
+		resetAt := *budget.ResetAt
+		budget.ResetAt = &resetAt
+	}
+	if budget.ObservedAt != nil {
+		observedAt := *budget.ObservedAt
+		budget.ObservedAt = &observedAt
+	}
+	return budget
+}
+
+func mergeRESTBudgets(current []telemetry.RESTBudget, incoming []telemetry.RESTBudget) []telemetry.RESTBudget {
+	if len(current) == 0 {
+		return cloneRESTBudgets(incoming)
+	}
+	if len(incoming) == 0 {
+		return cloneRESTBudgets(current)
+	}
+	merged := make(map[string]telemetry.RESTBudget, len(current)+len(incoming))
+	for _, budget := range append(append([]telemetry.RESTBudget(nil), current...), incoming...) {
+		consumer := strings.TrimSpace(budget.Consumer)
+		if consumer == "" {
+			consumer = telemetry.RESTConsumerOrchestrator
+		}
+		key := consumer + "\x00" + strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.EndpointFamily) + "\x00" + strings.TrimSpace(budget.Resource)
+		merged[key] = cloneRESTBudget(budget)
+	}
+	out := make([]telemetry.RESTBudget, 0, len(merged))
+	for _, budget := range merged {
+		out = append(out, budget)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return restBudgetStateKey(out[i]) < restBudgetStateKey(out[j])
+	})
+	return out
+}
+
+func restBudgetStateKey(budget telemetry.RESTBudget) string {
+	consumer := strings.TrimSpace(budget.Consumer)
+	if consumer == "" {
+		consumer = telemetry.RESTConsumerOrchestrator
+	}
+	return consumer + "\x00" + strings.TrimSpace(budget.CredentialIdentity) + "\x00" + strings.TrimSpace(budget.EndpointFamily) + "\x00" + strings.TrimSpace(budget.Resource)
 }
 
 func cloneTelemetryWorkAttempts(values []telemetry.WorkAttempt) []telemetry.WorkAttempt {

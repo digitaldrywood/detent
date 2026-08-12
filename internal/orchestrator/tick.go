@@ -112,6 +112,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
+	if fetched.statusOK {
+		ciIssues := mergeIssueSlices(fetched.candidates, fetched.status)
+		for _, running := range state.Running {
+			ciIssues = mergeIssueSlices(ciIssues, []connector.Issue{running.Issue})
+		}
+		o.syncCIAvailability(state, ciIssues, now)
+	}
 	terminalRetryTransitions := o.reconcileTerminalAttemptRetryStates(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, terminalRetryTransitions)
 	fetched.status = overlayIssueStateSnapshots(fetched.status, terminalRetryTransitions)
@@ -776,6 +783,9 @@ func applyPullRequestHydrationBlock(target *connector.PullRequest, source connec
 	}
 	if len(target.RequiredCheckFailures) == 0 {
 		target.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), source.RequiredCheckFailures...)
+	}
+	if len(target.UnstartedChecks) == 0 {
+		target.UnstartedChecks = append([]connector.PullRequestCheck(nil), source.UnstartedChecks...)
 	}
 	if len(target.StaleSuccessfulChecks) == 0 {
 		target.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), source.StaleSuccessfulChecks...)

@@ -101,6 +101,9 @@ GitHub token redacted.
   project config.
 - [`config.annotated.yaml`](../config.annotated.yaml) is a realistic GitHub
   setup with explanations beside each deliberate choice.
+- The [worked multi-project configuration](examples/multi-project/README.md)
+  pairs an annotated host config with two complete project configs and explains
+  the operator rationale behind their scheduling and isolation choices.
 - [`config.reference.yaml`](../config.reference.yaml) contains every supported
   project key. It is fully commented so you can copy only what you need.
 
@@ -133,6 +136,26 @@ enter configured states.
 sharing, and cleanup. `deliverable` selects pull requests or file artifacts and
 their review destination. `worker` distributes sessions across optional SSH
 hosts; per-state and global concurrency limits remain under `agent`.
+
+GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
+enterprise variants, or the host's GitHub CLI login. Leave
+`worker.github_token` empty to run workers with GitHub authentication disabled,
+or point it at a dedicated environment variable in a machine-local overlay:
+
+```yaml
+worker:
+  github_token: $DETENT_WORKER_GITHUB_TOKEN
+  github_rest_min_remaining_reserve: 1000
+  github_rest_poll_interval_ms: 60000
+```
+
+The worker token must belong to a different GitHub user than the orchestrator
+token; a second token for the same user still shares that user's primary REST
+budget and is rejected before launch. Detent verifies the principals through
+GraphQL, probes the dedicated worker REST budget at launch and no more often
+than the configured interval, and stops or refuses a worker at the reserve.
+Worker and orchestrator budget rows carry an explicit `consumer` in telemetry.
+Keep the token itself out of checked-in project files.
 
 `workpad.structured_only` requires machine-readable workpad status instead of
 accepting legacy narrative signals. `dependencies.source` chooses whether
@@ -225,6 +248,34 @@ compare your schedule with recent candidate-bearing runs and the runtime and
 token cost observed on your own host. Choose a slower explicit schedule when
 that latency/cost tradeoff is intentional.
 
+The onboarding workflow builder accepts a named `INTAKE_PROFILE` and expands
+these `answers.env` keys into the typed configuration below. The generated
+field reference remains derived from the YAML schema; this table documents the
+interview-to-config mapping that exists before YAML is rendered.
+
+| `answers.env` key | Generated config target |
+| --- | --- |
+| `INTAKE_PROFILE` | Selects the manual, assisted, or autonomous answer expansion |
+| `FOLLOWUPS_ENABLED` | `agent.followups.enabled` |
+| `BACKLOG_ADMISSION_ENABLED` | `backlog_admission.enabled`; the entire block is omitted when false |
+| `BACKLOG_ADMISSION_SCHEDULE` | `backlog_admission.schedule` |
+| `BACKLOG_ADMISSION_SOURCE_STATE` | `backlog_admission.sources.states` |
+| `BACKLOG_ADMISSION_TARGET_STATE` | `backlog_admission.target_state` |
+| `BACKLOG_ADMISSION_CRITERIA_SECTION` | `backlog_admission.criteria_section` and the matching shared `WORKFLOW.md` heading |
+| `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN` | `backlog_admission.max_candidates_per_run` |
+| `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN` | `backlog_admission.max_proposals_per_run` |
+| `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS` | `backlog_admission.max_open_proposals` |
+| `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` | `backlog_admission.proposal_expiry_days` |
+| `BACKLOG_ADMISSION_AUTO_ADMIT` | `backlog_admission.auto_admit` |
+| `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` | `backlog_admission.auto_admit_min_confidence` |
+| `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` | `backlog_admission.authors.allow_association` |
+| `ROUTINES_ENABLED` | Controls whether the generated `routines` list is present |
+| `ROUTINE_NAME` | `routines[].name` |
+| `ROUTINE_SCHEDULE` | `routines[].schedule` |
+| `ROUTINE_PROMPT` | `routines[].prompt` |
+| `STALE_TODOS_ENABLED` | Controls whether the built-in scheduled `stale-todos` source is present |
+| `STALE_TODOS_SCHEDULE` | `intake.sources[].cron` for the `stale-todos` source |
+
 ## Fleet staleness warnings
 
 `observability.staleness` detects work items that exceed lane-specific aging
@@ -252,6 +303,14 @@ Warnings appear in the dashboard, `/health`, and `detent doctor`. Configure
 `detent.staleness.warning` JSON event. The payload includes a stable warning ID,
 the affected project or item, the reason, and age and threshold values in
 seconds. A delivered warning is not sent again on every scheduler tick.
+
+## Unstarted GitHub checks
+
+`tracker.github_unstarted_check_threshold_seconds` controls when a GitHub check
+that remains queued without a `started_at` timestamp appears as unstarted. The
+15-minute default is intentionally non-zero because a cold or busy runner pool
+can legitimately take several minutes to pick up a job; setting the threshold
+too low would turn ordinary queueing into an operator-facing signal.
 
 ## Generated field reference
 
@@ -334,6 +393,7 @@ rendering and fails on drift.
 | `agent.max_turns` | `integer` | `20` | No | must be greater than 0 |
 | `agent.merge_fast_path` | `object` | `see child fields` | No | None |
 | `agent.merge_fast_path.enabled` | `boolean` | `true` | No | None |
+| `agent.merge_fast_path.fairness_age_seconds` | `integer` | `7200` | No | must be greater than 0 |
 | `agent.merge_worker_max_duration_ms` | `integer` | `21600000` | No | must be greater than 0 |
 | `agent.merge_worker_startup_timeout_ms` | `integer` | `240000` | No | must be greater than 0 |
 | `agent.no_progress_spend_limit_usd` | `number` | `3` | No | must be greater than or equal to 0 |
@@ -402,6 +462,7 @@ rendering and fails on drift.
 | `backlog_admission.authors.allow` | `list<string>` | `[]` | No | None |
 | `backlog_admission.authors.allow_association` | `list<string>` | `[]` | No | requires author association, but tracker.kind memory cannot supply it<br>values must be one of OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE |
 | `backlog_admission.auto_admit` | `boolean` | `false` | No | None |
+| `backlog_admission.auto_admit_by_label` | `mapping<string, boolean>` | `{}` | No | None |
 | `backlog_admission.auto_admit_min_confidence` | `number` | `0.9` | No | None |
 | `backlog_admission.criteria_section` | `string` | `none` | Conditional | is required |
 | `backlog_admission.effort_section` | `string` | `none` | Conditional | is required when require_effort is true |
@@ -553,9 +614,13 @@ rendering and fails on drift.
 | `retro.single_occurrence_severity` | `string` | `"critical" when configured` | No | must be one of info, warning, high, critical |
 | `retro.target_state` | `string` | `"Backlog" when configured` | No | must name a configured tracker state |
 | `routines` | `list<object>` | `[]` | No | None |
+| `routines[].labels` | `list<string>` | `[]` | Conditional | labels must not be blank |
+| `routines[].max_findings_per_run` | `integer` | `3 when configured` | No | must be greater than 0 |
+| `routines[].max_open_findings` | `integer` | `10 when configured` | No | must be greater than 0 |
 | `routines[].name` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
 | `routines[].prompt` | `string` | `none` | Conditional | is required |
 | `routines[].schedule` | `string` | `none` | Conditional | is required<br>must be a valid five-field cron expression |
+| `routines[].target_state` | `string` | `"Todo" when configured` | No | must name a configured workflow state |
 | `server` | `object` | `see child fields` | No | None |
 | `server.board_snapshot_stale_after_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `server.host` | `string` | `"127.0.0.1"` | No | is required |
@@ -613,6 +678,7 @@ rendering and fails on drift.
 | `tracker.github_rest_fanout_max_requests` | `integer` | `80` | No | must be greater than or equal to 0 |
 | `tracker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0 |
 | `tracker.github_status_source` | `string` | `"project_v2"` | No | must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.github_unstarted_check_threshold_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `tracker.github_webhook_secret` | `string` | `none` | No | None |
 | `tracker.http_idle_conn_timeout_ms` | `integer` | `90000` | No | must be greater than 0 |
 | `tracker.http_max_idle_conns` | `integer` | `100` | No | must be greater than 0 |
@@ -751,6 +817,16 @@ rendering and fails on drift.
 | `tracker.issues[].pull_request.transient_failed_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.transient_failed_checks[].status` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.transient_failed_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_check_count` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.unstarted_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.url` | `string` | `none` | No | None |
 | `tracker.issues[].stage_updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].state` | `string` | `none` | No | None |
@@ -773,6 +849,9 @@ rendering and fails on drift.
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |
+| `worker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0 |
+| `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
+| `worker.github_token` | `string` | `none` | No | None |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
 | `worker.ssh_hosts` | `list<string>` | `[]` | No | None |
 | `workpad` | `object` | `see child fields` | No | None |

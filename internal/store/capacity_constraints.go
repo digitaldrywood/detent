@@ -19,6 +19,7 @@ const (
 	CapacityConstraintLane           CapacityConstraintReason = "lane_capacity_full"
 	CapacityConstraintWorkerHost     CapacityConstraintReason = "worker_host_capacity_full"
 	CapacityConstraintRateWindow     CapacityConstraintReason = "provider_rate_window_backpressure"
+	CapacityConstraintCIUnavailable  CapacityConstraintReason = "ci_unavailable"
 )
 
 type CapacityConstraintQuery struct {
@@ -52,7 +53,7 @@ func QueryCapacityConstraintWaits(
 SELECT project_id, COALESCE(lane, ''), wait_reason, decision_at, capacity_snapshot_json
 FROM scheduler_decisions
 WHERE result = ?
-  AND wait_reason IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  AND wait_reason IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   AND decision_at >= ?`,
 		string(SchedulerDecisionResultSkipped),
 		poolCapacityWaitReason,
@@ -64,6 +65,7 @@ WHERE result = ?
 		string(CapacityConstraintWorkerHost),
 		"worker_host_unavailable",
 		string(CapacityConstraintRateWindow),
+		string(CapacityConstraintCIUnavailable),
 		"local_slot_unavailable",
 		since,
 	)
@@ -162,6 +164,8 @@ func capacityConstraintReason(waitReason string, globalAvailable *int) (Capacity
 		return CapacityConstraintWorkerHost, true
 	case string(CapacityConstraintRateWindow):
 		return CapacityConstraintRateWindow, true
+	case string(CapacityConstraintCIUnavailable):
+		return CapacityConstraintCIUnavailable, true
 	default:
 		return "", false
 	}

@@ -36,6 +36,13 @@ workspace:
   cache_strategy: isolated
   auto_branch: true
 
+# Use a separate bot-user token for worker gh/curl calls. A second token for
+# the orchestrator's GitHub user still shares its REST budget and is rejected.
+worker:
+  github_token: $DETENT_WORKER_GITHUB_TOKEN
+  github_rest_min_remaining_reserve: 1000
+  github_rest_poll_interval_ms: 60000
+
 # Bound fleet concurrency globally and serialize only the merge lane.
 agent:
   max_concurrent_agents: 4

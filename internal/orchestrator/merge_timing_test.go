@@ -51,6 +51,182 @@ func TestRecordMergeQueueEnteredResetsTerminalAttempt(t *testing.T) {
 	}
 }
 
+func TestMarkMergeWorkerSlotAcquiredPreservesAttemptBoundary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 22, 13, 0, 0, time.UTC)
+	firstAcquiredAt := now.Add(-9 * time.Minute)
+	oldEnteredAt := now.Add(-30 * time.Minute)
+	stageUpdatedAt := now.Add(-10 * time.Minute)
+	completedAt := now.Add(-20 * time.Minute)
+	tests := []struct {
+		name         string
+		initial      MergeTiming
+		acquisitions []time.Time
+		wantAcquired time.Time
+		wantQueue    int64
+		wantActive   int64
+		wantTotal    int64
+	}{
+		{
+			name:         "single acquisition",
+			acquisitions: []time.Time{now},
+			wantAcquired: now,
+			wantQueue:    600,
+			wantTotal:    600,
+		},
+		{
+			name:         "repeated acquisition preserves original timestamp",
+			acquisitions: []time.Time{firstAcquiredAt, now},
+			wantAcquired: firstAcquiredAt,
+			wantQueue:    60,
+			wantActive:   540,
+			wantTotal:    600,
+		},
+		{
+			name: "completed merge starts fresh",
+			initial: MergeTiming{
+				EnteredMergingAt:          oldEnteredAt,
+				MergeWorkerSlotAcquiredAt: oldEnteredAt.Add(time.Minute),
+				MergedAt:                  completedAt,
+			},
+			acquisitions: []time.Time{now},
+			wantAcquired: now,
+			wantQueue:    600,
+			wantTotal:    600,
+		},
+		{
+			name: "failed merge starts fresh",
+			initial: MergeTiming{
+				EnteredMergingAt:          oldEnteredAt,
+				MergeWorkerSlotAcquiredAt: oldEnteredAt.Add(time.Minute),
+				MergeFailedAt:             completedAt,
+				MergeFailureReason:        "merge_conflicts",
+			},
+			acquisitions: []time.Time{now},
+			wantAcquired: now,
+			wantQueue:    600,
+			wantTotal:    600,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:             "issue-1634-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Identifier:     "digitaldrywood/detent#1634",
+				State:          "Merging",
+				StageUpdatedAt: &stageUpdatedAt,
+				PullRequest:    &connector.PullRequest{Number: 1636, State: "OPEN"},
+			}
+			state := newState(normalizeConfig(Config{}))
+			state.MergeTimings[issue.ID] = tt.initial
+			orch := &Orchestrator{}
+
+			var got MergeTiming
+			for _, acquiredAt := range tt.acquisitions {
+				got = orch.markMergeWorkerSlotAcquired(&state, issue, acquiredAt)
+			}
+
+			if !got.MergeWorkerSlotAcquiredAt.Equal(tt.wantAcquired) {
+				t.Fatalf("MergeWorkerSlotAcquiredAt = %s, want %s", got.MergeWorkerSlotAcquiredAt, tt.wantAcquired)
+			}
+			if got.QueueWaitSeconds != tt.wantQueue || got.ActiveMergeDurationSeconds != tt.wantActive || got.TotalMergingSeconds != tt.wantTotal {
+				t.Fatalf(
+					"durations = queue %d active %d total %d, want %d/%d/%d",
+					got.QueueWaitSeconds,
+					got.ActiveMergeDurationSeconds,
+					got.TotalMergingSeconds,
+					tt.wantQueue,
+					tt.wantActive,
+					tt.wantTotal,
+				)
+			}
+		})
+	}
+}
+
+func TestMergeTimingWithDurationsUsesFirstSlotAcquisition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 22, 13, 0, 0, time.UTC)
+	enteredAt := now.Add(-10 * time.Minute)
+	acquiredAt := now.Add(-9 * time.Minute)
+	retryStartedAt := now.Add(-time.Minute)
+	tests := []struct {
+		name       string
+		timing     MergeTiming
+		wantQueue  int64
+		wantActive int64
+		wantTotal  int64
+	}{
+		{
+			name: "queued",
+			timing: MergeTiming{
+				EnteredMergingAt: enteredAt,
+			},
+			wantQueue: 600,
+			wantTotal: 600,
+		},
+		{
+			name: "active retry remains anchored to first slot",
+			timing: MergeTiming{
+				EnteredMergingAt:          enteredAt,
+				MergeWorkerSlotAcquiredAt: acquiredAt,
+				MergeStartedAt:            retryStartedAt,
+			},
+			wantQueue:  60,
+			wantActive: 540,
+			wantTotal:  600,
+		},
+		{
+			name: "completed",
+			timing: MergeTiming{
+				EnteredMergingAt:          enteredAt,
+				MergeWorkerSlotAcquiredAt: acquiredAt,
+				MergeStartedAt:            retryStartedAt,
+				MergedAt:                  now,
+			},
+			wantQueue:  60,
+			wantActive: 540,
+			wantTotal:  600,
+		},
+		{
+			name: "failed",
+			timing: MergeTiming{
+				EnteredMergingAt:          enteredAt,
+				MergeWorkerSlotAcquiredAt: acquiredAt,
+				MergeStartedAt:            retryStartedAt,
+				MergeFailedAt:             now,
+			},
+			wantQueue:  60,
+			wantActive: 540,
+			wantTotal:  600,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.timing.withDurations(now)
+			if got.QueueWaitSeconds != tt.wantQueue || got.ActiveMergeDurationSeconds != tt.wantActive || got.TotalMergingSeconds != tt.wantTotal {
+				t.Fatalf(
+					"durations = queue %d active %d total %d, want %d/%d/%d",
+					got.QueueWaitSeconds,
+					got.ActiveMergeDurationSeconds,
+					got.TotalMergingSeconds,
+					tt.wantQueue,
+					tt.wantActive,
+					tt.wantTotal,
+				)
+			}
+		})
+	}
+}
+
 func TestMarkMergeStartedPreservesCurrentHeadCIWaitDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +252,49 @@ func TestMarkMergeStartedPreservesCurrentHeadCIWaitDeadline(t *testing.T) {
 	}
 	if !got.MergeStartedAt.Equal(retryStart) {
 		t.Fatalf("MergeStartedAt = %s, want current attempt start %s", got.MergeStartedAt, retryStart)
+	}
+}
+
+func TestMarkMergeStartedRecordsOnlyActualBaseRefresh(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		mergeableState string
+		wantRefresh    bool
+	}{
+		{name: "behind head", mergeableState: "behind", wantRefresh: true},
+		{name: "current head", mergeableState: "clean"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:         "issue-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Identifier: "digitaldrywood/detent#1692",
+				State:      "Merging",
+				PullRequest: &connector.PullRequest{
+					Number:         1694,
+					State:          "OPEN",
+					MergeableState: tt.mergeableState,
+				},
+			}
+			state := newState(normalizeConfig(Config{}))
+			var logs strings.Builder
+			orch := &Orchestrator{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+
+			got := orch.markMergeStarted(&state, issue, now)
+
+			if got.BaseRefreshStartedAt.IsZero() == tt.wantRefresh {
+				t.Fatalf("BaseRefreshStartedAt = %v, want refresh recorded %t", got.BaseRefreshStartedAt, tt.wantRefresh)
+			}
+			if strings.Contains(logs.String(), "merge_base_refresh_started") != tt.wantRefresh {
+				t.Fatalf("logs %q, want refresh event %t", logs.String(), tt.wantRefresh)
+			}
+		})
 	}
 }
 

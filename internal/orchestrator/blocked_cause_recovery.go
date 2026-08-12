@@ -213,18 +213,30 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) {
 		return false
 	}
-	if reason := blockedCauseHoldReason(issue, state); reason != "" {
+	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+	if reason := o.blockedCauseHoldReason(issue, state, nil, dependencyCfg); reason != "" {
 		o.logBlockedRecoveryDecision(issue, "hold", reason, nil, "")
 		return false
 	}
-	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok &&
-		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
-		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
-		strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped)) {
+	if o.currentBlockedOperatorStop(ctx, state, issue) {
 		o.logBlockedRecoveryDecision(issue, "hold", "operator_stop", nil, "")
 		return false
 	}
 	withDependencies := o.issueWithDependencyRefs(issue)
+	withDependencies, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
+	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
+	if reason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg); reason != "" {
+		o.logBlockedRecoveryDecision(
+			issue,
+			"hold",
+			reason,
+			nil,
+			"",
+			dependencyBlockersNotReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates)...,
+		)
+		return false
+	}
 	if len(withDependencies.BlockedBy) > 0 {
 		o.logBlockedRecoveryDecision(issue, "defer", "dependency_recovery", nil, "")
 		return false
@@ -280,7 +292,12 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	return true
 }
 
-func blockedCauseHoldReason(issue connector.Issue, state *State) string {
+func (o *Orchestrator) blockedCauseHoldReason(
+	issue connector.Issue,
+	state *State,
+	workpadBlockers []dependencyBlocker,
+	dependencyCfg DependencyAutoUnblockConfig,
+) string {
 	if issue.WorkpadSignal != nil {
 		if issue.WorkpadSignal.Invalid != nil {
 			return "invalid_workpad_signal"
@@ -288,7 +305,7 @@ func blockedCauseHoldReason(issue connector.Issue, state *State) string {
 		if strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" {
 			return "human_action"
 		}
-		if len(issue.WorkpadSignal.Blockers) > 0 {
+		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
 			return "workpad_blocker"
 		}
 	}
@@ -297,12 +314,29 @@ func blockedCauseHoldReason(issue connector.Issue, state *State) string {
 			return "human_action"
 		}
 	}
+	if autoPromoteOptoutLabel(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote)) {
+		return "human_action"
+	}
 	if state != nil {
 		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
 			return "operator_stop"
 		}
 	}
 	return ""
+}
+
+func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *State, issue connector.Issue) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if state != nil && issueID != "" {
+		if blocked, ok := state.Blocked[issueID]; ok && blocked.Source == BlockedSourceOperatorStop {
+			return true
+		}
+	}
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	return ok &&
+		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
+		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
+		strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped))
 }
 
 func (o *Orchestrator) currentBlockedRecoveryPark(
@@ -355,6 +389,7 @@ func (o *Orchestrator) logBlockedRecoveryDecision(
 	reason string,
 	park *workflowLaneBlockedRecoveryMetadata,
 	fingerprint string,
+	unresolvedWorkpadBlockers ...dependencyBlocker,
 ) {
 	if o == nil || o.logger == nil {
 		return
@@ -375,6 +410,9 @@ func (o *Orchestrator) logBlockedRecoveryDecision(
 	}
 	if strings.TrimSpace(fingerprint) != "" {
 		attrs = append(attrs, "cause_fingerprint", strings.TrimSpace(fingerprint))
+	}
+	if len(unresolvedWorkpadBlockers) > 0 {
+		attrs = append(attrs, "unresolved_workpad_blockers", dependencyAutoUnblockBlockerLabels(unresolvedWorkpadBlockers))
 	}
 	o.logger.Info("blocked recovery decision", attrs...)
 }

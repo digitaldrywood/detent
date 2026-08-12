@@ -571,7 +571,7 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			continue
 		}
-		if !decided && autoAdmitProposal(settings.Config, proposal) {
+		if !decided && autoAdmitProposal(settings.Config, settings.Criteria, proposal, issue.Labels) {
 			recovered, err := m.recoverAutomaticAdmission(ctx, settings, issue, proposal)
 			if err != nil {
 				return commentsRemaining, autoAdmitsRemaining, err
@@ -650,7 +650,7 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			continue
 		}
-		if !decided && autoAdmitProposal(settings.Config, proposal) {
+		if !decided && autoAdmitProposal(settings.Config, settings.Criteria, proposal, issue.Labels) {
 			if !autoAdmitCandidateEligible(issue, settings.Config) {
 				decision := automaticAdmissionDecision(settings.Issues, proposal, at)
 				decision.Outcome = admissionmodel.ProposalSuperseded
@@ -909,7 +909,7 @@ func (m *Manager) executeProposals(
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, proposal) {
+		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
 			if err := m.admitProposal(
 				ctx,
 				settings,
@@ -935,7 +935,13 @@ func (m *Manager) commentProposal(
 	if err := settings.Issues.CreateComment(
 		ctx,
 		proposal.IssueID,
-		proposalComment(proposal, autoAdmitProposal(settings.Config, proposal), untracked),
+		proposalComment(
+			proposal,
+			settings.Criteria,
+			autoAdmitProposal(settings.Config, settings.Criteria, proposal, issue.Labels),
+			untracked,
+			issue.State,
+		),
 	); err != nil {
 		return fmt.Errorf("create backlog admission audit comment: %w", err)
 	}
@@ -959,7 +965,8 @@ func (m *Manager) admitProposal(
 	current, found := issueMap(issues)[proposal.IssueID]
 	eligible := found && admissionSourceEligible(current, settings.Config)
 	if decision.Automatic {
-		eligible = found && autoAdmitCandidateEligible(current, settings.Config)
+		eligible = found && autoAdmitCandidateEligible(current, settings.Config) &&
+			autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels)
 	}
 	if !eligible {
 		decision.Outcome = admissionmodel.ProposalSuperseded
@@ -1147,8 +1154,15 @@ func autoAdmitCandidateEligible(issue connector.Issue, cfg config.BacklogAdmissi
 	return admissionSourceEligible(issue, cfg) && !excludedCandidate(issue, cfg)
 }
 
-func autoAdmitProposal(cfg config.BacklogAdmission, proposal admissionmodel.Proposal) bool {
-	return cfg.AutoAdmit && proposal.Confidence >= cfg.AutoAdmitMinConfidence
+func autoAdmitProposal(
+	cfg config.BacklogAdmission,
+	criteria config.AdmissionCriteria,
+	proposal admissionmodel.Proposal,
+	labels []string,
+) bool {
+	return cfg.AutoAdmitForLabels(labels) &&
+		proposal.Confidence >= cfg.AutoAdmitMinConfidence &&
+		len(failedAdmissionDimensions(proposal.Findings, criteria)) == 0
 }
 
 func automaticAdmissionDecision(
@@ -1396,7 +1410,7 @@ func sortCandidates(issues []connector.Issue, settings Settings) {
 }
 
 func validateFindings(findings []admissionmodel.Finding, criteria config.AdmissionCriteria) ([]admissionmodel.Finding, error) {
-	if len(findings) == 0 {
+	if len(findings) == 0 || len(findings) != len(criteria.Dimensions) {
 		return nil, ErrInvalidProposal
 	}
 	dimensions := make(map[string]config.AdmissionDimension, len(criteria.Dimensions))
@@ -1426,7 +1440,33 @@ func validateFindings(findings []admissionmodel.Finding, criteria config.Admissi
 	if !matched {
 		return nil, ErrInvalidProposal
 	}
+	for key := range dimensions {
+		if _, ok := seen[key]; !ok {
+			return nil, ErrInvalidProposal
+		}
+	}
 	return out, nil
+}
+
+func failedAdmissionDimensions(
+	findings []admissionmodel.Finding,
+	criteria config.AdmissionCriteria,
+) []string {
+	matched := make(map[string]bool, len(findings))
+	for _, finding := range findings {
+		key := strings.ToLower(strings.TrimSpace(finding.Dimension))
+		if key == "" || !finding.Matched {
+			continue
+		}
+		matched[key] = true
+	}
+	failed := make([]string, 0, len(criteria.Dimensions))
+	for _, dimension := range criteria.Dimensions {
+		if !matched[strings.ToLower(strings.TrimSpace(dimension.Name))] {
+			failed = append(failed, strings.TrimSpace(dimension.Name))
+		}
+	}
+	return failed
 }
 
 func validateRecommendedEffort(
@@ -1478,14 +1518,35 @@ func proposalID(projectID string, issueID string, fingerprint string, at time.Ti
 	return "admission-" + hex.EncodeToString(sum[:12])
 }
 
-func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool, untracked bool) string {
+func proposalComment(
+	proposal admissionmodel.Proposal,
+	criteria config.AdmissionCriteria,
+	autoAdmit bool,
+	untracked bool,
+	sourceState string,
+) string {
 	var b strings.Builder
+	failedDimensions := failedAdmissionDimensions(proposal.Findings, criteria)
 	b.WriteString("## Detent backlog admission proposal\n\n")
 	b.WriteString("Proposal `")
 	b.WriteString(proposal.ID)
 	b.WriteString("` recommends moving this issue to **")
 	b.WriteString(proposal.TargetState)
-	if autoAdmit {
+	if len(failedDimensions) > 0 {
+		b.WriteString("**. This proposal does not meet every required admission dimension, so Detent will not automatically move the issue. The issue remains")
+		if sourceState = strings.TrimSpace(sourceState); sourceState != "" {
+			b.WriteString(" in **")
+			b.WriteString(sourceState)
+			b.WriteString("**")
+		} else {
+			b.WriteString(" in its current untracked state")
+		}
+		b.WriteString(". To accept and have Detent move the issue, reply with `")
+		b.WriteString(admissionAcceptCommand(proposal.ID))
+		b.WriteString("`. To reject, reply with `")
+		b.WriteString(admissionRejectCommand(proposal.ID))
+		b.WriteString("`. Leaving it unactioned will expire the proposal without counting as rejection.\n\n")
+	} else if autoAdmit {
 		b.WriteString("** and meets the configured automatic-admission threshold. Detent will move the issue to that state and record this proposal as the provenance.\n\n")
 	} else {
 		b.WriteString("**. To accept and have Detent move the issue, reply with `")
@@ -1511,10 +1572,18 @@ func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool, untracked
 		b.WriteString("- **")
 		b.WriteString(finding.Dimension)
 		b.WriteString("** — ")
+		if !finding.Matched {
+			b.WriteString("**Failed.** ")
+		}
 		b.WriteString(finding.Rationale)
 		b.WriteString("\n  - Criterion: “")
 		b.WriteString(finding.CriterionQuote)
 		b.WriteString("”\n")
+	}
+	if len(failedDimensions) > 0 {
+		b.WriteString("\nThe following required admission dimensions failed: **")
+		b.WriteString(strings.Join(failedDimensions, "**, **"))
+		b.WriteString("**.\n")
 	}
 	if proposal.RecommendedEffort != "" {
 		b.WriteString("\nRecommended effort: `")
@@ -1694,6 +1763,7 @@ func cloneSettings(settings Settings) Settings {
 	settings.Config.Sources.States = append([]string(nil), settings.Config.Sources.States...)
 	settings.Config.Sources.Labels = append([]string(nil), settings.Config.Sources.Labels...)
 	settings.Config.ExcludeLabels = append([]string(nil), settings.Config.ExcludeLabels...)
+	settings.Config.AutoAdmitByLabel = cloneLabelPolicies(settings.Config.AutoAdmitByLabel)
 	settings.Config.Authors.Allow = append([]string(nil), settings.Config.Authors.Allow...)
 	settings.Config.Authors.AllowAssociation = append([]string(nil), settings.Config.Authors.AllowAssociation...)
 	settings.Criteria.Dimensions = append([]config.AdmissionDimension(nil), settings.Criteria.Dimensions...)
@@ -1703,6 +1773,14 @@ func cloneSettings(settings Settings) Settings {
 	settings.TerminalStates = append([]string(nil), settings.TerminalStates...)
 	settings.ProjectCandidate.ActiveHours = settings.ProjectCandidate.ActiveHours.Normalize()
 	return settings
+}
+
+func cloneLabelPolicies(policies map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(policies))
+	for label, enabled := range policies {
+		out[label] = enabled
+	}
+	return out
 }
 
 func normalizeStrings(values []string) []string {

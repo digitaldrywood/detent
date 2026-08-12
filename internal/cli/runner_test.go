@@ -1270,6 +1270,116 @@ func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotAttributesFleetRESTBudgets(t *testing.T) {
+	t.Parallel()
+
+	firstObserved := time.Date(2026, 8, 8, 18, 0, 0, 0, time.UTC)
+	secondObserved := firstObserved.Add(time.Minute)
+	coreReset := firstObserved.Add(time.Hour)
+	searchReset := firstObserved.Add(2 * time.Minute)
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Limit: 5000, Remaining: 4200, ObservedAt: &firstObserved},
+			GitHubRESTBudgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4200, ResetAt: &coreReset, ObservedAt: &firstObserved},
+			},
+			RESTUsage: &telemetry.RESTUsage{TotalRequests: 3, BillableRequests: 3},
+		},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		BackendOutages: []telemetry.BackendOutage{{Kind: "github_rest_rate_limit", Reason: "dispatch paused"}},
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Limit: 5000, Remaining: 300, ObservedAt: &secondObserved},
+			GitHubRESTBudgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 300, ResetAt: &coreReset, ObservedAt: &secondObserved},
+				{CredentialIdentity: "github-rest:search", EndpointFamily: "issue search", Resource: "search", Limit: 30, Remaining: 20, ResetAt: &searchReset, ObservedAt: &secondObserved},
+			},
+			RESTUsage: &telemetry.RESTUsage{TotalRequests: 2, BillableRequests: 1},
+		},
+	})
+
+	if got.RateLimits == nil || len(got.RateLimits.GitHubRESTBudgets) != 2 {
+		t.Fatalf("RateLimits = %#v, want two credential endpoint budgets", got.RateLimits)
+	}
+	if budget := got.RateLimits.GitHubRESTBudgets[0]; budget.CredentialIdentity != "github-rest:search" || budget.ResetAt == nil || !budget.ResetAt.Equal(searchReset) {
+		t.Fatalf("GitHubRESTBudgets[0] = %#v, want search credential and reset", budget)
+	}
+	if budget := got.RateLimits.GitHubRESTBudgets[1]; budget.CredentialIdentity != "github-rest:shared" || budget.Remaining != 300 || budget.ResetAt == nil || !budget.ResetAt.Equal(coreReset) {
+		t.Fatalf("GitHubRESTBudgets[1] = %#v, want latest shared credential core budget", budget)
+	}
+	if got.RateLimits.RESTUsage == nil || got.RateLimits.RESTUsage.TotalRequests != 5 || got.RateLimits.RESTUsage.BillableRequests != 4 {
+		t.Fatalf("RESTUsage = %#v, want aggregated project request counts", got.RateLimits.RESTUsage)
+	}
+	if got.RateLimits.GitHubREST == nil || got.RateLimits.GitHubREST.Remaining != 300 {
+		t.Fatalf("GitHubREST = %#v, want most constrained compatibility bucket", got.RateLimits.GitHubREST)
+	}
+	if len(got.BackendOutages) != 1 || got.BackendOutages[0].Kind != "github_rest_rate_limit" {
+		t.Fatalf("BackendOutages = %#v, want fleet-visible REST dispatch condition", got.BackendOutages)
+	}
+}
+
+func TestFleetRESTBucketFromBudgetsUsesCurrentCredentialResourceSnapshot(t *testing.T) {
+	t.Parallel()
+
+	oldObserved := time.Date(2026, 8, 8, 18, 0, 0, 0, time.UTC)
+	newObserved := oldObserved.Add(time.Hour)
+	oldReset := oldObserved.Add(30 * time.Minute)
+	newReset := newObserved.Add(time.Hour)
+	tests := []struct {
+		name          string
+		budgets       []telemetry.RESTBudget
+		wantRemaining int64
+		wantReset     time.Time
+	}{
+		{
+			name: "new post-reset observation replaces stale exhausted family",
+			budgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 0, ResetAt: &oldReset, ObservedAt: &oldObserved},
+				{CredentialIdentity: "shared", EndpointFamily: "pull requests", Resource: "core", Limit: 5000, Remaining: 4990, ResetAt: &newReset, ObservedAt: &newObserved},
+			},
+			wantRemaining: 4990,
+			wantReset:     newReset,
+		},
+		{
+			name: "distinct credential keeps most constrained core budget",
+			budgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "first", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4000, ResetAt: &newReset, ObservedAt: &newObserved},
+				{CredentialIdentity: "second", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 300, ResetAt: &newReset, ObservedAt: &newObserved},
+			},
+			wantRemaining: 300,
+			wantReset:     newReset,
+		},
+		{
+			name: "core compatibility bucket outranks search resource",
+			budgets: []telemetry.RESTBudget{
+				{CredentialIdentity: "shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4000, ResetAt: &newReset, ObservedAt: &newObserved},
+				{CredentialIdentity: "shared", EndpointFamily: "issue search", Resource: "search", Limit: 30, Remaining: 0, ResetAt: &oldReset, ObservedAt: &newObserved},
+			},
+			wantRemaining: 4000,
+			wantReset:     newReset,
+		},
+		{
+			name: "exhausted worker budget does not constrain orchestrator dispatch",
+			budgets: []telemetry.RESTBudget{
+				{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "orchestrator", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4000, ResetAt: &newReset, ObservedAt: &newObserved},
+				{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "worker", EndpointFamily: "worker credential", Resource: "core", Limit: 5000, Remaining: 0, ResetAt: &newReset, ObservedAt: &newObserved},
+			},
+			wantRemaining: 4000,
+			wantReset:     newReset,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			bucket := fleetRESTBucketFromBudgets(test.budgets)
+			if bucket == nil || bucket.Remaining != test.wantRemaining || bucket.ResetAt == nil || !bucket.ResetAt.Equal(test.wantReset) {
+				t.Fatalf("bucket = %#v, want remaining %d reset %v", bucket, test.wantRemaining, test.wantReset)
+			}
+		})
+	}
+}
+
 func TestDedupeSnapshotIssues(t *testing.T) {
 	t.Parallel()
 
@@ -1471,6 +1581,7 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		Completed: []telemetry.Completed{
 			{Issue: telemetry.Issue{ID: "completed", Identifier: "digitaldrywood/detent#5"}, CompletedAt: completedAt},
 		},
+		CIUnavailable:      []telemetry.CICondition{{UnstartedCheckCount: 4, PullRequestCount: 2}},
 		FailureBreakers:    []telemetry.FailureBreaker{{Class: "session_token_ceiling"}},
 		DispatchRecoveries: []telemetry.DispatchRecovery{{Kind: "github_rest", Status: "ramping"}},
 	})
@@ -1487,6 +1598,7 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		{name: "queued", got: got.Queue[0].ProjectID},
 		{name: "blocked", got: got.Blocked[0].ProjectID},
 		{name: "completed", got: got.Completed[0].ProjectID},
+		{name: "CI unavailable", got: got.CIUnavailable[0].ProjectID},
 		{name: "failure breaker", got: got.FailureBreakers[0].ProjectID},
 		{name: "dispatch recovery", got: got.DispatchRecoveries[0].ProjectID},
 	}

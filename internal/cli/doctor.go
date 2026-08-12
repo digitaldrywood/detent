@@ -67,6 +67,7 @@ type doctorCheck struct {
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
 	ProjectDefinition         *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
+	Capabilities              *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization      doctorWorkflowOptimizationReport           `json:"-"`
 }
 
@@ -238,6 +239,7 @@ type doctorDeps struct {
 	githubReadiness      doctorGitHubReadinessFunc
 	githubMergeSettings  func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error)
 	githubRepositoryInfo func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error)
+	githubLabels         func(context.Context, workflowconfig.Config, string) ([]string, error)
 	ghAuthToken          func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
 	openSQLite           func(context.Context, string) (doctorStore, error)
@@ -417,7 +419,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		boot.Global = *global
 		boot.Host = bootHost(ctx, cfg.Host, firstGlobalProject(*global))
 		writeDoctorProgressStart(progressOut, "Global config reload")
-		check := checkDoctorConfigReload(*global)
+		check := checkDoctorConfigReload(ctx, *global, opts.runCommand)
 		writeDoctorProgressDone(progressOut, check)
 		report.Add(check)
 		writeDoctorProgressStart(progressOut, "Instance identity")
@@ -913,6 +915,13 @@ func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputForma
 		if _, err := fmt.Fprintf(out, "%-5s  %-28s  %s\n", check.Status, check.Name, check.Detail); err != nil {
 			return err
 		}
+		if check.Capabilities != nil {
+			for _, capability := range check.Capabilities.Capabilities {
+				if _, err := fmt.Fprintf(out, "%-5s  %-28s  %s\n", "", strings.ToUpper(string(capability.State))+" "+capability.Name, capability.Detail); err != nil {
+					return err
+				}
+			}
+		}
 		if strings.TrimSpace(check.Hint) != "" {
 			if _, err := fmt.Fprintf(out, "%-5s  %-28s  Hint: %s\n", "", "", check.Hint); err != nil {
 				return err
@@ -1101,6 +1110,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubRepositoryInfo == nil {
 		d.githubRepositoryInfo = defaults.githubRepositoryInfo
 	}
+	if d.githubLabels == nil {
+		d.githubLabels = defaults.githubLabels
+	}
 	if d.ghAuthToken == nil {
 		d.ghAuthToken = defaults.ghAuthToken
 	}
@@ -1162,6 +1174,7 @@ func defaultDoctorDeps() doctorDeps {
 		githubReadiness:      ghconnector.CheckReadiness,
 		githubMergeSettings:  defaultDoctorGitHubMergeSettings,
 		githubRepositoryInfo: defaultDoctorGitHubRepositoryInfo,
+		githubLabels:         defaultDoctorGitHubRepositoryLabels,
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,
 		openSQLite:           openDoctorSQLite,

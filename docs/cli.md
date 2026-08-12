@@ -130,6 +130,7 @@ Structured command objects:
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
 | `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
 | `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
+| `detent refresh-project api` | A review-only proposal containing `files`, `preserved_settings`, `default_updates`, `opt_in_features`, and a unified `diff`; rerun with `--yes` to apply it. |
 | `detent pause api --reason "maintenance"` / `detent unpause api` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
 | `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
@@ -141,6 +142,24 @@ Structured command objects:
 | `detent state [--project detent]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
 | `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
+
+### Project refresh proposals
+
+`detent refresh-project <project-id>` reads the registered project's split
+`WORKFLOW.md` and `detent.yaml`, derives its existing onboarding choices, and
+reconciles them with the current onboarding preset. It also preserves existing
+`AGENTS.md` content and proposes the current issue-effort rubric when missing.
+
+The command is read-only by default. Its output separates configured values
+that differ from current defaults, generated default additions or updates, and
+new opt-in capabilities with their effects. The unified diff is the proposed
+file change. Existing YAML comments and configured values remain authoritative;
+newly generated defaults carry a content marker so a later refresh can update
+an untouched default while treating an operator edit as explicit.
+
+Run the preview first, then pass `--yes` to apply that proposal. A refresh of
+the resulting files produces an empty diff. Legacy `WORKFLOW.md` frontmatter
+must first be migrated with `detent fix workflow-layout`.
 
 ### MCP stdio server
 

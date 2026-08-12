@@ -88,6 +88,7 @@ type Config struct {
 	RESTMinRemainingReserve    int
 	RESTFanoutMaxRequests      int
 	RESTDebugLogging           bool
+	UnstartedThreshold         time.Duration
 	DisableConditionalRequests bool
 	Logger                     *slog.Logger
 	Now                        func() time.Time
@@ -108,6 +109,7 @@ type Connector struct {
 	stateMap           map[string]string
 	priorityMap        map[string]*int
 	requiredChecks     []string
+	unstartedThreshold time.Duration
 	dependencySource   string
 	dependencyCaps     map[string]nativeDependencyCapability
 	statusCache        *statusCache
@@ -119,6 +121,7 @@ type Connector struct {
 	prDiffFingerprints map[pullRequestDiffFingerprintCacheKey]string
 	triggerLabelDir    string
 	logger             *slog.Logger
+	now                func() time.Time
 	mu                 sync.RWMutex
 	writeMu            sync.Mutex
 	instanceLogin      string
@@ -169,6 +172,14 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	unstartedThreshold := cfg.UnstartedThreshold
+	if unstartedThreshold <= 0 {
+		unstartedThreshold = defaultUnstartedCheckThreshold
+	}
 
 	client, err := NewClient(ClientConfig{
 		Endpoint:    cfg.Endpoint,
@@ -209,6 +220,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		stateMap:           cloneStateMap(cfg.StateMap),
 		priorityMap:        clonePriorityMapWithDefault(cfg.PriorityMap),
 		requiredChecks:     normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
+		unstartedThreshold: unstartedThreshold,
 		dependencySource:   normalizeDependencySource(cfg.DependencySource),
 		dependencyCaps:     map[string]nativeDependencyCapability{},
 		statusCache:        newStatusCache(githubCacheTTL, cfg.Now),
@@ -219,6 +231,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		prHydrationCursor:  map[string]string{},
 		prDiffFingerprints: map[pullRequestDiffFingerprintCacheKey]string{},
 		logger:             logger,
+		now:                now,
 	}, nil
 }
 

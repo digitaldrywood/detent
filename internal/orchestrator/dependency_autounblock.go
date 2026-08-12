@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -107,15 +108,33 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if issueID == "" {
 			continue
 		}
-		if o.issueHasStickyBlockReason(ctx, state, issue) {
+		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
+		if !ok {
 			continue
 		}
-		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
-		if !ok || len(hydrated.BlockedBy) == 0 {
+		hydrated, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
+		if reason := o.blockedCauseHoldReason(hydrated, state, nil, cfg); reason != "" {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, nil, "")
+			continue
+		}
+		if o.currentBlockedOperatorStop(ctx, state, hydrated) {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", "operator_stop", nil, "")
+			continue
+		}
+		if len(hydrated.BlockedBy) == 0 {
 			continue
 		}
 		o.logDependencyProseOnly(hydrated)
 		blockers := o.resolveDependencyBlockers(ctx, hydrated)
+		workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
+		if reason := o.blockedCauseHoldReason(hydrated, state, workpadBlockers, cfg); reason != "" {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, blockers, "")
+			continue
+		}
+		if stickyReason := o.issueStickyBlockReason(ctx, state, hydrated); stickyReason != "" &&
+			(!dependencyBlockersReady(workpadBlockers, cfg, o.cfg.TerminalStates) || !workpadBlockerStickyOverrideAllowed(stickyReason)) {
+			continue
+		}
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
 			o.logDependencyAutoUnblockDecision(hydrated, "skip", "blockers_not_ready", blockers, "")
 			continue
@@ -358,6 +377,104 @@ func (o *Orchestrator) issueWithDependencyRefs(issue connector.Issue) connector.
 		return issue
 	}
 	return issueWithTextDependencyRefs(issue)
+}
+
+func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
+	ctx context.Context,
+	issue connector.Issue,
+) (connector.Issue, []connector.BlockedRef) {
+	if !o.workpadBlockersMatchCurrentBlockedEntry(ctx, issue) {
+		return issue, nil
+	}
+	refs := workpadDependencyRefs(issue)
+	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, refs)
+	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+	refs = dependencyBlockedRefsWithoutSelf(refs, issue.Identifier)
+	return issue, refs
+}
+
+func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Context, issue connector.Issue) bool {
+	signal := issue.WorkpadSignal
+	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
+		strings.TrimSpace(signal.Status) != workpad.StatusBlocked || len(signal.Blockers) == 0 {
+		return false
+	}
+	commentAt, ok := workpadSignalCommentTime(issue, signal.CommentURL)
+	if !ok {
+		return true
+	}
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return true
+	}
+	currentIndex := -1
+	for index := len(timeline.Events) - 1; index >= 0; index-- {
+		event := timeline.Events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !blockedEntryMatchesCurrent(issue, event.StartedAt) {
+			return false
+		}
+		currentIndex = index
+		break
+	}
+	if currentIndex < 0 {
+		return true
+	}
+	for index := currentIndex - 1; index >= 0; index-- {
+		event := timeline.Events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		return !commentAt.Before(event.StartedAt.Add(-reworkBreakerStageUpdateSkew))
+	}
+	return true
+}
+
+func workpadSignalCommentTime(issue connector.Issue, commentURL string) (time.Time, bool) {
+	commentURL = strings.TrimSpace(commentURL)
+	if commentURL == "" {
+		return time.Time{}, false
+	}
+	for index := len(issue.Comments) - 1; index >= 0; index-- {
+		comment := issue.Comments[index]
+		if strings.TrimSpace(comment.URL) != commentURL {
+			continue
+		}
+		if comment.UpdatedAt != nil && !comment.UpdatedAt.IsZero() {
+			return comment.UpdatedAt.UTC(), true
+		}
+		if comment.CreatedAt != nil && !comment.CreatedAt.IsZero() {
+			return comment.CreatedAt.UTC(), true
+		}
+		return time.Time{}, false
+	}
+	return time.Time{}, false
+}
+
+func workpadDependencyRefs(issue connector.Issue) []connector.BlockedRef {
+	signal := issue.WorkpadSignal
+	if signal == nil {
+		return nil
+	}
+	repo := dependencyIssueRepo(issue.Identifier)
+	refs := make([]connector.BlockedRef, 0, len(signal.Blockers))
+	for _, blocker := range signal.Blockers {
+		identifier := strings.TrimSpace(blocker.Identifier)
+		if identifier == "" {
+			parsed, err := workpad.ParseRef(blocker.Ref, repo)
+			if err != nil {
+				continue
+			}
+			identifier = parsed
+		}
+		refs = append(refs, connector.BlockedRef{
+			Identifier: identifier,
+			Source:     connector.BlockedRefSourceWorkpad,
+		})
+	}
+	return refs
 }
 
 func issueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
@@ -658,6 +775,34 @@ func dependencyBlockersReady(blockers []dependencyBlocker, cfg DependencyAutoUnb
 	return true
 }
 
+func dependencyBlockersMatchingRefs(blockers []dependencyBlocker, refs []connector.BlockedRef) []dependencyBlocker {
+	wanted := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
+		if key != "" {
+			wanted[key] = struct{}{}
+		}
+	}
+	filtered := make([]dependencyBlocker, 0, len(wanted))
+	for _, blocker := range blockers {
+		key := dependencyAutoUnblockBlockerKey(blocker)
+		if _, ok := wanted[key]; ok {
+			filtered = append(filtered, blocker)
+		}
+	}
+	return filtered
+}
+
+func dependencyBlockersNotReady(blockers []dependencyBlocker, cfg DependencyAutoUnblockConfig, terminalStates []string) []dependencyBlocker {
+	filtered := make([]dependencyBlocker, 0, len(blockers))
+	for _, blocker := range blockers {
+		if !dependencyBlockerReady(blocker, cfg, terminalStates) {
+			filtered = append(filtered, blocker)
+		}
+	}
+	return filtered
+}
+
 func dependencyBlockersTerminal(blockers []dependencyBlocker, terminalStates []string) bool {
 	if len(blockers) == 0 {
 		return false
@@ -864,21 +1009,36 @@ func dependencyRefLabels(refs []connector.BlockedRef) []string {
 }
 
 func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) bool {
+	return o.issueStickyBlockReason(ctx, state, issue) != ""
+}
+
+func (o *Orchestrator) issueStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) string {
 	issueID := strings.TrimSpace(issue.ID)
 	if state != nil && issueID != "" {
 		if blocked, ok := state.Blocked[issueID]; ok &&
 			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) &&
 			stickyBlockReason(blocked.Reason) {
-			return true
+			return strings.TrimSpace(blocked.Reason)
 		}
 	}
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	if !ok {
-		return stickyBlockReason(issue.BlockerReason)
+		if stickyBlockReason(issue.BlockerReason) {
+			return strings.TrimSpace(issue.BlockerReason)
+		}
+		return ""
 	}
-	return normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
-		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
-		(stickyBlockReason(entry.Event.Reason) || stickyBlockReason(issue.BlockerReason))
+	if normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
+		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) {
+		return ""
+	}
+	if stickyBlockReason(entry.Event.Reason) {
+		return strings.TrimSpace(entry.Event.Reason)
+	}
+	if stickyBlockReason(issue.BlockerReason) {
+		return strings.TrimSpace(issue.BlockerReason)
+	}
+	return ""
 }
 
 func blockedEntryMatchesCurrent(issue connector.Issue, enteredAt time.Time) bool {
@@ -901,6 +1061,10 @@ func stickyBlockReason(reason string) bool {
 	default:
 		return false
 	}
+}
+
+func workpadBlockerStickyOverrideAllowed(reason string) bool {
+	return strings.EqualFold(strings.TrimSpace(reason), noProgressLimitReason)
 }
 
 func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
@@ -1182,6 +1346,8 @@ func dependencyBlockedRefSource(ref connector.BlockedRef) string {
 	switch strings.ToLower(strings.TrimSpace(ref.Source)) {
 	case connector.BlockedRefSourceNative:
 		return connector.BlockedRefSourceNative
+	case connector.BlockedRefSourceWorkpad:
+		return connector.BlockedRefSourceWorkpad
 	case "", connector.BlockedRefSourceProse:
 		return connector.BlockedRefSourceProse
 	default:

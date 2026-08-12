@@ -24,6 +24,7 @@ type dispatchPlanHooks struct {
 	dispatch                func(dispatchAction) bool
 	dispatchFailed          func(connector.Issue) bool
 	retryDispatchFailed     func(connector.Issue, Retry)
+	pollRetryWait           func(connector.Issue, Retry) (Retry, bool, string)
 	preserveMissingDueRetry func(Retry) bool
 	decision                func(dispatchPlanDecision)
 }
@@ -38,14 +39,15 @@ type dispatchAction struct {
 }
 
 type dispatchPlanDecision struct {
-	Issue          connector.Issue
-	QueuePosition  int
-	Attempt        int
-	WorkerHost     string
-	Retry          bool
-	Selected       bool
-	SkipReason     string
-	UnblockerCount int
+	Issue           connector.Issue
+	QueuePosition   int
+	Attempt         int
+	WorkerHost      string
+	Retry           bool
+	Selected        bool
+	SkipReason      string
+	SelectionReason string
+	UnblockerCount  int
 }
 
 func newDispatchPlanner(cfg Config) dispatchPlanner {
@@ -74,18 +76,54 @@ func (p dispatchPlanner) plan(
 	)
 	clearBlockedUnblockerCounts(plannedCandidates, state.Blocked)
 	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel, p.cfg.PrioritizeUnblockers)
-	prioritizeReadyMergingIssues(plannedCandidates)
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
+	dueRetries = dueRetriesByIssue(state, now)
+	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg.MergeFairnessAge)
+	logDecision := func(decision dispatchPlanDecision) {
+		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
+		p.logDecision(hooks, decision)
+	}
 
 	plan := DispatchPlan{}
 	continuations := 0
 	for index, issue := range plannedCandidates {
 		queuePosition := index + 1
+		if mergePriority.stickyIssueID != "" && mergeWorkerIssue(issue) && strings.TrimSpace(issue.ID) != mergePriority.stickyIssueID {
+			logDecision(dispatchPlanDecision{
+				Issue:         issue,
+				QueuePosition: queuePosition,
+				SkipReason:    dispatchSkipMergeFairnessReserved,
+			})
+			continue
+		}
 		if retry, ok := dueRetries[issue.ID]; ok {
+			if retry.Wait.Kind == retryWaitCurrentHeadCI {
+				var handled bool
+				reason := ""
+				if hooks.pollRetryWait != nil {
+					retry, handled, reason = hooks.pollRetryWait(issue, retry)
+				} else {
+					retry, handled = p.previewCurrentHeadCIWait(state, issue, retry, now)
+					if handled {
+						reason = dispatchSkipCurrentHeadCIWait
+					}
+				}
+				if handled {
+					p.logDecision(hooks, dispatchPlanDecision{
+						Issue:         issue,
+						QueuePosition: queuePosition,
+						Attempt:       retry.Attempt,
+						WorkerHost:    retry.WorkerHost,
+						Retry:         true,
+						SkipReason:    reason,
+					})
+					continue
+				}
+			}
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
-				p.logDecision(hooks, dispatchPlanDecision{
+				logDecision(dispatchPlanDecision{
 					Issue:         issue,
 					QueuePosition: queuePosition,
 					Attempt:       retry.Attempt,
@@ -95,7 +133,7 @@ func (p dispatchPlanner) plan(
 				})
 				continue
 			}
-			p.logDecision(hooks, dispatchPlanDecision{
+			logDecision(dispatchPlanDecision{
 				Issue:         action.issue,
 				QueuePosition: queuePosition,
 				Attempt:       action.attempt,
@@ -112,7 +150,7 @@ func (p dispatchPlanner) plan(
 		}
 		if p.hardAvailableSlots(state) == 0 {
 			for skipIndex := index; skipIndex < len(plannedCandidates); skipIndex++ {
-				p.logDecision(hooks, dispatchPlanDecision{
+				logDecision(dispatchPlanDecision{
 					Issue:         plannedCandidates[skipIndex],
 					QueuePosition: skipIndex + 1,
 					SkipReason:    dispatchSkipGlobalCapacityFull,
@@ -124,7 +162,7 @@ func (p dispatchPlanner) plan(
 			var ok bool
 			issue, ok = hooks.hydrate(issue)
 			if !ok {
-				p.logDecision(hooks, dispatchPlanDecision{
+				logDecision(dispatchPlanDecision{
 					Issue:         issue,
 					QueuePosition: queuePosition,
 					SkipReason:    dispatchSkipHydrationFailed,
@@ -134,7 +172,7 @@ func (p dispatchPlanner) plan(
 		}
 		action, ok, reason := p.dispatchAction(state, issue, now)
 		if !ok {
-			p.logDecision(hooks, dispatchPlanDecision{
+			logDecision(dispatchPlanDecision{
 				Issue:         issue,
 				QueuePosition: queuePosition,
 				SkipReason:    reason,
@@ -147,7 +185,7 @@ func (p dispatchPlanner) plan(
 			continuations++
 		}
 		if hooks.beforeDispatch != nil && !hooks.beforeDispatch(action.issue, continuationIndex) {
-			p.logDecision(hooks, dispatchPlanDecision{
+			logDecision(dispatchPlanDecision{
 				Issue:         action.issue,
 				QueuePosition: queuePosition,
 				Attempt:       action.attempt,
@@ -157,7 +195,7 @@ func (p dispatchPlanner) plan(
 			})
 			break
 		}
-		p.logDecision(hooks, dispatchPlanDecision{
+		logDecision(dispatchPlanDecision{
 			Issue:         action.issue,
 			QueuePosition: queuePosition,
 			Attempt:       action.attempt,
@@ -213,6 +251,9 @@ func (p dispatchPlanner) retryAction(
 	retry Retry,
 	now time.Time,
 ) (dispatchAction, bool, string) {
+	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || retry.CIUnavailable) {
+		return dispatchAction{}, false, dispatchSkipCIUnavailable
+	}
 	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
@@ -513,10 +554,34 @@ const (
 	dispatchSkipGlobalCapacityFull       = "global_capacity_full"
 	dispatchSkipHydrationFailed          = "hydrate_failed"
 	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
+	dispatchSkipMergeFairnessReserved    = "merge_fairness_head_reserved"
 	dispatchSkipGitHubRESTCapacity       = "github_rest_capacity_paused"
+	dispatchSkipCIUnavailable            = "ci_unavailable"
 	dispatchSkipProjectFailureBreaker    = projectFailureBreakerDispatchPaused
 	dispatchSkipRateWindowBackpressure   = "provider_rate_window_backpressure"
+	dispatchSkipCurrentHeadCIWait        = "current_head_ci_wait"
 )
+
+func (p dispatchPlanner) previewCurrentHeadCIWait(
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) (Retry, bool) {
+	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		retry.Attempt = nextAttempt(retry.Attempt)
+		retry.Wait = RetryWait{}
+		state.Retry[issue.ID] = retry
+		return retry, false
+	}
+	retry.Issue = cloneIssue(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	retry.Wait.PollCount++
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
+	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, p.cfg.ContinuationRetryDelay)
+	state.Retry[issue.ID] = retry
+	return retry, true
+}
 
 func (p dispatchPlanner) dispatchableIssueDecision(
 	issue connector.Issue,
@@ -551,6 +616,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if stateIn(issue.State, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipTerminalState}
+	}
+	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
+		return dispatchableDecision{reason: dispatchSkipCIUnavailable}
 	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}

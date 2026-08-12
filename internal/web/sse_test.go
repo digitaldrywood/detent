@@ -288,6 +288,90 @@ func TestSSEStreamSkipsUnchangedFragments(t *testing.T) {
 	}
 }
 
+func TestSSEStreamSkipsMatchingFingerprintBeforeRender(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                   string
+		fingerprint            templates.SSEFingerprint
+		secondBody             string
+		wantRenders            int
+		wantSent               int64
+		wantSkippedFingerprint int64
+		wantSkippedUnchanged   int64
+		wantDiscardRatio       float64
+	}{
+		{
+			name:                   "matching fingerprint bypasses renderer",
+			fingerprint:            templates.SSEFingerprint{1},
+			secondBody:             "changed but unreachable",
+			wantRenders:            1,
+			wantSent:               1,
+			wantSkippedFingerprint: 1,
+		},
+		{
+			name:                 "changed fingerprint renders identical output",
+			fingerprint:          templates.SSEFingerprint{2},
+			secondBody:           "initial",
+			wantRenders:          2,
+			wantSent:             1,
+			wantSkippedUnchanged: 1,
+			wantDiscardRatio:     0.5,
+		},
+		{
+			name:        "changed fingerprint renders changed output",
+			fingerprint: templates.SSEFingerprint{2},
+			secondBody:  "changed",
+			wantRenders: 2,
+			wantSent:    2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+			stream := newTestSSEStream(&now)
+			var out bytes.Buffer
+			renders := 0
+			component := func(body string) templ.Component {
+				return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
+					renders++
+					_, err := io.WriteString(w, body)
+					return err
+				})
+			}
+
+			if sent, err := stream.sendFingerprintedComponent(context.Background(), &out, sseEventSidebarV2, templates.SSEFingerprint{1}, component("initial"), 0); err != nil {
+				t.Fatalf("first sendFingerprintedComponent() error = %v", err)
+			} else if !sent {
+				t.Fatal("first sendFingerprintedComponent() sent = false, want true")
+			}
+			if _, err := stream.sendFingerprintedComponent(context.Background(), &out, sseEventSidebarV2, tt.fingerprint, component(tt.secondBody), 0); err != nil {
+				t.Fatalf("second sendFingerprintedComponent() error = %v", err)
+			}
+
+			metrics := stream.metricsFor(sseEventSidebarV2)
+			if renders != tt.wantRenders {
+				t.Fatalf("render calls = %d, want %d", renders, tt.wantRenders)
+			}
+			if metrics.sent != tt.wantSent {
+				t.Fatalf("sent = %d, want %d", metrics.sent, tt.wantSent)
+			}
+			if metrics.skippedFingerprint != tt.wantSkippedFingerprint {
+				t.Fatalf("skippedFingerprint = %d, want %d", metrics.skippedFingerprint, tt.wantSkippedFingerprint)
+			}
+			if metrics.skippedUnchanged != tt.wantSkippedUnchanged {
+				t.Fatalf("skippedUnchanged = %d, want %d", metrics.skippedUnchanged, tt.wantSkippedUnchanged)
+			}
+			if got := metrics.discardRatio(); got != tt.wantDiscardRatio {
+				t.Fatalf("discardRatio() = %v, want %v", got, tt.wantDiscardRatio)
+			}
+		})
+	}
+}
+
 func TestSSEStreamCoalescesPendingFragments(t *testing.T) {
 	t.Parallel()
 
@@ -351,6 +435,9 @@ func TestSSEStreamCoalescesPendingFragments(t *testing.T) {
 	if metrics.sent != 2 {
 		t.Fatalf("sent = %d, want 2", metrics.sent)
 	}
+	if got, want := metrics.discardRatio(), float64(1)/3; got != want {
+		t.Fatalf("discardRatio() = %v, want %v", got, want)
+	}
 }
 
 func TestSSEStreamLogsMetricsByEvent(t *testing.T) {
@@ -384,6 +471,8 @@ func TestSSEStreamLogsMetricsByEvent(t *testing.T) {
 		"sent_per_second",
 		"sent_payload_bytes",
 		"rendered_payload_bytes",
+		"skipped_fingerprint=0",
+		"discard_ratio=0",
 	} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("metrics log missing %q:\n%s", want, logs.String())

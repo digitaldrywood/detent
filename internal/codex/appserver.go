@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,8 @@ const (
 	modelListRequestID    = 6
 	threadReadRequestID   = 7
 	methodNotFoundCode    = -32601
+	chromeDevToolsServer  = "chrome-devtools"
+	mcpToolApprovalKind   = "mcp_tool_call"
 
 	defaultClientName    = "detent-orchestrator"
 	defaultClientTitle   = "Detent Orchestrator"
@@ -144,6 +147,7 @@ func (e *TurnFailedError) BackendErrorMessage() string {
 type AppServer struct {
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
+	logger           *slog.Logger
 	readTimeout      time.Duration
 	turnTimeout      time.Duration
 }
@@ -252,7 +256,16 @@ type TokenUsage struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	Last                  *TokenUsageBreakdown
 	ModelContextWindow    *int64
+}
+
+type TokenUsageBreakdown struct {
+	InputTokens           int64 `json:"inputTokens"`
+	CachedInputTokens     int64 `json:"cachedInputTokens"`
+	OutputTokens          int64 `json:"outputTokens"`
+	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
+	TotalTokens           int64 `json:"totalTokens"`
 }
 
 type RateLimitSnapshot struct {
@@ -288,6 +301,7 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 			Title:   defaultClientTitle,
 			Version: defaultClientVersion,
 		},
+		logger:      slog.Default(),
 		readTimeout: defaultReadTimeout,
 		turnTimeout: defaultTurnTimeout,
 	}
@@ -300,6 +314,9 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 	}
 	if server.clientInfo.Version == "" {
 		server.clientInfo.Version = defaultClientVersion
+	}
+	if server.logger == nil {
+		server.logger = slog.Default()
 	}
 	if server.readTimeout <= 0 {
 		server.readTimeout = defaultReadTimeout
@@ -314,6 +331,12 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 func WithClientInfo(info ClientInfo) AppServerOption {
 	return func(server *AppServer) {
 		server.clientInfo = info
+	}
+}
+
+func WithLogger(logger *slog.Logger) AppServerOption {
+	return func(server *AppServer) {
+		server.logger = logger
 	}
 }
 
@@ -931,7 +954,7 @@ func (s *AppServer) awaitResponse(
 			return msg.Result, nil
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg, toolHandler)
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, s.logger)
 		if err != nil {
 			return nil, err
 		}
@@ -965,7 +988,7 @@ func (s *AppServer) streamTurn(
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg, toolHandler)
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, s.logger)
 		if err != nil {
 			return err
 		}
@@ -1031,7 +1054,13 @@ func sendRequest(ctx context.Context, transport Transport, id int, method string
 	})
 }
 
-func handleServerRequest(ctx context.Context, transport Transport, msg Message, toolHandler DynamicToolHandler) (bool, error) {
+func handleServerRequest(
+	ctx context.Context,
+	transport Transport,
+	msg Message,
+	toolHandler DynamicToolHandler,
+	logger *slog.Logger,
+) (bool, error) {
 	if msg.Method == "" || len(msg.ID) == 0 {
 		return false, nil
 	}
@@ -1039,7 +1068,7 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message, 
 	response := Message{
 		ID: msg.ID,
 	}
-	result, ok, err := serverRequestResult(ctx, msg, toolHandler)
+	result, ok, err := serverRequestResult(ctx, msg, toolHandler, logger)
 	if err != nil {
 		return true, err
 	}
@@ -1058,7 +1087,12 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message, 
 	return true, nil
 }
 
-func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicToolHandler) (json.RawMessage, bool, error) {
+func serverRequestResult(
+	ctx context.Context,
+	msg Message,
+	toolHandler DynamicToolHandler,
+	logger *slog.Logger,
+) (json.RawMessage, bool, error) {
 	var result any
 	switch msg.Method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
@@ -1068,7 +1102,9 @@ func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicTo
 	case "item/tool/requestUserInput":
 		result = map[string]any{"answers": map[string]any{}}
 	case "mcpServer/elicitation/request":
-		result = map[string]any{"action": "decline", "content": nil}
+		response, decision := mcpElicitationResponse(msg.Params)
+		logMCPElicitationDecision(ctx, logger, decision)
+		result = response
 	case "item/tool/call":
 		if toolHandler == nil {
 			result = map[string]any{
@@ -1099,6 +1135,102 @@ func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicTo
 		return nil, true, fmt.Errorf("marshal %s server request response: %w", msg.Method, err)
 	}
 	return data, true, nil
+}
+
+type mcpElicitationDecision struct {
+	Server       string
+	Mode         string
+	ApprovalKind string
+	Action       string
+	Reason       string
+}
+
+func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitationDecision) {
+	decision := mcpElicitationDecision{
+		Action: "decline",
+		Reason: "invalid_request",
+	}
+	decline := func() (map[string]any, mcpElicitationDecision) {
+		return map[string]any{"action": "decline", "content": nil}, decision
+	}
+
+	var request struct {
+		ServerName      string          `json:"serverName"`
+		Mode            string          `json:"mode"`
+		Meta            json.RawMessage `json:"_meta"`
+		RequestedSchema json.RawMessage `json:"requestedSchema"`
+	}
+	if err := json.Unmarshal(params, &request); err != nil {
+		return decline()
+	}
+
+	decision.Server = request.ServerName
+	decision.Mode = request.Mode
+	if request.ServerName != chromeDevToolsServer {
+		decision.Reason = "unsupported_server"
+		return decline()
+	}
+	if request.Mode != "form" {
+		decision.Reason = "unsupported_mode"
+		return decline()
+	}
+
+	var meta struct {
+		ApprovalKind string `json:"codex_approval_kind"`
+	}
+	if err := json.Unmarshal(request.Meta, &meta); err != nil {
+		decision.Reason = "invalid_metadata"
+		return decline()
+	}
+	decision.ApprovalKind = meta.ApprovalKind
+	if meta.ApprovalKind != mcpToolApprovalKind {
+		decision.Reason = "unsupported_approval_kind"
+		return decline()
+	}
+	if !isEmptyObjectSchema(request.RequestedSchema) {
+		decision.Reason = "unsupported_schema"
+		return decline()
+	}
+
+	decision.Action = "accept"
+	decision.Reason = "supported_browser_tool_approval"
+	return map[string]any{"action": "accept", "content": map[string]any{}}, decision
+}
+
+func isEmptyObjectSchema(data json.RawMessage) bool {
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(data, &schema); err != nil || len(schema) != 2 {
+		return false
+	}
+
+	var schemaType string
+	if err := json.Unmarshal(schema["type"], &schemaType); err != nil || schemaType != "object" {
+		return false
+	}
+
+	var properties map[string]json.RawMessage
+	if err := json.Unmarshal(schema["properties"], &properties); err != nil {
+		return false
+	}
+	return properties != nil && len(properties) == 0
+}
+
+func logMCPElicitationDecision(ctx context.Context, logger *slog.Logger, decision mcpElicitationDecision) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	level := slog.LevelInfo
+	if decision.Action != "accept" {
+		level = slog.LevelWarn
+	}
+	logger.LogAttrs(ctx, level, "codex MCP elicitation decision",
+		slog.String("method", "mcpServer/elicitation/request"),
+		slog.String("server", decision.Server),
+		slog.String("mode", decision.Mode),
+		slog.String("approval_kind", decision.ApprovalKind),
+		slog.String("action", decision.Action),
+		slog.String("reason", decision.Reason),
+	)
 }
 
 func dynamicToolResponse(content string, success bool) map[string]any {
@@ -1226,17 +1358,13 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			Resolved    string `json:"resolvedModel"`
 			ResolvedAlt string `json:"resolved_model"`
 			TokenUsage  struct {
-				Total              tokenUsageBreakdown  `json:"total"`
-				Last               *tokenUsageBreakdown `json:"last"`
+				Total              TokenUsageBreakdown  `json:"total"`
+				Last               *TokenUsageBreakdown `json:"last"`
 				ModelContextWindow *int64               `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return Update{}, false, fmt.Errorf("%w: decode token usage: %w", ErrInvalidResponse, err)
-		}
-		usage := params.TokenUsage.Total
-		if params.TokenUsage.Last != nil {
-			usage = *params.TokenUsage.Last
 		}
 		return Update{
 			Type:     UpdateTokenUsage,
@@ -1245,11 +1373,12 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			TurnID:   params.TurnID,
 			Model:    firstNonBlank(params.Model, params.Resolved, params.ResolvedAlt, params.ModelID, params.ModelIDAlt),
 			Tokens: TokenUsage{
-				InputTokens:           usage.InputTokens,
-				CachedInputTokens:     usage.CachedInputTokens,
-				OutputTokens:          usage.OutputTokens,
-				ReasoningOutputTokens: usage.ReasoningOutputTokens,
-				TotalTokens:           usage.TotalTokens,
+				InputTokens:           params.TokenUsage.Total.InputTokens,
+				CachedInputTokens:     params.TokenUsage.Total.CachedInputTokens,
+				OutputTokens:          params.TokenUsage.Total.OutputTokens,
+				ReasoningOutputTokens: params.TokenUsage.Total.ReasoningOutputTokens,
+				TotalTokens:           params.TokenUsage.Total.TotalTokens,
+				Last:                  params.TokenUsage.Last,
 				ModelContextWindow:    params.TokenUsage.ModelContextWindow,
 			},
 			Payload: rawPayload(msg),
@@ -1573,14 +1702,6 @@ func looksLikeErrorEvent(raw json.RawMessage) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(decoded.Type), "error") || len(bytes.TrimSpace(decoded.Error)) > 0
-}
-
-type tokenUsageBreakdown struct {
-	InputTokens           int64 `json:"inputTokens"`
-	CachedInputTokens     int64 `json:"cachedInputTokens"`
-	OutputTokens          int64 `json:"outputTokens"`
-	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
-	TotalTokens           int64 `json:"totalTokens"`
 }
 
 type rateLimitSnapshotPayload struct {

@@ -51,6 +51,13 @@ import (
 
 const sseTestReadTimeout = 5 * time.Second
 
+func TestMain(m *testing.M) {
+	if err := os.Unsetenv("DETENT_API_TOKEN"); err != nil {
+		panic("clear DETENT_API_TOKEN: " + err.Error())
+	}
+	os.Exit(m.Run())
+}
+
 func TestNewServerValidatesDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -6319,6 +6326,7 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
 		Mode: workflowconfig.KanbanModeReadOnly,
 	}, &kanbanActionConnector{name: "github"})
+	mustSetWebProject(t, deps.Registry, "docs", false)
 	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -6333,6 +6341,7 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		GeneratedAt: now,
 		Projects: []telemetry.ProjectSnapshot{
 			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+			{Project: telemetry.Project{ID: "docs", DisplayName: "Docs"}},
 		},
 		BoardIssues: []telemetry.Issue{
 			{
@@ -6371,14 +6380,10 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		}
 	}
 
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
+	sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
 	for _, want := range []string{
 		`href="/projects/detent/kanban"`,
-		`data-dashboard-view="kanban"`,
-		`data-tui-sidebar-active="true"`,
+		`data-sidebar-project="detent"`,
 		`aria-current="page"`,
 	} {
 		if !strings.Contains(sidebarEvent.data, want) {
@@ -6459,21 +6464,17 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		}
 	}
 
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
+	sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
 	for _, want := range []string{
-		`href="/kanban"`,
-		`data-dashboard-static-nav="kanban"`,
-		`data-tui-sidebar-active="true"`,
+		`href="/"`,
+		`data-sidebar-nav-item="board"`,
 		`aria-current="page"`,
 	} {
 		if !strings.Contains(sidebarEvent.data, want) {
 			t.Fatalf("fleet Kanban sidebar event missing %q:\n%s", want, sidebarEvent.data)
 		}
 	}
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
+	assertAppSidebarLinkActive(t, sidebarEvent.data, "/")
 }
 
 func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
@@ -6670,6 +6671,46 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	healthOutages := health["backend_outages"].([]any)
 	if len(healthOutages) != 1 || healthOutages[0].(map[string]any)["backend_id"] != "codex" {
 		t.Fatalf("health backend_outages = %#v", healthOutages)
+	}
+}
+
+func TestHealthReportsCICondition(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		CIUnavailable: []telemetry.CICondition{{
+			ProjectID:           "detent",
+			UnstartedCheckCount: 6,
+			PullRequestCount:    2,
+			OldestQueueSeconds:  47 * 60,
+			DetectedAt:          now.Add(-32 * time.Minute),
+			LastObservedAt:      now,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if got := nestedString(t, health, "status"); got != "needs_attention" {
+		t.Fatalf("health status = %q, want needs_attention", got)
+	}
+	conditions := health["ci_unavailable"].([]any)
+	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "unstarted_check_count") != "6" {
+		t.Fatalf("health ci_unavailable = %#v", conditions)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	conditions = state["ci_unavailable"].([]any)
+	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "pull_request_count") != "2" {
+		t.Fatalf("state ci_unavailable = %#v", conditions)
 	}
 }
 
@@ -7818,18 +7859,12 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	defer conn.Close()
 	defer body.Close()
 
-	if event := readRawSSEEvent(t, conn, reader); event.name != "snapshot" {
-		t.Fatalf("first event name = %q, want snapshot", event.name)
-	}
-	if event := readRawSSEEvent(t, conn, reader); event.name != "sidebar" {
-		t.Fatalf("second event name = %q, want sidebar", event.name)
-	}
-	if event := readRawSSEEvent(t, conn, reader); event.name != "live-status" {
-		t.Fatalf("third event name = %q, want live-status", event.name)
-	}
-	event := readRawSSEEvent(t, conn, reader)
-	if event.name != "github-api-health" {
-		t.Fatalf("fourth event name = %q, want github-api-health", event.name)
+	var event sseEvent
+	for index, want := range []string{"snapshot", "live-status", "github-api-health"} {
+		event = readRawSSEEvent(t, conn, reader)
+		if event.name != want {
+			t.Fatalf("event %d name = %q, want %q", index+1, event.name, want)
+		}
 	}
 	for _, want := range []string{
 		`id="github-api-health"`,
@@ -7844,6 +7879,9 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("github api health event missing %q:\n%s", want, event.data)
 		}
+	}
+	if event := readRawSSEEvent(t, conn, reader); event.name != "sidebar-v2" {
+		t.Fatalf("fourth event name = %q, want sidebar-v2", event.name)
 	}
 	for _, forbidden := range []string{
 		`data-preserve-details="github-api-health"`,
@@ -8029,10 +8067,6 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	if strings.Contains(event.data, `hx-get="/api/v1/kanban/move?`) {
 		t.Fatalf("board snapshot rendered move controls:\n%s", event.data)
 	}
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
 	liveStatusEvent := readRawSSEEvent(t, conn, reader)
 	if liveStatusEvent.name != "live-status" {
 		t.Fatalf("event name = %q, want live-status", liveStatusEvent.name)
@@ -8099,6 +8133,12 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 					Running: 7,
 				},
 			},
+			{
+				Project: telemetry.Project{
+					ID:          "docs",
+					DisplayName: "Docs",
+				},
+			},
 		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -8108,16 +8148,13 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	if snapshotEvent.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
+	sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
 	for _, want := range []string{
 		"Detent",
 		`href="/projects/detent/kanban"`,
-		"Detent - 0 todo · 7 active · 0 waiting · 0 blocked",
-		`data-dashboard-project-entry`,
-		`data-tui-sidebar="menu-badge"`,
+		`data-sidebar-project="detent"`,
+		`data-sidebar-project-status="active"`,
+		`data-sidebar-project-badge`,
 		`aria-label="7 board load"`,
 		">7</span>",
 	} {
@@ -8128,6 +8165,7 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	for _, forbidden := range []string{
 		`data-tui-sidebar-state=`,
 		`data-tui-sidebar-trigger`,
+		`sse-swap="sidebar"`,
 	} {
 		if strings.Contains(sidebarEvent.data, forbidden) {
 			t.Fatalf("sidebar event rendered wrapper marker %q:\n%s", forbidden, sidebarEvent.data)
@@ -8159,15 +8197,12 @@ func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
 	if snapshotEvent.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
-	assertActiveSidebarLink(t, sidebarEvent.data, "/reports")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/analytics")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/settings")
+	sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
+	assertAppSidebarLinkActive(t, sidebarEvent.data, "/reports")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/health/ui")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/analytics")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/settings")
 }
 
 func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
@@ -8213,14 +8248,11 @@ func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
 		}
 	}
 
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
-	assertActiveSidebarLink(t, sidebarEvent.data, "/analytics")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/reports")
+	sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
+	assertAppSidebarLinkActive(t, sidebarEvent.data, "/analytics")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/health/ui")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/reports")
 }
 
 func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
@@ -8273,35 +8305,26 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 		}
 	}
 
-	sidebarEvent := readRawSSEEvent(t, conn, reader)
-	if sidebarEvent.name != "sidebar" {
-		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-	}
-	assertActiveSidebarLink(t, sidebarEvent.data, "/health/ui")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
-	assertInactiveSidebarLink(t, sidebarEvent.data, "/analytics")
+	sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
+	assertAppSidebarLinkActive(t, sidebarEvent.data, "/health/ui")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/")
+	assertAppSidebarLinkInactive(t, sidebarEvent.data, "/analytics")
 }
 
 func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		path         string
-		activeHref   string
-		inactiveHref []string
+		name string
+		path string
 	}{
 		{
-			name:         "reports",
-			path:         "/events?nav=reports&project=detent",
-			activeHref:   "/reports?project=detent",
-			inactiveHref: []string{"/analytics", "/projects/detent/kanban", "/settings?project=detent"},
+			name: "reports",
+			path: "/events?nav=reports&project=detent",
 		},
 		{
-			name:         "settings",
-			path:         "/events?nav=settings&project=detent",
-			activeHref:   "/projects/detent/configuration",
-			inactiveHref: []string{"/analytics", "/reports?project=detent", "/settings?project=detent"},
+			name: "settings",
+			path: "/events?nav=settings&project=detent",
 		},
 	}
 
@@ -8311,6 +8334,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 
 			deps := testDeps(t)
 			mustSetWebProject(t, deps.Registry, "detent", false)
+			mustSetWebProject(t, deps.Registry, "docs", false)
 			server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
@@ -8328,6 +8352,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 						Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
 						Counts:  telemetry.Counts{Running: 7},
 					},
+					{Project: telemetry.Project{ID: "docs", DisplayName: "Docs"}},
 				},
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
@@ -8337,30 +8362,22 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 			if snapshotEvent.name != "snapshot" {
 				t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 			}
-			sidebarEvent := readRawSSEEvent(t, conn, reader)
-			if sidebarEvent.name != "sidebar" {
-				t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
-			}
+			sidebarEvent := readRawSSEEventNamed(t, conn, reader, "sidebar-v2")
 			for _, want := range []string{
-				`aria-label="Project views"`,
-				`href="/projects/detent"`,
 				`href="/projects/detent/kanban"`,
-				`href="/projects/detent/runs"`,
-				`href="/projects/detent/configuration"`,
-				`href="/projects/detent/diagnostics"`,
+				`data-sidebar-project="detent"`,
 				`href="/health/ui"`,
 				`href="/analytics"`,
-				`href="/reports?project=detent"`,
-				`href="/settings?project=detent"`,
+				`href="/reports"`,
+				`href="/settings"`,
 			} {
 				if !strings.Contains(sidebarEvent.data, want) {
 					t.Fatalf("sidebar event missing project-context marker %q:\n%s", want, sidebarEvent.data)
 				}
 			}
-			assertActiveSidebarLink(t, sidebarEvent.data, tt.activeHref)
-			assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
-			for _, href := range tt.inactiveHref {
-				assertInactiveSidebarLink(t, sidebarEvent.data, href)
+			assertAppSidebarLinkActive(t, sidebarEvent.data, "/projects/detent/kanban")
+			for _, href := range []string{"/", "/health/ui", "/analytics", "/reports", "/settings"} {
+				assertAppSidebarLinkInactive(t, sidebarEvent.data, href)
 			}
 		})
 	}
@@ -9740,6 +9757,46 @@ func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 	}
 }
 
+func TestServerSurfacesFleetSpendWhenBudgetCapsAreDisabled(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	registry := project.NewRegistry()
+	mustSetWebProject(t, registry, "detent", false)
+	var gotQuery store.BudgetCostQuery
+	deps := testDeps(t)
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		budgetCostEvents: func(_ context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			gotQuery = query
+			return []store.BudgetCostEvent{
+				{ProjectID: "detent", At: generatedAt.Add(-time.Hour), CostUSD: 3.22},
+				{ProjectID: "detent", At: generatedAt.AddDate(0, 0, -1), CostUSD: 363.50},
+			}, nil
+		},
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	budgetState := state["budget"].(map[string]any)
+	if budgetState["enabled"] != false || budgetState["today_spend_usd"] != float64(3.22) {
+		t.Fatalf("budget = %#v, want uncapped fleet spend", budgetState)
+	}
+	regression := budgetState["spend_regression"].(map[string]any)
+	if regression["drop_percent"].(float64) < 98 || regression["previous_spend_usd"] != float64(363.50) || regression["projected_spend_usd"] != float64(6.44) {
+		t.Fatalf("spend regression = %#v, want same-day fleet regression", regression)
+	}
+	if len(gotQuery.ProjectIDs) != 1 || gotQuery.ProjectIDs[0] != "detent" {
+		t.Fatalf("BudgetCostQuery.ProjectIDs = %#v, want all configured projects", gotQuery.ProjectIDs)
+	}
+}
+
 func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 	t.Parallel()
 
@@ -10569,6 +10626,22 @@ func assertInactiveSidebarLink(t *testing.T, body string, href string) {
 	}
 }
 
+func assertAppSidebarLinkActive(t *testing.T, body string, href string) {
+	t.Helper()
+
+	if !appSidebarLinkActive(body, href) {
+		t.Fatalf("body missing active app sidebar link %q:\n%s", href, body)
+	}
+}
+
+func assertAppSidebarLinkInactive(t *testing.T, body string, href string) {
+	t.Helper()
+
+	if appSidebarLinkActive(body, href) {
+		t.Fatalf("body rendered inactive app sidebar link %q as active:\n%s", href, body)
+	}
+}
+
 func assertSingleCurrentSidebarItem(t *testing.T, body string) {
 	t.Helper()
 
@@ -10599,6 +10672,16 @@ func sidebarLinkActive(body string, href string) bool {
 	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*>`
 	for _, link := range regexp.MustCompile(pattern).FindAllString(body, -1) {
 		if strings.Contains(link, `data-tui-sidebar-active="true"`) && strings.Contains(link, `aria-current="page"`) {
+			return true
+		}
+	}
+	return false
+}
+
+func appSidebarLinkActive(body string, href string) bool {
+	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*>`
+	for _, link := range regexp.MustCompile(pattern).FindAllString(body, -1) {
+		if strings.Contains(link, `aria-current="page"`) {
 			return true
 		}
 	}
@@ -12484,6 +12567,17 @@ func readRawSSEEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent
 	for {
 		event := readRawSSEFrame(t, conn, reader)
 		if event.name != "build" {
+			return event
+		}
+	}
+}
+
+func readRawSSEEventNamed(t *testing.T, conn net.Conn, reader *bufio.Reader, name string) sseEvent {
+	t.Helper()
+
+	for {
+		event := readRawSSEEvent(t, conn, reader)
+		if event.name == name {
 			return event
 		}
 	}

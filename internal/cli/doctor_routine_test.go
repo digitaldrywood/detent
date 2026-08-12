@@ -27,15 +27,19 @@ CREATE TABLE routine_runs (
   project_id TEXT NOT NULL,
   routine_name TEXT NOT NULL,
   completed_at TEXT NOT NULL,
+  proposed_count INTEGER NOT NULL,
   filed_count INTEGER NOT NULL,
   deduplicated_count INTEGER NOT NULL,
+  limited_count INTEGER NOT NULL,
   error TEXT
 );
-INSERT INTO routine_runs (project_id, routine_name, completed_at, filed_count, deduplicated_count, error) VALUES
-  ('detent', 'dependencies', '2026-07-17T10:00:00Z', 2, 1, NULL),
-  ('detent', 'flaky-tests', '2026-07-17T10:03:00Z', 0, 0, 'third failure'),
-  ('detent', 'flaky-tests', '2026-07-17T10:02:00Z', 0, 0, 'second failure'),
-  ('detent', 'flaky-tests', '2026-07-17T10:01:00Z', 0, 0, 'first failure');
+INSERT INTO routine_runs (project_id, routine_name, completed_at, proposed_count, filed_count, deduplicated_count, limited_count, error) VALUES
+  ('detent', 'dependencies', '2026-07-17T10:00:00Z', 4, 2, 1, 1, NULL),
+  ('detent', 'dependencies', '2026-07-17T09:00:00Z', 4, 2, 1, 1, NULL),
+  ('detent', 'dependencies', '2026-07-17T08:00:00Z', 4, 2, 1, 1, NULL),
+  ('detent', 'flaky-tests', '2026-07-17T10:03:00Z', 0, 0, 0, 0, 'third failure'),
+  ('detent', 'flaky-tests', '2026-07-17T10:02:00Z', 0, 0, 0, 0, 'second failure'),
+  ('detent', 'flaky-tests', '2026-07-17T10:01:00Z', 0, 0, 0, 0, 'first failure');
 `); err != nil {
 		t.Fatalf("seed routine_runs error = %v", err)
 	}
@@ -52,7 +56,12 @@ INSERT INTO routine_runs (project_id, routine_name, completed_at, filed_count, d
 	if check.Status != doctorWarn {
 		t.Fatalf("Status = %q, want %q", check.Status, doctorWarn)
 	}
-	for _, want := range []string{"never run: never", "repeatedly failing: flaky-tests (3 consecutive", "dependencies at 2026-07-17T10:00:00Z filed=2 deduplicated=1"} {
+	for _, want := range []string{
+		"never run: never",
+		"repeatedly failing: flaky-tests (3 consecutive",
+		"repeatedly hitting finding ceilings: dependencies (3 consecutive runs",
+		"dependencies at 2026-07-17T10:00:00Z proposed=4 filed=2 deduplicated=1 limited=1",
+	} {
 		if !strings.Contains(check.Detail, want) {
 			t.Fatalf("Detail = %q, want %q", check.Detail, want)
 		}

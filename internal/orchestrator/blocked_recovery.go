@@ -441,7 +441,7 @@ func reworkBreakerIssueHeld(issue connector.Issue) bool {
 }
 
 func reworkBreakerCIGreen(pr *connector.PullRequest) bool {
-	if pr == nil || len(pr.RunningChecks) > 0 || len(pr.RequiredCheckFailures) > 0 {
+	if pr == nil || len(pr.RunningChecks) > 0 || len(pr.UnstartedChecks) > 0 || len(pr.RequiredCheckFailures) > 0 {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(pr.CIStatus)) {
