@@ -2718,8 +2718,8 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 		t.Fatalf("workflow phase events = %#v, want lane exit and entry", events)
 	}
 	metadata, ok := provenance.Parse(events[1].MetadataJSON)
-	if !ok || metadata.Provenance.Origin != provenance.OriginUnknown {
-		t.Fatalf("lane entry metadata = %#v, want unknown origin without tracker actor", metadata)
+	if !ok || metadata.Provenance.Origin != provenance.OriginIndeterminate {
+		t.Fatalf("lane entry metadata = %#v, want indeterminate origin without trusted request evidence", metadata)
 	}
 }
 

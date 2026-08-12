@@ -7,7 +7,7 @@ import (
 
 const (
 	Name      = "detent-operator-introspection"
-	Version   = 1
+	Version   = 2
 	Directory = Name
 	SkillFile = "SKILL.md"
 )

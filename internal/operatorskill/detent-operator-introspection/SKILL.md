@@ -5,9 +5,9 @@ description: Answer read-only operator questions about one issue in a running De
 
 # Detent operator introspection
 
-Bundle version: 1
+Bundle version: 2
 
-Expected response schema: 1
+Expected response schema: 2
 
 Select the one question class that matches the request. Make its call once. The command returns one JSON object and enforces a request timeout and response-size limit. Keep diagnostics on stderr. Do not add filtering commands before inspecting the complete object.
 
@@ -57,7 +57,7 @@ Escalate: Escalate with the unknown or unavailable fields when the model does no
 
 ### Evidence confidence
 
-Use for questions such as "How current or trustworthy is this answer?" Read `observed_at`, `current_lane.freshness`, `current_lane.degraded`, `sources`, and `evidence`.
+Use for questions such as "How current or trustworthy is this answer?" Read `observed_at`, `current_lane.freshness`, `current_lane.degraded`, `latest_transition.provenance`, `sources`, and `evidence`.
 
 Call once:
 
@@ -65,13 +65,13 @@ Call once:
 detent --format json issue '<issue-ref>' --explain --project '<project-id>'
 ```
 
-Stop: Treat only `live` evidence as current. Treat `available` as readable, then assess its observation, selection, heartbeat, and completion timestamps before describing it as current. Label `last_known`, `expired`, `unavailable`, or `corrupt` evidence explicitly.
+Stop: Treat only `live` evidence as current. Treat `available` as readable, then assess its observation, selection, heartbeat, and completion timestamps before describing it as current. Treat transition attribution as established only when `latest_transition.provenance.trustworthy` is true; otherwise report its `trustworthy_since` boundary and preserve the recorded origin as unverified history. Label `last_known`, `expired`, `unavailable`, or `corrupt` evidence explicitly.
 
 Escalate: Escalate when degraded or missing evidence prevents the requested conclusion. A successful response with degraded fields is still a success, not permission to use another data source.
 
 ## Interpret command outcomes
 
-- Success: Require `schema` to equal 1. Answer from the returned fields and cite degraded or last-known sources.
+- Success: Require `schema` to equal 2. Answer from the returned fields and cite degraded or last-known sources.
 - `dashboard_unauthorized` (HTTP 401): A supplied credential is invalid or expired. Stop; do not retry anonymously. Escalate for a valid supported read credential.
 - `dashboard_forbidden` (HTTP 403): The request is understood but not allowed. If the diagnostic identifies `api_token_required`, API access requires an operator-configured credential; this is not a missing issue. Otherwise the credential lacks the required read access. Stop and escalate without attempting to recover credential plaintext.
 - `ambiguous_reference`: The reference matches more than one issue. Stop and ask for an issue ID, canonical identifier, or full issue URL in the selected project.

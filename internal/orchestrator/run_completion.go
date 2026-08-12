@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -1757,8 +1758,10 @@ func (o *Orchestrator) commentObservedLaneTransition(
 	}
 	if _, reasonCode, ok := evaluateStructuredBlockedRecovery(after, o.cfg.BlockedRecovery); ok {
 		reason = reasonCode
-		o.recordLaneTransition(ctx, before, toState, at, reasonCode, workflowLaneMetadata{})
 	}
+	o.recordLaneTransition(ctx, before, toState, at, reason, workflowLaneMetadata{
+		Provenance: provenance.AttributionFromSource(provenance.SourceDetentAgentSession, provenance.Actor{}),
+	})
 	if o.connector == nil {
 		return
 	}

@@ -50,6 +50,7 @@ type Store interface {
 	BudgetCostStore
 	ProgressSpendStore
 	WorkflowMetricsStore
+	ProvenanceStore
 	WorkAttemptStore
 	WorkAttemptCapacityReleaseStore
 	MergeRequiredCheckStore
@@ -133,6 +134,10 @@ type WorkflowMetricsStore interface {
 	RecordWorkflowPhaseEvent(context.Context, WorkflowPhaseEvent) (int64, error)
 	WorkflowMetricsReport(context.Context, WorkflowMetricsQuery) (WorkflowMetricsReport, error)
 	IssueWorkflowTimeline(context.Context, IssueIdentity) (WorkflowTimeline, error)
+}
+
+type ProvenanceStore interface {
+	ProvenanceAttributionTrustBoundary(context.Context) (time.Time, error)
 }
 
 type WorkAttemptStore interface {

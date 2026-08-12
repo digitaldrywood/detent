@@ -154,7 +154,12 @@ func TestServiceSeparatesCurrentLaneFromEnteredTransition(t *testing.T) {
 	if got.LatestTransition == nil || got.LatestTransition.EvidenceID != "workflow:41" || got.LatestTransition.To != "Blocked" || got.LatestTransition.From != "Merging" {
 		t.Fatalf("latest transition = %#v, want entered workflow:41", got.LatestTransition)
 	}
-	if got.LatestTransition.Actor == nil || got.LatestTransition.Actor.Login != "ada" || got.LatestTransition.Provenance.Origin != "human" || got.LatestTransition.Provenance.Admission == nil {
+	if got.LatestTransition.Actor == nil || got.LatestTransition.Actor.Login != "ada" ||
+		got.LatestTransition.Provenance.Origin != "human" ||
+		got.LatestTransition.Provenance.Initiator != string(provenance.InitiatorHuman) ||
+		!got.LatestTransition.Provenance.Trustworthy ||
+		got.LatestTransition.Provenance.TrustworthySince == nil ||
+		got.LatestTransition.Provenance.Admission == nil {
 		t.Fatalf("parsed provenance = %#v", got.LatestTransition)
 	}
 	raw, err := json.Marshal(got)
@@ -382,8 +387,44 @@ func TestServiceMarksMalformedProvenanceUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Explain() error = %v", err)
 	}
-	if got.LatestTransition == nil || got.LatestTransition.Provenance.State != SourceCorrupt || got.LatestTransition.Provenance.Origin != "unknown" || got.LatestTransition.Actor != nil {
+	if got.LatestTransition == nil || got.LatestTransition.Provenance.State != SourceCorrupt || got.LatestTransition.Provenance.Origin != "indeterminate" || got.LatestTransition.Actor != nil {
 		t.Fatalf("transition provenance = %#v", got.LatestTransition)
+	}
+}
+
+func TestServiceMarksOnlyPostBoundarySchemaAttributionTrustworthy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
+	boundary := now.Add(-time.Hour)
+	trusted := provenance.Apply("{}", provenance.AttributionFromSource(provenance.SourceDetentAgentSession, provenance.Actor{Login: "worker", Kind: "User"}), nil)
+	tests := []struct {
+		name       string
+		at         time.Time
+		metadata   string
+		wantOrigin string
+		wantTrust  bool
+	}{
+		{name: "legacy human row remains untrusted", at: now, metadata: `{"provenance":{"origin":"human","actor":{"login":"corylanou","kind":"User"}}}`, wantOrigin: "human"},
+		{name: "backdated schema row remains untrusted", at: boundary.Add(-time.Minute), metadata: trusted, wantOrigin: "agent"},
+		{name: "post-boundary schema row is trusted", at: boundary.Add(time.Minute), metadata: trusted, wantOrigin: "agent", wantTrust: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reader := &evidenceReader{
+				observation:        liveIssueObservation(now, telemetry.Issue{ID: "issue-1", ProjectID: "detent", State: "Blocked"}),
+				workflow:           []store.WorkflowPhaseEvent{{ID: 1, ProjectID: "detent", IssueID: "issue-1", PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Blocked", Status: "entered", StartedAt: tt.at, MetadataJSON: tt.metadata}},
+				provenanceBoundary: boundary,
+			}
+			got, err := newTestService(now, reader).Explain(t.Context(), Query{ProjectID: "detent", IssueID: "issue-1"})
+			if err != nil {
+				t.Fatalf("Explain() error = %v", err)
+			}
+			if got.LatestTransition == nil || got.LatestTransition.Provenance.Origin != tt.wantOrigin || got.LatestTransition.Provenance.Trustworthy != tt.wantTrust {
+				t.Fatalf("provenance = %#v, want origin %q trustworthy %t", got.LatestTransition, tt.wantOrigin, tt.wantTrust)
+			}
+		})
 	}
 }
 
@@ -434,20 +475,22 @@ func TestServiceEvidenceIDsAreDeterministicAndNamespaced(t *testing.T) {
 }
 
 type evidenceReader struct {
-	observation  SnapshotObservation
-	snapshotErr  error
-	workflow     []store.WorkflowPhaseEvent
-	workflowErr  error
-	active       []store.WorkAttempt
-	activeErr    error
-	terminal     []store.WorkAttempt
-	terminalErr  error
-	decisions    []store.SchedulerDecision
-	decisionsErr error
-	session      *store.IssueAgentSession
-	sessionErr   error
-	proposals    []admissionmodel.Proposal
-	proposalsErr error
+	observation        SnapshotObservation
+	snapshotErr        error
+	workflow           []store.WorkflowPhaseEvent
+	workflowErr        error
+	active             []store.WorkAttempt
+	activeErr          error
+	terminal           []store.WorkAttempt
+	terminalErr        error
+	decisions          []store.SchedulerDecision
+	decisionsErr       error
+	session            *store.IssueAgentSession
+	sessionErr         error
+	proposals          []admissionmodel.Proposal
+	proposalsErr       error
+	provenanceBoundary time.Time
+	provenanceErr      error
 }
 
 func (r *evidenceReader) Snapshot(context.Context) (SnapshotObservation, error) {
@@ -456,6 +499,10 @@ func (r *evidenceReader) Snapshot(context.Context) (SnapshotObservation, error) 
 
 func (r *evidenceReader) IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error) {
 	return store.WorkflowTimeline{Events: append([]store.WorkflowPhaseEvent(nil), r.workflow...)}, r.workflowErr
+}
+
+func (r *evidenceReader) ProvenanceAttributionTrustBoundary(context.Context) (time.Time, error) {
+	return r.provenanceBoundary, r.provenanceErr
 }
 
 func (r *evidenceReader) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
@@ -485,14 +532,20 @@ func (r *evidenceReader) AdmissionProposalHistory(context.Context, string, strin
 }
 
 func newTestService(now time.Time, reader *evidenceReader) *Service {
+	cloned := *reader
+	reader = &cloned
+	if reader.provenanceBoundary.IsZero() {
+		reader.provenanceBoundary = now.Add(-24 * time.Hour)
+	}
 	return New(Dependencies{
-		Snapshots: reader,
-		Workflow:  reader,
-		Attempts:  reader,
-		Scheduler: reader,
-		Sessions:  reader,
-		Admission: reader,
-		Now:       func() time.Time { return now },
+		Snapshots:  reader,
+		Workflow:   reader,
+		Provenance: reader,
+		Attempts:   reader,
+		Scheduler:  reader,
+		Sessions:   reader,
+		Admission:  reader,
+		Now:        func() time.Time { return now },
 	})
 }
 

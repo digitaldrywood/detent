@@ -28,6 +28,10 @@ type WorkflowReader interface {
 	IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error)
 }
 
+type ProvenanceReader interface {
+	ProvenanceAttributionTrustBoundary(context.Context) (time.Time, error)
+}
+
 type AttemptReader interface {
 	ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error)
 	ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error)
@@ -46,29 +50,32 @@ type AdmissionReader interface {
 }
 
 type Dependencies struct {
-	Snapshots SnapshotSource
-	Workflow  WorkflowReader
-	Attempts  AttemptReader
-	Scheduler SchedulerReader
-	Sessions  SessionReader
-	Admission AdmissionReader
-	Now       func() time.Time
+	Snapshots  SnapshotSource
+	Workflow   WorkflowReader
+	Provenance ProvenanceReader
+	Attempts   AttemptReader
+	Scheduler  SchedulerReader
+	Sessions   SessionReader
+	Admission  AdmissionReader
+	Now        func() time.Time
 }
 
 type Service struct {
-	snapshots SnapshotSource
-	workflow  WorkflowReader
-	attempts  AttemptReader
-	scheduler SchedulerReader
-	sessions  SessionReader
-	admission AdmissionReader
-	now       func() time.Time
+	snapshots  SnapshotSource
+	workflow   WorkflowReader
+	provenance ProvenanceReader
+	attempts   AttemptReader
+	scheduler  SchedulerReader
+	sessions   SessionReader
+	admission  AdmissionReader
+	now        func() time.Time
 }
 
 type collectedEvidence struct {
 	snapshot           SnapshotObservation
 	snapshotIssues     []snapshotIssue
 	workflow           []store.WorkflowPhaseEvent
+	provenanceBoundary time.Time
 	activeAttempts     []store.WorkAttempt
 	terminalAttempts   []store.WorkAttempt
 	schedulerDecisions []store.SchedulerDecision
@@ -85,13 +92,14 @@ func New(deps Dependencies) *Service {
 		now = time.Now
 	}
 	return &Service{
-		snapshots: deps.Snapshots,
-		workflow:  deps.Workflow,
-		attempts:  deps.Attempts,
-		scheduler: deps.Scheduler,
-		sessions:  deps.Sessions,
-		admission: deps.Admission,
-		now:       now,
+		snapshots:  deps.Snapshots,
+		workflow:   deps.Workflow,
+		provenance: deps.Provenance,
+		attempts:   deps.Attempts,
+		scheduler:  deps.Scheduler,
+		sessions:   deps.Sessions,
+		admission:  deps.Admission,
+		now:        now,
 	}
 }
 
@@ -116,6 +124,9 @@ func (s *Service) Explain(ctx context.Context, query Query) (IssueExplanation, e
 	}
 	lookup = mergeLookupIdentity(lookup, identitiesFromSnapshot(collected.snapshotIssues))
 	if err := s.collectWorkflow(ctx, lookup, &collected); err != nil {
+		return IssueExplanation{}, err
+	}
+	if err := s.collectProvenanceBoundary(ctx, &collected); err != nil {
 		return IssueExplanation{}, err
 	}
 	lookup = mergeLookupIdentity(lookup, identitiesFromWorkflow(collected.workflow))
@@ -150,6 +161,26 @@ func (s *Service) Explain(ctx context.Context, query Query) (IssueExplanation, e
 	}
 
 	return buildExplanation(observedAt, identity, found, collected), nil
+}
+
+func (s *Service) collectProvenanceBoundary(ctx context.Context, collected *collectedEvidence) error {
+	if s.provenance == nil {
+		collected.sources = append(collected.sources, unavailableSource("provenance_boundary", "not_configured"))
+		return nil
+	}
+	collected.configuredSources++
+	boundary, err := s.provenance.ProvenanceAttributionTrustBoundary(ctx)
+	if err != nil {
+		if contextError(err) != nil {
+			return contextError(err)
+		}
+		collected.sources = append(collected.sources, failedSource("provenance_boundary", err))
+		return nil
+	}
+	collected.successfulSources++
+	collected.provenanceBoundary = boundary.UTC()
+	collected.sources = append(collected.sources, availableSource("provenance_boundary"))
+	return nil
 }
 
 func (s *Service) collectSnapshot(ctx context.Context, now time.Time, query Query, collected *collectedEvidence) error {

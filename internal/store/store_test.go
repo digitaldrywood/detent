@@ -52,6 +52,40 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	}
 }
 
+func TestProvenanceAttributionTrustBoundaryPersistsAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	first, err := Open(ctx, Config{Backend: BackendSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("Open(first) error = %v", err)
+	}
+	boundary, err := first.ProvenanceAttributionTrustBoundary(ctx)
+	if err != nil {
+		t.Fatalf("ProvenanceAttributionTrustBoundary(first) error = %v", err)
+	}
+	if boundary.IsZero() {
+		t.Fatal("ProvenanceAttributionTrustBoundary(first) is zero")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	restarted, err := Open(ctx, Config{Backend: BackendSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("Open(restarted) error = %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedBoundary, err := restarted.ProvenanceAttributionTrustBoundary(ctx)
+	if err != nil {
+		t.Fatalf("ProvenanceAttributionTrustBoundary(restarted) error = %v", err)
+	}
+	if !restartedBoundary.Equal(boundary) {
+		t.Fatalf("restarted boundary = %v, want %v", restartedBoundary, boundary)
+	}
+}
+
 func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))

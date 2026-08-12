@@ -79,6 +79,18 @@ func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs Workfl
 	return event.ID, nil
 }
 
+func (s *sqliteStore) ProvenanceAttributionTrustBoundary(ctx context.Context) (time.Time, error) {
+	value, err := s.queries.ProvenanceAttributionTrustBoundary(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading provenance attribution trust boundary: %w", err)
+	}
+	boundary, err := parseTimestamp("trustworthy_since", value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return boundary.UTC(), nil
+}
+
 func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowMetricsQuery) (WorkflowMetricsReport, error) {
 	from, err := optionalTimestamp("from", query.From)
 	if err != nil {

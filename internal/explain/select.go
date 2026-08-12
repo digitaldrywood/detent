@@ -382,7 +382,7 @@ func collectedHasEvidence(collected collectedEvidence) bool {
 
 func buildExplanation(observedAt time.Time, identity Identity, found bool, collected collectedEvidence) IssueExplanation {
 	selectedAttempt, selection := selectAttempt(collected.activeAttempts, collected.terminalAttempts)
-	transition := selectTransition(collected.workflow)
+	transition := selectTransition(collected.workflow, collected.provenanceBoundary)
 	eligibility := buildEligibility(collected)
 	sessions := buildSessions(selectedAttempt, selection, collected)
 	pullRequest := selectPullRequest(identity.ProjectID, selectedAttempt, selection, transition, collected)
@@ -432,7 +432,7 @@ func selectCurrentLane(collected collectedEvidence, observedAt time.Time) Lane {
 	return lane
 }
 
-func selectTransition(events []store.WorkflowPhaseEvent) *Transition {
+func selectTransition(events []store.WorkflowPhaseEvent, trustworthySince time.Time) *Transition {
 	var selected *store.WorkflowPhaseEvent
 	for index := range events {
 		event := &events[index]
@@ -447,11 +447,20 @@ func selectTransition(events []store.WorkflowPhaseEvent) *Transition {
 		return nil
 	}
 	metadata, parsed := provenance.Parse(selected.MetadataJSON)
-	transitionProvenance := Provenance{State: SourceCorrupt, Origin: string(provenance.OriginUnknown)}
+	transitionProvenance := Provenance{State: SourceCorrupt, Origin: string(provenance.OriginIndeterminate)}
+	if !trustworthySince.IsZero() {
+		boundary := trustworthySince.UTC()
+		transitionProvenance.TrustworthySince = &boundary
+	}
 	var actor *Actor
 	if parsed {
 		transitionProvenance.State = SourceAvailable
+		transitionProvenance.Schema = metadata.Provenance.Schema
 		transitionProvenance.Origin = string(metadata.Provenance.Origin)
+		transitionProvenance.Initiator = string(metadata.Provenance.Initiator)
+		transitionProvenance.Basis = string(metadata.Provenance.Basis)
+		transitionProvenance.Trustworthy = metadata.Provenance.Schema >= provenance.CurrentSchema &&
+			!trustworthySince.IsZero() && !selected.StartedAt.Before(trustworthySince)
 		if metadata.Provenance.Actor != nil {
 			actor = &Actor{Login: strings.TrimSpace(metadata.Provenance.Actor.Login), Kind: strings.TrimSpace(metadata.Provenance.Actor.Kind)}
 		}

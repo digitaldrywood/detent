@@ -227,6 +227,11 @@ type MergeRequiredCheckStreak struct {
 	UpdatedAt                 string `json:"updated_at"`
 }
 
+type ProvenanceAttributionBoundary struct {
+	ID               int64  `json:"id"`
+	TrustworthySince string `json:"trustworthy_since"`
+}
+
 type RetroRun struct {
 	ID            int64          `json:"id"`
 	ProjectID     string         `json:"project_id"`
