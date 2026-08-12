@@ -236,7 +236,7 @@ type doctorDeps struct {
 	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
 	runCommandInDir      func(context.Context, string, []string, string, ...string) error
 	codexInitialize      func(context.Context, string, []string) error
-	codexAccount         func(context.Context, string, []string) (codex.Account, error)
+	codexAccount         func(context.Context, workflowconfig.AgentBackend, []string) (codex.Account, error)
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc

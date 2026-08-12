@@ -1320,19 +1320,19 @@ func TestCheckDoctorMeteredBillingAuth(t *testing.T) {
 			name:       "flat subscription warns with every armed brake",
 			account:    codex.Account{Type: "chatgpt", PlanType: "plus"},
 			wantStatus: doctorWarn,
-			wantDetail: []string{"ChatGPT subscription", "budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"},
+			wantDetail: []string{"subscription auth", "backend codex-wrapper", `command "codex-wrapper app-server"`, "budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"},
 		},
 		{
 			name:       "API key preserves metered enforcement",
 			account:    codex.Account{Type: "apiKey"},
 			wantStatus: doctorOK,
-			wantDetail: []string{"apiKey", "do not use flat-subscription auth"},
+			wantDetail: []string{"apiKey", "does not use a flat subscription"},
 		},
 		{
 			name:       "usage based ChatGPT plan preserves metered enforcement",
 			account:    codex.Account{Type: "chatgpt", PlanType: "enterprise_cbp_usage_based"},
 			wantStatus: doctorOK,
-			wantDetail: []string{"enterprise_cbp_usage_based", "do not use flat-subscription auth"},
+			wantDetail: []string{"enterprise_cbp_usage_based", "does not use a flat subscription"},
 		},
 		{
 			name:       "unknown auth warns",
@@ -1346,16 +1346,22 @@ func TestCheckDoctorMeteredBillingAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			workflow := validDoctorWorkflow("/repo")
+			workflow.Agents.Backends = []workflowconfig.AgentBackend{{
+				ID:       "codex-wrapper",
+				Kind:     workflowconfig.AgentBackendCodex,
+				Protocol: "app-server",
+				Command:  "codex-wrapper app-server",
+			}}
+			var gotBackend workflowconfig.AgentBackend
 			checks := checkDoctorMeteredBillingAuth(context.Background(), globalconfig.Config{
 				Projects: []globalconfig.Project{{ID: "detent", Workflow: "WORKFLOW.md"}},
 			}, doctorDeps{
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-					return workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")}, nil
+					return workflowconfig.Workflow{Config: workflow}, nil
 				},
-				resolveCommandOnPath: func(string, string) (string, error) {
-					return "/usr/local/bin/codex", nil
-				},
-				codexAccount: func(context.Context, string, []string) (codex.Account, error) {
+				codexAccount: func(_ context.Context, backend workflowconfig.AgentBackend, _ []string) (codex.Account, error) {
+					gotBackend = backend
 					return tt.account, nil
 				},
 			}, doctorBinaryEnvironment{CheckedPath: "/usr/local/bin"})
@@ -1367,7 +1373,36 @@ func TestCheckDoctorMeteredBillingAuth(t *testing.T) {
 					t.Fatalf("checkDoctorMeteredBillingAuth() = %#v, want %q", checks, want)
 				}
 			}
+			if gotBackend.ID != "codex-wrapper" || gotBackend.Command != "codex-wrapper app-server" {
+				t.Fatalf("probed backend = %#v, want configured Codex wrapper", gotBackend)
+			}
 		})
+	}
+}
+
+func TestCheckDoctorMeteredBillingAuthSkipsUnroutedCodexBackend(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Agents.Backends = []workflowconfig.AgentBackend{
+		{ID: "unused-codex", Kind: workflowconfig.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"},
+		{ID: "claude", Kind: workflowconfig.AgentBackendClaudeCode, Protocol: "headless", Command: "claude"},
+	}
+	workflow.Agents.Routes = []workflowconfig.AgentRoute{{Name: "default", Backend: "claude", Default: true}}
+	called := false
+	checks := checkDoctorMeteredBillingAuth(context.Background(), globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "detent", Workflow: "WORKFLOW.md"}},
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		codexAccount: func(context.Context, workflowconfig.AgentBackend, []string) (codex.Account, error) {
+			called = true
+			return codex.Account{}, nil
+		},
+	}, doctorBinaryEnvironment{})
+	if called || len(checks) != 0 {
+		t.Fatalf("checkDoctorMeteredBillingAuth() = %#v, probe called=%t; want unrouted Codex backend skipped", checks, called)
 	}
 }
 
