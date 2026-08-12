@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -605,6 +606,186 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			}
 			if execution.result.CITriggerLabelReapplied != tt.wantCITriggerLabelReapplied {
 				t.Fatalf("CITriggerLabelReapplied = %v, want %v", execution.result.CITriggerLabelReapplied, tt.wantCITriggerLabelReapplied)
+			}
+		})
+	}
+}
+
+func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
+	t.Parallel()
+
+	const branch = "detent/acme_widgets_18"
+	const arguments = `{"base":"main","body":"Fixes #18","head":"detent/acme_widgets_18","repository_full_name":"acme/widgets","title":"fix(runner): recover delivery"}`
+	tests := []struct {
+		name                   string
+		recoveryUpdates        []AgentUpdate
+		wantErr                bool
+		wantPullRequestUpdated bool
+	}{
+		{
+			name: "retry creates pull request",
+			recoveryUpdates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "lookup", Tool: "codex_apps/github.search_issues", Delta: `{"query":"repo:acme/widgets is:pr is:open head:detent/acme_widgets_18"}`},
+				{Type: AgentUpdateToolCompleted, ItemID: "lookup", Tool: "codex_apps/github.search_issues", Status: "completed", Delta: `{"issues":[]}`},
+				{Type: AgentUpdateToolStarted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Delta: arguments},
+				{Type: AgentUpdateToolCompleted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Status: "completed", Delta: `{"url":"https://github.test/acme/widgets/pull/18"}`},
+				{Type: AgentUpdateTurnCompleted, TurnID: "turn-2", Status: "completed"},
+			},
+			wantPullRequestUpdated: true,
+		},
+		{
+			name: "retry adopts existing pull request",
+			recoveryUpdates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "lookup", Tool: "codex_apps/github.search_issues", Delta: `{"query":"repo:acme/widgets is:pr is:open head:detent/acme_widgets_18"}`},
+				{Type: AgentUpdateToolCompleted, ItemID: "lookup", Tool: "codex_apps/github.search_issues", Status: "completed", Delta: `{"issues":[{"head_ref_name":"detent/acme_widgets_18","url":"https://github.test/acme/widgets/pull/17"}]}`},
+				{Type: AgentUpdateTurnCompleted, TurnID: "turn-2", Status: "completed"},
+			},
+			wantPullRequestUpdated: true,
+		},
+		{
+			name: "unrecoverable retry surfaces pushed branch",
+			recoveryUpdates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "lookup", Tool: "codex_apps/github.search_issues", Delta: `{"query":"repo:acme/widgets is:pr is:open head:detent/acme_widgets_18"}`},
+				{Type: AgentUpdateToolCompleted, ItemID: "lookup", Tool: "codex_apps/github.search_issues", Status: "completed", Delta: `{"issues":[]}`},
+				{Type: AgentUpdateToolStarted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Delta: arguments},
+				{Type: AgentUpdateToolCompleted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Status: "failed", BackendErrorMessage: "HTTP 503: unavailable", BackendErrorBody: `{"status":503,"message":"unavailable"}`},
+				{Type: AgentUpdateTurnCompleted, TurnID: "turn-2", Status: "completed"},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: branch}}
+			backend := &deliverableRecoveryAgentBackend{turns: [][]AgentUpdate{
+				{
+					{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+					{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+					{Type: AgentUpdateToolStarted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Delta: arguments},
+					{Type: AgentUpdateToolCompleted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Status: "failed", BackendErrorMessage: "HTTP 502: upstream unavailable", BackendErrorBody: `{"status":502,"message":"upstream unavailable"}`},
+					{Type: AgentUpdateTurnCompleted, TurnID: "turn-1", Status: "completed"},
+				},
+				tt.recoveryUpdates,
+			}}
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work on {{ issue.identifier }}"},
+				Workspace:    workspaceBackend,
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
+				ID: "issue-18", Identifier: "acme/widgets#18", Title: "Recover delivery", State: "In Progress",
+				BranchName: branch, PRRepository: "acme/widgets",
+			}})
+			if tt.wantErr {
+				var recoveryErr *DeliverableRecoveryError
+				if !errors.As(runErr, &recoveryErr) {
+					t.Fatalf("Run() error = %T %v, want DeliverableRecoveryError", runErr, runErr)
+				}
+				if recoveryErr.Branch != branch || !strings.Contains(runErr.Error(), branch) || result.FinalState != FinalStateNeedsHumanAttention {
+					t.Fatalf("recovery error/result = %#v/%#v, want branch %q and needs-human state", recoveryErr, result, branch)
+				}
+				for _, want := range []string{"codex_apps/github.create_pull_request", "status=failed", arguments, "HTTP 503: unavailable", `{"status":503,"message":"unavailable"}`} {
+					if !strings.Contains(runErr.Error(), want) {
+						t.Fatalf("recovery error missing %q: %v", want, runErr)
+					}
+				}
+				if strings.Contains(runErr.Error(), ": null") {
+					t.Fatalf("recovery error contains terminal null detail: %v", runErr)
+				}
+			} else if runErr != nil || result.FinalState != FinalStateCompleted {
+				t.Fatalf("Run() = state %q error %v, want completed", result.FinalState, runErr)
+			}
+			if result.PullRequestUpdated != tt.wantPullRequestUpdated || !result.PullRequestHeadPushed {
+				t.Fatalf("delivery result = updated %v pushed %v, want updated %v pushed true", result.PullRequestUpdated, result.PullRequestHeadPushed, tt.wantPullRequestUpdated)
+			}
+			if len(backend.requests) != 2 {
+				t.Fatalf("RunTurn requests = %d, want implementation and one deliverable retry", len(backend.requests))
+			}
+			recoveryRequest := backend.requests[1]
+			if recoveryRequest.Resume.ThreadID != "thread-1" || recoveryRequest.Resume.SessionID != "session-1" {
+				t.Fatalf("recovery resume = %#v, want first turn identity", recoveryRequest.Resume)
+			}
+			for _, want := range []string{branch, arguments, "existing open pull request", "Do not edit"} {
+				if !strings.Contains(recoveryRequest.Prompt, want) {
+					t.Fatalf("recovery prompt missing %q:\n%s", want, recoveryRequest.Prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestDeliverableCommandErrorNeverReportsNullDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  *DeliverableCommandError
+		want []string
+	}{
+		{
+			name: "structured response",
+			err: &DeliverableCommandError{
+				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"detent/acme_widgets_18"}`,
+				Status: "failed", Message: "HTTP 502: unavailable", Body: `{"status":502}`,
+			},
+			want: []string{"status=failed", `arguments={"head":"detent/acme_widgets_18"}`, "HTTP 502: unavailable", `response={"status":502}`},
+		},
+		{
+			name: "null payload",
+			err: &DeliverableCommandError{
+				Operation: "codex_apps/github.create_pull_request", Arguments: "null", Status: "failed", Message: "null", Body: "null",
+			},
+			want: []string{"status=failed"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.err.Error()
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("Error() = %q, want containing %q", got, want)
+				}
+			}
+			if strings.Contains(got, "null") {
+				t.Fatalf("Error() = %q, want no null detail", got)
+			}
+		})
+	}
+}
+
+func TestRecoverablePullRequestDeliverableRequiresOnlyPullRequestFailure(t *testing.T) {
+	t.Parallel()
+
+	pullRequestErr := &DeliverableCommandError{OperationClass: "pull_request", Operation: "codex_apps/github.create_pull_request"}
+	pushErr := &DeliverableCommandError{OperationClass: "push", Operation: "git push"}
+	tests := []struct {
+		name   string
+		err    error
+		pushed bool
+		want   bool
+	}{
+		{name: "only pull request failed after push", err: pullRequestErr, pushed: true, want: true},
+		{name: "branch was not pushed", err: pullRequestErr, pushed: false},
+		{name: "push also failed", err: errors.Join(pullRequestErr, pushErr), pushed: true},
+		{name: "unrelated turn error also occurred", err: errors.Join(pullRequestErr, errors.New("agent transport failed")), pushed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, got := recoverablePullRequestDeliverable(agentTurnExecution{
+				result: RunResult{PullRequestHeadPushed: tt.pushed},
+				err:    tt.err,
+			})
+			if got != tt.want {
+				t.Fatalf("recoverablePullRequestDeliverable() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -4771,6 +4952,11 @@ type toolUpdateAgentBackend struct {
 	updates []AgentUpdate
 }
 
+type deliverableRecoveryAgentBackend struct {
+	turns    [][]AgentUpdate
+	requests []AgentTurnRequest
+}
+
 type scratchWritingAgentBackend struct {
 	runErr  error
 	tempDir string
@@ -4798,6 +4984,25 @@ func (b *toolUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, 
 		}
 	}
 	return AgentTurnResult{ThreadID: "thread-1211", TurnID: "turn-1211", SessionID: "thread-1211-turn-1211"}, nil
+}
+
+func (b *deliverableRecoveryAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	index := len(b.requests)
+	b.requests = append(b.requests, req)
+	if index >= len(b.turns) {
+		return AgentTurnResult{}, fmt.Errorf("unexpected turn %d", index+1)
+	}
+	for _, update := range b.turns[index] {
+		if err := onUpdate(update); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
+	turn := index + 1
+	return AgentTurnResult{
+		ThreadID:  "thread-" + strconv.Itoa(turn),
+		TurnID:    "turn-" + strconv.Itoa(turn),
+		SessionID: "session-" + strconv.Itoa(turn),
+	}, nil
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {

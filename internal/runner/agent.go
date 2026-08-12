@@ -816,6 +816,7 @@ func (r *Runner) runAgentTurn(
 		ciTriggerLabel,
 		strings.TrimSpace(runRequest.Issue.PRRepository),
 		ciTriggerPullRequestNumber(runRequest.Issue),
+		runRequest.deliverableRecoveryBranch,
 	)
 	usage := newSessionTokenUsage(!agentResumeEmpty(turnRequest.Resume))
 	if !result.RuntimeIdentity.IsZero() {
@@ -1329,6 +1330,53 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
 	}
+	turns := int64(1)
+	if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
+		branch := strings.TrimSpace(info.Branch)
+		if branch == "" {
+			branch = strings.TrimSpace(req.Issue.BranchName)
+		}
+		r.logWorkerEvent(req.Issue, "worker_deliverable_recovery_started",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
+			"workspace_branch", branch,
+			"deliverable_command", deliverableErr.Operation,
+		)
+		recoveryRequest := turnRequest
+		recoveryRequest.Prompt = deliverableRecoveryPrompt(branch, req.Issue.PRRepository, deliverableErr)
+		recoveryRequest.Resume = AgentResume{
+			ThreadID:  execution.turnResult.ThreadID,
+			SessionID: execution.turnResult.SessionID,
+		}
+		recoveryRunRequest := req
+		recoveryRunRequest.deliverableRecoveryBranch = branch
+		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, execution.result.RuntimeIdentity)
+		recovery.err = sessionBrake.wrapTurnLimit(ctx, recovery.err)
+		recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
+		turns++
+		initialErr := execution.err
+		execution = mergeAgentTurnExecutions(execution, recovery)
+		if recovery.err != nil {
+			execution.err = &DeliverableRecoveryError{Branch: branch, Err: errors.Join(initialErr, recovery.err)}
+			execution.result.FinalState = FinalStateNeedsHumanAttention
+			r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_deliverable_recovery_failed",
+				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+				telemetry.DetentSessionIDKey, sessionID,
+				"workspace_branch", branch,
+				"deliverable_command", deliverableErr.Operation,
+				"error", execution.err,
+			)
+		} else {
+			execution.err = nil
+			execution.result.FinalState = FinalStateCompleted
+			r.logWorkerEvent(req.Issue, "worker_deliverable_recovery_succeeded",
+				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+				telemetry.DetentSessionIDKey, sessionID,
+				"workspace_branch", branch,
+				"deliverable_command", deliverableErr.Operation,
+			)
+		}
+	}
 	sessionBrake.Stop()
 	turnResult := execution.turnResult
 	turnErr := execution.err
@@ -1383,7 +1431,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(finishContext, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
+			r.finishSession(finishContext, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -1400,7 +1448,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -1413,7 +1461,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -1425,10 +1473,143 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func recoverablePullRequestDeliverable(execution agentTurnExecution) (*DeliverableCommandError, bool) {
+	if execution.err == nil || !execution.result.PullRequestHeadPushed {
+		return nil, false
+	}
+	errorsFound, onlyDeliverableErrors := deliverableCommandErrors(execution.err)
+	if !onlyDeliverableErrors || len(errorsFound) == 0 {
+		return nil, false
+	}
+	for _, deliverableErr := range errorsFound {
+		if deliverableErr == nil || deliverableErr.OperationClass != "pull_request" {
+			return nil, false
+		}
+	}
+	return errorsFound[0], true
+}
+
+func deliverableCommandErrors(err error) ([]*DeliverableCommandError, bool) {
+	if err == nil {
+		return nil, true
+	}
+	var result []*DeliverableCommandError
+	var visit func(error) bool
+	visit = func(current error) bool {
+		if current == nil {
+			return true
+		}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, nested := range joined.Unwrap() {
+				if !visit(nested) {
+					return false
+				}
+			}
+			return true
+		}
+		if wrapped := errors.Unwrap(current); wrapped != nil {
+			return visit(wrapped)
+		}
+		var deliverableErr *DeliverableCommandError
+		if errors.As(current, &deliverableErr) {
+			result = append(result, deliverableErr)
+			return true
+		}
+		return false
+	}
+	return result, visit(err)
+}
+
+func deliverableRecoveryPrompt(branch string, repository string, deliverableErr *DeliverableCommandError) string {
+	branch = strings.TrimSpace(branch)
+	repository = strings.TrimSpace(repository)
+	operation := "pull request creation"
+	arguments := "{}"
+	if deliverableErr != nil {
+		if value := strings.TrimSpace(deliverableErr.Operation); value != "" {
+			operation = value
+		}
+		if value := strings.TrimSpace(deliverableErr.Arguments); value != "" {
+			arguments = value
+		}
+	}
+	var prompt strings.Builder
+	prompt.WriteString("The implementation is complete and the branch is already pushed. Recover only the pull request deliverable.\n\n")
+	prompt.WriteString("Search first for an existing open pull request whose head branch is exactly `")
+	prompt.WriteString(branch)
+	prompt.WriteString("`")
+	if repository != "" {
+		prompt.WriteString(" in `")
+		prompt.WriteString(repository)
+		prompt.WriteString("`")
+	}
+	prompt.WriteString(". If one exists, adopt it and do not create a duplicate. If none exists, retry `")
+	prompt.WriteString(operation)
+	prompt.WriteString("` with these attempted arguments:\n\n")
+	prompt.WriteString(arguments)
+	prompt.WriteString("\n\nDo not edit files, change commits, push the branch, rerun implementation, or perform unrelated work.")
+	return prompt.String()
+}
+
+func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExecution) agentTurnExecution {
+	result := recovery.result
+	result.Output = joinAgentOutputs(initial.result.Output, recovery.result.Output)
+	result.Model = effectiveModel(recovery.result.Model, initial.result.Model)
+	result.RuntimeIdentity = initial.result.RuntimeIdentity.Merge(recovery.result.RuntimeIdentity)
+	result.Tokens = addAgentTokenTotals(initial.result.Tokens, recovery.result.Tokens)
+	result.RateLimits = mergeAgentRateLimits(initial.result.RateLimits, recovery.result.RateLimits)
+	result.SkillDraftProposed = initial.result.SkillDraftProposed || recovery.result.SkillDraftProposed
+	result.PullRequestUpdated = initial.result.PullRequestUpdated || recovery.result.PullRequestUpdated
+	result.PullRequestHeadPushed = initial.result.PullRequestHeadPushed || recovery.result.PullRequestHeadPushed
+	result.CITriggerLabelReapplied = initial.result.CITriggerLabelReapplied || recovery.result.CITriggerLabelReapplied
+	if result.DiffStats == (DiffStats{}) {
+		result.DiffStats = initial.result.DiffStats
+	}
+	return agentTurnExecution{
+		turnResult:  recovery.turnResult,
+		result:      result,
+		err:         recovery.err,
+		cleanupErr:  errors.Join(initial.cleanupErr, recovery.cleanupErr),
+		turnStarted: initial.turnStarted || recovery.turnStarted,
+	}
+}
+
+func joinAgentOutputs(initial string, recovery string) string {
+	initial = strings.TrimSpace(initial)
+	recovery = strings.TrimSpace(recovery)
+	if initial == "" {
+		return recovery
+	}
+	if recovery == "" {
+		return initial
+	}
+	return initial + "\n" + recovery
+}
+
+func addAgentTokenTotals(initial TokenTotals, recovery TokenTotals) TokenTotals {
+	result := TokenTotals{
+		InputTokens:           initial.InputTokens + recovery.InputTokens,
+		CachedInputTokens:     initial.CachedInputTokens + recovery.CachedInputTokens,
+		OutputTokens:          initial.OutputTokens + recovery.OutputTokens,
+		ReasoningOutputTokens: initial.ReasoningOutputTokens + recovery.ReasoningOutputTokens,
+		TotalTokens:           initial.TotalTokens + recovery.TotalTokens,
+		RuntimeSeconds:        initial.RuntimeSeconds + recovery.RuntimeSeconds,
+		Last:                  cloneAgentTokenCounts(recovery.Last),
+		ModelContextWindow:    recovery.ModelContextWindow,
+	}
+	if result.Last == nil {
+		result.Last = cloneAgentTokenCounts(initial.Last)
+	}
+	if result.ModelContextWindow == nil {
+		result.ModelContextWindow = initial.ModelContextWindow
+	}
+	return result
 }
 
 func (r *Runner) workspaceRecoveryState(
@@ -1623,7 +1804,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0)
+	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "")
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
 	if err := r.publishRunUpdate(sessionCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
@@ -2539,45 +2720,47 @@ func cloneAgentTokenCounts(tokens *AgentTokenCounts) *AgentTokenCounts {
 }
 
 type agentRunProgress struct {
-	sessionID             string
-	processIdentity       string
-	workerProcess         procgroup.Identity
-	turnIDs               map[string]struct{}
-	messages              map[string]*runtimeoutput.Buffer
-	messageOrder          []string
-	outputPolicy          runtimeoutput.Policy
-	output                *runtimeoutput.Buffer
-	lastEventAt           time.Time
-	lastEvent             string
-	lastMessage           string
-	lastMessageTruncation *runtimeoutput.Truncation
-	recentEvents          []telemetry.ActivityEvent
-	diffStats             DiffStats
-	diffStatsCollected    bool
-	diffStatsCheckedAt    time.Time
-	toolInvocations       map[string]deliverableToolInvocation
-	deliverableFailures   map[string]error
-	deliverableSuccesses  map[string]bool
-	ciTriggerLabel        string
-	ciTriggerRepository   string
-	ciTriggerPRNumber     int
-	successfulPushes      int
-	ciTriggerPushSequence int
-	ciTriggerLabelValid   bool
+	sessionID                 string
+	processIdentity           string
+	workerProcess             procgroup.Identity
+	turnIDs                   map[string]struct{}
+	messages                  map[string]*runtimeoutput.Buffer
+	messageOrder              []string
+	outputPolicy              runtimeoutput.Policy
+	output                    *runtimeoutput.Buffer
+	lastEventAt               time.Time
+	lastEvent                 string
+	lastMessage               string
+	lastMessageTruncation     *runtimeoutput.Truncation
+	recentEvents              []telemetry.ActivityEvent
+	diffStats                 DiffStats
+	diffStatsCollected        bool
+	diffStatsCheckedAt        time.Time
+	toolInvocations           map[string]deliverableToolInvocation
+	deliverableFailures       map[string]error
+	deliverableSuccesses      map[string]bool
+	ciTriggerLabel            string
+	ciTriggerRepository       string
+	ciTriggerPRNumber         int
+	successfulPushes          int
+	ciTriggerPushSequence     int
+	ciTriggerLabelValid       bool
+	deliverableRecoveryBranch string
 }
 
-func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int) *agentRunProgress {
+func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int, deliverableRecoveryBranch string) *agentRunProgress {
 	return &agentRunProgress{
-		turnIDs:              map[string]struct{}{},
-		messages:             map[string]*runtimeoutput.Buffer{},
-		outputPolicy:         outputPolicy,
-		output:               runtimeoutput.NewBuffer(outputPolicy),
-		toolInvocations:      map[string]deliverableToolInvocation{},
-		deliverableFailures:  map[string]error{},
-		deliverableSuccesses: map[string]bool{},
-		ciTriggerLabel:       strings.TrimSpace(ciTriggerLabel),
-		ciTriggerRepository:  strings.TrimSpace(ciTriggerRepository),
-		ciTriggerPRNumber:    ciTriggerPRNumber,
+		turnIDs:                   map[string]struct{}{},
+		messages:                  map[string]*runtimeoutput.Buffer{},
+		outputPolicy:              outputPolicy,
+		output:                    runtimeoutput.NewBuffer(outputPolicy),
+		toolInvocations:           map[string]deliverableToolInvocation{},
+		deliverableFailures:       map[string]error{},
+		deliverableSuccesses:      map[string]bool{},
+		ciTriggerLabel:            strings.TrimSpace(ciTriggerLabel),
+		ciTriggerRepository:       strings.TrimSpace(ciTriggerRepository),
+		ciTriggerPRNumber:         ciTriggerPRNumber,
+		deliverableRecoveryBranch: strings.TrimSpace(deliverableRecoveryBranch),
 	}
 }
 
@@ -2673,7 +2856,7 @@ type deliverableToolInvocation struct {
 }
 
 func (p *agentRunProgress) recordDeliverableToolStart(update AgentUpdate) {
-	invocation := newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber)
+	invocation := newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
 	if invocation.class == "" {
 		return
 	}
@@ -2684,7 +2867,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	key := deliverableToolKey(update)
 	invocation, ok := p.toolInvocations[key]
 	if !ok {
-		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber)
+		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
 	}
 	if invocation.class == "" {
 		return
@@ -2717,6 +2900,11 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		case "pull_request":
 			delete(p.deliverableFailures, "pull_request")
 			p.deliverableSuccesses["pull_request"] = true
+		case "pull_request_lookup":
+			if pullRequestLookupAdopts(update) {
+				delete(p.deliverableFailures, "pull_request")
+				p.deliverableSuccesses["pull_request"] = true
+			}
 		}
 		return
 	}
@@ -2730,28 +2918,29 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 			p.successfulPushes++
 		}
 	}
+	if invocation.class == "pull_request_lookup" {
+		failureClass = "pull_request"
+	}
 	delete(p.deliverableSuccesses, failureClass)
 	if invocation.class == "ci_trigger_label" || invocation.class == "push_ci_trigger_label" {
 		p.ciTriggerLabelValid = false
 	}
-	detail := strings.TrimSpace(update.Delta)
-	if detail == "" {
-		detail = strings.TrimSpace(update.BackendErrorMessage)
+	message := meaningfulDeliverableDetail(update.BackendErrorMessage)
+	body := meaningfulDeliverableDetail(update.BackendErrorBody)
+	if message == "" {
+		message = meaningfulDeliverableDetail(update.Delta)
 	}
-	if detail == "" {
-		detail = strings.TrimSpace(update.BackendErrorBody)
+	if body == "" && strings.HasPrefix(strings.TrimSpace(update.Delta), "{") {
+		body = meaningfulDeliverableDetail(update.Delta)
 	}
-	if detail == "" {
-		detail = strings.TrimSpace(update.Status)
+	p.deliverableFailures[failureClass] = &DeliverableCommandError{
+		OperationClass: failureClass,
+		Operation:      deliverableInvocationOperation(invocation),
+		Arguments:      truncateDeliverableDetail(invocation.command),
+		Status:         strings.TrimSpace(update.Status),
+		Message:        truncateDeliverableDetail(message),
+		Body:           truncateDeliverableDetail(body),
 	}
-	if len(detail) > 4096 {
-		detail = detail[len(detail)-4096:]
-	}
-	operation := invocation.command
-	if operation == "" {
-		operation = invocation.tool
-	}
-	p.deliverableFailures[failureClass] = fmt.Errorf("deliverable command failed (%s): %s", strings.TrimSpace(operation), detail)
 }
 
 func (p *agentRunProgress) pullRequestUpdated() bool {
@@ -2773,6 +2962,15 @@ func (p *agentRunProgress) deliverableError() error {
 			errs = append(errs, err)
 		}
 	}
+	if len(errs) == 0 && p.deliverableRecoveryBranch != "" && !p.deliverableSuccesses["pull_request"] {
+		errs = append(errs, &DeliverableCommandError{
+			OperationClass: "pull_request",
+			Operation:      "pull request recovery",
+			Arguments:      `{"head":` + strconv.Quote(p.deliverableRecoveryBranch) + `}`,
+			Status:         "failed",
+			Message:        "recovery turn completed without creating or adopting a pull request",
+		})
+	}
 	return errors.Join(errs...)
 }
 
@@ -2783,7 +2981,7 @@ func deliverableToolKey(update AgentUpdate) string {
 	return strings.TrimSpace(update.TurnID) + "\x00" + strings.TrimSpace(update.Tool)
 }
 
-func deliverableOperationClass(tool string, command string) string {
+func deliverableOperationClass(tool string, command string, deliverableRecoveryBranch string) string {
 	lowerTool := strings.ToLower(strings.TrimSpace(tool))
 	lowerCommand := strings.ToLower(strings.TrimSpace(command))
 	push := gitPushCommand(lowerCommand)
@@ -2797,6 +2995,9 @@ func deliverableOperationClass(tool string, command string) string {
 	if push {
 		return "push"
 	}
+	if pullRequestLookupCommand(lowerTool, lowerCommand, deliverableRecoveryBranch) {
+		return "pull_request_lookup"
+	}
 	if pullRequestCommand(lowerCommand) ||
 		(strings.Contains(lowerTool, "pull_request") &&
 			(strings.Contains(lowerTool, "create") || strings.Contains(lowerTool, "update") || strings.Contains(lowerTool, "edit"))) {
@@ -2805,15 +3006,65 @@ func deliverableOperationClass(tool string, command string) string {
 	return ""
 }
 
-func newDeliverableToolInvocation(tool string, command string, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int) deliverableToolInvocation {
+func newDeliverableToolInvocation(tool string, command string, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int, deliverableRecoveryBranch string) deliverableToolInvocation {
 	command = strings.TrimSpace(command)
 	return deliverableToolInvocation{
-		class:                 deliverableOperationClass(tool, command),
+		class:                 deliverableOperationClass(tool, command, deliverableRecoveryBranch),
 		command:               command,
 		tool:                  strings.TrimSpace(tool),
 		ciTriggerLabelMatches: ciTriggerLabelCommandMatches(command, ciTriggerLabel, ciTriggerRepository, ciTriggerPRNumber),
 		ciTriggerAfterPush:    ciTriggerLabelRunsAfterPush(command),
 	}
+}
+
+func pullRequestLookupCommand(tool string, arguments string, branch string) bool {
+	branch = strings.ToLower(strings.TrimSpace(branch))
+	if branch == "" || !strings.Contains(arguments, branch) {
+		return false
+	}
+	if strings.Contains(tool, "list_pull_requests") {
+		return true
+	}
+	return strings.Contains(tool, "search_issues") && (strings.Contains(arguments, "is:pr") || strings.Contains(arguments, "pull_request"))
+}
+
+func pullRequestLookupAdopts(update AgentUpdate) bool {
+	result := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
+	return strings.Contains(result, "/pull/") || strings.Contains(result, `"pull_request"`)
+}
+
+func deliverableInvocationOperation(invocation deliverableToolInvocation) string {
+	tool := strings.TrimSpace(invocation.tool)
+	lowerTool := strings.ToLower(tool)
+	if strings.Contains(lowerTool, "pull_request") || strings.Contains(lowerTool, "search_issues") || strings.Contains(lowerTool, "list_pull_requests") {
+		return tool
+	}
+	lowerCommand := strings.ToLower(invocation.command)
+	for _, operation := range []string{"gh pr create", "gh pr edit", "gh pr ready", "git push", "detent ci-trigger-label"} {
+		if strings.Contains(lowerCommand, operation) {
+			return operation
+		}
+	}
+	if tool != "" {
+		return tool
+	}
+	return "unknown"
+}
+
+func meaningfulDeliverableDetail(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "null") {
+		return ""
+	}
+	return value
+}
+
+func truncateDeliverableDetail(value string) string {
+	value = meaningfulDeliverableDetail(value)
+	if len(value) > 4096 {
+		return value[len(value)-4096:]
+	}
+	return value
 }
 
 func ciTriggerLabelCommand(command string) bool {

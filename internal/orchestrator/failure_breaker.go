@@ -346,8 +346,11 @@ func projectAttemptFailureClass(
 	if errors.Is(err, runpkg.ErrSessionTokenCeilingExceeded) || strings.Contains(combined, "session token ceiling exceeded") {
 		return projectFailureClassSessionTokenCeiling
 	}
+	if command := deliverableFailureCommand(err, combined); command != "" {
+		return projectFailureClassDeliverableCommand + ":" + command
+	}
 	if strings.Contains(combined, "deliverable command failed") {
-		return projectFailureClassDeliverableCommand
+		return projectFailureClassDeliverableCommand + ":unknown"
 	}
 	var backendError interface {
 		BackendErrorBody() string
@@ -384,6 +387,31 @@ func projectAttemptFailureClass(
 		return ""
 	}
 	return projectFailureClassRunnerError + ":" + projectFailureHash(message)
+}
+
+func deliverableFailureCommand(err error, message string) string {
+	var deliverableErr *runpkg.DeliverableCommandError
+	if errors.As(err, &deliverableErr) && deliverableErr != nil {
+		return normalizeDeliverableFailureCommand(deliverableErr.Operation)
+	}
+	const prefix = "deliverable command failed ("
+	index := strings.Index(message, prefix)
+	if index < 0 {
+		return ""
+	}
+	command := message[index+len(prefix):]
+	if end := strings.Index(command, ")"); end >= 0 {
+		command = command[:end]
+	}
+	return normalizeDeliverableFailureCommand(command)
+}
+
+func normalizeDeliverableFailureCommand(command string) string {
+	command = strings.Join(strings.Fields(strings.TrimSpace(command)), " ")
+	if len(command) > 160 {
+		command = command[:160]
+	}
+	return command
 }
 
 func normalizeProjectFailureClass(value string) string {

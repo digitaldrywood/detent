@@ -247,7 +247,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage := event.Err.Error()
 		phase := "failed"
 		statusMessage := "worker failed"
-		if spendProgress.Block && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+		var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
+		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+			errorClass = deliverableRecoveryNeedsHumanReason
+			phase = "blocked"
+			statusMessage = "pushed branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs human attention"
+		}
+		if spendProgress.Block && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = spendProgressReason
 			errorMessage = spendProgressBlockMessage(spendProgress)
@@ -259,6 +265,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		attempt := event.RetryAttempt
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
+		}
+		if o.blockDeliverableRecoveryFailure(ctx, state, event, running) {
+			return
 		}
 		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {
 			return

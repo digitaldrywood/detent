@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -25,6 +26,7 @@ const (
 	FinalStateMergeRevoked          = "merge_revoked"
 	FinalStateCIUnavailable         = "ci_unavailable"
 	FinalStateMergeDurationExceeded = "merge_duration_exceeded"
+	FinalStateNeedsHumanAttention   = "needs_human_attention"
 	TokenCeilingSourceAbsolute      = "max_session_tokens"
 	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
 
@@ -39,18 +41,99 @@ const (
 )
 
 var (
-	ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
-	ErrTurnDurationExceeded        = errors.New("agent turn duration exceeded")
-	ErrSessionDurationExceeded     = errors.New("agent session duration exceeded")
-	ErrOperatorStopped             = errors.New("operator stopped run")
-	ErrMergeRevoked                = errors.New("merge eligibility revoked")
-	ErrCIUnavailable               = errors.New("CI unavailable")
-	ErrMergeWorkerStartupTimeout   = errors.New("merge worker startup timed out")
-	ErrMergeWorkerDurationExceeded = errors.New("merge worker duration exceeded")
-	ErrModelPermitUnavailable      = errors.New("provider model permit unavailable")
-	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
-	ErrAgentResumeUnsupported      = errors.New("agent backend does not support resume verification")
+	ErrSessionTokenCeilingExceeded  = errors.New("session token ceiling exceeded")
+	ErrTurnDurationExceeded         = errors.New("agent turn duration exceeded")
+	ErrSessionDurationExceeded      = errors.New("agent session duration exceeded")
+	ErrOperatorStopped              = errors.New("operator stopped run")
+	ErrMergeRevoked                 = errors.New("merge eligibility revoked")
+	ErrCIUnavailable                = errors.New("CI unavailable")
+	ErrMergeWorkerStartupTimeout    = errors.New("merge worker startup timed out")
+	ErrMergeWorkerDurationExceeded  = errors.New("merge worker duration exceeded")
+	ErrModelPermitUnavailable       = errors.New("provider model permit unavailable")
+	ErrAgentTurnCleanup             = errors.New("agent turn cleanup failed")
+	ErrAgentResumeUnsupported       = errors.New("agent backend does not support resume verification")
+	ErrDeliverableRecoveryExhausted = errors.New("deliverable recovery exhausted")
 )
+
+type DeliverableCommandError struct {
+	OperationClass string
+	Operation      string
+	Arguments      string
+	Status         string
+	Message        string
+	Body           string
+}
+
+func (e *DeliverableCommandError) Error() string {
+	if e == nil {
+		return "deliverable command failed: no error detail returned"
+	}
+	operation := strings.TrimSpace(e.Operation)
+	if operation == "" {
+		operation = "unknown"
+	}
+	parts := []string{"deliverable command failed (" + operation + ")"}
+	if status := strings.TrimSpace(e.Status); status != "" {
+		parts = append(parts, "status="+status)
+	}
+	if arguments := strings.TrimSpace(e.Arguments); arguments != "" && !strings.EqualFold(arguments, "null") {
+		parts = append(parts, "arguments="+arguments)
+	}
+	if message := strings.TrimSpace(e.Message); message != "" && !strings.EqualFold(message, "null") {
+		parts = append(parts, "message="+message)
+	}
+	if body := strings.TrimSpace(e.Body); body != "" && !strings.EqualFold(body, "null") && body != strings.TrimSpace(e.Message) {
+		parts = append(parts, "response="+body)
+	}
+	if len(parts) == 1 {
+		parts = append(parts, "detail=no error detail returned")
+	}
+	return strings.Join(parts, ": ")
+}
+
+func (e *DeliverableCommandError) BackendErrorBody() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Body)
+}
+
+func (e *DeliverableCommandError) BackendErrorMessage() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
+}
+
+type DeliverableRecoveryError struct {
+	Branch string
+	Err    error
+}
+
+func (e *DeliverableRecoveryError) Error() string {
+	if e == nil {
+		return ErrDeliverableRecoveryExhausted.Error()
+	}
+	message := ErrDeliverableRecoveryExhausted.Error()
+	if branch := strings.TrimSpace(e.Branch); branch != "" {
+		message += " for pushed branch " + branch
+	}
+	if e.Err != nil {
+		message += ": " + e.Err.Error()
+	}
+	return message
+}
+
+func (e *DeliverableRecoveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *DeliverableRecoveryError) Is(target error) bool {
+	return target == ErrDeliverableRecoveryExhausted
+}
 
 type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
@@ -312,30 +395,31 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	ProjectID           string
-	Issue               connector.Issue
-	Attempt             int
-	WorkAttemptID       int64
-	Mode                string
-	DispatchSourceState string
-	DispatchTargetState string
-	PriorAttempt        PriorAttempt
-	StartedAt           time.Time
-	WorkerHost          string
-	RetryMode           RetryMode
-	ResumeState         store.AgentResumeState
-	SelectorContext     selector.Context
-	OnUsageUpdate       UsageUpdateHandler
-	OnActivityUpdate    AgentActivityUpdateHandler
-	OnOverrideRejected  AgentOverrideRejectionHandler
-	ProgressProbe       SessionProgressProbe
-	Routine             *RoutineRequest
-	Admission           *AdmissionRequest
-	AgentTools          []AgentTool
-	AgentToolHandler    AgentToolHandler
-	AcquireModelPermit  ModelPermitAcquirer
-	MergePrecheck       *MergePrecheck
-	sessionBrake        *sessionBrakeController
+	ProjectID                 string
+	Issue                     connector.Issue
+	Attempt                   int
+	WorkAttemptID             int64
+	Mode                      string
+	DispatchSourceState       string
+	DispatchTargetState       string
+	PriorAttempt              PriorAttempt
+	StartedAt                 time.Time
+	WorkerHost                string
+	RetryMode                 RetryMode
+	ResumeState               store.AgentResumeState
+	SelectorContext           selector.Context
+	OnUsageUpdate             UsageUpdateHandler
+	OnActivityUpdate          AgentActivityUpdateHandler
+	OnOverrideRejected        AgentOverrideRejectionHandler
+	ProgressProbe             SessionProgressProbe
+	Routine                   *RoutineRequest
+	Admission                 *AdmissionRequest
+	AgentTools                []AgentTool
+	AgentToolHandler          AgentToolHandler
+	AcquireModelPermit        ModelPermitAcquirer
+	MergePrecheck             *MergePrecheck
+	sessionBrake              *sessionBrakeController
+	deliverableRecoveryBranch string
 }
 
 type SessionProgressProbe func(context.Context) (string, error)

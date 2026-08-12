@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -39,10 +40,21 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			want:          projectFailureClassSessionTokenCeiling,
 		},
 		{
-			name:          "deliverable command has stable class",
+			name:          "legacy deliverable command names the failing command",
 			err:           errors.New("deliverable command failed (gh pr create): exit status 1"),
 			terminalState: store.WorkAttemptTerminalFailure,
-			want:          projectFailureClassDeliverableCommand,
+			want:          projectFailureClassDeliverableCommand + ":gh pr create",
+		},
+		{
+			name: "structured deliverable command names the failing command",
+			err: &runpkg.DeliverableCommandError{
+				Operation: "codex_apps/github.create_pull_request",
+				Arguments: `{"head":"detent/acme_widgets_18"}`,
+				Status:    "failed",
+				Message:   "HTTP 503: unavailable",
+			},
+			terminalState: store.WorkAttemptTerminalFailure,
+			want:          projectFailureClassDeliverableCommand + ":codex_apps/github.create_pull_request",
 		},
 		{
 			name:          "backend body is hashed",
