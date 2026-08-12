@@ -10,6 +10,8 @@
 #   github_login: null
 #   # identity.ownership_mode | type: string | default: none | required: No | validation: identity.owner_field must be blank when identity.ownership_mode is assignee; must be one of assignee, field
 #   ownership_mode: null
+#   # identity.assignee_required | type: boolean | default: false | required: No | validation: None
+#   assignee_required: false
 #   # identity.owner_field | type: string | default: none | required: No | validation: must be blank when identity.ownership_mode is assignee
 #   owner_field: null
 # # active_hours | type: object | default: see child fields | required: Conditional | validation: .timezone: is required when active_hours is set; .timezone: must be a valid IANA timezone; .windows: must contain at least one recurring window

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -252,6 +253,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
+	cfg.Identity.AssigneeRequired = true
 	cfg.Tracker.Authorization = selector.Selector{
 		AssigneeIn: []string{"@me"},
 	}
@@ -370,6 +372,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
 		t.Fatalf("Claiming.OwnershipMode = %q, want assignee", got.Claiming.OwnershipMode)
+	}
+	if !got.Claiming.AssigneeRequired {
+		t.Fatal("Claiming.AssigneeRequired = false, want true")
 	}
 	if got.Claiming.Owner != "release-captain" {
 		t.Fatalf("Claiming.Owner = %q, want release-captain", got.Claiming.Owner)
@@ -1269,12 +1274,14 @@ func TestDispatchPlanOwnershipEligibility(t *testing.T) {
 	tests := []struct {
 		name          string
 		ownershipMode string
+		assigneeGate  bool
 		assignees     []string
 		wantDispatch  bool
 		wantAttention bool
 	}{
-		{name: "assignee present dispatches", ownershipMode: workflowconfig.IdentityOwnershipAssignee, assignees: []string{"operator"}, wantDispatch: true},
-		{name: "assignee absent surfaces", ownershipMode: workflowconfig.IdentityOwnershipAssignee, wantAttention: true},
+		{name: "upgrade grace dispatches unassigned issue", ownershipMode: workflowconfig.IdentityOwnershipAssignee, wantDispatch: true},
+		{name: "acknowledged rule blocks unassigned issue", ownershipMode: workflowconfig.IdentityOwnershipAssignee, assigneeGate: true, wantAttention: true},
+		{name: "assigned steady state dispatches", ownershipMode: workflowconfig.IdentityOwnershipAssignee, assigneeGate: true, assignees: []string{"operator"}, wantDispatch: true},
 		{name: "assignee absent in field mode dispatches", ownershipMode: workflowconfig.IdentityOwnershipField, wantDispatch: true},
 	}
 
@@ -1287,8 +1294,9 @@ func TestDispatchPlanOwnershipEligibility(t *testing.T) {
 				ActiveStates:        []string{"Todo"},
 				TerminalStates:      []string{"Done"},
 				Claiming: ClaimingConfig{
-					OwnershipSet:  true,
-					OwnershipMode: tt.ownershipMode,
+					OwnershipSet:     true,
+					OwnershipMode:    tt.ownershipMode,
+					AssigneeRequired: tt.assigneeGate,
 				},
 			})
 			state := newState(cfg)
@@ -1312,6 +1320,62 @@ func TestDispatchPlanOwnershipEligibility(t *testing.T) {
 	}
 }
 
+func TestOwnershipEligibilityStartupLogOncePerProject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		enforced    bool
+		wantMessage string
+	}{
+		{name: "upgrade grace", wantMessage: "ownership eligibility compatibility grace active"},
+		{name: "acknowledged enforcement", enforced: true, wantMessage: "ownership eligibility enforcement active"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			cfg := normalizeConfig(Config{
+				Project:        scheduler.ProjectCandidate{ID: "detent.build"},
+				ActiveStates:   []string{"Todo"},
+				TerminalStates: []string{"Done"},
+				Claiming: ClaimingConfig{
+					OwnershipSet:     true,
+					OwnershipMode:    workflowconfig.IdentityOwnershipAssignee,
+					AssigneeRequired: tt.enforced,
+				},
+			})
+			orch := Orchestrator{
+				cfg:       cfg,
+				projectID: "detent.build",
+				logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			issue := dispatchTestIssue("issue-10", "Todo")
+
+			orch.logOwnershipEligibilityStartup(newDispatchPlanner(cfg), []connector.Issue{issue})
+			orch.logOwnershipEligibilityStartup(newDispatchPlanner(cfg), []connector.Issue{issue})
+
+			output := logs.String()
+			if got := strings.Count(output, tt.wantMessage); got != 1 {
+				t.Fatalf("startup log count = %d, want 1; logs = %q", got, output)
+			}
+			for _, want := range []string{
+				"project_id=detent.build",
+				"config_key=identity.assignee_required",
+				fmt.Sprintf("enforced=%t", tt.enforced),
+				"blocked_issue_count=1",
+				"affected_issues=digitaldrywood/detent#issue-10",
+			} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("startup log = %q, want %q", output, want)
+				}
+			}
+		})
+	}
+}
+
 func TestOwnershipAttentionEscalatesOnce(t *testing.T) {
 	t.Parallel()
 
@@ -1321,8 +1385,9 @@ func TestOwnershipAttentionEscalatesOnce(t *testing.T) {
 		ActiveStates:        []string{"Todo"},
 		TerminalStates:      []string{"Done"},
 		Claiming: ClaimingConfig{
-			OwnershipSet:  true,
-			OwnershipMode: workflowconfig.IdentityOwnershipAssignee,
+			OwnershipSet:     true,
+			OwnershipMode:    workflowconfig.IdentityOwnershipAssignee,
+			AssigneeRequired: true,
 		},
 		Staleness: staleness.Config{RepeatedDecisionCount: 3},
 	})

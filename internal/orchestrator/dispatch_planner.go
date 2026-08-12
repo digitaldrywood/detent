@@ -759,6 +759,10 @@ func (p dispatchPlanner) authorized(issue connector.Issue) bool {
 }
 
 func (p dispatchPlanner) needsAssignee(issue connector.Issue) bool {
+	return p.cfg.Claiming.AssigneeRequired && p.assigneeEligibilityApplies(issue)
+}
+
+func (p dispatchPlanner) assigneeEligibilityApplies(issue connector.Issue) bool {
 	if !p.cfg.Claiming.OwnershipSet || p.cfg.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
 		return false
 	}
@@ -771,6 +775,17 @@ func (p dispatchPlanner) needsAssignee(issue connector.Issue) bool {
 		}
 	}
 	return true
+}
+
+func (p dispatchPlanner) assigneeEligibilityCandidates(issues []connector.Issue) []connector.Issue {
+	candidates := make([]connector.Issue, 0)
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" || !validCandidate(issue) || !stateIn(issue.State, p.cfg.ActiveStates) || stateIn(issue.State, p.cfg.TerminalStates) || !p.authorized(issue) || !p.assigneeEligibilityApplies(issue) {
+			continue
+		}
+		candidates = append(candidates, cloneIssue(issue))
+	}
+	return candidates
 }
 
 func (p dispatchPlanner) trackOwnershipAttentionCandidates(state *State, issues []connector.Issue, now time.Time) {

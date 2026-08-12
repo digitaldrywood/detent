@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -134,6 +135,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
+	o.logOwnershipEligibilityStartup(planner, issues)
 	var lastDispatchFailure string
 	decisions := make([]dispatchPlanDecision, 0, len(issues))
 	outcomes := make(map[string]dispatchIssueOutcome, len(issues))
@@ -182,6 +184,35 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		},
 	})
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
+}
+
+func (o *Orchestrator) logOwnershipEligibilityStartup(planner dispatchPlanner, issues []connector.Issue) {
+	if o == nil || o.ownershipStartupLogged || o.logger == nil || !planner.cfg.Claiming.OwnershipSet || planner.cfg.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
+		return
+	}
+	o.ownershipStartupLogged = true
+	candidates := planner.assigneeEligibilityCandidates(issues)
+	identifiers := make([]string, 0, len(candidates))
+	for _, issue := range candidates {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if identifier == "" {
+			identifier = strings.TrimSpace(issue.ID)
+		}
+		identifiers = append(identifiers, identifier)
+	}
+	message := "ownership eligibility compatibility grace active"
+	if planner.cfg.Claiming.AssigneeRequired {
+		message = "ownership eligibility enforcement active"
+	}
+	o.logger.Warn(
+		message,
+		"project_id", strings.TrimSpace(o.projectID),
+		"config_key", "identity.assignee_required",
+		"ownership_mode", workflowconfig.IdentityOwnershipAssignee,
+		"enforced", planner.cfg.Claiming.AssigneeRequired,
+		"blocked_issue_count", len(candidates),
+		"affected_issues", strings.Join(identifiers, ","),
+	)
 }
 
 func dispatchFailureRetryReason(reason string) string {

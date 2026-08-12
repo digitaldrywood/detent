@@ -137,6 +137,7 @@ type ClaimingConfig struct {
 	Enabled           bool
 	OwnershipSet      bool
 	OwnershipMode     string
+	AssigneeRequired  bool
 	Owner             string
 	AssigneeLogin     string
 	OwnerField        string
@@ -242,6 +243,7 @@ type Orchestrator struct {
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool
+	ownershipStartupLogged  bool
 	dispatchStartMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
@@ -876,6 +878,10 @@ func (o *Orchestrator) dispatchQuiesced() bool {
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
 	cfg := normalizeConfig(update.Config)
+	if o.cfg.Claiming.OwnershipMode != cfg.Claiming.OwnershipMode ||
+		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
+		o.ownershipStartupLogged = false
+	}
 	o.cfg = cfg
 	now := time.Now
 	if o.now != nil {
