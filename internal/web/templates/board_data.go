@@ -866,7 +866,7 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 	retryRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
 	reviewRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
 	for _, row := range data.Snapshot.Blocked {
-		if boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+		if boardBlockedWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
 			continue
 		}
 		if StopRunRetryDialogPath(row, data.ProjectID) != "" {
@@ -993,8 +993,8 @@ func boardMoreBlockedLabel(count int) string {
 }
 
 func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
-	detail := boardBlockedDetail(row.Source, row.RecoveryReason, row.Error)
-	if detail == "" && boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+	detail := boardBlockedDetail(row.Source, row.RecoveryAction, row.RecoveryReason, row.RecoveryRemedy, row.Error)
+	if detail == "" && boardBlockedWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
 		if boardBlockedDependencyWaiting(row.Source, row.RecoveryReason, row.Error, row.BlockedBy) {
 			detail = "dependency not ready"
 		} else {
@@ -1254,10 +1254,10 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	if view.Done || view.Terminal {
 		return primitives.KindNeutral, "", false
 	}
-	if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason) {
+	if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) {
 		return primitives.KindWarn, boardCardBlockedWaitingText(card), true
 	}
-	if reason := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason); reason != "" {
+	if reason := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason); reason != "" {
 		return primitives.KindErr, "needs review - " + reason, true
 	}
 	if label := strings.TrimSpace(card.AttentionLabel); label != "" {
@@ -1319,7 +1319,7 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 	if len(card.Blockers) > 0 {
 		return "waiting - " + card.Blockers[0]
 	}
-	if detail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason); detail != "" {
+	if detail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason); detail != "" {
 		return "waiting - " + detail
 	}
 	if boardBlockedDependencyWaiting(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason, nil) {
@@ -1328,7 +1328,13 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 	return "waiting - project status"
 }
 
-func boardBlockedWaiting(source telemetry.BlockedSource, recoveryReason string, reason string) bool {
+func boardBlockedWaiting(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(recoveryAction)) {
+	case "hold":
+		return false
+	case "defer":
+		return true
+	}
 	if source == telemetry.BlockedSourceOperatorStop && !operatorStopTransitionFailed(telemetry.Blocked{Source: source, RecoveryReason: recoveryReason, Error: reason}) {
 		return true
 	}
@@ -1373,7 +1379,17 @@ func boardBlockedLegacyWaitingReason(reason string) bool {
 	return strings.HasPrefix(strings.ToLower(reason), "depends on ")
 }
 
-func boardBlockedDetail(source telemetry.BlockedSource, recoveryReason string, reason string) string {
+func boardBlockedDetail(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, recoveryRemedy string, reason string) string {
+	if strings.EqualFold(strings.TrimSpace(recoveryAction), "hold") {
+		detail := strings.ReplaceAll(strings.TrimSpace(recoveryReason), "_", " ")
+		if detail == "" {
+			detail = "blocked recovery held"
+		}
+		if remedy := strings.TrimSpace(recoveryRemedy); remedy != "" {
+			detail += " — " + remedy
+		}
+		return detail
+	}
 	reason = strings.TrimSpace(reason)
 	switch reason {
 	case "blocked by non-terminal dependency":

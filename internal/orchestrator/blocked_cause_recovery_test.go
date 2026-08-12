@@ -117,6 +117,112 @@ func TestRecoverBlockedIssuesLogsDecisionForEveryBlockedIssue(t *testing.T) {
 	}
 }
 
+func TestRecoverBlockedIssuesSurfacesInvalidWorkpadHold(t *testing.T) {
+	t.Parallel()
+
+	invalid := dependencyAutoUnblockIssue("issue-invalid-workpad", blockedStatusState)
+	invalid.WorkpadSignal = &workpad.Signal{
+		Source:  workpad.SourceStructured,
+		Status:  workpad.StatusBlocked,
+		Invalid: &workpad.Invalid{Message: "status must be in_progress, blocked, or complete"},
+	}
+	deferred := dependencyAutoUnblockIssue("issue-deferred", blockedStatusState)
+	deferred.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#999"}}
+	root := cloneIssue(invalid)
+	root.ID = "issue-root"
+	root.Identifier = "digitaldrywood/detent#6"
+	middle := dependencyAutoUnblockIssue("issue-middle", blockedStatusState)
+	middle.Identifier = "digitaldrywood/detent#17"
+	middle.BlockedBy = []connector.BlockedRef{{ID: root.ID, Identifier: root.Identifier}}
+	leaf := dependencyAutoUnblockIssue("issue-leaf", blockedStatusState)
+	leaf.Identifier = "digitaldrywood/detent#18"
+	leaf.BlockedBy = []connector.BlockedRef{{ID: middle.ID, Identifier: middle.Identifier}}
+
+	tests := []struct {
+		name             string
+		issues           []connector.Issue
+		resolvedBlockers []connector.Issue
+		assert           func(*testing.T, State)
+	}{
+		{
+			name:   "invalid workpad hold needs human attention",
+			issues: []connector.Issue{invalid},
+			assert: func(t *testing.T, state State) {
+				entry := state.Blocked[invalid.ID]
+				if entry.RecoveryAction != "hold" || entry.RecoveryReason != "invalid_workpad_signal" || !entry.NeedsHumanAttention {
+					t.Fatalf("blocked recovery = %#v", entry)
+				}
+				if entry.RecoveryReachability != "held" || !entry.RecoveryIntentResumable || entry.Recovery == nil || entry.Recovery.Resumable {
+					t.Fatalf("recovery reachability = %#v", entry)
+				}
+				if !strings.Contains(entry.RecoveryRemedy, "fresh-work lane") || !strings.Contains(entry.RecoveryRemedy, "no pull request") {
+					t.Fatalf("RecoveryRemedy = %q", entry.RecoveryRemedy)
+				}
+				row := state.Snapshot(time.Date(2026, 8, 12, 12, 1, 0, 0, time.UTC)).Blocked[0]
+				if row.RecoveryAction != "hold" || row.RecoveryReachability != "held" || !row.NeedsHumanAttention || row.RecoveryRemedy != entry.RecoveryRemedy {
+					t.Fatalf("snapshot blocked recovery = %#v", row)
+				}
+			},
+		},
+		{
+			name:             "dependency defer stays machine-resolvable",
+			issues:           []connector.Issue{deferred},
+			resolvedBlockers: []connector.Issue{dependencyAutoUnblockIssue("issue-999", "In Progress")},
+			assert: func(t *testing.T, state State) {
+				entry := state.Blocked[deferred.ID]
+				if entry.RecoveryAction != "defer" || entry.RecoveryReason != "dependency_recovery" || entry.NeedsHumanAttention {
+					t.Fatalf("blocked recovery = %#v", entry)
+				}
+				if entry.RecoveryReachability != "deferred" || !entry.RecoveryIntentResumable {
+					t.Fatalf("recovery reachability = %#v", entry)
+				}
+			},
+		},
+		{
+			name:             "dependency chain attributes held root",
+			issues:           []connector.Issue{leaf, middle, root},
+			resolvedBlockers: []connector.Issue{middle, root},
+			assert: func(t *testing.T, state State) {
+				for _, issueID := range []string{leaf.ID, middle.ID} {
+					entry := state.Blocked[issueID]
+					if entry.NeedsHumanAttention || entry.RecoveryAction != "defer" || entry.RecoveryRoot == nil {
+						t.Fatalf("Blocked[%q] = %#v", issueID, entry)
+					}
+					if entry.RecoveryRoot.IssueIdentifier != root.Identifier || entry.RecoveryRoot.Reason != "invalid_workpad_signal" {
+						t.Fatalf("Blocked[%q].RecoveryRoot = %#v", issueID, entry.RecoveryRoot)
+					}
+				}
+				rows := state.Snapshot(time.Date(2026, 8, 12, 12, 1, 0, 0, time.UTC)).Blocked
+				for _, row := range rows {
+					if row.ID == leaf.ID && (row.RecoveryRoot == nil || row.RecoveryRoot.IssueIdentifier != root.Identifier) {
+						t.Fatalf("leaf snapshot root = %#v", row.RecoveryRoot)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &dependencyAutoUnblockConnector{blockers: tt.resolvedBlockers}
+			orch := blockedCauseTestOrchestrator(tracker)
+			state := newState(orch.cfg)
+			for _, issue := range tt.issues {
+				state.Blocked[issue.ID] = Blocked{
+					Issue:    issue,
+					Source:   BlockedSourceProjectStatus,
+					Recovery: &workflowLaneBlockedRecoveryMetadata{Resumable: true},
+				}
+			}
+
+			orch.recoverBlockedIssues(t.Context(), &state, tt.issues, time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC))
+			tt.assert(t, state)
+		})
+	}
+}
+
 func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) {
 	t.Parallel()
 
@@ -241,6 +347,35 @@ func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {
 	}
 	if blockedCauseFingerprint(original) == blockedCauseFingerprint(withOverride) {
 		t.Fatal("recovery-affecting label did not change the cause fingerprint")
+	}
+}
+
+func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
+	t.Parallel()
+
+	issue := dependencyAutoUnblockIssue("issue-resume-intent", blockedStatusState)
+	orch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+	orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{
+		WorkspacePresent: true,
+		WorkspaceFiles:   1,
+		WorkspaceStatus:  "present",
+		Health:           "ready",
+	}}
+	metadata := orch.newBlockedRecoveryMetadata(
+		t.Context(),
+		issue,
+		RunModeImplement,
+		noProgressLimitReason,
+		blockedRecoveryPredicateFingerprintChange,
+		"Todo",
+		DiffStats{},
+	)
+	raw := workflowLaneMetadataJSON(issue, metadata)
+	if !strings.Contains(raw, `"intent_resumable":true`) {
+		t.Fatalf("metadata = %s", raw)
+	}
+	if strings.Contains(raw, `"resumable":true`) {
+		t.Fatalf("metadata retains ambiguous resumable field: %s", raw)
 	}
 }
 

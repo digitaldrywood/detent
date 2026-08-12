@@ -114,7 +114,7 @@ func (o *Orchestrator) handleSessionBrake(
 			CauseFingerprint: brake.CauseFingerprint,
 			TargetState:      targetState,
 			RunMode:          running.Mode,
-			Resumable:        resumable,
+			IntentResumable:  resumable,
 		},
 	}
 	if err := o.updateIssueStateByIDStrictWithMetadata(

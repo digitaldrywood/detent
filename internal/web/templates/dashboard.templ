@@ -3903,7 +3903,7 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 										</div>
 									</td>
 									<td class="px-3 py-4 align-top text-sec">
-										<span class="line-clamp-3">{ rowError(row.Error) }</span>
+										<span class="line-clamp-3">{ blockedRecoverySummary(row) }</span>
 									</td>
 								</tr>
 							}
@@ -3933,7 +3933,7 @@ templ blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) {
 			<span class="mt-1 block font-mono text-xs text-sec">{ blockedLastUpdateMeta(row) }</span>
 		</div>
 		<div class="mt-3 rounded-md bg-elev/60 p-3 text-sm text-sec">
-			<span class="line-clamp-4">{ rowError(row.Error) }</span>
+			<span class="line-clamp-4">{ blockedRecoverySummary(row) }</span>
 		</div>
 		<div class="mt-3">
 			@sessionCopyButton(row.SessionID)
