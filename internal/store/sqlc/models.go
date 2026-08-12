@@ -227,11 +227,6 @@ type MergeRequiredCheckStreak struct {
 	UpdatedAt                 string `json:"updated_at"`
 }
 
-type ProvenanceAttributionBoundary struct {
-	ID               int64  `json:"id"`
-	TrustworthySince string `json:"trustworthy_since"`
-}
-
 type ProjectDispatchStatus struct {
 	ProjectID            string         `json:"project_id"`
 	CandidateCount       int64          `json:"candidate_count"`
@@ -242,6 +237,11 @@ type ProjectDispatchStatus struct {
 	AllSkippedSince      sql.NullString `json:"all_skipped_since"`
 	LastSelectedAt       sql.NullString `json:"last_selected_at"`
 	ObservedAt           string         `json:"observed_at"`
+}
+
+type ProvenanceAttributionBoundary struct {
+	ID               int64  `json:"id"`
+	TrustworthySince string `json:"trustworthy_since"`
 }
 
 type RetroRun struct {

@@ -120,8 +120,8 @@ func TestProjectDispatchStatusMigrationBackfillsLastSelection(t *testing.T) {
 	`, selectedAt, observedAt); err != nil {
 		t.Fatalf("seed scheduler_decisions error = %v", err)
 	}
-	if err := goose.UpToContext(ctx, db, "migrations", 30); err != nil {
-		t.Fatalf("goose.UpToContext(30) error = %v", err)
+	if err := goose.UpToContext(ctx, db, "migrations", 32); err != nil {
+		t.Fatalf("goose.UpToContext(32) error = %v", err)
 	}
 
 	var gotSelectedAt string
