@@ -1616,11 +1616,13 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 			ID               string          `json:"id"`
 			Type             string          `json:"type"`
 			Command          string          `json:"command"`
+			Arguments        json.RawMessage `json:"arguments"`
 			Status           string          `json:"status"`
 			AggregatedOutput string          `json:"aggregatedOutput"`
 			Server           string          `json:"server"`
 			Tool             string          `json:"tool"`
 			Result           json.RawMessage `json:"result"`
+			Error            json.RawMessage `json:"error"`
 			Changes          json.RawMessage `json:"changes"`
 			ContentItems     json.RawMessage `json:"contentItems"`
 		} `json:"item"`
@@ -1635,29 +1637,61 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 	if params.Item.Server != "" && params.Item.Tool != "" {
 		tool = params.Item.Server + "/" + params.Item.Tool
 	}
-	content := strings.TrimSpace(params.Item.Command)
+	content := firstNonBlank(
+		params.Item.Command,
+		compactNonNullJSON(params.Item.Arguments),
+	)
+	errorBody := ""
+	errorMessage := ""
 	updateType := UpdateToolStarted
 	if msg.Method == "item/completed" {
 		updateType = UpdateToolCompleted
+		errorBody = compactNonNullJSON(params.Item.Error)
+		errorMessage = errorMessageFromJSON(params.Item.Error)
+		if failedToolStatus(params.Item.Status) && errorBody == "" {
+			errorBody = firstNonBlank(
+				compactNonNullJSON(params.Item.Result),
+				compactNonNullJSON(params.Item.ContentItems),
+			)
+		}
+		if failedToolStatus(params.Item.Status) && errorMessage == "" {
+			errorMessage = firstNonBlank(
+				errorMessageFromJSON(params.Item.Result),
+				errorMessageFromJSON(params.Item.ContentItems),
+			)
+		}
 		content = firstNonBlank(
 			params.Item.AggregatedOutput,
-			compactJSON(params.Item.Result),
-			compactJSON(params.Item.ContentItems),
-			compactJSON(params.Item.Changes),
+			errorMessage,
+			compactNonNullJSON(params.Item.Result),
+			compactNonNullJSON(params.Item.ContentItems),
+			compactNonNullJSON(params.Item.Changes),
 			params.Item.Command,
+			params.Item.Status,
 		)
 	}
 	return Update{
-		Type:     updateType,
-		Method:   msg.Method,
-		ThreadID: params.ThreadID,
-		TurnID:   params.TurnID,
-		ItemID:   params.Item.ID,
-		Tool:     tool,
-		Delta:    content,
-		Status:   params.Item.Status,
-		Payload:  rawPayload(msg),
+		Type:                updateType,
+		Method:              msg.Method,
+		ThreadID:            params.ThreadID,
+		TurnID:              params.TurnID,
+		ItemID:              params.Item.ID,
+		Tool:                tool,
+		Delta:               content,
+		Status:              params.Item.Status,
+		BackendErrorBody:    errorBody,
+		BackendErrorMessage: errorMessage,
+		Payload:             rawPayload(msg),
 	}, true, nil
+}
+
+func failedToolStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error", "cancelled", "canceled", "timed_out":
+		return true
+	default:
+		return false
+	}
 }
 
 func toolItemType(value string) bool {
@@ -1729,6 +1763,14 @@ func compactJSON(raw json.RawMessage) string {
 		return string(raw)
 	}
 	return buf.String()
+}
+
+func compactNonNullJSON(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	return compactJSON(raw)
 }
 
 func errorMessageFromJSON(raw json.RawMessage) string {

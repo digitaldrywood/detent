@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +122,65 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 			}
 			if got := terminalRetryMetadataPushed(attempts.completions[0].WorkerMetadataJSON); got != tt.result.PullRequestHeadPushed {
 				t.Fatalf("persisted work_product_pushed = %v, want %v", got, tt.result.PullRequestHeadPushed)
+			}
+		})
+	}
+}
+
+func TestHandleRunResultParksUnrecoverableDeliverableWithBranch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		branch string
+	}{
+		{name: "named pushed branch", branch: "detent/acme_widgets_18"},
+		{name: "fallback workspace branch", branch: "detent/acme_widgets_19"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
+			issue := terminalRetryTestIssue(tt.name)
+			issue.BranchName = tt.branch
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+			attempts := &terminalRetryWorkAttemptStore{}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{
+				Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement,
+				StartedAt: now.Add(-time.Minute), WorkProductPushed: true, WorkspacePath: "/work/" + tt.branch,
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			commandErr := &runpkg.DeliverableCommandError{
+				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + tt.branch + `"}`,
+				Status: "failed", Message: "HTTP 503: unavailable",
+			}
+
+			o.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				Result:      runpkg.RunResult{FinalState: runpkg.FinalStateNeedsHumanAttention, PullRequestHeadPushed: true},
+				Err:         &runpkg.DeliverableRecoveryError{Branch: tt.branch, Err: commandErr},
+				CompletedAt: now,
+			})
+
+			if _, retrying := state.Retry[issue.ID]; retrying {
+				t.Fatalf("Retry[%q] present after unrecoverable PR delivery", issue.ID)
+			}
+			blocked, ok := state.Blocked[issue.ID]
+			if !ok || blocked.Issue.State != blockedStatusState || !strings.Contains(blocked.Reason, tt.branch) || !strings.Contains(blocked.RecoveryReason, tt.branch) {
+				t.Fatalf("Blocked[%q] = %#v, want needs-human recovery naming branch %q", issue.ID, blocked, tt.branch)
+			}
+			if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
+				t.Fatalf("state transitions = %v, want [%s]", got, blockedStatusState)
+			}
+			if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], tt.branch) || !strings.Contains(tracker.comments[0], "needs human attention") {
+				t.Fatalf("comments = %#v, want needs-human message naming branch", tracker.comments)
+			}
+			if len(attempts.completions) != 1 || attempts.completions[0].Phase != "blocked" || !strings.Contains(attempts.completions[0].StatusMessage, tt.branch) {
+				t.Fatalf("work attempt completions = %#v, want blocked phase naming branch", attempts.completions)
 			}
 		})
 	}
@@ -267,6 +327,7 @@ func terminalRetryTestIssueWithPullRequest(suffix string) connector.Issue {
 type terminalRetryConnector struct {
 	issues      map[string]connector.Issue
 	transitions []string
+	comments    []string
 }
 
 func (c *terminalRetryConnector) Name() string { return "terminal-retry" }
@@ -289,7 +350,10 @@ func (c *terminalRetryConnector) FetchIssueStatesByIDs(_ context.Context, ids []
 	return issues, nil
 }
 
-func (c *terminalRetryConnector) CreateComment(context.Context, string, string) error { return nil }
+func (c *terminalRetryConnector) CreateComment(_ context.Context, _ string, body string) error {
+	c.comments = append(c.comments, body)
+	return nil
+}
 
 func (c *terminalRetryConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
 	issue := c.issues[issueID]

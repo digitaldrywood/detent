@@ -2585,6 +2585,28 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotAttributesDeliverableFailureBreakerCommand(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
+		ProjectID:     "detent.build",
+		Class:         "deliverable_command_failure:codex_apps/github.create_pull_request",
+		Count:         5,
+		WindowSeconds: 3600,
+		ResumeAt:      data.Snapshot.GeneratedAt.Add(time.Hour),
+	}}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		"deliverable command failure:codex apps/github.create pull request",
+		"deliverable_command_failure:codex_apps/github.create_pull_request",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("failure breaker attribution missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardSnapshotHidesRampActiveDispatchRecovery(t *testing.T) {
 	t.Parallel()
 
