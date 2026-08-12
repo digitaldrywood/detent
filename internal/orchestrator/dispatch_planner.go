@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -61,6 +62,7 @@ func (p dispatchPlanner) plan(
 	hooks dispatchPlanHooks,
 ) DispatchPlan {
 	state.ensureInitialized(p.cfg)
+	p.trackOwnershipAttentionCandidates(state, candidates, now)
 
 	plannedCandidates := cloneIssues(candidates)
 	rankingIssues := cloneIssues(candidates)
@@ -89,6 +91,9 @@ func (p dispatchPlanner) plan(
 	continuations := 0
 	for index, issue := range plannedCandidates {
 		queuePosition := index + 1
+		if correctableDispatchEscalated(state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
+			continue
+		}
 		if mergePriority.stickyIssueID != "" && mergeWorkerIssue(issue) && strings.TrimSpace(issue.ID) != mergePriority.stickyIssueID {
 			logDecision(dispatchPlanDecision{
 				Issue:         issue,
@@ -544,33 +549,34 @@ type dispatchableDecision struct {
 }
 
 const (
-	dispatchSkipInvalidCandidate         = "invalid_candidate"
-	dispatchSkipInactiveState            = "inactive_state"
-	dispatchSkipTerminalState            = "terminal_state"
-	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
-	dispatchSkipAwaitingGate             = "awaiting_gate"
-	dispatchSkipArtifactGateWaitStatus   = "artifact_gate_wait_status"
-	dispatchSkipMergedPullRequest        = "merged_pull_request_reconciliation_pending"
-	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
-	dispatchSkipUnauthorized             = "unauthorized"
-	dispatchSkipBlockedByDependency      = "blocked_by_dependency"
-	dispatchSkipAlreadyRunning           = "already_running"
-	dispatchSkipRetryPending             = "retry_pending"
-	dispatchSkipAlreadyClaimed           = "already_claimed"
-	dispatchSkipBlocked                  = "blocked"
-	dispatchSkipBudgetCooldown           = "budget_cooldown"
-	dispatchSkipBudgetHardHold           = "budget_hard_hold"
-	dispatchSkipLocalSlotUnavailable     = "local_slot_unavailable"
-	dispatchSkipWorkerHostUnavailable    = "worker_host_unavailable"
-	dispatchSkipGlobalCapacityFull       = "global_capacity_full"
-	dispatchSkipHydrationFailed          = "hydrate_failed"
-	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
-	dispatchSkipMergeFairnessReserved    = "merge_fairness_head_reserved"
-	dispatchSkipGitHubRESTCapacity       = "github_rest_capacity_paused"
-	dispatchSkipCIUnavailable            = "ci_unavailable"
-	dispatchSkipProjectFailureBreaker    = projectFailureBreakerDispatchPaused
-	dispatchSkipRateWindowBackpressure   = "provider_rate_window_backpressure"
-	dispatchSkipCurrentHeadCIWait        = "current_head_ci_wait"
+	dispatchSkipInvalidCandidate          = "invalid_candidate"
+	dispatchSkipInactiveState             = "inactive_state"
+	dispatchSkipTerminalState             = "terminal_state"
+	dispatchSkipPullRequestHydration      = "pull_request_hydration_unavailable"
+	dispatchSkipAwaitingGate              = "awaiting_gate"
+	dispatchSkipArtifactGateWaitStatus    = "artifact_gate_wait_status"
+	dispatchSkipMergedPullRequest         = "merged_pull_request_reconciliation_pending"
+	dispatchSkipDuplicatePullRequest      = "duplicate_pull_request_work"
+	dispatchSkipUnauthorized              = "unauthorized"
+	dispatchSkipOwnershipAssigneeRequired = "ownership_assignee_required"
+	dispatchSkipBlockedByDependency       = "blocked_by_dependency"
+	dispatchSkipAlreadyRunning            = "already_running"
+	dispatchSkipRetryPending              = "retry_pending"
+	dispatchSkipAlreadyClaimed            = "already_claimed"
+	dispatchSkipBlocked                   = "blocked"
+	dispatchSkipBudgetCooldown            = "budget_cooldown"
+	dispatchSkipBudgetHardHold            = "budget_hard_hold"
+	dispatchSkipLocalSlotUnavailable      = "local_slot_unavailable"
+	dispatchSkipWorkerHostUnavailable     = "worker_host_unavailable"
+	dispatchSkipGlobalCapacityFull        = "global_capacity_full"
+	dispatchSkipHydrationFailed           = "hydrate_failed"
+	dispatchSkipDispatchBackoffCancelled  = "dispatch_backoff_cancelled"
+	dispatchSkipMergeFairnessReserved     = "merge_fairness_head_reserved"
+	dispatchSkipGitHubRESTCapacity        = "github_rest_capacity_paused"
+	dispatchSkipCIUnavailable             = "ci_unavailable"
+	dispatchSkipProjectFailureBreaker     = projectFailureBreakerDispatchPaused
+	dispatchSkipRateWindowBackpressure    = "provider_rate_window_backpressure"
+	dispatchSkipCurrentHeadCIWait         = "current_head_ci_wait"
 )
 
 func (p dispatchPlanner) previewCurrentHeadCIWait(
@@ -657,6 +663,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if !p.authorized(issue) {
 		return dispatchableDecision{reason: dispatchSkipUnauthorized}
+	}
+	if p.needsAssignee(issue) {
+		return dispatchableDecision{reason: dispatchSkipOwnershipAssigneeRequired}
 	}
 	if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
@@ -747,6 +756,54 @@ func (p dispatchPlanner) authorized(issue connector.Issue) bool {
 		return true
 	}
 	return selector.Match(issue, p.cfg.Authorization, p.cfg.SelectorContext)
+}
+
+func (p dispatchPlanner) needsAssignee(issue connector.Issue) bool {
+	if !p.cfg.Claiming.OwnershipSet || p.cfg.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
+		return false
+	}
+	if strings.TrimSpace(issue.AssigneeID) != "" {
+		return false
+	}
+	for _, assignee := range issue.Assignees {
+		if strings.TrimSpace(assignee) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (p dispatchPlanner) trackOwnershipAttentionCandidates(state *State, issues []connector.Issue, now time.Time) {
+	seen := make(map[string]struct{})
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" || !validCandidate(issue) || !stateIn(issue.State, p.cfg.ActiveStates) || stateIn(issue.State, p.cfg.TerminalStates) || !p.authorized(issue) || !p.needsAssignee(issue) {
+			continue
+		}
+		seen[issue.ID] = struct{}{}
+		existing, ok := state.Blocked[issue.ID]
+		if ok && existing.Source == BlockedSourceOwnership {
+			existing.Issue = cloneIssue(issue)
+			state.Blocked[issue.ID] = existing
+			continue
+		}
+		state.Blocked[issue.ID] = Blocked{
+			Issue:          cloneIssue(issue),
+			Reason:         "issue needs an assignee under ownership_mode: assignee",
+			RecoveryReason: "human_blocker",
+			BlockedAt:      now,
+			Source:         BlockedSourceOwnership,
+		}
+	}
+	for issueID, blocked := range state.Blocked {
+		if blocked.Source != BlockedSourceOwnership {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		delete(state.Blocked, issueID)
+		delete(state.DispatchEscalations, correctableDispatchEscalationKey(issueID, dispatchSkipOwnershipAssigneeRequired))
+	}
 }
 
 func (p dispatchPlanner) slotsAvailableForModelRequirement(

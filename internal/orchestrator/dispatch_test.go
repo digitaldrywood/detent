@@ -20,6 +20,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -363,6 +364,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if !got.Claiming.Enabled {
 		t.Fatal("Claiming.Enabled = false, want true")
+	}
+	if !got.Claiming.OwnershipSet {
+		t.Fatal("Claiming.OwnershipSet = false, want true")
 	}
 	if got.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
 		t.Fatalf("Claiming.OwnershipMode = %q, want assignee", got.Claiming.OwnershipMode)
@@ -1255,6 +1259,138 @@ func TestDispatchableFiltersUnauthorizedCandidates(t *testing.T) {
 				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDispatchPlanOwnershipEligibility(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		ownershipMode string
+		assignees     []string
+		wantDispatch  bool
+		wantAttention bool
+	}{
+		{name: "assignee present dispatches", ownershipMode: workflowconfig.IdentityOwnershipAssignee, assignees: []string{"operator"}, wantDispatch: true},
+		{name: "assignee absent surfaces", ownershipMode: workflowconfig.IdentityOwnershipAssignee, wantAttention: true},
+		{name: "assignee absent in field mode dispatches", ownershipMode: workflowconfig.IdentityOwnershipField, wantDispatch: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Claiming: ClaimingConfig{
+					OwnershipSet:  true,
+					OwnershipMode: tt.ownershipMode,
+				},
+			})
+			state := newState(cfg)
+			issue := dispatchTestIssue("issue-ownership", "Todo")
+			issue.Assignees = append([]string(nil), tt.assignees...)
+
+			plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{})
+			if got := len(plan.Dispatches) == 1; got != tt.wantDispatch {
+				t.Fatalf("dispatch = %t, want %t; plan = %#v", got, tt.wantDispatch, plan)
+			}
+			blocked, gotAttention := state.Blocked[issue.ID]
+			if gotAttention != tt.wantAttention {
+				t.Fatalf("ownership attention = %t, want %t; blocked = %#v", gotAttention, tt.wantAttention, state.Blocked)
+			}
+			if tt.wantAttention {
+				if blocked.RecoveryReason != "human_blocker" || !strings.Contains(blocked.Reason, "needs an assignee") {
+					t.Fatalf("ownership attention = %#v, want human blocker with assignee remedy", blocked)
+				}
+			}
+		})
+	}
+}
+
+func TestOwnershipAttentionEscalatesOnce(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Claiming: ClaimingConfig{
+			OwnershipSet:  true,
+			OwnershipMode: workflowconfig.IdentityOwnershipAssignee,
+		},
+		Staleness: staleness.Config{RepeatedDecisionCount: 3},
+	})
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	issue := dispatchTestIssue("issue-unassigned", "Todo")
+	state.BoardIssues = []connector.Issue{issue}
+
+	for tick := range 10 {
+		newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now.Add(time.Duration(tick)*time.Minute), dispatchPlanHooks{
+			decision: func(decision dispatchPlanDecision) {
+				orch.logDispatchPlanDecision(t.Context(), &state, now.Add(time.Duration(tick)*time.Minute), decision)
+			},
+		})
+	}
+
+	if len(attempts.decisions) != 3 {
+		t.Fatalf("recorded ownership decisions = %d, want threshold 3", len(attempts.decisions))
+	}
+	escalations := 0
+	for _, event := range state.RecentEvents {
+		if event.Event == "scheduler_dispatch_needs_human_attention" {
+			escalations++
+		}
+	}
+	if escalations != 1 {
+		t.Fatalf("ownership escalations = %d, want 1; events = %#v", escalations, state.RecentEvents)
+	}
+	snapshot := state.Snapshot(now.Add(10 * time.Minute))
+	if snapshot.Counts.Blocked != 1 {
+		t.Fatalf("dashboard blocked count = %d, want 1", snapshot.Counts.Blocked)
+	}
+	counts := telemetry.BoardStateCounts(snapshot)
+	if len(counts) != 1 || counts[0].State != "Blocked" || counts[0].Count != 1 {
+		t.Fatalf("dashboard lane counts = %#v, want one Blocked issue", counts)
+	}
+
+	issue.Assignees = []string{"operator"}
+	plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now.Add(11*time.Minute), dispatchPlanHooks{})
+	if len(plan.Dispatches) != 1 {
+		t.Fatalf("dispatches after assignee remedy = %#v, want one", plan.Dispatches)
+	}
+
+	delete(state.Claimed, issue.ID)
+	delete(state.Running, issue.ID)
+	issue.Assignees = nil
+	for tick := range 3 {
+		newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now.Add(time.Duration(12+tick)*time.Minute), dispatchPlanHooks{
+			decision: func(decision dispatchPlanDecision) {
+				orch.logDispatchPlanDecision(t.Context(), &state, now.Add(time.Duration(12+tick)*time.Minute), decision)
+			},
+		})
+		if tick == 0 && correctableDispatchEscalated(&state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
+			t.Fatal("new ownership incident escalated before reaching threshold")
+		}
+	}
+	if len(attempts.decisions) != 6 {
+		t.Fatalf("recorded ownership decisions across incidents = %d, want 6", len(attempts.decisions))
+	}
+	escalations = 0
+	for _, event := range state.RecentEvents {
+		if event.Event == "scheduler_dispatch_needs_human_attention" {
+			escalations++
+		}
+	}
+	if escalations != 2 {
+		t.Fatalf("ownership escalations across two incidents = %d, want 2; events = %#v", escalations, state.RecentEvents)
 	}
 }
 

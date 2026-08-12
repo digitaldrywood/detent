@@ -37,6 +37,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
 	for _, project := range cfg.Projects {
 		project.GlobalActiveHours = cfg.Global.ActiveHours
+		project.Identity = cfg.Global.Identity
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 	}
 
@@ -186,6 +187,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		project.GlobalActiveHours = cfg.Global.ActiveHours
+		project.Identity = cfg.Global.Identity
 		id := doctorProjectID(project)
 		progress := newDoctorCheckProgress()
 		jobs = append(jobs, doctorCheckJob{
@@ -244,6 +246,11 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGlobalGitHubToken(githubToken))
+	if project.Identity.Configured() {
+		identity := project.Identity
+		identity.Normalize()
+		workflow.Config.Identity = identity
+	}
 	workflow.Config.ActiveHours = projectpkg.EffectiveActiveHours(project, workflow.Config.ActiveHours)
 	if err := workflow.Config.Validate(); err != nil {
 		return []doctorCheck{
@@ -342,6 +349,8 @@ func checkDoctorProjectWithProgress(
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		setDoctorCurrentCheck("Project " + id + " issue agent models")
 		checks = append(checks, checkDoctorIssueAgentModels(ctx, id, project, workflow.Config, deps))
+		setDoctorCurrentCheck("Project " + id + " ownership eligibility")
+		checks = append(checks, checkDoctorOwnershipEligibility(ctx, id, project, workflow.Config, deps))
 		setDoctorCurrentCheck("Project " + id + " configured labels")
 		checks = append(checks, checkDoctorConfiguredLabels(ctx, id, project, workflow.Config, deps))
 	}

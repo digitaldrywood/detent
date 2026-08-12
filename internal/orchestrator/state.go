@@ -62,6 +62,7 @@ type State struct {
 	Running                  map[string]Running
 	WorkAttempts             []telemetry.WorkAttempt
 	SchedulerDecisions       []telemetry.SchedulerDecision
+	DispatchEscalations      map[string]time.Time
 	Release                  releasepkg.Status
 	Claimed                  map[string]Claimed
 	Blocked                  map[string]Blocked
@@ -160,6 +161,7 @@ const (
 	BlockedSourceMergeDuration = telemetry.BlockedSourceMergeDuration
 	BlockedSourceProjectStatus = telemetry.BlockedSourceProjectStatus
 	BlockedSourceOperatorStop  = telemetry.BlockedSourceOperatorStop
+	BlockedSourceOwnership     = telemetry.BlockedSourceOwnership
 )
 
 type Blocked struct {
@@ -302,6 +304,7 @@ func newState(cfg Config) State {
 		Running:                  map[string]Running{},
 		Claimed:                  map[string]Claimed{},
 		Blocked:                  map[string]Blocked{},
+		DispatchEscalations:      map[string]time.Time{},
 		Completed:                map[string]Completed{},
 		Retry:                    map[string]Retry{},
 		MergeTimings:             map[string]MergeTiming{},
@@ -367,6 +370,7 @@ func (s State) clone() State {
 		AutoPromoteDecisions:     cloneAutoPromoteDecisions(s.AutoPromoteDecisions),
 		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions:       cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
+		DispatchEscalations:      maps.Clone(s.DispatchEscalations),
 		Release:                  s.Release,
 		Running:                  make(map[string]Running, len(s.Running)),
 		Claimed:                  make(map[string]Claimed, len(s.Claimed)),

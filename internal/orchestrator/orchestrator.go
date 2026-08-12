@@ -134,6 +134,7 @@ type FailureBreakerConfig struct {
 
 type ClaimingConfig struct {
 	Enabled           bool
+	OwnershipSet      bool
 	OwnershipMode     string
 	Owner             string
 	AssigneeLogin     string

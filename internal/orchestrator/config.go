@@ -49,6 +49,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		},
 		Claiming: ClaimingConfig{
 			Enabled:           cfg.Tracker.Claims.Enabled,
+			OwnershipSet:      identity.Configured(),
 			OwnershipMode:     identity.OwnershipMode,
 			Owner:             identity.Name,
 			AssigneeLogin:     identity.GitHubLogin,
