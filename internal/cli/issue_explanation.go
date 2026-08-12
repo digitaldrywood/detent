@@ -34,11 +34,12 @@ func newIssueExplainer(snapshots *hub.Hub[telemetry.Snapshot], backend store.Sto
 		sessions = reader
 	}
 	return explain.New(explain.Dependencies{
-		Snapshots: issueExplanationSnapshotSource{snapshots: snapshots},
-		Workflow:  backend,
-		Attempts:  backend,
-		Scheduler: scheduler,
-		Sessions:  sessions,
-		Admission: backend,
+		Snapshots:  issueExplanationSnapshotSource{snapshots: snapshots},
+		Workflow:   backend,
+		Provenance: backend,
+		Attempts:   backend,
+		Scheduler:  scheduler,
+		Sessions:   sessions,
+		Admission:  backend,
 	})
 }

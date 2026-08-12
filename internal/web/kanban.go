@@ -206,6 +206,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 				"kanban_move_field",
 				target.connector,
 				kanbanAdmissionTargetState(target.workflow),
+				kanbanMutationProvenanceSource(c),
 			)
 			s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 			return nil
@@ -222,6 +223,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			"kanban_move",
 			target.connector,
 			kanbanAdmissionTargetState(target.workflow),
+			kanbanMutationProvenanceSource(c),
 		)
 		s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 		return nil
@@ -1409,6 +1411,7 @@ func (s *Server) recordKanbanLaneTransition(
 	reason string,
 	tracker connector.Connector,
 	admissionTargetState string,
+	provenanceSource provenance.Source,
 ) {
 	if s.store == nil {
 		return
@@ -1455,10 +1458,7 @@ func (s *Server) recordKanbanLaneTransition(
 			actor = provenance.Actor{Login: transition.Actor.Login, Kind: transition.Actor.Kind}
 		}
 	}
-	attribution := provenance.Attribution{Origin: provenance.OriginFromActor(actor)}
-	if actor.Login != "" || actor.Kind != "" {
-		attribution.Actor = &actor
-	}
+	attribution := provenance.AttributionFromSource(provenanceSource, actor)
 	var admission *provenance.Admission
 	if strings.EqualFold(strings.TrimSpace(targetState), strings.TrimSpace(admissionTargetState)) &&
 		strings.TrimSpace(admissionTargetState) != "" {
@@ -1474,6 +1474,23 @@ func (s *Server) recordKanbanLaneTransition(
 	}); err != nil && s.logger != nil {
 		s.logger.WarnContext(ctx, "record kanban lane transition metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
 	}
+}
+
+func kanbanMutationProvenanceSource(c echo.Context) provenance.Source {
+	if c == nil || c.Request() == nil {
+		return ""
+	}
+	request := c.Request()
+	if len(requestAPITokens(request)) > 0 {
+		return provenance.SourceExternalAutomation
+	}
+	if _, ok := webSessionFromContext(request.Context()); ok {
+		return provenance.SourceHumanSession
+	}
+	if request.Header.Get("HX-Request") == "true" && requestSameOriginDashboardSource(request) {
+		return provenance.SourceHumanSession
+	}
+	return ""
 }
 
 func kanbanAdmissionTargetState(cfg workflowconfig.Config) string {

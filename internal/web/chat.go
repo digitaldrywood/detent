@@ -225,6 +225,7 @@ func (s *Server) explainDependencies() explain.Dependencies {
 		return deps
 	}
 	deps.Workflow = s.store
+	deps.Provenance = s.store
 	deps.Attempts = s.store
 	deps.Admission = s.store
 	if scheduler, ok := s.store.(explain.SchedulerReader); ok {

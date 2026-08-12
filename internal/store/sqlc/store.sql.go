@@ -3521,6 +3521,19 @@ func (q *Queries) ProjectDailyTokenSpend(ctx context.Context, arg ProjectDailyTo
 	return items, nil
 }
 
+const provenanceAttributionTrustBoundary = `-- name: ProvenanceAttributionTrustBoundary :one
+SELECT trustworthy_since
+FROM provenance_attribution_boundaries
+WHERE id = 1
+`
+
+func (q *Queries) ProvenanceAttributionTrustBoundary(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, provenanceAttributionTrustBoundary)
+	var trustworthy_since string
+	err := row.Scan(&trustworthy_since)
+	return trustworthy_since, err
+}
+
 const recentModelTokenQuantiles = `-- name: RecentModelTokenQuantiles :one
 WITH recent AS (
   SELECT

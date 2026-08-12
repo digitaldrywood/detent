@@ -37,13 +37,13 @@ func TestSkillDocumentContract(t *testing.T) {
 	if len(metadata) != 2 || metadata["name"] != Name || strings.TrimSpace(stringValue(metadata["description"])) == "" {
 		t.Fatalf("frontmatter = %#v, want only name and description", metadata)
 	}
-	if !strings.Contains(body, "Bundle version: 1") {
+	if !strings.Contains(body, "Bundle version: 2") {
 		t.Fatalf("body missing bundle version %d", Version)
 	}
-	if Version != 1 {
+	if Version != 2 {
 		t.Fatalf("Version = %d, update the version stamp contract", Version)
 	}
-	if !strings.Contains(body, "Expected response schema: 1") || explain.SchemaVersion != 1 {
+	if !strings.Contains(body, "Expected response schema: 2") || explain.SchemaVersion != 2 {
 		t.Fatalf("response schema stamp does not match explain.SchemaVersion = %d", explain.SchemaVersion)
 	}
 

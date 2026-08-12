@@ -2,10 +2,12 @@ package web_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -64,6 +67,43 @@ func TestServerOpenAPIEndpoint(t *testing.T) {
 				t.Fatalf("OpenAPI servers = %#v, want one relative root URL", document.Servers)
 			}
 		})
+	}
+}
+
+func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	document := parseOpenAPI(t, requestOpenAPI(t, httpServer.URL))
+
+	path := document.Paths.Find("/api/v1/projects/{project_id}/issues/explanation")
+	if path == nil || path.Get == nil {
+		t.Fatal("OpenAPI issue explanation operation is missing")
+	}
+	operation := path.Get
+	parameter := operation.Parameters.GetByInAndName("query", "schema")
+	if parameter == nil || parameter.Schema == nil || parameter.Schema.Value == nil {
+		t.Fatal("OpenAPI issue explanation schema parameter is missing")
+	}
+	assertOpenAPISchemaVersion(t, parameter.Schema.Value.Enum)
+	explanation, ok := document.Components.Schemas["IssueExplanation"]
+	if !ok || explanation == nil || explanation.Value == nil {
+		t.Fatal("OpenAPI IssueExplanation schema is missing")
+	}
+	responseSchema, ok := explanation.Value.Properties["schema"]
+	if !ok || responseSchema == nil || responseSchema.Value == nil {
+		t.Fatal("OpenAPI IssueExplanation schema version property is missing")
+	}
+	assertOpenAPISchemaVersion(t, responseSchema.Value.Enum)
+}
+
+func assertOpenAPISchemaVersion(t *testing.T, values []any) {
+	t.Helper()
+	want := strconv.Itoa(explain.SchemaVersion)
+	if len(values) != 1 || fmt.Sprint(values[0]) != want {
+		t.Fatalf("OpenAPI issue explanation schema versions = %v, want [%s]", values, want)
 	}
 }
 

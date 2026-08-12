@@ -376,15 +376,17 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 
 		latestEvent, eventBacked := latestCurrentLaneEntry(result.timeline.Events, issue.State)
 		trackerTransition := connector.IssueStateTransition{}
+		observedAttribution := provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
 		if !eventBacked {
 			trackerTransition = o.trackerIssueStateTransition(ctx, issue)
+			observedAttribution = observedLaneAttribution(state, issue, trackerTransition.Actor)
 		}
 		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], trackerTransition.EnteredAt, observedAt, result.timeline.Events)
 		if !enteredAt.IsZero() {
 			next[laneKey] = enteredAt
 		}
 		if !eventBacked {
-			o.recordObservedLaneEntry(ctx, issue, enteredAt, trackerTransition.Actor)
+			o.recordObservedLaneEntry(ctx, issue, enteredAt, observedAttribution)
 			if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
 				observed := cloneIssue(issue)
 				observed.State = ""
@@ -396,14 +398,10 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 			if metadata, ok := provenance.Parse(latestEvent.MetadataJSON); ok {
 				nextProvenance[laneKey] = metadata.Provenance
 			} else {
-				nextProvenance[laneKey] = provenance.Attribution{Origin: provenance.OriginUnknown}
+				nextProvenance[laneKey] = provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
 			}
 		} else {
-			actor := provenance.Actor{Login: trackerTransition.Actor.Login, Kind: trackerTransition.Actor.Kind}
-			nextProvenance[laneKey] = provenance.Attribution{
-				Origin: provenance.OriginFromActor(actor),
-				Actor:  provenanceActorPointer(actor),
-			}
+			nextProvenance[laneKey] = observedAttribution
 		}
 	}
 	state.laneEntries = next
@@ -429,16 +427,12 @@ func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue co
 	return connector.IssueStateTransition{}
 }
 
-func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connector.Issue, enteredAt time.Time, transitionActor connector.IssueActor) {
+func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connector.Issue, enteredAt time.Time, attribution provenance.Attribution) {
 	if o.workflowMetrics == nil || enteredAt.IsZero() || strings.TrimSpace(issue.State) == "" {
 		return
 	}
-	actor := provenance.Actor{Login: transitionActor.Login, Kind: transitionActor.Kind}
 	metadata := workflowLaneMetadata{
-		Provenance: provenance.Attribution{
-			Origin: provenance.OriginFromActor(actor),
-			Actor:  provenanceActorPointer(actor),
-		},
+		Provenance: attribution,
 	}
 	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(o.cfg.AdmissionTargetState)) &&
 		strings.TrimSpace(o.cfg.AdmissionTargetState) != "" {
@@ -621,7 +615,9 @@ func workflowLaneMetadataJSON(issue connector.Issue, metadata workflowLaneMetada
 		metadata.PullRequest = workflowLanePullRequestMetadataFromIssue(issue)
 	}
 	if metadata.Provenance.Origin == "" {
-		metadata.Provenance.Origin = provenance.OriginUnknown
+		metadata.Provenance = provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
+	} else {
+		metadata.Provenance = provenance.Prepare(metadata.Provenance)
 	}
 	data, err := json.Marshal(metadata)
 	if err != nil {
@@ -635,17 +631,21 @@ func workflowOriginForReason(reason string) provenance.Origin {
 	case "dependency_auto_unblock", "blocker_auto_promote":
 		return provenance.OriginDependency
 	default:
-		return provenance.OriginUnknown
+		return provenance.OriginDetent
 	}
 }
 
-func provenanceActorPointer(actor provenance.Actor) *provenance.Actor {
-	actor.Login = strings.TrimSpace(actor.Login)
-	actor.Kind = strings.TrimSpace(actor.Kind)
-	if actor.Login == "" && actor.Kind == "" {
-		return nil
+func observedLaneAttribution(state *State, issue connector.Issue, transitionActor connector.IssueActor) provenance.Attribution {
+	source := provenance.SourceTrackerObservation
+	if state != nil {
+		if _, ok := state.Running[strings.TrimSpace(issue.ID)]; ok {
+			source = provenance.SourceDetentAgentSession
+		}
 	}
-	return &actor
+	return provenance.AttributionFromSource(source, provenance.Actor{
+		Login: transitionActor.Login,
+		Kind:  transitionActor.Kind,
+	})
 }
 
 func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {

@@ -262,6 +262,40 @@ func TestResolveCurrentLaneEnteredAt(t *testing.T) {
 	}
 }
 
+func TestObservedLaneAttribution(t *testing.T) {
+	t.Parallel()
+
+	issue := connector.Issue{ID: "issue-1761"}
+	operatorActor := connector.IssueActor{Login: "corylanou", Kind: "User"}
+	activeAgent := newState(Config{})
+	activeAgent.Running[issue.ID] = Running{Issue: issue}
+	tests := []struct {
+		name          string
+		state         *State
+		actor         connector.IssueActor
+		wantOrigin    provenance.Origin
+		wantInitiator provenance.Initiator
+	}{
+		{name: "active Detent agent using user token", state: &activeAgent, actor: operatorActor, wantOrigin: provenance.OriginAgent, wantInitiator: provenance.InitiatorDetentAgentSession},
+		{name: "unverified user actor", state: statePointer(newState(Config{})), actor: operatorActor, wantOrigin: provenance.OriginIndeterminate, wantInitiator: provenance.InitiatorIndeterminate},
+		{name: "external bot", state: statePointer(newState(Config{})), actor: connector.IssueActor{Login: "audit[bot]", Kind: "Bot"}, wantOrigin: provenance.OriginAutomation, wantInitiator: provenance.InitiatorExternalAutomation},
+		{name: "missing state and actor", wantOrigin: provenance.OriginIndeterminate, wantInitiator: provenance.InitiatorIndeterminate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := observedLaneAttribution(tt.state, issue, tt.actor)
+			if got.Origin != tt.wantOrigin || got.Initiator != tt.wantInitiator {
+				t.Fatalf("observedLaneAttribution() = %#v, want origin %q initiator %q", got, tt.wantOrigin, tt.wantInitiator)
+			}
+		})
+	}
+}
+
+func statePointer(state State) *State {
+	return &state
+}
+
 func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testing.T) {
 	ctx := t.Context()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
@@ -292,8 +326,8 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 		t.Fatalf("workflow event = %#v, want Blocked entered at %v", event, enteredAt)
 	}
 	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
-	if !ok || metadata.Provenance.Origin != provenance.OriginUnknown || metadata.Provenance.Actor != nil {
-		t.Fatalf("workflow metadata = %#v, want unknown origin without actor", metadata)
+	if !ok || metadata.Provenance.Origin != provenance.OriginIndeterminate || metadata.Provenance.Initiator != provenance.InitiatorIndeterminate || metadata.Provenance.Actor != nil {
+		t.Fatalf("workflow metadata = %#v, want indeterminate origin without actor", metadata)
 	}
 	if err := backend.Close(); err != nil {
 		t.Fatalf("backend.Close() error = %v", err)
@@ -350,8 +384,8 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 	if got := first.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(enteredAt) {
 		t.Fatalf("first CurrentLaneEnteredAt = %v, want %v", got, enteredAt)
 	}
-	if got := first.BoardIssues[0].Origin; got != string(provenance.OriginHuman) {
-		t.Fatalf("first Origin = %q, want %q", got, provenance.OriginHuman)
+	if got := first.BoardIssues[0].Origin; got != string(provenance.OriginIndeterminate) {
+		t.Fatalf("first Origin = %q, want %q", got, provenance.OriginIndeterminate)
 	}
 	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: "issue-1162"})
 	if err != nil {

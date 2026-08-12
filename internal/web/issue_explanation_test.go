@@ -48,7 +48,7 @@ func TestIssueExplanationAPIReferences(t *testing.T) {
 			}
 			fake := &fakeIssueExplainer{result: want}
 			server := newIssueExplanationServer(t, fake)
-			query := url.Values{"reference": {tt.reference}, "schema": {"1"}}
+			query := url.Values{"reference": {tt.reference}, "schema": {"2"}}
 			recorder := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/projects/detent/issues/explanation?"+query.Encode(), "", map[string]string{
 				"Authorization": "Bearer detent_test_token",
 			})
@@ -84,7 +84,7 @@ func TestIssueExplanationAPIProblems(t *testing.T) {
 	}{
 		{name: "missing reference", path: "/api/v1/projects/detent/issues/explanation", explainer: &fakeIssueExplainer{}, wantStatus: http.StatusBadRequest, wantCode: "bad_request"},
 		{name: "invalid version", path: "/api/v1/projects/detent/issues/explanation?reference=1639&schema=invalid", explainer: &fakeIssueExplainer{}, wantStatus: http.StatusBadRequest, wantCode: "bad_request"},
-		{name: "version conflict", path: "/api/v1/projects/detent/issues/explanation?reference=1639&schema=2", explainer: &fakeIssueExplainer{}, wantStatus: http.StatusConflict, wantCode: "version_conflict"},
+		{name: "version conflict", path: "/api/v1/projects/detent/issues/explanation?reference=1639&schema=1", explainer: &fakeIssueExplainer{}, wantStatus: http.StatusConflict, wantCode: "version_conflict"},
 		{name: "ambiguous reference", path: "/api/v1/projects/detent/issues/explanation?reference=1639", explainer: &fakeIssueExplainer{err: &explain.AmbiguousIdentityError{ProjectID: "detent", Field: "issue_id", Values: []string{"a", "b"}}}, wantStatus: http.StatusConflict, wantCode: "ambiguous_reference"},
 		{name: "not found", path: "/api/v1/projects/detent/issues/explanation?reference=1639", explainer: &fakeIssueExplainer{err: explain.ErrNotFound}, wantStatus: http.StatusNotFound, wantCode: "issue_not_found"},
 		{name: "runtime error", path: "/api/v1/projects/detent/issues/explanation?reference=1639", explainer: &fakeIssueExplainer{err: errors.New("database closed")}, wantStatus: http.StatusServiceUnavailable, wantCode: "runtime_unavailable"},

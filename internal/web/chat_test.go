@@ -15,6 +15,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -93,7 +94,7 @@ func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
 		if err := json.Unmarshal([]byte(result.Content), &explanation); err != nil {
 			return chatpkg.TurnResponse{}, err
 		}
-		toolCalled = explanation.Schema == 1 && !explanation.ObservedAt.IsZero() && explanation.CurrentLane.Name == "Rework"
+		toolCalled = explanation.Schema == explain.SchemaVersion && !explanation.ObservedAt.IsZero() && explanation.CurrentLane.Name == "Rework"
 		return chatpkg.TurnResponse{Content: "Issue #1647 is in Rework because its latest transition requires another pass."}, nil
 	})
 	if err := deps.Hub.Publish(telemetry.Snapshot{

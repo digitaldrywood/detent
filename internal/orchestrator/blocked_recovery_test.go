@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -335,6 +336,17 @@ func TestObservedStructuredBlockedRecoveryReasonAuthorizesRecovery(t *testing.T)
 	if !ok || reason != blockedRecoveryReasonMergeConflict {
 		t.Fatalf("latest Blocked reason = %q, %v, want %q", reason, ok, blockedRecoveryReasonMergeConflict)
 	}
+	for _, event := range timeline.Events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane || event.PhaseName != blockedStatusState || event.Status != "entered" {
+			continue
+		}
+		metadata, parsed := provenance.Parse(event.MetadataJSON)
+		if !parsed || metadata.Provenance.Origin != provenance.OriginAgent || metadata.Provenance.Initiator != provenance.InitiatorDetentAgentSession {
+			t.Fatalf("Blocked transition provenance = %#v, parsed %v, want Detent agent session", metadata.Provenance, parsed)
+		}
+		return
+	}
+	t.Fatal("Blocked entry event not found")
 }
 
 func TestBlockedRecoverySignatureUsesDiffFingerprintAndBaseOID(t *testing.T) {

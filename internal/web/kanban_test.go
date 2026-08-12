@@ -3,17 +3,70 @@ package web
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/auth"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
+
+func TestKanbanMutationProvenanceSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		prepare func(*http.Request) *http.Request
+		want    provenance.Source
+	}{
+		{
+			name: "authenticated human session",
+			prepare: func(request *http.Request) *http.Request {
+				return request.WithContext(context.WithValue(request.Context(), sessionContextKey{}, auth.Session{Email: "operator@example.com"}))
+			},
+			want: provenance.SourceHumanSession,
+		},
+		{
+			name: "same-origin dashboard action",
+			prepare: func(request *http.Request) *http.Request {
+				request.Header.Set("HX-Request", "true")
+				request.Header.Set("Origin", "http://example.com")
+				request.Host = "example.com"
+				return request
+			},
+			want: provenance.SourceHumanSession,
+		},
+		{
+			name: "API token automation",
+			prepare: func(request *http.Request) *http.Request {
+				request.Header.Set("Authorization", "Bearer operator-token")
+				return request
+			},
+			want: provenance.SourceExternalAutomation,
+		},
+		{name: "unverified request", prepare: func(request *http.Request) *http.Request { return request }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			request := tt.prepare(httptest.NewRequest(http.MethodPost, "/api/v1/kanban/move", nil))
+			echoContext := echo.New().NewContext(request, httptest.NewRecorder())
+			if got := kanbanMutationProvenanceSource(echoContext); got != tt.want {
+				t.Fatalf("kanbanMutationProvenanceSource() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestKanbanCardCapabilitiesDeriveFromStatePath(t *testing.T) {
 	t.Parallel()

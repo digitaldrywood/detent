@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 var (
 	ErrProjectRequired      = errors.New("project reference is required")
@@ -119,9 +119,14 @@ type Actor struct {
 }
 
 type Provenance struct {
-	State     SourceState `json:"state"`
-	Origin    string      `json:"origin"`
-	Admission *Admission  `json:"admission,omitempty"`
+	State            SourceState `json:"state"`
+	Schema           int         `json:"schema,omitempty"`
+	Origin           string      `json:"origin"`
+	Initiator        string      `json:"initiator,omitempty"`
+	Basis            string      `json:"basis,omitempty"`
+	Trustworthy      bool        `json:"trustworthy"`
+	TrustworthySince *time.Time  `json:"trustworthy_since,omitempty"`
+	Admission        *Admission  `json:"admission,omitempty"`
 }
 
 type Admission struct {

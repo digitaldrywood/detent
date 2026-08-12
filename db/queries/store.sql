@@ -663,6 +663,11 @@ INSERT INTO workflow_phase_events (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
+-- name: ProvenanceAttributionTrustBoundary :one
+SELECT trustworthy_since
+FROM provenance_attribution_boundaries
+WHERE id = 1;
+
 -- name: WorkflowPhaseDurationRows :many
 SELECT *
 FROM workflow_phase_events
