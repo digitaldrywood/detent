@@ -1483,6 +1483,66 @@ func TestBoardExceptionsCompactHumanBlocks(t *testing.T) {
 	}
 }
 
+func TestBoardExceptionsDistinguishHeldRecoveryFromDefer(t *testing.T) {
+	t.Parallel()
+
+	blockedAt := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		blocked        telemetry.Blocked
+		wantExceptions int
+		wantDetail     string
+	}{
+		{
+			name: "held recovery needs review",
+			blocked: telemetry.Blocked{
+				Issue:               telemetry.Issue{ID: "issue-held", Identifier: "digitaldrywood/detent#6", ProjectID: "detent", State: "Blocked"},
+				Source:              telemetry.BlockedSourceProjectStatus,
+				RecoveryAction:      "hold",
+				RecoveryReason:      "invalid_workpad_signal",
+				RecoveryRemedy:      "Move the issue to Todo or another fresh-work lane; no pull request exists to resume.",
+				NeedsHumanAttention: true,
+				BlockedAt:           &blockedAt,
+			},
+			wantExceptions: 1,
+			wantDetail:     "fresh-work lane",
+		},
+		{
+			name: "deferred dependency stays out of review",
+			blocked: telemetry.Blocked{
+				Issue:          telemetry.Issue{ID: "issue-deferred", Identifier: "digitaldrywood/detent#17", ProjectID: "detent", State: "Blocked"},
+				Source:         telemetry.BlockedSourceProjectStatus,
+				RecoveryAction: "defer",
+				RecoveryReason: "dependency_recovery",
+				RecoveryRoot: &telemetry.BlockedRecoveryRoot{
+					IssueIdentifier: "digitaldrywood/detent#6",
+					Reason:          "invalid_workpad_signal",
+				},
+				BlockedAt: &blockedAt,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := boardTestData()
+			data.Kanban.ShowBlockedAlerts = true
+			data.Snapshot.GeneratedAt = blockedAt.Add(time.Hour)
+			data.Snapshot.Blocked = []telemetry.Blocked{tt.blocked}
+
+			exceptions := boardExceptions(data, true)
+			if len(exceptions) != tt.wantExceptions {
+				t.Fatalf("exceptions = %#v", exceptions)
+			}
+			if tt.wantDetail != "" && !strings.Contains(exceptions[0].Rest, tt.wantDetail) {
+				t.Fatalf("exception detail = %q", exceptions[0].Rest)
+			}
+		})
+	}
+}
+
 func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
 	data := boardTestData()
 	blockedAt := data.Snapshot.GeneratedAt.Add(-15 * time.Minute)

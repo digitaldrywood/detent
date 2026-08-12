@@ -47,7 +47,9 @@ const (
 const (
 	projectKanbanBlockedSourceMetadataKey                = "detent.blocked_source"
 	projectKanbanBlockedReasonMetadataKey                = "detent.blocked_reason"
+	projectKanbanBlockedRecoveryActionMetadataKey        = "detent.blocked_recovery_action"
 	projectKanbanBlockedRecoveryReasonMetadataKey        = "detent.blocked_recovery_reason"
+	projectKanbanBlockedRecoveryRemedyMetadataKey        = "detent.blocked_recovery_remedy"
 	projectKanbanAutoPromoteActionMetadataKey            = "detent.auto_promote_action"
 	projectKanbanAutoPromoteReasonMetadataKey            = "detent.auto_promote_reason"
 	projectKanbanAutomatedReviewModeMetadataKey          = "detent.automated_review_mode"
@@ -602,7 +604,9 @@ type projectKanbanCard struct {
 	GatePending           bool
 	BlockedSource         telemetry.BlockedSource
 	BlockedReason         string
+	BlockedRecoveryAction string
 	BlockedRecoveryReason string
+	BlockedRecoveryRemedy string
 	AttentionLabel        string
 	AttentionDetail       string
 	MergeLaneStatus       string
@@ -2455,7 +2459,9 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		}
 		issue.Metadata[projectKanbanBlockedSourceMetadataKey] = string(row.Source)
 		issue.Metadata[projectKanbanBlockedReasonMetadataKey] = row.Error
+		issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey] = row.RecoveryAction
 		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
+		issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey] = row.RecoveryRemedy
 		appendSnapshotIssue(issue, "Blocked", stageAt, 40)
 	}
 
@@ -3030,7 +3036,9 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		GatePending:           issue.GatePending,
 		BlockedSource:         telemetry.BlockedSource(strings.TrimSpace(issue.Metadata[projectKanbanBlockedSourceMetadataKey])),
 		BlockedReason:         strings.TrimSpace(issue.Metadata[projectKanbanBlockedReasonMetadataKey]),
+		BlockedRecoveryAction: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey]),
 		BlockedRecoveryReason: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey]),
+		BlockedRecoveryRemedy: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey]),
 		AttentionLabel:        projectKanbanAttentionLabel(issue),
 		AttentionDetail:       projectKanbanAttentionDetail(issue),
 		Stage:                 chartText(state, "n/a"),
@@ -4630,6 +4638,42 @@ func blockedLastUpdateMeta(row telemetry.Blocked) string {
 		parts = append(parts, timeLabel(*row.LastEventAt))
 	}
 	return strings.Join(parts, " / ")
+}
+
+func blockedRecoverySummary(row telemetry.Blocked) string {
+	action := strings.ToLower(strings.TrimSpace(row.RecoveryAction))
+	reason := strings.ReplaceAll(strings.TrimSpace(row.RecoveryReason), "_", " ")
+	remedy := strings.TrimSpace(row.RecoveryRemedy)
+	if action == "hold" {
+		detail := "Needs human attention"
+		if reason != "" {
+			detail += ": " + reason
+		}
+		if remedy != "" {
+			detail += ". " + remedy
+		}
+		return detail
+	}
+	if action == "defer" {
+		detail := "Automatic recovery deferred"
+		if reason != "" {
+			detail += ": " + reason
+		}
+		if row.RecoveryRoot != nil {
+			root := strings.TrimSpace(row.RecoveryRoot.IssueIdentifier)
+			if root == "" {
+				root = strings.TrimSpace(row.RecoveryRoot.IssueID)
+			}
+			if root != "" {
+				detail += "; held root " + root
+			}
+			if rootReason := strings.ReplaceAll(strings.TrimSpace(row.RecoveryRoot.Reason), "_", " "); rootReason != "" {
+				detail += " (" + rootReason + ")"
+			}
+		}
+		return detail
+	}
+	return rowError(row.Error)
 }
 
 func completedAtLabel(row telemetry.Completed) string {

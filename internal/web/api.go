@@ -683,29 +683,35 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 	payload := make([]blockedAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, blockedAPIResponse{
-			IssueID:               entry.ID,
-			IssueIdentifier:       entry.Identifier,
-			ProjectID:             entry.ProjectID,
-			IssueURL:              optionalString(entry.URL),
-			IssueTitle:            optionalTrimmedString(entry.Title),
-			IssueDescription:      issueDescription(entry.Description),
-			PullRequestURL:        optionalString(pullRequestURL(entry.Issue)),
-			PullRequestNumber:     pullRequestNumber(entry.Issue),
-			BudgetAlert:           false,
-			State:                 entry.State,
-			Error:                 optionalString(entry.Error),
-			Source:                string(entry.Source),
-			RecoveryReason:        optionalString(entry.RecoveryReason),
-			RecoveryTarget:        optionalString(entry.RecoveryTarget),
-			WorkerHost:            optionalString(entry.WorkerHost),
-			WorkspacePath:         optionalString(entry.WorkspacePath),
-			SessionID:             optionalString(entry.SessionID),
-			BlockedAt:             timestampStringPtr(entry.BlockedAt),
-			LastEvent:             optionalString(entry.LastEvent),
-			LastMessage:           optionalString(entry.LastMessage),
-			LastEventAt:           timestampStringPtr(entry.LastEventAt),
-			CurrentLaneEnteredAt:  timestampStringPtr(entry.CurrentLaneEnteredAt),
-			CurrentLaneAgeSeconds: entry.CurrentLaneAgeSeconds,
+			IssueID:                 entry.ID,
+			IssueIdentifier:         entry.Identifier,
+			ProjectID:               entry.ProjectID,
+			IssueURL:                optionalString(entry.URL),
+			IssueTitle:              optionalTrimmedString(entry.Title),
+			IssueDescription:        issueDescription(entry.Description),
+			PullRequestURL:          optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber:       pullRequestNumber(entry.Issue),
+			BudgetAlert:             false,
+			State:                   entry.State,
+			Error:                   optionalString(entry.Error),
+			Source:                  string(entry.Source),
+			RecoveryAction:          optionalString(entry.RecoveryAction),
+			RecoveryReason:          optionalString(entry.RecoveryReason),
+			RecoveryTarget:          optionalString(entry.RecoveryTarget),
+			RecoveryRemedy:          optionalString(entry.RecoveryRemedy),
+			RecoveryReachability:    optionalString(entry.RecoveryReachability),
+			RecoveryIntentResumable: entry.RecoveryIntentResumable,
+			NeedsHumanAttention:     entry.NeedsHumanAttention,
+			RecoveryRoot:            entry.RecoveryRoot,
+			WorkerHost:              optionalString(entry.WorkerHost),
+			WorkspacePath:           optionalString(entry.WorkspacePath),
+			SessionID:               optionalString(entry.SessionID),
+			BlockedAt:               timestampStringPtr(entry.BlockedAt),
+			LastEvent:               optionalString(entry.LastEvent),
+			LastMessage:             optionalString(entry.LastMessage),
+			LastEventAt:             timestampStringPtr(entry.LastEventAt),
+			CurrentLaneEnteredAt:    timestampStringPtr(entry.CurrentLaneEnteredAt),
+			CurrentLaneAgeSeconds:   entry.CurrentLaneAgeSeconds,
 		})
 	}
 	return payload
@@ -779,18 +785,24 @@ func retryIssueResponse(entry telemetry.Queued) *retryIssueAPIResponse {
 
 func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 	return &blockedIssueAPIResponse{
-		WorkerHost:     optionalString(entry.WorkerHost),
-		WorkspacePath:  optionalString(entry.WorkspacePath),
-		SessionID:      optionalString(entry.SessionID),
-		State:          entry.State,
-		Error:          optionalString(entry.Error),
-		Source:         string(entry.Source),
-		RecoveryReason: optionalString(entry.RecoveryReason),
-		RecoveryTarget: optionalString(entry.RecoveryTarget),
-		BlockedAt:      timestampStringPtr(entry.BlockedAt),
-		LastEvent:      optionalString(entry.LastEvent),
-		LastMessage:    optionalString(entry.LastMessage),
-		LastEventAt:    timestampStringPtr(entry.LastEventAt),
+		WorkerHost:              optionalString(entry.WorkerHost),
+		WorkspacePath:           optionalString(entry.WorkspacePath),
+		SessionID:               optionalString(entry.SessionID),
+		State:                   entry.State,
+		Error:                   optionalString(entry.Error),
+		Source:                  string(entry.Source),
+		RecoveryAction:          optionalString(entry.RecoveryAction),
+		RecoveryReason:          optionalString(entry.RecoveryReason),
+		RecoveryTarget:          optionalString(entry.RecoveryTarget),
+		RecoveryRemedy:          optionalString(entry.RecoveryRemedy),
+		RecoveryReachability:    optionalString(entry.RecoveryReachability),
+		RecoveryIntentResumable: entry.RecoveryIntentResumable,
+		NeedsHumanAttention:     entry.NeedsHumanAttention,
+		RecoveryRoot:            entry.RecoveryRoot,
+		BlockedAt:               timestampStringPtr(entry.BlockedAt),
+		LastEvent:               optionalString(entry.LastEvent),
+		LastMessage:             optionalString(entry.LastMessage),
+		LastEventAt:             timestampStringPtr(entry.LastEventAt),
 	}
 }
 
@@ -1505,29 +1517,35 @@ type retryAPIResponse struct {
 }
 
 type blockedAPIResponse struct {
-	IssueID               string  `json:"issue_id"`
-	IssueIdentifier       string  `json:"issue_identifier"`
-	ProjectID             string  `json:"project_id,omitempty"`
-	IssueURL              *string `json:"issue_url"`
-	IssueTitle            *string `json:"issue_title"`
-	IssueDescription      *string `json:"issue_description"`
-	PullRequestURL        *string `json:"pull_request_url"`
-	PullRequestNumber     *int    `json:"pull_request_number"`
-	BudgetAlert           bool    `json:"budget_alert?"`
-	State                 string  `json:"state"`
-	Error                 *string `json:"error"`
-	Source                string  `json:"source,omitempty"`
-	RecoveryReason        *string `json:"recovery_reason"`
-	RecoveryTarget        *string `json:"recovery_target"`
-	WorkerHost            *string `json:"worker_host"`
-	WorkspacePath         *string `json:"workspace_path"`
-	SessionID             *string `json:"session_id"`
-	BlockedAt             *string `json:"blocked_at"`
-	LastEvent             *string `json:"last_event"`
-	LastMessage           *string `json:"last_message"`
-	LastEventAt           *string `json:"last_event_at"`
-	CurrentLaneEnteredAt  *string `json:"current_lane_entered_at"`
-	CurrentLaneAgeSeconds int64   `json:"current_lane_age_seconds"`
+	IssueID                 string                         `json:"issue_id"`
+	IssueIdentifier         string                         `json:"issue_identifier"`
+	ProjectID               string                         `json:"project_id,omitempty"`
+	IssueURL                *string                        `json:"issue_url"`
+	IssueTitle              *string                        `json:"issue_title"`
+	IssueDescription        *string                        `json:"issue_description"`
+	PullRequestURL          *string                        `json:"pull_request_url"`
+	PullRequestNumber       *int                           `json:"pull_request_number"`
+	BudgetAlert             bool                           `json:"budget_alert?"`
+	State                   string                         `json:"state"`
+	Error                   *string                        `json:"error"`
+	Source                  string                         `json:"source,omitempty"`
+	RecoveryAction          *string                        `json:"recovery_action"`
+	RecoveryReason          *string                        `json:"recovery_reason"`
+	RecoveryTarget          *string                        `json:"recovery_target"`
+	RecoveryRemedy          *string                        `json:"recovery_remedy"`
+	RecoveryReachability    *string                        `json:"recovery_reachability"`
+	RecoveryIntentResumable bool                           `json:"recovery_intent_resumable"`
+	NeedsHumanAttention     bool                           `json:"needs_human_attention"`
+	RecoveryRoot            *telemetry.BlockedRecoveryRoot `json:"recovery_root"`
+	WorkerHost              *string                        `json:"worker_host"`
+	WorkspacePath           *string                        `json:"workspace_path"`
+	SessionID               *string                        `json:"session_id"`
+	BlockedAt               *string                        `json:"blocked_at"`
+	LastEvent               *string                        `json:"last_event"`
+	LastMessage             *string                        `json:"last_message"`
+	LastEventAt             *string                        `json:"last_event_at"`
+	CurrentLaneEnteredAt    *string                        `json:"current_lane_entered_at"`
+	CurrentLaneAgeSeconds   int64                          `json:"current_lane_age_seconds"`
 }
 
 type statsAPIResponse struct {
@@ -1771,18 +1789,24 @@ type retryIssueAPIResponse struct {
 }
 
 type blockedIssueAPIResponse struct {
-	WorkerHost     *string `json:"worker_host"`
-	WorkspacePath  *string `json:"workspace_path"`
-	SessionID      *string `json:"session_id"`
-	State          string  `json:"state"`
-	Error          *string `json:"error"`
-	Source         string  `json:"source,omitempty"`
-	RecoveryReason *string `json:"recovery_reason"`
-	RecoveryTarget *string `json:"recovery_target"`
-	BlockedAt      *string `json:"blocked_at"`
-	LastEvent      *string `json:"last_event"`
-	LastMessage    *string `json:"last_message"`
-	LastEventAt    *string `json:"last_event_at"`
+	WorkerHost              *string                        `json:"worker_host"`
+	WorkspacePath           *string                        `json:"workspace_path"`
+	SessionID               *string                        `json:"session_id"`
+	State                   string                         `json:"state"`
+	Error                   *string                        `json:"error"`
+	Source                  string                         `json:"source,omitempty"`
+	RecoveryAction          *string                        `json:"recovery_action"`
+	RecoveryReason          *string                        `json:"recovery_reason"`
+	RecoveryTarget          *string                        `json:"recovery_target"`
+	RecoveryRemedy          *string                        `json:"recovery_remedy"`
+	RecoveryReachability    *string                        `json:"recovery_reachability"`
+	RecoveryIntentResumable bool                           `json:"recovery_intent_resumable"`
+	NeedsHumanAttention     bool                           `json:"needs_human_attention"`
+	RecoveryRoot            *telemetry.BlockedRecoveryRoot `json:"recovery_root"`
+	BlockedAt               *string                        `json:"blocked_at"`
+	LastEvent               *string                        `json:"last_event"`
+	LastMessage             *string                        `json:"last_message"`
+	LastEventAt             *string                        `json:"last_event_at"`
 }
 
 type logsAPIResponse struct {

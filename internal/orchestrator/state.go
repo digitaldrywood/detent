@@ -167,21 +167,27 @@ const (
 )
 
 type Blocked struct {
-	Issue           connector.Issue
-	Reason          string
-	RecoveryReason  string
-	RecoveryTarget  string
-	BlockedAt       time.Time
-	Source          BlockedSource
-	Attempt         int
-	WorkAttemptID   int64
-	DetentSessionID int64
-	SessionID       string
-	Destination     string
-	Priority        int
-	PriorityName    string
-	StopReason      string
-	Recovery        *workflowLaneBlockedRecoveryMetadata
+	Issue                   connector.Issue
+	Reason                  string
+	RecoveryAction          string
+	RecoveryReason          string
+	RecoveryTarget          string
+	RecoveryRemedy          string
+	RecoveryReachability    string
+	RecoveryIntentResumable bool
+	NeedsHumanAttention     bool
+	RecoveryRoot            *telemetry.BlockedRecoveryRoot
+	BlockedAt               time.Time
+	Source                  BlockedSource
+	Attempt                 int
+	WorkAttemptID           int64
+	DetentSessionID         int64
+	SessionID               string
+	Destination             string
+	Priority                int
+	PriorityName            string
+	StopReason              string
+	Recovery                *workflowLaneBlockedRecoveryMetadata
 }
 
 type Completed struct {

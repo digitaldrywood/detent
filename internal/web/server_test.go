@@ -8856,14 +8856,25 @@ func TestServerAPIRoutes(t *testing.T) {
 					Title:      "Blocked API",
 					State:      "Todo",
 				},
-				WorkerHost:    "host-b",
-				WorkspacePath: "/workspaces/DD-BLOCKED",
-				SessionID:     "thread-blocked",
-				Error:         "dependency is not merged",
-				BlockedAt:     &blockedAt,
-				LastEventAt:   &lastEventAt,
-				LastEvent:     "turn_input_required",
-				LastMessage:   "waiting for operator input",
+				WorkerHost:              "host-b",
+				WorkspacePath:           "/workspaces/DD-BLOCKED",
+				SessionID:               "thread-blocked",
+				Error:                   "dependency is not merged",
+				RecoveryAction:          "defer",
+				RecoveryReason:          "dependency_recovery",
+				RecoveryTarget:          "Rework",
+				RecoveryRemedy:          "Resolve the held root.",
+				RecoveryReachability:    "deferred",
+				RecoveryIntentResumable: true,
+				RecoveryRoot: &telemetry.BlockedRecoveryRoot{
+					IssueIdentifier: "digitaldrywood/detent#6",
+					Reason:          "invalid_workpad_signal",
+					Remedy:          "Move the issue to a fresh-work lane.",
+				},
+				BlockedAt:   &blockedAt,
+				LastEventAt: &lastEventAt,
+				LastEvent:   "turn_input_required",
+				LastMessage: "waiting for operator input",
 			},
 		},
 		Completed: []telemetry.Completed{
@@ -9030,6 +9041,23 @@ func TestServerAPIRoutes(t *testing.T) {
 	if retrying["issue_identifier"] != "DD-RETRY" || retrying["attempt"] != float64(2) {
 		t.Fatalf("retrying row = %#v", retrying)
 	}
+	blocked := state["blocked"].([]any)[0].(map[string]any)
+	for key, want := range map[string]any{
+		"recovery_action":           "defer",
+		"recovery_reason":           "dependency_recovery",
+		"recovery_target":           "Rework",
+		"recovery_remedy":           "Resolve the held root.",
+		"recovery_reachability":     "deferred",
+		"recovery_intent_resumable": true,
+		"needs_human_attention":     false,
+	} {
+		if blocked[key] != want {
+			t.Fatalf("blocked[%q] = %#v, want %#v; row = %#v", key, blocked[key], want, blocked)
+		}
+	}
+	if root := blocked["recovery_root"].(map[string]any); root["issue_identifier"] != "digitaldrywood/detent#6" || root["reason"] != "invalid_workpad_signal" {
+		t.Fatalf("blocked.recovery_root = %#v", root)
+	}
 
 	if got := nestedString(t, state, "codex_totals", "seconds_running"); got != "44.5" {
 		t.Fatalf("codex_totals.seconds_running = %s, want 44.5", got)
@@ -9111,6 +9139,13 @@ func TestServerAPIRoutes(t *testing.T) {
 	blockedIssue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-BLOCKED", http.StatusOK)
 	if blockedIssue["status"] != "blocked" || blockedIssue["last_error"] != "dependency is not merged" {
 		t.Fatalf("blocked issue payload = %#v", blockedIssue)
+	}
+	blockedOverlay := blockedIssue["blocked"].(map[string]any)
+	if blockedOverlay["recovery_action"] != "defer" || blockedOverlay["recovery_reachability"] != "deferred" || blockedOverlay["recovery_intent_resumable"] != true {
+		t.Fatalf("blocked issue recovery = %#v", blockedOverlay)
+	}
+	if root := blockedOverlay["recovery_root"].(map[string]any); root["issue_identifier"] != "digitaldrywood/detent#6" {
+		t.Fatalf("blocked issue recovery root = %#v", root)
 	}
 
 	missing := requestJSON(t, server, http.MethodGet, "/api/v1/DD-MISSING", http.StatusNotFound)

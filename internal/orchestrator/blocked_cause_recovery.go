@@ -66,7 +66,7 @@ func (o *Orchestrator) newBlockedRecoveryMetadata(
 			CauseFingerprint: blockedCauseFingerprint(signals),
 			TargetState:      targetState,
 			RunMode:          strings.TrimSpace(runMode),
-			Resumable:        blockedCauseResumable(issue, signals),
+			IntentResumable:  blockedCauseResumable(issue, signals),
 		},
 	}
 }
@@ -215,11 +215,11 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if reason := o.blockedCauseHoldReason(issue, state, nil, dependencyCfg); reason != "" {
-		o.logBlockedRecoveryDecision(issue, "hold", reason, nil, "")
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", reason, nil, "")
 		return false
 	}
 	if o.currentBlockedOperatorStop(ctx, state, issue) {
-		o.logBlockedRecoveryDecision(issue, "hold", "operator_stop", nil, "")
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "operator_stop", nil, "")
 		return false
 	}
 	withDependencies := o.issueWithDependencyRefs(issue)
@@ -227,8 +227,10 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
 	if reason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg); reason != "" {
-		o.logBlockedRecoveryDecision(
-			issue,
+		o.recordBlockedRecoveryDecision(
+			ctx,
+			state,
+			withDependencies,
 			"hold",
 			reason,
 			nil,
@@ -238,11 +240,11 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	if len(withDependencies.BlockedBy) > 0 {
-		o.logBlockedRecoveryDecision(issue, "defer", "dependency_recovery", nil, "")
+		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "")
 		return false
 	}
 	if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
-		o.logBlockedRecoveryDecision(issue, "defer", "rework_breaker_recovery", nil, park.Signature)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "rework_breaker_recovery", nil, park.Signature)
 		return false
 	}
 	park, ok := o.currentBlockedRecoveryPark(ctx, state, issue)
@@ -250,36 +252,36 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
 		if recoveryCfg.Enabled && reasonFound && blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
-			o.logBlockedRecoveryDecision(issue, "defer", "pr_maintenance_recovery", nil, "")
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "pr_maintenance_recovery", nil, "")
 		} else {
-			o.logBlockedRecoveryDecision(issue, "hold", "no_recovery_predicate", nil, "")
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", nil, "")
 		}
 		return false
 	}
 	if park.Predicate == blockedRecoveryPredicateManaged {
-		o.logBlockedRecoveryDecision(issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	currentFingerprint := blockedCauseFingerprint(signals)
 	if park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
-		o.logBlockedRecoveryDecision(issue, "hold", "cause_unchanged", &park, currentFingerprint)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
 		return false
 	}
 	if park.Predicate != blockedRecoveryPredicateFingerprintChange &&
 		park.Predicate != blockedRecoveryPredicateOncePerFingerprint {
-		o.logBlockedRecoveryDecision(issue, "hold", "no_recovery_predicate", &park, currentFingerprint)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, currentFingerprint)
 		return false
 	}
 	signature := blockedCauseRecoverySignature(park.Cause, currentFingerprint)
 	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionCauseBlockedRecovery, signature); consumed {
-		o.logBlockedRecoveryDecision(issue, "hold", "fingerprint_already_consumed", &park, currentFingerprint)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "fingerprint_already_consumed", &park, currentFingerprint)
 		return false
 	}
 	targetState := blockedCauseTargetState(issue, signals, park.TargetState)
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
 	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata); err != nil {
-		o.logBlockedRecoveryDecision(issue, "hold", "transition_failed", &park, currentFingerprint)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, currentFingerprint)
 		return false
 	}
 	if o.connector != nil {
@@ -298,6 +300,23 @@ func (o *Orchestrator) blockedCauseHoldReason(
 	workpadBlockers []dependencyBlocker,
 	dependencyCfg DependencyAutoUnblockConfig,
 ) string {
+	if reason := BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel); reason != "" {
+		return reason
+	}
+	if issue.WorkpadSignal != nil {
+		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
+			return "workpad_blocker"
+		}
+	}
+	if state != nil {
+		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
+			return "operator_stop"
+		}
+	}
+	return ""
+}
+
+func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) string {
 	if issue.WorkpadSignal != nil {
 		if issue.WorkpadSignal.Invalid != nil {
 			return "invalid_workpad_signal"
@@ -305,21 +324,12 @@ func (o *Orchestrator) blockedCauseHoldReason(
 		if strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" {
 			return "human_action"
 		}
-		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
-			return "workpad_blocker"
-		}
 	}
+	configuredOptout := normalizeLabel(optoutLabel)
 	for _, label := range issue.Labels {
-		if normalizeLabel(label) == "requires-human-review" {
+		normalized := normalizeLabel(label)
+		if normalized == "requires-human-review" || configuredOptout != "" && normalized == configuredOptout {
 			return "human_action"
-		}
-	}
-	if autoPromoteOptoutLabel(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote)) {
-		return "human_action"
-	}
-	if state != nil {
-		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
-			return "operator_stop"
 		}
 	}
 	return ""
@@ -381,6 +391,95 @@ func blockedCauseRecoveryComment(
 		strings.TrimSpace(park.Predicate),
 		strings.TrimSpace(fingerprint),
 	)
+}
+
+func (o *Orchestrator) recordBlockedRecoveryDecision(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	action string,
+	reason string,
+	park *workflowLaneBlockedRecoveryMetadata,
+	fingerprint string,
+	unresolvedWorkpadBlockers ...dependencyBlocker,
+) {
+	o.logBlockedRecoveryDecision(issue, action, reason, park, fingerprint, unresolvedWorkpadBlockers...)
+	if state == nil || strings.TrimSpace(issue.ID) == "" {
+		return
+	}
+	entry, ok := state.Blocked[issue.ID]
+	if !ok {
+		return
+	}
+	entry.Issue = cloneIssue(issue)
+	if park == nil {
+		if current, found := o.currentBlockedRecoveryPark(ctx, state, issue); found {
+			park = &current
+		}
+	}
+	entry.RecoveryAction = strings.TrimSpace(action)
+	entry.RecoveryReason = strings.TrimSpace(reason)
+	entry.RecoveryRemedy = BlockedRecoveryOperatorRemedy(issue, reason)
+	entry.RecoveryReachability = blockedRecoveryReachability(action)
+	entry.NeedsHumanAttention = strings.EqualFold(strings.TrimSpace(action), "hold")
+	entry.RecoveryRoot = nil
+	if park != nil {
+		current := *park
+		current.IntentResumable = current.intentResumable()
+		current.Resumable = false
+		current.Reachability = entry.RecoveryReachability
+		current.HoldReason = entry.RecoveryReason
+		current.OperatorRemedy = entry.RecoveryRemedy
+		entry.Recovery = &current
+		entry.RecoveryTarget = current.TargetState
+		entry.RecoveryIntentResumable = current.IntentResumable
+	} else {
+		entry.Recovery = nil
+		entry.RecoveryIntentResumable = strings.EqualFold(strings.TrimSpace(action), "defer")
+	}
+	state.Blocked[issue.ID] = entry
+}
+
+func blockedRecoveryReachability(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "hold":
+		return "held"
+	case "defer":
+		return "deferred"
+	default:
+		return ""
+	}
+}
+
+func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "invalid_workpad_signal":
+		if issue.PullRequest == nil && issue.PRNumber == nil {
+			return "Move the issue to Todo or another fresh-work lane; no pull request exists to resume."
+		}
+		return "Correct the latest Codex Workpad detent-status block, or move the issue to a fresh-work lane."
+	case "human_action":
+		if issue.WorkpadSignal != nil && strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" {
+			return strings.TrimSpace(issue.WorkpadSignal.HumanAction)
+		}
+		return "Complete the requested human action, then update the Workpad."
+	case "workpad_blocker":
+		return "Resolve or remove the current Workpad blocker references."
+	case "operator_stop":
+		return "Review the operator stop and route the issue to its intended lane."
+	case "cause_unchanged":
+		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
+	case "fingerprint_already_consumed":
+		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
+	case "transition_failed":
+		return "Retry the lane transition after restoring tracker write access."
+	case "managed_recovery":
+		return "Review the configured recovery owner and move the issue manually if that owner cannot recover it."
+	case "no_recovery_predicate":
+		return "Add a durable recovery predicate or move the issue to a lane that starts fresh work."
+	default:
+		return "Review the blocked recovery reason and move the issue to an appropriate lane."
+	}
 }
 
 func (o *Orchestrator) logBlockedRecoveryDecision(

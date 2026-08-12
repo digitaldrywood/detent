@@ -30,15 +30,18 @@ const (
 )
 
 type doctorBlockedRecoveryCandidateDiagnostic struct {
-	IssueID         string `json:"issue_id,omitempty"`
-	IssueIdentifier string `json:"issue_identifier,omitempty"`
-	IssueURL        string `json:"issue_url,omitempty"`
-	PRNumber        int    `json:"pr_number,omitempty"`
-	PRURL           string `json:"pr_url,omitempty"`
-	PRHeadSHA       string `json:"pr_head_sha,omitempty"`
-	TargetState     string `json:"target_state,omitempty"`
-	Reason          string `json:"reason"`
-	Detail          string `json:"detail,omitempty"`
+	IssueID             string `json:"issue_id,omitempty"`
+	IssueIdentifier     string `json:"issue_identifier,omitempty"`
+	IssueURL            string `json:"issue_url,omitempty"`
+	PRNumber            int    `json:"pr_number,omitempty"`
+	PRURL               string `json:"pr_url,omitempty"`
+	PRHeadSHA           string `json:"pr_head_sha,omitempty"`
+	TargetState         string `json:"target_state,omitempty"`
+	Action              string `json:"action,omitempty"`
+	Reason              string `json:"reason"`
+	Detail              string `json:"detail,omitempty"`
+	Remedy              string `json:"remedy,omitempty"`
+	NeedsHumanAttention bool   `json:"needs_human_attention,omitempty"`
 }
 
 type doctorDependencyAutoUnblockSettings struct {
@@ -172,10 +175,36 @@ func checkDoctorBlockedRecoveryLive(
 		}
 		candidates = append(candidates, doctorBlockedRecoveryCandidateDiagnosticFromIssue(issue, decision))
 	}
+	held := []doctorBlockedRecoveryCandidateDiagnostic{}
+	heldIssues := map[string]struct{}{}
+	for _, issue := range issues {
+		reason := orchestrator.BlockedRecoveryHumanHoldReason(issue, cfg.Agent.AutoPromote.OptoutLabel)
+		if reason == "" {
+			continue
+		}
+		detail := "runtime recovery requires human attention"
+		if issue.WorkpadSignal != nil && issue.WorkpadSignal.Invalid != nil {
+			detail = strings.TrimSpace(issue.WorkpadSignal.Invalid.Message)
+		}
+		held = append(held, doctorBlockedRecoveryCandidateDiagnostic{
+			IssueID:             strings.TrimSpace(issue.ID),
+			IssueIdentifier:     strings.TrimSpace(issue.Identifier),
+			IssueURL:            strings.TrimSpace(issue.URL),
+			Action:              "hold",
+			Reason:              reason,
+			Detail:              detail,
+			Remedy:              orchestrator.BlockedRecoveryOperatorRemedy(issue, reason),
+			NeedsHumanAttention: true,
+		})
+		heldIssues[doctorBlockedRecoveryIdentityKey(issue)] = struct{}{}
+	}
 	capacity := doctorBlockedCapacityDiagnostics(ctx, projectConnector, cfg, issues, now)
 	capacityIssues := doctorParkedCapacityIssueSet(capacity)
 	withoutRecovery := []doctorBlockedRecoveryCandidateDiagnostic{}
 	for _, issue := range issues {
+		if _, isHeld := heldIssues[doctorBlockedRecoveryIdentityKey(issue)]; isHeld {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(issue.State), "Blocked") ||
 			doctorBlockedIssueHasRecoveryPredicate(ctx, issue, recoveryConfig, timelineStore, capacityIssues) {
 			continue
@@ -190,7 +219,7 @@ func checkDoctorBlockedRecoveryLive(
 	}
 
 	detail := fmt.Sprintf("scanned %d blocked-recovery source candidate(s)", len(issues))
-	if len(candidates) == 0 && len(capacity) == 0 && len(withoutRecovery) == 0 {
+	if len(candidates) == 0 && len(held) == 0 && len(capacity) == 0 && len(withoutRecovery) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
@@ -199,6 +228,13 @@ func checkDoctorBlockedRecoveryLive(
 	}
 	if len(candidates) > 0 {
 		detail += "; " + doctorBlockedRecoveryCandidateSummaries(candidates)
+	}
+	if len(held) > 0 {
+		detail += fmt.Sprintf(
+			"; %d permanently-held blocked recovery issue(s) need human attention: %s",
+			len(held),
+			strings.Join(doctorBlockedRecoveryIssueLabels(held), ", "),
+		)
 	}
 	if len(capacity) > 0 {
 		detail += fmt.Sprintf(
@@ -215,6 +251,9 @@ func checkDoctorBlockedRecoveryLive(
 		)
 	}
 	hint := fmt.Sprintf("PR-condition matches are diagnostic only; runtime still requires the latest durable source-lane entry reason before recovery to %s. Detent separately recovers quota-parked issues after provider capacity returns.", targetState)
+	if len(held) > 0 {
+		hint += " Apply the remedy reported for each permanently-held recovery."
+	}
 	if len(withoutRecovery) > 0 {
 		hint += " Add a native dependency, structured human_action, or durable owner and recovery predicate before parking the issue in Blocked."
 	}
@@ -224,9 +263,14 @@ func checkDoctorBlockedRecoveryLive(
 		Detail:                    detail,
 		Hint:                      hint,
 		BlockedRecoveryCandidates: candidates,
+		PermanentlyHeldRecoveries: held,
 		BlockedWithoutRecovery:    withoutRecovery,
 		BackendCapacity:           capacity,
 	}
+}
+
+func doctorBlockedRecoveryIdentityKey(issue connector.Issue) string {
+	return strings.ToLower(strings.TrimSpace(doctorFirstNonBlank(issue.ID, issue.Identifier, issue.URL)))
 }
 
 func doctorParkedCapacityIssueLabels(diagnostics []doctorBackendCapacityDiagnostic) []string {

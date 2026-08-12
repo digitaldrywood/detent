@@ -62,7 +62,15 @@ type workflowLaneBlockedRecoveryMetadata struct {
 	CauseFingerprint string `json:"cause_fingerprint,omitempty"`
 	TargetState      string `json:"target_state,omitempty"`
 	RunMode          string `json:"run_mode,omitempty"`
+	IntentResumable  bool   `json:"intent_resumable,omitempty"`
 	Resumable        bool   `json:"resumable,omitempty"`
+	Reachability     string `json:"reachability,omitempty"`
+	HoldReason       string `json:"hold_reason,omitempty"`
+	OperatorRemedy   string `json:"operator_remedy,omitempty"`
+}
+
+func (m workflowLaneBlockedRecoveryMetadata) intentResumable() bool {
+	return m.IntentResumable || m.Resumable
 }
 
 type workflowLaneActionSignatureMetadata struct {

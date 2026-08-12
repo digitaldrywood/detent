@@ -719,24 +719,38 @@ const (
 
 type Blocked struct {
 	Issue
-	WorkerHost      string        `json:"worker_host,omitempty"`
-	WorkspacePath   string        `json:"workspace_path,omitempty"`
-	SessionID       string        `json:"session_id,omitempty"`
-	Error           string        `json:"error,omitempty"`
-	Source          BlockedSource `json:"source,omitempty"`
-	RecoveryReason  string        `json:"recovery_reason,omitempty"`
-	RecoveryTarget  string        `json:"recovery_target,omitempty"`
-	BlockedAt       *time.Time    `json:"blocked_at,omitempty"`
-	LastEventAt     *time.Time    `json:"last_event_at,omitempty"`
-	LastEvent       string        `json:"last_event,omitempty"`
-	LastMessage     string        `json:"last_message,omitempty"`
-	Attempt         int           `json:"attempt,omitempty"`
-	WorkAttemptID   int64         `json:"work_attempt_id,omitempty"`
-	DetentSessionID int64         `json:"detent_session_id,omitempty"`
-	Destination     string        `json:"destination,omitempty"`
-	Priority        int           `json:"priority,omitempty"`
-	PriorityName    string        `json:"priority_name,omitempty"`
-	StopReason      string        `json:"stop_reason,omitempty"`
+	WorkerHost              string               `json:"worker_host,omitempty"`
+	WorkspacePath           string               `json:"workspace_path,omitempty"`
+	SessionID               string               `json:"session_id,omitempty"`
+	Error                   string               `json:"error,omitempty"`
+	Source                  BlockedSource        `json:"source,omitempty"`
+	RecoveryAction          string               `json:"recovery_action,omitempty"`
+	RecoveryReason          string               `json:"recovery_reason,omitempty"`
+	RecoveryTarget          string               `json:"recovery_target,omitempty"`
+	RecoveryRemedy          string               `json:"recovery_remedy,omitempty"`
+	RecoveryReachability    string               `json:"recovery_reachability,omitempty"`
+	RecoveryIntentResumable bool                 `json:"recovery_intent_resumable,omitempty"`
+	NeedsHumanAttention     bool                 `json:"needs_human_attention,omitempty"`
+	RecoveryRoot            *BlockedRecoveryRoot `json:"recovery_root,omitempty"`
+	BlockedAt               *time.Time           `json:"blocked_at,omitempty"`
+	LastEventAt             *time.Time           `json:"last_event_at,omitempty"`
+	LastEvent               string               `json:"last_event,omitempty"`
+	LastMessage             string               `json:"last_message,omitempty"`
+	Attempt                 int                  `json:"attempt,omitempty"`
+	WorkAttemptID           int64                `json:"work_attempt_id,omitempty"`
+	DetentSessionID         int64                `json:"detent_session_id,omitempty"`
+	Destination             string               `json:"destination,omitempty"`
+	Priority                int                  `json:"priority,omitempty"`
+	PriorityName            string               `json:"priority_name,omitempty"`
+	StopReason              string               `json:"stop_reason,omitempty"`
+}
+
+type BlockedRecoveryRoot struct {
+	IssueID         string `json:"issue_id,omitempty"`
+	IssueIdentifier string `json:"issue_identifier,omitempty"`
+	IssueURL        string `json:"issue_url,omitempty"`
+	Reason          string `json:"reason"`
+	Remedy          string `json:"remedy,omitempty"`
 }
 
 type Completed struct {

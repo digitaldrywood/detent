@@ -2868,6 +2868,136 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	}
 }
 
+func TestDoctorBlockedRecoveryDistinguishesHeldFromDeferred(t *testing.T) {
+	t.Parallel()
+
+	held := doctorDependencyIssue("issue-held", nil)
+	held.Identifier = "digitaldrywood/detent#6"
+	held.WorkpadSignal = &workpad.Signal{
+		Source:  workpad.SourceStructured,
+		Invalid: &workpad.Invalid{Message: "status must be in_progress, blocked, or complete"},
+	}
+	dependent := doctorDependencyIssue("issue-dependent", []connector.BlockedRef{{ID: held.ID, Identifier: held.Identifier}})
+	deferred := doctorDependencyIssue("issue-deferred", []connector.BlockedRef{{Identifier: "digitaldrywood/detent#999"}})
+
+	tests := []struct {
+		name       string
+		issues     []connector.Issue
+		wantStatus doctorStatus
+		wantHeld   int
+	}{
+		{
+			name:       "held root is reported once while dependent is attributed to it",
+			issues:     []connector.Issue{dependent, held},
+			wantStatus: doctorWarn,
+			wantHeld:   1,
+		},
+		{
+			name:       "deferred dependency is not human attention",
+			issues:     []connector.Issue{deferred},
+			wantStatus: doctorOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			check := checkDoctorBlockedRecoveryLive(
+				t.Context(),
+				"Project alpha blocked recovery",
+				&fakeDoctorAutoPromoteConnector{issues: tt.issues},
+				validDoctorDependencyWorkflow(true),
+				time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+				nil,
+			)
+
+			if check.Status != tt.wantStatus || len(check.PermanentlyHeldRecoveries) != tt.wantHeld {
+				t.Fatalf("check = %#v", check)
+			}
+			if tt.wantHeld == 0 {
+				if strings.Contains(check.Detail, "needs human attention") {
+					t.Fatalf("Detail = %q", check.Detail)
+				}
+				return
+			}
+			diagnostic := check.PermanentlyHeldRecoveries[0]
+			if diagnostic.IssueIdentifier != held.Identifier || diagnostic.Action != "hold" || diagnostic.Reason != "invalid_workpad_signal" || !diagnostic.NeedsHumanAttention {
+				t.Fatalf("diagnostic = %#v", diagnostic)
+			}
+			if !strings.Contains(diagnostic.Remedy, "fresh-work lane") || !strings.Contains(diagnostic.Remedy, "no pull request") {
+				t.Fatalf("Remedy = %q", diagnostic.Remedy)
+			}
+			if strings.Contains(check.Detail, dependent.ID) {
+				t.Fatalf("Detail = %q, dependent must not appear as a second symptom", check.Detail)
+			}
+		})
+	}
+}
+
+func TestDoctorBlockedRecoveryClassifiesHumanHolds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*workflowconfig.Config)
+		issue      connector.Issue
+		wantReason string
+		wantRemedy string
+	}{
+		{
+			name: "structured human action",
+			issue: func() connector.Issue {
+				issue := doctorDependencyIssue("issue-human-action", nil)
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, HumanAction: "Approve the external deployment."}
+				return issue
+			}(),
+			wantReason: "human_action",
+			wantRemedy: "Approve the external deployment.",
+		},
+		{
+			name: "configured optout label",
+			configure: func(cfg *workflowconfig.Config) {
+				cfg.Agent.AutoPromote.OptoutLabel = "operator-review"
+			},
+			issue: func() connector.Issue {
+				issue := doctorDependencyIssue("issue-optout", nil)
+				issue.Labels = []string{"operator-review"}
+				return issue
+			}(),
+			wantReason: "human_action",
+			wantRemedy: "Complete the requested human action",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validDoctorDependencyWorkflow(true)
+			if tt.configure != nil {
+				tt.configure(&cfg)
+			}
+			check := checkDoctorBlockedRecoveryLive(
+				t.Context(),
+				"Project alpha blocked recovery",
+				&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{tt.issue}},
+				cfg,
+				time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+				nil,
+			)
+
+			if check.Status != doctorWarn || len(check.PermanentlyHeldRecoveries) != 1 {
+				t.Fatalf("check = %#v", check)
+			}
+			diagnostic := check.PermanentlyHeldRecoveries[0]
+			if diagnostic.Reason != tt.wantReason || !diagnostic.NeedsHumanAttention || !strings.Contains(diagnostic.Remedy, tt.wantRemedy) {
+				t.Fatalf("diagnostic = %#v", diagnostic)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
 	t.Parallel()
 

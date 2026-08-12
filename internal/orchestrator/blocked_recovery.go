@@ -239,10 +239,77 @@ func (o *Orchestrator) recoverBlockedIssues(
 		}
 		transitioned[issueID] = struct{}{}
 	}
+	attributeHeldBlockedRecoveryRoots(state)
 	if len(transitioned) == 0 {
 		return nil
 	}
 	return transitioned
+}
+
+func attributeHeldBlockedRecoveryRoots(state *State) {
+	if state == nil || len(state.Blocked) == 0 {
+		return
+	}
+	byID := make(map[string]string, len(state.Blocked))
+	byIdentifier := make(map[string]string, len(state.Blocked))
+	for key, entry := range state.Blocked {
+		if id := strings.ToLower(strings.TrimSpace(entry.Issue.ID)); id != "" {
+			byID[id] = key
+		}
+		if identifier := strings.ToLower(strings.TrimSpace(entry.Issue.Identifier)); identifier != "" {
+			byIdentifier[identifier] = key
+		}
+	}
+	for key, entry := range state.Blocked {
+		if !strings.EqualFold(strings.TrimSpace(entry.RecoveryAction), "defer") {
+			continue
+		}
+		root, ok := heldBlockedRecoveryRoot(key, state.Blocked, byID, byIdentifier, map[string]struct{}{})
+		if !ok {
+			continue
+		}
+		entry.RecoveryRoot = &root
+		state.Blocked[key] = entry
+	}
+}
+
+func heldBlockedRecoveryRoot(
+	key string,
+	blocked map[string]Blocked,
+	byID map[string]string,
+	byIdentifier map[string]string,
+	seen map[string]struct{},
+) (telemetry.BlockedRecoveryRoot, bool) {
+	if _, ok := seen[key]; ok {
+		return telemetry.BlockedRecoveryRoot{}, false
+	}
+	seen[key] = struct{}{}
+	entry, ok := blocked[key]
+	if !ok {
+		return telemetry.BlockedRecoveryRoot{}, false
+	}
+	if entry.NeedsHumanAttention {
+		return telemetry.BlockedRecoveryRoot{
+			IssueID:         strings.TrimSpace(entry.Issue.ID),
+			IssueIdentifier: strings.TrimSpace(entry.Issue.Identifier),
+			IssueURL:        strings.TrimSpace(entry.Issue.URL),
+			Reason:          strings.TrimSpace(entry.RecoveryReason),
+			Remedy:          strings.TrimSpace(entry.RecoveryRemedy),
+		}, true
+	}
+	for _, ref := range entry.Issue.BlockedBy {
+		blockerKey := byID[strings.ToLower(strings.TrimSpace(ref.ID))]
+		if blockerKey == "" {
+			blockerKey = byIdentifier[strings.ToLower(strings.TrimSpace(ref.Identifier))]
+		}
+		if blockerKey == "" {
+			continue
+		}
+		if root, found := heldBlockedRecoveryRoot(blockerKey, blocked, byID, byIdentifier, seen); found {
+			return root, true
+		}
+	}
+	return telemetry.BlockedRecoveryRoot{}, false
 }
 
 func blockedRecoveryReasonAllowed(cfg BlockedRecoveryConfig, reasonCode string) bool {
