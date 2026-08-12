@@ -97,6 +97,15 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			appendSchedulerDecisionSnapshot(state, telemetrySchedulerDecision(decision))
 		}
 	}
+	if statuses, ok := o.workAttempts.(store.ProjectDispatchStatusStore); ok {
+		status, err := statuses.ProjectDispatchStatus(ctx, projectID)
+		switch {
+		case err == nil:
+			state.DispatchStatus = status
+		case !errors.Is(err, store.ErrNotFound) && o.logger != nil:
+			o.logger.Warn("project dispatch status recovery failed", "project_id", projectID, "error", err)
+		}
+	}
 	o.recoverOrphanedAgentSessions(ctx, state, orphanedSessions, now)
 	o.recoverPendingOperatorStops(ctx, state, now)
 }

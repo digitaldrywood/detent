@@ -33,6 +33,7 @@ type State struct {
 	PoolAvailable            int
 	PoolDraining             bool
 	StrandedActiveThreshold  time.Duration
+	DispatchStallThreshold   time.Duration
 	AutoPromoteQuietDuration time.Duration
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
@@ -63,6 +64,7 @@ type State struct {
 	WorkAttempts             []telemetry.WorkAttempt
 	SchedulerDecisions       []telemetry.SchedulerDecision
 	DispatchEscalations      map[string]time.Time
+	DispatchStatus           store.ProjectDispatchStatus
 	Release                  releasepkg.Status
 	Claimed                  map[string]Claimed
 	Blocked                  map[string]Blocked
@@ -290,6 +292,7 @@ func newState(cfg Config) State {
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
 		MaxAgentsByState:         cloneStateLimits(cfg.MaxConcurrentAgentsByState),
 		StrandedActiveThreshold:  cfg.StrandedActiveThreshold,
+		DispatchStallThreshold:   cfg.DispatchStallThreshold,
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
@@ -342,6 +345,7 @@ func (s State) clone() State {
 		PoolAvailable:            s.PoolAvailable,
 		PoolDraining:             s.PoolDraining,
 		StrandedActiveThreshold:  s.StrandedActiveThreshold,
+		DispatchStallThreshold:   s.DispatchStallThreshold,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),
@@ -371,6 +375,7 @@ func (s State) clone() State {
 		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions:       cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
 		DispatchEscalations:      maps.Clone(s.DispatchEscalations),
+		DispatchStatus:           cloneProjectDispatchStatus(s.DispatchStatus),
 		Release:                  s.Release,
 		Running:                  make(map[string]Running, len(s.Running)),
 		Claimed:                  make(map[string]Claimed, len(s.Claimed)),
@@ -859,6 +864,18 @@ func cloneTelemetrySchedulerDecisions(values []telemetry.SchedulerDecision) []te
 		return nil
 	}
 	return append([]telemetry.SchedulerDecision(nil), values...)
+}
+
+func cloneProjectDispatchStatus(status store.ProjectDispatchStatus) store.ProjectDispatchStatus {
+	if status.AllSkippedSince != nil {
+		value := *status.AllSkippedSince
+		status.AllSkippedSince = &value
+	}
+	if status.LastSelectedAt != nil {
+		value := *status.LastSelectedAt
+		status.LastSelectedAt = &value
+	}
+	return status
 }
 
 func addTokenTotals(left, right TokenTotals) TokenTotals {

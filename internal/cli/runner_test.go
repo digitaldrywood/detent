@@ -1655,6 +1655,45 @@ func TestMergeSnapshotMergesSchedulerRuntimeRows(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotMergesFleetDispatchStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
+	alphaSelectedAt := now.Add(-4 * time.Hour)
+	betaSelectedAt := now.Add(-time.Hour)
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{ID: "alpha"},
+		Dispatch: telemetry.DispatchStatus{
+			CandidateCount: 2, SkippedCount: 2, LastSelectedAt: &alphaSelectedAt, Stalled: true, NeedsHumanAttention: true, WaitReason: "github_rest_capacity",
+		},
+		DispatchStalls: []telemetry.DispatchStatus{{CandidateCount: 2, Stalled: true, NeedsHumanAttention: true}},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{ID: "beta"},
+		Dispatch: telemetry.DispatchStatus{
+			CandidateCount: 1, SelectedCount: 1, LastSelectedAt: &betaSelectedAt,
+		},
+	})
+
+	if got.Dispatch.CandidateCount != 3 || got.Dispatch.SelectedCount != 1 || got.Dispatch.SkippedCount != 2 || !got.Dispatch.Stalled || !got.Dispatch.NeedsHumanAttention {
+		t.Fatalf("fleet Dispatch = %#v", got.Dispatch)
+	}
+	if got.Dispatch.LastSelectedAt == nil || !got.Dispatch.LastSelectedAt.Equal(betaSelectedAt) {
+		t.Fatalf("fleet LastSelectedAt = %#v, want %s", got.Dispatch.LastSelectedAt, betaSelectedAt)
+	}
+	if got.Dispatch.SecondsSinceLastSelected == nil || *got.Dispatch.SecondsSinceLastSelected != 3600 {
+		t.Fatalf("fleet SecondsSinceLastSelected = %#v, want 3600", got.Dispatch.SecondsSinceLastSelected)
+	}
+	if len(got.DispatchStalls) != 1 || got.DispatchStalls[0].ProjectID != "alpha" {
+		t.Fatalf("fleet DispatchStalls = %#v, want stamped alpha stall", got.DispatchStalls)
+	}
+	if len(got.Projects) != 2 || got.Projects[0].Dispatch.ProjectID != "alpha" || got.Projects[1].Dispatch.ProjectID != "beta" {
+		t.Fatalf("project dispatch snapshots = %#v", got.Projects)
+	}
+}
+
 func TestMergeSnapshotMergesDrainingShutdown(t *testing.T) {
 	t.Parallel()
 

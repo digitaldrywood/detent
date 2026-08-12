@@ -895,6 +895,8 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Running = append(current.Running, next.Running...)
 	current.WorkAttempts = append(current.WorkAttempts, next.WorkAttempts...)
 	current.SchedulerDecisions = append(current.SchedulerDecisions, next.SchedulerDecisions...)
+	current.Dispatch = mergeFleetDispatchStatus(current.Dispatch, next.Dispatch, next.GeneratedAt)
+	current.DispatchStalls = append(current.DispatchStalls, next.DispatchStalls...)
 	if !next.Release.IsZero() {
 		current.Releases = append(current.Releases, next.Release)
 		if current.Release.IsZero() {
@@ -1325,6 +1327,14 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 			snapshot.SchedulerDecisions[i].ProjectID = projectID
 		}
 	}
+	if strings.TrimSpace(snapshot.Dispatch.ProjectID) == "" {
+		snapshot.Dispatch.ProjectID = projectID
+	}
+	for i := range snapshot.DispatchStalls {
+		if strings.TrimSpace(snapshot.DispatchStalls[i].ProjectID) == "" {
+			snapshot.DispatchStalls[i].ProjectID = projectID
+		}
+	}
 	for i := range snapshot.BackendOutages {
 		if strings.TrimSpace(snapshot.BackendOutages[i].ProjectID) == "" {
 			snapshot.BackendOutages[i].ProjectID = projectID
@@ -1404,7 +1414,36 @@ func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 		Throughput: snapshot.Throughput,
 		Auth:       snapshot.Auth,
 		Refresh:    snapshot.Refresh,
+		Dispatch:   snapshot.Dispatch,
 	}
+}
+
+func mergeFleetDispatchStatus(current telemetry.DispatchStatus, next telemetry.DispatchStatus, now time.Time) telemetry.DispatchStatus {
+	merged := telemetry.DispatchStatus{
+		CandidateCount:      current.CandidateCount + next.CandidateCount,
+		SelectedCount:       current.SelectedCount + next.SelectedCount,
+		SkippedCount:        current.SkippedCount + next.SkippedCount,
+		Stalled:             current.Stalled || next.Stalled,
+		NeedsHumanAttention: current.NeedsHumanAttention || next.NeedsHumanAttention,
+	}
+	merged.LastSelectedAt = latestTime(current.LastSelectedAt, next.LastSelectedAt)
+	merged.ObservedAt = current.ObservedAt
+	if next.ObservedAt.After(merged.ObservedAt) {
+		merged.ObservedAt = next.ObservedAt
+	}
+	if merged.LastSelectedAt != nil && !now.IsZero() {
+		seconds := max(int64(now.Sub(*merged.LastSelectedAt)/time.Second), 0)
+		merged.SecondsSinceLastSelected = &seconds
+	}
+	if current.Stalled && next.Stalled && strings.TrimSpace(current.WaitReason) != strings.TrimSpace(next.WaitReason) {
+		return merged
+	}
+	if next.Stalled {
+		merged.WaitReason = next.WaitReason
+	} else if current.Stalled {
+		merged.WaitReason = current.WaitReason
+	}
+	return merged
 }
 
 func mergeProject(current, next telemetry.Project) telemetry.Project {

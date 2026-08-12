@@ -567,6 +567,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `intake.sources[].secret` | `string` | `none` | Conditional | is required for webhook sources |
 | `observability` | `object` | `see child fields` | No | None |
 | `observability.dashboard_enabled` | `boolean` | `true` | No | None |
+| `observability.dispatch_stall_threshold_seconds` | `integer` | `7200` | No | must be greater than 0 |
 | `observability.efficiency` | `object` | `see child fields` | No | None |
 | `observability.efficiency.anomaly_dwell_multiple` | `number` | `3` | No | must be greater than 0 |
 | `observability.efficiency.anomaly_sessions_multiple` | `number` | `3` | No | must be greater than 0 |

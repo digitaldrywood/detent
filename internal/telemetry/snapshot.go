@@ -32,6 +32,8 @@ type Snapshot struct {
 	Running                 []Running           `json:"running"`
 	WorkAttempts            []WorkAttempt       `json:"work_attempts,omitempty"`
 	SchedulerDecisions      []SchedulerDecision `json:"scheduler_decisions,omitempty"`
+	Dispatch                DispatchStatus      `json:"dispatch"`
+	DispatchStalls          []DispatchStatus    `json:"dispatch_stalls,omitempty"`
 	Release                 Release             `json:"release,omitzero"`
 	Releases                []Release           `json:"releases,omitempty"`
 	Queue                   []Queued            `json:"queue"`
@@ -237,6 +239,23 @@ type ProjectSnapshot struct {
 	Throughput TokenThroughput `json:"throughput"`
 	Auth       AuthHealth      `json:"auth,omitzero"`
 	Refresh    Refresh         `json:"refresh,omitzero"`
+	Dispatch   DispatchStatus  `json:"dispatch"`
+}
+
+type DispatchStatus struct {
+	ProjectID                string     `json:"project_id,omitempty"`
+	CandidateCount           int        `json:"candidate_count"`
+	SelectedCount            int        `json:"selected_count"`
+	SkippedCount             int        `json:"skipped_count"`
+	WaitReason               string     `json:"wait_reason,omitempty"`
+	AllSkippedSince          *time.Time `json:"all_skipped_since,omitempty"`
+	LastSelectedAt           *time.Time `json:"last_selected_at,omitempty"`
+	SecondsSinceLastSelected *int64     `json:"seconds_since_last_selected,omitempty"`
+	StallDurationSeconds     int64      `json:"stall_duration_seconds,omitempty"`
+	StallThresholdSeconds    int64      `json:"stall_threshold_seconds,omitempty"`
+	ObservedAt               time.Time  `json:"observed_at,omitzero"`
+	Stalled                  bool       `json:"stalled"`
+	NeedsHumanAttention      bool       `json:"needs_human_attention"`
 }
 
 type Release struct {

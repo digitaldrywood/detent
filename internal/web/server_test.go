@@ -6714,6 +6714,43 @@ func TestHealthReportsCICondition(t *testing.T) {
 	}
 }
 
+func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", true)
+	now := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
+	lastSelectedAt := now.Add(-4 * time.Hour)
+	stall := telemetry.DispatchStatus{
+		ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, WaitReason: "github_rest_capacity", LastSelectedAt: &lastSelectedAt, StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true,
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, Dispatch: stall, DispatchStalls: []telemetry.DispatchStatus{stall}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if health["status"] != "needs_attention" {
+		t.Fatalf("health status = %#v, want needs_attention", health["status"])
+	}
+	projects := health["projects"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["status"] != "needs_human_attention" {
+		t.Fatalf("health projects = %#v, want detent needs_human_attention", projects)
+	}
+	stalls := health["dispatch_stalls"].([]any)
+	if len(stalls) != 1 || nestedString(t, stalls[0].(map[string]any), "candidate_count") != "8" {
+		t.Fatalf("health dispatch_stalls = %#v", stalls)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	if nestedString(t, state, "dispatch", "last_selected_at") != lastSelectedAt.Format(time.RFC3339) {
+		t.Fatalf("state dispatch = %#v, want last_selected_at %s", state["dispatch"], lastSelectedAt)
+	}
+}
+
 func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.T) {
 	t.Parallel()
 

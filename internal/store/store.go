@@ -52,6 +52,7 @@ type Store interface {
 	WorkflowMetricsStore
 	ProvenanceStore
 	WorkAttemptStore
+	ProjectDispatchStatusStore
 	WorkAttemptCapacityReleaseStore
 	MergeRequiredCheckStore
 	OperatorStopStore
@@ -155,6 +156,11 @@ type WorkAttemptStore interface {
 
 type IssueSchedulerDecisionStore interface {
 	ListIssueSchedulerDecisions(context.Context, IssueSchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type ProjectDispatchStatusStore interface {
+	RecordProjectDispatchStatus(context.Context, ProjectDispatchStatus) error
+	ProjectDispatchStatus(context.Context, string) (ProjectDispatchStatus, error)
 }
 
 type WorkAttemptCapacityReleaseStore interface {
@@ -746,6 +752,18 @@ type SchedulerDecision struct {
 type SchedulerDecisionQuery struct {
 	ProjectID string
 	Limit     int
+}
+
+type ProjectDispatchStatus struct {
+	ProjectID            string
+	CandidateCount       int
+	CandidateFingerprint string
+	SelectedCount        int
+	SkippedCount         int
+	WaitReason           string
+	AllSkippedSince      *time.Time
+	LastSelectedAt       *time.Time
+	ObservedAt           time.Time
 }
 
 type IssueSchedulerDecisionQuery struct {

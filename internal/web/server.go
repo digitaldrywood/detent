@@ -1062,6 +1062,8 @@ func (s *Server) health(c echo.Context) error {
 	ciUnavailable := []telemetry.CICondition{}
 	stalenessWarnings := []telemetry.StalenessWarning{}
 	strandedActiveIssues := []telemetry.StrandedIssue{}
+	dispatch := telemetry.DispatchStatus{}
+	dispatchStalls := []telemetry.DispatchStatus{}
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
@@ -1069,6 +1071,8 @@ func (s *Server) health(c echo.Context) error {
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
 			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
 			strandedActiveIssues = append(strandedActiveIssues, snapshot.StrandedActiveIssues...)
+			dispatch = snapshot.Dispatch
+			dispatchStalls = append(dispatchStalls, snapshot.DispatchStalls...)
 			if snapshot.Shutdown.Draining {
 				status = "draining"
 				sessionsRemaining = snapshot.Shutdown.SessionsRemaining
@@ -1086,12 +1090,13 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
+	projectHealth = applyDispatchStallsToProjectHealth(projectHealth, dispatchStalls)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(ciUnavailable) > 0 {
+		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 {
 			status = "needs_attention"
 		}
 	}
@@ -1110,8 +1115,25 @@ func (s *Server) health(c echo.Context) error {
 		BackendOutages:    backendOutages,
 		StalenessWarnings: stalenessWarnings,
 		StrandedIssues:    strandedActiveIssues,
+		Dispatch:          dispatch,
+		DispatchStalls:    dispatchStalls,
 		Projects:          projectHealth,
 	})
+}
+
+func applyDispatchStallsToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus) []healthProject {
+	stalled := make(map[string]struct{}, len(stalls))
+	for _, stall := range stalls {
+		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
+			stalled[projectID] = struct{}{}
+		}
+	}
+	for index := range projects {
+		if _, ok := stalled[strings.TrimSpace(projects[index].ProjectID)]; ok {
+			projects[index].Status = "needs_human_attention"
+		}
+	}
+	return projects
 }
 
 func (s *Server) projectHealth() (string, []healthProject) {
@@ -1371,6 +1393,8 @@ type healthResponse struct {
 	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
 	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`
+	Dispatch          telemetry.DispatchStatus     `json:"dispatch"`
+	DispatchStalls    []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
 	Projects          []healthProject              `json:"projects,omitempty"`
 }
 

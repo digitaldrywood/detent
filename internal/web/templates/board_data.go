@@ -34,6 +34,7 @@ type boardAlertKind string
 const (
 	boardAlertKindLastKnown             boardAlertKind = "board-last-known"
 	boardAlertKindFailureBreaker        boardAlertKind = "project-failure-breaker"
+	boardAlertKindDispatchStall         boardAlertKind = "dispatch-stall"
 	boardAlertKindCIUnavailable         boardAlertKind = "ci-unavailable"
 	boardAlertKindStaleness             boardAlertKind = "staleness-warning"
 	boardAlertKindTrackerStale          boardAlertKind = "board-stale-data"
@@ -50,6 +51,7 @@ const (
 	boardAlertSeverityStaleness                        = 450
 	boardAlertSeverityFailureBreaker                   = 500
 	boardAlertSeverityCIUnavailable                    = 550
+	boardAlertSeverityDispatchStall                    = 575
 	boardAlertSeverityLastKnown                        = 600
 )
 
@@ -83,7 +85,7 @@ type boardAlertAction struct {
 }
 
 func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
-	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+6)
+	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+7)
 	if alert, ok := boardLastKnownAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
@@ -91,6 +93,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardCIUnavailableAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardDispatchStallAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	alerts = append(alerts, boardStalenessAlerts(snapshot.StalenessWarnings)...)
@@ -113,6 +118,48 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		return alerts[i].Severity > alerts[j].Severity
 	})
 	return alerts
+}
+
+func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if len(snapshot.DispatchStalls) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.DispatchStalls))
+	for index, stall := range snapshot.DispatchStalls {
+		projectID := strings.TrimSpace(stall.ProjectID)
+		if projectID == "" {
+			projectID = "Fleet"
+		}
+		detail := boardCountLabel(stall.CandidateCount, "candidate", "candidates") + " skipped for " + formatDuration(float64(stall.StallDurationSeconds))
+		if stall.LastSelectedAt != nil {
+			detail += " · last dispatch selected " + formatDuration(float64(valueOrZero(stall.SecondsSinceLastSelected))) + " ago"
+		}
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-dispatch-stall-" + boardAlertRowSlug(projectID, index),
+			Label:   projectID,
+			Summary: "Needs human attention",
+			Detail:  detail + " · wait reason: " + strings.TrimSpace(stall.WaitReason),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-dispatch-stall",
+		Kind:          boardAlertKindDispatchStall,
+		Severity:      boardAlertSeverityDispatchStall,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Dispatch stalled (" + boardCountLabel(len(snapshot.DispatchStalls), "project", "projects") + ")",
+		DetailSummary: "Eligible work is not moving and requires an operator decision.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func valueOrZero(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func boardCIUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {

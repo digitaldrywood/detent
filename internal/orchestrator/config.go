@@ -126,6 +126,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			Timeout:    durationFromMillis(cfg.Observability.Staleness.Webhook.TimeoutMS),
 		},
 		StrandedActiveThreshold: durationFromSeconds(cfg.Observability.StrandedActiveThresholdSeconds),
+		DispatchStallThreshold:  durationFromSeconds(cfg.Observability.DispatchStallThresholdSeconds),
 	}
 }
 
@@ -169,6 +170,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.StrandedActiveThreshold <= 0 {
 		cfg.StrandedActiveThreshold = durationFromSeconds(workflowconfig.DefaultStrandedActiveThresholdSeconds)
+	}
+	if cfg.DispatchStallThreshold <= 0 {
+		cfg.DispatchStallThreshold = durationFromSeconds(workflowconfig.DefaultDispatchStallThresholdSeconds)
 	}
 	if cfg.MergeWorkerStartupTimeout <= 0 {
 		cfg.MergeWorkerStartupTimeout = durationFromMillis(workflowconfig.DefaultMergeWorkerStartupTimeoutMS)

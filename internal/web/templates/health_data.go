@@ -44,6 +44,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		Footnote:  "GitHub quota bars turn amber at 90%; project budget bars warn at 80% and turn red at the cap.",
 		Rows:      append(append(healthRows(snapshot), healthActiveHoursRows(data)...), healthBudgetRows(data)...),
 	}
+	if len(snapshot.DispatchStalls) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Dispatch is stalled."
+		view.Detail = boardCountLabel(len(snapshot.DispatchStalls), "Project needs", "Projects need") + " human attention."
+		return view
+	}
 	if len(snapshot.CIUnavailable) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "CI is unavailable."
@@ -213,6 +219,9 @@ func healthBudgetRows(data DashboardData) []healthRow {
 
 func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows := make([]healthRow, 0, 4)
+	for _, stall := range snapshot.DispatchStalls {
+		rows = append(rows, healthDispatchStallRow(stall))
+	}
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
 	for _, warning := range snapshot.StalenessWarnings {
 		rows = append(rows, healthStalenessRow(warning))
@@ -258,6 +267,25 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthDispatchStallRow(stall telemetry.DispatchStatus) healthRow {
+	projectID := strings.TrimSpace(stall.ProjectID)
+	if projectID == "" {
+		projectID = "Fleet"
+	}
+	detail := boardCountLabel(stall.CandidateCount, "candidate", "candidates") + " skipped for " + formatDuration(float64(stall.StallDurationSeconds))
+	if waitReason := strings.TrimSpace(stall.WaitReason); waitReason != "" {
+		detail += " · " + waitReason
+	}
+	return healthRow{
+		ID:        "health-dispatch-stall-" + boardCardSlug(projectID),
+		Component: "Dispatch · " + projectID,
+		Kind:      primitives.KindErr,
+		Status:    "Needs attention",
+		Detail:    detail,
+		Resets:    "operator action",
+	}
 }
 
 func healthCIUnavailableRows(conditions []telemetry.CICondition) []healthRow {

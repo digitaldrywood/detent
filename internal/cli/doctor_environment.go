@@ -822,6 +822,8 @@ type doctorHealthResponse struct {
 	Workflows         []doctorHealthWorkflow       `json:"workflows"`
 	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings"`
 	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues"`
+	Dispatch          telemetry.DispatchStatus     `json:"dispatch"`
+	DispatchStalls    []telemetry.DispatchStatus   `json:"dispatch_stalls"`
 }
 
 type doctorHealthEnvironment struct {

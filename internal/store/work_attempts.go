@@ -451,6 +451,95 @@ func (s *sqliteStore) ListIssueSchedulerDecisions(ctx context.Context, query Iss
 	return decisions, nil
 }
 
+func (s *sqliteStore) RecordProjectDispatchStatus(ctx context.Context, status ProjectDispatchStatus) error {
+	projectID := strings.TrimSpace(status.ProjectID)
+	if projectID == "" {
+		return errors.New("project_id is required")
+	}
+	observedAt, err := requiredTimestamp("observed_at", status.ObservedAt)
+	if err != nil {
+		return err
+	}
+	allSkippedSince, err := nullableTimestamp("all_skipped_since", status.AllSkippedSince)
+	if err != nil {
+		return err
+	}
+	lastSelectedAt, err := nullableTimestamp("last_selected_at", status.LastSelectedAt)
+	if err != nil {
+		return err
+	}
+	row, err := s.queries.UpsertProjectDispatchStatus(ctx, sqlc.UpsertProjectDispatchStatusParams{
+		ProjectID:            projectID,
+		CandidateCount:       nonNegative(int64(status.CandidateCount)),
+		CandidateFingerprint: strings.TrimSpace(status.CandidateFingerprint),
+		SelectedCount:        nonNegative(int64(status.SelectedCount)),
+		SkippedCount:         nonNegative(int64(status.SkippedCount)),
+		WaitReason:           nullString(status.WaitReason),
+		AllSkippedSince:      allSkippedSince,
+		LastSelectedAt:       lastSelectedAt,
+		ObservedAt:           observedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("recording project dispatch status: %w", err)
+	}
+	if _, err := projectDispatchStatusFromRow(row); err != nil {
+		return fmt.Errorf("reading recorded project dispatch status: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ProjectDispatchStatus(ctx context.Context, projectID string) (ProjectDispatchStatus, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ProjectDispatchStatus{}, errors.New("project_id is required")
+	}
+	row, err := s.queries.GetProjectDispatchStatus(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectDispatchStatus{}, ErrNotFound
+	}
+	if err != nil {
+		return ProjectDispatchStatus{}, fmt.Errorf("reading project dispatch status: %w", err)
+	}
+	status, err := projectDispatchStatusFromRow(row)
+	if err != nil {
+		return ProjectDispatchStatus{}, fmt.Errorf("decoding project dispatch status: %w", err)
+	}
+	return status, nil
+}
+
+func projectDispatchStatusFromRow(row sqlc.ProjectDispatchStatus) (ProjectDispatchStatus, error) {
+	allSkippedSince, err := parseOptionalTimestamp("all_skipped_since", row.AllSkippedSince)
+	if err != nil {
+		return ProjectDispatchStatus{}, err
+	}
+	lastSelectedAt, err := parseOptionalTimestamp("last_selected_at", row.LastSelectedAt)
+	if err != nil {
+		return ProjectDispatchStatus{}, err
+	}
+	observedAt, err := parseTimestamp("observed_at", row.ObservedAt)
+	if err != nil {
+		return ProjectDispatchStatus{}, err
+	}
+	return ProjectDispatchStatus{
+		ProjectID:            row.ProjectID,
+		CandidateCount:       int(row.CandidateCount),
+		CandidateFingerprint: row.CandidateFingerprint,
+		SelectedCount:        int(row.SelectedCount),
+		SkippedCount:         int(row.SkippedCount),
+		WaitReason:           row.WaitReason.String,
+		AllSkippedSince:      optionalTimePointer(allSkippedSince),
+		LastSelectedAt:       optionalTimePointer(lastSelectedAt),
+		ObservedAt:           observedAt,
+	}, nil
+}
+
+func optionalTimePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
+}
+
 func workAttemptsFromRows(rows []sqlc.WorkAttempt) ([]WorkAttempt, error) {
 	attempts := make([]WorkAttempt, 0, len(rows))
 	for _, row := range rows {
