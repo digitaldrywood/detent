@@ -136,6 +136,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	planner := o.dispatchPlanner()
 	var lastDispatchFailure string
 	decisions := make([]dispatchPlanDecision, 0, len(issues))
+	outcomes := make(map[string]dispatchIssueOutcome, len(issues))
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
 			return o.hydrateDispatchIssue(ctx, issue)
@@ -148,6 +149,9 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		},
 		dispatch: func(action dispatchAction) bool {
 			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
+			if identity := workflowIssueIdentityKey(action.issue); identity != "" {
+				outcomes[identity] = outcome
+			}
 			if !outcome.dispatched {
 				lastDispatchFailure = outcome.reason
 			} else {
@@ -177,7 +181,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			o.logDispatchPlanDecision(ctx, state, now, decision)
 		},
 	})
-	o.observeProjectDispatchStatus(ctx, state, issues, decisions, now)
+	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
 }
 
 func dispatchFailureRetryReason(reason string) string {

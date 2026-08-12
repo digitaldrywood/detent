@@ -17,6 +17,7 @@ func (o *Orchestrator) observeProjectDispatchStatus(
 	state *State,
 	candidates []connector.Issue,
 	decisions []dispatchPlanDecision,
+	outcomes map[string]dispatchIssueOutcome,
 	now time.Time,
 ) {
 	if o == nil || state == nil || now.IsZero() {
@@ -27,6 +28,7 @@ func (o *Orchestrator) observeProjectDispatchStatus(
 		strings.TrimSpace(o.cfg.Project.ID),
 		candidates,
 		decisions,
+		outcomes,
 		now,
 	)
 	state.DispatchStatus = status
@@ -44,22 +46,31 @@ func projectDispatchStatusFromCycle(
 	projectID string,
 	candidates []connector.Issue,
 	decisions []dispatchPlanDecision,
+	outcomes map[string]dispatchIssueOutcome,
 	now time.Time,
 ) store.ProjectDispatchStatus {
 	now = now.UTC().Truncate(time.Second)
+	latest := make(map[string]dispatchPlanDecision, len(decisions))
+	for _, decision := range decisions {
+		if identity := workflowIssueIdentityKey(decision.Issue); identity != "" {
+			latest[identity] = decision
+		}
+	}
 	identities := dispatchCandidateIdentities(candidates)
+	tracked := identities[:0]
+	for _, identity := range identities {
+		if decision, ok := latest[identity]; ok && dispatchStatusExcludesCandidate(decision) {
+			continue
+		}
+		tracked = append(tracked, identity)
+	}
+	identities = tracked
 	status := store.ProjectDispatchStatus{
 		ProjectID:            strings.TrimSpace(projectID),
 		CandidateCount:       len(identities),
 		CandidateFingerprint: dispatchCandidateFingerprint(identities),
 		LastSelectedAt:       cloneTimePointer(previous.LastSelectedAt),
 		ObservedAt:           now,
-	}
-	latest := make(map[string]dispatchPlanDecision, len(decisions))
-	for _, decision := range decisions {
-		if identity := workflowIssueIdentityKey(decision.Issue); identity != "" {
-			latest[identity] = decision
-		}
 	}
 
 	commonWaitReason := ""
@@ -70,13 +81,21 @@ func projectDispatchStatusFromCycle(
 			allSkipped = false
 			continue
 		}
+		waitReason := ""
 		if decision.Selected {
-			status.SelectedCount++
-			allSkipped = false
-			continue
+			outcome, attempted := outcomes[identity]
+			if attempted && outcome.dispatched {
+				status.SelectedCount++
+				allSkipped = false
+				continue
+			}
+			if attempted {
+				waitReason = schedulerDecisionWaitReason(outcome.reason)
+			}
+		} else {
+			waitReason = schedulerDecisionWaitReason(decision.SkipReason)
 		}
 		status.SkippedCount++
-		waitReason := schedulerDecisionWaitReason(decision.SkipReason)
 		if waitReason == "" {
 			allSkipped = false
 			continue
@@ -104,6 +123,18 @@ func projectDispatchStatusFromCycle(
 		status.AllSkippedSince = &now
 	}
 	return status
+}
+
+func dispatchStatusExcludesCandidate(decision dispatchPlanDecision) bool {
+	if decision.Selected {
+		return false
+	}
+	switch strings.TrimSpace(decision.SkipReason) {
+	case dispatchSkipAlreadyRunning, dispatchSkipAlreadyClaimed:
+		return true
+	default:
+		return false
+	}
 }
 
 func dispatchCandidateIdentities(candidates []connector.Issue) []string {

@@ -17,13 +17,15 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 	fingerprint := dispatchCandidateFingerprint(dispatchCandidateIdentities([]connector.Issue{alpha, beta}))
 
 	tests := []struct {
-		name       string
-		previous   store.ProjectDispatchStatus
-		candidates []connector.Issue
-		decisions  []dispatchPlanDecision
-		wantCount  int
-		wantReason string
-		wantStall  bool
+		name        string
+		previous    store.ProjectDispatchStatus
+		candidates  []connector.Issue
+		decisions   []dispatchPlanDecision
+		outcomes    map[string]dispatchIssueOutcome
+		wantCount   int
+		wantSkipped int
+		wantReason  string
+		wantStall   bool
 	}{
 		{
 			name: "no candidates is healthy",
@@ -39,6 +41,7 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			name:       "candidate selected is healthy",
 			candidates: []connector.Issue{alpha},
 			decisions:  []dispatchPlanDecision{{Issue: alpha, Selected: true}},
+			outcomes:   dispatchStatusOutcomes(alpha, dispatchIssueOutcome{dispatched: true}),
 			wantCount:  1,
 		},
 		{
@@ -55,8 +58,9 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 				{Issue: alpha, SkipReason: dispatchSkipGitHubRESTCapacity},
 				{Issue: beta, SkipReason: dispatchSkipGitHubRESTCapacity},
 			},
-			wantCount:  2,
-			wantReason: dispatchSkipGitHubRESTCapacity,
+			wantCount:   2,
+			wantSkipped: 2,
+			wantReason:  dispatchSkipGitHubRESTCapacity,
 		},
 		{
 			name: "uniform skips over threshold are stalled",
@@ -72,19 +76,39 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 				{Issue: alpha, SkipReason: dispatchSkipGitHubRESTCapacity},
 				{Issue: beta, SkipReason: dispatchSkipGitHubRESTCapacity},
 			},
-			wantCount:  2,
-			wantReason: dispatchSkipGitHubRESTCapacity,
-			wantStall:  true,
+			wantCount:   2,
+			wantSkipped: 2,
+			wantReason:  dispatchSkipGitHubRESTCapacity,
+			wantStall:   true,
+		},
+		{
+			name:        "failed selection does not advance dispatch",
+			candidates:  []connector.Issue{alpha},
+			decisions:   []dispatchPlanDecision{{Issue: alpha, Selected: true}},
+			outcomes:    dispatchStatusOutcomes(alpha, dispatchIssueOutcome{reason: dispatchIssueFailureClaimFailed}),
+			wantCount:   1,
+			wantSkipped: 1,
+			wantReason:  dispatchIssueFailureClaimFailed,
+		},
+		{
+			name:       "already running candidate is healthy idle",
+			candidates: []connector.Issue{alpha},
+			decisions:  []dispatchPlanDecision{{Issue: alpha, SkipReason: dispatchSkipAlreadyRunning}},
+		},
+		{
+			name:       "already claimed candidate is healthy idle",
+			candidates: []connector.Issue{alpha},
+			decisions:  []dispatchPlanDecision{{Issue: alpha, SkipReason: dispatchSkipAlreadyClaimed}},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			status := projectDispatchStatusFromCycle(tt.previous, "detent", tt.candidates, tt.decisions, now)
+			status := projectDispatchStatusFromCycle(tt.previous, "detent", tt.candidates, tt.decisions, tt.outcomes, now)
 			got := dispatchStatusSnapshot(status, threshold, now)
-			if got.CandidateCount != tt.wantCount || got.WaitReason != tt.wantReason || got.Stalled != tt.wantStall {
-				t.Fatalf("dispatch status = %#v, want count=%d reason=%q stalled=%t", got, tt.wantCount, tt.wantReason, tt.wantStall)
+			if got.CandidateCount != tt.wantCount || got.SkippedCount != tt.wantSkipped || got.WaitReason != tt.wantReason || got.Stalled != tt.wantStall {
+				t.Fatalf("dispatch status = %#v, want count=%d skipped=%d reason=%q stalled=%t", got, tt.wantCount, tt.wantSkipped, tt.wantReason, tt.wantStall)
 			}
 			if got.NeedsHumanAttention != tt.wantStall {
 				t.Fatalf("NeedsHumanAttention = %t, want %t", got.NeedsHumanAttention, tt.wantStall)
@@ -124,12 +148,20 @@ func TestProjectDispatchStatusMixedProjects(t *testing.T) {
 	}
 
 	for _, project := range projects {
-		status := projectDispatchStatusFromCycle(project.previous, project.id, []connector.Issue{candidate}, []dispatchPlanDecision{project.decision}, now)
+		outcomes := map[string]dispatchIssueOutcome(nil)
+		if project.id == "moving" {
+			outcomes = dispatchStatusOutcomes(candidate, dispatchIssueOutcome{dispatched: true})
+		}
+		status := projectDispatchStatusFromCycle(project.previous, project.id, []connector.Issue{candidate}, []dispatchPlanDecision{project.decision}, outcomes, now)
 		got := dispatchStatusSnapshot(status, 2*time.Hour, now)
 		if got.Stalled != project.stalled {
 			t.Fatalf("project %s stalled = %t, want %t", project.id, got.Stalled, project.stalled)
 		}
 	}
+}
+
+func dispatchStatusOutcomes(issue connector.Issue, outcome dispatchIssueOutcome) map[string]dispatchIssueOutcome {
+	return map[string]dispatchIssueOutcome{workflowIssueIdentityKey(issue): outcome}
 }
 
 func dispatchStatusTimePointer(value time.Time) *time.Time {
