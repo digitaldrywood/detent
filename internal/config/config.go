@@ -234,10 +234,11 @@ type BlockerAutoPromote struct {
 }
 
 type Identity struct {
-	Name          string `yaml:"name"`
-	GitHubLogin   string `yaml:"github_login,omitempty"`
-	OwnershipMode string `yaml:"ownership_mode,omitempty"`
-	OwnerField    string `yaml:"owner_field,omitempty"`
+	Name             string `yaml:"name"`
+	GitHubLogin      string `yaml:"github_login,omitempty"`
+	OwnershipMode    string `yaml:"ownership_mode,omitempty"`
+	AssigneeRequired bool   `yaml:"assignee_required,omitempty"`
+	OwnerField       string `yaml:"owner_field,omitempty"`
 }
 
 type Polling struct {
@@ -865,6 +866,7 @@ func (i Identity) Configured() bool {
 	return strings.TrimSpace(i.Name) != "" ||
 		strings.TrimSpace(i.GitHubLogin) != "" ||
 		strings.TrimSpace(i.OwnershipMode) != "" ||
+		i.AssigneeRequired ||
 		strings.TrimSpace(i.OwnerField) != ""
 }
 

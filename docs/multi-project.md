@@ -362,6 +362,12 @@ a fresh lease, the issue is skipped. When the lease timestamp is stale by
 refreshes running claim leases every `heartbeat_seconds`; that value must be
 greater than zero and less than or equal to `ttl_seconds`.
 
+Setting `identity.assignee_required: true` separately makes an assignee a
+dispatch eligibility requirement. The default is `false` so upgrading Detent
+cannot silently make an existing `ownership_mode: assignee` declaration begin
+blocking unassigned work. Run `detent doctor` before enabling the requirement;
+it lists active issues that would stop dispatching.
+
 Task-to-model routing also lives in `detent.yaml`. If `agents.backends` is
 omitted, routes can reference the legacy `codex` backend built from the top-level
 `codex` block. Routes are evaluated in order, skipping defaults first; the first

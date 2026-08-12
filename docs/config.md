@@ -547,6 +547,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `hooks.shell` | `string` | `platform default shell` | No | None |
 | `hooks.timeout_ms` | `integer` | `60000` | No | must be greater than 0 |
 | `identity` | `object` | `see child fields` | No | None |
+| `identity.assignee_required` | `boolean` | `false` | No | None |
 | `identity.github_login` | `string` | `none` | No | None |
 | `identity.name` | `string` | `none` | Conditional | must not be blank |
 | `identity.owner_field` | `string` | `none` | No | must be blank when identity.ownership_mode is assignee |

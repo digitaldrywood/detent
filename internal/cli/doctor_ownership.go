@@ -63,7 +63,19 @@ func checkDoctorOwnershipEligibility(
 		})
 	}
 	if len(diagnostics) == 0 {
-		return doctorCheck{Name: name, Status: doctorOK, Detail: "all label-eligible active issues have an assignee"}
+		if identity.AssigneeRequired {
+			return doctorCheck{Name: name, Status: doctorOK, Detail: "all label-eligible active issues have an assignee"}
+		}
+		return doctorCheck{Name: name, Status: doctorOK, Detail: "ownership eligibility compatibility grace is active; no issue would be blocked by identity.assignee_required"}
+	}
+	if !identity.AssigneeRequired {
+		return doctorCheck{
+			Name:               name,
+			Status:             doctorWarn,
+			Detail:             fmt.Sprintf("%d label-eligible active issue(s) would stop dispatching if identity.assignee_required were enabled; compatibility grace is active and dispatch remains eligible", len(diagnostics)),
+			Hint:               "Assign each reported issue before setting identity.assignee_required: true, then rerun detent doctor.",
+			OwnershipAttention: diagnostics,
+		}
 	}
 
 	return doctorCheck{
