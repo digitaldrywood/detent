@@ -2801,6 +2801,78 @@ func TestRunnerFinishSessionWarnsOnImplausibleCompletedUsage(t *testing.T) {
 	}
 }
 
+func TestRunnerFinishSessionRecordsBudgetProjectionOvershoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		projectedCost float64
+		inputTokens   int64
+		wantOvershoot float64
+		wantWarning   bool
+	}{
+		{name: "actual cost exceeds admitted projection", projectedCost: 0.10, inputTokens: 20, wantOvershoot: 0.10, wantWarning: true},
+		{name: "actual cost stays below admitted projection", projectedCost: 0.25, inputTokens: 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			sessionStore := &fakeSessionStore{sessionID: 1757}
+			r := &Runner{
+				projectID: "detent",
+				store:     sessionStore,
+				pricing: budget.PricingTable{
+					"gpt-test": {USDPerInputToken: 0.01},
+				},
+				logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			startedAt := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+			err := r.finishSession(
+				context.Background(),
+				1757,
+				true,
+				91,
+				connector.Issue{ID: "issue-1757", Identifier: "digitaldrywood/detent#1757"},
+				startedAt,
+				startedAt.Add(time.Minute),
+				RunResult{
+					FinalState:       FinalStateCompleted,
+					Tokens:           TokenTotals{InputTokens: tt.inputTokens, TotalTokens: tt.inputTokens, RuntimeSeconds: 60},
+					budgetProjection: &dispatchBudgetProjection{CostUSD: tt.projectedCost},
+				},
+				"gpt-test",
+				"codex",
+				1,
+				AgentTurnResult{},
+				0,
+			)
+			if err != nil {
+				t.Fatalf("finishSession() error = %v", err)
+			}
+			if sessionStore.usage.ProjectedCostUSD == nil || math.Abs(*sessionStore.usage.ProjectedCostUSD-tt.projectedCost) > 0.000001 {
+				t.Fatalf("ProjectedCostUSD = %v, want %.2f", sessionStore.usage.ProjectedCostUSD, tt.projectedCost)
+			}
+			if math.Abs(sessionStore.usage.ProjectionOvershootUSD-tt.wantOvershoot) > 0.000001 {
+				t.Fatalf("ProjectionOvershootUSD = %.6f, want %.6f", sessionStore.usage.ProjectionOvershootUSD, tt.wantOvershoot)
+			}
+			gotWarning := strings.Contains(logs.String(), "worker_budget_projection_overshoot")
+			if gotWarning != tt.wantWarning {
+				t.Fatalf("overshoot warning present = %t, want %t\n%s", gotWarning, tt.wantWarning, logs.String())
+			}
+			if tt.wantWarning {
+				for _, want := range []string{"projected_cost_usd=0.1", "actual_cost_usd=0.2", "projection_overshoot_usd=0.1"} {
+					if !strings.Contains(logs.String(), want) {
+						t.Fatalf("overshoot warning missing %q:\n%s", want, logs.String())
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestLogRuntimeIdentityChangeUsesCanonicalFieldsWithoutPayloadSecrets(t *testing.T) {
 	t.Parallel()
 

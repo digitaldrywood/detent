@@ -528,12 +528,14 @@ INSERT INTO usage_events (
   total_tokens,
   model_context_window,
   cost_usd,
+  projected_cost_usd,
+  projection_overshoot_usd,
   runtime_seconds,
   started_at,
   finished_at,
   event_day,
   outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetUsageEvent :one

@@ -283,8 +283,12 @@ func (p dispatchPlanner) retryAction(
 		modelPermitRequired,
 	)
 	if !decision.dispatchable {
-		if p.budgetCooldownActive(state, issue.ID, now) {
-			p.rescheduleRetry(state, retry, now, "budget cooldown active", false)
+		if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
+			if reason == dispatchSkipBudgetCooldown {
+				p.rescheduleRetry(state, retry, now, "budget cooldown active", false)
+			} else {
+				p.parkBudgetHardHold(state, issue.ID)
+			}
 			return dispatchAction{}, false, decision.reason
 		}
 		if !p.slotsAvailableForModelRequirement(issue, state, retry.WorkerHost, modelPermitRequired) {
@@ -418,16 +422,22 @@ func (p dispatchPlanner) pruneInactiveIssueBudgetRefusals(state *State, candidat
 	}
 }
 
-func (p dispatchPlanner) budgetCooldownActive(state *State, issueID string, now time.Time) bool {
+func (p dispatchPlanner) budgetRefusalWaitReason(state *State, issueID string, now time.Time) string {
 	if p.cfg.subscriptionBilling() {
-		return false
+		return ""
 	}
 	refusal, ok := state.BudgetRefusals[issueID]
 	if !ok {
-		return false
+		return ""
 	}
 
-	return p.budgetRefusalActive(refusal, now, nil, nil)
+	if !p.budgetRefusalActive(refusal, now, nil, nil) {
+		return ""
+	}
+	if refusal.Code == string(budget.ReasonPerIssueMaxUSD) {
+		return dispatchSkipBudgetHardHold
+	}
+	return dispatchSkipBudgetCooldown
 }
 
 func (p dispatchPlanner) budgetRefusalActive(
@@ -549,6 +559,7 @@ const (
 	dispatchSkipAlreadyClaimed           = "already_claimed"
 	dispatchSkipBlocked                  = "blocked"
 	dispatchSkipBudgetCooldown           = "budget_cooldown"
+	dispatchSkipBudgetHardHold           = "budget_hard_hold"
 	dispatchSkipLocalSlotUnavailable     = "local_slot_unavailable"
 	dispatchSkipWorkerHostUnavailable    = "worker_host_unavailable"
 	dispatchSkipGlobalCapacityFull       = "global_capacity_full"
@@ -662,8 +673,8 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if _, ok := state.Blocked[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipBlocked}
 	}
-	if p.budgetCooldownActive(state, issue.ID, now) {
-		return dispatchableDecision{reason: dispatchSkipBudgetCooldown}
+	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
+		return dispatchableDecision{reason: reason}
 	}
 	if p.hardAvailableSlots(state) == 0 {
 		return dispatchableDecision{reason: dispatchSkipGlobalCapacityFull}
@@ -962,6 +973,13 @@ func (p dispatchPlanner) releaseIssue(state *State, issueID string) {
 	delete(state.Blocked, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+func (p dispatchPlanner) parkBudgetHardHold(state *State, issueID string) {
+	cancelRunning(state, issueID)
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
 }
 
 func (p dispatchPlanner) releaseClaim(state *State, issueID string) {

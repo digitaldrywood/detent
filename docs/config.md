@@ -324,6 +324,15 @@ Run `go generate ./...` after changing the config structs, defaults, or
 validators. `make check` compares the committed generated artifacts with fresh
 rendering and fails on drift.
 
+`budget.per_issue_max_usd` and `agent.budget.per_issue_max_usd` are
+estimate-based admission backstops, not mid-session spend ceilings. Detent
+checks cumulative issue spend plus a preflight session estimate before starting
+the agent. Actual session cost can exceed that estimate and the configured
+backstop. Once the next projected dispatch would exceed the backstop, Detent
+parks the issue on a hard hold until an operator raises or disables the cap, or
+explicitly retries after resetting the hold. `refusal_cooldown_seconds` applies
+only to resettable budget pacing and never clears a per-issue hard hold.
+
 <!-- BEGIN GENERATED CONFIG REFERENCE -->
 
 | Key | Type | Default | Required | Validation |

@@ -579,25 +579,27 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 	}
 
 	event, err := s.queries.CreateUsageEvent(ctx, sqlc.CreateUsageEventParams{
-		ProjectID:             projectID,
-		RunID:                 nullPositiveInt64(attrs.RunID),
-		SessionID:             nullPositiveInt64(attrs.SessionID),
-		IssueID:               nullString(attrs.IssueID),
-		Identifier:            nullString(attrs.Identifier),
-		PrNumber:              nullOptionalInt64(attrs.PRNumber),
-		Model:                 strings.TrimSpace(attrs.Model),
-		InputTokens:           nonNegative(attrs.InputTokens),
-		CachedInputTokens:     nullNonNegativeInt64(attrs.CachedInputTokens),
-		OutputTokens:          nonNegative(attrs.OutputTokens),
-		ReasoningOutputTokens: nullNonNegativeInt64(attrs.ReasoningOutputTokens),
-		TotalTokens:           nonNegative(attrs.TotalTokens),
-		ModelContextWindow:    nullOptionalInt64(attrs.ModelContextWindow),
-		CostUsd:               nonNegativeFloat(attrs.CostUSD),
-		RuntimeSeconds:        nonNegative(attrs.RuntimeSeconds),
-		StartedAt:             startedAt,
-		FinishedAt:            finishedAt,
-		EventDay:              attrs.FinishedAt.UTC().Format("2006-01-02"),
-		Outcome:               outcome,
+		ProjectID:              projectID,
+		RunID:                  nullPositiveInt64(attrs.RunID),
+		SessionID:              nullPositiveInt64(attrs.SessionID),
+		IssueID:                nullString(attrs.IssueID),
+		Identifier:             nullString(attrs.Identifier),
+		PrNumber:               nullOptionalInt64(attrs.PRNumber),
+		Model:                  strings.TrimSpace(attrs.Model),
+		InputTokens:            nonNegative(attrs.InputTokens),
+		CachedInputTokens:      nullNonNegativeInt64(attrs.CachedInputTokens),
+		OutputTokens:           nonNegative(attrs.OutputTokens),
+		ReasoningOutputTokens:  nullNonNegativeInt64(attrs.ReasoningOutputTokens),
+		TotalTokens:            nonNegative(attrs.TotalTokens),
+		ModelContextWindow:     nullOptionalInt64(attrs.ModelContextWindow),
+		CostUsd:                nonNegativeFloat(attrs.CostUSD),
+		ProjectedCostUsd:       nullableNonNegativeFloat(attrs.ProjectedCostUSD),
+		ProjectionOvershootUsd: nonNegativeFloat(attrs.ProjectionOvershootUSD),
+		RuntimeSeconds:         nonNegative(attrs.RuntimeSeconds),
+		StartedAt:              startedAt,
+		FinishedAt:             finishedAt,
+		EventDay:               attrs.FinishedAt.UTC().Format("2006-01-02"),
+		Outcome:                outcome,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("recording usage event: %w", err)
@@ -1409,6 +1411,13 @@ func nonNegativeFloat(value float64) float64 {
 		return 0
 	}
 	return value
+}
+
+func nullableNonNegativeFloat(value *float64) sql.NullFloat64 {
+	if value == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: nonNegativeFloat(*value), Valid: true}
 }
 
 func positiveWeight(value int) int {

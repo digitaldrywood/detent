@@ -23,17 +23,19 @@ func TestCheckerCheckDispatch(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		cfg        Config
-		spend      *fakeSpendStore
-		req        DispatchRequest
-		wantCode   ReasonCode
-		wantSpend  float64
-		wantMax    float64
-		wantErr    string
-		wantAllow  bool
-		wantDaily  int
-		wantIssues int
+		name        string
+		cfg         Config
+		spend       *fakeSpendStore
+		req         DispatchRequest
+		wantCode    ReasonCode
+		wantSpend   float64
+		wantMax     float64
+		wantErr     string
+		wantAllow   bool
+		wantCost    float64
+		wantProject bool
+		wantDaily   int
+		wantIssues  int
 	}{
 		{
 			name:      "disabled budget allows without spend store",
@@ -69,10 +71,12 @@ func TestCheckerCheckDispatch(t *testing.T) {
 				Enabled:      true,
 				PerDayMaxUSD: 0.01,
 			},
-			spend:     &fakeSpendStore{},
-			req:       DispatchRequest{Model: "missing-model", Now: now, Estimate: TokenEstimate{InputTokens: 10}},
-			wantAllow: true,
-			wantDaily: 1,
+			spend:       &fakeSpendStore{},
+			req:         DispatchRequest{Model: "missing-model", Now: now, Estimate: TokenEstimate{InputTokens: 10}},
+			wantAllow:   true,
+			wantCost:    0.00005,
+			wantProject: true,
+			wantDaily:   1,
 		},
 		{
 			name: "daily cap refuses when projection exceeds limit",
@@ -96,10 +100,12 @@ func TestCheckerCheckDispatch(t *testing.T) {
 				Now:        now,
 				Estimate:   TokenEstimate{InputTokens: 10},
 			},
-			wantCode:  ReasonPerDayMaxUSD,
-			wantSpend: 1.05,
-			wantMax:   1.0,
-			wantDaily: 1,
+			wantCode:    ReasonPerDayMaxUSD,
+			wantSpend:   1.05,
+			wantMax:     1.0,
+			wantCost:    0.1,
+			wantProject: true,
+			wantDaily:   1,
 		},
 		{
 			name: "per issue cap refuses only matching issue spend",
@@ -125,10 +131,12 @@ func TestCheckerCheckDispatch(t *testing.T) {
 				Now:        now,
 				Estimate:   TokenEstimate{InputTokens: 10},
 			},
-			wantCode:   ReasonPerIssueMaxUSD,
-			wantSpend:  0.55,
-			wantMax:    0.5,
-			wantIssues: 1,
+			wantCode:    ReasonPerIssueMaxUSD,
+			wantSpend:   0.55,
+			wantMax:     0.5,
+			wantCost:    0.1,
+			wantProject: true,
+			wantIssues:  1,
 		},
 		{
 			name: "per issue cap uses identifier when issue id is missing",
@@ -151,10 +159,12 @@ func TestCheckerCheckDispatch(t *testing.T) {
 				Now:        now,
 				Estimate:   TokenEstimate{InputTokens: 10},
 			},
-			wantCode:   ReasonPerIssueMaxUSD,
-			wantSpend:  0.55,
-			wantMax:    0.5,
-			wantIssues: 1,
+			wantCode:    ReasonPerIssueMaxUSD,
+			wantSpend:   0.55,
+			wantMax:     0.5,
+			wantCost:    0.1,
+			wantProject: true,
+			wantIssues:  1,
 		},
 		{
 			name: "caps allow when projected spend is below limits",
@@ -170,9 +180,11 @@ func TestCheckerCheckDispatch(t *testing.T) {
 				Now:      now,
 				Estimate: TokenEstimate{InputTokens: 10},
 			},
-			wantAllow:  true,
-			wantDaily:  1,
-			wantIssues: 1,
+			wantAllow:   true,
+			wantCost:    0.1,
+			wantProject: true,
+			wantDaily:   1,
+			wantIssues:  1,
 		},
 		{
 			name: "enabled cap requires spend store",
@@ -219,6 +231,12 @@ func TestCheckerCheckDispatch(t *testing.T) {
 
 			if decision.Allowed != tt.wantAllow {
 				t.Fatalf("Decision.Allowed = %v, want %v", decision.Allowed, tt.wantAllow)
+			}
+			if got := decision.Projection != nil; got != tt.wantProject {
+				t.Fatalf("Decision.Projection present = %t, want %t", got, tt.wantProject)
+			}
+			if decision.Projection != nil {
+				assertInDelta(t, decision.Projection.CostUSD, tt.wantCost)
 			}
 			if tt.wantCode == "" {
 				if decision.Refusal != nil {
@@ -445,8 +463,16 @@ func TestPerIssueRefusalCommentDescribesHardHold(t *testing.T) {
 		MaxUSD:            &maxUSD,
 		RefusedAt:         time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC),
 	}).Comment()
-	if !strings.Contains(comment, "hard budget hold") || !strings.Contains(comment, "needs an operator decision") {
-		t.Fatalf("Refusal.Comment() = %q, want hard-hold guidance", comment)
+	for _, want := range []string{
+		"hard budget hold",
+		"needs an operator decision",
+		"not a mid-session spend ceiling",
+		"Actual session cost can exceed both the estimate and the configured backstop",
+		"refusal_cooldown_seconds does not apply",
+	} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("Refusal.Comment() = %q, want %q", comment, want)
+		}
 	}
 	if strings.Contains(comment, "will be reconsidered after") {
 		t.Fatalf("Refusal.Comment() = %q, must not promise automatic reconsideration", comment)

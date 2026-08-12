@@ -1153,8 +1153,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if effort != "" {
 		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
 	}
+	var budgetProjection *dispatchBudgetProjection
 	if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
-		if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
+		if admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
 			return RunResult{}, err
 		} else if refused {
 			r.logWorkerEvent(req.Issue, "worker_budget_refused",
@@ -1164,9 +1165,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 				"route", selection.RouteName,
 				"role", role,
 				"model", sessionModel,
-				"code", result.BudgetRefusal.Code,
+				"code", admission.BudgetRefusal.Code,
 			)
-			return result, nil
+			return admission, nil
+		} else {
+			budgetProjection = admission.budgetProjection
 		}
 	}
 	resumeState := store.AgentResumeState{}
@@ -1331,6 +1334,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	result.budgetProjection = budgetProjection
 	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
 		result.DiffStats = brakeDiff
 	}
@@ -1478,12 +1482,19 @@ func (r *Runner) checkDispatchBudget(ctx context.Context, checker BudgetChecker,
 		return RunResult{}, false, fmt.Errorf("check dispatch budget: %w", err)
 	}
 	if decision.Allowed || decision.Refusal == nil {
-		return RunResult{}, false, nil
+		return runResultWithBudgetProjection(decision.Projection), false, nil
 	}
-	return RunResult{
-		FinalState:    FinalStateCompleted,
-		BudgetRefusal: budgetRefusalFromDecision(issue, *decision.Refusal),
-	}, true, nil
+	result := runResultWithBudgetProjection(decision.Projection)
+	result.FinalState = FinalStateCompleted
+	result.BudgetRefusal = budgetRefusalFromDecision(issue, *decision.Refusal)
+	return result, true, nil
+}
+
+func runResultWithBudgetProjection(projection *budget.Projection) RunResult {
+	if projection == nil {
+		return RunResult{}
+	}
+	return RunResult{budgetProjection: &dispatchBudgetProjection{CostUSD: projection.CostUSD}}
 }
 
 func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *BudgetRefusal {
@@ -2093,6 +2104,8 @@ func (r *Runner) finishSession(
 	requestedModel := strings.TrimSpace(model)
 	resolvedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model)
 	usageModel := effectiveModel(resolvedModel, requestedModel)
+	actualCostUSD := r.usageCostUSD(usageModel, result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendKind)
+	projectedCostUSD, projectionOvershootUSD := budgetProjectionCosts(result.budgetProjection, actualCostUSD)
 
 	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
 		CompletedAt:           finishedAt,
@@ -2126,24 +2139,36 @@ func (r *Runner) finishSession(
 	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
 	r.logWorkerEvent(issue, "worker_session_finished", attrs...)
 	r.warnImplausibleCompletedSessionUsage(issue, workAttemptID, sessionID, turns, result)
+	if projectionOvershootUSD > 0 && projectedCostUSD != nil {
+		r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_budget_projection_overshoot",
+			telemetry.WorkAttemptIDKey, workAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
+			"model", usageModel,
+			"projected_cost_usd", *projectedCostUSD,
+			"actual_cost_usd", actualCostUSD,
+			"projection_overshoot_usd", projectionOvershootUSD,
+		)
+	}
 	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
-		ProjectID:             r.projectID,
-		SessionID:             sessionID,
-		IssueID:               issue.ID,
-		Identifier:            issue.Identifier,
-		PRNumber:              pullRequestNumber(issue),
-		Model:                 usageModel,
-		InputTokens:           result.Tokens.InputTokens,
-		CachedInputTokens:     result.Tokens.CachedInputTokens,
-		OutputTokens:          result.Tokens.OutputTokens,
-		ReasoningOutputTokens: result.Tokens.ReasoningOutputTokens,
-		TotalTokens:           result.Tokens.TotalTokens,
-		ModelContextWindow:    result.Tokens.ModelContextWindow,
-		CostUSD:               r.usageCostUSD(usageModel, result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendKind),
-		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
-		StartedAt:             startedAt,
-		FinishedAt:            finishedAt,
-		Outcome:               result.FinalState,
+		ProjectID:              r.projectID,
+		SessionID:              sessionID,
+		IssueID:                issue.ID,
+		Identifier:             issue.Identifier,
+		PRNumber:               pullRequestNumber(issue),
+		Model:                  usageModel,
+		InputTokens:            result.Tokens.InputTokens,
+		CachedInputTokens:      result.Tokens.CachedInputTokens,
+		OutputTokens:           result.Tokens.OutputTokens,
+		ReasoningOutputTokens:  result.Tokens.ReasoningOutputTokens,
+		TotalTokens:            result.Tokens.TotalTokens,
+		ModelContextWindow:     result.Tokens.ModelContextWindow,
+		CostUSD:                actualCostUSD,
+		ProjectedCostUSD:       projectedCostUSD,
+		ProjectionOvershootUSD: projectionOvershootUSD,
+		RuntimeSeconds:         int64(math.Round(result.Tokens.RuntimeSeconds)),
+		StartedAt:              startedAt,
+		FinishedAt:             finishedAt,
+		Outcome:                result.FinalState,
 	}); err != nil {
 		return fmt.Errorf("record usage event: %w", err)
 	}
@@ -2151,6 +2176,14 @@ func (r *Runner) finishSession(
 		return err
 	}
 	return nil
+}
+
+func budgetProjectionCosts(projection *dispatchBudgetProjection, actualCostUSD float64) (*float64, float64) {
+	if projection == nil {
+		return nil, 0
+	}
+	projectedCostUSD := max(0, projection.CostUSD)
+	return &projectedCostUSD, max(0, actualCostUSD-projectedCostUSD)
 }
 
 func (r *Runner) warnImplausibleCompletedSessionUsage(issue connector.Issue, workAttemptID int64, sessionID int64, turns int64, result RunResult) {

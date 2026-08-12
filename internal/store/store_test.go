@@ -2350,6 +2350,7 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	modelContextWindow := int64(128000)
+	projectedCost := 0.0008
 	tests := []struct {
 		name  string
 		event UsageEvent
@@ -2357,24 +2358,26 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 		{
 			name: "persists usage event across reopen",
 			event: UsageEvent{
-				ProjectID:             " detent ",
-				RunID:                 11,
-				SessionID:             42,
-				IssueID:               " I_kwDOSskuwc8AAAABD6psJQ ",
-				Identifier:            " digitaldrywood/detent#117 ",
-				PRNumber:              int64Ptr(91),
-				Model:                 " gpt-5-codex ",
-				InputTokens:           123,
-				CachedInputTokens:     67,
-				OutputTokens:          45,
-				ReasoningOutputTokens: 9,
-				TotalTokens:           168,
-				ModelContextWindow:    &modelContextWindow,
-				CostUSD:               0.00123,
-				RuntimeSeconds:        73,
-				StartedAt:             time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
-				FinishedAt:            time.Date(2026, 5, 31, 13, 1, 13, 0, time.UTC),
-				Outcome:               " completed ",
+				ProjectID:              " detent ",
+				RunID:                  11,
+				SessionID:              42,
+				IssueID:                " I_kwDOSskuwc8AAAABD6psJQ ",
+				Identifier:             " digitaldrywood/detent#117 ",
+				PRNumber:               int64Ptr(91),
+				Model:                  " gpt-5-codex ",
+				InputTokens:            123,
+				CachedInputTokens:      67,
+				OutputTokens:           45,
+				ReasoningOutputTokens:  9,
+				TotalTokens:            168,
+				ModelContextWindow:     &modelContextWindow,
+				CostUSD:                0.00123,
+				ProjectedCostUSD:       &projectedCost,
+				ProjectionOvershootUSD: 0.00043,
+				RuntimeSeconds:         73,
+				StartedAt:              time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
+				FinishedAt:             time.Date(2026, 5, 31, 13, 1, 13, 0, time.UTC),
+				Outcome:                " completed ",
 			},
 		},
 	}
@@ -2432,6 +2435,12 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			}
 			if got.CostUsd != 0.00123 {
 				t.Fatalf("cost_usd = %.12f, want 0.001230000000", got.CostUsd)
+			}
+			if !got.ProjectedCostUsd.Valid || got.ProjectedCostUsd.Float64 != projectedCost {
+				t.Fatalf("projected_cost_usd = %#v, want %.12f", got.ProjectedCostUsd, projectedCost)
+			}
+			if got.ProjectionOvershootUsd != 0.00043 {
+				t.Fatalf("projection_overshoot_usd = %.12f, want 0.000430000000", got.ProjectionOvershootUsd)
 			}
 			if got.StartedAt != "2026-05-31T13:00:00Z" || got.FinishedAt != "2026-05-31T13:01:13Z" {
 				t.Fatalf("timestamps = %q/%q", got.StartedAt, got.FinishedAt)
