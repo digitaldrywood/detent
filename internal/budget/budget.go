@@ -354,22 +354,22 @@ func (r Refusal) Comment() string {
 			resetAt = r.ResetAt.UTC().Format(time.RFC3339)
 		}
 		return strings.TrimSpace(fmt.Sprintf(`
-Detent refused to dispatch this issue because the projected dispatch would exceed the daily budget.
+Detent refused to dispatch this issue because the projected dispatch would exceed the daily notional USD budget.
 
-Current daily spend: %s
-Projected dispatch cost: %s
-Projected daily spend: %s / %s
+Current daily notional USD: %s
+Projected dispatch notional USD: %s
+Projected daily notional USD: %s / %s
 Model: %s
 Daily budget resets at: %s
 This issue will be reconsidered after: %s
 `, currentSpend, projectedCost, projectedSpend, max, model, resetAt, dueAt))
 	case ReasonPerIssueMaxUSD:
 		return strings.TrimSpace(fmt.Sprintf(`
-Detent refused to dispatch this issue because the preflight estimate would exceed the per-issue budget backstop.
+Detent refused to dispatch this issue because the preflight estimate would exceed the per-issue notional USD budget backstop.
 
-Current issue spend: %s
-Projected dispatch cost: %s
-Projected issue spend: %s / %s
+Current issue notional USD: %s
+Projected dispatch notional USD: %s
+Projected issue notional USD: %s / %s
 Model: %s
 This is an estimate-based admission check, not a mid-session spend ceiling. Actual session cost can exceed both the estimate and the configured backstop.
 The per-issue budget has no automatic reset, and refusal_cooldown_seconds does not apply.
@@ -377,11 +377,11 @@ This issue is parked on a hard budget hold and needs an operator decision. Raise
 `, currentSpend, projectedCost, projectedSpend, max, model))
 	default:
 		return strings.TrimSpace(fmt.Sprintf(`
-Detent refused to dispatch this issue because the budget check failed.
+Detent refused to dispatch this issue because the notional USD budget check failed.
 
-Current spend: %s
-Projected dispatch cost: %s
-Projected spend: %s / %s
+Current notional USD: %s
+Projected dispatch notional USD: %s
+Projected notional USD: %s / %s
 Model: %s
 This issue will be reconsidered after: %s
 `, currentSpend, projectedCost, projectedSpend, max, model, dueAt))

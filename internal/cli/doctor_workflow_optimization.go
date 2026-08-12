@@ -982,8 +982,8 @@ func doctorWorkflowSpendProgressLimitFinding(
 		projectID,
 		workflowPath,
 		doctorWorkflowRuleSpendProgressBelowMedian,
-		"Spend-progress breaker is below observed session cost",
-		"effective breaker limit is below observed p50 per-session cost for effort tier(s): "+strings.Join(details, ", "),
+		"Notional USD progress breaker is below observed session value",
+		"effective notional USD breaker limit is below observed p50 per-session notional USD for effort tier(s): "+strings.Join(details, ", "),
 		0,
 		map[string]any{
 			"configured_base_limit_usd":             configuredLimit,

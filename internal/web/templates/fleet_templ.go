@@ -973,7 +973,7 @@ func fleetMetricCards(metrics fleetMetrics) templ.Component {
 			templ_7745c5c3_Var45 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "<div id=\"fleet-metrics\" class=\"grid min-w-0 flex-none grid-cols-1 gap-3 md:grid-cols-3\"><section id=\"metric-spend\" class=\"flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3\"><div class=\"flex items-baseline justify-between gap-2\"><span class=\"text-xs text-sec\">Spend · today</span> <span class=\"whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "<div id=\"fleet-metrics\" class=\"grid min-w-0 flex-none grid-cols-1 gap-3 md:grid-cols-3\"><section id=\"metric-spend\" class=\"flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3\"><div class=\"flex items-baseline justify-between gap-2\"><span class=\"text-xs text-sec\">Notional USD · today</span> <span class=\"whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

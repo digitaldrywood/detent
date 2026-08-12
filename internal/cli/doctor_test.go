@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1127,8 +1128,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "advisory:", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "advisory:", "configuration footgun:", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "all progress brakes disabled",
@@ -1145,8 +1146,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "advisory:", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "advisory:", "configuration footgun:", "effective cross-session progress brake", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1256,8 +1257,11 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			name: "undeclared mode without USD controls does not warn",
 		},
 		{
-			name:   "declared metered mode does not warn",
-			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered, Enabled: true},
+			name:       "declared metered mode warns for subscription auth",
+			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered, Enabled: true},
+			spendLimit: 3,
+			wantOK:     true,
+			wantDetail: "notional USD brakes",
 		},
 		{
 			name:       "subscription budget cap warns that enforcement is advisory",
@@ -1285,14 +1289,120 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			got, ok := checkDoctorBillingMode("detent", workflowconfig.Config{
 				Budget: tt.budget,
 				Agent:  workflowconfig.Agent{NoProgressSpendLimitUSD: tt.spendLimit},
-			})
+			}, true)
 			if ok != tt.wantOK {
 				t.Fatalf("checkDoctorBillingMode() ok = %t, want %t: %#v", ok, tt.wantOK, got)
 			}
 			if tt.wantOK && (got.Status != doctorWarn || !strings.Contains(got.Detail, tt.wantDetail)) {
 				t.Fatalf("checkDoctorBillingMode() = %#v, want warning containing %q", got, tt.wantDetail)
 			}
+			if tt.name == "declared metered mode warns for subscription auth" {
+				for _, want := range []string{"budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"} {
+					if !strings.Contains(got.Detail+" "+got.Hint, want) {
+						t.Fatalf("checkDoctorBillingMode() = %#v, want %q", got, want)
+					}
+				}
+			}
 		})
+	}
+}
+
+func TestCheckDoctorMeteredBillingAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		account    codex.Account
+		wantStatus doctorStatus
+		wantDetail []string
+	}{
+		{
+			name:       "flat subscription warns with every armed brake",
+			account:    codex.Account{Type: "chatgpt", PlanType: "plus"},
+			wantStatus: doctorWarn,
+			wantDetail: []string{"subscription auth", "backend codex-wrapper", `command "codex-wrapper app-server"`, "budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"},
+		},
+		{
+			name:       "API key preserves metered enforcement",
+			account:    codex.Account{Type: "apiKey"},
+			wantStatus: doctorOK,
+			wantDetail: []string{"apiKey", "does not use a flat subscription"},
+		},
+		{
+			name:       "usage based ChatGPT plan preserves metered enforcement",
+			account:    codex.Account{Type: "chatgpt", PlanType: "enterprise_cbp_usage_based"},
+			wantStatus: doctorOK,
+			wantDetail: []string{"enterprise_cbp_usage_based", "does not use a flat subscription"},
+		},
+		{
+			name:       "unknown auth warns",
+			account:    codex.Account{},
+			wantStatus: doctorWarn,
+			wantDetail: []string{"did not identify an account type"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow := validDoctorWorkflow("/repo")
+			workflow.Agents.Backends = []workflowconfig.AgentBackend{{
+				ID:       "codex-wrapper",
+				Kind:     workflowconfig.AgentBackendCodex,
+				Protocol: "app-server",
+				Command:  "codex-wrapper app-server",
+			}}
+			var gotBackend workflowconfig.AgentBackend
+			checks := checkDoctorMeteredBillingAuth(context.Background(), globalconfig.Config{
+				Projects: []globalconfig.Project{{ID: "detent", Workflow: "WORKFLOW.md"}},
+			}, doctorDeps{
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return workflowconfig.Workflow{Config: workflow}, nil
+				},
+				codexAccount: func(_ context.Context, backend workflowconfig.AgentBackend, _ []string) (codex.Account, error) {
+					gotBackend = backend
+					return tt.account, nil
+				},
+			}, doctorBinaryEnvironment{CheckedPath: "/usr/local/bin"})
+			if len(checks) != 1 || checks[0].Status != tt.wantStatus {
+				t.Fatalf("checkDoctorMeteredBillingAuth() = %#v, want one %s check", checks, tt.wantStatus)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(checks[0].Detail+" "+checks[0].Hint, want) {
+					t.Fatalf("checkDoctorMeteredBillingAuth() = %#v, want %q", checks, want)
+				}
+			}
+			if gotBackend.ID != "codex-wrapper" || gotBackend.Command != "codex-wrapper app-server" {
+				t.Fatalf("probed backend = %#v, want configured Codex wrapper", gotBackend)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorMeteredBillingAuthSkipsUnroutedCodexBackend(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Agents.Backends = []workflowconfig.AgentBackend{
+		{ID: "unused-codex", Kind: workflowconfig.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"},
+		{ID: "claude", Kind: workflowconfig.AgentBackendClaudeCode, Protocol: "headless", Command: "claude"},
+	}
+	workflow.Agents.Routes = []workflowconfig.AgentRoute{{Name: "default", Backend: "claude", Default: true}}
+	called := false
+	checks := checkDoctorMeteredBillingAuth(context.Background(), globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "detent", Workflow: "WORKFLOW.md"}},
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		codexAccount: func(context.Context, workflowconfig.AgentBackend, []string) (codex.Account, error) {
+			called = true
+			return codex.Account{}, nil
+		},
+	}, doctorBinaryEnvironment{})
+	if called || len(checks) != 0 {
+		t.Fatalf("checkDoctorMeteredBillingAuth() = %#v, probe called=%t; want unrouted Codex backend skipped", checks, called)
 	}
 }
 
@@ -3210,7 +3320,14 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
 	}
-	if len(checks) != 8 || checks[5].Status != doctorOK || checks[5].Name != "Project alpha source repo" {
+	var sourceRepo doctorCheck
+	for _, check := range checks {
+		if check.Name == "Project alpha source repo" {
+			sourceRepo = check
+			break
+		}
+	}
+	if sourceRepo.Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
 	}
 }

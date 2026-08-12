@@ -781,7 +781,7 @@ func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
 	if result.BudgetRefusal.Code != string(budget.ReasonPerDayMaxUSD) || result.BudgetRefusal.Message != "daily budget exceeded" {
 		t.Fatalf("BudgetRefusal = %#v, want daily budget refusal", result.BudgetRefusal)
 	}
-	if !strings.Contains(result.BudgetRefusal.Comment, "projected dispatch would exceed the daily budget") {
+	if !strings.Contains(result.BudgetRefusal.Comment, "projected dispatch would exceed the daily notional USD budget") {
 		t.Fatalf("BudgetRefusal.Comment = %q, want refusal comment", result.BudgetRefusal.Comment)
 	}
 	if agentBackend.calls != 0 {

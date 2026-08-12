@@ -42,7 +42,7 @@ test("daily digest renders local days, deltas, and runtime metrics", async ({
     "Cached share",
   );
   await expect(today.locator('[data-digest-metric="cost"]')).toContainText(
-    "Estimated cost",
+    "Estimated notional USD",
   );
   await expect(today.locator('[data-digest-metric="failures"]')).toContainText(
     "Failed sessions",

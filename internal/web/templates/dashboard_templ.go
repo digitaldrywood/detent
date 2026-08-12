@@ -6651,7 +6651,7 @@ func projectSmallMultipleCardView(card projectSmallMultipleCard) templ.Component
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 407, "</div><div class=\"grid min-w-0 gap-1\"><div class=\"flex items-center justify-between gap-2 text-xs\"><span class=\"text-sec\">Spend</span> <span class=\"font-mono text-sec\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 407, "</div><div class=\"grid min-w-0 gap-1\"><div class=\"flex items-center justify-between gap-2 text-xs\"><span class=\"text-sec\">Notional USD</span> <span class=\"font-mono text-sec\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -14820,7 +14820,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = plainInlineLabel("Spend today", "text-sec").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Notional USD today", "text-sec").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -14864,7 +14864,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = plainInlineLabel("Cost burn-down", "font-medium text-sec").Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = plainInlineLabel("Notional USD burn-down", "font-medium text-sec").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -14889,14 +14889,14 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1083, "<div class=\"grid grid-cols-3 gap-2 font-mono text-xs text-sec\"><span>Spend ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1083, "<div class=\"grid grid-cols-3 gap-2 font-mono text-xs text-sec\"><span>Notional ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var719 string
 				templ_7745c5c3_Var719, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).CurrentLabel)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 4212, Col: 62}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 4212, Col: 65}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var719))
 				if templ_7745c5c3_Err != nil {
@@ -14934,7 +14934,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 				}
 			}
 			if len(budgetHistoryBars(snapshot.Budget)) == 0 {
-				templ_7745c5c3_Err = dashboardEmptyState("No budget history yet.", "Spend bars will appear after daily budget samples are recorded.", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = dashboardEmptyState("No budget history yet.", "Notional USD bars will appear after daily budget samples are recorded.", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -14960,7 +14960,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1089, "</span></div><div class=\"grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-line bg-elev px-2 py-2\" aria-label=\"Spend over the last seven days\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1089, "</span></div><div class=\"grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-line bg-elev px-2 py-2\" aria-label=\"Notional USD over the last seven days\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

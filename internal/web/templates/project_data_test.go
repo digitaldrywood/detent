@@ -31,7 +31,7 @@ func TestProjectRunRowsRenderEfficiencyReceipt(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows len = %d, want 1", len(rows))
 	}
-	if rows[0].Receipt != "3 sessions · 97% cached · $3.25" || !rows[0].Anomaly {
+	if rows[0].Receipt != "3 sessions · 97% cached · $3.25 notional USD" || !rows[0].Anomaly {
 		t.Fatalf("receipt row = %#v", rows[0])
 	}
 	for _, want := range []string{"1,200,000 tokens", "2 attempts", "10m"} {

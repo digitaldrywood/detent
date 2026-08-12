@@ -19,6 +19,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -480,6 +481,125 @@ func probeDoctorCodexInitialize(ctx context.Context, path string, environment []
 		return err
 	}
 	return server.CheckHealth(ctx)
+}
+
+func probeDoctorCodexAccount(ctx context.Context, backend workflowconfig.AgentBackend, environment []string) (codex.Account, error) {
+	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
+		cmd := commandshell.Command(commandCtx, backend.Command, backend.CodexOptions().Shell)
+		cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+		return cmd
+	})
+	if err != nil {
+		return codex.Account{}, err
+	}
+	server, err := codex.NewAppServer(factory)
+	if err != nil {
+		return codex.Account{}, err
+	}
+	return server.Account(ctx)
+}
+
+func checkDoctorMeteredBillingAuth(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, environment doctorBinaryEnvironment) []doctorCheck {
+	type projectBilling struct {
+		id       string
+		config   workflowconfig.Config
+		backends []workflowconfig.AgentBackend
+	}
+	projects := make([]projectBilling, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
+		if err != nil || workflow.Config.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered {
+			continue
+		}
+		brakes := workflow.Config.USDBrakes()
+		if !brakes.BudgetCaps && !brakes.NoProgress {
+			continue
+		}
+		backends := doctorRoutedCodexBackends(workflow.Config)
+		if len(backends) == 0 {
+			continue
+		}
+		projects = append(projects, projectBilling{id: doctorProjectID(project), config: workflow.Config, backends: backends})
+	}
+	if len(projects) == 0 {
+		return nil
+	}
+
+	checks := make([]doctorCheck, 0, len(projects))
+	for _, project := range projects {
+		subscriptions := make([]string, 0, len(project.backends))
+		metered := make([]string, 0, len(project.backends))
+		for _, backend := range project.backends {
+			account, err := deps.codexAccount(ctx, backend, doctorBinaryCommandEnvironment(environment))
+			if err != nil {
+				checks = append(checks, doctorCheck{
+					Name:   "Project " + project.id + " billing auth",
+					Status: doctorWarn,
+					Detail: fmt.Sprintf("routed Codex backend %s auth could not be read from command %q: %v", backend.ID, backend.Command, err),
+					Hint:   "Fix the configured Codex backend command or auth, then rerun detent doctor to verify whether its USD brakes use notional subscription-auth values.",
+				})
+				continue
+			}
+			if strings.TrimSpace(account.Type) == "" {
+				checks = append(checks, doctorCheck{
+					Name:   "Project " + project.id + " billing auth",
+					Status: doctorWarn,
+					Detail: fmt.Sprintf("routed Codex backend %s command %q did not identify an account type", backend.ID, backend.Command),
+					Hint:   "Fix the configured Codex backend auth, then rerun detent doctor to verify whether its USD brakes use notional subscription-auth values.",
+				})
+				continue
+			}
+			detail := fmt.Sprintf("backend %s command %q: %s%s", backend.ID, backend.Command, account.Type, doctorAccountPlanDetail(account.PlanType))
+			if account.SubscriptionBased() {
+				subscriptions = append(subscriptions, detail)
+			} else {
+				metered = append(metered, detail)
+			}
+		}
+		if len(subscriptions) > 0 {
+			check, ok := checkDoctorBillingMode(project.id, project.config, true)
+			if ok {
+				check.Detail = "resolved routed Codex subscription auth (" + strings.Join(subscriptions, "; ") + "); " + check.Detail
+				checks = append(checks, check)
+			}
+		} else if len(metered) == len(project.backends) {
+			checks = append(checks, doctorCheck{
+				Name:   "Project " + project.id + " billing auth",
+				Status: doctorOK,
+				Detail: "resolved routed Codex auth does not use a flat subscription (" + strings.Join(metered, "; ") + ")",
+			})
+		}
+	}
+	return checks
+}
+
+func doctorRoutedCodexBackends(cfg workflowconfig.Config) []workflowconfig.AgentBackend {
+	backends := make(map[string]workflowconfig.AgentBackend)
+	for _, backend := range cfg.AgentBackendConfigs() {
+		backends[strings.TrimSpace(backend.ID)] = backend
+	}
+	seen := make(map[string]struct{})
+	routed := make([]workflowconfig.AgentBackend, 0, len(backends))
+	for _, route := range cfg.AgentRouteConfigs() {
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			continue
+		}
+		if _, ok := seen[backend.ID]; ok {
+			continue
+		}
+		seen[backend.ID] = struct{}{}
+		routed = append(routed, backend)
+	}
+	return routed
+}
+
+func doctorAccountPlanDetail(plan string) string {
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return ""
+	}
+	return " (plan " + plan + ")"
 }
 
 func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {

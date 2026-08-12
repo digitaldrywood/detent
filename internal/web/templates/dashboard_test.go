@@ -588,12 +588,12 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Spend today",
+		"Notional USD today",
 		"$12.50 / $100.00",
 		`aria-label="Daily budget usage"`,
 		`style="width: 13%;"`,
 		"Budget history",
-		`aria-label="Spend over the last seven days"`,
+		`aria-label="Notional USD over the last seven days"`,
 		`title="2026-05-25: $4.00"`,
 		`title="2026-05-30: $15.00"`,
 		`style="height: 100%;"`,

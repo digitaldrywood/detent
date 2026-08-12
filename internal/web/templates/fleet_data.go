@@ -110,7 +110,7 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 		AgentPools: agentPools,
 		Figures:    boardFigures(snapshot),
 		TPS:        throughputRate(snapshot),
-		Spend:      formatUSD(snapshot.Budget.CurrentSpendUSD) + " today",
+		Spend:      formatUSD(snapshot.Budget.CurrentSpendUSD) + " notional USD today",
 		Uptime:     "uptime " + runtimeLabel(snapshot),
 		Merge:      prPipelineMergeSummary(snapshot),
 		PRLanes:    fleetPRLanes(snapshot),
@@ -461,12 +461,12 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 			metrics.SpendValue += " / " + formatUSD(*cap)
 		}
 		if budget.CurrentSpendUSD <= 0 && len(budget.Days) == 0 {
-			metrics.SpendNote = "No budget spend yet."
+			metrics.SpendNote = "No notional USD yet."
 		}
 	}
 	if regression := budget.SpendRegression; regression != nil {
 		metrics.SpendWarn = true
-		metrics.SpendNote = fmt.Sprintf("%.0f%% below yesterday's pace (%s projected vs %s yesterday).", regression.DropPercent, formatUSD(regression.ProjectedSpendUSD), formatUSD(regression.PreviousSpendUSD))
+		metrics.SpendNote = fmt.Sprintf("Notional USD is %.0f%% below yesterday's pace (%s projected vs %s yesterday).", regression.DropPercent, formatUSD(regression.ProjectedSpendUSD), formatUSD(regression.PreviousSpendUSD))
 	}
 
 	// Gate on the points the chart actually plots (throughputTrendPoints

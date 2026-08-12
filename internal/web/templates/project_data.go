@@ -191,7 +191,7 @@ func projectRunReceiptLabel(receipts []efficiency.Receipt, issue telemetry.Issue
 	if !ok {
 		return "—"
 	}
-	return formatCount(int(receipt.Sessions)) + " sessions · " + reportCacheReadFraction(receipt.CacheShare()) + " cached · " + formatUSD(receipt.EstimatedCostUSD)
+	return formatCount(int(receipt.Sessions)) + " sessions · " + reportCacheReadFraction(receipt.CacheShare()) + " cached · " + formatUSD(receipt.EstimatedCostUSD) + " notional USD"
 }
 
 func projectRunReceiptTitle(receipts []efficiency.Receipt, issue telemetry.Issue) string {

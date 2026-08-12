@@ -873,11 +873,11 @@ func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
 			b.WriteString(strconv.FormatInt(prior.NoProgressTokenLimit, 10))
 		}
 		if prior.ObservedSpendUSD > 0 {
-			b.WriteString("\n- spend since last accepted state change: $")
+			b.WriteString("\n- notional USD since last accepted state change: $")
 			b.WriteString(strconv.FormatFloat(prior.ObservedSpendUSD, 'f', 2, 64))
 		}
 		if prior.NoProgressSpendLimitUSD > 0 {
-			b.WriteString("\n- configured limit: $")
+			b.WriteString("\n- configured notional USD limit: $")
 			b.WriteString(strconv.FormatFloat(prior.NoProgressSpendLimitUSD, 'f', 2, 64))
 		}
 	}

@@ -46,7 +46,9 @@ test("renders per-project cost summaries and trend charts", async ({ page }) => 
     billing.locator('svg[aria-label="billing-api tokens per outcome trend"]'),
   ).toBeVisible();
   await expect(
-    billing.locator('svg[aria-label="billing-api spend per outcome trend"]'),
+    billing.locator(
+      'svg[aria-label="billing-api notional USD per outcome trend"]',
+    ),
   ).toBeVisible();
 });
 

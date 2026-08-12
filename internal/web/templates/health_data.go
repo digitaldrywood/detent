@@ -184,7 +184,7 @@ func healthBudgetRows(data DashboardData) []healthRow {
 			kind = primitives.KindWarn
 			status = "Approaching limit"
 		}
-		detail := formatUSD(project.CurrentSpendUSD) + " spent today"
+		detail := formatUSD(project.CurrentSpendUSD) + " notional USD today"
 		if project.BudgetOverride != nil {
 			observedAt := project.BudgetObservedAt
 			if observedAt.IsZero() {

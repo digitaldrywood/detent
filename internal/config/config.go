@@ -488,6 +488,11 @@ type Budget struct {
 	perIssueMaxUSDConfigured bool
 }
 
+type USDBrakes struct {
+	BudgetCaps bool
+	NoProgress bool
+}
+
 func (b Budget) EffectiveBillingMode() string {
 	if strings.EqualFold(strings.TrimSpace(b.BillingMode), BillingModeMetered) {
 		return BillingModeMetered
@@ -501,6 +506,23 @@ func (b Budget) BillingModeConfigured() bool {
 
 func (b Budget) USDEnforcementEnabled() bool {
 	return b.Enabled && b.EffectiveBillingMode() == BillingModeMetered
+}
+
+func (c Config) USDBrakes() USDBrakes {
+	metered := c.Budget.EffectiveBillingMode() == BillingModeMetered
+	return USDBrakes{
+		BudgetCaps: metered && c.Budget.Enabled,
+		NoProgress: metered && c.Agent.NoProgressSpendLimitUSD > 0,
+	}
+}
+
+func (c Config) ValidationWarnings() []string {
+	if !c.USDBrakes().NoProgress {
+		return nil
+	}
+	return []string{
+		"budget.billing_mode: metered with agent.no_progress_spend_limit_usd > 0 arms a notional USD progress brake; budget.enabled: false does not disarm it; use budget.billing_mode: subscription to make USD enforcement inert",
+	}
 }
 
 func (b *Budget) Normalize() {

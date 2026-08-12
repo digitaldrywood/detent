@@ -955,7 +955,7 @@ func BoardEfficiencyReceipt(receipt efficiency.Receipt, present bool, path strin
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = sheetRowValue("Estimated cost", formatUSD(receipt.EstimatedCostUSD), "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = sheetRowValue("Estimated notional USD", formatUSD(receipt.EstimatedCostUSD), "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

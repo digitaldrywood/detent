@@ -536,6 +536,24 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 	}
 }
 
+func TestSpendProgressUSDMessagesLabelNotionalValue(t *testing.T) {
+	t.Parallel()
+
+	decision := spendProgressDecision{
+		BlockedBy: "usd",
+		Spend:     store.IssueSpendSince{CostUSD: 6.75},
+		LimitUSD:  5,
+	}
+	for name, value := range map[string]string{
+		"block":   spendProgressBlockMessage(decision),
+		"summary": spendProgressUsageSummary(decision),
+	} {
+		if !strings.Contains(value, "notional USD") {
+			t.Fatalf("%s message = %q, want notional USD label", name, value)
+		}
+	}
+}
+
 func TestSpendProgressPriorAttemptRestoresExplainBeforeRetry(t *testing.T) {
 	t.Parallel()
 

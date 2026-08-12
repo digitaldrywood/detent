@@ -235,7 +235,7 @@ func budgetLimits(cfg workflowconfig.Budget) budget.OverrideLimits {
 func writeBudgetOverride(out CommandOutput, override store.BudgetOverride, now time.Time) error {
 	result := newBudgetOverrideResult(override, now)
 	return out.Write(func(out io.Writer) error {
-		_, err := fmt.Fprintf(out, "Budget override for %s: daily %s, issue %s, expires %s (%s), reason: %s\n", result.ProjectID, optionalBudgetUSD(result.PerDayMaxUSD), optionalBudgetUSD(result.PerIssueMaxUSD), result.ExpiresAt.Format(time.RFC3339), result.Remaining, result.Reason)
+		_, err := fmt.Fprintf(out, "Notional USD budget override for %s: daily %s, issue %s, expires %s (%s), reason: %s\n", result.ProjectID, optionalBudgetUSD(result.PerDayMaxUSD), optionalBudgetUSD(result.PerIssueMaxUSD), result.ExpiresAt.Format(time.RFC3339), result.Remaining, result.Reason)
 		return err
 	}, result)
 }
