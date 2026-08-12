@@ -300,6 +300,23 @@ func (o *Orchestrator) blockedCauseHoldReason(
 	workpadBlockers []dependencyBlocker,
 	dependencyCfg DependencyAutoUnblockConfig,
 ) string {
+	if reason := BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel); reason != "" {
+		return reason
+	}
+	if issue.WorkpadSignal != nil {
+		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
+			return "workpad_blocker"
+		}
+	}
+	if state != nil {
+		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
+			return "operator_stop"
+		}
+	}
+	return ""
+}
+
+func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) string {
 	if issue.WorkpadSignal != nil {
 		if issue.WorkpadSignal.Invalid != nil {
 			return "invalid_workpad_signal"
@@ -307,21 +324,12 @@ func (o *Orchestrator) blockedCauseHoldReason(
 		if strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" {
 			return "human_action"
 		}
-		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
-			return "workpad_blocker"
-		}
 	}
+	configuredOptout := normalizeLabel(optoutLabel)
 	for _, label := range issue.Labels {
-		if normalizeLabel(label) == "requires-human-review" {
+		normalized := normalizeLabel(label)
+		if normalized == "requires-human-review" || configuredOptout != "" && normalized == configuredOptout {
 			return "human_action"
-		}
-	}
-	if autoPromoteOptoutLabel(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote)) {
-		return "human_action"
-	}
-	if state != nil {
-		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
-			return "operator_stop"
 		}
 	}
 	return ""

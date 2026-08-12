@@ -178,17 +178,22 @@ func checkDoctorBlockedRecoveryLive(
 	held := []doctorBlockedRecoveryCandidateDiagnostic{}
 	heldIssues := map[string]struct{}{}
 	for _, issue := range issues {
-		if issue.WorkpadSignal == nil || issue.WorkpadSignal.Invalid == nil {
+		reason := orchestrator.BlockedRecoveryHumanHoldReason(issue, cfg.Agent.AutoPromote.OptoutLabel)
+		if reason == "" {
 			continue
+		}
+		detail := "runtime recovery requires human attention"
+		if issue.WorkpadSignal != nil && issue.WorkpadSignal.Invalid != nil {
+			detail = strings.TrimSpace(issue.WorkpadSignal.Invalid.Message)
 		}
 		held = append(held, doctorBlockedRecoveryCandidateDiagnostic{
 			IssueID:             strings.TrimSpace(issue.ID),
 			IssueIdentifier:     strings.TrimSpace(issue.Identifier),
 			IssueURL:            strings.TrimSpace(issue.URL),
 			Action:              "hold",
-			Reason:              "invalid_workpad_signal",
-			Detail:              strings.TrimSpace(issue.WorkpadSignal.Invalid.Message),
-			Remedy:              orchestrator.BlockedRecoveryOperatorRemedy(issue, "invalid_workpad_signal"),
+			Reason:              reason,
+			Detail:              detail,
+			Remedy:              orchestrator.BlockedRecoveryOperatorRemedy(issue, reason),
 			NeedsHumanAttention: true,
 		})
 		heldIssues[doctorBlockedRecoveryIdentityKey(issue)] = struct{}{}

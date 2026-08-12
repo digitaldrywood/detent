@@ -2935,6 +2935,69 @@ func TestDoctorBlockedRecoveryDistinguishesHeldFromDeferred(t *testing.T) {
 	}
 }
 
+func TestDoctorBlockedRecoveryClassifiesHumanHolds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*workflowconfig.Config)
+		issue      connector.Issue
+		wantReason string
+		wantRemedy string
+	}{
+		{
+			name: "structured human action",
+			issue: func() connector.Issue {
+				issue := doctorDependencyIssue("issue-human-action", nil)
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, HumanAction: "Approve the external deployment."}
+				return issue
+			}(),
+			wantReason: "human_action",
+			wantRemedy: "Approve the external deployment.",
+		},
+		{
+			name: "configured optout label",
+			configure: func(cfg *workflowconfig.Config) {
+				cfg.Agent.AutoPromote.OptoutLabel = "operator-review"
+			},
+			issue: func() connector.Issue {
+				issue := doctorDependencyIssue("issue-optout", nil)
+				issue.Labels = []string{"operator-review"}
+				return issue
+			}(),
+			wantReason: "human_action",
+			wantRemedy: "Complete the requested human action",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validDoctorDependencyWorkflow(true)
+			if tt.configure != nil {
+				tt.configure(&cfg)
+			}
+			check := checkDoctorBlockedRecoveryLive(
+				t.Context(),
+				"Project alpha blocked recovery",
+				&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{tt.issue}},
+				cfg,
+				time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+				nil,
+			)
+
+			if check.Status != doctorWarn || len(check.PermanentlyHeldRecoveries) != 1 {
+				t.Fatalf("check = %#v", check)
+			}
+			diagnostic := check.PermanentlyHeldRecoveries[0]
+			if diagnostic.Reason != tt.wantReason || !diagnostic.NeedsHumanAttention || !strings.Contains(diagnostic.Remedy, tt.wantRemedy) {
+				t.Fatalf("diagnostic = %#v", diagnostic)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
 	t.Parallel()
 
