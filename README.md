@@ -6,6 +6,9 @@
 [![License](https://img.shields.io/github/license/digitaldrywood/detent)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/digitaldrywood/detent?include_prereleases&sort=semver)](https://github.com/digitaldrywood/detent/releases)
 
+**[detent.build](https://detent.build)** — what Detent is, how it works, and how
+to install it.
+
 ## Start With AI
 
 Hi, welcome to Detent. If you are reading this as a human, pause here and paste
@@ -167,7 +170,10 @@ For project settings, start with the
 
 ## Documentation
 
-Start here, then follow the focused reference for the task at hand.
+[detent.build](https://detent.build) is the product site — the overview, the
+mechanism, and install paths. The reference below is the authoritative source
+for operating Detent; start there, then follow the focused document for the task
+at hand.
 
 ### Get started
 
