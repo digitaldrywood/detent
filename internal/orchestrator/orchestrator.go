@@ -118,6 +118,7 @@ type Config struct {
 	Staleness                     staleness.Config
 	StalenessDelivery             staleness.DeliveryConfig
 	StrandedActiveThreshold       time.Duration
+	DispatchStallThreshold        time.Duration
 }
 
 type LessonCaptureConfig struct {
@@ -899,6 +900,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
+	state.DispatchStallThreshold = cfg.DispatchStallThreshold
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

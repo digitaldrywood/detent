@@ -13,6 +13,7 @@ import (
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -97,6 +98,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Running:                 runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now, s.laneEntries),
 		WorkAttempts:            cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions:      cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
+		Dispatch:                dispatchStatusSnapshot(s.DispatchStatus, s.DispatchStallThreshold, now),
 		Release:                 releaseSnapshot(s.Release),
 		Queue:                   queueSnapshots(s.Retry, s.Claimed, s.MergeTimings, now, s.laneEntries),
 		Blocked:                 blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
@@ -114,6 +116,9 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
 	}
+	if snapshot.Dispatch.Stalled {
+		snapshot.DispatchStalls = []telemetry.DispatchStatus{snapshot.Dispatch}
+	}
 	snapshot.Counts = telemetry.Counts{
 		Running:   len(snapshot.Running),
 		Queue:     len(snapshot.Queue),
@@ -122,6 +127,36 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	}
 	applySnapshotLaneProvenance(&snapshot, s.laneProvenance)
 	return snapshot
+}
+
+func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.Duration, now time.Time) telemetry.DispatchStatus {
+	result := telemetry.DispatchStatus{
+		ProjectID:             strings.TrimSpace(status.ProjectID),
+		CandidateCount:        status.CandidateCount,
+		SelectedCount:         status.SelectedCount,
+		SkippedCount:          status.SkippedCount,
+		WaitReason:            strings.TrimSpace(status.WaitReason),
+		AllSkippedSince:       cloneTimePointer(status.AllSkippedSince),
+		LastSelectedAt:        cloneTimePointer(status.LastSelectedAt),
+		StallThresholdSeconds: int64(threshold / time.Second),
+		ObservedAt:            status.ObservedAt,
+	}
+	if status.LastSelectedAt != nil && !status.LastSelectedAt.IsZero() && !now.IsZero() {
+		seconds := max(int64(now.Sub(*status.LastSelectedAt)/time.Second), 0)
+		result.SecondsSinceLastSelected = &seconds
+	}
+	if status.AllSkippedSince == nil || status.AllSkippedSince.IsZero() || now.IsZero() {
+		return result
+	}
+	result.StallDurationSeconds = max(int64(now.Sub(*status.AllSkippedSince)/time.Second), 0)
+	result.Stalled = threshold > 0 &&
+		status.CandidateCount > 0 &&
+		status.SelectedCount == 0 &&
+		status.SkippedCount == status.CandidateCount &&
+		result.WaitReason != "" &&
+		now.Sub(*status.AllSkippedSince) >= threshold
+	result.NeedsHumanAttention = result.Stalled
+	return result
 }
 
 func ciUnavailableSnapshots(condition *CICondition) []telemetry.CICondition {

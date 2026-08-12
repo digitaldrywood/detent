@@ -46,6 +46,17 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "CI is unavailable.",
 		},
 		{
+			name: "dispatch stall requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				DispatchStalls: []telemetry.DispatchStatus{{
+					ProjectID: "detent", CandidateCount: 8, WaitReason: "github_rest_capacity", StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true,
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Dispatch is stalled.",
+		},
+		{
 			name: "backend capacity outage warns",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -107,6 +118,24 @@ func TestHealthViewVerdicts(t *testing.T) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
 			}
 		})
+	}
+}
+
+func TestHealthDispatchStallRows(t *testing.T) {
+	t.Parallel()
+
+	rows := healthRows(telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
+		ProjectID: "detent", CandidateCount: 8, WaitReason: "github_rest_capacity", StallDurationSeconds: 10_800,
+	}}})
+	var got healthRow
+	for _, row := range rows {
+		if row.ID == "health-dispatch-stall-detent" {
+			got = row
+			break
+		}
+	}
+	if got.Kind != primitives.KindErr || got.Status != "Needs attention" || !strings.Contains(got.Detail, "8 candidates skipped for 3h") || !strings.Contains(got.Detail, "github_rest_capacity") {
+		t.Fatalf("dispatch stall row = %#v", got)
 	}
 }
 

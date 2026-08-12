@@ -26,6 +26,7 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 				Counts:     telemetry.Counts{Running: 1, Queue: 1, Blocked: 1, Completed: 1},
 				Tokens:     telemetry.Tokens{Input: 10, Output: 20, Total: 30},
 				Throughput: telemetry.TokenThroughput{TokensPerSecond: 2.5, WindowSeconds: 60, Tokens: 150},
+				Dispatch:   telemetry.DispatchStatus{ProjectID: "detent", CandidateCount: 2, Stalled: true, NeedsHumanAttention: true},
 			},
 			{
 				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
@@ -78,6 +79,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 		DispatchRecoveries: []telemetry.DispatchRecovery{
 			{ProjectID: "detent", Kind: "github_rest", Status: "ramping"},
 			{ProjectID: "pyroapex", Kind: "backend_capacity", Status: "waiting"},
+		},
+		DispatchStalls: []telemetry.DispatchStatus{
+			{ProjectID: "detent", CandidateCount: 2, Stalled: true, NeedsHumanAttention: true},
+			{ProjectID: "pyroapex", CandidateCount: 1, Stalled: true, NeedsHumanAttention: true},
 		},
 		StrandedActiveIssues: []telemetry.StrandedIssue{
 			{ProjectID: "detent", IssueID: "detent-stranded"},
@@ -142,6 +147,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.DispatchRecoveries) != 1 || got.DispatchRecoveries[0].Kind != "github_rest" {
 		t.Fatalf("DispatchRecoveries = %#v, want only detent row", got.DispatchRecoveries)
+	}
+	if len(got.DispatchStalls) != 1 || got.DispatchStalls[0].ProjectID != "detent" || !got.Dispatch.NeedsHumanAttention {
+		t.Fatalf("Dispatch/DispatchStalls = %#v/%#v, want only detent stall", got.Dispatch, got.DispatchStalls)
 	}
 	if len(got.StrandedActiveIssues) != 1 || got.StrandedActiveIssues[0].IssueID != "detent-stranded" {
 		t.Fatalf("StrandedActiveIssues = %#v, want only detent row", got.StrandedActiveIssues)

@@ -65,6 +65,7 @@ type doctorCheck struct {
 	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	StalenessWarnings         []telemetry.StalenessWarning               `json:"staleness_warnings,omitempty"`
 	StrandedIssues            []telemetry.StrandedIssue                  `json:"stranded_active_issues,omitempty"`
+	DispatchStalls            []telemetry.DispatchStatus                 `json:"dispatch_stalls,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
 	OwnershipAttention        []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
@@ -533,6 +534,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Stranded active work",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorStrandedActive(jobCtx, boot, cfg.ProjectID, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Dispatch stalls",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorDispatchStalls(jobCtx, boot, cfg.ProjectID, deps)}
 			},
 		},
 		doctorCheckJob{

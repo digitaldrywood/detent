@@ -74,6 +74,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.CIUnavailable = scopedCIUnavailable(snapshot.CIUnavailable, selectedProjectID, fallbackProjectID)
 	out.FailureBreakers = scopedFailureBreakers(snapshot.FailureBreakers, selectedProjectID, fallbackProjectID)
 	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
+	out.DispatchStalls = scopedDispatchStatuses(snapshot.DispatchStalls, selectedProjectID, fallbackProjectID)
 	out.StalenessWarnings = scopedStalenessWarnings(snapshot.StalenessWarnings, selectedProjectID, fallbackProjectID)
 	out.StrandedActiveIssues = scopedStrandedActiveIssues(snapshot.StrandedActiveIssues, selectedProjectID, fallbackProjectID)
 	out.AdmissionProposals = scopedAdmissionProposals(snapshot.AdmissionProposals, selectedProjectID)
@@ -82,6 +83,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.Tokens = sourceProject.Tokens
 		out.Throughput = sourceProject.Throughput
 		out.Auth = sourceProject.Auth
+		out.Dispatch = sourceProject.Dispatch
 		if projectSnapshotHasRefreshSignal(sourceProject) {
 			out.Refresh = sourceProject.Refresh
 		}
@@ -94,11 +96,26 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		}
 		out.Tokens = scopedTokens(out.Running, out.Completed)
 		out.Throughput = telemetry.TokenThroughput{}
+		out.Dispatch = telemetry.DispatchStatus{ProjectID: selectedProjectID}
 	}
 	if len(snapshot.Projects) > 0 {
 		out.TokenTrend = nil
 	}
 	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
+	return out
+}
+
+func scopedDispatchStatuses(statuses []telemetry.DispatchStatus, selectedProjectID string, fallbackProjectID string) []telemetry.DispatchStatus {
+	out := make([]telemetry.DispatchStatus, 0, len(statuses))
+	for _, status := range statuses {
+		projectID := strings.TrimSpace(status.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
+		if projectID == selectedProjectID {
+			out = append(out, status)
+		}
+	}
 	return out
 }
 

@@ -1651,6 +1651,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Observability.StrandedActiveThresholdSeconds != DefaultStrandedActiveThresholdSeconds {
 		t.Fatalf("Observability.StrandedActiveThresholdSeconds = %d, want %d", cfg.Observability.StrandedActiveThresholdSeconds, DefaultStrandedActiveThresholdSeconds)
 	}
+	if cfg.Observability.DispatchStallThresholdSeconds != DefaultDispatchStallThresholdSeconds {
+		t.Fatalf("Observability.DispatchStallThresholdSeconds = %d, want %d", cfg.Observability.DispatchStallThresholdSeconds, DefaultDispatchStallThresholdSeconds)
+	}
 	if cfg.Observability.Efficiency.AnomalyTokensMultiple != 3 || cfg.Observability.Efficiency.AnomalySessionsMultiple != 3 || cfg.Observability.Efficiency.AnomalyDwellMultiple != 3 {
 		t.Fatalf("Observability.Efficiency = %#v, want 3x defaults", cfg.Observability.Efficiency)
 	}
@@ -3154,6 +3157,13 @@ func TestObservabilityValidation(t *testing.T) {
 				cfg.Observability.StrandedActiveThresholdSeconds = 0
 			},
 			wantErr: "observability.stranded_active_threshold_seconds must be greater than 0",
+		},
+		{
+			name: "nonpositive dispatch stall threshold",
+			mutate: func(cfg *Config) {
+				cfg.Observability.DispatchStallThresholdSeconds = 0
+			},
+			wantErr: "observability.dispatch_stall_threshold_seconds must be greater than 0",
 		},
 	}
 	for _, tt := range tests {

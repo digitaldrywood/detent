@@ -135,6 +135,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
 	var lastDispatchFailure string
+	decisions := make([]dispatchPlanDecision, 0, len(issues))
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
 			return o.hydrateDispatchIssue(ctx, issue)
@@ -172,9 +173,11 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return o.preserveMissingDueRetry(state, retry)
 		},
 		decision: func(decision dispatchPlanDecision) {
+			decisions = append(decisions, decision)
 			o.logDispatchPlanDecision(ctx, state, now, decision)
 		},
 	})
+	o.observeProjectDispatchStatus(ctx, state, issues, decisions, now)
 }
 
 func dispatchFailureRetryReason(reason string) string {

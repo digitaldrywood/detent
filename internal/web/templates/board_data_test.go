@@ -2062,6 +2062,30 @@ func TestBoardAlertsSurfaceCIUnavailableEvidence(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
+	t.Parallel()
+
+	secondsSinceLastSelected := int64(14_400)
+	alerts := boardAlerts(telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
+		ProjectID:                "detent",
+		CandidateCount:           8,
+		WaitReason:               "github_rest_capacity",
+		SecondsSinceLastSelected: &secondsSinceLastSelected,
+		StallDurationSeconds:     10_800,
+		Stalled:                  true,
+		NeedsHumanAttention:      true,
+	}}})
+	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindDispatchStall || alerts[0].Tone != primitives.KindErr {
+		t.Fatalf("boardAlerts() = %#v, want one dispatch-stall error", alerts)
+	}
+	combined := alerts[0].TerseSummary + " " + alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
+	for _, want := range []string{"Dispatch stalled", "human attention", "8 candidates", "3h", "github_rest_capacity"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("dispatch alert = %q, want containing %q", combined, want)
+		}
+	}
+}
+
 func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	t.Parallel()
 

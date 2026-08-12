@@ -934,6 +934,34 @@ WHERE project_id = sqlc.arg(project_id)
 ORDER BY decision_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
+-- name: UpsertProjectDispatchStatus :one
+INSERT INTO project_dispatch_status (
+  project_id,
+  candidate_count,
+  candidate_fingerprint,
+  selected_count,
+  skipped_count,
+  wait_reason,
+  all_skipped_since,
+  last_selected_at,
+  observed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id) DO UPDATE SET
+  candidate_count = excluded.candidate_count,
+  candidate_fingerprint = excluded.candidate_fingerprint,
+  selected_count = excluded.selected_count,
+  skipped_count = excluded.skipped_count,
+  wait_reason = excluded.wait_reason,
+  all_skipped_since = excluded.all_skipped_since,
+  last_selected_at = excluded.last_selected_at,
+  observed_at = excluded.observed_at
+RETURNING *;
+
+-- name: GetProjectDispatchStatus :one
+SELECT *
+FROM project_dispatch_status
+WHERE project_id = ?;
+
 -- name: ListIssueActivityEvents :many
 WITH issue_events AS (
   SELECT

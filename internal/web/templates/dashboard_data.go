@@ -383,6 +383,7 @@ type ProjectSmallMultiple struct {
 	PauseIssue                string
 	PauseUntil                string
 	ActiveHours               telemetry.ActiveHours
+	Dispatch                  telemetry.DispatchStatus
 	Running                   int
 	QueueCount                int
 	Blocked                   int
@@ -1257,6 +1258,8 @@ func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
 
 func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView {
 	switch {
+	case project.Dispatch.NeedsHumanAttention:
+		return projectStatusView{Rank: 0, Label: "needs attention", DotClass: "bg-err", BadgeClass: "bg-err/15 text-err"}
 	case project.Paused:
 		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.ActiveHours.Configured && !project.ActiveHours.Open:
@@ -1277,7 +1280,7 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 }
 
 func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
-	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" {
+	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" || item.StatusLabel == "needs attention" {
 		return item.StatusLabel
 	}
 	return item.RunningLabel

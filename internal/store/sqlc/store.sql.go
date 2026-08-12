@@ -1849,6 +1849,29 @@ func (q *Queries) GetLatestIssueAgentSession(ctx context.Context, arg GetLatestI
 	return i, err
 }
 
+const getProjectDispatchStatus = `-- name: GetProjectDispatchStatus :one
+SELECT project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at
+FROM project_dispatch_status
+WHERE project_id = ?
+`
+
+func (q *Queries) GetProjectDispatchStatus(ctx context.Context, projectID string) (ProjectDispatchStatus, error) {
+	row := q.db.QueryRowContext(ctx, getProjectDispatchStatus, projectID)
+	var i ProjectDispatchStatus
+	err := row.Scan(
+		&i.ProjectID,
+		&i.CandidateCount,
+		&i.CandidateFingerprint,
+		&i.SelectedCount,
+		&i.SkippedCount,
+		&i.WaitReason,
+		&i.AllSkippedSince,
+		&i.LastSelectedAt,
+		&i.ObservedAt,
+	)
+	return i, err
+}
+
 const getUsageEvent = `-- name: GetUsageEvent :one
 SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd
 FROM usage_events
@@ -4262,6 +4285,69 @@ func (q *Queries) UpsertFairShareUsage(ctx context.Context, arg UpsertFairShareU
 		&i.Dispatches,
 		&i.RuntimeSeconds,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertProjectDispatchStatus = `-- name: UpsertProjectDispatchStatus :one
+INSERT INTO project_dispatch_status (
+  project_id,
+  candidate_count,
+  candidate_fingerprint,
+  selected_count,
+  skipped_count,
+  wait_reason,
+  all_skipped_since,
+  last_selected_at,
+  observed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id) DO UPDATE SET
+  candidate_count = excluded.candidate_count,
+  candidate_fingerprint = excluded.candidate_fingerprint,
+  selected_count = excluded.selected_count,
+  skipped_count = excluded.skipped_count,
+  wait_reason = excluded.wait_reason,
+  all_skipped_since = excluded.all_skipped_since,
+  last_selected_at = excluded.last_selected_at,
+  observed_at = excluded.observed_at
+RETURNING project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at
+`
+
+type UpsertProjectDispatchStatusParams struct {
+	ProjectID            string         `json:"project_id"`
+	CandidateCount       int64          `json:"candidate_count"`
+	CandidateFingerprint string         `json:"candidate_fingerprint"`
+	SelectedCount        int64          `json:"selected_count"`
+	SkippedCount         int64          `json:"skipped_count"`
+	WaitReason           sql.NullString `json:"wait_reason"`
+	AllSkippedSince      sql.NullString `json:"all_skipped_since"`
+	LastSelectedAt       sql.NullString `json:"last_selected_at"`
+	ObservedAt           string         `json:"observed_at"`
+}
+
+func (q *Queries) UpsertProjectDispatchStatus(ctx context.Context, arg UpsertProjectDispatchStatusParams) (ProjectDispatchStatus, error) {
+	row := q.db.QueryRowContext(ctx, upsertProjectDispatchStatus,
+		arg.ProjectID,
+		arg.CandidateCount,
+		arg.CandidateFingerprint,
+		arg.SelectedCount,
+		arg.SkippedCount,
+		arg.WaitReason,
+		arg.AllSkippedSince,
+		arg.LastSelectedAt,
+		arg.ObservedAt,
+	)
+	var i ProjectDispatchStatus
+	err := row.Scan(
+		&i.ProjectID,
+		&i.CandidateCount,
+		&i.CandidateFingerprint,
+		&i.SelectedCount,
+		&i.SkippedCount,
+		&i.WaitReason,
+		&i.AllSkippedSince,
+		&i.LastSelectedAt,
+		&i.ObservedAt,
 	)
 	return i, err
 }
