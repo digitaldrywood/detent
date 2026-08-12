@@ -215,7 +215,7 @@ paths:
         - in: query
           name: schema
           description: Requested response schema version. Omit to use the current version.
-          schema: {type: integer, enum: [1]}
+          schema: {type: integer, enum: [2]}
       responses:
         "200":
           description: Versioned issue explanation, possibly containing degraded or last-known evidence.
@@ -932,10 +932,10 @@ components:
             message: {type: string}
     IssueExplanation:
       type: object
-      description: Version 1 issue state assembled from tracker, runtime, session, pull-request, and gate evidence.
+      description: Version 2 issue state assembled from tracker, runtime, session, pull-request, gate, and provenance trust evidence.
       required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, sources, evidence]
       properties:
-        schema: {type: integer, enum: [1]}
+        schema: {type: integer, enum: [2]}
         found: {type: boolean}
         observed_at: {type: string, format: date-time}
         identity: {$ref: "#/components/schemas/IssueExplanationIdentity"}
