@@ -181,7 +181,10 @@ budget:
   billing_mode: metered
   enabled: true
   per_day_max_usd: 50
+  # Preflight estimate backstop, not a spend ceiling: sessions may overshoot.
+  # A breach parks the issue until an operator acts.
   per_issue_max_usd: 5
+  # Applies only to resettable budget pacing; it does not clear per-issue hard holds.
   refusal_cooldown_seconds: 3600
   pricing_path: priv/pricing/models.yaml
 hooks:

@@ -779,35 +779,39 @@ INSERT INTO usage_events (
   total_tokens,
   model_context_window,
   cost_usd,
+  projected_cost_usd,
+  projection_overshoot_usd,
   runtime_seconds,
   started_at,
   finished_at,
   event_day,
   outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd
 `
 
 type CreateUsageEventParams struct {
-	ProjectID             string         `json:"project_id"`
-	RunID                 sql.NullInt64  `json:"run_id"`
-	SessionID             sql.NullInt64  `json:"session_id"`
-	IssueID               sql.NullString `json:"issue_id"`
-	Identifier            sql.NullString `json:"identifier"`
-	PrNumber              sql.NullInt64  `json:"pr_number"`
-	Model                 string         `json:"model"`
-	InputTokens           int64          `json:"input_tokens"`
-	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
-	OutputTokens          int64          `json:"output_tokens"`
-	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
-	TotalTokens           int64          `json:"total_tokens"`
-	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
-	CostUsd               float64        `json:"cost_usd"`
-	RuntimeSeconds        int64          `json:"runtime_seconds"`
-	StartedAt             string         `json:"started_at"`
-	FinishedAt            string         `json:"finished_at"`
-	EventDay              string         `json:"event_day"`
-	Outcome               string         `json:"outcome"`
+	ProjectID              string          `json:"project_id"`
+	RunID                  sql.NullInt64   `json:"run_id"`
+	SessionID              sql.NullInt64   `json:"session_id"`
+	IssueID                sql.NullString  `json:"issue_id"`
+	Identifier             sql.NullString  `json:"identifier"`
+	PrNumber               sql.NullInt64   `json:"pr_number"`
+	Model                  string          `json:"model"`
+	InputTokens            int64           `json:"input_tokens"`
+	CachedInputTokens      sql.NullInt64   `json:"cached_input_tokens"`
+	OutputTokens           int64           `json:"output_tokens"`
+	ReasoningOutputTokens  sql.NullInt64   `json:"reasoning_output_tokens"`
+	TotalTokens            int64           `json:"total_tokens"`
+	ModelContextWindow     sql.NullInt64   `json:"model_context_window"`
+	CostUsd                float64         `json:"cost_usd"`
+	ProjectedCostUsd       sql.NullFloat64 `json:"projected_cost_usd"`
+	ProjectionOvershootUsd float64         `json:"projection_overshoot_usd"`
+	RuntimeSeconds         int64           `json:"runtime_seconds"`
+	StartedAt              string          `json:"started_at"`
+	FinishedAt             string          `json:"finished_at"`
+	EventDay               string          `json:"event_day"`
+	Outcome                string          `json:"outcome"`
 }
 
 func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventParams) (UsageEvent, error) {
@@ -826,6 +830,8 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		arg.TotalTokens,
 		arg.ModelContextWindow,
 		arg.CostUsd,
+		arg.ProjectedCostUsd,
+		arg.ProjectionOvershootUsd,
 		arg.RuntimeSeconds,
 		arg.StartedAt,
 		arg.FinishedAt,
@@ -854,6 +860,8 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		&i.CachedInputTokens,
 		&i.ReasoningOutputTokens,
 		&i.ModelContextWindow,
+		&i.ProjectedCostUsd,
+		&i.ProjectionOvershootUsd,
 	)
 	return i, err
 }
@@ -1842,7 +1850,7 @@ func (q *Queries) GetLatestIssueAgentSession(ctx context.Context, arg GetLatestI
 }
 
 const getUsageEvent = `-- name: GetUsageEvent :one
-SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window
+SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd
 FROM usage_events
 WHERE id = ?
 `
@@ -1871,6 +1879,8 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 		&i.CachedInputTokens,
 		&i.ReasoningOutputTokens,
 		&i.ModelContextWindow,
+		&i.ProjectedCostUsd,
+		&i.ProjectionOvershootUsd,
 	)
 	return i, err
 }

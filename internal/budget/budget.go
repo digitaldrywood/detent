@@ -61,8 +61,14 @@ type TokenEstimate struct {
 }
 
 type Decision struct {
-	Allowed bool
-	Refusal *Refusal
+	Allowed    bool
+	Refusal    *Refusal
+	Projection *Projection
+}
+
+type Projection struct {
+	Estimate TokenEstimate
+	CostUSD  float64
 }
 
 type DailyStatus struct {
@@ -154,7 +160,9 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 		return Decision{}, err
 	}
 
-	projectedCost := tokenCostUSD(req.Estimate.normalized(), modelPricing)
+	estimate := req.Estimate.normalized()
+	projectedCost := tokenCostUSD(estimate, modelPricing)
+	projection := &Projection{Estimate: estimate, CostUSD: projectedCost}
 	if capActive(effective.PerDayMaxUSD) {
 		if missingSpendStore(c.spend) {
 			return Decision{}, ErrMissingSpendStore
@@ -166,7 +174,8 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 		currentSpend := SpendUSD(dailySpend, c.pricing)
 		if currentSpend+projectedCost > effective.PerDayMaxUSD {
 			return Decision{
-				Refusal: c.refusal(ReasonPerDayMaxUSD, req, now, currentSpend, projectedCost, effective.PerDayMaxUSD, nextDailyReset(now)),
+				Refusal:    c.refusal(ReasonPerDayMaxUSD, req, now, currentSpend, projectedCost, effective.PerDayMaxUSD, nextDailyReset(now)),
+				Projection: projection,
 			}, nil
 		}
 	}
@@ -191,12 +200,13 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 		}
 		if currentSpend+projectedCost > effective.PerIssueMaxUSD {
 			return Decision{
-				Refusal: c.refusal(ReasonPerIssueMaxUSD, req, now, currentSpend, projectedCost, effective.PerIssueMaxUSD, nil),
+				Refusal:    c.refusal(ReasonPerIssueMaxUSD, req, now, currentSpend, projectedCost, effective.PerIssueMaxUSD, nil),
+				Projection: projection,
 			}, nil
 		}
 	}
 
-	return Decision{Allowed: true}, nil
+	return Decision{Allowed: true, Projection: projection}, nil
 }
 
 func (c *Checker) DailyStatus(ctx context.Context, now time.Time) (DailyStatus, error) {
@@ -355,14 +365,15 @@ This issue will be reconsidered after: %s
 `, currentSpend, projectedCost, projectedSpend, max, model, resetAt, dueAt))
 	case ReasonPerIssueMaxUSD:
 		return strings.TrimSpace(fmt.Sprintf(`
-Detent refused to dispatch this issue because the projected dispatch would exceed the per-issue budget.
+Detent refused to dispatch this issue because the preflight estimate would exceed the per-issue budget backstop.
 
 Current issue spend: %s
 Projected dispatch cost: %s
 Projected issue spend: %s / %s
 Model: %s
-The per-issue budget has no automatic reset.
-This issue is on a hard budget hold and needs an operator decision. Raise or disable the per-issue cap, or explicitly retry the issue after resetting its budget hold.
+This is an estimate-based admission check, not a mid-session spend ceiling. Actual session cost can exceed both the estimate and the configured backstop.
+The per-issue budget has no automatic reset, and refusal_cooldown_seconds does not apply.
+This issue is parked on a hard budget hold and needs an operator decision. Raise or disable the per-issue cap, or explicitly retry the issue after resetting its budget hold.
 `, currentSpend, projectedCost, projectedSpend, max, model))
 	default:
 		return strings.TrimSpace(fmt.Sprintf(`

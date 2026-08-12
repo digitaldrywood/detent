@@ -486,24 +486,26 @@ type APIUsageLog struct {
 }
 
 type UsageEvent struct {
-	ProjectID             string
-	RunID                 int64
-	SessionID             int64
-	IssueID               string
-	Identifier            string
-	PRNumber              *int64
-	Model                 string
-	InputTokens           int64
-	CachedInputTokens     int64
-	OutputTokens          int64
-	ReasoningOutputTokens int64
-	TotalTokens           int64
-	ModelContextWindow    *int64
-	CostUSD               float64
-	RuntimeSeconds        int64
-	StartedAt             time.Time
-	FinishedAt            time.Time
-	Outcome               string
+	ProjectID              string
+	RunID                  int64
+	SessionID              int64
+	IssueID                string
+	Identifier             string
+	PRNumber               *int64
+	Model                  string
+	InputTokens            int64
+	CachedInputTokens      int64
+	OutputTokens           int64
+	ReasoningOutputTokens  int64
+	TotalTokens            int64
+	ModelContextWindow     *int64
+	CostUSD                float64
+	ProjectedCostUSD       *float64
+	ProjectionOvershootUSD float64
+	RuntimeSeconds         int64
+	StartedAt              time.Time
+	FinishedAt             time.Time
+	Outcome                string
 }
 
 type WorkflowPhaseEvent = workflowmetrics.PhaseEvent

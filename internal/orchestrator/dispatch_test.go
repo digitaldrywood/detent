@@ -592,6 +592,66 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 	}
 }
 
+func TestDispatchableBudgetRefusalWaitReasons(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(12 * time.Hour)
+	tests := []struct {
+		name       string
+		code       budget.ReasonCode
+		refusedAt  time.Time
+		resetAt    *time.Time
+		wantReason string
+	}{
+		{
+			name:       "daily refusal is a cooldown",
+			code:       budget.ReasonPerDayMaxUSD,
+			refusedAt:  now.Add(-time.Minute),
+			resetAt:    &resetAt,
+			wantReason: dispatchSkipBudgetCooldown,
+		},
+		{
+			name:       "per issue refusal is a hard hold",
+			code:       budget.ReasonPerIssueMaxUSD,
+			refusedAt:  now.Add(-time.Minute),
+			wantReason: dispatchSkipBudgetHardHold,
+		},
+		{
+			name:       "per issue hold survives cooldown expiry",
+			code:       budget.ReasonPerIssueMaxUSD,
+			refusedAt:  now.Add(-48 * time.Hour),
+			wantReason: dispatchSkipBudgetHardHold,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:   1,
+				BillingMode:           workflowconfig.BillingModeMetered,
+				ActiveStates:          []string{"Todo"},
+				BudgetRefusalCooldown: time.Hour,
+			})
+			issue := dispatchTestIssue("issue-budget", "Todo")
+			state := newState(cfg)
+			state.BudgetRefusals[issue.ID] = BudgetRefusal{
+				Issue:     issue,
+				Code:      string(tt.code),
+				RefusedAt: tt.refusedAt,
+				ResetAt:   tt.resetAt,
+			}
+
+			decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, now, "")
+			if decision.dispatchable || decision.reason != tt.wantReason {
+				t.Fatalf("dispatch decision = %#v, want skipped for %q", decision, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 	t.Parallel()
 

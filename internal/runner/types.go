@@ -420,6 +420,11 @@ type RunResult struct {
 	PullRequestHeadPushed   bool
 	CITriggerLabelReapplied bool
 	MergePrecheck           *MergePrecheck
+	budgetProjection        *dispatchBudgetProjection
+}
+
+type dispatchBudgetProjection struct {
+	CostUSD float64
 }
 
 type UsageUpdateHandler func(UsageUpdate) error

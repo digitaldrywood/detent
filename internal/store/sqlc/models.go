@@ -288,26 +288,28 @@ type SchedulerDecision struct {
 }
 
 type UsageEvent struct {
-	ID                    int64          `json:"id"`
-	ProjectID             string         `json:"project_id"`
-	RunID                 sql.NullInt64  `json:"run_id"`
-	SessionID             sql.NullInt64  `json:"session_id"`
-	IssueID               sql.NullString `json:"issue_id"`
-	Identifier            sql.NullString `json:"identifier"`
-	PrNumber              sql.NullInt64  `json:"pr_number"`
-	Model                 string         `json:"model"`
-	InputTokens           int64          `json:"input_tokens"`
-	OutputTokens          int64          `json:"output_tokens"`
-	TotalTokens           int64          `json:"total_tokens"`
-	RuntimeSeconds        int64          `json:"runtime_seconds"`
-	StartedAt             string         `json:"started_at"`
-	FinishedAt            string         `json:"finished_at"`
-	EventDay              string         `json:"event_day"`
-	Outcome               string         `json:"outcome"`
-	CostUsd               float64        `json:"cost_usd"`
-	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
-	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
-	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	ID                     int64           `json:"id"`
+	ProjectID              string          `json:"project_id"`
+	RunID                  sql.NullInt64   `json:"run_id"`
+	SessionID              sql.NullInt64   `json:"session_id"`
+	IssueID                sql.NullString  `json:"issue_id"`
+	Identifier             sql.NullString  `json:"identifier"`
+	PrNumber               sql.NullInt64   `json:"pr_number"`
+	Model                  string          `json:"model"`
+	InputTokens            int64           `json:"input_tokens"`
+	OutputTokens           int64           `json:"output_tokens"`
+	TotalTokens            int64           `json:"total_tokens"`
+	RuntimeSeconds         int64           `json:"runtime_seconds"`
+	StartedAt              string          `json:"started_at"`
+	FinishedAt             string          `json:"finished_at"`
+	EventDay               string          `json:"event_day"`
+	Outcome                string          `json:"outcome"`
+	CostUsd                float64         `json:"cost_usd"`
+	CachedInputTokens      sql.NullInt64   `json:"cached_input_tokens"`
+	ReasoningOutputTokens  sql.NullInt64   `json:"reasoning_output_tokens"`
+	ModelContextWindow     sql.NullInt64   `json:"model_context_window"`
+	ProjectedCostUsd       sql.NullFloat64 `json:"projected_cost_usd"`
+	ProjectionOvershootUsd float64         `json:"projection_overshoot_usd"`
 }
 
 type ValidatorVerdict struct {
