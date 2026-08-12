@@ -568,7 +568,7 @@ func TestFleetViewSurfacesDailySpendRegression(t *testing.T) {
 		ThresholdPercent:  90,
 	}
 	view := fleetViewFromDashboard(data)
-	if view.Spend != "$45.50 today" {
+	if view.Spend != "$45.50 notional USD today" {
 		t.Fatalf("Spend = %q, want fleet daily spend figure", view.Spend)
 	}
 	if !view.Metrics.SpendWarn || !strings.Contains(view.Metrics.SpendNote, "99% below yesterday's pace") || !strings.Contains(view.Metrics.SpendNote, "$3.22 projected vs $363.50 yesterday") {

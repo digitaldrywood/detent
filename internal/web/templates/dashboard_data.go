@@ -1142,7 +1142,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 			ThroughputChart: projectSmallMultipleChart(name+" throughput", samples, "tps", "text-accent", func(sample ProjectSmallMultipleSample) float64 {
 				return sample.ThroughputTokensPerSecond
 			}),
-			SpendChart: projectSmallMultipleChart(name+" spend", samples, "USD", "text-ok", func(sample ProjectSmallMultipleSample) float64 {
+			SpendChart: projectSmallMultipleChart(name+" notional USD", samples, "notional USD", "text-ok", func(sample ProjectSmallMultipleSample) float64 {
 				return sample.SpendUSD
 			}),
 			QueueChart: projectSmallMultipleChart(name+" queue depth", samples, "queued", "text-warn", func(sample ProjectSmallMultipleSample) float64 {
@@ -6276,7 +6276,7 @@ func budgetBurnDownView(snapshot telemetry.Snapshot) budgetBurnDownViewModel {
 	if !budget.Enabled {
 		return budgetBurnDownViewModel{
 			EmptyTitle:      "Budget disabled.",
-			EmptyDetail:     "Enable a daily budget cap to show spend burn-down.",
+			EmptyDetail:     "Enable a daily budget cap to show notional USD burn-down.",
 			CurrentLabel:    formatUSD(budget.CurrentSpendUSD),
 			CapLabel:        optionalUSD(budget.PerDayMaxUSD),
 			ProjectionLabel: formatUSD(budget.ProjectedCostUSD),
@@ -6301,8 +6301,8 @@ func budgetBurnDownView(snapshot telemetry.Snapshot) budgetBurnDownViewModel {
 	actualPoints := budgetActualPoints(budget.SpendPoints, periodStart, periodEnd, now, currentSpend)
 	if currentSpend <= 0 && len(actualPoints) <= 1 {
 		return budgetBurnDownViewModel{
-			EmptyTitle:      "No budget spend yet.",
-			EmptyDetail:     "Cumulative spend and projection will appear after usage is recorded.",
+			EmptyTitle:      "No notional USD yet.",
+			EmptyDetail:     "Cumulative notional USD and its projection will appear after usage is recorded.",
 			CurrentLabel:    formatUSD(currentSpend),
 			CapLabel:        optionalUSD(budget.PerDayMaxUSD),
 			ProjectionLabel: formatUSD(projectedSpend),
@@ -6317,12 +6317,12 @@ func budgetBurnDownView(snapshot telemetry.Snapshot) budgetBurnDownViewModel {
 		CapLabel:        optionalUSD(budget.PerDayMaxUSD),
 		ProjectionLabel: formatUSD(projectedSpend),
 		Chart: BudgetProjectionChartData{
-			Title:        "Cost burn-down",
-			AriaLabel:    "Cumulative cost burn-down with budget cap and projected period-end spend",
+			Title:        "Notional USD burn-down",
+			AriaLabel:    "Cumulative notional USD burn-down with budget cap and projected period-end value",
 			ActualPoints: actualPoints,
 			ProjectionPoints: []BudgetProjectionPoint{
 				{
-					Label: "Current spend",
+					Label: "Current notional USD",
 					At:    lastActual.At,
 					Value: lastActual.Value,
 				},
@@ -6343,7 +6343,7 @@ func budgetUnavailableDetail(budget telemetry.Budget) string {
 	if reason := strings.TrimSpace(budget.DegradedReason); reason != "" {
 		return reason
 	}
-	return "Budget spend data unavailable."
+	return "Budget notional USD data unavailable."
 }
 
 func budgetProjectionLabel(budget telemetry.Budget) string {
@@ -6451,7 +6451,7 @@ func budgetActualPoints(points []telemetry.BudgetSpendPoint, periodStart time.Ti
 			at = periodEnd
 		}
 		out = append(out, BudgetProjectionPoint{
-			Label: "Current spend",
+			Label: "Current notional USD",
 			At:    at,
 			Value: currentSpend,
 		})
@@ -6476,7 +6476,7 @@ func budgetPeriodLabel(periodStart time.Time, periodEnd time.Time) string {
 
 func budgetPointLabel(at time.Time) string {
 	if at.IsZero() {
-		return "Spend"
+		return "Notional USD"
 	}
 	at = at.UTC()
 	if at.Second() == 0 {

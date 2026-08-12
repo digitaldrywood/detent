@@ -9815,7 +9815,7 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 			budgetCostEvents: func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
 				return nil, nil
 			},
-			wantHTML:      "No budget spend yet.",
+			wantHTML:      "No notional USD yet.",
 			forbiddenHTML: []string{"Budget data unavailable."},
 		},
 		{
@@ -9825,7 +9825,7 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 			},
 			wantReason:    "budget spend query failed",
 			wantHTML:      "Budget data unavailable.",
-			forbiddenHTML: []string{"No budget spend yet.", "$0.00 / $100.00"},
+			forbiddenHTML: []string{"No notional USD yet.", "$0.00 / $100.00"},
 		},
 	}
 
@@ -10537,10 +10537,10 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 		`href="/"`,
 		`href="/settings"`,
 		`id="reports-kpis"`,
-		"Total spend",
+		"Total notional USD",
 		"Cache hit",
 		"Sessions",
-		"Spend · by day",
+		"Notional USD · by day",
 		"Tokens · cumulative",
 		"Top issues by tokens",
 		"Top PRs by tokens",

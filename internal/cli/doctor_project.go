@@ -327,7 +327,7 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, overlayCheck)
 	}
 	setDoctorCurrentCheck("Project " + id + " billing mode")
-	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
+	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config, false); ok {
 		checks = append(checks, billingCheck)
 	}
 	setDoctorCurrentCheck("Project " + id + " progress brake")
@@ -819,12 +819,43 @@ func doctorLocalDefinitionPaths(workflow workflowconfig.Workflow) []string {
 	return paths
 }
 
-func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
+func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAuth bool) (doctorCheck, bool) {
 	mode := cfg.Budget.EffectiveBillingMode()
 	modeDetail := "billing_mode=" + mode
 	if !cfg.Budget.BillingModeConfigured() {
 		mode = workflowconfig.BillingModeSubscription
 		modeDetail = "budget.billing_mode is undeclared; subscription billing is the default"
+	}
+	if mode == workflowconfig.BillingModeMetered {
+		if subscriptionAuth {
+			brakes := cfg.USDBrakes()
+			armed := make([]string, 0, 2)
+			if brakes.BudgetCaps {
+				armed = append(armed, "budget.per_day_max_usd / budget.per_issue_max_usd")
+			}
+			if brakes.NoProgress {
+				armed = append(armed, "agent.no_progress_spend_limit_usd")
+			}
+			if len(armed) == 0 {
+				return doctorCheck{}, false
+			}
+			return doctorCheck{
+				Name:   "Project " + id + " billing mode",
+				Status: doctorWarn,
+				Detail: "budget.billing_mode=metered arms notional USD brakes against subscription-auth usage: " + strings.Join(armed, ", ") + "; budget.enabled=false does not disarm agent.no_progress_spend_limit_usd",
+				Hint:   "Set budget.billing_mode: subscription to make every notional USD brake inert. Do not rely on budget.enabled: false; it only disables budget.per_day_max_usd and budget.per_issue_max_usd.",
+			}, true
+		}
+		warnings := cfg.ValidationWarnings()
+		if len(warnings) == 0 {
+			return doctorCheck{}, false
+		}
+		return doctorCheck{
+			Name:   "Project " + id + " billing mode",
+			Status: doctorWarn,
+			Detail: "configuration footgun: " + strings.Join(warnings, "; "),
+			Hint:   "Confirm marginal API billing before keeping this notional USD brake active.",
+		}, true
 	}
 	if mode != workflowconfig.BillingModeSubscription {
 		return doctorCheck{}, false

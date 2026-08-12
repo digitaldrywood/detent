@@ -232,8 +232,8 @@ func newBudgetProjectionChartView(data BudgetProjectionChartData) budgetProjecti
 	}
 
 	return budgetProjectionChartView{
-		Title:              chartText(data.Title, "Cost burn-down"),
-		AriaLabel:          chartText(data.AriaLabel, chartText(data.Title, "Cost burn-down")),
+		Title:              chartText(data.Title, "Notional USD burn-down"),
+		AriaLabel:          chartText(data.AriaLabel, chartText(data.Title, "Notional USD burn-down")),
 		Class:              chartClass("dt-responsive-chart block h-36 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
 		Style:              chartAspectRatioStyle(width, height),
 		ViewBox:            chartViewBox(width, height),

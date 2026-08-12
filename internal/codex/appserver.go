@@ -23,6 +23,7 @@ const (
 	configReadRequestID   = 5
 	modelListRequestID    = 6
 	threadReadRequestID   = 7
+	accountReadRequestID  = 8
 	methodNotFoundCode    = -32601
 	chromeDevToolsServer  = "chrome-devtools"
 	mcpToolApprovalKind   = "mcp_tool_call"
@@ -209,6 +210,20 @@ type Model struct {
 	Default                   bool
 	Upgrade                   string
 	SupportedReasoningEfforts []string
+}
+
+type Account struct {
+	Type               string
+	PlanType           string
+	RequiresOpenAIAuth bool
+}
+
+func (a Account) SubscriptionBased() bool {
+	if !strings.EqualFold(strings.TrimSpace(a.Type), "chatgpt") {
+		return false
+	}
+	plan := strings.ToLower(strings.TrimSpace(a.PlanType))
+	return plan != "self_serve_business_usage_based" && plan != "enterprise_cbp_usage_based"
 }
 
 type UpdateHandler func(Update) error
@@ -473,6 +488,47 @@ func (s *AppServer) CheckHealth(ctx context.Context) (err error) {
 		}
 	}()
 	return s.initialize(ctx, transport, nil)
+}
+
+func (s *AppServer) Account(ctx context.Context) (account Account, err error) {
+	ctx = contextOrBackground(ctx)
+	transport, err := s.transportFactory.NewTransport(ctx)
+	if err != nil {
+		return Account{}, fmt.Errorf("start codex app-server transport: %w", err)
+	}
+	defer func() {
+		closeErr := closeTransport(ctx, transport, s.readTimeout)
+		if closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	if err := s.initialize(ctx, transport, nil); err != nil {
+		return Account{}, err
+	}
+	if err := sendRequest(ctx, transport, accountReadRequestID, "account/read", map[string]any{"refreshToken": false}); err != nil {
+		return Account{}, err
+	}
+	result, err := s.awaitResponse(ctx, transport, accountReadRequestID, nil, nil)
+	if err != nil {
+		return Account{}, err
+	}
+	var response struct {
+		Account *struct {
+			Type     string `json:"type"`
+			PlanType string `json:"planType"`
+		} `json:"account"`
+		RequiresOpenAIAuth bool `json:"requiresOpenaiAuth"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return Account{}, fmt.Errorf("%w: decode account/read result: %w", ErrInvalidResponse, err)
+	}
+	account.RequiresOpenAIAuth = response.RequiresOpenAIAuth
+	if response.Account != nil {
+		account.Type = strings.TrimSpace(response.Account.Type)
+		account.PlanType = strings.TrimSpace(response.Account.PlanType)
+	}
+	return account, nil
 }
 
 func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) {
@@ -1803,6 +1859,8 @@ func requestName(id int) string {
 		return "model/list"
 	case threadReadRequestID:
 		return "thread/read"
+	case accountReadRequestID:
+		return "account/read"
 	default:
 		return strconv.Itoa(id)
 	}

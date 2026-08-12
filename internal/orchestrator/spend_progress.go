@@ -568,7 +568,7 @@ func spendProgressBlockMessage(decision spendProgressDecision) string {
 		)
 	}
 	return fmt.Sprintf(
-		"spent %s since the last accepted state change; configured limit %s",
+		"computed %s notional USD since the last accepted state change; configured notional limit %s",
 		budget.FormatUSD(decision.Spend.CostUSD),
 		budget.FormatUSD(decision.LimitUSD),
 	)
@@ -578,7 +578,7 @@ func spendProgressUsageSummary(decision spendProgressDecision) string {
 	if decision.BlockedBy == "tokens" {
 		return fmt.Sprintf("%d tokens", decision.Spend.TotalTokens)
 	}
-	return budget.FormatUSD(decision.Spend.CostUSD)
+	return budget.FormatUSD(decision.Spend.CostUSD) + " notional USD"
 }
 
 func spendProgressRecoveryReason(decision spendProgressDecision) string {

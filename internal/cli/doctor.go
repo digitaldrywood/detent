@@ -23,6 +23,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -235,6 +236,7 @@ type doctorDeps struct {
 	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
 	runCommandInDir      func(context.Context, string, []string, string, ...string) error
 	codexInitialize      func(context.Context, string, []string) error
+	codexAccount         func(context.Context, string, []string) (codex.Account, error)
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
@@ -461,6 +463,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 				},
 			})
 		}
+		jobs = append(jobs, doctorCheckJob{
+			Name: "Billing auth",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return checkDoctorMeteredBillingAuth(jobCtx, globalConfig, deps, binaryEnvironment)
+			},
+		})
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Lessons",
 			Run: func(jobCtx context.Context) []doctorCheck {
@@ -1096,6 +1104,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.codexInitialize == nil {
 		d.codexInitialize = defaults.codexInitialize
 	}
+	if d.codexAccount == nil {
+		d.codexAccount = defaults.codexAccount
+	}
 	if d.httpDo == nil {
 		d.httpDo = defaults.httpDo
 	}
@@ -1170,6 +1181,7 @@ func defaultDoctorDeps() doctorDeps {
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
 		codexInitialize:      probeDoctorCodexInitialize,
+		codexAccount:         probeDoctorCodexAccount,
 		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,
 		githubReadiness:      ghconnector.CheckReadiness,

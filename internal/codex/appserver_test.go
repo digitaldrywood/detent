@@ -276,6 +276,59 @@ func TestAppServerCheckHealthCompletesInitializeHandshake(t *testing.T) {
 	}
 }
 
+func TestAppServerAccountReadsResolvedAuthentication(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		response         string
+		want             Account
+		wantSubscription bool
+	}{
+		{
+			name:             "flat ChatGPT plan is subscription based",
+			response:         `{"account":{"type":"chatgpt","email":"operator@example.com","planType":"pro"},"requiresOpenaiAuth":true}`,
+			want:             Account{Type: "chatgpt", PlanType: "pro", RequiresOpenAIAuth: true},
+			wantSubscription: true,
+		},
+		{
+			name:     "API key is metered",
+			response: `{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}`,
+			want:     Account{Type: "apiKey", RequiresOpenAIAuth: true},
+		},
+		{
+			name:     "usage based ChatGPT plan is metered",
+			response: `{"account":{"type":"chatgpt","email":"operator@example.com","planType":"self_serve_business_usage_based"},"requiresOpenaiAuth":true}`,
+			want:     Account{Type: "chatgpt", PlanType: "self_serve_business_usage_based", RequiresOpenAIAuth: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+				responseMessage(t, accountReadRequestID, tt.response),
+			})
+			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+			account, err := server.Account(t.Context())
+			if err != nil {
+				t.Fatalf("Account() error = %v", err)
+			}
+			if account != tt.want || account.SubscriptionBased() != tt.wantSubscription {
+				t.Fatalf("Account() = %#v, subscription=%t; want %#v, subscription=%t", account, account.SubscriptionBased(), tt.want, tt.wantSubscription)
+			}
+			sent := transport.sentMessages()
+			if len(sent) != 3 || sent[2].Method != "account/read" {
+				t.Fatalf("sent messages = %#v, want initialize, initialized, account/read", sent)
+			}
+		})
+	}
+}
+
 func TestAppServerRunTurnExecutesDynamicToolRequest(t *testing.T) {
 	t.Parallel()
 	transport := newFakeAppServerTransport([]Message{

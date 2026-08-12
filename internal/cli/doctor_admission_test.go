@@ -136,7 +136,7 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		"origins=admission:1,routine:1,unknown:1",
 		"proposal_outcomes=accepted:1,expired:1",
 		"average_decision_seconds=accepted:60,expired:604800",
-		"accepted_downstream=completed:1,rework:2,review_churn:3,spend:$4.50",
+		"accepted_downstream=completed:1,rework:2,review_churn:3,notional_usd:$4.50",
 	} {
 		if !strings.Contains(check.Detail, want) {
 			t.Fatalf("Detail = %q, want %q", check.Detail, want)

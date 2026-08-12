@@ -482,6 +482,96 @@ func probeDoctorCodexInitialize(ctx context.Context, path string, environment []
 	return server.CheckHealth(ctx)
 }
 
+func probeDoctorCodexAccount(ctx context.Context, path string, environment []string) (codex.Account, error) {
+	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(commandCtx, path, "app-server")
+		cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+		return cmd
+	})
+	if err != nil {
+		return codex.Account{}, err
+	}
+	server, err := codex.NewAppServer(factory)
+	if err != nil {
+		return codex.Account{}, err
+	}
+	return server.Account(ctx)
+}
+
+func checkDoctorMeteredBillingAuth(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, environment doctorBinaryEnvironment) []doctorCheck {
+	type projectBilling struct {
+		id     string
+		config workflowconfig.Config
+	}
+	projects := make([]projectBilling, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
+		if err != nil || workflow.Config.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered {
+			continue
+		}
+		brakes := workflow.Config.USDBrakes()
+		if !brakes.BudgetCaps && !brakes.NoProgress {
+			continue
+		}
+		projects = append(projects, projectBilling{id: doctorProjectID(project), config: workflow.Config})
+	}
+	if len(projects) == 0 {
+		return nil
+	}
+
+	path, err := resolveDoctorBinary(ctx, deps, environment, "codex")
+	if err != nil {
+		return []doctorCheck{{
+			Name:   "Billing auth",
+			Status: doctorWarn,
+			Detail: "metered USD brakes are configured, but Codex auth could not be resolved because codex was not found on PATH",
+			Hint:   "Restore the Codex binary, then rerun detent doctor to verify whether the configured USD brakes use notional subscription-auth values.",
+		}}
+	}
+	account, err := deps.codexAccount(ctx, path, doctorBinaryCommandEnvironment(environment))
+	if err != nil {
+		return []doctorCheck{{
+			Name:   "Billing auth",
+			Status: doctorWarn,
+			Detail: "metered USD brakes are configured, but resolved Codex auth could not be read: " + err.Error(),
+			Hint:   "Fix Codex auth, then rerun detent doctor to verify whether the configured USD brakes use notional subscription-auth values.",
+		}}
+	}
+	if strings.TrimSpace(account.Type) == "" {
+		return []doctorCheck{{
+			Name:   "Billing auth",
+			Status: doctorWarn,
+			Detail: "metered USD brakes are configured, but resolved Codex auth did not identify an account type",
+			Hint:   "Fix Codex auth, then rerun detent doctor to verify whether the configured USD brakes use notional subscription-auth values.",
+		}}
+	}
+	if !account.SubscriptionBased() {
+		return []doctorCheck{{
+			Name:   "Billing auth",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("resolved Codex auth is %s%s; configured metered USD brakes do not use flat-subscription auth", account.Type, doctorAccountPlanDetail(account.PlanType)),
+		}}
+	}
+
+	checks := make([]doctorCheck, 0, len(projects))
+	for _, project := range projects {
+		check, ok := checkDoctorBillingMode(project.id, project.config, true)
+		if ok {
+			check.Detail = fmt.Sprintf("resolved Codex auth is ChatGPT subscription%s; %s", doctorAccountPlanDetail(account.PlanType), check.Detail)
+			checks = append(checks, check)
+		}
+	}
+	return checks
+}
+
+func doctorAccountPlanDetail(plan string) string {
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return ""
+	}
+	return " (plan " + plan + ")"
+}
+
 func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
 	return checkDoctorBinary(ctx, deps, environment, "claude", "claude binary", "--version", "Install Claude Code and run `claude` once to log in (or set ANTHROPIC_API_KEY).")
 }

@@ -266,7 +266,7 @@ templ BoardEfficiencyReceipt(receipt efficiency.Receipt, present bool, path stri
 				@sheetRowValue("Sessions · attempts", formatInt(receipt.Sessions)+" · "+formatInt(receipt.Attempts), "")
 				@sheetRowValue("Tokens", formatInt(receipt.TotalTokens), formatInt(receipt.FreshInputTokens())+" fresh input · "+formatInt(receipt.CachedInputTokens)+" cached input · "+formatInt(receipt.OutputTokens)+" output")
 				@sheetRowValue("Cache share", reportCacheReadFraction(receipt.CacheShare()), "")
-				@sheetRowValue("Estimated cost", formatUSD(receipt.EstimatedCostUSD), "")
+				@sheetRowValue("Estimated notional USD", formatUSD(receipt.EstimatedCostUSD), "")
 				@sheetRowValue("Wall clock", formatDuration(float64(receipt.WallSeconds)), "")
 				@sheetRowValue("Dwell", formatDuration(float64(receipt.WorkingSeconds))+" working · "+formatDuration(float64(receipt.GateWaitSeconds))+" gate · "+formatDuration(float64(receipt.MergeTrainSeconds))+" merge · "+formatDuration(float64(receipt.ParkedSeconds))+" parked", "")
 				@sheetRowValue("Retries", formatInt(receipt.Redispatches)+" redispatches · "+formatInt(receipt.CIReruns)+" CI reruns · "+formatInt(receipt.BreakerTrips)+" breakers", "")

@@ -509,7 +509,7 @@ func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, una
 	if diagnostic.AcceptedCompleted > 0 || diagnostic.ReworkCount > 0 ||
 		diagnostic.ReviewChurnCount > 0 || diagnostic.SpendUSD > 0 {
 		details = append(details, fmt.Sprintf(
-			"accepted_downstream=completed:%d,rework:%d,review_churn:%d,spend:$%.2f",
+			"accepted_downstream=completed:%d,rework:%d,review_churn:%d,notional_usd:$%.2f",
 			diagnostic.AcceptedCompleted,
 			diagnostic.ReworkCount,
 			diagnostic.ReviewChurnCount,

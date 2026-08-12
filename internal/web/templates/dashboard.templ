@@ -2588,7 +2588,7 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 			</div>
 			<div class="grid min-w-0 gap-1">
 				<div class="flex items-center justify-between gap-2 text-xs">
-					<span class="text-sec">Spend</span>
+					<span class="text-sec">Notional USD</span>
 					<span class="font-mono text-sec">{ card.SpendLabel }</span>
 				</div>
 				@SparklineChart(card.SpendChart)
@@ -4192,7 +4192,7 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 			<div class="mt-5 grid gap-4 text-sm">
 				<div class="grid gap-2">
 					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Spend today", "text-sec")
+						@plainInlineLabel("Notional USD today", "text-sec")
 						<strong class="font-mono font-medium text-text">{ budgetSpendTodayLabel(snapshot.Budget) }</strong>
 					</div>
 					<div class="h-2 overflow-hidden rounded-full bg-elev" aria-label="Daily budget usage">
@@ -4204,26 +4204,26 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 				} else {
 					<div class="grid gap-3">
 						<div class="flex items-center justify-between gap-4">
-							@plainInlineLabel("Cost burn-down", "font-medium text-sec")
+							@plainInlineLabel("Notional USD burn-down", "font-medium text-sec")
 							<span class="font-mono text-xs text-sec">{ budgetBurnDownView(snapshot).PeriodLabel }</span>
 						</div>
 						@BudgetProjectionChart(budgetBurnDownView(snapshot).Chart)
 						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-sec">
-							<span>Spend { budgetBurnDownView(snapshot).CurrentLabel }</span>
+							<span>Notional { budgetBurnDownView(snapshot).CurrentLabel }</span>
 							<span>Cap { budgetBurnDownView(snapshot).CapLabel }</span>
 							<span>Projected { budgetBurnDownView(snapshot).ProjectionLabel }</span>
 						</div>
 					</div>
 				}
 				if len(budgetHistoryBars(snapshot.Budget)) == 0 {
-					@dashboardEmptyState("No budget history yet.", "Spend bars will appear after daily budget samples are recorded.", "bg-accent")
+					@dashboardEmptyState("No budget history yet.", "Notional USD bars will appear after daily budget samples are recorded.", "bg-accent")
 				} else {
 					<div class="grid gap-2">
 						<div class="flex items-center justify-between gap-4">
 							@plainInlineLabel("Budget history", "font-medium text-sec")
 							<span class="font-mono text-xs text-sec">{ budgetHistoryCount(snapshot.Budget) }</span>
 						</div>
-						<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-line bg-elev px-2 py-2" aria-label="Spend over the last seven days">
+						<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-line bg-elev px-2 py-2" aria-label="Notional USD over the last seven days">
 							for _, bar := range budgetHistoryBars(snapshot.Budget) {
 								<span class="block min-h-1 rounded-t bg-accent opacity-80" style={ bar.Style } title={ bar.Title }>
 									<span class="sr-only">{ bar.Title }</span>

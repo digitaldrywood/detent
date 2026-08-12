@@ -605,7 +605,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 	board := projectKanbanBoardView(data)
 	spend := "-- today"
 	if !data.PendingEnrichment {
-		spend = formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today"
+		spend = formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " notional USD today"
 	}
 	view := boardView{
 		Key:        boardVisibilityKey(data),

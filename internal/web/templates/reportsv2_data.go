@@ -203,9 +203,9 @@ func reportsCostPerOutcomeView(data ReportsData) reportsCostPerOutcome {
 			Closed:    formatInt(current.ClosedIssues),
 			Metrics: []reportsOutcomeMetric{
 				{ID: "tokens-merged-pr", Label: "Tokens / merged PR", Value: reportsOutcomeTokenValue(current.TokensPerMergedPR, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
-				{ID: "spend-merged-pr", Label: "Spend / merged PR", Value: reportsOutcomeSpendValue(current.SpendPerMergedPRUSD, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
+				{ID: "spend-merged-pr", Label: "Notional USD / merged PR", Value: reportsOutcomeSpendValue(current.SpendPerMergedPRUSD, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
 				{ID: "tokens-closed-issue", Label: "Tokens / closed issue", Value: reportsOutcomeTokenValue(current.TokensPerClosedIssue, current.ClosedIssues), Detail: reportsOutcomeCount(current.ClosedIssues, "closed issue", "closed issues")},
-				{ID: "spend-closed-issue", Label: "Spend / closed issue", Value: reportsOutcomeSpendValue(current.SpendPerClosedIssueUSD, current.ClosedIssues), Detail: reportsOutcomeCount(current.ClosedIssues, "closed issue", "closed issues")},
+				{ID: "spend-closed-issue", Label: "Notional USD / closed issue", Value: reportsOutcomeSpendValue(current.SpendPerClosedIssueUSD, current.ClosedIssues), Detail: reportsOutcomeCount(current.ClosedIssues, "closed issue", "closed issues")},
 			},
 		}
 		if len(project.Trend) > 0 {
@@ -218,7 +218,7 @@ func reportsCostPerOutcomeView(data ReportsData) reportsCostPerOutcome {
 				spendPoints = append(spendPoints, SplitSeriesPoint{Label: label, Input: point.Metrics.SpendPerMergedPRUSD, Output: point.Metrics.SpendPerClosedIssueUSD})
 			}
 			item.TokenChart = SplitSeriesChartData{Title: name + " tokens per outcome", AriaLabel: name + " tokens per outcome trend", InputLabel: "Merged PR", OutputLabel: "Closed issue", Points: tokenPoints, ValueSuffix: " tokens", Class: "h-28 w-full"}
-			item.SpendChart = SplitSeriesChartData{Title: name + " spend per outcome", AriaLabel: name + " spend per outcome trend", InputLabel: "Merged PR", OutputLabel: "Closed issue", Points: spendPoints, ValueSuffix: " USD", Class: "h-28 w-full", InputClass: "text-accent", OutputClass: "text-ok"}
+			item.SpendChart = SplitSeriesChartData{Title: name + " notional USD per outcome", AriaLabel: name + " notional USD per outcome trend", InputLabel: "Merged PR", OutputLabel: "Closed issue", Points: spendPoints, ValueSuffix: " notional USD", Class: "h-28 w-full", InputClass: "text-accent", OutputClass: "text-ok"}
 		}
 		view.Projects = append(view.Projects, item)
 	}
@@ -289,8 +289,8 @@ func reportsEfficiencyView(rollup efficiency.Rollup) reportsEfficiency {
 		Rows: []reportsEfficiencyRow{
 			{Label: "Tokens / merged issue · p50", Current: fleetCompactTokens(int64(current.TokensPerIssue.P50)), Baseline: fleetCompactTokens(int64(baseline.TokensPerIssue.P50)), Delta: reportsEfficiencyDelta(current.TokensPerIssue.P50, baseline.TokensPerIssue.P50)},
 			{Label: "Tokens / merged issue · p90", Current: fleetCompactTokens(int64(current.TokensPerIssue.P90)), Baseline: fleetCompactTokens(int64(baseline.TokensPerIssue.P90)), Delta: reportsEfficiencyDelta(current.TokensPerIssue.P90, baseline.TokensPerIssue.P90)},
-			{Label: "Cost / merged issue · p50", Current: formatUSD(current.CostPerIssueUSD.P50), Baseline: formatUSD(baseline.CostPerIssueUSD.P50), Delta: reportsEfficiencyDelta(current.CostPerIssueUSD.P50, baseline.CostPerIssueUSD.P50)},
-			{Label: "Cost / merged issue · p90", Current: formatUSD(current.CostPerIssueUSD.P90), Baseline: formatUSD(baseline.CostPerIssueUSD.P90), Delta: reportsEfficiencyDelta(current.CostPerIssueUSD.P90, baseline.CostPerIssueUSD.P90)},
+			{Label: "Notional USD / merged issue · p50", Current: formatUSD(current.CostPerIssueUSD.P50), Baseline: formatUSD(baseline.CostPerIssueUSD.P50), Delta: reportsEfficiencyDelta(current.CostPerIssueUSD.P50, baseline.CostPerIssueUSD.P50)},
+			{Label: "Notional USD / merged issue · p90", Current: formatUSD(current.CostPerIssueUSD.P90), Baseline: formatUSD(baseline.CostPerIssueUSD.P90), Delta: reportsEfficiencyDelta(current.CostPerIssueUSD.P90, baseline.CostPerIssueUSD.P90)},
 			{Label: "Cache share", Current: reportCacheReadFraction(current.CacheShare), Baseline: reportCacheReadFraction(baseline.CacheShare), Delta: reportsEfficiencyDelta(current.CacheShare, baseline.CacheShare)},
 			{Label: "Sessions / issue", Current: formatDecimal(current.SessionsPerIssue), Baseline: formatDecimal(baseline.SessionsPerIssue), Delta: reportsEfficiencyDelta(current.SessionsPerIssue, baseline.SessionsPerIssue)},
 			{Label: "First-attempt merge rate", Current: reportCacheReadFraction(current.FirstAttemptMergeRate), Baseline: reportCacheReadFraction(baseline.FirstAttemptMergeRate), Delta: reportsEfficiencyDelta(current.FirstAttemptMergeRate, baseline.FirstAttemptMergeRate)},
@@ -360,13 +360,13 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 		reportsDigestFloatMetric("cache", "Cached share", cacheShare, baseline, func(value DailyDigestDayData) float64 {
 			return usageFraction(value.CachedInputTokens, value.InputTokens)
 		}),
-		reportsDigestFloatMetric("cost", "Estimated cost", day.SpendUSD, baseline, func(value DailyDigestDayData) float64 { return value.SpendUSD }),
+		reportsDigestFloatMetric("cost", "Estimated notional USD", day.SpendUSD, baseline, func(value DailyDigestDayData) float64 { return value.SpendUSD }),
 		reportsDigestCountMetric("recoveries", "Orphan recoveries", recoveries, baseline, func(value DailyDigestDayData) int64 { return value.OrphanResumed + value.OrphanFresh }),
 		reportsDigestCountMetric("outages", "Capacity outages", day.CapacityOutages, baseline, func(value DailyDigestDayData) int64 { return value.CapacityOutages }),
 		reportsDigestCountMetric("breakers", "Breaker trips", day.BreakerTrips, baseline, func(value DailyDigestDayData) int64 { return value.BreakerTrips }),
 		reportsDigestCountMetric("failures", "Failed sessions", day.FailedSessions, baseline, func(value DailyDigestDayData) int64 { return value.FailedSessions }),
 		reportsDigestFloatMetric("tokens-per-merged", "Tokens / merged · p50", day.Efficiency.TokensPerIssue.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.TokensPerIssue.P50 }),
-		reportsDigestFloatMetric("cost-per-merged", "Cost / merged · p50", day.Efficiency.CostPerIssueUSD.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.CostPerIssueUSD.P50 }),
+		reportsDigestFloatMetric("cost-per-merged", "Notional USD / merged · p50", day.Efficiency.CostPerIssueUSD.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.CostPerIssueUSD.P50 }),
 		reportsDigestFloatMetric("sessions-per-issue", "Sessions / issue", day.Efficiency.SessionsPerIssue, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.SessionsPerIssue }),
 		reportsDigestFloatMetric("first-attempt", "First-attempt merge", day.Efficiency.FirstAttemptMergeRate, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.FirstAttemptMergeRate }),
 		reportsDigestCountMetric("efficiency-anomalies", "Efficiency anomalies", day.Efficiency.Anomalies, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Anomalies }),
@@ -510,7 +510,7 @@ func reportsReleaseView(data ReportsData) reportsRelease {
 func reportsKPIs(data ReportsData) []reportsKPI {
 	totals := data.Day.Totals
 	return []reportsKPI{
-		{ID: "kpi-spend", Value: formatUSD(totals.SpendUSD), Label: "Total spend"},
+		{ID: "kpi-spend", Value: formatUSD(totals.SpendUSD), Label: "Total notional USD"},
 		{ID: "kpi-tokens", Value: fleetCompactTokens(totals.TotalTokens), Label: "Tokens", Full: formatInt(totals.TotalTokens)},
 		{ID: "kpi-cache", Value: reportCacheReadFraction(totals.CacheReadFraction), Label: "Cache hit"},
 		{ID: "kpi-sessions", Value: formatInt(totals.Events), Label: "Sessions"},
@@ -550,8 +550,8 @@ func reportsSpendBars(data ReportsData) reportsSpendChart {
 	view := reportsSpendChart{
 		HasSpend: hasSpend,
 		Chart: BarChartData{
-			Title:       "Daily spend",
-			AriaLabel:   "Daily spend bar chart",
+			Title:       "Daily notional USD",
+			AriaLabel:   "Daily notional USD bar chart",
 			Bars:        bars,
 			ValueSuffix: "USD",
 			Class:       "h-30 w-full",
@@ -693,7 +693,7 @@ func reportsBudgetView(data ReportsData) reportsBudget {
 	switch {
 	case !budget.Enabled:
 		view.State = "disabled"
-		view.Detail = "Budget disabled — spend is tracked but not limited."
+		view.Detail = "Budget disabled — notional USD is tracked but not limited."
 		return view
 	case strings.TrimSpace(budget.DegradedReason) != "":
 		view.State = "unavailable"
@@ -701,7 +701,7 @@ func reportsBudgetView(data ReportsData) reportsBudget {
 		return view
 	case budget.CurrentSpendUSD <= 0 && len(budget.Days) == 0:
 		view.State = "empty"
-		view.Detail = "No budget spend yet."
+		view.Detail = "No notional USD yet."
 		return view
 	}
 	view.State = "ok"
@@ -723,7 +723,7 @@ func reportsBudgetView(data ReportsData) reportsBudget {
 		view.HasDays = true
 		view.Chart = BarChartData{
 			Title:       "Budget burn-down",
-			AriaLabel:   "Daily budget spend",
+			AriaLabel:   "Daily budget notional USD",
 			Bars:        bars,
 			ValueSuffix: "USD",
 			Class:       "h-15 w-full",

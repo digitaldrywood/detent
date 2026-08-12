@@ -98,7 +98,7 @@ func reportsCostPerOutcomeSection(view reportsCostPerOutcome) templ.Component {
 			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<section id=\"reports-cost-outcomes\" class=\"flex flex-none flex-col gap-3 px-5 pb-5\" aria-labelledby=\"reports-cost-outcomes-title\"><div class=\"flex flex-wrap items-center justify-between gap-3\"><div><h2 id=\"reports-cost-outcomes-title\" class=\"text-sm font-semibold text-text\">Cost per outcome</h2><p class=\"mt-1 text-xs text-sec\">Project usage divided by merged pull requests and closed issues.</p></div><nav class=\"flex overflow-hidden rounded-card border border-line\" aria-label=\"Cost per outcome window\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<section id=\"reports-cost-outcomes\" class=\"flex flex-none flex-col gap-3 px-5 pb-5\" aria-labelledby=\"reports-cost-outcomes-title\"><div class=\"flex flex-wrap items-center justify-between gap-3\"><div><h2 id=\"reports-cost-outcomes-title\" class=\"text-sm font-semibold text-text\">Notional USD per outcome</h2><p class=\"mt-1 text-xs text-sec\">Project usage divided by merged pull requests and closed issues.</p></div><nav class=\"flex overflow-hidden rounded-card border border-line\" aria-label=\"Cost per outcome window\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -331,7 +331,7 @@ func reportsCostPerOutcomeSection(view reportsCostPerOutcome) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "</div><div><p class=\"mb-2 text-xs font-medium text-sec\">Spend per outcome</p>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "</div><div><p class=\"mb-2 text-xs font-medium text-sec\">Notional USD per outcome</p>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -511,7 +511,7 @@ func ReportsSnapshotV2(data ReportsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = primitives.EmptyLine("No spend recorded in this window").Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = primitives.EmptyLine("No notional USD recorded in this window").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -522,7 +522,7 @@ func ReportsSnapshotV2(data ReportsData) templ.Component {
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = primitives.Panel(primitives.PanelProps{ID: "reports-spend", Title: "Spend · by day"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var23), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = primitives.Panel(primitives.PanelProps{ID: "reports-spend", Title: "Notional USD · by day"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var23), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -759,7 +759,7 @@ func ReportsSnapshotV2(data ReportsData) templ.Component {
 			}
 			ctx = templ.InitializeContext(ctx)
 			if view.Budget.State == "ok" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<div class=\"flex flex-col gap-2.5 p-4\"><div class=\"flex items-baseline justify-between gap-2\"><span class=\"text-xs text-sec\">Spend today</span> <span class=\"whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<div class=\"flex flex-col gap-2.5 p-4\"><div class=\"flex items-baseline justify-between gap-2\"><span class=\"text-xs text-sec\">Notional USD today</span> <span class=\"whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -1336,7 +1336,7 @@ func reportsTopTable(id string, title string, rows []reportsTopRow) templ.Compon
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 110, "<div class=\"overflow-x-auto\"><div class=\"min-w-[450px] md:min-w-0\"><div class=\"grid grid-cols-[90px_minmax(0,1fr)_110px_90px] gap-3.5 border-b border-line px-4 py-2\"><span class=\"text-2xs font-semibold uppercase text-dim\">ID</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Title</span> <span class=\"text-right text-2xs font-semibold uppercase text-dim\">Tokens</span> <span class=\"text-right text-2xs font-semibold uppercase text-dim\">Cost</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 110, "<div class=\"overflow-x-auto\"><div class=\"min-w-[450px] md:min-w-0\"><div class=\"grid grid-cols-[90px_minmax(0,1fr)_110px_90px] gap-3.5 border-b border-line px-4 py-2\"><span class=\"text-2xs font-semibold uppercase text-dim\">ID</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Title</span> <span class=\"text-right text-2xs font-semibold uppercase text-dim\">Tokens</span> <span class=\"text-right text-2xs font-semibold uppercase text-dim\">Notional USD</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

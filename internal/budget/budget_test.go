@@ -271,6 +271,9 @@ func TestCheckerCheckDispatch(t *testing.T) {
 			if !strings.Contains(comment, "Detent refused to dispatch this issue") {
 				t.Fatalf("Refusal.Comment() = %q, want refusal explanation", comment)
 			}
+			if !strings.Contains(comment, "notional USD") {
+				t.Fatalf("Refusal.Comment() = %q, want notional USD label", comment)
+			}
 			if !strings.Contains(comment, FormatUSD(tt.wantSpend)) {
 				t.Fatalf("Refusal.Comment() = %q, want projected spend %s", comment, FormatUSD(tt.wantSpend))
 			}

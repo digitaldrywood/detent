@@ -355,10 +355,10 @@ func formatBudget(budget telemetry.Budget, s styles) string {
 	}
 
 	parts := []string{
-		statusStyle.Render(status) + " " + s.muted.Render("current ") + s.warn.Render(formatUSD(budget.CurrentSpendUSD)),
-		s.muted.Render("projected ") + s.warn.Render(formatUSD(budget.ProjectedCostUSD)),
-		s.muted.Render("day max ") + s.info.Render(formatUSDCap(budget.PerDayMaxUSD)),
-		s.muted.Render("issue max ") + s.info.Render(formatUSDCap(budget.PerIssueMaxUSD)),
+		statusStyle.Render(status) + " " + s.muted.Render("notional current ") + s.warn.Render(formatUSD(budget.CurrentSpendUSD)),
+		s.muted.Render("notional projected ") + s.warn.Render(formatUSD(budget.ProjectedCostUSD)),
+		s.muted.Render("notional day max ") + s.info.Render(formatUSDCap(budget.PerDayMaxUSD)),
+		s.muted.Render("notional issue max ") + s.info.Render(formatUSDCap(budget.PerIssueMaxUSD)),
 	}
 
 	return strings.Join(parts, s.muted.Render(" | "))

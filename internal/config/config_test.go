@@ -420,6 +420,55 @@ func TestParseWorkflowBillingMode(t *testing.T) {
 	}
 }
 
+func TestUSDBrakes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		billingMode    string
+		budgetEnabled  bool
+		spendLimit     float64
+		wantBudgetCaps bool
+		wantProgress   bool
+		wantWarning    bool
+	}{
+		{name: "subscription disabled without progress limit", billingMode: BillingModeSubscription},
+		{name: "subscription disabled with progress limit", billingMode: BillingModeSubscription, spendLimit: 3},
+		{name: "subscription enabled without progress limit", billingMode: BillingModeSubscription, budgetEnabled: true},
+		{name: "subscription enabled with progress limit", billingMode: BillingModeSubscription, budgetEnabled: true, spendLimit: 3},
+		{name: "metered disabled without progress limit", billingMode: BillingModeMetered},
+		{name: "metered disabled with progress limit", billingMode: BillingModeMetered, spendLimit: 3, wantProgress: true, wantWarning: true},
+		{name: "metered enabled without progress limit", billingMode: BillingModeMetered, budgetEnabled: true, wantBudgetCaps: true},
+		{name: "metered enabled with progress limit", billingMode: BillingModeMetered, budgetEnabled: true, spendLimit: 3, wantBudgetCaps: true, wantProgress: true, wantWarning: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{
+				Budget: Budget{BillingMode: tt.billingMode, Enabled: tt.budgetEnabled},
+				Agent:  Agent{NoProgressSpendLimitUSD: tt.spendLimit},
+			}
+			brakes := cfg.USDBrakes()
+			if brakes.BudgetCaps != tt.wantBudgetCaps || brakes.NoProgress != tt.wantProgress {
+				t.Fatalf("USDBrakes() = %#v, want budget caps=%t progress=%t", brakes, tt.wantBudgetCaps, tt.wantProgress)
+			}
+			warnings := cfg.ValidationWarnings()
+			if got := len(warnings) > 0; got != tt.wantWarning {
+				t.Fatalf("ValidationWarnings() = %#v, want warning=%t", warnings, tt.wantWarning)
+			}
+			if tt.wantWarning {
+				warning := strings.Join(warnings, "; ")
+				for _, want := range []string{"billing_mode: metered", "agent.no_progress_spend_limit_usd", "budget.enabled: false", "billing_mode: subscription"} {
+					if !strings.Contains(warning, want) {
+						t.Fatalf("ValidationWarnings() = %q, want %q", warning, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestParseWorkflowMergeMethod(t *testing.T) {
 	t.Parallel()
 

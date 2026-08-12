@@ -616,8 +616,8 @@ func TestBuildPromptRequiresExplanationBeforeBreakerRetry(t *testing.T) {
 		"lane transition or pull request signature change",
 		"tokens since last accepted state change: 25000000",
 		"configured token limit: 20000000",
-		"spend since last accepted state change: $6.75",
-		"configured limit: $5.00",
+		"notional USD since last accepted state change: $6.75",
+		"configured notional USD limit: $5.00",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
