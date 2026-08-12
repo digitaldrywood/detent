@@ -655,6 +655,7 @@ type agentTurnExecution struct {
 	err         error
 	cleanupErr  error
 	turnStarted bool
+	turnCount   int
 }
 
 func runAgentBackendTurn(
@@ -817,6 +818,7 @@ func (r *Runner) runAgentTurn(
 		strings.TrimSpace(runRequest.Issue.PRRepository),
 		ciTriggerPullRequestNumber(runRequest.Issue),
 		runRequest.deliverableRecoveryBranch,
+		runRequest.sessionTurnOffset,
 	)
 	usage := newSessionTokenUsage(!agentResumeEmpty(turnRequest.Resume))
 	if !result.RuntimeIdentity.IsZero() {
@@ -899,6 +901,7 @@ func (r *Runner) runAgentTurn(
 		err:         turnErr,
 		cleanupErr:  cleanupErr,
 		turnStarted: turnStarted,
+		turnCount:   progress.turnCount(),
 	}
 }
 
@@ -1330,7 +1333,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
 	}
-	turns := int64(1)
+	turns := int64(max(execution.turnCount, 1))
 	if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
 		branch := strings.TrimSpace(info.Branch)
 		if branch == "" {
@@ -1350,22 +1353,38 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		recoveryRunRequest := req
 		recoveryRunRequest.deliverableRecoveryBranch = branch
+		recoveryRunRequest.sessionTurnOffset = execution.turnCount
 		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, execution.result.RuntimeIdentity)
 		recovery.err = sessionBrake.wrapTurnLimit(ctx, recovery.err)
 		recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
-		turns++
+		if recovery.err != nil {
+			recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
+		}
 		initialErr := execution.err
 		execution = mergeAgentTurnExecutions(execution, recovery)
+		turns = int64(max(execution.turnCount, 1))
 		if recovery.err != nil {
-			execution.err = &DeliverableRecoveryError{Branch: branch, Err: errors.Join(initialErr, recovery.err)}
-			execution.result.FinalState = FinalStateNeedsHumanAttention
-			r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_deliverable_recovery_failed",
-				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
-				telemetry.DetentSessionIDKey, sessionID,
-				"workspace_branch", branch,
-				"deliverable_command", deliverableErr.Operation,
-				"error", execution.err,
-			)
+			if recoveryFailure, exhausted := pullRequestDeliverableFailure(recovery.err); exhausted {
+				execution.err = &DeliverableRecoveryError{Branch: branch, Err: errors.Join(initialErr, recovery.err)}
+				execution.result.FinalState = FinalStateNeedsHumanAttention
+				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_deliverable_recovery_failed",
+					telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+					telemetry.DetentSessionIDKey, sessionID,
+					"workspace_branch", branch,
+					"deliverable_command", recoveryFailure.Operation,
+					"error", execution.err,
+				)
+			} else {
+				execution.err = recovery.err
+				execution.result.FinalState = finalStateForTurnError(recovery.err)
+				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_deliverable_recovery_interrupted",
+					telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+					telemetry.DetentSessionIDKey, sessionID,
+					"workspace_branch", branch,
+					"deliverable_command", deliverableErr.Operation,
+					"error", execution.err,
+				)
+			}
 		} else {
 			execution.err = nil
 			execution.result.FinalState = FinalStateCompleted
@@ -1483,7 +1502,11 @@ func recoverablePullRequestDeliverable(execution agentTurnExecution) (*Deliverab
 	if execution.err == nil || !execution.result.PullRequestHeadPushed {
 		return nil, false
 	}
-	errorsFound, onlyDeliverableErrors := deliverableCommandErrors(execution.err)
+	return pullRequestDeliverableFailure(execution.err)
+}
+
+func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
+	errorsFound, onlyDeliverableErrors := deliverableCommandErrors(err)
 	if !onlyDeliverableErrors || len(errorsFound) == 0 {
 		return nil, false
 	}
@@ -1549,7 +1572,7 @@ func deliverableRecoveryPrompt(branch string, repository string, deliverableErr 
 		prompt.WriteString(repository)
 		prompt.WriteString("`")
 	}
-	prompt.WriteString(". If one exists, adopt it and do not create a duplicate. If none exists, retry `")
+	prompt.WriteString(". Adopt it only after a tool result explicitly reports that exact head branch; if a search result omits the head, inspect the pull request before adopting it. If no exact-head pull request exists, retry `")
 	prompt.WriteString(operation)
 	prompt.WriteString("` with these attempted arguments:\n\n")
 	prompt.WriteString(arguments)
@@ -1577,6 +1600,7 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 		err:         recovery.err,
 		cleanupErr:  errors.Join(initial.cleanupErr, recovery.cleanupErr),
 		turnStarted: initial.turnStarted || recovery.turnStarted,
+		turnCount:   max(initial.turnCount, recovery.turnCount),
 	}
 }
 
@@ -1804,7 +1828,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "")
+	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
 	if err := r.publishRunUpdate(sessionCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
@@ -2746,9 +2770,10 @@ type agentRunProgress struct {
 	ciTriggerPushSequence     int
 	ciTriggerLabelValid       bool
 	deliverableRecoveryBranch string
+	turnOffset                int
 }
 
-func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int, deliverableRecoveryBranch string) *agentRunProgress {
+func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int, deliverableRecoveryBranch string, turnOffset int) *agentRunProgress {
 	return &agentRunProgress{
 		turnIDs:                   map[string]struct{}{},
 		messages:                  map[string]*runtimeoutput.Buffer{},
@@ -2761,6 +2786,7 @@ func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel strin
 		ciTriggerRepository:       strings.TrimSpace(ciTriggerRepository),
 		ciTriggerPRNumber:         ciTriggerPRNumber,
 		deliverableRecoveryBranch: strings.TrimSpace(deliverableRecoveryBranch),
+		turnOffset:                max(turnOffset, 0),
 	}
 }
 
@@ -2901,7 +2927,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 			delete(p.deliverableFailures, "pull_request")
 			p.deliverableSuccesses["pull_request"] = true
 		case "pull_request_lookup":
-			if pullRequestLookupAdopts(update) {
+			if pullRequestLookupAdopts(update, p.deliverableRecoveryBranch) {
 				delete(p.deliverableFailures, "pull_request")
 				p.deliverableSuccesses["pull_request"] = true
 			}
@@ -3028,9 +3054,82 @@ func pullRequestLookupCommand(tool string, arguments string, branch string) bool
 	return strings.Contains(tool, "search_issues") && (strings.Contains(arguments, "is:pr") || strings.Contains(arguments, "pull_request"))
 }
 
-func pullRequestLookupAdopts(update AgentUpdate) bool {
-	result := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
-	return strings.Contains(result, "/pull/") || strings.Contains(result, `"pull_request"`)
+func pullRequestLookupAdopts(update AgentUpdate, branch string) bool {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return false
+	}
+	for _, raw := range []string{update.Delta, update.BackendErrorBody, update.BackendErrorMessage} {
+		var payload any
+		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &payload) == nil && pullRequestPayloadMatchesHead(payload, branch) {
+			return true
+		}
+	}
+	return false
+}
+
+func pullRequestPayloadMatchesHead(payload any, branch string) bool {
+	switch value := payload.(type) {
+	case []any:
+		for _, item := range value {
+			if pullRequestPayloadMatchesHead(item, branch) {
+				return true
+			}
+		}
+	case map[string]any:
+		if pullRequestObjectMatchesHead(value, branch) {
+			return true
+		}
+		for _, nested := range value {
+			if pullRequestPayloadMatchesHead(nested, branch) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestObjectMatchesHead(value map[string]any, branch string) bool {
+	if !pullRequestObject(value) {
+		return false
+	}
+	for _, key := range []string{"head_ref_name", "headRefName", "head_branch", "headBranch", "source_branch", "sourceBranch"} {
+		if stringValue(value[key]) == branch {
+			return true
+		}
+	}
+	switch head := value["head"].(type) {
+	case string:
+		return strings.TrimSpace(head) == branch
+	case map[string]any:
+		for _, key := range []string{"ref", "name", "branch"} {
+			if stringValue(head[key]) == branch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestObject(value map[string]any) bool {
+	for _, key := range []string{"url", "html_url", "htmlUrl"} {
+		if strings.Contains(strings.ToLower(stringValue(value[key])), "/pull/") {
+			return true
+		}
+	}
+	if strings.EqualFold(stringValue(value["type"]), "pull_request") || strings.EqualFold(stringValue(value["kind"]), "pull_request") {
+		return true
+	}
+	_, ok := value["pull_request"]
+	return ok
+}
+
+func stringValue(value any) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
 }
 
 func deliverableInvocationOperation(invocation deliverableToolInvocation) string {
@@ -3263,7 +3362,7 @@ func modelUpdatedActivityMessage(model string) string {
 }
 
 func (p *agentRunProgress) turnCount() int {
-	return len(p.turnIDs)
+	return p.turnOffset + len(p.turnIDs)
 }
 
 func (p *agentRunProgress) addRecentEvent(event telemetry.ActivityEvent) {

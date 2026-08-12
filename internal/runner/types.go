@@ -420,6 +420,7 @@ type RunRequest struct {
 	MergePrecheck             *MergePrecheck
 	sessionBrake              *sessionBrakeController
 	deliverableRecoveryBranch string
+	sessionTurnOffset         int
 }
 
 type SessionProgressProbe func(context.Context) (string, error)

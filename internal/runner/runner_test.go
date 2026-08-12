@@ -619,7 +619,9 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 	tests := []struct {
 		name                   string
 		recoveryUpdates        []AgentUpdate
+		recoveryErr            error
 		wantErr                bool
+		wantInterrupted        error
 		wantPullRequestUpdated bool
 	}{
 		{
@@ -641,6 +643,14 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				{Type: AgentUpdateTurnCompleted, TurnID: "turn-2", Status: "completed"},
 			},
 			wantPullRequestUpdated: true,
+		},
+		{
+			name: "retry interruption remains retryable",
+			recoveryUpdates: []AgentUpdate{
+				{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-2"},
+			},
+			recoveryErr:     context.Canceled,
+			wantInterrupted: context.Canceled,
 		},
 		{
 			name: "unrecoverable retry surfaces pushed branch",
@@ -669,7 +679,7 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 					{Type: AgentUpdateTurnCompleted, TurnID: "turn-1", Status: "completed"},
 				},
 				tt.recoveryUpdates,
-			}}
+			}, errors: []error{nil, tt.recoveryErr}}
 			runner, err := NewRunner(Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work on {{ issue.identifier }}"},
 				Workspace:    workspaceBackend,
@@ -683,7 +693,12 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				ID: "issue-18", Identifier: "acme/widgets#18", Title: "Recover delivery", State: "In Progress",
 				BranchName: branch, PRRepository: "acme/widgets",
 			}})
-			if tt.wantErr {
+			if tt.wantInterrupted != nil {
+				var recoveryErr *DeliverableRecoveryError
+				if !errors.Is(runErr, tt.wantInterrupted) || errors.As(runErr, &recoveryErr) || result.FinalState == FinalStateNeedsHumanAttention {
+					t.Fatalf("Run() interruption = state %q error %T %v, want preserved %v", result.FinalState, runErr, runErr, tt.wantInterrupted)
+				}
+			} else if tt.wantErr {
 				var recoveryErr *DeliverableRecoveryError
 				if !errors.As(runErr, &recoveryErr) {
 					t.Fatalf("Run() error = %T %v, want DeliverableRecoveryError", runErr, runErr)
@@ -716,6 +731,71 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				if !strings.Contains(recoveryRequest.Prompt, want) {
 					t.Fatalf("recovery prompt missing %q:\n%s", want, recoveryRequest.Prompt)
 				}
+			}
+		})
+	}
+}
+
+func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
+	t.Parallel()
+
+	const branch = "detent/acme_widgets_18"
+	const arguments = `{"head":"detent/acme_widgets_18","repository_full_name":"acme/widgets"}`
+	backend := &deliverableRecoveryAgentBackend{turns: [][]AgentUpdate{
+		{
+			{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push origin HEAD"},
+			{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+			{Type: AgentUpdateToolStarted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Delta: arguments},
+			{Type: AgentUpdateToolCompleted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Status: "failed", BackendErrorMessage: "HTTP 502"},
+			{Type: AgentUpdateTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
+		},
+		{{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-2"}},
+	}}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 1}}, Prompt: "Work"},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: branch}},
+		AgentBackend: backend,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
+		ID: "issue-18", Identifier: "acme/widgets#18", BranchName: branch, PRRepository: "acme/widgets",
+	}})
+	var brake *SessionBrakeError
+	var recoveryErr *DeliverableRecoveryError
+	if !errors.Is(runErr, ErrSessionTurnLimitExceeded) || !errors.As(runErr, &brake) || errors.As(runErr, &recoveryErr) {
+		t.Fatalf("Run() error = %T %v, want preserved session brake", runErr, runErr)
+	}
+	if brake.Turns != 2 || brake.MaxTurns != 1 || result.FinalState != FinalStateTurnLimitExceeded {
+		t.Fatalf("session brake/result = %#v/%#v, want turn 2 beyond limit 1", brake, result)
+	}
+	if len(backend.requests) != 2 {
+		t.Fatalf("RunTurn requests = %d, want initial and interrupted recovery", len(backend.requests))
+	}
+}
+
+func TestPullRequestLookupAdoptsExactHead(t *testing.T) {
+	t.Parallel()
+
+	const branch = "detent/acme_widgets_18"
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "exact head", body: `{"issues":[{"head_ref_name":"detent/acme_widgets_18","url":"https://github.test/acme/widgets/pull/18"}]}`, want: true},
+		{name: "nested exact head", body: `{"pull_requests":[{"url":"https://github.test/acme/widgets/pull/18","head":{"ref":"detent/acme_widgets_18"}}]}`, want: true},
+		{name: "unrelated head", body: `{"issues":[{"head_ref_name":"detent/acme_widgets_17","url":"https://github.test/acme/widgets/pull/17"}]}`},
+		{name: "url without head", body: `{"issues":[{"url":"https://github.test/acme/widgets/pull/18","pull_request":{}}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := pullRequestLookupAdopts(AgentUpdate{Delta: tt.body}, branch)
+			if got != tt.want {
+				t.Fatalf("pullRequestLookupAdopts() = %v, want %v for %s", got, tt.want, tt.body)
 			}
 		})
 	}
@@ -4954,6 +5034,7 @@ type toolUpdateAgentBackend struct {
 
 type deliverableRecoveryAgentBackend struct {
 	turns    [][]AgentUpdate
+	errors   []error
 	requests []AgentTurnRequest
 }
 
@@ -4998,11 +5079,15 @@ func (b *deliverableRecoveryAgentBackend) RunTurn(_ context.Context, req AgentTu
 		}
 	}
 	turn := index + 1
+	var runErr error
+	if index < len(b.errors) {
+		runErr = b.errors[index]
+	}
 	return AgentTurnResult{
 		ThreadID:  "thread-" + strconv.Itoa(turn),
 		TurnID:    "turn-" + strconv.Itoa(turn),
 		SessionID: "session-" + strconv.Itoa(turn),
-	}, nil
+	}, runErr
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
