@@ -139,6 +139,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		cached           *connector.PullRequest
 		lookup           *connector.PullRequest
 		lookupErrors     []error
+		lookupFoundAfter int
 		wantBlocked      bool
 		wantReason       string
 		wantLookupCalls  int
@@ -155,7 +156,15 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			name:            "no pull request parks",
 			wantBlocked:     true,
 			wantReason:      "no exact-head pull request",
-			wantLookupCalls: 1,
+			wantLookupCalls: 3,
+		},
+		{
+			name: "transient not found retries then reconciles",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
+			},
+			lookupFoundAfter: 3,
+			wantLookupCalls:  3,
 		},
 		{
 			name: "merged pull request routes to merged deliverable reconciliation",
@@ -193,7 +202,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			},
 			wantBlocked:     true,
 			wantReason:      "lookup result: no exact-head pull request",
-			wantLookupCalls: 1,
+			wantLookupCalls: 3,
 		},
 	}
 	for _, tt := range tests {
@@ -209,9 +218,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
 			}}
 			tracker := &terminalRetryConnector{
-				issues:       map[string]connector.Issue{issue.ID: cloneIssue(issue)},
-				lookup:       tt.lookup,
-				lookupErrors: append([]error(nil), tt.lookupErrors...),
+				issues:           map[string]connector.Issue{issue.ID: cloneIssue(issue)},
+				lookup:           tt.lookup,
+				lookupErrors:     append([]error(nil), tt.lookupErrors...),
+				lookupFoundAfter: tt.lookupFoundAfter,
 			}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
@@ -440,6 +450,7 @@ type terminalRetryConnector struct {
 	lookup           *connector.PullRequest
 	lookupErrors     []error
 	lookupCalls      int
+	lookupFoundAfter int
 	lookupRepository string
 	lookupBranch     string
 	lookupHeadSHA    string
@@ -478,6 +489,9 @@ func (c *terminalRetryConnector) LookupPullRequestByHead(_ context.Context, repo
 		return connector.PullRequest{}, false, c.lookupErrors[c.lookupCalls-1]
 	}
 	if c.lookup == nil {
+		return connector.PullRequest{}, false, nil
+	}
+	if c.lookupFoundAfter > c.lookupCalls {
 		return connector.PullRequest{}, false, nil
 	}
 	pullRequest := *c.lookup

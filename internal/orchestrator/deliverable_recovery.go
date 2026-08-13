@@ -63,39 +63,45 @@ func (o *Orchestrator) lookupDeliverableRecovery(
 		return result
 	}
 
-	var lookupErr error
+	var (
+		lookupErr error
+		notFound  bool
+	)
 	for attempt := 1; attempt <= deliverableRecoveryLookupAttempts; attempt++ {
 		result.Attempts = attempt
 		pullRequest, found, err := lookup.LookupPullRequestByHead(ctx, result.Repository, result.Branch, result.HeadSHA)
 		if err == nil {
+			lookupErr = nil
 			if !found {
-				result.LookupResult = "no exact-head pull request"
+				notFound = true
+			} else {
+				fresh := pullRequest
+				result.PullRequest = &fresh
+				if strings.TrimSpace(fresh.BranchName) != result.Branch || strings.TrimSpace(fresh.HeadSHA) != result.HeadSHA {
+					result.LookupResult = fmt.Sprintf(
+						"no exact-head pull request; lookup returned PR #%d branch %q head %q",
+						fresh.Number,
+						strings.TrimSpace(fresh.BranchName),
+						strings.TrimSpace(fresh.HeadSHA),
+					)
+					result.PullRequest = nil
+					return result
+				}
+				state := normalizePullRequestState(fresh.State)
+				switch state {
+				case "open", "merged":
+					result.LookupResult = fmt.Sprintf("exact-head pull request #%d is %s", fresh.Number, state)
+				case "closed":
+					result.LookupResult = fmt.Sprintf("exact-head pull request #%d is closed without merge", fresh.Number)
+				default:
+					result.LookupResult = fmt.Sprintf("exact-head pull request #%d has state %q", fresh.Number, strings.TrimSpace(fresh.State))
+				}
 				return result
 			}
-			fresh := pullRequest
-			result.PullRequest = &fresh
-			if strings.TrimSpace(fresh.BranchName) != result.Branch || strings.TrimSpace(fresh.HeadSHA) != result.HeadSHA {
-				result.LookupResult = fmt.Sprintf(
-					"no exact-head pull request; lookup returned PR #%d branch %q head %q",
-					fresh.Number,
-					strings.TrimSpace(fresh.BranchName),
-					strings.TrimSpace(fresh.HeadSHA),
-				)
-				result.PullRequest = nil
-				return result
-			}
-			state := normalizePullRequestState(fresh.State)
-			switch state {
-			case "open", "merged":
-				result.LookupResult = fmt.Sprintf("exact-head pull request #%d is %s", fresh.Number, state)
-			case "closed":
-				result.LookupResult = fmt.Sprintf("exact-head pull request #%d is closed without merge", fresh.Number)
-			default:
-				result.LookupResult = fmt.Sprintf("exact-head pull request #%d has state %q", fresh.Number, strings.TrimSpace(fresh.State))
-			}
-			return result
+		} else {
+			lookupErr = err
+			notFound = false
 		}
-		lookupErr = err
 		if attempt == deliverableRecoveryLookupAttempts {
 			break
 		}
@@ -104,8 +110,14 @@ func (o *Orchestrator) lookupDeliverableRecovery(
 			wait = waitForDispatchBackoff
 		}
 		if !wait(ctx, deliverableRecoveryLookupBackoff*time.Duration(1<<(attempt-1))) {
+			lookupErr = ctx.Err()
+			notFound = false
 			break
 		}
+	}
+	if notFound {
+		result.LookupResult = "no exact-head pull request after " + strconv.Itoa(result.Attempts) + " attempts"
+		return result
 	}
 	result.LookupResult = "PR lookup unavailable after " + strconv.Itoa(result.Attempts) + " attempts"
 	if lookupErr != nil {
