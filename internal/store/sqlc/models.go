@@ -216,6 +216,12 @@ type FairShareUsage struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
+type HealthNotificationState struct {
+	Identity  string `json:"identity"`
+	StateJson string `json:"state_json"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 type MergeRequiredCheckStreak struct {
 	ProjectID                 string `json:"project_id"`
 	IssueID                   string `json:"issue_id"`

@@ -278,6 +278,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if previous.InstanceName != next.InstanceName {
 		fields = append(fields, globalConfigChange{Field: "instance_name", Old: previous.InstanceName, New: next.InstanceName})
 	}
+	if !reflect.DeepEqual(previous.Notifications, next.Notifications) {
+		fields = append(fields, globalConfigChange{Field: "notifications", RequiresRestart: true})
+	}
 	if !reflect.DeepEqual(previous.Auth, next.Auth) {
 		fields = append(fields, globalConfigChange{Field: "auth", RequiresRestart: true})
 	}

@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -6715,6 +6716,7 @@ func TestHealthReportsCICondition(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", true)
 	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: now,
@@ -6743,11 +6745,38 @@ func TestHealthReportsCICondition(t *testing.T) {
 	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "unstarted_check_count") != "6" {
 		t.Fatalf("health ci_unavailable = %#v", conditions)
 	}
+	projects := health["projects"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["status"] != "needs_human_attention" {
+		t.Fatalf("health projects = %#v, want detent needs_human_attention", projects)
+	}
 
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	conditions = state["ci_unavailable"].([]any)
 	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "pull_request_count") != "2" {
 		t.Fatalf("state ci_unavailable = %#v", conditions)
+	}
+}
+
+func TestHealthReportsNotificationDeliveryFailures(t *testing.T) {
+	t.Parallel()
+	deps := testDeps(t)
+	deps.HealthNotifications = healthNotificationFailureReader{failures: []healthnotify.Failure{{
+		EventID:     "health-event-1",
+		Identity:    "fleet",
+		Scope:       healthnotify.ScopeFleet,
+		Transition:  healthnotify.TransitionEntry,
+		Attempts:    2,
+		MaxAttempts: 5,
+		LastError:   "receiver unavailable",
+	}}}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	failures := health["health_notification_failures"].([]any)
+	if len(failures) != 1 || failures[0].(map[string]any)["event_id"] != "health-event-1" {
+		t.Fatalf("health notification failures = %#v", failures)
 	}
 }
 
@@ -11829,6 +11858,14 @@ type storeProbe struct {
 	budgetCostEvents  func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 	runtimeEvidence   func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
 	validatorVerdicts func(context.Context, store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error)
+}
+
+type healthNotificationFailureReader struct {
+	failures []healthnotify.Failure
+}
+
+func (r healthNotificationFailureReader) Failures(context.Context) ([]healthnotify.Failure, error) {
+	return append([]healthnotify.Failure(nil), r.failures...), nil
 }
 
 type renderBlockingStore struct {

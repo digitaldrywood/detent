@@ -27,6 +27,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -45,21 +46,22 @@ var (
 )
 
 type Dependencies struct {
-	Hub              *hub.Hub[telemetry.Snapshot]
-	Store            store.Store
-	Registry         *project.Registry
-	Connector        connector.Connector
-	Refresher        Refresher
-	OperatorMoves    OperatorMoveReconciler
-	Recovery         WorkAttemptRecovery
-	RunStopper       RunStopper
-	UpdateApplier    UpdateApplier
-	Activity         *activity.Broker
-	History          activity.HistoryReader
-	MagicLinkSender  auth.Sender
-	IdentityProvider auth.IdentityProvider
-	Chat             chatpkg.Provider
-	IssueExplainer   IssueExplainer
+	Hub                 *hub.Hub[telemetry.Snapshot]
+	Store               store.Store
+	Registry            *project.Registry
+	Connector           connector.Connector
+	Refresher           Refresher
+	OperatorMoves       OperatorMoveReconciler
+	Recovery            WorkAttemptRecovery
+	RunStopper          RunStopper
+	UpdateApplier       UpdateApplier
+	Activity            *activity.Broker
+	History             activity.HistoryReader
+	MagicLinkSender     auth.Sender
+	IdentityProvider    auth.IdentityProvider
+	Chat                chatpkg.Provider
+	IssueExplainer      IssueExplainer
+	HealthNotifications healthnotify.FailureReader
 }
 
 type Mode string
@@ -165,6 +167,7 @@ type Server struct {
 	identityAllowlist   *auth.Allowlist
 	chat                *chatpkg.Service
 	issueExplainer      IssueExplainer
+	healthNotifications healthnotify.FailureReader
 	operatorTools       *operatortool.Executor
 	mcpHTTP             *mcp.HTTPHandler
 }
@@ -273,6 +276,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		identityProvider:    identityProvider,
 		identityAllowlist:   identityAllowlist,
 		issueExplainer:      deps.IssueExplainer,
+		healthNotifications: deps.HealthNotifications,
 	}
 	if !magicLinksEnabled && !oidcEnabled {
 		server.sessions = nil
@@ -1064,6 +1068,7 @@ func (s *Server) health(c echo.Context) error {
 	strandedActiveIssues := []telemetry.StrandedIssue{}
 	dispatch := telemetry.DispatchStatus{}
 	dispatchStalls := []telemetry.DispatchStatus{}
+	notificationFailures := []healthnotify.Failure{}
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
@@ -1079,6 +1084,14 @@ func (s *Server) health(c echo.Context) error {
 			}
 		}
 	}
+	if s.healthNotifications != nil {
+		failures, err := s.healthNotifications.Failures(c.Request().Context())
+		if err != nil {
+			s.logger.Warn("read health notification failures failed", "error", err)
+		} else {
+			notificationFailures = failures
+		}
+	}
 	checks := map[string]string{
 		"hub":       configuredStatus(s.hub),
 		"store":     configuredStatus(s.store),
@@ -1090,7 +1103,7 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyDispatchStallsToProjectHealth(projectHealth, dispatchStalls)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
@@ -1101,37 +1114,43 @@ func (s *Server) health(c echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusOK, healthResponse{
-		Status:            status,
-		Version:           s.build.Version,
-		Commit:            s.build.Commit,
-		ProjectStatus:     projectStatus,
-		Mode:              string(s.mode),
-		Connector:         s.connectorName(),
-		SessionsRemaining: sessionsRemaining,
-		Update:            updateStatus,
-		Checks:            checks,
-		Environment:       healthEnvironment{Path: os.Getenv("PATH")},
-		Budgets:           budgets,
-		Workflows:         workflows,
-		CIUnavailable:     ciUnavailable,
-		BackendOutages:    backendOutages,
-		StalenessWarnings: stalenessWarnings,
-		StrandedIssues:    strandedActiveIssues,
-		Dispatch:          dispatch,
-		DispatchStalls:    dispatchStalls,
-		Projects:          projectHealth,
+		Status:               status,
+		Version:              s.build.Version,
+		Commit:               s.build.Commit,
+		ProjectStatus:        projectStatus,
+		Mode:                 string(s.mode),
+		Connector:            s.connectorName(),
+		SessionsRemaining:    sessionsRemaining,
+		Update:               updateStatus,
+		Checks:               checks,
+		Environment:          healthEnvironment{Path: os.Getenv("PATH")},
+		Budgets:              budgets,
+		Workflows:            workflows,
+		CIUnavailable:        ciUnavailable,
+		BackendOutages:       backendOutages,
+		StalenessWarnings:    stalenessWarnings,
+		StrandedIssues:       strandedActiveIssues,
+		Dispatch:             dispatch,
+		DispatchStalls:       dispatchStalls,
+		NotificationFailures: notificationFailures,
+		Projects:             projectHealth,
 	})
 }
 
-func applyDispatchStallsToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus) []healthProject {
-	stalled := make(map[string]struct{}, len(stalls))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(ciUnavailable))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
-			stalled[projectID] = struct{}{}
+			needsAttention[projectID] = struct{}{}
+		}
+	}
+	for _, condition := range ciUnavailable {
+		if projectID := strings.TrimSpace(condition.ProjectID); projectID != "" {
+			needsAttention[projectID] = struct{}{}
 		}
 	}
 	for index := range projects {
-		if _, ok := stalled[strings.TrimSpace(projects[index].ProjectID)]; ok {
+		if _, ok := needsAttention[strings.TrimSpace(projects[index].ProjectID)]; ok {
 			projects[index].Status = "needs_human_attention"
 		}
 	}
@@ -1381,25 +1400,26 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
-	Status            string                       `json:"status"`
-	Version           string                       `json:"version"`
-	Commit            string                       `json:"commit"`
-	ProjectStatus     string                       `json:"project_status"`
-	Mode              string                       `json:"mode"`
-	Connector         string                       `json:"connector"`
-	SessionsRemaining int                          `json:"sessions_remaining,omitempty"`
-	Update            telemetry.Update             `json:"update,omitzero"`
-	Checks            map[string]string            `json:"checks"`
-	Environment       healthEnvironment            `json:"environment"`
-	Budgets           []healthBudget               `json:"budgets,omitempty"`
-	Workflows         []healthWorkflowSource       `json:"workflows,omitempty"`
-	CIUnavailable     []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
-	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
-	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
-	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`
-	Dispatch          telemetry.DispatchStatus     `json:"dispatch"`
-	DispatchStalls    []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
-	Projects          []healthProject              `json:"projects,omitempty"`
+	Status               string                       `json:"status"`
+	Version              string                       `json:"version"`
+	Commit               string                       `json:"commit"`
+	ProjectStatus        string                       `json:"project_status"`
+	Mode                 string                       `json:"mode"`
+	Connector            string                       `json:"connector"`
+	SessionsRemaining    int                          `json:"sessions_remaining,omitempty"`
+	Update               telemetry.Update             `json:"update,omitzero"`
+	Checks               map[string]string            `json:"checks"`
+	Environment          healthEnvironment            `json:"environment"`
+	Budgets              []healthBudget               `json:"budgets,omitempty"`
+	Workflows            []healthWorkflowSource       `json:"workflows,omitempty"`
+	CIUnavailable        []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
+	BackendOutages       []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	StalenessWarnings    []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
+	StrandedIssues       []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`
+	Dispatch             telemetry.DispatchStatus     `json:"dispatch"`
+	DispatchStalls       []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
+	NotificationFailures []healthnotify.Failure       `json:"health_notification_failures,omitempty"`
+	Projects             []healthProject              `json:"projects,omitempty"`
 }
 
 type healthEnvironment struct {

@@ -93,6 +93,7 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 		{name: "routine_runs", projectScoped: true},
 		{name: "backlog_admission_proposals", projectScoped: true},
 		{name: "backlog_admission_runs", projectScoped: true},
+		{name: "health_notification_states"},
 		{name: "api_keys"},
 		{name: "api_usage_logs"},
 		{name: "auth_magic_links"},
@@ -1273,6 +1274,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_proposals")
 		case "backlog_admission_runs":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_runs")
+		case "health_notification_states":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM health_notification_states")
 		case "api_keys":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys")
 		case "api_usage_logs":

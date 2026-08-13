@@ -75,6 +75,7 @@ type Config struct {
 	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
 	Port                  *int            `yaml:"port,omitempty"`
 	InstanceName          string          `yaml:"instance_name,omitempty"`
+	Notifications         Notifications   `yaml:"notifications,omitempty"`
 	Update                Update          `yaml:"update,omitempty"`
 	Auth                  Auth            `yaml:"auth,omitempty"`
 	Global                Settings        `yaml:"global"`
@@ -640,6 +641,7 @@ func (c Config) Validate(opts ...Option) error {
 	if strings.ContainsAny(c.APIToken, "\r\n") {
 		problems = append(problems, "api_token: must be a single line")
 	}
+	problems = append(problems, c.Notifications.Validate()...)
 	problems = append(problems, dashboardAccessProblems(c.DashboardAccess)...)
 	if c.Update.CheckIntervalHours < 0 {
 		problems = append(problems, "update.check_interval_hours: must be a positive integer")
@@ -948,6 +950,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, dashboardAccessRawErrors(attrs["dashboard_access"])...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
+	problems = append(problems, notificationsRawErrors(attrs["notifications"])...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
 	problems = append(problems, updateErrors(attrs["update"])...)
 	problems = append(problems, authErrors(attrs["auth"])...)
@@ -1732,6 +1735,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	notifications, err := buildNotifications(attrs["notifications"])
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	port, err := optionalIntPointer(attrs["port"], "port")
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1767,6 +1774,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		DashboardAccess:       dashboardAccess,
 		Port:                  port,
 		InstanceName:          instanceName,
+		Notifications:         notifications,
 		Update:                update,
 		Auth:                  auth,
 		Global:                settings,
