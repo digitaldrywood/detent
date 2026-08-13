@@ -237,24 +237,26 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
-	Workspace          string
-	TempDir            string
-	Prompt             string
-	ToolInstructions   string
-	ReadOnly           bool
-	Model              string
-	ModelProvider      string
-	ServiceTier        string
-	ReasoningEffort    string
-	Resume             AgentResume
-	MaxTurns           int
-	TurnTimeout        time.Duration
-	MaxDuration        time.Duration
-	ExtraWritableRoots []string
-	Environment        procgroup.Environment
-	cacheStrategy      string
-	projectID          string
-	workerGitHub       workerGitHubPolicy
+	Workspace             string
+	TempDir               string
+	Prompt                string
+	ToolInstructions      string
+	ReadOnly              bool
+	Model                 string
+	ModelProvider         string
+	ServiceTier           string
+	ReasoningEffort       string
+	Resume                AgentResume
+	MaxTurns              int
+	TurnTimeout           time.Duration
+	MaxDuration           time.Duration
+	ExtraWritableRoots    []string
+	DeliverableKind       string
+	DeliverableRepository string
+	Environment           procgroup.Environment
+	cacheStrategy         string
+	projectID             string
+	workerGitHub          workerGitHubPolicy
 }
 
 type AgentResume struct {
@@ -314,6 +316,7 @@ const (
 	AgentUpdateToolStarted      AgentUpdateType = "tool_started"
 	AgentUpdateToolOutput       AgentUpdateType = "tool_output"
 	AgentUpdateToolCompleted    AgentUpdateType = "tool_completed"
+	AgentUpdateMCPElicitation   AgentUpdateType = "mcp_elicitation"
 )
 
 type AgentUpdate struct {

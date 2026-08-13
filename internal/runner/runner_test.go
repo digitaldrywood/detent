@@ -123,7 +123,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		ProjectID: "detent",
 		Workflow: config.Workflow{
 			Config: config.Config{
-				Workspace: config.Workspace{CacheStrategy: config.WorkspaceCacheShared},
+				Workspace:   config.Workspace{CacheStrategy: config.WorkspaceCacheShared},
+				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
 				Agent: config.Agent{
 					Skills: config.Skills{
 						Enabled:           true,
@@ -158,13 +159,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
-			ID:          "issue-22",
-			Identifier:  "digitaldrywood/detent#22",
-			Title:       "Add runner",
-			Description: "```detent-agent\nschema: 1\nmodel: gpt-5-codex-high\neffort: high\n```",
-			URL:         "https://github.com/digitaldrywood/detent/issues/22",
-			PRNumber:    &prNumber,
-			BranchName:  "detent/digitaldrywood_detent_22",
+			ID:           "issue-22",
+			Identifier:   "digitaldrywood/detent#22",
+			Title:        "Add runner",
+			Description:  "```detent-agent\nschema: 1\nmodel: gpt-5-codex-high\neffort: high\n```",
+			URL:          "https://github.com/digitaldrywood/detent/issues/22",
+			PRNumber:     &prNumber,
+			PRRepository: "digitaldrywood/detent",
+			BranchName:   "detent/digitaldrywood_detent_22",
 		},
 		Attempt:   2,
 		StartedAt: startedAt,
@@ -273,6 +275,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if codexClient.request.Workspace != workspacePath {
 		t.Fatalf("codex workspace = %q, want %q", codexClient.request.Workspace, workspacePath)
+	}
+	if codexClient.request.DeliverableKind != config.DeliverablePullRequest || codexClient.request.DeliverableRepository != "digitaldrywood/detent" {
+		t.Fatalf("codex deliverable = %q/%q, want pull request for digitaldrywood/detent", codexClient.request.DeliverableKind, codexClient.request.DeliverableRepository)
 	}
 	cacheRoot := sharedWorkerCacheRoot(workspacePath, "detent")
 	for name, want := range map[string]string{

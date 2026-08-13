@@ -86,6 +86,7 @@ func (b *AgentBackend) runTurn(
 		ResumeThreadID:        req.Resume.ThreadID,
 		DeveloperInstructions: toolTurnInstructions(tools, req.ToolInstructions),
 		ApprovalPolicy:        approvalPolicy(b.options.ApprovalPolicy, restricted),
+		MCPElicitationPolicy:  mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
 		ThreadSandbox:         threadSandbox(b.options.ThreadSandbox, restricted),
 		TurnSandboxPolicy:     turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
 		Model:                 req.Model,
@@ -124,6 +125,17 @@ func approvalPolicy(configured any, restricted bool) any {
 		return "never"
 	}
 	return configured
+}
+
+func mcpElicitationPolicy(allowlist []MCPElicitationRule, req runner.AgentTurnRequest, restricted bool) MCPElicitationPolicy {
+	if restricted {
+		return MCPElicitationPolicy{}
+	}
+	return MCPElicitationPolicy{
+		DeliverableKind: strings.TrimSpace(req.DeliverableKind),
+		Repository:      strings.TrimSpace(req.DeliverableRepository),
+		Allowlist:       append([]MCPElicitationRule(nil), allowlist...),
+	}
 }
 
 func threadSandbox(configured string, restricted bool) string {

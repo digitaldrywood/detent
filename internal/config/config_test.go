@@ -3132,6 +3132,104 @@ Prompt
 	}
 }
 
+func TestParseWorkflowDeliverableElicitationAllowlist(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+codex:
+  deliverable_elicitation_allowlist:
+    - server: " codex_apps "
+      tool: " github.create_pull_request "
+      repository: " acme/widgets "
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	rules := workflow.Config.Codex.DeliverableElicitationAllowlist
+	want := []DeliverableElicitationRule{{
+		Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+	}}
+	if !reflect.DeepEqual(rules, want) {
+		t.Fatalf("DeliverableElicitationAllowlist = %#v, want %#v", rules, want)
+	}
+	backendRules := workflow.Config.AgentBackendConfigs()[0].CodexOptions().DeliverableElicitationAllowlist
+	if !reflect.DeepEqual(backendRules, want) {
+		t.Fatalf("backend DeliverableElicitationAllowlist = %#v, want %#v", backendRules, want)
+	}
+}
+
+func TestDeliverableElicitationAllowlistValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rules   []DeliverableElicitationRule
+		wantErr string
+	}{
+		{
+			name: "valid tuple",
+			rules: []DeliverableElicitationRule{{
+				Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+			}},
+		},
+		{
+			name:    "server only",
+			rules:   []DeliverableElicitationRule{{Server: "codex_apps"}},
+			wantErr: "codex.deliverable_elicitation_allowlist[0].tool is required",
+		},
+		{
+			name: "missing server",
+			rules: []DeliverableElicitationRule{{
+				Tool: "github.create_pull_request", Repository: "acme/widgets",
+			}},
+			wantErr: "codex.deliverable_elicitation_allowlist[0].server is required",
+		},
+		{
+			name: "invalid repository",
+			rules: []DeliverableElicitationRule{{
+				Server: "codex_apps", Tool: "github.create_pull_request", Repository: "widgets",
+			}},
+			wantErr: "codex.deliverable_elicitation_allowlist[0].repository must be owner/name",
+		},
+		{
+			name: "duplicate tuple",
+			rules: []DeliverableElicitationRule{
+				{Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets"},
+				{Server: "codex_apps", Tool: "github.create_pull_request", Repository: "ACME/WIDGETS"},
+			},
+			wantErr: "codex.deliverable_elicitation_allowlist[1] duplicates an earlier rule",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Default()
+			cfg.Tracker.Kind = TrackerMemory
+			cfg.Codex.DeliverableElicitationAllowlist = tt.rules
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestObservabilityValidation(t *testing.T) {
 	t.Parallel()
 

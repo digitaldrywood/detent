@@ -715,6 +715,15 @@
 #         service_tier: null
 #         # agents.backends[].options.approval_policy | type: string or mapping | default: {"reject":{"mcp_elicitations":true,"rules":true,"sandbox_approval":true}} for Codex | required: No | validation: None
 #         approval_policy: {"reject":{"mcp_elicitations":true,"rules":true,"sandbox_approval":true}}
+#         # agents.backends[].options.deliverable_elicitation_allowlist | type: list<object> | default: [] for Codex | required: Conditional | validation: values.repository must be owner/name; values.server is required; values.tool is required
+#         deliverable_elicitation_allowlist:
+#           -
+#             # agents.backends[].options.deliverable_elicitation_allowlist[].server | type: string | default: none | required: No | validation: None
+#             server: null
+#             # agents.backends[].options.deliverable_elicitation_allowlist[].tool | type: string | default: none | required: No | validation: None
+#             tool: null
+#             # agents.backends[].options.deliverable_elicitation_allowlist[].repository | type: string | default: none | required: No | validation: None
+#             repository: null
 #         # agents.backends[].options.thread_sandbox | type: string | default: "workspace-write" for Codex | required: No | validation: None
 #         thread_sandbox: "workspace-write"
 #         # agents.backends[].options.turn_sandbox_policy | type: mapping<string, value> | default: {} for Codex | required: No | validation: None
@@ -789,6 +798,15 @@
 #   service_tier: null
 #   # codex.approval_policy | type: string or mapping | default: {"reject":{"mcp_elicitations":true,"rules":true,"sandbox_approval":true}} | required: No | validation: None
 #   approval_policy: {"reject":{"mcp_elicitations":true,"rules":true,"sandbox_approval":true}}
+#   # codex.deliverable_elicitation_allowlist | type: list<object> | default: [] | required: No | validation: None
+#   deliverable_elicitation_allowlist:
+#     -
+#       # codex.deliverable_elicitation_allowlist[].server | type: string | default: none | required: Conditional | validation: is required
+#       server: null
+#       # codex.deliverable_elicitation_allowlist[].tool | type: string | default: none | required: Conditional | validation: is required
+#       tool: null
+#       # codex.deliverable_elicitation_allowlist[].repository | type: string | default: none | required: No | validation: must be owner/name
+#       repository: null
 #   # codex.thread_sandbox | type: string | default: "workspace-write" | required: No | validation: None
 #   thread_sandbox: "workspace-write"
 #   # codex.turn_sandbox_policy | type: mapping<string, value> | default: {} | required: No | validation: None

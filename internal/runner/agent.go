@@ -521,6 +521,19 @@ func normalizeRunMode(mode string) string {
 	}
 }
 
+func agentTurnDeliverable(cfg config.Config, issue connector.Issue, mode string) (string, string) {
+	switch normalizeRunMode(mode) {
+	case RunModeImplement, RunModeMerge:
+	default:
+		return "", ""
+	}
+	repository := strings.TrimSpace(issue.PRRepository)
+	if repository == "" {
+		repository = strings.TrimSpace(cfg.Tracker.Repository)
+	}
+	return strings.TrimSpace(cfg.Deliverable.Kind), repository
+}
+
 func runRole(mode string, issue connector.Issue) string {
 	switch normalizeRunMode(mode) {
 	case RunModePlan:
@@ -1276,21 +1289,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if req.Admission == nil {
 		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger)
 	}
+	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest := AgentTurnRequest{
-		Workspace:          info.Path,
-		Prompt:             turnPrompt,
-		ReadOnly:           mode == RunModeRoutine,
-		Model:              selectedModel,
-		ModelProvider:      modelProvider,
-		ServiceTier:        serviceTier,
-		ReasoningEffort:    effort,
-		Resume:             agentResumeFromState(resumeState),
-		MaxTurns:           workflow.Config.Agent.MaxTurns,
-		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots: extraWritableRoots,
-		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
-		projectID:          r.projectID,
-		workerGitHub:       workerGitHub,
+		Workspace:             info.Path,
+		Prompt:                turnPrompt,
+		ReadOnly:              mode == RunModeRoutine,
+		Model:                 selectedModel,
+		ModelProvider:         modelProvider,
+		ServiceTier:           serviceTier,
+		ReasoningEffort:       effort,
+		Resume:                agentResumeFromState(resumeState),
+		MaxTurns:              workflow.Config.Agent.MaxTurns,
+		MaxDuration:           durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
+		ExtraWritableRoots:    extraWritableRoots,
+		DeliverableKind:       deliverableKind,
+		DeliverableRepository: deliverableRepository,
+		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
+		projectID:             r.projectID,
+		workerGitHub:          workerGitHub,
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
@@ -2864,6 +2880,8 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		p.recordDeliverableToolStart(update)
 	case AgentUpdateToolCompleted:
 		p.recordDeliverableToolCompletion(update)
+	case AgentUpdateMCPElicitation:
+		eventMessage = update.Delta
 	}
 
 	p.addRecentEvent(telemetry.ActivityEvent{

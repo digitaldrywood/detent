@@ -43,4 +43,26 @@ func TestActivityUpdateHandlerPublishesIssueSessionContent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for activity event")
 	}
+
+	err = orchestrator.activityUpdateHandler(context.Background(), issue)(runpkg.AgentActivityUpdate{
+		At:              time.Date(2026, 7, 10, 15, 0, 1, 0, time.UTC),
+		DetentSessionID: 1156,
+		Type:            runpkg.AgentUpdateMCPElicitation,
+		Tool:            "codex_apps/github.create_pull_request",
+		Content:         "server=codex_apps tool=github.create_pull_request repository=acme/other reason=repository_mismatch",
+		Status:          "decline",
+	})
+	if err != nil {
+		t.Fatalf("activityUpdateHandler() MCP error = %v", err)
+	}
+
+	select {
+	case event := <-subscription.C():
+		if event.Kind != "mcp_elicitation" || event.Title != "MCP elicitation · codex_apps/github.create_pull_request" ||
+			event.Content != "server=codex_apps tool=github.create_pull_request repository=acme/other reason=repository_mismatch" || event.Status != "decline" {
+			t.Fatalf("MCP event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for MCP activity event")
+	}
 }

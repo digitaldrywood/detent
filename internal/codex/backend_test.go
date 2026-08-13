@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -123,6 +124,43 @@ func TestToolTurnInstructions(t *testing.T) {
 
 			if got := toolTurnInstructions(tt.tools, tt.override); got != tt.want {
 				t.Fatalf("toolTurnInstructions() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMCPElicitationPolicyForTurn(t *testing.T) {
+	t.Parallel()
+
+	rules := []MCPElicitationRule{{
+		Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+	}}
+	tests := []struct {
+		name       string
+		restricted bool
+		want       MCPElicitationPolicy
+	}{
+		{
+			name: "deliverable turn",
+			want: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist:       rules,
+			},
+		},
+		{name: "restricted turn", restricted: true, want: MCPElicitationPolicy{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := mcpElicitationPolicy(rules, runner.AgentTurnRequest{
+				DeliverableKind:       " pull_request ",
+				DeliverableRepository: " acme/widgets ",
+			}, tt.restricted)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("mcpElicitationPolicy() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

@@ -351,6 +351,40 @@ that remains queued without a `started_at` timestamp appears as unstarted. The
 can legitimately take several minutes to pick up a job; setting the threshold
 too low would turn ordinary queueing into an operator-facing signal.
 
+## Codex deliverable elicitation
+
+`codex.deliverable_elicitation_allowlist` declares exact MCP mutation tuples
+that an unattended Codex worker may confirm for its configured deliverable. The
+same field is available under `agents.backends[].options` for a routed Codex
+backend. It defaults to an empty list. Each entry requires `server`, `tool`, and
+`repository`; server-only entries are invalid.
+
+```yaml
+codex:
+  approval_policy: never
+  deliverable_elicitation_allowlist:
+    - server: codex_apps
+      tool: github.create_pull_request
+      repository: digitaldrywood/detent
+    - server: codex_apps
+      tool: github.update_pull_request
+      repository: digitaldrywood/detent
+```
+
+The allowlist is a narrow exception to `codex.approval_policy`, not a broader
+approval mode. With either `never` or `on-request`, Detent accepts an MCP
+elicitation only when it correlates to exactly one pending tool call on the
+same server, thread, and turn; the correlated tool is a supported pull-request
+deliverable mutation; and both its `repository_full_name` argument and the
+active work item's pull-request repository match the configured tuple. Missing
+or ambiguous correlation, other mutation tools, and repository mismatches are
+declined. Command, file-change, permission, and user-input requests retain
+their existing handling.
+
+With `approval_policy: never` and an empty allowlist, non-browser MCP
+elicitations are declined exactly as before. `chrome-devtools` empty-form tool
+approval remains a separate built-in behavior and is unchanged by this list.
+
 ## Generated field reference
 
 The generated block reflects the YAML-tagged Go structs reachable from the
@@ -471,6 +505,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agents.backends[].options` | `mapping` | `see child fields` | No | None |
 | `agents.backends[].options.allowed_tools` | `list<string>` | `[] for Claude Code` | No | None |
 | `agents.backends[].options.approval_policy` | `string or mapping` | `{"reject":{"mcp_elicitations":true,"rules":true,"sandbox_approval":true}} for Codex` | No | None |
+| `agents.backends[].options.deliverable_elicitation_allowlist` | `list<object>` | `[] for Codex` | Conditional | values.repository must be owner/name<br>values.server is required<br>values.tool is required |
+| `agents.backends[].options.deliverable_elicitation_allowlist[].repository` | `string` | `none` | No | None |
+| `agents.backends[].options.deliverable_elicitation_allowlist[].server` | `string` | `none` | No | None |
+| `agents.backends[].options.deliverable_elicitation_allowlist[].tool` | `string` | `none` | No | None |
 | `agents.backends[].options.disallowed_tools` | `list<string>` | `[] for Claude Code` | No | None |
 | `agents.backends[].options.effort` | `string` | `none for Claude Code` | No | must be one of low, medium, high, xhigh, max, ultracode |
 | `agents.backends[].options.extra_args` | `list<string>` | `[] for Claude Code` | No | None |
@@ -539,6 +577,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `codex` | `object` | `see child fields` | No | agents.backends.protocol must be app-server for codex |
 | `codex.approval_policy` | `string or mapping` | `{"reject":{"mcp_elicitations":true,"rules":true,"sandbox_approval":true}}` | No | None |
 | `codex.command` | `string` | `"codex app-server"` | No | is required |
+| `codex.deliverable_elicitation_allowlist` | `list<object>` | `[]` | No | None |
+| `codex.deliverable_elicitation_allowlist[].repository` | `string` | `none` | No | must be owner/name |
+| `codex.deliverable_elicitation_allowlist[].server` | `string` | `none` | Conditional | is required |
+| `codex.deliverable_elicitation_allowlist[].tool` | `string` | `none` | Conditional | is required |
 | `codex.model_provider` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
 | `codex.read_timeout_ms` | `integer` | `5000` | No | must be greater than 0 |
 | `codex.service_tier` | `string` | `none` | No | None |

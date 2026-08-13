@@ -878,6 +878,9 @@ agents:
       provider: invalid/value
       options:
         model_provider: invalid!
+        deliverable_elicitation_allowlist:
+          - server: ""
+            repository: invalid
         turn_timeout_ms: -1
         read_timeout_ms: -1
         stall_timeout_ms: -1
