@@ -4995,6 +4995,43 @@ func TestAPIStateSurfacesProjectAuthHealth(t *testing.T) {
 	}
 }
 
+func TestAPIStateProjectsRunningBuildUnderInstance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		version string
+		commit  string
+	}{
+		{name: "release build", version: "v1.3.0", commit: "abcdef123456"},
+		{name: "development build", version: "dev", commit: "123456abcdef"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{Build: buildinfo.Info{Version: tt.version, Commit: tt.commit}}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+			instance, ok := state["instance"].(map[string]any)
+			if !ok {
+				t.Fatalf("instance = %#v, want object", state["instance"])
+			}
+			if instance["version"] != tt.version || instance["commit"] != tt.commit {
+				t.Fatalf("instance build = version %#v commit %#v, want %q %q", instance["version"], instance["commit"], tt.version, tt.commit)
+			}
+		})
+	}
+}
+
 func TestAPIStateSurfacesSingleProjectAuthHealth(t *testing.T) {
 	t.Parallel()
 
@@ -7006,37 +7043,55 @@ func TestHealthRespondsDuringDrainWithoutSupplementalProjectReads(t *testing.T) 
 	}
 }
 
-func TestHealthReportsUpdateCheckStatus(t *testing.T) {
+func TestHealthReportsRunningBuildDistinctFromAppliedUpdate(t *testing.T) {
 	t.Parallel()
 
-	lastCheck := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
-	nextCheck := lastCheck.Add(24 * time.Hour)
-	deps := testDeps(t)
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: lastCheck,
-		Update: telemetry.Update{
-			Enabled:            true,
-			CheckIntervalHours: 24,
-			State:              "scheduled",
-			LastCheckAt:        &lastCheck,
-			LastAppliedVersion: "1.2.4",
-			NextCheckAt:        &nextCheck,
-		},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
+	tests := []struct {
+		name    string
+		version string
+		commit  string
+	}{
+		{name: "release build", version: "v1.3.0", commit: "abcdef123456"},
+		{name: "development build", version: "dev", commit: "123456abcdef"},
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
-	update, ok := payload["update"].(map[string]any)
-	if !ok {
-		t.Fatalf("update payload = %#v, want object", payload["update"])
-	}
-	if update["state"] != "scheduled" || update["last_applied_version"] != "1.2.4" || update["next_check_at"] == nil {
-		t.Fatalf("update payload = %#v", update)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lastCheck := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+			nextCheck := lastCheck.Add(24 * time.Hour)
+			deps := testDeps(t)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: lastCheck,
+				Update: telemetry.Update{
+					Enabled:            true,
+					CheckIntervalHours: 24,
+					State:              "scheduled",
+					LastCheckAt:        &lastCheck,
+					LastAppliedVersion: "v1.2.4",
+					NextCheckAt:        &nextCheck,
+				},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+
+			server, err := web.NewServer(web.Config{Build: buildinfo.Info{Version: tt.version, Commit: tt.commit}}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+			payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			if payload["version"] != tt.version || payload["commit"] != tt.commit {
+				t.Fatalf("running build = version %#v commit %#v, want %q %q", payload["version"], payload["commit"], tt.version, tt.commit)
+			}
+			update, ok := payload["update"].(map[string]any)
+			if !ok {
+				t.Fatalf("update payload = %#v, want object", payload["update"])
+			}
+			if update["state"] != "scheduled" || update["last_applied_version"] != "v1.2.4" || update["next_check_at"] == nil {
+				t.Fatalf("update payload = %#v", update)
+			}
+		})
 	}
 }
 
