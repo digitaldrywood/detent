@@ -384,6 +384,10 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	if !stateIn(autoPromoteMergingState, o.cfg.ActiveStates) {
 		return "merging_lane_inactive"
 	}
+	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if !autoPromoteCfg.Enabled {
+		return "auto_promote_disabled"
+	}
 	pullRequest := issue.PullRequest
 	if pullRequest == nil || pullRequestHydrationBlocksProgress(pullRequest) ||
 		strings.TrimSpace(pullRequest.HeadSHA) == "" || strings.TrimSpace(pullRequest.BaseSHA) == "" {
@@ -404,8 +408,6 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
 		return "merge_dispatch_revoked"
 	}
-	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	autoPromoteCfg.Enabled = true
 	if !o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
 		return "pull_request_gate_not_ready"
 	}

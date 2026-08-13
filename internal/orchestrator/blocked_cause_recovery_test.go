@@ -507,6 +507,15 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 			snapshot: baseSnapshot,
 		},
 		{
+			name:  "auto promote disabled",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateConfig: func(cfg *Config) {
+				cfg.AutoPromote.Enabled = false
+			},
+			snapshot: baseSnapshot,
+		},
+		{
 			name:  "merge fast path disabled",
 			cause: strandedUnpushedWorkReason,
 			owner: blockedRecoveryOwnerOrchestrator,
@@ -542,7 +551,8 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 				TerminalStates:       []string{"Done", "Cancelled"},
 				MergeFastPathEnabled: true,
 				AutoPromote: AutoPromoteConfig{
-					Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff},
+					Enabled: true,
+					Gate:    gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff},
 				},
 			})
 			if tt.mutateConfig != nil {
