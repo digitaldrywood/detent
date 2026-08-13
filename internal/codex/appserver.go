@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,8 @@ const (
 
 	defaultReadTimeout = 5 * time.Second
 	defaultTurnTimeout = time.Hour
+
+	maxToolFailureDiagnosticBytes = 2048
 )
 
 var (
@@ -1660,6 +1663,9 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 				errorMessageFromJSON(params.Item.ContentItems),
 			)
 		}
+		if failedToolStatus(params.Item.Status) && errorMessage == "" {
+			errorMessage = toolFailureDiagnosticMessage(msg.Params)
+		}
 		content = firstNonBlank(
 			params.Item.AggregatedOutput,
 			errorMessage,
@@ -1788,6 +1794,192 @@ func errorMessageFromJSON(raw json.RawMessage) string {
 		return ""
 	}
 	return firstNonBlank(decoded.Message, decoded.Error.Message)
+}
+
+type toolFailureDiagnostic struct {
+	Code       string `json:"code,omitempty"`
+	Message    string `json:"message,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+}
+
+func toolFailureDiagnosticMessage(raw json.RawMessage) string {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return ""
+	}
+	diagnostic := toolFailureDiagnostic{}
+	collectToolFailureDiagnostic(value, &diagnostic)
+	if diagnostic == (toolFailureDiagnostic{}) {
+		return ""
+	}
+	return marshalToolFailureDiagnostic(diagnostic)
+}
+
+func collectToolFailureDiagnostic(value any, diagnostic *toolFailureDiagnostic) {
+	if diagnostic == nil {
+		return
+	}
+	switch value := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			leftRank := toolFailureDiagnosticKeyRank(keys[i])
+			rightRank := toolFailureDiagnosticKeyRank(keys[j])
+			if leftRank != rightRank {
+				return leftRank < rightRank
+			}
+			return keys[i] < keys[j]
+		})
+		for _, key := range keys {
+			collectToolFailureDiagnosticField(key, value[key], diagnostic)
+		}
+		for _, key := range keys {
+			if toolFailureDiagnosticSensitiveKey(key) {
+				continue
+			}
+			collectToolFailureDiagnostic(value[key], diagnostic)
+		}
+	case []any:
+		for _, item := range value {
+			collectToolFailureDiagnostic(item, diagnostic)
+		}
+	}
+}
+
+func collectToolFailureDiagnosticField(key string, value any, diagnostic *toolFailureDiagnostic) {
+	switch toolFailureDiagnosticKey(key) {
+	case "code":
+		if diagnostic.Code == "" {
+			diagnostic.Code = toolFailureDiagnosticText(value)
+		}
+	case "message":
+		if diagnostic.Message == "" {
+			message, ok := value.(string)
+			if ok {
+				diagnostic.Message = strings.TrimSpace(message)
+			}
+		}
+	case "httpstatus":
+		if diagnostic.HTTPStatus == 0 {
+			diagnostic.HTTPStatus = toolFailureHTTPStatus(value)
+		}
+	}
+}
+
+func toolFailureDiagnosticKey(key string) string {
+	key = strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "_", ""), "-", ""))
+	switch key {
+	case "code", "errorcode":
+		return "code"
+	case "message", "errormessage":
+		return "message"
+	case "httpstatus", "statuscode", "status":
+		return "httpstatus"
+	default:
+		return ""
+	}
+}
+
+func toolFailureDiagnosticSensitiveKey(key string) bool {
+	key = strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "_", ""), "-", ""))
+	for _, fragment := range []string{
+		"argument", "auth", "body", "command", "cookie", "credential", "header", "input", "password", "payload", "request", "secret", "token",
+	} {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return key == "aggregatedoutput" || key == "changes"
+}
+
+func toolFailureDiagnosticKeyRank(key string) int {
+	switch strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "_", ""), "-", "")) {
+	case "error":
+		return 0
+	case "failure":
+		return 1
+	case "diagnostic", "diagnostics":
+		return 2
+	case "detail", "details":
+		return 3
+	case "result":
+		return 4
+	case "contentitems":
+		return 5
+	default:
+		return 6
+	}
+}
+
+func toolFailureDiagnosticText(value any) string {
+	switch value := value.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case json.Number:
+		return strings.TrimSpace(value.String())
+	default:
+		return ""
+	}
+}
+
+func toolFailureHTTPStatus(value any) int {
+	text := toolFailureDiagnosticText(value)
+	status, err := strconv.Atoi(text)
+	if err != nil || status < 100 || status > 599 {
+		return 0
+	}
+	return status
+}
+
+func marshalToolFailureDiagnostic(diagnostic toolFailureDiagnostic) string {
+	encoded, err := json.Marshal(diagnostic)
+	if err != nil {
+		return ""
+	}
+	if len(encoded) <= maxToolFailureDiagnosticBytes {
+		return string(encoded)
+	}
+	fitToolFailureDiagnosticField(&diagnostic, diagnostic.Message, func(value string) {
+		diagnostic.Message = value
+	})
+	encoded, err = json.Marshal(diagnostic)
+	if err != nil {
+		return ""
+	}
+	if len(encoded) <= maxToolFailureDiagnosticBytes {
+		return string(encoded)
+	}
+	fitToolFailureDiagnosticField(&diagnostic, diagnostic.Code, func(value string) {
+		diagnostic.Code = value
+	})
+	encoded, err = json.Marshal(diagnostic)
+	if err != nil || len(encoded) > maxToolFailureDiagnosticBytes {
+		return ""
+	}
+	return string(encoded)
+}
+
+func fitToolFailureDiagnosticField(diagnostic *toolFailureDiagnostic, value string, set func(string)) {
+	runes := []rune(value)
+	best := ""
+	for low, high := 0, len(runes); low <= high; {
+		middle := low + (high-low)/2
+		candidate := string(runes[:middle])
+		set(candidate)
+		encoded, err := json.Marshal(diagnostic)
+		if err == nil && len(encoded) <= maxToolFailureDiagnosticBytes {
+			best = candidate
+			low = middle + 1
+		} else {
+			high = middle - 1
+		}
+	}
+	set(best)
 }
 
 func looksLikeErrorEvent(raw json.RawMessage) bool {
