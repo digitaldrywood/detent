@@ -10,18 +10,28 @@ import (
 )
 
 type Options struct {
-	ApprovalPolicy    any
-	ThreadSandbox     string
-	TurnSandboxPolicy any
-	StallTimeout      time.Duration
+	ApprovalPolicy                  any
+	DeliverableElicitationAllowlist []MCPElicitationRule
+	ThreadSandbox                   string
+	TurnSandboxPolicy               any
+	StallTimeout                    time.Duration
 }
 
 func OptionsFromConfig(cfg config.CodexOptions) Options {
+	allowlist := make([]MCPElicitationRule, 0, len(cfg.DeliverableElicitationAllowlist))
+	for _, rule := range cfg.DeliverableElicitationAllowlist {
+		allowlist = append(allowlist, MCPElicitationRule{
+			Server:     rule.Server,
+			Tool:       rule.Tool,
+			Repository: rule.Repository,
+		})
+	}
 	return Options{
-		ApprovalPolicy:    stringOrMapValue(cfg.ApprovalPolicy),
-		ThreadSandbox:     cfg.ThreadSandbox,
-		TurnSandboxPolicy: cfg.TurnSandboxPolicy,
-		StallTimeout:      time.Duration(cfg.StallTimeoutMS) * time.Millisecond,
+		ApprovalPolicy:                  stringOrMapValue(cfg.ApprovalPolicy),
+		DeliverableElicitationAllowlist: allowlist,
+		ThreadSandbox:                   cfg.ThreadSandbox,
+		TurnSandboxPolicy:               cfg.TurnSandboxPolicy,
+		StallTimeout:                    time.Duration(cfg.StallTimeoutMS) * time.Millisecond,
 	}
 }
 

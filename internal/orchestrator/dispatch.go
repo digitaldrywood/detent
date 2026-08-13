@@ -964,6 +964,11 @@ func activityUpdateTitle(update runpkg.AgentActivityUpdate) string {
 		return "Tool output · " + strings.TrimSpace(update.Tool)
 	case runpkg.AgentUpdateToolCompleted:
 		return "Tool finished · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateMCPElicitation:
+		if tool := strings.TrimSpace(update.Tool); tool != "" {
+			return "MCP elicitation · " + tool
+		}
+		return "MCP elicitation"
 	case runpkg.AgentUpdateTokenUsage:
 		return "Usage"
 	case runpkg.AgentUpdateTurnStarted:

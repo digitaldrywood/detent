@@ -70,15 +70,20 @@ func TestOptionsFromConfigClonesApprovalPolicy(t *testing.T) {
 			"rules": true,
 		},
 	}
+	rules := []config.DeliverableElicitationRule{{
+		Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+	}}
 	options := OptionsFromConfig(config.CodexOptions{
-		ApprovalPolicy: config.MapValue(rawPolicy),
-		ThreadSandbox:  "workspace-write",
-		StallTimeoutMS: 1250,
+		ApprovalPolicy:                  config.MapValue(rawPolicy),
+		DeliverableElicitationAllowlist: rules,
+		ThreadSandbox:                   "workspace-write",
+		StallTimeoutMS:                  1250,
 		TurnSandboxPolicy: map[string]any{
 			"type": "workspaceWrite",
 		},
 	})
 	rawPolicy["reject"].(map[string]any)["rules"] = false
+	rules[0].Tool = "github.delete_issue"
 
 	policy, ok := options.ApprovalPolicy.(map[string]any)
 	if !ok {
@@ -90,6 +95,10 @@ func TestOptionsFromConfigClonesApprovalPolicy(t *testing.T) {
 	}
 	if reject["rules"] != true {
 		t.Fatalf("ApprovalPolicy.reject.rules = %#v, want cloned true", reject["rules"])
+	}
+	wantRule := MCPElicitationRule{Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets"}
+	if len(options.DeliverableElicitationAllowlist) != 1 || options.DeliverableElicitationAllowlist[0] != wantRule {
+		t.Fatalf("DeliverableElicitationAllowlist = %#v, want %#v", options.DeliverableElicitationAllowlist, wantRule)
 	}
 	if options.ThreadSandbox != "workspace-write" {
 		t.Fatalf("ThreadSandbox = %q, want workspace-write", options.ThreadSandbox)

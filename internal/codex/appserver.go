@@ -170,6 +170,7 @@ type RunTurnRequest struct {
 	ResumeThreadID        string
 	DeveloperInstructions string
 	ApprovalPolicy        any
+	MCPElicitationPolicy  MCPElicitationPolicy
 	ThreadSandbox         string
 	TurnSandboxPolicy     any
 	Model                 string
@@ -203,6 +204,18 @@ type DynamicToolCall struct {
 type DynamicToolResult struct {
 	Content string
 	Success bool
+}
+
+type MCPElicitationRule struct {
+	Server     string
+	Tool       string
+	Repository string
+}
+
+type MCPElicitationPolicy struct {
+	DeliverableKind string
+	Repository      string
+	Allowlist       []MCPElicitationRule
 }
 
 type DynamicToolHandler func(context.Context, DynamicToolCall) (DynamicToolResult, error)
@@ -246,6 +259,7 @@ const (
 	UpdateToolStarted       UpdateType = "tool_started"
 	UpdateToolOutput        UpdateType = "tool_output"
 	UpdateToolCompleted     UpdateType = "tool_completed"
+	UpdateMCPElicitation    UpdateType = "mcp_elicitation"
 )
 
 type Update struct {
@@ -436,7 +450,8 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
-	turn, err := s.startTurn(ctx, transport, req, threadID, onUpdate)
+	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
+	turn, err := s.startTurn(ctx, transport, req, threadID, elicitationState, onUpdate)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
@@ -471,7 +486,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
-	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, onUpdate); err != nil {
+	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
 
@@ -512,7 +527,7 @@ func (s *AppServer) Account(ctx context.Context) (account Account, err error) {
 	if err := sendRequest(ctx, transport, accountReadRequestID, "account/read", map[string]any{"refreshToken": false}); err != nil {
 		return Account{}, err
 	}
-	result, err := s.awaitResponse(ctx, transport, accountReadRequestID, nil, nil)
+	result, err := s.awaitResponse(ctx, transport, accountReadRequestID, nil, nil, nil)
 	if err != nil {
 		return Account{}, err
 	}
@@ -563,7 +578,7 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 		if err := sendRequest(ctx, transport, modelListRequestID, "model/list", params); err != nil {
 			return nil, err
 		}
-		result, err := s.awaitResponse(ctx, transport, modelListRequestID, nil, nil)
+		result, err := s.awaitResponse(ctx, transport, modelListRequestID, nil, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -649,7 +664,7 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	if err := sendRequest(ctx, transport, threadReadRequestID, "thread/read", params); err != nil {
 		return err
 	}
-	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, nil, nil)
+	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -674,7 +689,7 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 	if err := sendRequest(ctx, transport, initializeRequestID, "initialize", params); err != nil {
 		return err
 	}
-	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, nil, onUpdate); err != nil {
+	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, nil, nil, onUpdate); err != nil {
 		return err
 	}
 
@@ -768,7 +783,7 @@ func (s *AppServer) startThread(
 		return "", agentidentity.Identity{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, req.ToolHandler, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, req.ToolHandler, nil, onUpdate)
 	if err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -826,7 +841,7 @@ func (s *AppServer) resumeThread(
 		return "", agentidentity.Identity{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, req.ToolHandler, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, req.ToolHandler, nil, onUpdate)
 	if err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -863,6 +878,7 @@ func (s *AppServer) startTurn(
 	transport Transport,
 	req RunTurnRequest,
 	threadID string,
+	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
 ) (startTurnResult, error) {
 	params := map[string]any{
@@ -906,7 +922,7 @@ func (s *AppServer) startTurn(
 		return onUpdate(update)
 	}
 
-	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, req.ToolHandler, trackTurnStarted)
+	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, req.ToolHandler, elicitationState, trackTurnStarted)
 	if err != nil {
 		return startTurnResult{}, err
 	}
@@ -965,7 +981,7 @@ func (s *AppServer) resolveDefaultModel(
 	if err := sendRequest(ctx, transport, configReadRequestID, "config/read", params); err != nil {
 		return "", err
 	}
-	result, err := s.awaitResponse(ctx, transport, configReadRequestID, nil, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, configReadRequestID, nil, nil, onUpdate)
 	if err != nil {
 		var responseErr *ResponseError
 		if errors.As(err, &responseErr) {
@@ -990,6 +1006,7 @@ func (s *AppServer) awaitResponse(
 	transport Transport,
 	requestID int,
 	toolHandler DynamicToolHandler,
+	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
 ) (json.RawMessage, error) {
 	for {
@@ -1013,7 +1030,10 @@ func (s *AppServer) awaitResponse(
 			return msg.Result, nil
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, s.logger)
+		if err := elicitationState.observe(msg); err != nil {
+			return nil, err
+		}
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, elicitationState, s.logger)
 		if err != nil {
 			return nil, err
 		}
@@ -1039,6 +1059,7 @@ func (s *AppServer) streamTurn(
 	turnTimeout time.Duration,
 	stallTimeout time.Duration,
 	toolHandler DynamicToolHandler,
+	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
 ) error {
 	for {
@@ -1047,7 +1068,10 @@ func (s *AppServer) streamTurn(
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, s.logger)
+		if err := elicitationState.observe(msg); err != nil {
+			return err
+		}
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler, elicitationState, s.logger)
 		if err != nil {
 			return err
 		}
@@ -1118,6 +1142,7 @@ func handleServerRequest(
 	transport Transport,
 	msg Message,
 	toolHandler DynamicToolHandler,
+	elicitationState *mcpElicitationState,
 	logger *slog.Logger,
 ) (bool, error) {
 	if msg.Method == "" || len(msg.ID) == 0 {
@@ -1127,7 +1152,7 @@ func handleServerRequest(
 	response := Message{
 		ID: msg.ID,
 	}
-	result, ok, err := serverRequestResult(ctx, msg, toolHandler, logger)
+	result, ok, err := serverRequestResult(ctx, msg, toolHandler, elicitationState, logger)
 	if err != nil {
 		return true, err
 	}
@@ -1150,6 +1175,7 @@ func serverRequestResult(
 	ctx context.Context,
 	msg Message,
 	toolHandler DynamicToolHandler,
+	elicitationState *mcpElicitationState,
 	logger *slog.Logger,
 ) (json.RawMessage, bool, error) {
 	var result any
@@ -1161,8 +1187,13 @@ func serverRequestResult(
 	case "item/tool/requestUserInput":
 		result = map[string]any{"answers": map[string]any{}}
 	case "mcpServer/elicitation/request":
-		response, decision := mcpElicitationResponse(msg.Params)
+		response, decision := mcpElicitationResponse(msg.Params, elicitationState)
 		logMCPElicitationDecision(ctx, logger, decision)
+		if decision.Action != "accept" {
+			if err := elicitationState.publishDecline(decision); err != nil {
+				return nil, true, err
+			}
+		}
 		result = response
 	case "item/tool/call":
 		if toolHandler == nil {
@@ -1200,14 +1231,192 @@ type mcpElicitationDecision struct {
 	Server       string
 	Mode         string
 	ApprovalKind string
+	ThreadID     string
+	TurnID       string
+	ItemID       string
+	Tool         string
+	Repository   string
 	Action       string
 	Reason       string
 }
 
-func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitationDecision) {
+type pendingMCPToolCall struct {
+	ThreadID  string
+	TurnID    string
+	ItemID    string
+	Server    string
+	Tool      string
+	Arguments json.RawMessage
+}
+
+type mcpElicitationState struct {
+	policy   MCPElicitationPolicy
+	pending  map[string]pendingMCPToolCall
+	onUpdate UpdateHandler
+}
+
+func newMCPElicitationState(policy MCPElicitationPolicy, onUpdate UpdateHandler) *mcpElicitationState {
+	return &mcpElicitationState{
+		policy: MCPElicitationPolicy{
+			DeliverableKind: strings.TrimSpace(policy.DeliverableKind),
+			Repository:      strings.TrimSpace(policy.Repository),
+			Allowlist:       append([]MCPElicitationRule(nil), policy.Allowlist...),
+		},
+		pending:  map[string]pendingMCPToolCall{},
+		onUpdate: onUpdate,
+	}
+}
+
+func (s *mcpElicitationState) observe(msg Message) error {
+	if s == nil || msg.Method != "item/started" && msg.Method != "item/completed" {
+		return nil
+	}
+	var params struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		Item     struct {
+			ID        string          `json:"id"`
+			Type      string          `json:"type"`
+			Server    string          `json:"server"`
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return fmt.Errorf("%w: decode MCP tool lifecycle correlation: %w", ErrInvalidResponse, err)
+	}
+	if params.Item.Type != "mcpToolCall" {
+		return nil
+	}
+	key := mcpToolCallKey(params.ThreadID, params.TurnID, params.Item.ID)
+	if key == "" {
+		return nil
+	}
+	if msg.Method == "item/completed" {
+		delete(s.pending, key)
+		return nil
+	}
+	s.pending[key] = pendingMCPToolCall{
+		ThreadID:  strings.TrimSpace(params.ThreadID),
+		TurnID:    strings.TrimSpace(params.TurnID),
+		ItemID:    strings.TrimSpace(params.Item.ID),
+		Server:    strings.TrimSpace(params.Item.Server),
+		Tool:      strings.TrimSpace(params.Item.Tool),
+		Arguments: append(json.RawMessage(nil), params.Item.Arguments...),
+	}
+	return nil
+}
+
+func mcpToolCallKey(threadID string, turnID string, itemID string) string {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	itemID = strings.TrimSpace(itemID)
+	if threadID == "" || turnID == "" || itemID == "" {
+		return ""
+	}
+	return threadID + "\x00" + turnID + "\x00" + itemID
+}
+
+func (s *mcpElicitationState) correlate(server string, threadID string, turnID string) []pendingMCPToolCall {
+	if s == nil {
+		return nil
+	}
+	server = strings.TrimSpace(server)
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	if server == "" || threadID == "" || turnID == "" {
+		return nil
+	}
+	var matches []pendingMCPToolCall
+	for _, call := range s.pending {
+		if call.Server == server && call.ThreadID == threadID && call.TurnID == turnID {
+			matches = append(matches, call)
+		}
+	}
+	return matches
+}
+
+func (s *mcpElicitationState) hasServerRule(server string) bool {
+	if s == nil {
+		return false
+	}
+	for _, rule := range s.policy.Allowlist {
+		if strings.TrimSpace(rule.Server) == server {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *mcpElicitationState) hasToolRule(server string, tool string) bool {
+	if s == nil {
+		return false
+	}
+	for _, rule := range s.policy.Allowlist {
+		if strings.TrimSpace(rule.Server) == server && strings.TrimSpace(rule.Tool) == tool {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *mcpElicitationState) hasRepositoryRule(server string, tool string, repository string) bool {
+	if s == nil {
+		return false
+	}
+	for _, rule := range s.policy.Allowlist {
+		if strings.TrimSpace(rule.Server) == server && strings.TrimSpace(rule.Tool) == tool &&
+			strings.EqualFold(strings.TrimSpace(rule.Repository), repository) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *mcpElicitationState) publishDecline(decision mcpElicitationDecision) error {
+	if s == nil || s.onUpdate == nil {
+		return nil
+	}
+	tool := strings.TrimSpace(decision.Tool)
+	if decision.Server != "" && tool != "" {
+		tool = decision.Server + "/" + tool
+	}
+	return emitUpdate(Update{
+		Type:     UpdateMCPElicitation,
+		Method:   "mcpServer/elicitation/request",
+		ThreadID: decision.ThreadID,
+		TurnID:   decision.TurnID,
+		ItemID:   decision.ItemID,
+		Tool:     tool,
+		Delta:    mcpElicitationActivityContent(decision),
+		Status:   decision.Action,
+	}, s.onUpdate)
+}
+
+func mcpElicitationActivityContent(decision mcpElicitationDecision) string {
+	server := strings.TrimSpace(decision.Server)
+	if server == "" {
+		server = "<unknown>"
+	}
+	parts := []string{"server=" + server}
+	if tool := strings.TrimSpace(decision.Tool); tool != "" {
+		parts = append(parts, "tool="+tool)
+	}
+	if repository := strings.TrimSpace(decision.Repository); repository != "" {
+		parts = append(parts, "repository="+repository)
+	}
+	parts = append(parts, "reason="+decision.Reason)
+	return strings.Join(parts, " ")
+}
+
+func mcpElicitationResponse(params json.RawMessage, state *mcpElicitationState) (map[string]any, mcpElicitationDecision) {
 	decision := mcpElicitationDecision{
 		Action: "decline",
 		Reason: "invalid_request",
+	}
+	policy := MCPElicitationPolicy{}
+	if state != nil {
+		policy = state.policy
 	}
 	decline := func() (map[string]any, mcpElicitationDecision) {
 		return map[string]any{"action": "decline", "content": nil}, decision
@@ -1216,6 +1425,8 @@ func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitat
 	var request struct {
 		ServerName      string          `json:"serverName"`
 		Mode            string          `json:"mode"`
+		ThreadID        string          `json:"threadId"`
+		TurnID          string          `json:"turnId"`
 		Meta            json.RawMessage `json:"_meta"`
 		RequestedSchema json.RawMessage `json:"requestedSchema"`
 	}
@@ -1225,7 +1436,15 @@ func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitat
 
 	decision.Server = request.ServerName
 	decision.Mode = request.Mode
-	if request.ServerName != chromeDevToolsServer {
+	decision.ThreadID = request.ThreadID
+	decision.TurnID = request.TurnID
+	matches := state.correlate(request.ServerName, request.ThreadID, request.TurnID)
+	if len(matches) == 1 {
+		decision.ItemID = matches[0].ItemID
+		decision.Tool = matches[0].Tool
+	}
+	browserRequest := request.ServerName == chromeDevToolsServer
+	if !browserRequest && !state.hasServerRule(request.ServerName) {
 		decision.Reason = "unsupported_server"
 		return decline()
 	}
@@ -1250,10 +1469,70 @@ func mcpElicitationResponse(params json.RawMessage) (map[string]any, mcpElicitat
 		decision.Reason = "unsupported_schema"
 		return decline()
 	}
+	if !browserRequest {
+		switch len(matches) {
+		case 0:
+			decision.Reason = "missing_correlation"
+			return decline()
+		case 1:
+		default:
+			decision.Reason = "ambiguous_correlation"
+			return decline()
+		}
+		call := matches[0]
+		if !state.hasToolRule(call.Server, call.Tool) {
+			decision.Reason = "tool_not_allowlisted"
+			return decline()
+		}
+		repositoryArgument, deliverableTool := deliverableMCPRepositoryArgument(call.Server, call.Tool)
+		if !deliverableTool || policy.DeliverableKind != "pull_request" {
+			decision.Reason = "non_deliverable_mutation"
+			return decline()
+		}
+		repository, ok := mcpToolRepository(call.Arguments, repositoryArgument)
+		if !ok {
+			decision.Reason = "invalid_tool_arguments"
+			return decline()
+		}
+		decision.Repository = repository
+		if policy.Repository == "" || !strings.EqualFold(repository, policy.Repository) ||
+			!state.hasRepositoryRule(call.Server, call.Tool, policy.Repository) {
+			decision.Reason = "repository_mismatch"
+			return decline()
+		}
+		decision.Action = "accept"
+		decision.Reason = "allowlisted_deliverable_tool"
+		return map[string]any{"action": "accept", "content": map[string]any{}}, decision
+	}
 
 	decision.Action = "accept"
 	decision.Reason = "supported_browser_tool_approval"
 	return map[string]any{"action": "accept", "content": map[string]any{}}, decision
+}
+
+func deliverableMCPRepositoryArgument(server string, tool string) (string, bool) {
+	if server != "codex_apps" {
+		return "", false
+	}
+	switch tool {
+	case "github.create_pull_request", "github.update_pull_request":
+		return "repository_full_name", true
+	default:
+		return "", false
+	}
+}
+
+func mcpToolRepository(arguments json.RawMessage, key string) (string, bool) {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(arguments, &values); err != nil || values == nil {
+		return "", false
+	}
+	var repository string
+	if err := json.Unmarshal(values[key], &repository); err != nil {
+		return "", false
+	}
+	repository = strings.TrimSpace(repository)
+	return repository, repository != ""
 }
 
 func isEmptyObjectSchema(data json.RawMessage) bool {
@@ -1285,6 +1564,8 @@ func logMCPElicitationDecision(ctx context.Context, logger *slog.Logger, decisio
 	logger.LogAttrs(ctx, level, "codex MCP elicitation decision",
 		slog.String("method", "mcpServer/elicitation/request"),
 		slog.String("server", decision.Server),
+		slog.String("tool", decision.Tool),
+		slog.String("repository", decision.Repository),
 		slog.String("mode", decision.Mode),
 		slog.String("approval_kind", decision.ApprovalKind),
 		slog.String("action", decision.Action),

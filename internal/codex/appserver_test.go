@@ -937,7 +937,7 @@ func TestAppServerStreamTurnResetsStallTimeoutAfterActivity(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	if err := server.streamTurn(context.Background(), transport, time.Hour, time.Second, nil, nil); err != nil {
+	if err := server.streamTurn(context.Background(), transport, time.Hour, time.Second, nil, nil, nil); err != nil {
 		t.Fatalf("streamTurn() error = %v", err)
 	}
 	if len(transport.deadlines) != 2 {
@@ -967,7 +967,7 @@ func TestAppServerStreamTurnResetsTurnTimeoutAfterActivity(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	if err := server.streamTurn(context.Background(), transport, time.Second, 0, nil, nil); err != nil {
+	if err := server.streamTurn(context.Background(), transport, time.Second, 0, nil, nil, nil); err != nil {
 		t.Fatalf("streamTurn() error = %v", err)
 	}
 	if len(transport.deadlines) != 2 {
@@ -1062,9 +1062,9 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 		serverRequestMessage(t, 45, "mcpServer/elicitation/request", `{
 			"threadId":"thread-1",
 			"turnId":"turn-1",
-			"serverName":"other-server",
+			"serverName":"codex_apps",
 			"mode":"form",
-			"message":"Allow another MCP tool call?",
+			"message":"Allow the GitHub connector to create a pull request?",
 			"requestedSchema":{"type":"object","properties":{}},
 			"_meta":{"codex_approval_kind":"mcp_tool_call"}
 		}`),
@@ -1081,8 +1081,9 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	}
 
 	_, err = server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace: "/tmp/detent-workspace",
-		Prompt:    "Ship issue #18",
+		Workspace:      "/tmp/detent-workspace",
+		Prompt:         "Ship issue #18",
+		ApprovalPolicy: "never",
 	}, nil)
 	if err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
@@ -1105,8 +1106,8 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	assertErrorResponse(t, sent[11], 46, methodNotFoundCode, "unsupported server request: custom/request")
 
 	for _, want := range []string{
-		"method=mcpServer/elicitation/request server=chrome-devtools mode=form approval_kind=mcp_tool_call action=accept reason=supported_browser_tool_approval",
-		"method=mcpServer/elicitation/request server=other-server mode=form approval_kind=\"\" action=decline reason=unsupported_server",
+		"method=mcpServer/elicitation/request server=chrome-devtools tool=\"\" repository=\"\" mode=form approval_kind=mcp_tool_call action=accept reason=supported_browser_tool_approval",
+		"method=mcpServer/elicitation/request server=codex_apps tool=\"\" repository=\"\" mode=form approval_kind=\"\" action=decline reason=unsupported_server",
 	} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, missing %q", logs.String(), want)
@@ -1118,10 +1119,14 @@ func TestMCPElicitationResponse(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		params     string
-		wantAction string
-		wantReason string
+		name           string
+		params         string
+		policy         MCPElicitationPolicy
+		pending        []string
+		wantAction     string
+		wantReason     string
+		wantTool       string
+		wantRepository string
 	}{
 		{
 			name: "browser tool approval",
@@ -1133,6 +1138,150 @@ func TestMCPElicitationResponse(t *testing.T) {
 			}`,
 			wantAction: "accept",
 			wantReason: "supported_browser_tool_approval",
+		},
+		{
+			name: "approval policy never with empty allowlist preserves decline",
+			params: `{
+				"threadId":"thread-1",
+				"turnId":"turn-1",
+				"serverName":"codex_apps",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},
+				"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{DeliverableKind: "pull_request", Repository: "acme/widgets"},
+			pending: []string{`{
+				"threadId":"thread-1","turnId":"turn-1",
+				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}
+			}`},
+			wantAction: "decline",
+			wantReason: "unsupported_server",
+			wantTool:   "github.create_pull_request",
+		},
+		{
+			name: "allowlisted deliverable tuple",
+			params: `{
+				"threadId":"thread-1",
+				"turnId":"turn-1",
+				"serverName":"codex_apps",
+				"mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},
+				"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist: []MCPElicitationRule{{
+					Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+				}},
+			},
+			pending: []string{`{
+				"threadId":"thread-1","turnId":"turn-1",
+				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}
+			}`},
+			wantAction:     "accept",
+			wantReason:     "allowlisted_deliverable_tool",
+			wantTool:       "github.create_pull_request",
+			wantRepository: "acme/widgets",
+		},
+		{
+			name: "whole server rule without tool match",
+			params: `{
+				"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist:       []MCPElicitationRule{{Server: "codex_apps"}},
+			},
+			pending: []string{`{
+				"threadId":"thread-1","turnId":"turn-1",
+				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}
+			}`},
+			wantAction: "decline",
+			wantReason: "tool_not_allowlisted",
+			wantTool:   "github.create_pull_request",
+		},
+		{
+			name: "mismatched repository",
+			params: `{
+				"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist: []MCPElicitationRule{{
+					Server: "codex_apps", Tool: "github.update_pull_request", Repository: "acme/widgets",
+				}},
+			},
+			pending: []string{`{
+				"threadId":"thread-1","turnId":"turn-1",
+				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.update_pull_request","arguments":{"repository_full_name":"acme/other","pr_number":18}}
+			}`},
+			wantAction:     "decline",
+			wantReason:     "repository_mismatch",
+			wantTool:       "github.update_pull_request",
+			wantRepository: "acme/other",
+		},
+		{
+			name: "non-deliverable mutation",
+			params: `{
+				"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist: []MCPElicitationRule{{
+					Server: "codex_apps", Tool: "github.delete_issue", Repository: "acme/widgets",
+				}},
+			},
+			pending: []string{`{
+				"threadId":"thread-1","turnId":"turn-1",
+				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.delete_issue","arguments":{"repository_full_name":"acme/widgets","issue_number":18}}
+			}`},
+			wantAction: "decline",
+			wantReason: "non_deliverable_mutation",
+			wantTool:   "github.delete_issue",
+		},
+		{
+			name: "missing correlation",
+			params: `{
+				"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist: []MCPElicitationRule{{
+					Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+				}},
+			},
+			wantAction: "decline",
+			wantReason: "missing_correlation",
+		},
+		{
+			name: "ambiguous correlation",
+			params: `{
+				"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+				"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+			}`,
+			policy: MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist: []MCPElicitationRule{
+					{Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets"},
+					{Server: "codex_apps", Tool: "github.update_pull_request", Repository: "acme/widgets"},
+				},
+			},
+			pending: []string{
+				`{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}}`,
+				`{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-2","type":"mcpToolCall","server":"codex_apps","tool":"github.update_pull_request","arguments":{"repository_full_name":"acme/widgets","pr_number":18}}}`,
+			},
+			wantAction: "decline",
+			wantReason: "ambiguous_correlation",
 		},
 		{
 			name: "unsupported server",
@@ -1190,8 +1339,11 @@ func TestMCPElicitationResponse(t *testing.T) {
 			wantReason: "unsupported_approval_kind",
 		},
 		{
-			name:       "malformed request",
-			params:     `{`,
+			name:   "malformed request",
+			params: `{`,
+			policy: MCPElicitationPolicy{Allowlist: []MCPElicitationRule{{
+				Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+			}}},
 			wantAction: "decline",
 			wantReason: "invalid_request",
 		},
@@ -1201,7 +1353,13 @@ func TestMCPElicitationResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			response, decision := mcpElicitationResponse(json.RawMessage(tt.params))
+			state := newMCPElicitationState(tt.policy, nil)
+			for _, params := range tt.pending {
+				if err := state.observe(notificationMessage(t, "item/started", params)); err != nil {
+					t.Fatalf("observe() error = %v", err)
+				}
+			}
+			response, decision := mcpElicitationResponse(json.RawMessage(tt.params), state)
 			if got := response["action"]; got != tt.wantAction {
 				t.Errorf("action = %v, want %q", got, tt.wantAction)
 			}
@@ -1211,6 +1369,12 @@ func TestMCPElicitationResponse(t *testing.T) {
 			if decision.Reason != tt.wantReason {
 				t.Errorf("decision reason = %q, want %q", decision.Reason, tt.wantReason)
 			}
+			if decision.Tool != tt.wantTool {
+				t.Errorf("decision tool = %q, want %q", decision.Tool, tt.wantTool)
+			}
+			if decision.Repository != tt.wantRepository {
+				t.Errorf("decision repository = %q, want %q", decision.Repository, tt.wantRepository)
+			}
 			if tt.wantAction == "accept" {
 				if got, ok := response["content"].(map[string]any); !ok || len(got) != 0 {
 					t.Errorf("content = %#v, want empty object", response["content"])
@@ -1218,6 +1382,167 @@ func TestMCPElicitationResponse(t *testing.T) {
 			} else if response["content"] != nil {
 				t.Errorf("content = %#v, want nil", response["content"])
 			}
+		})
+	}
+}
+
+func TestAppServerRunTurnRecordsDeclinedMCPElicitations(t *testing.T) {
+	t.Parallel()
+
+	const request = `{
+		"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+		"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+	}`
+	tests := []struct {
+		name       string
+		started    []string
+		repository string
+		wantReason string
+		wantTool   string
+	}{
+		{
+			name:       "missing correlation",
+			repository: "acme/widgets",
+			wantReason: "missing_correlation",
+		},
+		{
+			name: "ambiguous correlation",
+			started: []string{
+				`{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}}`,
+				`{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-2","type":"mcpToolCall","server":"codex_apps","tool":"github.update_pull_request","arguments":{"repository_full_name":"acme/widgets","pr_number":18}}}`,
+			},
+			repository: "acme/widgets",
+			wantReason: "ambiguous_correlation",
+		},
+		{
+			name: "correlated repository mismatch",
+			started: []string{
+				`{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/other"}}}`,
+			},
+			repository: "acme/widgets",
+			wantReason: "repository_mismatch",
+			wantTool:   "codex_apps/github.create_pull_request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			received := []Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5.6"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+			}
+			for _, params := range tt.started {
+				received = append(received, notificationMessage(t, "item/started", params))
+			}
+			received = append(received,
+				serverRequestMessage(t, 44, "mcpServer/elicitation/request", request),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+			)
+			transport := newFakeAppServerTransport(received)
+			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+
+			var decisions []Update
+			_, err = server.RunTurn(context.Background(), RunTurnRequest{
+				Workspace:      "/tmp/detent-workspace",
+				Prompt:         "Ship issue #18",
+				ApprovalPolicy: "never",
+				MCPElicitationPolicy: MCPElicitationPolicy{
+					DeliverableKind: "pull_request",
+					Repository:      tt.repository,
+					Allowlist: []MCPElicitationRule{
+						{Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets"},
+						{Server: "codex_apps", Tool: "github.update_pull_request", Repository: "acme/widgets"},
+					},
+				},
+			}, func(update Update) error {
+				if update.Type == UpdateMCPElicitation {
+					decisions = append(decisions, update)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+
+			sent := transport.sentMessages()
+			if len(sent) != 5 {
+				t.Fatalf("sent messages = %d, want 5: %#v", len(sent), sent)
+			}
+			assertResponseResultContains(t, sent[4], 44, "action", "decline")
+			if len(decisions) != 1 {
+				t.Fatalf("elicitation updates = %#v, want one", decisions)
+			}
+			decision := decisions[0]
+			if decision.Status != "decline" || decision.Tool != tt.wantTool {
+				t.Errorf("elicitation update = %#v, want declined tool %q", decision, tt.wantTool)
+			}
+			for _, fragment := range []string{"server=codex_apps", "reason=" + tt.wantReason} {
+				if !strings.Contains(decision.Delta, fragment) {
+					t.Errorf("elicitation content = %q, want containing %q", decision.Delta, fragment)
+				}
+			}
+			if tt.wantTool != "" && !strings.Contains(decision.Delta, "tool=github.create_pull_request") {
+				t.Errorf("elicitation content = %q, want correlated tool", decision.Delta)
+			}
+		})
+	}
+}
+
+func TestAppServerRunTurnAllowsConfiguredDeliverableElicitationAcrossApprovalPolicies(t *testing.T) {
+	t.Parallel()
+
+	for _, approvalPolicy := range []string{"never", "on-request"} {
+		t.Run(approvalPolicy, func(t *testing.T) {
+			t.Parallel()
+
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5.6"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+				notificationMessage(t, "item/started", `{
+					"threadId":"thread-1","turnId":"turn-1",
+					"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}
+				}`),
+				serverRequestMessage(t, 44, "mcpServer/elicitation/request", `{
+					"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+					"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+				}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+			})
+			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+
+			_, err = server.RunTurn(context.Background(), RunTurnRequest{
+				Workspace:      "/tmp/detent-workspace",
+				Prompt:         "Ship issue #18",
+				ApprovalPolicy: approvalPolicy,
+				MCPElicitationPolicy: MCPElicitationPolicy{
+					DeliverableKind: "pull_request",
+					Repository:      "acme/widgets",
+					Allowlist: []MCPElicitationRule{{
+						Server: "codex_apps", Tool: "github.create_pull_request", Repository: "acme/widgets",
+					}},
+				},
+			}, nil)
+			if err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+
+			sent := transport.sentMessages()
+			if len(sent) != 5 {
+				t.Fatalf("sent messages = %d, want 5: %#v", len(sent), sent)
+			}
+			assertJSONContains(t, sent[2].Params, "approvalPolicy", approvalPolicy)
+			assertJSONContains(t, sent[3].Params, "approvalPolicy", approvalPolicy)
+			assertResponseResultContains(t, sent[4], 44, "action", "accept")
 		})
 	}
 }

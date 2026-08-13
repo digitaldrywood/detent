@@ -277,6 +277,12 @@ type Deliverable struct {
 	mergeMethodConfigured bool
 }
 
+type DeliverableElicitationRule struct {
+	Server     string `yaml:"server"`
+	Tool       string `yaml:"tool"`
+	Repository string `yaml:"repository"`
+}
+
 type Worker struct {
 	SSHHosts                   []string `yaml:"ssh_hosts"`
 	MaxConcurrentAgentsPerHost *int     `yaml:"max_concurrent_agents_per_host"`
@@ -389,15 +395,16 @@ type BackendOptions struct {
 }
 
 type CodexOptions struct {
-	Shell             string         `yaml:"shell"`
-	ModelProvider     string         `yaml:"model_provider"`
-	ServiceTier       string         `yaml:"service_tier"`
-	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
-	ThreadSandbox     string         `yaml:"thread_sandbox"`
-	TurnSandboxPolicy map[string]any `yaml:"turn_sandbox_policy"`
-	TurnTimeoutMS     int            `yaml:"turn_timeout_ms"`
-	ReadTimeoutMS     int            `yaml:"read_timeout_ms"`
-	StallTimeoutMS    int            `yaml:"stall_timeout_ms"`
+	Shell                           string                       `yaml:"shell"`
+	ModelProvider                   string                       `yaml:"model_provider"`
+	ServiceTier                     string                       `yaml:"service_tier"`
+	ApprovalPolicy                  StringOrMap                  `yaml:"approval_policy"`
+	DeliverableElicitationAllowlist []DeliverableElicitationRule `yaml:"deliverable_elicitation_allowlist"`
+	ThreadSandbox                   string                       `yaml:"thread_sandbox"`
+	TurnSandboxPolicy               map[string]any               `yaml:"turn_sandbox_policy"`
+	TurnTimeoutMS                   int                          `yaml:"turn_timeout_ms"`
+	ReadTimeoutMS                   int                          `yaml:"read_timeout_ms"`
+	StallTimeoutMS                  int                          `yaml:"stall_timeout_ms"`
 }
 
 type ClaudeCodeOptions struct {
@@ -544,16 +551,17 @@ func (b Budget) PerIssueMaxUSDConfigured() bool {
 }
 
 type Codex struct {
-	Command           string         `yaml:"command"`
-	Shell             string         `yaml:"shell"`
-	ModelProvider     string         `yaml:"model_provider"`
-	ServiceTier       string         `yaml:"service_tier"`
-	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
-	ThreadSandbox     string         `yaml:"thread_sandbox"`
-	TurnSandboxPolicy map[string]any `yaml:"turn_sandbox_policy"`
-	TurnTimeoutMS     int            `yaml:"turn_timeout_ms"`
-	ReadTimeoutMS     int            `yaml:"read_timeout_ms"`
-	StallTimeoutMS    int            `yaml:"stall_timeout_ms"`
+	Command                         string                       `yaml:"command"`
+	Shell                           string                       `yaml:"shell"`
+	ModelProvider                   string                       `yaml:"model_provider"`
+	ServiceTier                     string                       `yaml:"service_tier"`
+	ApprovalPolicy                  StringOrMap                  `yaml:"approval_policy"`
+	DeliverableElicitationAllowlist []DeliverableElicitationRule `yaml:"deliverable_elicitation_allowlist"`
+	ThreadSandbox                   string                       `yaml:"thread_sandbox"`
+	TurnSandboxPolicy               map[string]any               `yaml:"turn_sandbox_policy"`
+	TurnTimeoutMS                   int                          `yaml:"turn_timeout_ms"`
+	ReadTimeoutMS                   int                          `yaml:"read_timeout_ms"`
+	StallTimeoutMS                  int                          `yaml:"stall_timeout_ms"`
 }
 
 func (c Config) AgentBackendConfigs() []AgentBackend {
@@ -590,15 +598,16 @@ func (c Config) AgentRouteConfigs() []AgentRoute {
 
 func CodexAgentBackend(codex Codex) AgentBackend {
 	options := CodexOptions{
-		Shell:             codex.Shell,
-		ModelProvider:     codex.ModelProvider,
-		ServiceTier:       codex.ServiceTier,
-		ApprovalPolicy:    codex.ApprovalPolicy,
-		ThreadSandbox:     codex.ThreadSandbox,
-		TurnSandboxPolicy: codex.TurnSandboxPolicy,
-		TurnTimeoutMS:     codex.TurnTimeoutMS,
-		ReadTimeoutMS:     codex.ReadTimeoutMS,
-		StallTimeoutMS:    codex.StallTimeoutMS,
+		Shell:                           codex.Shell,
+		ModelProvider:                   codex.ModelProvider,
+		ServiceTier:                     codex.ServiceTier,
+		ApprovalPolicy:                  codex.ApprovalPolicy,
+		DeliverableElicitationAllowlist: append([]DeliverableElicitationRule(nil), codex.DeliverableElicitationAllowlist...),
+		ThreadSandbox:                   codex.ThreadSandbox,
+		TurnSandboxPolicy:               codex.TurnSandboxPolicy,
+		TurnTimeoutMS:                   codex.TurnTimeoutMS,
+		ReadTimeoutMS:                   codex.ReadTimeoutMS,
+		StallTimeoutMS:                  codex.StallTimeoutMS,
 	}
 	options.normalize()
 	return AgentBackend{
@@ -631,6 +640,9 @@ func mergedCodexAgentBackend(fallback Codex, backend AgentBackend) AgentBackend 
 	}
 	if options.ApprovalPolicy.IsString || options.ApprovalPolicy.IsMap {
 		cfg.ApprovalPolicy = options.ApprovalPolicy
+	}
+	if options.DeliverableElicitationAllowlist != nil {
+		cfg.DeliverableElicitationAllowlist = append([]DeliverableElicitationRule(nil), options.DeliverableElicitationAllowlist...)
 	}
 	if strings.TrimSpace(options.ThreadSandbox) != "" {
 		cfg.ThreadSandbox = strings.TrimSpace(options.ThreadSandbox)
@@ -1713,6 +1725,7 @@ func (c *Config) normalize() {
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Codex.ModelProvider = strings.TrimSpace(c.Codex.ModelProvider)
 	c.Codex.ServiceTier = strings.TrimSpace(c.Codex.ServiceTier)
+	c.Codex.DeliverableElicitationAllowlist = normalizeDeliverableElicitationRules(c.Codex.DeliverableElicitationAllowlist)
 	c.Gate = gate.Effective(c.Gate)
 	c.Agent.AutoPromote.GateWaitTimeoutAction = EffectiveAutoPromoteGateWaitTimeoutAction(
 		c.Agent.AutoPromote.GateWaitTimeoutAction,
@@ -2014,6 +2027,42 @@ func (d *Deliverable) validate(problems *[]string) {
 	}
 }
 
+func normalizeDeliverableElicitationRules(rules []DeliverableElicitationRule) []DeliverableElicitationRule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]DeliverableElicitationRule, len(rules))
+	for index, rule := range rules {
+		out[index] = DeliverableElicitationRule{
+			Server:     strings.TrimSpace(rule.Server),
+			Tool:       strings.TrimSpace(rule.Tool),
+			Repository: strings.TrimSpace(rule.Repository),
+		}
+	}
+	return out
+}
+
+func validateDeliverableElicitationRules(prefix string, rules []DeliverableElicitationRule, problems *[]string) {
+	seen := make(map[string]struct{}, len(rules))
+	for index, rule := range rules {
+		field := fmt.Sprintf("%s[%d]", prefix, index)
+		if rule.Server == "" {
+			*problems = append(*problems, field+".server is required")
+		}
+		if rule.Tool == "" {
+			*problems = append(*problems, field+".tool is required")
+		}
+		if !validRepositoryName(rule.Repository) {
+			*problems = append(*problems, field+".repository must be owner/name")
+		}
+		key := rule.Server + "\x00" + rule.Tool + "\x00" + strings.ToLower(rule.Repository)
+		if _, ok := seen[key]; ok {
+			*problems = append(*problems, field+" duplicates an earlier rule")
+		}
+		seen[key] = struct{}{}
+	}
+}
+
 func (d Deliverable) EffectiveMergeMethod() string {
 	method := normalizeMergeMethod(d.MergeMethod)
 	if method == "" {
@@ -2243,9 +2292,11 @@ func (o *CodexOptions) normalize() {
 		o.Shell = commandshell.Normalize(o.Shell)
 	}
 	o.ThreadSandbox = strings.TrimSpace(o.ThreadSandbox)
+	o.DeliverableElicitationAllowlist = normalizeDeliverableElicitationRules(o.DeliverableElicitationAllowlist)
 }
 
 func (o CodexOptions) validate(prefix string, problems *[]string) {
+	validateDeliverableElicitationRules(prefix+".deliverable_elicitation_allowlist", o.DeliverableElicitationAllowlist, problems)
 	if o.ModelProvider != "" && !validAgentIdentityLabel(o.ModelProvider) {
 		*problems = append(*problems, prefix+".model_provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens")
 	}
@@ -2488,6 +2539,7 @@ func (b *Budget) validate(prefix string, problems *[]string) {
 }
 
 func (c *Codex) validate(problems *[]string) {
+	validateDeliverableElicitationRules("codex.deliverable_elicitation_allowlist", c.DeliverableElicitationAllowlist, problems)
 	if strings.TrimSpace(c.Command) == "" {
 		*problems = append(*problems, "codex.command is required")
 	}
