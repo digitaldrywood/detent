@@ -18,6 +18,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
+const oversizedJSONRPCPayloadSize = 4 * 1024 * 1024
+
 func TestLocalTransportRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -63,6 +65,100 @@ func TestLocalTransportRoundTrip(t *testing.T) {
 		t.Fatalf("ID = %s, want 42", response.ID)
 	}
 	assertJSONEqual(t, response.Result, json.RawMessage(`{"echoedMethod":"ping","ok":true}`))
+}
+
+func TestLocalTransportReceivesOversizedFrame(t *testing.T) {
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "oversized-frame")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = transport.Close(closeCtx)
+	})
+
+	receiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	msg, err := transport.Receive(receiveCtx)
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if msg.Method != "item/agentMessage" {
+		t.Fatalf("Method = %q, want item/agentMessage", msg.Method)
+	}
+	var params struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if len(params.Text) != oversizedJSONRPCPayloadSize {
+		t.Fatalf("params text length = %d, want %d", len(params.Text), oversizedJSONRPCPayloadSize)
+	}
+}
+
+func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		mode               string
+		receiveBeforeClose bool
+	}{
+		{name: "failure reported before close", mode: "invalid-frame-backpressure", receiveBeforeClose: true},
+		{name: "failure arrives after close starts", mode: "close-before-invalid-frame-backpressure"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return helperCommand(ctx, tt.mode)
+			})
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
+			transport, err := factory.NewTransport(context.Background())
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
+			local, ok := transport.(*localTransport)
+			if !ok {
+				t.Fatalf("transport = %T, want *localTransport", transport)
+			}
+			t.Cleanup(func() {
+				closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = transport.Close(closeCtx)
+			})
+
+			if tt.receiveBeforeClose {
+				receiveCtx, cancelReceive := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancelReceive()
+				_, err = transport.Receive(receiveCtx)
+				if !errors.Is(err, ErrInvalidFrame) {
+					t.Fatalf("Receive() error = %v, want ErrInvalidFrame", err)
+				}
+			}
+
+			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelClose()
+			if err := transport.Close(closeCtx); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			assertLocalTransportClosed(t, local, tt.name)
+		})
+	}
 }
 
 func TestLocalTransportReceiveHonorsContext(t *testing.T) {
@@ -203,7 +299,7 @@ func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
 		}
 	})
 
-	params, err := json.Marshal(strings.Repeat("x", 2*MaxScanTokenSize))
+	params, err := json.Marshal(strings.Repeat("x", oversizedJSONRPCPayloadSize))
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
@@ -327,7 +423,7 @@ func TestLocalTransportPublishReceivedStopsDuringBackpressure(t *testing.T) {
 func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
 	t.Parallel()
 
-	params, err := json.Marshal(strings.Repeat("x", 2*MaxScanTokenSize))
+	params, err := json.Marshal(strings.Repeat("x", oversizedJSONRPCPayloadSize))
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
@@ -564,6 +660,15 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 	switch mode {
 	case "roundtrip":
 		helperRoundTrip()
+	case "oversized-frame":
+		helperOversizedFrame()
+	case "invalid-frame-backpressure":
+		helperInvalidFrameBackpressure()
+	case "close-before-invalid-frame-backpressure":
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			helperBackpressureExit("wait for stdin close", err)
+		}
+		helperInvalidFrameBackpressure()
 	case "silent":
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "block-send":
@@ -641,6 +746,43 @@ func helperFloodOutput(codec *Codec, blockAfterFlood bool) {
 	}
 }
 
+func helperOversizedFrame() {
+	params, err := json.Marshal(map[string]string{
+		"text": strings.Repeat("x", oversizedJSONRPCPayloadSize),
+	})
+	if err != nil {
+		helperBackpressureExit("marshal oversized frame", err)
+	}
+	if err := NewCodec(os.Stdin, os.Stdout).WriteMessage(Message{
+		Method: "item/agentMessage",
+		Params: params,
+	}); err != nil {
+		helperBackpressureExit("write oversized frame", err)
+	}
+}
+
+func helperInvalidFrameBackpressure() {
+	if _, err := fmt.Fprintln(os.Stdout, "{not-json}"); err != nil {
+		helperBackpressureExit("write invalid frame", err)
+	}
+
+	params, err := json.Marshal(map[string]string{
+		"text": strings.Repeat("x", 256*1024),
+	})
+	if err != nil {
+		helperBackpressureExit("marshal backpressure frame", err)
+	}
+	codec := NewCodec(os.Stdin, os.Stdout)
+	for range 64 {
+		if err := codec.WriteMessage(Message{
+			Method: "item/agentMessage/delta",
+			Params: params,
+		}); err != nil {
+			helperBackpressureExit("write backpressure frame", err)
+		}
+	}
+}
+
 func helperBackpressureRespond(codec *Codec, id int, method string, result json.RawMessage) {
 	helperBackpressureExpect(codec, id, method)
 	if err := codec.WriteMessage(Message{
@@ -674,7 +816,7 @@ func helperBackpressureExit(stage string, err error) {
 
 func helperRoundTrip() {
 	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), MaxScanTokenSize)
+	scanner.Buffer(make([]byte, 0, 64*1024), oversizedJSONRPCPayloadSize)
 
 	if !scanner.Scan() {
 		os.Exit(3)
