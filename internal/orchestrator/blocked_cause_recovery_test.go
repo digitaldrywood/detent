@@ -472,6 +472,55 @@ func TestBlockedCauseFingerprintIgnoresAttemptMutatedSignals(t *testing.T) {
 	}
 }
 
+func TestCauseBlockedRecoveryHoldsLegacyFingerprint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		predicate string
+	}{
+		{name: "fingerprint change", predicate: blockedRecoveryPredicateFingerprintChange},
+		{name: "once per fingerprint", predicate: blockedRecoveryPredicateOncePerFingerprint},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := dependencyAutoUnblockIssue("issue-legacy-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			parkOrch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+			parkOrch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-old", Health: "ready"}}
+			metadata := parkOrch.newBlockedRecoveryMetadata(t.Context(), issue, RunModeImplement, noProgressLimitReason, tt.predicate, "Todo", DiffStats{})
+			metadata.BlockedRecovery.CauseFingerprint = "legacy-fingerprint"
+			metadata.BlockedRecovery.CauseFingerprintVersion = 0
+			parkedAt := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
+			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			orch.workflowMetrics = metrics
+			orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-new", Health: "ready"}}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     issue,
+				Source:    BlockedSourceProjectStatus,
+				BlockedAt: parkedAt,
+				Recovery:  metadata.BlockedRecovery,
+			}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+
+			if len(tracker.updates) != 0 || len(transitioned) != 0 {
+				t.Fatalf("updates = %#v, transitioned = %#v, want legacy fingerprint held", tracker.updates, transitioned)
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != "legacy_cause_fingerprint" || !blocked.NeedsHumanAttention {
+				t.Fatalf("blocked recovery = %#v, want visible legacy-fingerprint hold", blocked)
+			}
+		})
+	}
+}
+
 func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
 	t.Parallel()
 
@@ -494,6 +543,9 @@ func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
 	)
 	raw := workflowLaneMetadataJSON(issue, metadata)
 	if !strings.Contains(raw, `"intent_resumable":true`) {
+		t.Fatalf("metadata = %s", raw)
+	}
+	if !strings.Contains(raw, `"cause_fingerprint_version":2`) {
 		t.Fatalf("metadata = %s", raw)
 	}
 	if strings.Contains(raw, `"resumable":true`) {

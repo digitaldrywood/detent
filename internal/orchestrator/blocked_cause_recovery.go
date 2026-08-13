@@ -24,6 +24,7 @@ const (
 	blockedRecoveryPredicateFingerprintChange  = "fingerprint_changed"
 	blockedRecoveryPredicateOncePerFingerprint = "once_per_fingerprint"
 	blockedRecoveryPredicateManaged            = "managed"
+	blockedCauseFingerprintVersion             = 2
 	workflowActionCauseBlockedRecovery         = "cause_blocked_recovery"
 	workflowActionBlockedReadyPRReconciliation = "blocked_ready_pr_reconciliation"
 )
@@ -80,13 +81,14 @@ func (o *Orchestrator) newBlockedRecoveryMetadata(
 	targetState = blockedCauseTargetState(issue, signals, targetState)
 	return workflowLaneMetadata{
 		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
-			Owner:            blockedRecoveryOwnerOrchestrator,
-			Cause:            cause,
-			Predicate:        strings.TrimSpace(predicate),
-			CauseFingerprint: blockedCauseFingerprint(cause, signals),
-			TargetState:      targetState,
-			RunMode:          strings.TrimSpace(runMode),
-			IntentResumable:  blockedCauseResumable(issue, signals),
+			Owner:                   blockedRecoveryOwnerOrchestrator,
+			Cause:                   cause,
+			Predicate:               strings.TrimSpace(predicate),
+			CauseFingerprint:        blockedCauseFingerprint(cause, signals),
+			CauseFingerprintVersion: blockedCauseFingerprintVersion,
+			TargetState:             targetState,
+			RunMode:                 strings.TrimSpace(runMode),
+			IntentResumable:         blockedCauseResumable(issue, signals),
 		},
 	}
 }
@@ -311,15 +313,19 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false
 	}
+	if park.Predicate != blockedRecoveryPredicateFingerprintChange &&
+		park.Predicate != blockedRecoveryPredicateOncePerFingerprint {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, park.CauseFingerprint)
+		return false
+	}
+	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "legacy_cause_fingerprint", &park, park.CauseFingerprint)
+		return false
+	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	currentFingerprint := blockedCauseFingerprint(park.Cause, signals)
 	if park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
-		return false
-	}
-	if park.Predicate != blockedRecoveryPredicateFingerprintChange &&
-		park.Predicate != blockedRecoveryPredicateOncePerFingerprint {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, currentFingerprint)
 		return false
 	}
 	signature := blockedCauseRecoverySignature(park.Cause, currentFingerprint)
@@ -647,6 +653,8 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
 	case "fingerprint_already_consumed":
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
+	case "legacy_cause_fingerprint":
+		return "Review the blocking cause, then move the issue to a lane that starts fresh work."
 	case "transition_failed":
 		return "Retry the lane transition after restoring tracker write access."
 	case "managed_recovery":
