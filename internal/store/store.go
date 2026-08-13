@@ -202,6 +202,7 @@ type ActivityStore interface {
 
 type ParkSummaryStore interface {
 	IssueParkSummary(context.Context, IssueIdentity) (ParkSummary, error)
+	IssueParkSummaries(context.Context, []IssueIdentity) (map[IssueIdentity]ParkSummary, error)
 	ListIssueParkSummaries(context.Context, string) ([]ParkSummary, error)
 	AcknowledgeIssueParks(context.Context, IssueIdentity, int64, time.Time) error
 }

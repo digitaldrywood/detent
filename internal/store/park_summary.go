@@ -22,6 +22,7 @@ type ParkSummary struct {
 	AcknowledgedAt           *time.Time
 	Causes                   []ParkCauseSummary
 	Tokens                   ParkTokenTotals
+	aliases                  []IssueIdentity
 }
 
 type ParkCauseSummary struct {
@@ -58,16 +59,41 @@ type parkEvent struct {
 }
 
 func (s *sqliteStore) IssueParkSummary(ctx context.Context, identity IssueIdentity) (ParkSummary, error) {
-	summaries, err := QueryParkSummaries(ctx, s.db, identity.ProjectID)
+	identity = normalizeParkIdentity(identity)
+	summaries, err := s.IssueParkSummaries(ctx, []IssueIdentity{identity})
 	if err != nil {
 		return ParkSummary{}, err
 	}
-	for _, summary := range summaries {
-		if parkIdentityMatches(identity, summary) {
-			return summary, nil
-		}
+	if summary, ok := summaries[identity]; ok {
+		return summary, nil
 	}
 	return ParkSummary{}, ErrNotFound
+}
+
+func (s *sqliteStore) IssueParkSummaries(ctx context.Context, identities []IssueIdentity) (map[IssueIdentity]ParkSummary, error) {
+	summaries, err := QueryParkSummariesForIssues(ctx, s.db, identities)
+	if err != nil {
+		return nil, err
+	}
+	byAlias := make(map[string]ParkSummary, len(summaries)*3)
+	for _, summary := range summaries {
+		for _, alias := range parkSummaryAliases(summary) {
+			for _, key := range parkAliasKeys(alias) {
+				byAlias[key] = summary
+			}
+		}
+	}
+	result := make(map[IssueIdentity]ParkSummary, len(identities))
+	for _, rawIdentity := range identities {
+		identity := normalizeParkIdentity(rawIdentity)
+		for _, key := range parkAliasKeys(identity) {
+			if summary, ok := byAlias[key]; ok {
+				result[identity] = summary
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 func (s *sqliteStore) ListIssueParkSummaries(ctx context.Context, projectID string) ([]ParkSummary, error) {
@@ -105,9 +131,20 @@ ON CONFLICT(project_id, issue_key) DO UPDATE SET
 }
 
 func QueryParkSummaries(ctx context.Context, db ParkSummaryQuerier, projectID string) ([]ParkSummary, error) {
+	return queryParkSummaries(ctx, db, strings.TrimSpace(projectID), nil)
+}
+
+func QueryParkSummariesForIssues(ctx context.Context, db ParkSummaryQuerier, identities []IssueIdentity) ([]ParkSummary, error) {
+	if len(identities) == 0 {
+		return []ParkSummary{}, nil
+	}
+	return queryParkSummaries(ctx, db, "", identities)
+}
+
+func queryParkSummaries(ctx context.Context, db ParkSummaryQuerier, projectID string, identities []IssueIdentity) ([]ParkSummary, error) {
 	projectID = strings.TrimSpace(projectID)
 	summaries := map[string]*ParkSummary{}
-	events, err := queryParkEvents(ctx, db, projectID)
+	events, err := queryParkEvents(ctx, db, projectID, identities)
 	if err != nil {
 		return nil, err
 	}
@@ -120,10 +157,10 @@ func QueryParkSummaries(ctx context.Context, db ParkSummaryQuerier, projectID st
 			addParkCause(summary, event.cause, event.at)
 		}
 	}
-	if err := queryParkUsage(ctx, db, projectID, summaries); err != nil {
+	if err := queryParkUsage(ctx, db, projectID, identities, summaries); err != nil {
 		return nil, err
 	}
-	if err := queryParkAcknowledgements(ctx, db, projectID, summaries); err != nil {
+	if err := queryParkAcknowledgements(ctx, db, projectID, identities, summaries); err != nil {
 		return nil, err
 	}
 	out := make([]ParkSummary, 0, len(summaries))
@@ -145,13 +182,49 @@ func QueryParkSummaries(ctx context.Context, db ParkSummaryQuerier, projectID st
 	return out, nil
 }
 
-func queryParkEvents(ctx context.Context, db ParkSummaryQuerier, projectID string) ([]parkEvent, error) {
-	args := []any{}
-	filter := ""
-	if projectID != "" {
-		filter = " WHERE project_id = ?"
-		args = append(args, projectID)
+func parkSummaryFilter(prefix, projectID string, identities []IssueIdentity, includeIssueURL bool) (string, []any) {
+	if len(identities) == 0 {
+		if projectID == "" {
+			return "", nil
+		}
+		return " " + prefix + " project_id = ?", []any{projectID}
 	}
+	clauses := make([]string, 0, len(identities))
+	args := make([]any, 0, len(identities)*4)
+	for _, rawIdentity := range identities {
+		identity := normalizeParkIdentity(rawIdentity)
+		if identity.ProjectID == "" {
+			continue
+		}
+		aliases := []string{}
+		aliasArgs := []any{}
+		if identity.IssueID != "" {
+			aliases = append(aliases, "issue_id = ?")
+			aliasArgs = append(aliasArgs, identity.IssueID)
+		}
+		if identity.Identifier != "" {
+			aliases = append(aliases, "identifier = ?")
+			aliasArgs = append(aliasArgs, identity.Identifier)
+		}
+		if includeIssueURL && identity.IssueURL != "" {
+			aliases = append(aliases, "issue_url = ?")
+			aliasArgs = append(aliasArgs, identity.IssueURL)
+		}
+		if len(aliases) == 0 {
+			continue
+		}
+		clauses = append(clauses, "(project_id = ? AND ("+strings.Join(aliases, " OR ")+"))")
+		args = append(args, identity.ProjectID)
+		args = append(args, aliasArgs...)
+	}
+	if len(clauses) == 0 {
+		return " " + prefix + " 1 = 0", nil
+	}
+	return " " + prefix + " (" + strings.Join(clauses, " OR ") + ")", args
+}
+
+func queryParkEvents(ctx context.Context, db ParkSummaryQuerier, projectID string, identities []IssueIdentity) ([]parkEvent, error) {
+	filter, args := parkSummaryFilter("WHERE", projectID, identities, true)
 	rows, err := db.QueryContext(ctx, `
 SELECT id, project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''), COALESCE(issue_url, ''),
        status, COALESCE(terminal_state, ''), COALESCE(error_class, ''),
@@ -189,10 +262,8 @@ SELECT id, project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''), COALESC
 FROM workflow_phase_events
 WHERE phase_type = 'lane' AND lower(trim(phase_name)) = 'blocked' AND lower(trim(COALESCE(status, 'entered'))) = 'entered'`+
 		func() string {
-			if projectID != "" {
-				return " AND project_id = ?"
-			}
-			return ""
+			workflowFilter, _ := parkSummaryFilter("AND", projectID, identities, true)
+			return workflowFilter
 		}()+`
 ORDER BY project_id, started_at, id`, args...)
 	if err != nil {
@@ -229,16 +300,13 @@ ORDER BY project_id, started_at, id`, args...)
 	return events, nil
 }
 
-func queryParkUsage(ctx context.Context, db ParkSummaryQuerier, projectID string, summaries map[string]*ParkSummary) error {
+func queryParkUsage(ctx context.Context, db ParkSummaryQuerier, projectID string, identities []IssueIdentity, summaries map[string]*ParkSummary) error {
 	query := `SELECT project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''),
 CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER), CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER),
 CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER), CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER)
 FROM usage_events`
-	args := []any{}
-	if projectID != "" {
-		query += " WHERE project_id = ?"
-		args = append(args, projectID)
-	}
+	filter, args := parkSummaryFilter("WHERE", projectID, identities, false)
+	query += filter
 	query += " GROUP BY project_id, issue_id, identifier"
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -260,13 +328,10 @@ FROM usage_events`
 	return rows.Err()
 }
 
-func queryParkAcknowledgements(ctx context.Context, db ParkSummaryQuerier, projectID string, summaries map[string]*ParkSummary) error {
+func queryParkAcknowledgements(ctx context.Context, db ParkSummaryQuerier, projectID string, identities []IssueIdentity, summaries map[string]*ParkSummary) error {
 	query := `SELECT project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''), COALESCE(issue_url, ''), park_sequence, acknowledged_at FROM issue_park_acknowledgements`
-	args := []any{}
-	if projectID != "" {
-		query += " WHERE project_id = ?"
-		args = append(args, projectID)
-	}
+	filter, args := parkSummaryFilter("WHERE", projectID, identities, true)
+	query += filter
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("querying issue park acknowledgements: %w", err)
@@ -291,24 +356,129 @@ func queryParkAcknowledgements(ctx context.Context, db ParkSummaryQuerier, proje
 
 func parkSummaryFor(summaries map[string]*ParkSummary, projectID, issueID, identifier, issueURL string) *ParkSummary {
 	identity := normalizeParkIdentity(IssueIdentity{ProjectID: projectID, IssueID: issueID, Identifier: identifier, IssueURL: issueURL})
-	for _, summary := range summaries {
-		if parkIdentityMatches(identity, *summary) {
-			if summary.IssueID == "" {
-				summary.IssueID = identity.IssueID
-			}
-			if summary.Identifier == "" {
-				summary.Identifier = identity.Identifier
-			}
-			if summary.IssueURL == "" {
-				summary.IssueURL = identity.IssueURL
-			}
-			return summary
+	var summary *ParkSummary
+	var summaryKey string
+	for key, candidate := range summaries {
+		if candidate == nil || !parkIdentityMatches(identity, *candidate) {
+			continue
 		}
+		if summary == nil {
+			summary = candidate
+			summaryKey = key
+			continue
+		}
+		if key < summaryKey {
+			mergeParkSummaries(candidate, summary)
+			delete(summaries, summaryKey)
+			summary = candidate
+			summaryKey = key
+			continue
+		}
+		mergeParkSummaries(summary, candidate)
+		delete(summaries, key)
 	}
-	key := identity.ProjectID + "\x00" + parkIssueKey(identity.IssueID, identity.Identifier, identity.IssueURL)
-	summary := &ParkSummary{ProjectID: identity.ProjectID, IssueID: identity.IssueID, Identifier: identity.Identifier, IssueURL: identity.IssueURL, Causes: []ParkCauseSummary{}}
+	if summary != nil {
+		addParkAlias(summary, identity)
+		fillParkSummaryIdentity(summary, identity)
+		return summary
+	}
+	key := identity.ProjectID + "\x00empty"
+	if aliasKeys := parkAliasKeys(identity); len(aliasKeys) > 0 {
+		key = aliasKeys[0]
+	}
+	summary = &ParkSummary{ProjectID: identity.ProjectID, IssueID: identity.IssueID, Identifier: identity.Identifier, IssueURL: identity.IssueURL, Causes: []ParkCauseSummary{}, aliases: []IssueIdentity{identity}}
 	summaries[key] = summary
 	return summary
+}
+
+func fillParkSummaryIdentity(summary *ParkSummary, identity IssueIdentity) {
+	if summary.IssueID == "" {
+		summary.IssueID = identity.IssueID
+	}
+	if summary.Identifier == "" {
+		summary.Identifier = identity.Identifier
+	}
+	if summary.IssueURL == "" {
+		summary.IssueURL = identity.IssueURL
+	}
+}
+
+func addParkAlias(summary *ParkSummary, identity IssueIdentity) {
+	for _, alias := range summary.aliases {
+		if alias == identity {
+			return
+		}
+	}
+	summary.aliases = append(summary.aliases, identity)
+}
+
+func mergeParkSummaries(target, source *ParkSummary) {
+	target.AttemptCount += source.AttemptCount
+	target.ParkCount += source.ParkCount
+	target.Tokens.InputTokens += source.Tokens.InputTokens
+	target.Tokens.CachedInputTokens += source.Tokens.CachedInputTokens
+	target.Tokens.OutputTokens += source.Tokens.OutputTokens
+	target.Tokens.ReasoningOutputTokens += source.Tokens.ReasoningOutputTokens
+	for _, cause := range source.Causes {
+		mergeParkCause(target, cause)
+	}
+	if source.AcknowledgedParkSequence > target.AcknowledgedParkSequence ||
+		(source.AcknowledgedParkSequence == target.AcknowledgedParkSequence && timestampAfter(source.AcknowledgedAt, target.AcknowledgedAt)) {
+		target.AcknowledgedParkSequence = source.AcknowledgedParkSequence
+		target.AcknowledgedAt = source.AcknowledgedAt
+	}
+	addParkAlias(target, IssueIdentity{ProjectID: source.ProjectID, IssueID: source.IssueID, Identifier: source.Identifier, IssueURL: source.IssueURL})
+	for _, alias := range source.aliases {
+		addParkAlias(target, alias)
+	}
+	fillParkSummaryIdentity(target, IssueIdentity{IssueID: source.IssueID, Identifier: source.Identifier, IssueURL: source.IssueURL})
+}
+
+func mergeParkCause(summary *ParkSummary, incoming ParkCauseSummary) {
+	for index := range summary.Causes {
+		cause := &summary.Causes[index]
+		if cause.Cause != incoming.Cause {
+			continue
+		}
+		cause.Count += incoming.Count
+		if incoming.FirstAt.Before(cause.FirstAt) {
+			cause.FirstAt = incoming.FirstAt
+		}
+		if incoming.LastAt.After(cause.LastAt) {
+			cause.LastAt = incoming.LastAt
+		}
+		return
+	}
+	summary.Causes = append(summary.Causes, incoming)
+}
+
+func timestampAfter(candidate, current *time.Time) bool {
+	return candidate != nil && (current == nil || candidate.After(*current))
+}
+
+func parkSummaryAliases(summary ParkSummary) []IssueIdentity {
+	aliases := make([]IssueIdentity, 0, len(summary.aliases)+1)
+	aliases = append(aliases, IssueIdentity{ProjectID: summary.ProjectID, IssueID: summary.IssueID, Identifier: summary.Identifier, IssueURL: summary.IssueURL})
+	aliases = append(aliases, summary.aliases...)
+	return aliases
+}
+
+func parkAliasKeys(identity IssueIdentity) []string {
+	identity = normalizeParkIdentity(identity)
+	keys := make([]string, 0, 3)
+	if identity.ProjectID == "" {
+		return keys
+	}
+	if identity.IssueID != "" {
+		keys = append(keys, identity.ProjectID+"\x00issue_id\x00"+identity.IssueID)
+	}
+	if identity.Identifier != "" {
+		keys = append(keys, identity.ProjectID+"\x00identifier\x00"+identity.Identifier)
+	}
+	if identity.IssueURL != "" {
+		keys = append(keys, identity.ProjectID+"\x00issue_url\x00"+identity.IssueURL)
+	}
+	return keys
 }
 
 func addParkCause(summary *ParkSummary, cause string, at time.Time) {
@@ -407,7 +577,15 @@ func parkIdentityMatches(identity IssueIdentity, summary ParkSummary) bool {
 	if identity.ProjectID != "" && identity.ProjectID != summary.ProjectID {
 		return false
 	}
-	return parkAliasesOverlap(identity.IssueID, identity.Identifier, identity.IssueURL, summary.IssueID, summary.Identifier, summary.IssueURL)
+	if parkAliasesOverlap(identity.IssueID, identity.Identifier, identity.IssueURL, summary.IssueID, summary.Identifier, summary.IssueURL) {
+		return true
+	}
+	for _, alias := range summary.aliases {
+		if parkAliasesOverlap(identity.IssueID, identity.Identifier, identity.IssueURL, alias.IssueID, alias.Identifier, alias.IssueURL) {
+			return true
+		}
+	}
+	return false
 }
 
 func parkAliasesOverlap(issueIDA, identifierA, issueURLA, issueIDB, identifierB, issueURLB string) bool {

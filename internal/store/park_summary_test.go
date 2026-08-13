@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -140,6 +141,88 @@ func TestParkAcknowledgementPersistsAndRearms(t *testing.T) {
 	}
 }
 
+func TestParkSummaryCoalescesBridgingAliases(t *testing.T) {
+	t.Parallel()
+
+	db := openParkTestStore(t, filepath.Join(t.TempDir(), "detent.db"))
+	first := time.Date(2026, 8, 9, 16, 6, 0, 0, time.UTC)
+	insertParkAttemptIdentity(t, db, first, "issue-legacy", "", "")
+	insertParkAttemptIdentity(t, db, first.Add(time.Minute), "", "digitaldrywood/detent#1773", "")
+	insertParkAttemptIdentity(t, db, first.Add(2*time.Minute), "issue-legacy", "digitaldrywood/detent#1773", "https://github.com/digitaldrywood/detent/issues/1773")
+
+	summaries, err := db.ListIssueParkSummaries(t.Context(), "detent")
+	if err != nil {
+		t.Fatalf("ListIssueParkSummaries() error = %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].AttemptCount != 3 || summaries[0].ParkCount != 3 {
+		t.Fatalf("summaries = %#v, want one summary with three attempts and parks", summaries)
+	}
+	requested := []IssueIdentity{
+		{ProjectID: "detent", IssueID: "issue-legacy"},
+		{ProjectID: "detent", Identifier: "digitaldrywood/detent#1773"},
+		{ProjectID: "detent", IssueURL: "https://github.com/digitaldrywood/detent/issues/1773"},
+	}
+	byIssue, err := db.IssueParkSummaries(t.Context(), requested)
+	if err != nil {
+		t.Fatalf("IssueParkSummaries() error = %v", err)
+	}
+	if len(byIssue) != len(requested) {
+		t.Fatalf("IssueParkSummaries() returned %d identities, want %d", len(byIssue), len(requested))
+	}
+	for _, identity := range requested {
+		if summary := byIssue[identity]; summary.AttemptCount != 3 || summary.ParkCount != 3 {
+			t.Fatalf("summary for %#v = %#v, want merged counts", identity, summary)
+		}
+	}
+}
+
+func TestParkSummaryFilterScopesRequestedIdentities(t *testing.T) {
+	t.Parallel()
+
+	identity := IssueIdentity{
+		ProjectID:  "detent",
+		IssueID:    "issue-1773",
+		Identifier: "digitaldrywood/detent#1773",
+		IssueURL:   "https://github.com/digitaldrywood/detent/issues/1773",
+	}
+	tests := []struct {
+		name            string
+		identities      []IssueIdentity
+		includeIssueURL bool
+		wantFilter      string
+		wantArgs        []any
+	}{
+		{
+			name:            "event identities include URL",
+			identities:      []IssueIdentity{identity},
+			includeIssueURL: true,
+			wantFilter:      " WHERE ((project_id = ? AND (issue_id = ? OR identifier = ? OR issue_url = ?)))",
+			wantArgs:        []any{"detent", "issue-1773", "digitaldrywood/detent#1773", "https://github.com/digitaldrywood/detent/issues/1773"},
+		},
+		{
+			name:            "usage identities omit unavailable URL",
+			identities:      []IssueIdentity{identity},
+			includeIssueURL: false,
+			wantFilter:      " WHERE ((project_id = ? AND (issue_id = ? OR identifier = ?)))",
+			wantArgs:        []any{"detent", "issue-1773", "digitaldrywood/detent#1773"},
+		},
+		{
+			name:       "invalid identity returns empty predicate",
+			identities: []IssueIdentity{{Identifier: "digitaldrywood/detent#1773"}},
+			wantFilter: " WHERE 1 = 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			filter, args := parkSummaryFilter("WHERE", "", tt.identities, tt.includeIssueURL)
+			if filter != tt.wantFilter || !reflect.DeepEqual(args, tt.wantArgs) {
+				t.Fatalf("parkSummaryFilter() = %q %#v, want %q %#v", filter, args, tt.wantFilter, tt.wantArgs)
+			}
+		})
+	}
+}
+
 func openParkTestStore(t *testing.T, path string) *sqliteStore {
 	t.Helper()
 	db, err := openSQLite(context.Background(), Config{Path: path})
@@ -165,6 +248,17 @@ project_id, issue_id, identifier, issue_url, worker_type, attempt_number, status
 terminal_state, error_class, worker_metadata_json
 ) VALUES ('detent', 'issue-6', 'digitaldrywood/detent.build#6', 'https://github.com/digitaldrywood/detent.build/issues/6', 'codex', 1, ?, ?, ?, ?, ?, ?)`, status, time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC).Format(time.RFC3339Nano), completed, terminalState, errorClass, metadata); err != nil {
 		t.Fatalf("insert work attempt: %v", err)
+	}
+}
+
+func insertParkAttemptIdentity(t *testing.T, db *sqliteStore, at time.Time, issueID, identifier, issueURL string) {
+	t.Helper()
+	if _, err := db.db.Exec(`INSERT INTO work_attempts (
+project_id, issue_id, identifier, issue_url, worker_type, attempt_number, status, started_at, completed_at,
+terminal_state, worker_metadata_json
+) VALUES ('detent', NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 'codex', 1, 'terminal', ?, ?, 'no_progress', '{}')`,
+		issueID, identifier, issueURL, at.Add(-time.Minute).Format(time.RFC3339Nano), at.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert work attempt identity: %v", err)
 	}
 }
 

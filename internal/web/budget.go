@@ -141,31 +141,31 @@ func (s *Server) snapshotParkSummaries(ctx context.Context, snapshot telemetry.S
 	if !ok {
 		return snapshot
 	}
-	summaries, err := reader.ListIssueParkSummaries(ctx, "")
+	identities := make([]store.IssueIdentity, 0, len(snapshot.BoardIssues))
+	for _, issue := range snapshot.BoardIssues {
+		identities = append(identities, boardIssueParkIdentity(issue))
+	}
+	summaries, err := reader.IssueParkSummaries(ctx, identities)
 	if err != nil {
 		s.logger.WarnContext(ctx, "issue park summary query failed", slog.Any("error", err))
 		return snapshot
 	}
 	snapshot.BoardIssues = append([]telemetry.Issue(nil), snapshot.BoardIssues...)
 	for index := range snapshot.BoardIssues {
-		for _, summary := range summaries {
-			if !parkSummaryMatchesIssue(summary, snapshot.BoardIssues[index]) {
-				continue
-			}
+		if summary, ok := summaries[identities[index]]; ok {
 			snapshot.BoardIssues[index].ParkSummary = parkSummaryTelemetry(summary)
-			break
 		}
 	}
 	return snapshot
 }
 
-func parkSummaryMatchesIssue(summary store.ParkSummary, issue telemetry.Issue) bool {
-	if strings.TrimSpace(summary.ProjectID) != strings.TrimSpace(issue.ProjectID) {
-		return false
+func boardIssueParkIdentity(issue telemetry.Issue) store.IssueIdentity {
+	return store.IssueIdentity{
+		ProjectID:  strings.TrimSpace(issue.ProjectID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
 	}
-	return (summary.IssueID != "" && summary.IssueID == strings.TrimSpace(issue.ID)) ||
-		(summary.Identifier != "" && summary.Identifier == strings.TrimSpace(issue.Identifier)) ||
-		(summary.IssueURL != "" && summary.IssueURL == strings.TrimSpace(issue.URL))
 }
 
 func parkSummaryTelemetry(summary store.ParkSummary) telemetry.ParkSummary {
