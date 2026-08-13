@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -68,7 +69,7 @@ func (s *Server) apiState(c echo.Context) error {
 			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
 		}
 		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
-		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), s.instanceName()))
+		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), s.instanceName(), s.build))
 	}
 	now := apiNow()
 	snapshot, ok := s.hub.Latest()
@@ -80,7 +81,7 @@ func (s *Server) apiState(c echo.Context) error {
 		snapshot = s.withManualRefresh(snapshot)
 	}
 
-	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), s.instanceName()))
+	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), s.instanceName(), s.build))
 }
 
 func (s *Server) apiProject(c echo.Context) error {
@@ -114,7 +115,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
 		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Pool: project.Pool})
-		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), s.instanceName()))
+		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), s.instanceName(), s.build))
 	}
 	now := apiNow()
 	snapshot, ok := s.hub.Latest()
@@ -136,7 +137,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 	scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(c.Request().Context(), scopedSnapshot)
 	scopedSnapshot = s.withManualRefresh(scopedSnapshot)
 
-	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName()))
+	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName(), s.build))
 }
 
 func (s *Server) apiTimeSeries(c echo.Context) error {
@@ -457,13 +458,13 @@ func (s *Server) handleHTTPError(err error, c echo.Context) {
 	}
 }
 
-func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceName string) stateAPIResponse {
+func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceName string, build buildinfo.Info) stateAPIResponse {
 	return stateAPIResponse{
 		GeneratedAt:        generatedAt,
 		Status:             runtimeStatus(snapshot),
 		Shutdown:           shutdownResponse(snapshot.Shutdown),
 		Update:             snapshot.Update,
-		Instance:           instanceResponse(snapshot.Instance, instanceName),
+		Instance:           instanceResponse(snapshot.Instance, instanceName, build),
 		Projects:           projectsAPIResponse(snapshot),
 		Refresh:            snapshot.Refresh,
 		Events:             recentEventsFromTelemetry(snapshot.Events, nil, "", ""),
@@ -532,10 +533,12 @@ func shutdownResponse(shutdown telemetry.Shutdown) shutdownAPIResponse {
 	}
 }
 
-func instanceResponse(instance telemetry.Instance, displayName string) instanceAPIResponse {
+func instanceResponse(instance telemetry.Instance, displayName string, build buildinfo.Info) instanceAPIResponse {
 	return instanceAPIResponse{
 		DisplayName:             strings.TrimSpace(displayName),
 		Name:                    strings.TrimSpace(instance.Name),
+		Version:                 strings.TrimSpace(build.Version),
+		Commit:                  strings.TrimSpace(build.Commit),
 		GitHubLogin:             strings.TrimSpace(instance.GitHubLogin),
 		AuthorizationScope:      strings.TrimSpace(instance.AuthorizationScope),
 		AuthorizationConfigured: instance.AuthorizationConfigured,
@@ -1445,6 +1448,8 @@ type shutdownAPIResponse struct {
 type instanceAPIResponse struct {
 	DisplayName             string `json:"display_name,omitempty"`
 	Name                    string `json:"name,omitempty"`
+	Version                 string `json:"version"`
+	Commit                  string `json:"commit"`
 	GitHubLogin             string `json:"github_login,omitempty"`
 	AuthorizationScope      string `json:"authorization_scope,omitempty"`
 	AuthorizationConfigured bool   `json:"authorization_configured"`

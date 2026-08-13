@@ -205,12 +205,13 @@ func TestStateCommandOutput(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		stdoutTTY  bool
-		args       []string
-		wantPretty []string
+		name          string
+		stdoutTTY     bool
+		args          []string
+		wantPretty    []string
+		wantJSONBuild bool
 	}{
-		{name: "JSON projection", args: []string{"--project", "detent"}},
+		{name: "JSON projection", args: []string{"--project", "detent"}, wantJSONBuild: true},
 		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Running: 2", "Truncated: false"}},
 	}
 
@@ -273,6 +274,15 @@ func TestStateCommandOutput(t *testing.T) {
 					t.Fatalf("JSON output missing %q: %s", key, stdout.String())
 				}
 			}
+			if tt.wantJSONBuild {
+				var instance map[string]string
+				if err := json.Unmarshal(object["instance"], &instance); err != nil {
+					t.Fatalf("Unmarshal(instance) error = %v", err)
+				}
+				if instance["version"] != "v1.3.0" || instance["commit"] != "abcdef123456" {
+					t.Fatalf("instance = %#v, want running build", instance)
+				}
+			}
 		})
 	}
 }
@@ -332,6 +342,7 @@ func stateFixture() map[string]any {
 	return map[string]any{
 		"generated_at": "2026-08-08T03:00:00Z",
 		"status":       "running",
+		"instance":     map[string]any{"version": "v1.3.0", "commit": "abcdef123456"},
 		"refresh": map[string]any{
 			"status":              "degraded",
 			"last_refresh_at":     "2026-08-08T02:59:30Z",

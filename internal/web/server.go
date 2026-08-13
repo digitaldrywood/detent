@@ -1102,6 +1102,8 @@ func (s *Server) health(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:            status,
+		Version:           s.build.Version,
+		Commit:            s.build.Commit,
 		ProjectStatus:     projectStatus,
 		Mode:              string(s.mode),
 		Connector:         s.connectorName(),
@@ -1380,6 +1382,8 @@ func (s *Server) connectorName() string {
 
 type healthResponse struct {
 	Status            string                       `json:"status"`
+	Version           string                       `json:"version"`
+	Commit            string                       `json:"commit"`
 	ProjectStatus     string                       `json:"project_status"`
 	Mode              string                       `json:"mode"`
 	Connector         string                       `json:"connector"`

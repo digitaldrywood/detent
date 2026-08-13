@@ -4326,6 +4326,56 @@ func TestCheckDoctorDetentExecutableReportsRunningBinary(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorDetentServiceReportsRemoteBuild(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		version string
+		commit  string
+	}{
+		{name: "release build", version: "v1.3.0", commit: "abcdef123456"},
+		{name: "development build", version: "dev", commit: "123456abcdef"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload, err := json.Marshal(map[string]any{
+				"status":  "ok",
+				"version": tt.version,
+				"commit":  tt.commit,
+				"mode":    "running",
+				"checks": map[string]string{
+					"hub": "configured", "store": "configured", "registry": "configured", "connector": "configured",
+				},
+			})
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			port := 4017
+			got := checkDoctorDetentService(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+				httpDo: func(request *http.Request) (*http.Response, error) {
+					if request.URL.String() != "http://127.0.0.1:4017/health" {
+						t.Errorf("URL = %q, want configured health endpoint", request.URL)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(payload))}, nil
+				},
+			})
+
+			if got.Name != "Remote Detent service" || got.Status != doctorOK {
+				t.Fatalf("check = %#v, want remote service OK", got)
+			}
+			for _, want := range []string{"remote service build", tt.version, tt.commit, "http://127.0.0.1:4017/health"} {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckDoctorGitHub(t *testing.T) {
 	t.Parallel()
 
