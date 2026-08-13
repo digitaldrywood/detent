@@ -361,7 +361,7 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	if reason := o.blockedReadyPullRequestDeferredReason(ctx, state, issue, signals, now); reason != "" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(signals))
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(park.Cause, signals))
 		return true, false
 	}
 	signature := blockedReadyPullRequestSignature(issue, park)
