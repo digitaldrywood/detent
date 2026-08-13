@@ -241,6 +241,7 @@ type Orchestrator struct {
 	newStalenessNotifier    func(staleness.DeliveryConfig) (staleness.Notifier, error)
 	mergeWorkerLimit        runDurationLimitFactory
 	mergeWorkerStartupTimer mergeWorkerStartupTimerFactory
+	deliverableRecoveryWait func(context.Context, time.Duration) bool
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool

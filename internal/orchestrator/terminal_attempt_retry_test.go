@@ -127,15 +127,83 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 	}
 }
 
-func TestHandleRunResultParksUnrecoverableDeliverableWithBranch(t *testing.T) {
+func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 	t.Parallel()
 
+	const (
+		branch  = "detent/acme_widgets_18"
+		headSHA = "current-head"
+	)
 	tests := []struct {
-		name   string
-		branch string
+		name             string
+		cached           *connector.PullRequest
+		lookup           *connector.PullRequest
+		lookupErrors     []error
+		lookupFoundAfter int
+		wantBlocked      bool
+		wantReason       string
+		wantLookupCalls  int
+		wantMergedReason bool
 	}{
-		{name: "named pushed branch", branch: "detent/acme_widgets_18"},
-		{name: "fallback workspace branch", branch: "detent/acme_widgets_19"},
+		{
+			name: "open pull request on exact current head reconciles",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
+			},
+			wantLookupCalls: 1,
+		},
+		{
+			name:            "no pull request parks",
+			wantBlocked:     true,
+			wantReason:      "no exact-head pull request",
+			wantLookupCalls: 3,
+		},
+		{
+			name: "transient not found retries then reconciles",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
+			},
+			lookupFoundAfter: 3,
+			wantLookupCalls:  3,
+		},
+		{
+			name: "merged pull request routes to merged deliverable reconciliation",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "MERGED", HeadSHA: headSHA,
+				CIStatus: "success", CheckRunCount: 1,
+			},
+			wantLookupCalls:  1,
+			wantMergedReason: true,
+		},
+		{
+			name: "closed unmerged pull request parks accurately",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "CLOSED", HeadSHA: headSHA,
+			},
+			wantBlocked:     true,
+			wantReason:      "closed without merge",
+			wantLookupCalls: 1,
+		},
+		{
+			name: "lookup unavailable retries then parks",
+			lookupErrors: []error{
+				errors.New("lookup unavailable 1"),
+				errors.New("lookup unavailable 2"),
+				errors.New("lookup unavailable 3"),
+			},
+			wantBlocked:     true,
+			wantReason:      "PR lookup unavailable",
+			wantLookupCalls: 3,
+		},
+		{
+			name: "stale cached hydration is not trusted",
+			cached: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
+			},
+			wantBlocked:     true,
+			wantReason:      "lookup result: no exact-head pull request",
+			wantLookupCalls: 3,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,44 +211,95 @@ func TestHandleRunResultParksUnrecoverableDeliverableWithBranch(t *testing.T) {
 
 			now := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
 			issue := terminalRetryTestIssue(tt.name)
-			issue.BranchName = tt.branch
-			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+			issue.BranchName = branch
+			issue.PRRepository = "acme/widgets"
+			issue.PullRequest = tt.cached
+			issue.Comments = []connector.IssueComment{{
+				Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			}}
+			tracker := &terminalRetryConnector{
+				issues:           map[string]connector.Issue{issue.ID: cloneIssue(issue)},
+				lookup:           tt.lookup,
+				lookupErrors:     append([]error(nil), tt.lookupErrors...),
+				lookupFoundAfter: tt.lookupFoundAfter,
+			}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
-			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			o := &Orchestrator{
+				cfg: cfg, connector: tracker, workAttempts: attempts,
+				deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
+			}
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
 				Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement,
-				StartedAt: now.Add(-time.Minute), WorkProductPushed: true, WorkspacePath: "/work/" + tt.branch,
+				StartedAt: now.Add(-time.Minute), WorkProductPushed: true, WorkspacePath: "/work/" + branch,
+				DiffStats: DiffStats{Status: "clean", HeadSHA: headSHA},
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			commandErr := &runpkg.DeliverableCommandError{
-				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + tt.branch + `"}`,
+				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
 				Status: "failed", Message: "HTTP 503: unavailable",
 			}
 
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{
-				IssueID:     issue.ID,
-				Result:      runpkg.RunResult{FinalState: runpkg.FinalStateNeedsHumanAttention, PullRequestHeadPushed: true},
-				Err:         &runpkg.DeliverableRecoveryError{Branch: tt.branch, Err: commandErr},
+				IssueID: issue.ID,
+				Result: runpkg.RunResult{
+					FinalState: runpkg.FinalStateNeedsHumanAttention, PullRequestHeadPushed: true,
+					DiffStats: runpkg.DiffStats{Status: "clean", HeadSHA: headSHA},
+				},
+				Err:         &runpkg.DeliverableRecoveryError{Branch: branch, Err: commandErr},
 				CompletedAt: now,
 			})
 
-			if _, retrying := state.Retry[issue.ID]; retrying {
-				t.Fatalf("Retry[%q] present after unrecoverable PR delivery", issue.ID)
+			if tracker.lookupCalls != tt.wantLookupCalls {
+				t.Fatalf("lookup calls = %d, want %d", tracker.lookupCalls, tt.wantLookupCalls)
+			}
+			if tracker.lookupRepository != "acme/widgets" || tracker.lookupBranch != branch || tracker.lookupHeadSHA != headSHA {
+				t.Fatalf(
+					"lookup target = %q/%q@%q, want acme/widgets/%s@%s",
+					tracker.lookupRepository,
+					tracker.lookupBranch,
+					tracker.lookupHeadSHA,
+					branch,
+					headSHA,
+				)
 			}
 			blocked, ok := state.Blocked[issue.ID]
-			if !ok || blocked.Issue.State != blockedStatusState || !strings.Contains(blocked.Reason, tt.branch) || !strings.Contains(blocked.RecoveryReason, tt.branch) {
-				t.Fatalf("Blocked[%q] = %#v, want needs-human recovery naming branch %q", issue.ID, blocked, tt.branch)
+			if ok != tt.wantBlocked {
+				t.Fatalf("Blocked[%q] present = %v, want %v: %#v", issue.ID, ok, tt.wantBlocked, blocked)
 			}
-			if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
-				t.Fatalf("state transitions = %v, want [%s]", got, blockedStatusState)
+			if tt.wantBlocked {
+				if !strings.Contains(blocked.Reason, branch) || !strings.Contains(blocked.Reason, tt.wantReason) {
+					t.Fatalf("Blocked[%q].Reason = %q, want branch and %q", issue.ID, blocked.Reason, tt.wantReason)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "hydration state:") ||
+					!strings.Contains(tracker.comments[0], "lookup result:") || !strings.Contains(tracker.comments[0], tt.wantReason) {
+					t.Fatalf("comments = %#v, want hydration and lookup diagnostics containing %q", tracker.comments, tt.wantReason)
+				}
+				if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
+					t.Fatalf("state transitions = %v, want [%s]", got, blockedStatusState)
+				}
+				if tt.cached != nil && tt.lookup == nil && blocked.Issue.PullRequest != nil {
+					t.Fatalf("Blocked[%q].Issue.PullRequest = %#v, want stale hydration cleared", issue.ID, blocked.Issue.PullRequest)
+				}
+				if tt.lookup != nil && normalizePullRequestState(tt.lookup.State) == "closed" &&
+					(blocked.Issue.PullRequest == nil || normalizePullRequestState(blocked.Issue.PullRequest.State) != "closed") {
+					t.Fatalf("Blocked[%q].Issue.PullRequest = %#v, want fresh closed PR", issue.ID, blocked.Issue.PullRequest)
+				}
+				return
 			}
-			if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], tt.branch) || !strings.Contains(tracker.comments[0], "needs human attention") {
-				t.Fatalf("comments = %#v, want needs-human message naming branch", tracker.comments)
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+				t.Fatalf("work attempt completions = %#v, want successful reconciliation", attempts.completions)
 			}
-			if len(attempts.completions) != 1 || attempts.completions[0].Phase != "blocked" || !strings.Contains(attempts.completions[0].StatusMessage, tt.branch) {
-				t.Fatalf("work attempt completions = %#v, want blocked phase naming branch", attempts.completions)
+			completed := state.Completed[issue.ID]
+			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != 18 {
+				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR 18", issue.ID, completed.Issue.PullRequest)
+			}
+			if tt.wantMergedReason {
+				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
+				if record.Reason != implementMergedCompletionReason {
+					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
+				}
 			}
 		})
 	}
@@ -325,9 +444,16 @@ func terminalRetryTestIssueWithPullRequest(suffix string) connector.Issue {
 }
 
 type terminalRetryConnector struct {
-	issues      map[string]connector.Issue
-	transitions []string
-	comments    []string
+	issues           map[string]connector.Issue
+	transitions      []string
+	comments         []string
+	lookup           *connector.PullRequest
+	lookupErrors     []error
+	lookupCalls      int
+	lookupFoundAfter int
+	lookupRepository string
+	lookupBranch     string
+	lookupHeadSHA    string
 }
 
 func (c *terminalRetryConnector) Name() string { return "terminal-retry" }
@@ -348,6 +474,40 @@ func (c *terminalRetryConnector) FetchIssueStatesByIDs(_ context.Context, ids []
 		}
 	}
 	return issues, nil
+}
+
+func (c *terminalRetryConnector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	return append([]connector.IssueComment(nil), c.issues[issue.ID].Comments...), nil
+}
+
+func (c *terminalRetryConnector) LookupPullRequestByHead(_ context.Context, repository string, branch string, headSHA string) (connector.PullRequest, bool, error) {
+	c.lookupCalls++
+	c.lookupRepository = repository
+	c.lookupBranch = branch
+	c.lookupHeadSHA = headSHA
+	if c.lookupCalls <= len(c.lookupErrors) {
+		return connector.PullRequest{}, false, c.lookupErrors[c.lookupCalls-1]
+	}
+	if c.lookup == nil {
+		return connector.PullRequest{}, false, nil
+	}
+	if c.lookupFoundAfter > c.lookupCalls {
+		return connector.PullRequest{}, false, nil
+	}
+	pullRequest := *c.lookup
+	return pullRequest, true, nil
+}
+
+func (c *terminalRetryConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	if c.lookup == nil {
+		return issue, nil
+	}
+	pullRequest := *c.lookup
+	issue.PullRequest = &pullRequest
+	issue.PRRepository = "acme/widgets"
+	number := pullRequest.Number
+	issue.PRNumber = &number
+	return issue, nil
 }
 
 func (c *terminalRetryConnector) CreateComment(_ context.Context, _ string, body string) error {

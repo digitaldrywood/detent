@@ -74,6 +74,7 @@ var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
+var _ connector.PullRequestHeadLookup = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 
@@ -387,6 +388,23 @@ func (c *Connector) HydratePullRequest(_ context.Context, issue connector.Issue)
 		}
 	}
 	return cloneIssue(issue), nil
+}
+
+func (c *Connector) LookupPullRequestByHead(_ context.Context, repository string, branch string, headSHA string) (connector.PullRequest, bool, error) {
+	repository = normalizeState(repository)
+	branch = strings.TrimSpace(branch)
+	headSHA = strings.TrimSpace(headSHA)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, issue := range c.issues {
+		if issue.PullRequest == nil || normalizeState(memoryPullRequestRepository(issue)) != repository ||
+			strings.TrimSpace(issue.PullRequest.BranchName) != branch || strings.TrimSpace(issue.PullRequest.HeadSHA) != headSHA {
+			continue
+		}
+		pullRequest := *issue.PullRequest
+		return pullRequest, true, nil
+	}
+	return connector.PullRequest{}, false, nil
 }
 
 func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {

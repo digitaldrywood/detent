@@ -1421,6 +1421,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
 		result.DiffStats = brakeDiff
 	}
+	var exhaustedDeliverable *DeliverableRecoveryError
+	if mode == RunModeImplement && result.PullRequestHeadPushed && errors.As(turnErr, &exhaustedDeliverable) {
+		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "deliverable_recovery"); recoveryState != nil {
+			result.DiffStats = diffStatsFromWorkspace(recoveryState.DiffStat)
+			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
+			result.DiffStats.HeadSHA = strings.TrimSpace(recoveryState.HeadSHA)
+		}
+	}
 	commandFinishedAttrs := []any{
 		"workspace_path", info.Path,
 		"work_attempt_id", req.WorkAttemptID,

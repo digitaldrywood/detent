@@ -333,6 +333,35 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 	return issue, nil
 }
 
+func (c *Connector) LookupPullRequestByHead(
+	ctx context.Context,
+	repository string,
+	branch string,
+	headSHA string,
+) (connector.PullRequest, bool, error) {
+	repo, ok := pullRequestRepoFromName(repository)
+	branch = strings.TrimSpace(branch)
+	headSHA = strings.TrimSpace(headSHA)
+	if !ok || branch == "" || headSHA == "" {
+		return connector.PullRequest{}, false, errors.New("lookup github pull request by head: invalid repository, branch, or head SHA")
+	}
+
+	var response []restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, restPullRequestsByHeadPath(repo, branch), nil, &response); err != nil {
+		return connector.PullRequest{}, false, fmt.Errorf("lookup github pull request by head: %w", err)
+	}
+	for _, candidate := range response {
+		pullRequest := pullRequestNodeFromREST(candidate)
+		if strings.TrimSpace(pullRequest.HeadRefName) != branch || strings.TrimSpace(pullRequest.HeadSHA) != headSHA {
+			continue
+		}
+		issue := connector.Issue{}
+		attachPullRequestToIssue(&issue, repo, pullRequest)
+		return *issue.PullRequest, true, nil
+	}
+	return connector.PullRequest{}, false, nil
+}
+
 func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {
 	repo, number, ok := hydratedPullRequestRef(issue)
 	if !ok || issue.PullRequest == nil {
