@@ -93,6 +93,7 @@ type Config struct {
 	AutoPromote                   AutoPromoteConfig
 	Plan                          gate.PlanConfig
 	DependencySource              string
+	StatusLabelPrefix             string
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	BlockedRecovery               BlockedRecoveryConfig
 	BlockerAutoPromote            BlockerAutoPromoteConfig

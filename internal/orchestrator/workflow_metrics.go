@@ -56,17 +56,18 @@ type workflowLaneReworkBreakerMetadata struct {
 }
 
 type workflowLaneBlockedRecoveryMetadata struct {
-	Owner            string `json:"owner,omitempty"`
-	Cause            string `json:"cause,omitempty"`
-	Predicate        string `json:"predicate,omitempty"`
-	CauseFingerprint string `json:"cause_fingerprint,omitempty"`
-	TargetState      string `json:"target_state,omitempty"`
-	RunMode          string `json:"run_mode,omitempty"`
-	IntentResumable  bool   `json:"intent_resumable,omitempty"`
-	Resumable        bool   `json:"resumable,omitempty"`
-	Reachability     string `json:"reachability,omitempty"`
-	HoldReason       string `json:"hold_reason,omitempty"`
-	OperatorRemedy   string `json:"operator_remedy,omitempty"`
+	Owner                   string `json:"owner,omitempty"`
+	Cause                   string `json:"cause,omitempty"`
+	Predicate               string `json:"predicate,omitempty"`
+	CauseFingerprint        string `json:"cause_fingerprint,omitempty"`
+	CauseFingerprintVersion int    `json:"cause_fingerprint_version,omitempty"`
+	TargetState             string `json:"target_state,omitempty"`
+	RunMode                 string `json:"run_mode,omitempty"`
+	IntentResumable         bool   `json:"intent_resumable,omitempty"`
+	Resumable               bool   `json:"resumable,omitempty"`
+	Reachability            string `json:"reachability,omitempty"`
+	HoldReason              string `json:"hold_reason,omitempty"`
+	OperatorRemedy          string `json:"operator_remedy,omitempty"`
 }
 
 func (m workflowLaneBlockedRecoveryMetadata) intentResumable() bool {

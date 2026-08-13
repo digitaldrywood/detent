@@ -24,6 +24,7 @@ const (
 	blockedRecoveryPredicateFingerprintChange  = "fingerprint_changed"
 	blockedRecoveryPredicateOncePerFingerprint = "once_per_fingerprint"
 	blockedRecoveryPredicateManaged            = "managed"
+	blockedCauseFingerprintVersion             = 2
 	workflowActionCauseBlockedRecovery         = "cause_blocked_recovery"
 	workflowActionBlockedReadyPRReconciliation = "blocked_ready_pr_reconciliation"
 )
@@ -50,6 +51,22 @@ type blockedCauseSignals struct {
 	PRDiffFingerprint    string            `json:"pr_diff_fingerprint,omitempty"`
 }
 
+type blockedCauseIdentity struct {
+	Cause              string            `json:"cause,omitempty"`
+	ConfigFingerprint  string            `json:"config_fingerprint,omitempty"`
+	ToolingFingerprint string            `json:"tooling_fingerprint,omitempty"`
+	BaseFingerprint    string            `json:"base_fingerprint,omitempty"`
+	Health             string            `json:"health,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	ModelOverride      string            `json:"model_override,omitempty"`
+	Labels             []string          `json:"labels,omitempty"`
+	Fields             map[string]string `json:"fields,omitempty"`
+	PRNumber           int               `json:"pr_number,omitempty"`
+	PRHeadSHA          string            `json:"pr_head_sha,omitempty"`
+	PRBaseSHA          string            `json:"pr_base_sha,omitempty"`
+	PRDiffFingerprint  string            `json:"pr_diff_fingerprint,omitempty"`
+}
+
 func (o *Orchestrator) newBlockedRecoveryMetadata(
 	ctx context.Context,
 	issue connector.Issue,
@@ -59,17 +76,19 @@ func (o *Orchestrator) newBlockedRecoveryMetadata(
 	targetState string,
 	fallback DiffStats,
 ) workflowLaneMetadata {
+	cause = strings.TrimSpace(cause)
 	signals := o.blockedCauseSignals(ctx, issue, runMode, targetState, fallback)
 	targetState = blockedCauseTargetState(issue, signals, targetState)
 	return workflowLaneMetadata{
 		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
-			Owner:            blockedRecoveryOwnerOrchestrator,
-			Cause:            strings.TrimSpace(cause),
-			Predicate:        strings.TrimSpace(predicate),
-			CauseFingerprint: blockedCauseFingerprint(signals),
-			TargetState:      targetState,
-			RunMode:          strings.TrimSpace(runMode),
-			IntentResumable:  blockedCauseResumable(issue, signals),
+			Owner:                   blockedRecoveryOwnerOrchestrator,
+			Cause:                   cause,
+			Predicate:               strings.TrimSpace(predicate),
+			CauseFingerprint:        blockedCauseFingerprint(cause, signals),
+			CauseFingerprintVersion: blockedCauseFingerprintVersion,
+			TargetState:             targetState,
+			RunMode:                 strings.TrimSpace(runMode),
+			IntentResumable:         blockedCauseResumable(issue, signals),
 		},
 	}
 }
@@ -123,7 +142,7 @@ func (o *Orchestrator) blockedCauseSignals(
 		Health:               strings.TrimSpace(snapshot.Health),
 		Description:          strings.TrimSpace(issue.Description),
 		ModelOverride:        strings.TrimSpace(issue.ModelOverride),
-		Labels:               blockedCauseLabels(issue.Labels),
+		Labels:               blockedCauseLabels(issue.Labels, o.cfg.StatusLabelPrefix),
 		Workpad:              blockedCauseWorkpadSignal(issue.WorkpadSignal),
 		Fields:               blockedCauseFields(issue.Fields),
 	}
@@ -156,8 +175,14 @@ func blockedCauseWorkpadSignal(signal *workpad.Signal) *workpad.Signal {
 	return &cloned
 }
 
-func blockedCauseLabels(labels []string) []string {
+func blockedCauseLabels(labels []string, statusLabelPrefix string) []string {
 	normalized := normalizeLabels(labels)
+	statusLabelPrefix = strings.ToLower(strings.TrimSpace(statusLabelPrefix))
+	if statusLabelPrefix != "" {
+		normalized = slices.DeleteFunc(normalized, func(label string) bool {
+			return strings.HasPrefix(label, statusLabelPrefix)
+		})
+	}
 	slices.Sort(normalized)
 	return normalized
 }
@@ -179,8 +204,23 @@ func blockedCauseFields(fields map[string]string) map[string]string {
 	return cloned
 }
 
-func blockedCauseFingerprint(signals blockedCauseSignals) string {
-	data, err := json.Marshal(signals)
+func blockedCauseFingerprint(cause string, signals blockedCauseSignals) string {
+	identity := blockedCauseIdentity{
+		Cause:              strings.TrimSpace(cause),
+		ConfigFingerprint:  signals.ConfigFingerprint,
+		ToolingFingerprint: signals.ToolingFingerprint,
+		BaseFingerprint:    signals.BaseFingerprint,
+		Health:             signals.Health,
+		Description:        signals.Description,
+		ModelOverride:      signals.ModelOverride,
+		Labels:             signals.Labels,
+		Fields:             signals.Fields,
+		PRNumber:           signals.PRNumber,
+		PRHeadSHA:          signals.PRHeadSHA,
+		PRBaseSHA:          signals.PRBaseSHA,
+		PRDiffFingerprint:  signals.PRDiffFingerprint,
+	}
+	data, err := json.Marshal(identity)
 	if err != nil {
 		return blockedCauseHash(err.Error())
 	}
@@ -273,15 +313,19 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false
 	}
-	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-	currentFingerprint := blockedCauseFingerprint(signals)
-	if park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
-		return false
-	}
 	if park.Predicate != blockedRecoveryPredicateFingerprintChange &&
 		park.Predicate != blockedRecoveryPredicateOncePerFingerprint {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, currentFingerprint)
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, park.CauseFingerprint)
+		return false
+	}
+	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "legacy_cause_fingerprint", &park, park.CauseFingerprint)
+		return false
+	}
+	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+	currentFingerprint := blockedCauseFingerprint(park.Cause, signals)
+	if park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
 		return false
 	}
 	signature := blockedCauseRecoverySignature(park.Cause, currentFingerprint)
@@ -317,7 +361,7 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	if reason := o.blockedReadyPullRequestDeferredReason(ctx, state, issue, signals, now); reason != "" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(signals))
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(park.Cause, signals))
 		return true, false
 	}
 	signature := blockedReadyPullRequestSignature(issue, park)
@@ -609,6 +653,8 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
 	case "fingerprint_already_consumed":
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
+	case "legacy_cause_fingerprint":
+		return "Review the blocking cause, then move the issue to a lane that starts fresh work."
 	case "transition_failed":
 		return "Retry the lane transition after restoring tracker write access."
 	case "managed_recovery":

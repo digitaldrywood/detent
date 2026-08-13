@@ -228,12 +228,17 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		predicate      string
-		parked         runpkg.BlockedRecoverySnapshot
-		current        runpkg.BlockedRecoverySnapshot
-		wantTarget     string
-		wantTransition bool
+		name                  string
+		predicate             string
+		parked                runpkg.BlockedRecoverySnapshot
+		current               runpkg.BlockedRecoverySnapshot
+		parkedLabels          []string
+		currentLabels         []string
+		parkedWorkpad         *workpad.Signal
+		currentWorkpad        *workpad.Signal
+		wantTarget            string
+		wantTransition        bool
+		wantStableFingerprint bool
 	}{
 		{
 			name:           "changed configuration fingerprint",
@@ -244,10 +249,43 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			wantTransition: true,
 		},
 		{
-			name:      "unchanged no-progress cause",
+			name:                  "unchanged no-progress cause",
+			predicate:             blockedRecoveryPredicateFingerprintChange,
+			parked:                runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-same", Health: "ready", WorkspaceStatus: "missing"},
+			current:               runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-same", Health: "ready", WorkspaceStatus: "missing"},
+			wantStableFingerprint: true,
+		},
+		{
+			name:      "attempt workspace churn leaves failure cause unchanged",
 			predicate: blockedRecoveryPredicateFingerprintChange,
-			parked:    runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-same", Health: "ready", WorkspaceStatus: "missing"},
-			current:   runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-same", Health: "ready", WorkspaceStatus: "missing"},
+			parked: runpkg.BlockedRecoverySnapshot{
+				ConfigFingerprint:    "config-same",
+				WorkspaceFingerprint: "workspace-before-failure",
+				WorkspaceStatus:      "clean",
+				WorkspacePresent:     true,
+				Health:               "ready",
+			},
+			current: runpkg.BlockedRecoverySnapshot{
+				ConfigFingerprint:    "config-same",
+				WorkspaceFingerprint: "workspace-after-failure",
+				WorkspaceStatus:      "dirty",
+				WorkspacePresent:     true,
+				WorkspaceFiles:       1,
+				Health:               "ready",
+			},
+			parkedLabels:  []string{"bug", "detent:in-progress"},
+			currentLabels: []string{"bug", "detent:blocked"},
+			parkedWorkpad: &workpad.Signal{
+				Source: workpad.SourceStructured,
+				Status: workpad.StatusInProgress,
+				Fields: map[string]string{"attempt": "4"},
+			},
+			currentWorkpad: &workpad.Signal{
+				Source: workpad.SourceStructured,
+				Status: workpad.StatusInProgress,
+				Fields: map[string]string{"attempt": "5"},
+			},
+			wantStableFingerprint: true,
 		},
 		{
 			name:      "stranded workspace once per unchanged fingerprint",
@@ -278,6 +316,8 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			t.Parallel()
 
 			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			issue.Labels = append([]string(nil), tt.parkedLabels...)
+			issue.WorkpadSignal = tt.parkedWorkpad
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			parkTracker := &dependencyAutoUnblockConnector{}
 			parkOrch := blockedCauseTestOrchestrator(parkTracker)
@@ -294,14 +334,31 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 				DiffStats{},
 			)
 			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+			currentIssue := cloneIssue(issue)
+			if tt.currentLabels != nil {
+				currentIssue.Labels = append([]string(nil), tt.currentLabels...)
+			}
+			if tt.currentWorkpad != nil {
+				currentIssue.WorkpadSignal = tt.currentWorkpad
+			}
 
 			tracker := &dependencyAutoUnblockConnector{}
 			orch := blockedCauseTestOrchestrator(tracker)
 			orch.workflowMetrics = metrics
 			orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: tt.current}
 			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     currentIssue,
+				Source:    BlockedSourceProjectStatus,
+				BlockedAt: parkedAt,
+				Recovery:  metadata.BlockedRecovery,
+			}
+			currentFingerprint := blockedCauseFingerprint(noProgressLimitReason, orch.blockedCauseSignals(t.Context(), currentIssue, RunModeImplement, metadata.BlockedRecovery.TargetState, DiffStats{}))
+			if tt.wantStableFingerprint && currentFingerprint != metadata.BlockedRecovery.CauseFingerprint {
+				t.Fatalf("current fingerprint = %q, parked fingerprint = %q", currentFingerprint, metadata.BlockedRecovery.CauseFingerprint)
+			}
 
-			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{currentIssue}, parkedAt.Add(time.Minute))
 
 			if tt.wantTransition {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantTarget {
@@ -310,7 +367,6 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 				if _, ok := transitioned[issue.ID]; !ok {
 					t.Fatalf("transitioned[%q] missing", issue.ID)
 				}
-				currentFingerprint := blockedCauseFingerprint(orch.blockedCauseSignals(t.Context(), issue, RunModeImplement, metadata.BlockedRecovery.TargetState, DiffStats{}))
 				assertWorkflowActionSignature(t, metrics, issue, workflowActionCauseBlockedRecovery, blockedCauseRecoverySignature(noProgressLimitReason, currentFingerprint))
 
 				if tt.predicate == blockedRecoveryPredicateOncePerFingerprint {
@@ -319,7 +375,7 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 					restarted := blockedCauseTestOrchestrator(restartedTracker)
 					restarted.workflowMetrics = metrics
 					restarted.recoveryInspector = staticBlockedRecoveryInspector{snapshot: tt.current}
-					restarted.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(3*time.Minute))
+					restarted.recoverBlockedIssues(t.Context(), &state, []connector.Issue{currentIssue}, parkedAt.Add(3*time.Minute))
 					if len(restartedTracker.updates) != 0 {
 						t.Fatalf("restart updates = %#v, want consumed fingerprint held", restartedTracker.updates)
 					}
@@ -332,6 +388,12 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			if _, ok := transitioned[issue.ID]; ok {
 				t.Fatalf("transitioned[%q] present", issue.ID)
 			}
+			if tt.wantStableFingerprint {
+				blocked := state.Blocked[issue.ID]
+				if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != "cause_unchanged" || !blocked.NeedsHumanAttention {
+					t.Fatalf("blocked recovery = %#v, want visible cause-unchanged hold", blocked)
+				}
+			}
 		})
 	}
 }
@@ -339,15 +401,123 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {
 	t.Parallel()
 
-	original := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:blocked"})}
-	reordered := blockedCauseSignals{Labels: blockedCauseLabels([]string{" DETENT:BLOCKED ", "Bug", "bug"})}
-	withOverride := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:blocked", "agent:max-tokens"})}
+	original := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:in-progress"}, "detent:")}
+	reordered := blockedCauseSignals{Labels: blockedCauseLabels([]string{" DETENT:BLOCKED ", "Bug", "bug"}, "detent:")}
+	withOverride := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:blocked", "agent:max-tokens"}, "detent:")}
 
-	if blockedCauseFingerprint(original) != blockedCauseFingerprint(reordered) {
-		t.Fatal("equivalent labels changed the cause fingerprint")
+	if blockedCauseFingerprint(noProgressLimitReason, original) != blockedCauseFingerprint(noProgressLimitReason, reordered) {
+		t.Fatal("status label transition changed the cause fingerprint")
 	}
-	if blockedCauseFingerprint(original) == blockedCauseFingerprint(withOverride) {
+	if blockedCauseFingerprint(noProgressLimitReason, original) == blockedCauseFingerprint(noProgressLimitReason, withOverride) {
 		t.Fatal("recovery-affecting label did not change the cause fingerprint")
+	}
+	if blockedCauseFingerprint(noProgressLimitReason, original) == blockedCauseFingerprint(spendProgressReason, original) {
+		t.Fatal("failure cause did not change the cause fingerprint")
+	}
+}
+
+func TestBlockedCauseFingerprintIgnoresAttemptMutatedSignals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		current blockedCauseSignals
+	}{
+		{
+			name: "workspace churn",
+			current: blockedCauseSignals{
+				ConfigFingerprint:    "config-same",
+				WorkspaceFingerprint: "workspace-after-failure",
+				WorkspaceStatus:      "dirty",
+				WorkspacePresent:     true,
+				WorkspaceFiles:       1,
+				UnpushedCommits:      1,
+				Health:               "ready",
+			},
+		},
+		{
+			name: "workpad churn",
+			current: blockedCauseSignals{
+				ConfigFingerprint: "config-same",
+				Health:            "ready",
+				Workpad: &workpad.Signal{
+					Source: workpad.SourceStructured,
+					Status: workpad.StatusInProgress,
+					Fields: map[string]string{"attempt": "5"},
+				},
+			},
+		},
+	}
+
+	parked := blockedCauseSignals{
+		ConfigFingerprint:    "config-same",
+		WorkspaceFingerprint: "workspace-before-failure",
+		WorkspaceStatus:      "clean",
+		WorkspacePresent:     true,
+		Health:               "ready",
+		Workpad: &workpad.Signal{
+			Source: workpad.SourceStructured,
+			Status: workpad.StatusInProgress,
+			Fields: map[string]string{"attempt": "4"},
+		},
+	}
+	want := blockedCauseFingerprint("instant_failure_circuit_breaker", parked)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := blockedCauseFingerprint("instant_failure_circuit_breaker", tt.current); got != want {
+				t.Fatalf("fingerprint = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestCauseBlockedRecoveryHoldsLegacyFingerprint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		predicate string
+	}{
+		{name: "fingerprint change", predicate: blockedRecoveryPredicateFingerprintChange},
+		{name: "once per fingerprint", predicate: blockedRecoveryPredicateOncePerFingerprint},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := dependencyAutoUnblockIssue("issue-legacy-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			parkOrch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+			parkOrch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-old", Health: "ready"}}
+			metadata := parkOrch.newBlockedRecoveryMetadata(t.Context(), issue, RunModeImplement, noProgressLimitReason, tt.predicate, "Todo", DiffStats{})
+			metadata.BlockedRecovery.CauseFingerprint = "legacy-fingerprint"
+			metadata.BlockedRecovery.CauseFingerprintVersion = 0
+			parkedAt := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
+			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			orch.workflowMetrics = metrics
+			orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-new", Health: "ready"}}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     issue,
+				Source:    BlockedSourceProjectStatus,
+				BlockedAt: parkedAt,
+				Recovery:  metadata.BlockedRecovery,
+			}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+
+			if len(tracker.updates) != 0 || len(transitioned) != 0 {
+				t.Fatalf("updates = %#v, transitioned = %#v, want legacy fingerprint held", tracker.updates, transitioned)
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != "legacy_cause_fingerprint" || !blocked.NeedsHumanAttention {
+				t.Fatalf("blocked recovery = %#v, want visible legacy-fingerprint hold", blocked)
+			}
+		})
 	}
 }
 
@@ -373,6 +543,9 @@ func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
 	)
 	raw := workflowLaneMetadataJSON(issue, metadata)
 	if !strings.Contains(raw, `"intent_resumable":true`) {
+		t.Fatalf("metadata = %s", raw)
+	}
+	if !strings.Contains(raw, `"cause_fingerprint_version":2`) {
 		t.Fatalf("metadata = %s", raw)
 	}
 	if strings.Contains(raw, `"resumable":true`) {
@@ -628,6 +801,7 @@ func blockedReadyPullRequestIssue() connector.Issue {
 func blockedCauseTestOrchestrator(tracker *dependencyAutoUnblockConnector) *Orchestrator {
 	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
 	orch.cfg.BlockedRecovery.Enabled = false
+	orch.cfg.StatusLabelPrefix = "detent:"
 	return orch
 }
 

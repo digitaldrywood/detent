@@ -76,8 +76,9 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			WorkpadStructuredOnly: cfg.Workpad.StructuredOnly,
 			Gate:                  gate.Effective(cfg.Gate),
 		}),
-		Plan:             gate.EffectivePlan(cfg.Plan),
-		DependencySource: normalizeDependencySource(cfg.Dependencies.Source),
+		Plan:              gate.EffectivePlan(cfg.Plan),
+		DependencySource:  normalizeDependencySource(cfg.Dependencies.Source),
+		StatusLabelPrefix: blockedCauseStatusLabelPrefix(cfg),
 		DependencyAutoUnblock: normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
 			Enabled:      cfg.Tracker.DependencyAutoUnblock.Enabled,
 			SourceStates: append([]string(nil), cfg.Tracker.DependencyAutoUnblock.SourceStates...),
@@ -246,6 +247,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)
 	cfg.DependencySource = normalizeDependencySource(cfg.DependencySource)
+	cfg.StatusLabelPrefix = strings.ToLower(strings.TrimSpace(cfg.StatusLabelPrefix))
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
 	cfg.BlockedRecovery = normalizeBlockedRecoveryConfig(cfg.BlockedRecovery)
 	cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(cfg.BlockerAutoPromote, cfg.ActiveStates, cfg.DependencyAutoUnblock)
@@ -265,6 +267,13 @@ func normalizeConfig(cfg Config) Config {
 	}
 
 	return cfg
+}
+
+func blockedCauseStatusLabelPrefix(cfg workflowconfig.Config) string {
+	if cfg.Tracker.GitHubStatusSource != workflowconfig.GitHubStatusSourceLabel {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(cfg.Tracker.StatusLabelPrefix))
 }
 
 func stopRunPriorityNames(value workflowconfig.StringOrMap) map[int]string {
