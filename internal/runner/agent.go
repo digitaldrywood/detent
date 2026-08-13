@@ -3447,6 +3447,12 @@ func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpd
 	if req.OnActivityUpdate == nil {
 		return nil
 	}
+	content := update.Delta
+	if update.Type == AgentUpdateToolCompleted && failedAgentToolStatus(update.Status) {
+		if message := meaningfulDeliverableDetail(update.BackendErrorMessage); message != "" {
+			content = message
+		}
+	}
 	return req.OnActivityUpdate(AgentActivityUpdate{
 		At:                at.UTC(),
 		DetentSessionID:   detentSessionID,
@@ -3455,11 +3461,20 @@ func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpd
 		ItemID:            strings.TrimSpace(update.ItemID),
 		Type:              update.Type,
 		Tool:              strings.TrimSpace(update.Tool),
-		Content:           update.Delta,
+		Content:           content,
 		Status:            strings.TrimSpace(update.Status),
 		Model:             strings.TrimSpace(update.Model),
 		TotalTokens:       update.Tokens.TotalTokens,
 	})
+}
+
+func failedAgentToolStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error", "cancelled", "canceled", "timed_out":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Runner) liveDiffStats(

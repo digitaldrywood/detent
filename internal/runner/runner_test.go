@@ -824,6 +824,11 @@ func TestDeliverableCommandErrorNeverReportsNullDetail(t *testing.T) {
 			},
 			want: []string{"status=failed"},
 		},
+		{
+			name: "no detail",
+			err:  &DeliverableCommandError{Operation: "codex_apps/github.create_pull_request"},
+			want: []string{"detail=no error detail returned"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
