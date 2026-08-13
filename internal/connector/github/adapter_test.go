@@ -4595,6 +4595,76 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 }
 
+func TestConnectorLookupPullRequestByHeadUsesExactCurrentHead(t *testing.T) {
+	t.Parallel()
+
+	const (
+		branch  = "detent/acme_widgets_18"
+		headSHA = "current-head"
+		path    = "/repos/example/repo/pulls?direction=desc&head=example%3Adetent%2Facme_widgets_18&per_page=100&sort=updated&state=all"
+	)
+	tests := []struct {
+		name      string
+		body      string
+		wantFound bool
+		wantState string
+	}{
+		{
+			name:      "open exact head",
+			body:      `[{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","head":{"ref":"detent/acme_widgets_18","sha":"current-head"},"base":{"ref":"main","sha":"base-head"}}]`,
+			wantFound: true,
+			wantState: "OPEN",
+		},
+		{
+			name:      "merged exact head",
+			body:      `[{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"closed","merged_at":"2026-08-12T18:00:00Z","head":{"ref":"detent/acme_widgets_18","sha":"current-head"},"base":{"ref":"main","sha":"base-head"}}]`,
+			wantFound: true,
+			wantState: "MERGED",
+		},
+		{
+			name:      "closed unmerged exact head",
+			body:      `[{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"closed","head":{"ref":"detent/acme_widgets_18","sha":"current-head"},"base":{"ref":"main","sha":"base-head"}}]`,
+			wantFound: true,
+			wantState: "CLOSED",
+		},
+		{
+			name: "stale head does not match",
+			body: `[{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","head":{"ref":"detent/acme_widgets_18","sha":"stale-head"},"base":{"ref":"main","sha":"base-head"}}]`,
+		},
+		{
+			name: "no pull request",
+			body: `[]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				method: http.MethodGet,
+				path:   path,
+				body:   tt.body,
+			}})
+			c := newGitHubTestConnector(t, server, Config{})
+
+			pullRequest, found, err := c.LookupPullRequestByHead(t.Context(), "example/repo", branch, headSHA)
+			if err != nil {
+				t.Fatalf("LookupPullRequestByHead() error = %v", err)
+			}
+			if found != tt.wantFound {
+				t.Fatalf("LookupPullRequestByHead() = %#v, found = %v, want %v", pullRequest, found, tt.wantFound)
+			}
+			if !tt.wantFound {
+				return
+			}
+			if pullRequest.Number != 42 || pullRequest.State != tt.wantState || pullRequest.BranchName != branch || pullRequest.HeadSHA != headSHA {
+				t.Fatalf("LookupPullRequestByHead() = %#v, want PR 42 state %s on exact head", pullRequest, tt.wantState)
+			}
+		})
+	}
+}
+
 func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.T) {
 	t.Parallel()
 

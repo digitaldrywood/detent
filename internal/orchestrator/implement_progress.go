@@ -261,6 +261,18 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		o.warnImplementProgressHydration(issue, reason, nil)
 		return decision
 	}
+	if pullRequestMerged(issue.PullRequest) {
+		refreshed, workpadCurrent := o.refreshImplementCompletionIssue(ctx, issue)
+		decision.Issue = refreshed
+		decision.TrackerState = strings.TrimSpace(refreshed.State)
+		if workpadCurrent && implementProgressMergedCompletion(refreshed, running.DiffStats) {
+			decision.WorkpadStatus = workpad.StatusComplete
+			decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(refreshed, staleMergedPullRequestSummaryFromIssue(refreshed))
+			decision.Reason = implementMergedCompletionReason
+			return decision
+		}
+		issue = refreshed
+	}
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	decision.CurrentSignature = signature
 	if !implementProgressSignatureUsable(signature) {

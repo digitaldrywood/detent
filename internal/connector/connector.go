@@ -164,6 +164,10 @@ type PullRequestHydrator interface {
 	HydratePullRequest(context.Context, Issue) (Issue, error)
 }
 
+type PullRequestHeadLookup interface {
+	LookupPullRequestByHead(context.Context, string, string, string) (PullRequest, bool, error)
+}
+
 type PullRequestDiffFingerprintReader interface {
 	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
 }

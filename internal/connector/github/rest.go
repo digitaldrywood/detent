@@ -65,6 +65,16 @@ func restPullRequestsPath(repo pullRequestRepo, page int) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
 }
 
+func restPullRequestsByHeadPath(repo pullRequestRepo, branch string) string {
+	values := url.Values{}
+	values.Set("state", "all")
+	values.Set("head", repo.Owner+":"+strings.TrimSpace(branch))
+	values.Set("sort", "updated")
+	values.Set("direction", "desc")
+	values.Set("per_page", strconv.Itoa(pullRequestsPageSize))
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
+}
+
 func restPullRequestPath(repo pullRequestRepo, number int) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls/" + strconv.Itoa(number)
 }

@@ -142,6 +142,32 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
 		return
 	}
+	deliverableLookup := deliverableRecoveryLookupResult{}
+	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
+	if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		deliverableLookup = o.lookupDeliverableRecovery(ctx, running, deliverableRecoveryErr)
+		if deliverableLookup.reconciles() {
+			running.Issue = deliverableRecoveryIssue(running, deliverableLookup)
+			event.Err = nil
+			event.Result.FinalState = FinalStateCompleted
+			event.Result.PullRequestUpdated = true
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "deliverable_recovery_reconciled",
+				Message: deliverableLookup.LookupResult + " for " + issueLabel(running.Issue),
+			})
+			telemetry.LogLifecycle(o.logger, slog.LevelInfo, telemetry.LifecycleWorkAttempt, "deliverable_recovery_reconciled", o.runningLifecycleCorrelation(running.Issue, running),
+				"workspace_branch", deliverableLookup.Branch,
+				"workspace_head_sha", deliverableLookup.HeadSHA,
+				"hydration_state", deliverableLookup.HydrationState,
+				"lookup_result", deliverableLookup.LookupResult,
+				"pull_request_number", deliverableLookup.PullRequest.Number,
+			)
+		}
+	}
 	if event.Err != nil {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
@@ -190,7 +216,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
 	}
 
-	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+	if !deliverableLookup.reconciles() && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 		tokens := event.Result.Tokens
 		if tokens == (TokenTotals{}) {
@@ -247,7 +273,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage := event.Err.Error()
 		phase := "failed"
 		statusMessage := "worker failed"
-		var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
+		deliverableRecoveryErr = nil
 		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
 			errorClass = deliverableRecoveryNeedsHumanReason
 			phase = "blocked"
@@ -266,7 +292,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
 		}
-		if o.blockDeliverableRecoveryFailure(ctx, state, event, running) {
+		if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
 			return
 		}
 		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {

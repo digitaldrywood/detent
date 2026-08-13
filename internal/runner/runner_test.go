@@ -674,7 +674,13 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			workspaceBackend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: branch}}
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Branch: branch},
+				recoveryStates: []workspace.RecoveryState{
+					{HeadSHA: "dispatch-head"},
+					{HeadSHA: "current-head"},
+				},
+			}
 			backend := &deliverableRecoveryAgentBackend{turns: [][]AgentUpdate{
 				{
 					{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
@@ -710,6 +716,9 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				}
 				if recoveryErr.Branch != branch || !strings.Contains(runErr.Error(), branch) || result.FinalState != FinalStateNeedsHumanAttention {
 					t.Fatalf("recovery error/result = %#v/%#v, want branch %q and needs-human state", recoveryErr, result, branch)
+				}
+				if result.DiffStats.HeadSHA != "current-head" {
+					t.Fatalf("DiffStats.HeadSHA = %q, want fresh current head", result.DiffStats.HeadSHA)
 				}
 				for _, want := range []string{"codex_apps/github.create_pull_request", "status=failed", arguments, "HTTP 503: unavailable", `{"status":503,"message":"unavailable"}`} {
 					if !strings.Contains(runErr.Error(), want) {

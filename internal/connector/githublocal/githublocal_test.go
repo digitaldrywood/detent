@@ -782,6 +782,10 @@ func (b *recordingGitHubBackend) HydratePullRequest(context.Context, connector.I
 	panic("unexpected github HydratePullRequest")
 }
 
+func (b *recordingGitHubBackend) LookupPullRequestByHead(context.Context, string, string, string) (connector.PullRequest, bool, error) {
+	panic("unexpected github LookupPullRequestByHead")
+}
+
 func (b *recordingGitHubBackend) FetchIssueParents(context.Context, string) ([]connector.Issue, error) {
 	panic("unexpected github FetchIssueParents")
 }

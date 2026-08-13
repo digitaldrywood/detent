@@ -54,6 +54,7 @@ type githubBackend interface {
 	connector.ProjectRemover
 	connector.PullRequestCommenter
 	connector.PullRequestCommentReader
+	connector.PullRequestHeadLookup
 	connector.PullRequestHydrator
 	connector.PullRequestMergeQueue
 	connector.PullRequestMerger
@@ -122,6 +123,7 @@ var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestCommentReader = (*Connector)(nil)
 var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
+var _ connector.PullRequestHeadLookup = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestLabelReapplier = (*Connector)(nil)
 var _ connector.PullRequestMergeQueue = (*Connector)(nil)
@@ -563,6 +565,10 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	return c.github.HydratePullRequest(ctx, issue)
+}
+
+func (c *Connector) LookupPullRequestByHead(ctx context.Context, repository string, branch string, headSHA string) (connector.PullRequest, bool, error) {
+	return c.github.LookupPullRequestByHead(ctx, repository, branch, headSHA)
 }
 
 func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {
