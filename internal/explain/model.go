@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 var (
 	ErrProjectRequired      = errors.New("project reference is required")
@@ -79,8 +79,32 @@ type IssueExplanation struct {
 	Sessions         Sessions            `json:"sessions"`
 	PullRequest      *PullRequest        `json:"pull_request,omitempty"`
 	RequiredGate     Gate                `json:"required_gate"`
+	ParkSummary      ParkSummary         `json:"park_summary"`
 	Sources          []SourceStatus      `json:"sources"`
 	Evidence         []EvidenceReference `json:"evidence"`
+}
+
+type ParkSummary struct {
+	AttemptCount             int64              `json:"attempt_count"`
+	ParkCount                int64              `json:"park_count"`
+	AcknowledgedParkSequence int64              `json:"acknowledged_park_sequence"`
+	AcknowledgedAt           *time.Time         `json:"acknowledged_at,omitempty"`
+	Causes                   []ParkCauseSummary `json:"causes"`
+	Tokens                   ParkTokenTotals    `json:"tokens"`
+}
+
+type ParkCauseSummary struct {
+	Cause   string    `json:"cause"`
+	Count   int64     `json:"count"`
+	FirstAt time.Time `json:"first_at"`
+	LastAt  time.Time `json:"last_at"`
+}
+
+type ParkTokenTotals struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 }
 
 type Identity struct {

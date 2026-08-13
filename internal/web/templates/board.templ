@@ -522,6 +522,22 @@ templ boardCardView2(card boardCardView) {
 				</div>
 			}
 		}
+		if card.ParkSummary != "" {
+			<div
+				id={ card.DomID + "-park-summary" }
+				class="min-w-0 truncate font-mono text-2xs text-sec"
+				tabindex="0"
+				role="img"
+				aria-label={ "Park history: " + card.ParkDetail }
+				data-board-card-park-summary
+				data-board-card-expanded
+				data-help-trigger
+				data-help-scope="park-history"
+				data-help-term={ card.DomID + "-park-summary" }
+				data-help-title="Park history"
+				data-help-description={ card.ParkDetail }
+			>{ card.ParkSummary }</div>
+		}
 		if card.AgeFooter != "" {
 			<div class="mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer data-board-card-expanded>
 				<span class="min-w-0 truncate">In lane</span>

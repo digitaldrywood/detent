@@ -6,12 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -48,7 +50,7 @@ func TestIssueExplanationAPIReferences(t *testing.T) {
 			}
 			fake := &fakeIssueExplainer{result: want}
 			server := newIssueExplanationServer(t, fake)
-			query := url.Values{"reference": {tt.reference}, "schema": {"2"}}
+			query := url.Values{"reference": {tt.reference}, "schema": {"3"}}
 			recorder := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/projects/detent/issues/explanation?"+query.Encode(), "", map[string]string{
 				"Authorization": "Bearer detent_test_token",
 			})
@@ -148,7 +150,7 @@ func TestIssueExplanationAPIReturnsDegradedDTO(t *testing.T) {
 	}
 }
 
-func TestIssueExplanationAPIIsGETAndReadScopeOnly(t *testing.T) {
+func TestIssueExplanationAPIRequiresAuthentication(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeIssueExplainer{result: explain.IssueExplanation{Schema: explain.SchemaVersion}}
@@ -159,12 +161,53 @@ func TestIssueExplanationAPIIsGETAndReadScopeOnly(t *testing.T) {
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d, want %d", unauthorized.Code, http.StatusUnauthorized)
 	}
-	post := performJSON(t, server.Handler(), http.MethodPost, path, "", map[string]string{"Authorization": "Bearer detent_test_token"})
-	if post.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST status = %d, want %d; body = %s", post.Code, http.StatusMethodNotAllowed, post.Body.String())
+	post := performJSON(t, server.Handler(), http.MethodPost, path, "", nil)
+	if post.Code != http.StatusUnauthorized {
+		t.Fatalf("POST status = %d, want %d; body = %s", post.Code, http.StatusUnauthorized, post.Body.String())
 	}
 	if fake.calls != 0 {
 		t.Fatalf("Explain() calls = %d, want 0", fake.calls)
+	}
+}
+
+func TestIssueExplanationAPIAcknowledgesCurrentParkSequence(t *testing.T) {
+	t.Parallel()
+
+	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	fake := &fakeIssueExplainer{result: explain.IssueExplanation{
+		Schema:      explain.SchemaVersion,
+		Identity:    explain.Identity{ProjectID: "detent", IssueID: "issue-1639", Identifier: "digitaldrywood/detent#1639"},
+		ParkSummary: explain.ParkSummary{ParkCount: 4, Causes: []explain.ParkCauseSummary{}},
+	}}
+	deps := testDeps(t)
+	deps.Store = backend
+	deps.IssueExplainer = fake
+	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	path := "/api/v1/projects/detent/issues/explanation?reference=1639&schema=3"
+	recorder := performJSON(t, server.Handler(), http.MethodPost, path, "", map[string]string{"Authorization": "Bearer detent_test_token"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var got explain.IssueExplanation
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.ParkSummary.AcknowledgedParkSequence != 4 || got.ParkSummary.AcknowledgedAt == nil {
+		t.Fatalf("acknowledgement response = %#v", got.ParkSummary)
+	}
+	persisted, err := backend.(store.ParkSummaryStore).IssueParkSummary(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: "issue-1639"})
+	if err != nil {
+		t.Fatalf("IssueParkSummary() error = %v", err)
+	}
+	if persisted.AcknowledgedParkSequence != 4 {
+		t.Fatalf("persisted sequence = %d, want 4", persisted.AcknowledgedParkSequence)
 	}
 }
 

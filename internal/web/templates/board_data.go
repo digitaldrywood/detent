@@ -637,6 +637,8 @@ type boardCardView struct {
 	RuntimeComfyText  string
 	RuntimeDetail     string
 	RuntimeBadge      bool
+	ParkSummary       string
+	ParkDetail        string
 	Labels            []string
 	Effort            string
 	Activity          string
@@ -1078,6 +1080,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	view.ParkSummary, view.ParkDetail = boardCardParkSummary(card.ParkSummary)
 	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
 	view.AuthorDetail = boardCardAuthorDetail(card.AuthorID, card.OriginActor)
 	view.Activity = boardCardActivity(data.Snapshot, card)
@@ -1099,6 +1102,22 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
 	view.CompactSignal = boardCardCompactSignal(view)
 	return view
+}
+
+func boardCardParkSummary(summary telemetry.ParkSummary) (string, string) {
+	if summary.AttemptCount == 0 && summary.ParkCount == 0 && summary.Tokens == (telemetry.ParkTokenTotals{}) {
+		return "", ""
+	}
+	line := formatInt(summary.AttemptCount) + " attempts · " + formatInt(summary.ParkCount) + " parks · tokens " +
+		fleetCompactTokens(summary.Tokens.InputTokens) + " input / " +
+		fleetCompactTokens(summary.Tokens.CachedInputTokens) + " cached / " +
+		fleetCompactTokens(summary.Tokens.OutputTokens) + " output / " +
+		fleetCompactTokens(summary.Tokens.ReasoningOutputTokens) + " reasoning"
+	details := []string{line}
+	for _, cause := range summary.Causes {
+		details = append(details, cause.Cause+": "+formatInt(cause.Count)+"; first "+cause.FirstAt.Format(time.RFC3339)+"; last "+cause.LastAt.Format(time.RFC3339))
+	}
+	return line, strings.Join(details, "\n")
 }
 
 func boardCardOriginDetail(origin string, actor string) string {

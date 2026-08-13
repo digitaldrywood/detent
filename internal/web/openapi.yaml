@@ -215,10 +215,44 @@ paths:
         - in: query
           name: schema
           description: Requested response schema version. Omit to use the current version.
-          schema: {type: integer, enum: [2]}
+          schema: {type: integer, enum: [3]}
       responses:
         "200":
           description: Versioned issue explanation, possibly containing degraded or last-known evidence.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IssueExplanation"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: acknowledgeIssueParks
+      summary: Acknowledge an issue's current park sequence
+      description: Records the current cumulative park position and returns the versioned issue explanation model.
+      tags: [projects, telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/issues/explanation
+      parameters:
+        - in: query
+          name: reference
+          required: true
+          description: Issue ID, canonical identifier, issue URL, bare number, or hash-prefixed number.
+          schema: {type: string, minLength: 1}
+        - in: query
+          name: schema
+          description: Requested response schema version. Omit to use the current version.
+          schema: {type: integer, enum: [3]}
+      responses:
+        "200":
+          description: Issue explanation with the acknowledged park sequence updated.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/IssueExplanation"}
@@ -932,10 +966,10 @@ components:
             message: {type: string}
     IssueExplanation:
       type: object
-      description: Version 2 issue state assembled from tracker, runtime, session, pull-request, gate, and provenance trust evidence.
-      required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, sources, evidence]
+      description: Version 3 issue state assembled from tracker, runtime, session, pull-request, gate, provenance trust, and cumulative park evidence.
+      required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, park_summary, sources, evidence]
       properties:
-        schema: {type: integer, enum: [2]}
+        schema: {type: integer, enum: [3]}
         found: {type: boolean}
         observed_at: {type: string, format: date-time}
         identity: {$ref: "#/components/schemas/IssueExplanationIdentity"}
@@ -946,12 +980,41 @@ components:
         sessions: {$ref: "#/components/schemas/GenericObject"}
         pull_request: {$ref: "#/components/schemas/GenericObject"}
         required_gate: {$ref: "#/components/schemas/GenericObject"}
+        park_summary: {$ref: "#/components/schemas/IssueParkSummary"}
         sources:
           type: array
           items: {$ref: "#/components/schemas/IssueExplanationSource"}
         evidence:
           type: array
           items: {$ref: "#/components/schemas/IssueExplanationEvidence"}
+    IssueParkSummary:
+      type: object
+      required: [attempt_count, park_count, acknowledged_park_sequence, causes, tokens]
+      properties:
+        attempt_count: {type: integer, format: int64}
+        park_count: {type: integer, format: int64}
+        acknowledged_park_sequence: {type: integer, format: int64}
+        acknowledged_at: {type: string, format: date-time}
+        causes:
+          type: array
+          items: {$ref: "#/components/schemas/IssueParkCauseSummary"}
+        tokens: {$ref: "#/components/schemas/IssueParkTokenTotals"}
+    IssueParkCauseSummary:
+      type: object
+      required: [cause, count, first_at, last_at]
+      properties:
+        cause: {type: string}
+        count: {type: integer, format: int64}
+        first_at: {type: string, format: date-time}
+        last_at: {type: string, format: date-time}
+    IssueParkTokenTotals:
+      type: object
+      required: [input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens]
+      properties:
+        input_tokens: {type: integer, format: int64}
+        cached_input_tokens: {type: integer, format: int64}
+        output_tokens: {type: integer, format: int64}
+        reasoning_output_tokens: {type: integer, format: int64}
     IssueExplanationIdentity:
       type: object
       required: [project_id]

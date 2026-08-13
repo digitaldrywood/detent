@@ -43,7 +43,7 @@ func TestSkillDocumentContract(t *testing.T) {
 	if Version != 2 {
 		t.Fatalf("Version = %d, update the version stamp contract", Version)
 	}
-	if !strings.Contains(body, "Expected response schema: 2") || explain.SchemaVersion != 2 {
+	if !strings.Contains(body, "Expected response schema: 3") || explain.SchemaVersion != 3 {
 		t.Fatalf("response schema stamp does not match explain.SchemaVersion = %d", explain.SchemaVersion)
 	}
 

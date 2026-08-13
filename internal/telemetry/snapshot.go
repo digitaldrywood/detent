@@ -489,6 +489,34 @@ type Issue struct {
 	CurrentLaneEnteredAt  *time.Time             `json:"current_lane_entered_at,omitempty"`
 	CurrentLaneAgeSeconds int64                  `json:"current_lane_age_seconds,omitempty"`
 	RuntimeIdentity       agentidentity.Identity `json:"runtime_identity,omitzero"`
+	ParkSummary           ParkSummary            `json:"park_summary,omitzero"`
+}
+
+type ParkSummary struct {
+	AttemptCount             int64              `json:"attempt_count"`
+	ParkCount                int64              `json:"park_count"`
+	AcknowledgedParkSequence int64              `json:"acknowledged_park_sequence,omitempty"`
+	AcknowledgedAt           *time.Time         `json:"acknowledged_at,omitempty"`
+	Causes                   []ParkCauseSummary `json:"causes,omitempty"`
+	Tokens                   ParkTokenTotals    `json:"tokens"`
+}
+
+func (s ParkSummary) IsZero() bool {
+	return s.AttemptCount == 0 && s.ParkCount == 0 && s.AcknowledgedParkSequence == 0 && s.AcknowledgedAt == nil && len(s.Causes) == 0 && s.Tokens == (ParkTokenTotals{})
+}
+
+type ParkCauseSummary struct {
+	Cause   string    `json:"cause"`
+	Count   int64     `json:"count"`
+	FirstAt time.Time `json:"first_at"`
+	LastAt  time.Time `json:"last_at"`
+}
+
+type ParkTokenTotals struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 }
 
 type IssueComment struct {

@@ -222,6 +222,16 @@ type HealthNotificationState struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type IssueParkAcknowledgement struct {
+	ProjectID      string         `json:"project_id"`
+	IssueKey       string         `json:"issue_key"`
+	IssueID        sql.NullString `json:"issue_id"`
+	Identifier     sql.NullString `json:"identifier"`
+	IssueURL       sql.NullString `json:"issue_url"`
+	ParkSequence   int64          `json:"park_sequence"`
+	AcknowledgedAt string         `json:"acknowledged_at"`
+}
+
 type MergeRequiredCheckStreak struct {
 	ProjectID                 string `json:"project_id"`
 	IssueID                   string `json:"issue_id"`

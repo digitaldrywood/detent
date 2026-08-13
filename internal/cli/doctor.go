@@ -72,6 +72,7 @@ type doctorCheck struct {
 	UntrackedIssues            []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues         []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
 	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
+	ParkReviews                []doctorParkReviewDiagnostic               `json:"park_reviews,omitempty"`
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
