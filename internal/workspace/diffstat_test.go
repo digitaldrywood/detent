@@ -214,6 +214,9 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	if got.UnpushedCommits != 1 || got.DiffStat.Files != 1 || got.DiffStat.Added != 1 {
 		t.Fatalf("RecoveryState() = %+v, want one unpushed commit and one dirty file", got)
 	}
+	if want := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got.HeadSHA != want {
+		t.Fatalf("RecoveryState().HeadSHA = %q, want %q", got.HeadSHA, want)
+	}
 	runGit(t, info.Path, "push", "-u", "origin", "HEAD:"+info.Branch)
 	pushed, err := provider.RecoveryState(context.Background(), info, issue)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -377,6 +378,251 @@ func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
 	if strings.Contains(raw, `"resumable":true`) {
 		t.Fatalf("metadata retains ambiguous resumable field: %s", raw)
 	}
+}
+
+func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
+	t.Parallel()
+
+	baseSnapshot := runpkg.BlockedRecoverySnapshot{
+		HeadSHA:          "ready-head",
+		WorkspacePresent: true,
+		WorkspaceStatus:  "present",
+		Health:           "ready",
+	}
+	tests := []struct {
+		name         string
+		cause        string
+		owner        string
+		mutateIssue  func(*connector.Issue)
+		mutateConfig func(*Config)
+		mutateState  func(*State, connector.Issue)
+		snapshot     runpkg.BlockedRecoverySnapshot
+		repetitions  int
+		wantMerging  bool
+	}{
+		{name: "recoverable stranded work with ready pull request", cause: strandedUnpushedWorkReason, owner: blockedRecoveryOwnerOrchestrator, snapshot: baseSnapshot, wantMerging: true},
+		{name: "deliverable recovery with ready pull request", cause: deliverableRecoveryNeedsHumanReason + ": pushed branch ready has no recoverable pull request", owner: blockedRecoveryOwnerHuman, snapshot: baseSnapshot, wantMerging: true},
+		{
+			name:  "operator stop",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateState: func(state *State, issue connector.Issue) {
+				blocked := state.Blocked[issue.ID]
+				blocked.Source = BlockedSourceOperatorStop
+				state.Blocked[issue.ID] = blocked
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "human action",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.WorkpadSignal.Status = workpad.StatusBlocked
+				issue.WorkpadSignal.HumanAction = "provide production credentials"
+			},
+			snapshot: baseSnapshot,
+		},
+		{name: "human-only cause", cause: "credentials_missing", owner: blockedRecoveryOwnerHuman, snapshot: baseSnapshot},
+		{
+			name:  "draft pull request",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.Draft = true
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "failing pull request",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.CIStatus = "failure"
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "head mismatched pull request",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			snapshot: runpkg.BlockedRecoverySnapshot{
+				HeadSHA:          "workspace-head",
+				WorkspacePresent: true,
+				WorkspaceStatus:  "present",
+				Health:           "ready",
+			},
+		},
+		{
+			name:  "dirty workspace",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			snapshot: runpkg.BlockedRecoverySnapshot{
+				HeadSHA:          "ready-head",
+				WorkspacePresent: true,
+				WorkspaceFiles:   1,
+				WorkspaceStatus:  "present",
+				Health:           "ready",
+			},
+		},
+		{
+			name:  "hydration unavailable",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRESTBudgetReserved
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "dependency not ready",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.BlockedBy = []connector.BlockedRef{{ID: "blocker", Identifier: "digitaldrywood/detent#1700", State: "In Progress", Source: connector.BlockedRefSourceNative}}
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "approval revoked",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateConfig: func(cfg *Config) {
+				cfg.AutoPromote.Gate.Kind = gate.KindHumanReview
+				cfg.AutoPromote.Gate.ApprovalLabel = "human-approved"
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "ci trigger revoked",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.Labels = []string{}
+			},
+			mutateConfig: func(cfg *Config) {
+				cfg.AutoPromote.Gate.CITriggerLabel = "run-ci"
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "auto promote disabled",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateConfig: func(cfg *Config) {
+				cfg.AutoPromote.Enabled = false
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "merge fast path disabled",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateConfig: func(cfg *Config) {
+				cfg.MergeFastPathEnabled = false
+			},
+			snapshot: baseSnapshot,
+		},
+		{
+			name:  "merging lane inactive",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateConfig: func(cfg *Config) {
+				cfg.ActiveStates = []string{"Todo", "In Progress", "Rework"}
+			},
+			snapshot: baseSnapshot,
+		},
+		{name: "repeated reconciliation is idempotent", cause: strandedUnpushedWorkReason, owner: blockedRecoveryOwnerOrchestrator, snapshot: baseSnapshot, repetitions: 2, wantMerging: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := blockedReadyPullRequestIssue()
+			if tt.mutateIssue != nil {
+				tt.mutateIssue(&issue)
+			}
+			tracker := &dependencyAutoUnblockConnector{}
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:  1,
+				ActiveStates:         []string{"Todo", "In Progress", "Rework", autoPromoteMergingState},
+				TerminalStates:       []string{"Done", "Cancelled"},
+				MergeFastPathEnabled: true,
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true,
+					Gate:    gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff},
+				},
+			})
+			if tt.mutateConfig != nil {
+				tt.mutateConfig(&cfg)
+				cfg = normalizeConfig(cfg)
+			}
+			orch := &Orchestrator{
+				cfg:               cfg,
+				connector:         tracker,
+				logger:            slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+				recoveryInspector: staticBlockedRecoveryInspector{snapshot: tt.snapshot},
+			}
+			state := newState(cfg)
+			parkedAt := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     issue,
+				Reason:    tt.cause,
+				BlockedAt: parkedAt,
+				Source:    BlockedSourceProjectStatus,
+				Recovery: &workflowLaneBlockedRecoveryMetadata{
+					Owner:       tt.owner,
+					Cause:       tt.cause,
+					Predicate:   blockedRecoveryPredicateOncePerFingerprint,
+					TargetState: autoPromoteReworkState,
+					RunMode:     RunModeImplement,
+				},
+			}
+			if tt.mutateState != nil {
+				tt.mutateState(&state, issue)
+			}
+
+			repetitions := max(1, tt.repetitions)
+			for range repetitions {
+				orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+			}
+
+			if tt.wantMerging {
+				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: autoPromoteMergingState}) {
+					t.Fatalf("updates = %#v, want one Merging transition", tracker.updates)
+				}
+				if _, ok := state.Blocked[issue.ID]; ok {
+					t.Fatalf("Blocked[%q] present after reconciliation", issue.ID)
+				}
+				return
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want none", tracker.updates)
+			}
+		})
+	}
+}
+
+func blockedReadyPullRequestIssue() connector.Issue {
+	prNumber := 1776
+	issue := dependencyAutoUnblockIssue("issue-ready-pr", blockedStatusState)
+	issue.PRNumber = &prNumber
+	issue.PRRepository = "digitaldrywood/detent"
+	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusComplete}
+	issue.PullRequest = &connector.PullRequest{
+		Number:          prNumber,
+		URL:             "https://github.com/digitaldrywood/detent/pull/1776",
+		State:           "OPEN",
+		MergeableState:  "clean",
+		HeadSHA:         "ready-head",
+		BaseSHA:         "ready-base",
+		DiffFingerprint: "ready-diff",
+		CIStatus:        "success",
+		CheckRunCount:   1,
+	}
+	return issue
 }
 
 func blockedCauseTestOrchestrator(tracker *dependencyAutoUnblockConnector) *Orchestrator {

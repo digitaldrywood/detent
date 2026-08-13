@@ -115,6 +115,7 @@ func newSessionProgressTicker(interval time.Duration) sessionProgressTicker {
 
 type sessionProgressSnapshot struct {
 	DiffStats            DiffStats
+	HeadSHA              string
 	WorkspaceFingerprint string
 	WorkpadFingerprint   string
 	UnpushedCommits      int
@@ -390,6 +391,7 @@ func (c *sessionBrakeController) resultDiffStats() DiffStats {
 	defer c.mu.Unlock()
 	result := c.current.DiffStats
 	result.UnpushedCommits = c.current.UnpushedCommits
+	result.HeadSHA = strings.TrimSpace(c.current.HeadSHA)
 	return result
 }
 
@@ -457,6 +459,7 @@ func (r *Runner) sessionProgressSnapshot(
 			workspaceErr = err
 		} else {
 			snapshot.DiffStats = diffStatsFromWorkspace(recovery.DiffStat)
+			snapshot.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
 			snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)
 			snapshot.UnpushedCommits = recovery.UnpushedCommits
 		}

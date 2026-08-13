@@ -73,6 +73,7 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	return RecoveryState{
 		DiffStat:             stat,
 		BaseFingerprint:      gitRecoveryBaseFingerprint(ctx, normalized.Path, issue.BaseRef),
+		HeadSHA:              strings.TrimSpace(head),
 		WorkspaceFingerprint: workspaceRecoveryFingerprint(strings.TrimSpace(head), stat.Fingerprint),
 		UnpushedCommits:      unpushedCommits,
 	}, nil

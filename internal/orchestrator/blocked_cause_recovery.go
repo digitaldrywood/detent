@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -24,12 +25,14 @@ const (
 	blockedRecoveryPredicateOncePerFingerprint = "once_per_fingerprint"
 	blockedRecoveryPredicateManaged            = "managed"
 	workflowActionCauseBlockedRecovery         = "cause_blocked_recovery"
+	workflowActionBlockedReadyPRReconciliation = "blocked_ready_pr_reconciliation"
 )
 
 type blockedCauseSignals struct {
 	ConfigFingerprint    string            `json:"config_fingerprint,omitempty"`
 	ToolingFingerprint   string            `json:"tooling_fingerprint,omitempty"`
 	BaseFingerprint      string            `json:"base_fingerprint,omitempty"`
+	WorkspaceHeadSHA     string            `json:"workspace_head_sha,omitempty"`
 	WorkspaceFingerprint string            `json:"workspace_fingerprint,omitempty"`
 	WorkspaceStatus      string            `json:"workspace_status,omitempty"`
 	WorkspacePresent     bool              `json:"workspace_present,omitempty"`
@@ -111,6 +114,7 @@ func (o *Orchestrator) blockedCauseSignals(
 		ConfigFingerprint:    strings.TrimSpace(snapshot.ConfigFingerprint),
 		ToolingFingerprint:   strings.TrimSpace(snapshot.ToolingFingerprint),
 		BaseFingerprint:      strings.TrimSpace(snapshot.BaseFingerprint),
+		WorkspaceHeadSHA:     strings.TrimSpace(snapshot.HeadSHA),
 		WorkspaceFingerprint: strings.TrimSpace(snapshot.WorkspaceFingerprint),
 		WorkspaceStatus:      strings.TrimSpace(snapshot.WorkspaceStatus),
 		WorkspacePresent:     snapshot.WorkspacePresent,
@@ -258,6 +262,13 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		}
 		return false
 	}
+	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
+		return transitioned
+	}
+	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_recovery", &park, park.CauseFingerprint)
+		return false
+	}
 	if park.Predicate == blockedRecoveryPredicateManaged {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false
@@ -292,6 +303,133 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
+}
+
+func (o *Orchestrator) reconcileBlockedReadyPullRequest(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park workflowLaneBlockedRecoveryMetadata,
+	now time.Time,
+) (bool, bool) {
+	if !blockedReadyPullRequestRecoverableCause(park) || !implementProgressLinkedPullRequest(issue) {
+		return false, false
+	}
+	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+	if reason := o.blockedReadyPullRequestDeferredReason(ctx, state, issue, signals, now); reason != "" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(signals))
+		return true, false
+	}
+	signature := blockedReadyPullRequestSignature(issue, park)
+	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionBlockedReadyPRReconciliation, signature); consumed {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "ready_pr_reconciliation_already_consumed", &park, signature)
+		return true, false
+	}
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedReadyPRReconciliation, signature)
+	if err := o.updateIssueStateByIDStrictWithMetadata(
+		ctx,
+		state,
+		issue.ID,
+		issue,
+		autoPromoteMergingState,
+		now,
+		workflowActionBlockedReadyPRReconciliation,
+		metadata,
+	); err != nil {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "ready_pr_reconciliation_transition_failed", &park, signature)
+		if o.logger != nil {
+			o.logger.Warn("blocked ready pull request reconciliation failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return true, false
+	}
+	if o.connector != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, blockedReadyPullRequestComment(issue, park)); err != nil && o.logger != nil {
+			o.logger.Warn("blocked ready pull request reconciliation comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	delete(state.Blocked, issue.ID)
+	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+	promoted := promotedIssue(issue, autoPromoteMergingState, now)
+	o.recordMergeQueueEntered(state, promoted, now, workflowActionBlockedReadyPRReconciliation)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   workflowActionBlockedReadyPRReconciliation,
+		Message: "reconciled " + issueLabel(issue) + " from Blocked to Merging with its ready pull request",
+	})
+	return true, true
+}
+
+func blockedReadyPullRequestRecoverableCause(park workflowLaneBlockedRecoveryMetadata) bool {
+	cause := strings.TrimSpace(park.Cause)
+	owner := strings.TrimSpace(park.Owner)
+	if cause == deliverableRecoveryNeedsHumanReason || strings.HasPrefix(cause, deliverableRecoveryNeedsHumanReason+":") {
+		return owner != blockedRecoveryOwnerOperator
+	}
+	if owner != blockedRecoveryOwnerOrchestrator || strings.TrimSpace(park.RunMode) != RunModeImplement {
+		return false
+	}
+	return cause == strandedUnpushedWorkReason || cause == noProgressLimitReason
+}
+
+func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	signals blockedCauseSignals,
+	now time.Time,
+) string {
+	if !o.cfg.MergeFastPathEnabled {
+		return "merge_fast_path_disabled"
+	}
+	if !stateIn(autoPromoteMergingState, o.cfg.ActiveStates) {
+		return "merging_lane_inactive"
+	}
+	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if !autoPromoteCfg.Enabled {
+		return "auto_promote_disabled"
+	}
+	pullRequest := issue.PullRequest
+	if pullRequest == nil || pullRequestHydrationBlocksProgress(pullRequest) ||
+		strings.TrimSpace(pullRequest.HeadSHA) == "" || strings.TrimSpace(pullRequest.BaseSHA) == "" {
+		return "pull_request_hydration_unavailable"
+	}
+	if !signals.WorkspacePresent || strings.TrimSpace(signals.WorkspaceStatus) != "present" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
+		return "workspace_head_unavailable"
+	}
+	if signals.WorkspaceFiles > 0 {
+		return "workspace_diff_present"
+	}
+	if strings.TrimSpace(signals.WorkspaceHeadSHA) != strings.TrimSpace(pullRequest.HeadSHA) {
+		return "workspace_pull_request_head_mismatch"
+	}
+	if !mergeWorkerProgrammaticMergeReady(issue) || !reworkBreakerCIGreen(pullRequest) || len(pullRequest.StaleSuccessfulChecks) > 0 {
+		return "pull_request_not_merge_ready"
+	}
+	if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
+		return "merge_dispatch_revoked"
+	}
+	if !o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
+		return "pull_request_gate_not_ready"
+	}
+	return ""
+}
+
+func blockedReadyPullRequestSignature(issue connector.Issue, park workflowLaneBlockedRecoveryMetadata) string {
+	return fmt.Sprintf(
+		"cause=%s;pr=%d;head=%s",
+		blockedCauseHash(strings.TrimSpace(park.Cause)),
+		pullRequestNumber(issue),
+		strings.TrimSpace(issue.PullRequest.HeadSHA),
+	)
+}
+
+func blockedReadyPullRequestComment(issue connector.Issue, park workflowLaneBlockedRecoveryMetadata) string {
+	return fmt.Sprintf(
+		"Reconciled this issue from Blocked to Merging after its Detent-owned recovery cause cleared and the linked pull request met the current merge gate.\n\n- cause: %s\n- pull request: %s\n- head_sha: %s",
+		strings.TrimSpace(park.Cause),
+		strings.TrimSpace(issue.PullRequest.URL),
+		strings.TrimSpace(issue.PullRequest.HeadSHA),
+	)
 }
 
 func (o *Orchestrator) blockedCauseHoldReason(

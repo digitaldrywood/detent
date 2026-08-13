@@ -62,6 +62,25 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		if got := implementProgressDiffStatsClean(diffStats); got != wantClean {
 			t.Fatalf("implementProgressDiffStatsClean(%#v) = %t, want %t", diffStats, got, wantClean)
 		}
+		unpushed := diffStats
+		unpushed.UnpushedCommits = 1
+		unpushed.HeadSHA = leftHead
+		gotStranded, gotDeferred := implementProgressUnpushedClassification(unpushed, &connector.PullRequest{HeadSHA: rightHead})
+		wantStranded := false
+		wantDeferred := ""
+		switch {
+		case !implementProgressDiffStatsClean(unpushed):
+			wantStranded = true
+		case strings.TrimSpace(leftHead) == "":
+			wantDeferred = workspaceHeadUnavailableReason
+		case strings.TrimSpace(rightHead) == "":
+			wantDeferred = pullRequestHeadUnavailableReason
+		case strings.TrimSpace(leftHead) != strings.TrimSpace(rightHead):
+			wantStranded = true
+		}
+		if gotStranded != wantStranded || gotDeferred != wantDeferred {
+			t.Fatalf("implementProgressUnpushedClassification(%#v) = %t, %q, want %t, %q", unpushed, gotStranded, gotDeferred, wantStranded, wantDeferred)
+		}
 
 		leftSignature := autoPromoteReworkSignature{PRNumber: leftNumber, HeadSHA: leftHead, FailedChecks: strings.Split(leftChecks, ",")}
 		rightSignature := autoPromoteReworkSignature{PRNumber: rightNumber, HeadSHA: rightHead, FailedChecks: strings.Split(rightChecks, ",")}
