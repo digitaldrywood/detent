@@ -53,6 +53,7 @@ type localTransport struct {
 	readStopOnce   sync.Once
 	closeOnce      sync.Once
 	closeErr       error
+	readDrainErr   error
 }
 
 type transportResult struct {
@@ -361,6 +362,9 @@ func (t *localTransport) readLoop() {
 			if !t.readingStopped() {
 				t.publishReceived(transportResult{err: err})
 			}
+			if !errors.Is(err, io.EOF) {
+				t.readDrainErr = t.codec.drain()
+			}
 			return
 		}
 
@@ -382,6 +386,9 @@ func (t *localTransport) wait() {
 		err = errors.Join(err, cleanupErr)
 	}
 	<-t.readDone
+	if t.readDrainErr != nil {
+		err = errors.Join(err, t.readDrainErr)
+	}
 	if stderrErr := <-t.stderrDone; stderrErr != nil {
 		err = errors.Join(err, fmt.Errorf("read codex stderr: %w", stderrErr))
 	}

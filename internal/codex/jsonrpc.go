@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,8 +12,9 @@ import (
 )
 
 const (
-	JSONRPCVersion   = "2.0"
-	MaxScanTokenSize = 2 * 1024 * 1024
+	JSONRPCVersion          = "2.0"
+	maxFrameDiagnosticBytes = 2 * 1024
+	maxFrameIdentityBytes   = 256
 )
 
 var ErrInvalidFrame = errors.New("invalid json-rpc frame")
@@ -33,7 +35,7 @@ type RPCError struct {
 }
 
 type Codec struct {
-	scanner *bufio.Scanner
+	reader  *bufio.Reader
 	writer  *bufio.Writer
 	writeMu sync.Mutex
 }
@@ -46,37 +48,73 @@ func NewCodec(r io.Reader, w io.Writer) *Codec {
 		w = io.Discard
 	}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), MaxScanTokenSize)
-
 	return &Codec{
-		scanner: scanner,
-		writer:  bufio.NewWriter(w),
+		reader: bufio.NewReaderSize(r, 64*1024),
+		writer: bufio.NewWriter(w),
 	}
 }
 
 func (c *Codec) ReadMessage() (Message, error) {
-	if !c.scanner.Scan() {
-		if err := c.scanner.Err(); err != nil {
-			return Message{}, fmt.Errorf("%w: scan: %w", ErrInvalidFrame, err)
-		}
+	frame, err := c.reader.ReadBytes('\n')
+	if len(frame) == 0 && errors.Is(err, io.EOF) {
 		return Message{}, io.EOF
 	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Message{}, fmt.Errorf("%w: read: %w", ErrInvalidFrame, err)
+	}
 
-	line := strings.TrimSpace(string(c.scanner.Bytes()))
-	if line == "" {
+	line := bytes.TrimSpace(frame)
+	if len(line) == 0 {
 		return Message{}, fmt.Errorf("%w: empty frame", ErrInvalidFrame)
 	}
 
 	var msg Message
-	if err := json.Unmarshal([]byte(line), &msg); err != nil {
-		return Message{}, fmt.Errorf("%w: decode: %w: frame %s", ErrInvalidFrame, err, line)
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return Message{}, fmt.Errorf("%w: decode: %w: %s", ErrInvalidFrame, err, frameDiagnostic(line, msg))
 	}
 	if err := validateMessage(msg); err != nil {
-		return Message{}, fmt.Errorf("%w: frame %s", err, line)
+		return Message{}, fmt.Errorf("%w: %s", err, frameDiagnostic(line, msg))
 	}
 
 	return msg, nil
+}
+
+func (c *Codec) drain() error {
+	if _, err := io.Copy(io.Discard, c.reader); err != nil {
+		return fmt.Errorf("drain json-rpc stream: %w", err)
+	}
+	return nil
+}
+
+func frameDiagnostic(frame []byte, msg Message) string {
+	details := []string{fmt.Sprintf("frame_bytes=%d", len(frame))}
+	if method := strings.TrimSpace(msg.Method); method != "" {
+		excerpt, truncated := diagnosticExcerpt([]byte(method), maxFrameIdentityBytes)
+		details = append(details, fmt.Sprintf("method=%q", excerpt))
+		if truncated {
+			details = append(details, "method_truncated=true")
+		}
+	}
+	if id := bytes.TrimSpace(msg.ID); len(id) > 0 {
+		excerpt, truncated := diagnosticExcerpt(id, maxFrameIdentityBytes)
+		details = append(details, fmt.Sprintf("id=%s", excerpt))
+		if truncated {
+			details = append(details, "id_truncated=true")
+		}
+	}
+	excerpt, truncated := diagnosticExcerpt(frame, maxFrameDiagnosticBytes)
+	details = append(details, fmt.Sprintf("frame_excerpt=%q", excerpt))
+	if truncated {
+		details = append(details, "frame_truncated=true")
+	}
+	return strings.Join(details, " ")
+}
+
+func diagnosticExcerpt(value []byte, limit int) ([]byte, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+	return value[:limit], true
 }
 
 func (c *Codec) WriteMessage(msg Message) error {

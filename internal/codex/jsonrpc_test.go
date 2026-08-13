@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 )
+
+const legacyScannerLimit = 2 * 1024 * 1024
+const frameDiagnosticTestLimit = 4 * 1024
 
 func TestCodecWriteMessageFramesJSONLine(t *testing.T) {
 	t.Parallel()
@@ -160,30 +164,84 @@ func TestCodecReadMessageReturnsEOF(t *testing.T) {
 	}
 }
 
+func TestCodecReadMessageBoundsInvalidFrameDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	largeText := strings.Repeat("x", 16*frameDiagnosticTestLimit)
+	tests := []struct {
+		name string
+		line string
+		want []string
+	}{
+		{
+			name: "invalid json",
+			line: `{"jsonrpc":"2.0","method":"broken","params":{"text":"` + largeText + `"` + "\n",
+		},
+		{
+			name: "invalid message shape",
+			line: `{"jsonrpc":"2.0","id":"request-17","method":"mixed","result":"` + largeText + `"}` + "\n",
+			want: []string{`method="mixed"`, `id="request-17"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			codec := NewCodec(strings.NewReader(tt.line), io.Discard)
+			_, err := codec.ReadMessage()
+			if !errors.Is(err, ErrInvalidFrame) {
+				t.Fatalf("ReadMessage() error = %v, want ErrInvalidFrame", err)
+			}
+			for _, want := range append([]string{
+				fmt.Sprintf("frame_bytes=%d", len(strings.TrimSpace(tt.line))),
+				"frame_truncated=true",
+			}, tt.want...) {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("ReadMessage() error = %v, want containing %q", err, want)
+				}
+			}
+			if len(err.Error()) > frameDiagnosticTestLimit+1024 {
+				t.Fatalf("ReadMessage() error length = %d, want at most %d", len(err.Error()), frameDiagnosticTestLimit+1024)
+			}
+		})
+	}
+}
+
 func TestCodecReadsLargeFrame(t *testing.T) {
 	t.Parallel()
 
-	if MaxScanTokenSize < 1024*1024 {
-		t.Fatalf("MaxScanTokenSize = %d, want at least 1 MiB", MaxScanTokenSize)
+	tests := []struct {
+		name string
+		size int
+	}{
+		{name: "below scanner ceiling", size: 1024 * 1024},
+		{name: "above scanner ceiling", size: 2 * legacyScannerLimit},
 	}
 
-	wantText := strings.Repeat("x", 1024*1024)
-	frame := `{"jsonrpc":"2.0","method":"item/agentMessage","params":{"text":"` + wantText + `"}}` + "\n"
-	codec := NewCodec(strings.NewReader(frame), io.Discard)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	got, err := codec.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage() error = %v", err)
-	}
+			wantText := strings.Repeat("x", tt.size)
+			frame := `{"jsonrpc":"2.0","method":"item/agentMessage","params":{"text":"` + wantText + `"}}` + "\n"
+			codec := NewCodec(strings.NewReader(frame), io.Discard)
 
-	var params struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(got.Params, &params); err != nil {
-		t.Fatalf("unmarshal params: %v", err)
-	}
-	if params.Text != wantText {
-		t.Fatalf("params text length = %d, want %d", len(params.Text), len(wantText))
+			got, err := codec.ReadMessage()
+			if err != nil {
+				t.Fatalf("ReadMessage() error = %v", err)
+			}
+
+			var params struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			if params.Text != wantText {
+				t.Fatalf("params text length = %d, want %d", len(params.Text), len(wantText))
+			}
+		})
 	}
 }
 
