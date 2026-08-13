@@ -1488,6 +1488,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if mode == RunModeImplement {
 		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
 			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
+			result.DiffStats.HeadSHA = strings.TrimSpace(recoveryState.HeadSHA)
 		}
 	}
 	finishedAt := r.now().UTC()

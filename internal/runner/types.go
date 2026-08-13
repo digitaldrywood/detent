@@ -147,6 +147,7 @@ type BlockedRecoverySnapshot struct {
 	ConfigFingerprint    string
 	ToolingFingerprint   string
 	BaseFingerprint      string
+	HeadSHA              string
 	WorkspaceFingerprint string
 	WorkspaceStatus      string
 	WorkspacePresent     bool
@@ -566,6 +567,7 @@ type DiffStats struct {
 	AddedLines      int
 	RemovedLines    int
 	UnpushedCommits int
+	HeadSHA         string
 	Fingerprint     string
 	Status          string
 }

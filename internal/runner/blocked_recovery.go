@@ -47,6 +47,7 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 	}
 	snapshot.WorkspacePresent = true
 	snapshot.BaseFingerprint = strings.TrimSpace(recovery.BaseFingerprint)
+	snapshot.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
 	snapshot.WorkspaceFiles = recovery.DiffStat.Files
 	snapshot.UnpushedCommits = recovery.UnpushedCommits
 	snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)

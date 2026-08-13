@@ -24,6 +24,9 @@ const (
 	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
 	workpadBlockedUnactionedLimit      = 2
+	workspaceHeadUnavailableReason     = "workspace_head_unavailable_for_unpushed_check"
+	pullRequestHeadUnavailableReason   = "pull_request_head_unavailable_for_unpushed_check"
+	unpushedRemoteTruthUnavailable     = "unpushed_remote_truth_unavailable_without_pull_request"
 )
 
 type implementCompletionProgressDecision struct {
@@ -90,6 +93,7 @@ type implementProgressDiffStats struct {
 	AddedLines      int    `json:"added_lines"`
 	RemovedLines    int    `json:"removed_lines"`
 	UnpushedCommits int    `json:"unpushed_commits,omitempty"`
+	HeadSHA         string `json:"head_sha,omitempty"`
 	Fingerprint     string `json:"fingerprint,omitempty"`
 	Status          string `json:"status,omitempty"`
 }
@@ -174,7 +178,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				return decision
 			}
 		}
-		if running.DiffStats.UnpushedCommits > 0 {
+		if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
+			decision.Reason = deferReason
+			return decision
+		} else if stranded {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = strandedUnpushedWorkReason
 			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
@@ -281,7 +288,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		decision.PreviousSignatureFound = true
 		decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
 	}
-	if running.DiffStats.UnpushedCommits > 0 {
+	if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, issue.PullRequest); deferReason != "" {
+		decision.Reason = deferReason
+		return decision
+	} else if stranded {
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = strandedUnpushedWorkReason
 		decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, signature)
@@ -595,6 +605,7 @@ func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgr
 		AddedLines:      diffStats.AddedLines,
 		RemovedLines:    diffStats.RemovedLines,
 		UnpushedCommits: diffStats.UnpushedCommits,
+		HeadSHA:         strings.TrimSpace(diffStats.HeadSHA),
 		Fingerprint:     strings.TrimSpace(diffStats.Fingerprint),
 		Status:          strings.TrimSpace(diffStats.Status),
 	}
@@ -615,6 +626,30 @@ func implementProgressDiffStatsClean(diffStats DiffStats) bool {
 		diffStats.FilesChanged == 0 &&
 		diffStats.AddedLines == 0 &&
 		diffStats.RemovedLines == 0
+}
+
+func implementProgressUnpushedClassification(diffStats DiffStats, pullRequest *connector.PullRequest) (bool, string) {
+	if diffStats.UnpushedCommits <= 0 {
+		return false, ""
+	}
+	if !implementProgressDiffStatsClean(diffStats) {
+		return true, ""
+	}
+	if pullRequest == nil {
+		return false, unpushedRemoteTruthUnavailable
+	}
+	workspaceHead := strings.TrimSpace(diffStats.HeadSHA)
+	if workspaceHead == "" {
+		return false, workspaceHeadUnavailableReason
+	}
+	pullRequestHead := strings.TrimSpace(pullRequest.HeadSHA)
+	if pullRequestHead == "" {
+		return false, pullRequestHeadUnavailableReason
+	}
+	if workspaceHead == pullRequestHead {
+		return false, ""
+	}
+	return true, ""
 }
 
 func implementProgressLinkedPullRequest(issue connector.Issue) bool {

@@ -55,8 +55,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
 		recoveryStates: []workspace.RecoveryState{
-			{UnpushedCommits: 1, DiffStat: workspace.DiffStat{Files: 1, Added: 2}},
-			{DiffStat: workspace.DiffStat{Files: 2, Added: 5, Removed: 1}},
+			{UnpushedCommits: 1, HeadSHA: "initial-head", DiffStat: workspace.DiffStat{Files: 1, Added: 2}},
+			{HeadSHA: "final-head", DiffStat: workspace.DiffStat{Files: 2, Added: 5, Removed: 1}},
 		},
 	}
 	codexClient := &fakeCodexClient{
@@ -250,8 +250,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[3].DiffStats.FilesChanged != 2 || usageUpdates[3].DiffStats.AddedLines != 5 || usageUpdates[3].DiffStats.RemovedLines != 1 {
 		t.Fatalf("fourth usage update DiffStats = %#v, want refreshed diff", usageUpdates[3].DiffStats)
 	}
-	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.Fingerprint != "final-diff" {
-		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed, and final fingerprint", result.DiffStats)
+	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.HeadSHA != "final-head" || result.DiffStats.Fingerprint != "final-diff" {
+		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed, final head, and final fingerprint", result.DiffStats)
 	}
 	if result.RateLimits == nil || result.RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("RateLimits = %#v, want codex-primary", result.RateLimits)

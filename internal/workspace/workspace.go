@@ -70,6 +70,7 @@ type IssueRecoveryStateProvider interface {
 type RecoveryState struct {
 	DiffStat             DiffStat
 	BaseFingerprint      string
+	HeadSHA              string
 	WorkspaceFingerprint string
 	UnpushedCommits      int
 }
