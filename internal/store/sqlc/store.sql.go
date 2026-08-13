@@ -2552,6 +2552,35 @@ func (q *Queries) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, err
 	return items, nil
 }
 
+const listHealthNotificationStates = `-- name: ListHealthNotificationStates :many
+SELECT identity, state_json, updated_at
+FROM health_notification_states
+ORDER BY identity
+`
+
+func (q *Queries) ListHealthNotificationStates(ctx context.Context) ([]HealthNotificationState, error) {
+	rows, err := q.db.QueryContext(ctx, listHealthNotificationStates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HealthNotificationState{}
+	for rows.Next() {
+		var i HealthNotificationState
+		if err := rows.Scan(&i.Identity, &i.StateJson, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueActivityEvents = `-- name: ListIssueActivityEvents :many
 WITH issue_events AS (
   SELECT
@@ -4287,6 +4316,28 @@ func (q *Queries) UpsertFairShareUsage(ctx context.Context, arg UpsertFairShareU
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const upsertHealthNotificationState = `-- name: UpsertHealthNotificationState :exec
+INSERT INTO health_notification_states (
+  identity,
+  state_json,
+  updated_at
+) VALUES (?, ?, ?)
+ON CONFLICT(identity) DO UPDATE SET
+  state_json = excluded.state_json,
+  updated_at = excluded.updated_at
+`
+
+type UpsertHealthNotificationStateParams struct {
+	Identity  string `json:"identity"`
+	StateJson string `json:"state_json"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func (q *Queries) UpsertHealthNotificationState(ctx context.Context, arg UpsertHealthNotificationStateParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHealthNotificationState, arg.Identity, arg.StateJson, arg.UpdatedAt)
+	return err
 }
 
 const upsertProjectDispatchStatus = `-- name: UpsertProjectDispatchStatus :one

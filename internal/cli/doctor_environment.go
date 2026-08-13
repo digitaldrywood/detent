@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -814,18 +815,19 @@ type doctorHealthProbe struct {
 }
 
 type doctorHealthResponse struct {
-	Status            string                       `json:"status"`
-	Version           string                       `json:"version"`
-	Commit            string                       `json:"commit"`
-	Mode              string                       `json:"mode"`
-	Checks            map[string]string            `json:"checks"`
-	Environment       doctorHealthEnvironment      `json:"environment"`
-	Budgets           []doctorHealthBudget         `json:"budgets"`
-	Workflows         []doctorHealthWorkflow       `json:"workflows"`
-	StalenessWarnings []telemetry.StalenessWarning `json:"staleness_warnings"`
-	StrandedIssues    []telemetry.StrandedIssue    `json:"stranded_active_issues"`
-	Dispatch          telemetry.DispatchStatus     `json:"dispatch"`
-	DispatchStalls    []telemetry.DispatchStatus   `json:"dispatch_stalls"`
+	Status                     string                       `json:"status"`
+	Version                    string                       `json:"version"`
+	Commit                     string                       `json:"commit"`
+	Mode                       string                       `json:"mode"`
+	Checks                     map[string]string            `json:"checks"`
+	Environment                doctorHealthEnvironment      `json:"environment"`
+	Budgets                    []doctorHealthBudget         `json:"budgets"`
+	Workflows                  []doctorHealthWorkflow       `json:"workflows"`
+	StalenessWarnings          []telemetry.StalenessWarning `json:"staleness_warnings"`
+	StrandedIssues             []telemetry.StrandedIssue    `json:"stranded_active_issues"`
+	Dispatch                   telemetry.DispatchStatus     `json:"dispatch"`
+	DispatchStalls             []telemetry.DispatchStatus   `json:"dispatch_stalls"`
+	HealthNotificationFailures []healthnotify.Failure       `json:"health_notification_failures"`
 }
 
 func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDeps) []doctorCheck {

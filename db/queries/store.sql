@@ -962,6 +962,21 @@ SELECT *
 FROM project_dispatch_status
 WHERE project_id = ?;
 
+-- name: ListHealthNotificationStates :many
+SELECT *
+FROM health_notification_states
+ORDER BY identity;
+
+-- name: UpsertHealthNotificationState :exec
+INSERT INTO health_notification_states (
+  identity,
+  state_json,
+  updated_at
+) VALUES (?, ?, ?)
+ON CONFLICT(identity) DO UPDATE SET
+  state_json = excluded.state_json,
+  updated_at = excluded.updated_at;
+
 -- name: ListIssueActivityEvents :many
 WITH issue_events AS (
   SELECT

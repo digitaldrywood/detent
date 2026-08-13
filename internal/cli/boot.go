@@ -29,8 +29,10 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/notify"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -323,6 +325,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
+	healthNotifications, err := newHealthNotificationManager(cfg.Global, runtimeStore, logger)
+	if err != nil {
+		return err
+	}
 	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger, func(ctx context.Context) (func(), bool) {
 		return runtimeUpdateIdleReservation(ctx, manager.Registry(), globalDispatchGate)
 	})
@@ -366,6 +372,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	resourceWorkers.Go(func() {
 		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	})
+	if healthNotifications.Enabled() {
+		resourceWorkers.Go(func() {
+			healthNotifications.Run(runCtx, snapshotHub, manager.Registry().Health)
+		})
+	}
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
 	resourceWorkers.Go(func() {
 		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
@@ -390,18 +401,19 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
-		Hub:            snapshotHub,
-		Store:          runtimeStore,
-		Registry:       manager.Registry(),
-		Connector:      firstConnector(manager),
-		Refresher:      refresherForRegistry(manager.Registry()),
-		OperatorMoves:  registryRefresher{registry: manager.Registry()},
-		Recovery:       recoveryForRegistry(manager.Registry()),
-		RunStopper:     registryRefresher{registry: manager.Registry()},
-		UpdateApplier:  updateScheduler,
-		Activity:       activityBroker,
-		Chat:           chatProvider,
-		IssueExplainer: newIssueExplainer(snapshotHub, runtimeStore),
+		Hub:                 snapshotHub,
+		Store:               runtimeStore,
+		Registry:            manager.Registry(),
+		Connector:           firstConnector(manager),
+		Refresher:           refresherForRegistry(manager.Registry()),
+		OperatorMoves:       registryRefresher{registry: manager.Registry()},
+		Recovery:            recoveryForRegistry(manager.Registry()),
+		RunStopper:          registryRefresher{registry: manager.Registry()},
+		UpdateApplier:       updateScheduler,
+		Activity:            activityBroker,
+		Chat:                chatProvider,
+		IssueExplainer:      newIssueExplainer(snapshotHub, runtimeStore),
+		HealthNotifications: healthNotifications,
 	})
 	if err != nil {
 		return err
@@ -523,6 +535,41 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return serve(ctx, server, listener)
 		})
 	})
+}
+
+func newHealthNotificationManager(cfg globalconfig.Config, stateStore store.HealthNotificationStateStore, logger *slog.Logger) (*healthnotify.Manager, error) {
+	health := cfg.Notifications.Health
+	if strings.TrimSpace(health.Webhook.URL) == "" {
+		return healthnotify.NewManager(healthnotify.Config{}, healthnotify.Dependencies{})
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		if logger != nil {
+			logger.Warn("resolve health notification hostname failed", "error", err)
+		}
+		hostname = ""
+	}
+	instance := strings.TrimSpace(cfg.InstanceName)
+	if instance == "" {
+		instance = strings.TrimSpace(cfg.Global.Identity.Name)
+	}
+	if instance == "" {
+		instance = strings.TrimSpace(strings.SplitN(hostname, ".", 2)[0])
+	}
+	manager, err := healthnotify.NewManager(healthnotify.Config{
+		Webhook: notify.WebhookConfig{
+			URL:     health.Webhook.URL,
+			Headers: health.Webhook.Headers,
+			Timeout: health.Webhook.Timeout(),
+		},
+		Instance: instance,
+		Host:     hostname,
+		Debounce: health.Debounce(),
+	}, healthnotify.Dependencies{Store: stateStore, Logger: logger})
+	if err != nil {
+		return nil, fmt.Errorf("configure health notifications: %w", err)
+	}
+	return manager, nil
 }
 
 type sessionProjectBackfiller interface {

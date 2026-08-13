@@ -43,6 +43,9 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Private dashboard URL | | | `dashboard_access` | disabled |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
+| Health webhook | | | `notifications.health.webhook.url` | disabled |
+| Health notification debounce | | | `notifications.health.debounce_seconds` | `300` |
+| Health webhook timeout | | | `notifications.health.webhook.timeout_ms` | `5000` |
 | Automatic update checks | | | `update.auto_check_enabled` | `false` |
 | Update check interval | | | `update.check_interval_hours` | `6` |
 | Automatic update apply when idle | | | `update.auto_apply_enabled` | `false` |
@@ -74,6 +77,42 @@ from the first non-empty value in this order: top-level `instance_name` in
 single-project fallback mode without `global.yaml`, workflow top-level
 `identity.name` is used before the short hostname. Names are trimmed, must be a
 single line, and are capped at 40 characters in the web UI.
+
+Health notifications deliver fleet and project needs-attention transitions to
+one generic webhook. They are disabled when
+`notifications.health.webhook.url` is absent, preserving the silent default.
+Configure the host-wide channel in `global.yaml`:
+
+```yaml
+notifications:
+  health:
+    debounce_seconds: 300
+    webhook:
+      url: https://alerts.example.com/detent
+      headers:
+        Authorization: Bearer replace-me
+      timeout_ms: 5000
+```
+
+The five-minute default debounce applies independently to entry and recovery.
+Project identities are stable per project and cause, currently
+`ci_unavailable` and `dispatch_stall`; a separate fleet identity represents
+the aggregate transition while any project cause remains active. A flap that
+clears before the debounce expires emits neither entry nor recovery. Once an
+entry is emitted, exactly one recovery is emitted after the identity remains
+healthy for the debounce window.
+
+Webhook payloads use event name `detent.health.transition` and include a stable
+event ID, host and instance names, scope, optional project ID, entered state,
+causes, optional wait reasons, and entry timestamps. Delivery state and pending
+events are stored in the runtime SQLite database before sending, so a restart
+does not re-fire active conditions or discard unsent transitions. Failed sends
+retry at most five times with exponential backoff starting at 30 seconds and
+capped at 15 minutes. Every failure is logged and appears in
+`health_notification_failures` on `/health`; `detent doctor` reports both
+retrying and exhausted deliveries. Notification configuration changes require
+a restart. Treat configured headers as secrets and keep host-specific values
+out of checked-in project configuration.
 
 Automatic update checks are host-specific and disabled by default. When
 enabled, Detent persists the last check and schedules the next jittered check

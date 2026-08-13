@@ -53,6 +53,7 @@ type Store interface {
 	ProvenanceStore
 	WorkAttemptStore
 	ProjectDispatchStatusStore
+	HealthNotificationStateStore
 	WorkAttemptCapacityReleaseStore
 	MergeRequiredCheckStore
 	OperatorStopStore
@@ -161,6 +162,11 @@ type IssueSchedulerDecisionStore interface {
 type ProjectDispatchStatusStore interface {
 	RecordProjectDispatchStatus(context.Context, ProjectDispatchStatus) error
 	ProjectDispatchStatus(context.Context, string) (ProjectDispatchStatus, error)
+}
+
+type HealthNotificationStateStore interface {
+	ListHealthNotificationStates(context.Context) ([]HealthNotificationState, error)
+	SaveHealthNotificationStates(context.Context, []HealthNotificationState) error
 }
 
 type WorkAttemptCapacityReleaseStore interface {
@@ -764,6 +770,12 @@ type ProjectDispatchStatus struct {
 	AllSkippedSince      *time.Time
 	LastSelectedAt       *time.Time
 	ObservedAt           time.Time
+}
+
+type HealthNotificationState struct {
+	Identity  string
+	StateJSON []byte
+	UpdatedAt time.Time
 }
 
 type IssueSchedulerDecisionQuery struct {

@@ -28,6 +28,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -47,32 +48,33 @@ const (
 )
 
 type doctorCheck struct {
-	Name                      string                                     `json:"name"`
-	Status                    doctorStatus                               `json:"status"`
-	Detail                    string                                     `json:"detail"`
-	Hint                      string                                     `json:"hint,omitempty"`
-	BinaryResolution          *doctorBinaryResolution                    `json:"binary_resolution,omitempty"`
-	WorkflowSkillSuggestions  []doctorWorkflowSkillSuggestion            `json:"workflow_skill_suggestions,omitempty"`
-	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
-	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
-	PermanentlyHeldRecoveries []doctorBlockedRecoveryCandidateDiagnostic `json:"permanently_held_recoveries,omitempty"`
-	BlockedWithoutRecovery    []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_without_recovery,omitempty"`
-	BackendCapacity           []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
-	ArtifactGateConvergence   []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
-	ValidatorFailures         []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
-	Routines                  []doctorRoutineDiagnostic                  `json:"routines,omitempty"`
-	BacklogAdmission          *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
-	OverloadRetriesLastHour   int                                        `json:"overload_retries_last_hour,omitempty"`
-	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
-	StalenessWarnings         []telemetry.StalenessWarning               `json:"staleness_warnings,omitempty"`
-	StrandedIssues            []telemetry.StrandedIssue                  `json:"stranded_active_issues,omitempty"`
-	DispatchStalls            []telemetry.DispatchStatus                 `json:"dispatch_stalls,omitempty"`
-	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
-	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
-	OwnershipAttention        []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
-	ProjectDefinition         *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
-	Capabilities              *doctorCapabilityReport                    `json:"capabilities,omitempty"`
-	WorkflowOptimization      doctorWorkflowOptimizationReport           `json:"-"`
+	Name                       string                                     `json:"name"`
+	Status                     doctorStatus                               `json:"status"`
+	Detail                     string                                     `json:"detail"`
+	Hint                       string                                     `json:"hint,omitempty"`
+	BinaryResolution           *doctorBinaryResolution                    `json:"binary_resolution,omitempty"`
+	WorkflowSkillSuggestions   []doctorWorkflowSkillSuggestion            `json:"workflow_skill_suggestions,omitempty"`
+	AutoPromoteCandidates      []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
+	BlockedRecoveryCandidates  []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
+	PermanentlyHeldRecoveries  []doctorBlockedRecoveryCandidateDiagnostic `json:"permanently_held_recoveries,omitempty"`
+	BlockedWithoutRecovery     []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_without_recovery,omitempty"`
+	BackendCapacity            []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
+	ArtifactGateConvergence    []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
+	ValidatorFailures          []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
+	Routines                   []doctorRoutineDiagnostic                  `json:"routines,omitempty"`
+	BacklogAdmission           *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
+	OverloadRetriesLastHour    int                                        `json:"overload_retries_last_hour,omitempty"`
+	DependencyCapabilities     []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
+	StalenessWarnings          []telemetry.StalenessWarning               `json:"staleness_warnings,omitempty"`
+	StrandedIssues             []telemetry.StrandedIssue                  `json:"stranded_active_issues,omitempty"`
+	DispatchStalls             []telemetry.DispatchStatus                 `json:"dispatch_stalls,omitempty"`
+	HealthNotificationFailures []healthnotify.Failure                     `json:"health_notification_failures,omitempty"`
+	UntrackedIssues            []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
+	OpenTerminalIssues         []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
+	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
+	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
+	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
+	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
 }
 
 type doctorProjectDefinitionDiagnostic struct {
@@ -535,6 +537,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Fleet staleness",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorFleetStaleness(jobCtx, boot, cfg.ProjectID, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Health notification delivery",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorHealthNotificationDelivery(jobCtx, boot, cfg.ProjectID, deps)}
 			},
 		},
 		doctorCheckJob{
