@@ -200,6 +200,12 @@ type ActivityStore interface {
 	LatestIssueAgentSession(context.Context, IssueIdentity) (IssueAgentSession, error)
 }
 
+type ParkSummaryStore interface {
+	IssueParkSummary(context.Context, IssueIdentity) (ParkSummary, error)
+	ListIssueParkSummaries(context.Context, string) ([]ParkSummary, error)
+	AcknowledgeIssueParks(context.Context, IssueIdentity, int64, time.Time) error
+}
+
 type AgentResumeStore interface {
 	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
 	LatestIssueAgentResumeState(context.Context, IssueIdentity) (AgentResumeState, error)

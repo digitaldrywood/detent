@@ -128,6 +128,14 @@ func newDashboardReadClient(
 }
 
 func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string, reference string) (explain.IssueExplanation, error) {
+	return c.issueExplanation(ctx, http.MethodGet, projectID, reference)
+}
+
+func (c *DashboardReadClient) AcknowledgeIssueParks(ctx context.Context, projectID string, reference string) (explain.IssueExplanation, error) {
+	return c.issueExplanation(ctx, http.MethodPost, projectID, reference)
+}
+
+func (c *DashboardReadClient) issueExplanation(ctx context.Context, method string, projectID string, reference string) (explain.IssueExplanation, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -151,7 +159,7 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 	requestURL.RawQuery = query.Encode()
 
 	var result explain.IssueExplanation
-	statusCode, err := c.readJSON(ctx, requestURL, &result)
+	statusCode, err := c.requestJSON(ctx, method, requestURL, &result)
 	if err != nil {
 		return explain.IssueExplanation{}, err
 	}
@@ -210,6 +218,10 @@ func (s DashboardState) field(name string) any {
 }
 
 func (c *DashboardReadClient) readJSON(ctx context.Context, requestURL url.URL, result any) (int, error) {
+	return c.requestJSON(ctx, http.MethodGet, requestURL, result)
+}
+
+func (c *DashboardReadClient) requestJSON(ctx context.Context, method string, requestURL url.URL, result any) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -225,7 +237,7 @@ func (c *DashboardReadClient) readJSON(ctx context.Context, requestURL url.URL, 
 	}
 	requestContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, requestURL.String(), nil)
+	request, err := http.NewRequestWithContext(requestContext, method, requestURL.String(), nil)
 	if err != nil {
 		return 0, fmt.Errorf("create dashboard API request: %w", err)
 	}

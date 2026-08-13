@@ -53,6 +53,35 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 	}
 }
 
+func TestBoardCardRendersCumulativeParkSummary(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, 8, 9, 16, 6, 0, 0, time.UTC)
+	last := time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC)
+	summary, detail := boardCardParkSummary(telemetry.ParkSummary{
+		AttemptCount: 7,
+		ParkCount:    3,
+		Causes:       []telemetry.ParkCauseSummary{{Cause: "no_progress_limit", Count: 2, FirstAt: first, LastAt: last}},
+		Tokens:       telemetry.ParkTokenTotals{InputTokens: 5_247_029, CachedInputTokens: 4_978_944, OutputTokens: 25_709, ReasoningOutputTokens: 10_232},
+	})
+	for _, want := range []string{"7 attempts", "3 parks", "5.2M input", "5.0M cached", "25.7K output", "10.2K reasoning"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q missing %q", summary, want)
+		}
+	}
+	for _, want := range []string{"no_progress_limit: 2", first.Format(time.RFC3339), last.Format(time.RFC3339)} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail %q missing %q", detail, want)
+		}
+	}
+	html := renderBoardComponent(t, boardCardView2(boardCardView{DomID: "card-1773", Title: "Park summary", ParkSummary: summary, ParkDetail: detail}))
+	for _, want := range []string{"data-board-card-park-summary", "data-help-title=\"Park history\"", "no_progress_limit"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("card HTML missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardExceptionsIncludeFleetStalenessWarning(t *testing.T) {
 	t.Parallel()
 	data := DashboardData{

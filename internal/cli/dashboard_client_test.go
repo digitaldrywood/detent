@@ -161,6 +161,31 @@ func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
 	}
 }
 
+func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
+	t.Parallel()
+
+	want := dashboardExplanationFixture(false)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", request.Method)
+		}
+		if got := request.URL.Query().Get("reference"); got != "#1643" {
+			t.Errorf("reference = %q", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(want)
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := dashboardClientForServer(t, server, "").AcknowledgeIssueParks(t.Context(), "detent", "#1643")
+	if err != nil {
+		t.Fatalf("AcknowledgeIssueParks() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("result = %#v, want %#v", got, want)
+	}
+}
+
 func TestDashboardReadClientCredentialPrecedence(t *testing.T) {
 	t.Parallel()
 
@@ -375,8 +400,14 @@ func dashboardExplanationFixture(degraded bool) explain.IssueExplanation {
 		Eligibility:  explain.Eligibility{State: explain.EligibilityEligible, Refusals: []explain.EligibilityDecision{}, Source: explain.SourceAvailable},
 		Sessions:     explain.Sessions{Source: explain.SourceAvailable},
 		RequiredGate: explain.Gate{State: explain.GatePending, SourceState: explain.SourceAvailable, Failures: []string{}, Running: []string{}},
-		Sources:      []explain.SourceStatus{{Name: "snapshot", State: explain.SourceLive}},
-		Evidence:     []explain.EvidenceReference{},
+		ParkSummary: explain.ParkSummary{
+			AttemptCount: 7,
+			ParkCount:    3,
+			Causes:       []explain.ParkCauseSummary{{Cause: "no_progress_limit", Count: 1, FirstAt: time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC), LastAt: time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC)}},
+			Tokens:       explain.ParkTokenTotals{InputTokens: 5247029, CachedInputTokens: 4978944, OutputTokens: 25709, ReasoningOutputTokens: 10232},
+		},
+		Sources:  []explain.SourceStatus{{Name: "snapshot", State: explain.SourceLive}},
+		Evidence: []explain.EvidenceReference{},
 	}
 }
 
@@ -392,7 +423,7 @@ func TestIssueCommandOutputAndScoping(t *testing.T) {
 	}{
 		{name: "project required", args: []string{"#1643", "--explain"}, wantError: "--project is required"},
 		{name: "operation required", args: []string{"#1643", "--project", "detent"}, wantError: "issue operation is required"},
-		{name: "pretty projection", args: []string{"#1643", "--explain", "--project", "detent"}, stdoutTTY: true, wantPretty: []string{"Issue: digitaldrywood/detent#1643", "Lane: In Progress", "Lane degraded: true", "Source snapshot: unavailable (not_published)"}},
+		{name: "pretty projection", args: []string{"#1643", "--explain", "--project", "detent"}, stdoutTTY: true, wantPretty: []string{"Issue: digitaldrywood/detent#1643", "Lane: In Progress", "Lane degraded: true", "Lifetime attempts: 7", "Lifetime parks: 3", "Lifetime tokens: input 5247029, cached input 4978944, output 25709, reasoning 10232", "Park cause no_progress_limit: 1", "Source snapshot: unavailable (not_published)"}},
 		{name: "JSON DTO", args: []string{"#1643", "--explain", "--project", "detent"}},
 	}
 

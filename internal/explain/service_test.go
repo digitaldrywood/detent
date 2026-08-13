@@ -127,6 +127,42 @@ func TestServiceNormalizesDecoratedIssueURLs(t *testing.T) {
 	}
 }
 
+func TestServiceIncludesLifetimeParkSummary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	reader := &evidenceReader{observation: liveIssueObservation(now, telemetry.Issue{ID: "issue-1773", Identifier: "digitaldrywood/detent#1773", ProjectID: "detent", State: "In Progress"})}
+	service := newTestService(now, reader)
+	service.parks = staticParkSummaryReader{summary: store.ParkSummary{
+		AttemptCount: 7,
+		ParkCount:    3,
+		Causes:       []store.ParkCauseSummary{{Cause: "no_progress_limit", Count: 1, FirstAt: now.Add(-time.Hour), LastAt: now.Add(-time.Hour)}},
+		Tokens:       store.ParkTokenTotals{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 20, ReasoningOutputTokens: 10},
+	}}
+	got, err := service.Explain(t.Context(), Query{ProjectID: "detent", IssueID: "issue-1773"})
+	if err != nil {
+		t.Fatalf("Explain() error = %v", err)
+	}
+	if got.ParkSummary.AttemptCount != 7 || got.ParkSummary.ParkCount != 3 || len(got.ParkSummary.Causes) != 1 {
+		t.Fatalf("ParkSummary = %#v", got.ParkSummary)
+	}
+	if got.ParkSummary.Tokens != (ParkTokenTotals{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 20, ReasoningOutputTokens: 10}) {
+		t.Fatalf("Tokens = %#v", got.ParkSummary.Tokens)
+	}
+	if source := findSourceStatus(got.Sources, "park_summary"); source.State != SourceAvailable {
+		t.Fatalf("park_summary source = %#v", source)
+	}
+}
+
+type staticParkSummaryReader struct {
+	summary store.ParkSummary
+	err     error
+}
+
+func (r staticParkSummaryReader) IssueParkSummary(context.Context, store.IssueIdentity) (store.ParkSummary, error) {
+	return r.summary, r.err
+}
+
 func TestServiceSeparatesCurrentLaneFromEnteredTransition(t *testing.T) {
 	t.Parallel()
 

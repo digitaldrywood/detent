@@ -16,18 +16,20 @@ import (
 
 func newIssueCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
 	var explainIssue bool
+	var acknowledgeParks bool
 	var projectID string
 	cmd := &cobra.Command{
 		Use:   "issue <ref>",
 		Short: "Inspect an issue through the running Detent service",
-		Long:  "Inspect an issue through the running Detent service. Issue explanation reads are bounded HTTP requests and never open the runtime database or contact the tracker directly.",
+		Long:  "Inspect or acknowledge an issue through the running Detent service. Issue operations use bounded HTTP requests and never open the runtime database or contact the tracker directly.",
 		Example: strings.TrimSpace(`detent issue '#1643' --explain --project detent
 detent issue digitaldrywood/detent#1643 --explain --project detent --format json
-detent issue https://github.com/digitaldrywood/detent/issues/1643 --explain --project detent | jq '.current_lane'`),
+	detent issue https://github.com/digitaldrywood/detent/issues/1643 --explain --project detent | jq '.current_lane'
+	detent issue '#1643' --acknowledge-parks --project detent`),
 		Args: ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !explainIssue {
-				return NewValidationError("issue operation is required", "Use --explain to read the issue explanation model.", nil)
+			if explainIssue == acknowledgeParks {
+				return NewValidationError("exactly one issue operation is required", "Use either --explain or --acknowledge-parks.", nil)
 			}
 			if strings.TrimSpace(projectID) == "" {
 				return NewValidationError("--project is required", "Pass the Detent project ID that owns the issue, for example --project detent.", nil)
@@ -40,7 +42,12 @@ detent issue https://github.com/digitaldrywood/detent/issues/1643 --explain --pr
 			if err != nil {
 				return err
 			}
-			result, err := client.ExplainIssue(cmd.Context(), projectID, args[0])
+			var result explain.IssueExplanation
+			if acknowledgeParks {
+				result, err = client.AcknowledgeIssueParks(cmd.Context(), projectID, args[0])
+			} else {
+				result, err = client.ExplainIssue(cmd.Context(), projectID, args[0])
+			}
 			if err != nil {
 				return classifyDashboardReadError(err)
 			}
@@ -50,6 +57,7 @@ detent issue https://github.com/digitaldrywood/detent/issues/1643 --explain --pr
 		},
 	}
 	cmd.Flags().BoolVar(&explainIssue, "explain", false, "show the versioned issue explanation read model")
+	cmd.Flags().BoolVar(&acknowledgeParks, "acknowledge-parks", false, "acknowledge the issue's current park sequence")
 	cmd.Flags().StringVar(&projectID, "project", "", "Detent project ID that owns the issue (required)")
 	return cmd
 }
@@ -120,6 +128,17 @@ func writeIssueExplanationPretty(writer io.Writer, result explain.IssueExplanati
 	}
 	if result.Attempt != nil {
 		lines = append(lines, fmt.Sprintf("Attempt: %d (%s)", result.Attempt.ID, result.Attempt.Status))
+	}
+	lines = append(lines,
+		fmt.Sprintf("Lifetime attempts: %d", result.ParkSummary.AttemptCount),
+		fmt.Sprintf("Lifetime parks: %d", result.ParkSummary.ParkCount),
+		fmt.Sprintf("Lifetime tokens: input %d, cached input %d, output %d, reasoning %d", result.ParkSummary.Tokens.InputTokens, result.ParkSummary.Tokens.CachedInputTokens, result.ParkSummary.Tokens.OutputTokens, result.ParkSummary.Tokens.ReasoningOutputTokens),
+	)
+	for _, cause := range result.ParkSummary.Causes {
+		lines = append(lines, fmt.Sprintf("Park cause %s: %d (first %s, last %s)", cause.Cause, cause.Count, cause.FirstAt.Format(time.RFC3339), cause.LastAt.Format(time.RFC3339)))
+	}
+	if result.ParkSummary.AcknowledgedParkSequence > 0 {
+		lines = append(lines, fmt.Sprintf("Acknowledged park sequence: %d", result.ParkSummary.AcknowledgedParkSequence))
 	}
 	for _, source := range result.Sources {
 		value := string(source.State)

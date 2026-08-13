@@ -377,7 +377,8 @@ func collectedHasEvidence(collected collectedEvidence) bool {
 		len(collected.terminalAttempts) > 0 ||
 		len(collected.schedulerDecisions) > 0 ||
 		collected.session != nil ||
-		len(collected.admissionProposals) > 0
+		len(collected.admissionProposals) > 0 ||
+		collected.parkSummaryFound
 }
 
 func buildExplanation(observedAt time.Time, identity Identity, found bool, collected collectedEvidence) IssueExplanation {
@@ -401,10 +402,33 @@ func buildExplanation(observedAt time.Time, identity Identity, found bool, colle
 		Sessions:         sessions,
 		PullRequest:      pullRequest,
 		RequiredGate:     gate,
+		ParkSummary:      parkSummaryModel(collected.parkSummary),
 		Sources:          append([]SourceStatus(nil), collected.sources...),
 	}
 	explanation.Evidence = explanationEvidence(explanation, collected)
 	return explanation
+}
+
+func parkSummaryModel(summary store.ParkSummary) ParkSummary {
+	causes := make([]ParkCauseSummary, 0, len(summary.Causes))
+	for _, cause := range summary.Causes {
+		causes = append(causes, ParkCauseSummary{
+			Cause: cause.Cause, Count: cause.Count, FirstAt: cause.FirstAt, LastAt: cause.LastAt,
+		})
+	}
+	return ParkSummary{
+		AttemptCount:             summary.AttemptCount,
+		ParkCount:                summary.ParkCount,
+		AcknowledgedParkSequence: summary.AcknowledgedParkSequence,
+		AcknowledgedAt:           summary.AcknowledgedAt,
+		Causes:                   causes,
+		Tokens: ParkTokenTotals{
+			InputTokens:           summary.Tokens.InputTokens,
+			CachedInputTokens:     summary.Tokens.CachedInputTokens,
+			OutputTokens:          summary.Tokens.OutputTokens,
+			ReasoningOutputTokens: summary.Tokens.ReasoningOutputTokens,
+		},
+	}
 }
 
 func selectCurrentLane(collected collectedEvidence, observedAt time.Time) Lane {

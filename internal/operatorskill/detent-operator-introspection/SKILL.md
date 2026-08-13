@@ -7,7 +7,7 @@ description: Answer read-only operator questions about one issue in a running De
 
 Bundle version: 2
 
-Expected response schema: 2
+Expected response schema: 3
 
 Select the one question class that matches the request. Make its call once. The command returns one JSON object and enforces a request timeout and response-size limit. Keep diagnostics on stderr. Do not add filtering commands before inspecting the complete object.
 
@@ -71,7 +71,7 @@ Escalate: Escalate when degraded or missing evidence prevents the requested conc
 
 ## Interpret command outcomes
 
-- Success: Require `schema` to equal 2. Answer from the returned fields and cite degraded or last-known sources.
+- Success: Require `schema` to equal 3. Answer from the returned fields and cite degraded or last-known sources.
 - `dashboard_unauthorized` (HTTP 401): A supplied credential is invalid or expired. Stop; do not retry anonymously. Escalate for a valid supported read credential.
 - `dashboard_forbidden` (HTTP 403): The request is understood but not allowed. If the diagnostic identifies `api_token_required`, API access requires an operator-configured credential; this is not a missing issue. Otherwise the credential lacks the required read access. Stop and escalate without attempting to recover credential plaintext.
 - `ambiguous_reference`: The reference matches more than one issue. Stop and ask for an issue ID, canonical identifier, or full issue URL in the selected project.

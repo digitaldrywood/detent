@@ -617,6 +617,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `observability.otlp.headers` | `mapping<string, string>` | `{}` | No | None |
 | `observability.otlp.service_name` | `string` | `"detent"` | No | None |
 | `observability.otlp.timeout_ms` | `integer` | `5000` | No | None |
+| `observability.park_review_threshold` | `integer` | `3` | No | must be greater than 0 |
 | `observability.refresh_ms` | `integer` | `1000` | No | must be greater than 0 |
 | `observability.render_interval_ms` | `integer` | `16` | No | must be greater than 0 |
 | `observability.staleness` | `object` | `see child fields` | No | None |

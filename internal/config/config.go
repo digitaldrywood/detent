@@ -88,6 +88,7 @@ const (
 	DefaultStalenessWebhookTimeoutMS      = 5000
 	DefaultStrandedActiveThresholdSeconds = 10 * 60
 	DefaultDispatchStallThresholdSeconds  = 2 * 60 * 60
+	DefaultParkReviewThreshold            = 3
 	DefaultGitHubUnstartedSeconds         = 15 * 60
 	MaxStalenessRepeatedCount             = 500
 
@@ -749,6 +750,7 @@ type Observability struct {
 	RenderIntervalMS               int                     `yaml:"render_interval_ms"`
 	StrandedActiveThresholdSeconds int                     `yaml:"stranded_active_threshold_seconds"`
 	DispatchStallThresholdSeconds  int                     `yaml:"dispatch_stall_threshold_seconds"`
+	ParkReviewThreshold            int                     `yaml:"park_review_threshold"`
 	Efficiency                     EfficiencyObservability `yaml:"efficiency,omitempty"`
 	OTLP                           OTLPObservability       `yaml:"otlp,omitempty"`
 	Staleness                      StalenessObservability  `yaml:"staleness,omitempty"`
@@ -1403,6 +1405,7 @@ func Default() Config {
 			RenderIntervalMS:               16,
 			StrandedActiveThresholdSeconds: DefaultStrandedActiveThresholdSeconds,
 			DispatchStallThresholdSeconds:  DefaultDispatchStallThresholdSeconds,
+			ParkReviewThreshold:            DefaultParkReviewThreshold,
 			Efficiency: EfficiencyObservability{
 				AnomalyTokensMultiple:   3,
 				AnomalySessionsMultiple: 3,
@@ -2613,6 +2616,7 @@ func (o *Observability) validate(problems *[]string) {
 	validatePositive("observability.render_interval_ms", o.RenderIntervalMS, problems)
 	validatePositive("observability.stranded_active_threshold_seconds", o.StrandedActiveThresholdSeconds, problems)
 	validatePositive("observability.dispatch_stall_threshold_seconds", o.DispatchStallThresholdSeconds, problems)
+	validatePositive("observability.park_review_threshold", o.ParkReviewThreshold, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_tokens_multiple", o.Efficiency.AnomalyTokensMultiple, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_sessions_multiple", o.Efficiency.AnomalySessionsMultiple, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_dwell_multiple", o.Efficiency.AnomalyDwellMultiple, problems)
@@ -2635,6 +2639,9 @@ func (o *Observability) validate(problems *[]string) {
 func (o *Observability) Normalize() {
 	if o == nil {
 		return
+	}
+	if o.ParkReviewThreshold == 0 {
+		o.ParkReviewThreshold = DefaultParkReviewThreshold
 	}
 	o.OTLP.Endpoint = strings.TrimSpace(o.OTLP.Endpoint)
 	o.OTLP.ServiceName = strings.TrimSpace(o.OTLP.ServiceName)

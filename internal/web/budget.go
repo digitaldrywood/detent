@@ -112,6 +112,7 @@ func (c *snapshotEnrichmentCache) enrich(ctx context.Context, snapshot telemetry
 
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
 	snapshot.AdmissionProposals = s.snapshotAdmissionProposals(ctx, snapshot.GeneratedAt)
+	snapshot = s.snapshotParkSummaries(ctx, snapshot)
 	if cycleTime, ok := s.snapshotCycleTime(ctx); ok {
 		snapshot.CycleTime = cycleTime
 	}
@@ -130,6 +131,61 @@ func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot
 	budget.Refusals = append([]telemetry.BudgetRefusal(nil), snapshot.Budget.Refusals...)
 	snapshot.Budget = budget
 	return snapshot
+}
+
+func (s *Server) snapshotParkSummaries(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	if s.store == nil || len(snapshot.BoardIssues) == 0 {
+		return snapshot
+	}
+	reader, ok := s.store.(store.ParkSummaryStore)
+	if !ok {
+		return snapshot
+	}
+	summaries, err := reader.ListIssueParkSummaries(ctx, "")
+	if err != nil {
+		s.logger.WarnContext(ctx, "issue park summary query failed", slog.Any("error", err))
+		return snapshot
+	}
+	snapshot.BoardIssues = append([]telemetry.Issue(nil), snapshot.BoardIssues...)
+	for index := range snapshot.BoardIssues {
+		for _, summary := range summaries {
+			if !parkSummaryMatchesIssue(summary, snapshot.BoardIssues[index]) {
+				continue
+			}
+			snapshot.BoardIssues[index].ParkSummary = parkSummaryTelemetry(summary)
+			break
+		}
+	}
+	return snapshot
+}
+
+func parkSummaryMatchesIssue(summary store.ParkSummary, issue telemetry.Issue) bool {
+	if strings.TrimSpace(summary.ProjectID) != strings.TrimSpace(issue.ProjectID) {
+		return false
+	}
+	return (summary.IssueID != "" && summary.IssueID == strings.TrimSpace(issue.ID)) ||
+		(summary.Identifier != "" && summary.Identifier == strings.TrimSpace(issue.Identifier)) ||
+		(summary.IssueURL != "" && summary.IssueURL == strings.TrimSpace(issue.URL))
+}
+
+func parkSummaryTelemetry(summary store.ParkSummary) telemetry.ParkSummary {
+	causes := make([]telemetry.ParkCauseSummary, 0, len(summary.Causes))
+	for _, cause := range summary.Causes {
+		causes = append(causes, telemetry.ParkCauseSummary{Cause: cause.Cause, Count: cause.Count, FirstAt: cause.FirstAt, LastAt: cause.LastAt})
+	}
+	return telemetry.ParkSummary{
+		AttemptCount:             summary.AttemptCount,
+		ParkCount:                summary.ParkCount,
+		AcknowledgedParkSequence: summary.AcknowledgedParkSequence,
+		AcknowledgedAt:           summary.AcknowledgedAt,
+		Causes:                   causes,
+		Tokens: telemetry.ParkTokenTotals{
+			InputTokens:           summary.Tokens.InputTokens,
+			CachedInputTokens:     summary.Tokens.CachedInputTokens,
+			OutputTokens:          summary.Tokens.OutputTokens,
+			ReasoningOutputTokens: summary.Tokens.ReasoningOutputTokens,
+		},
+	}
 }
 
 func (s *Server) snapshotAdmissionProposals(ctx context.Context, observedAt time.Time) []telemetry.AdmissionProposal {
