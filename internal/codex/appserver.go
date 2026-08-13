@@ -1887,12 +1887,14 @@ func toolFailureDiagnosticKey(key string) string {
 
 func toolFailureDiagnosticSensitiveKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "_", ""), "-", ""))
-	switch key {
-	case "aggregatedoutput", "arguments", "authorization", "body", "changes", "command", "credential", "credentials", "headers", "input", "payload", "request", "token", "tokens":
-		return true
-	default:
-		return false
+	for _, fragment := range []string{
+		"argument", "auth", "body", "command", "cookie", "credential", "header", "input", "password", "payload", "request", "secret", "token",
+	} {
+		if strings.Contains(key, fragment) {
+			return true
+		}
 	}
+	return key == "aggregatedoutput" || key == "changes"
 }
 
 func toolFailureDiagnosticKeyRank(key string) int {

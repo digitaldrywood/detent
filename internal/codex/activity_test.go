@@ -86,6 +86,17 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantMaxBytes:     2048,
 			contentFromError: true,
 		},
+		{
+			name:             "failed mcp result skips compound sensitive containers",
+			method:           "item/completed",
+			params:           `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-6","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","result":null,"error":null,"diagnostic":{"code":"connector_failure","requestBody":{"message":"private request"},"authTokenData":{"message":"private token"},"clientSecretValue":{"message":"private secret"},"credentialEnvelope":{"message":"private credential"}},"status":"failed"}}`,
+			wantType:         UpdateToolCompleted,
+			wantTool:         "codex_apps/github.create_pull_request",
+			wantContent:      `{"code":"connector_failure"}`,
+			wantErrorMessage: `{"code":"connector_failure"}`,
+			wantOmitted:      []string{"private request", "private token", "private secret", "private credential"},
+			wantMaxBytes:     2048,
+		},
 	}
 
 	for _, tt := range tests {
