@@ -206,6 +206,7 @@ func (m *Manager) Reconcile(ctx context.Context, snapshot telemetry.Snapshot, he
 		return err
 	}
 	observed := map[string]struct{}{}
+	changed := map[string]*durableState{}
 	for _, current := range observations(snapshot, health) {
 		observed[current.Identity] = struct{}{}
 		state := states[current.Identity]
@@ -217,21 +218,26 @@ func (m *Manager) Reconcile(ctx context.Context, snapshot telemetry.Snapshot, he
 				ProjectID: current.ProjectID,
 			}
 			states[current.Identity] = state
+			changed[current.Identity] = state
 		}
-		m.applyObservation(state, current, now)
+		if m.applyObservation(state, current, now) {
+			changed[current.Identity] = state
+		}
 	}
 	for identity, state := range states {
 		if _, ok := observed[identity]; ok || (!state.StableActive && (state.Pending == nil || !state.Pending.Active)) {
 			continue
 		}
-		m.applyObservation(state, observation{
+		if m.applyObservation(state, observation{
 			Identity:  identity,
 			Scope:     state.Scope,
 			ProjectID: state.ProjectID,
 			State:     unknownProjectRecoveryStatus,
-		}, now)
+		}, now) {
+			changed[identity] = state
+		}
 	}
-	if err := m.saveStates(ctx, states, now); err != nil {
+	if err := m.saveStates(ctx, changed, now); err != nil {
 		return err
 	}
 	return m.deliverDue(ctx, states, now)
@@ -271,13 +277,16 @@ func (m *Manager) Failures(ctx context.Context) ([]Failure, error) {
 	return failures, nil
 }
 
-func (m *Manager) applyObservation(state *durableState, current observation, now time.Time) {
+func (m *Manager) applyObservation(state *durableState, current observation, now time.Time) bool {
+	deliveryCount := len(state.Deliveries)
 	state.Deliveries = slices.DeleteFunc(state.Deliveries, func(delivery deliveryState) bool {
 		return delivery.DeliveredAt != nil
 	})
+	changed := len(state.Deliveries) != deliveryCount
 	if current.Active == state.StableActive {
+		changed = changed || state.Pending != nil
 		state.Pending = nil
-		return
+		return changed
 	}
 	if state.Pending == nil || state.Pending.Active != current.Active {
 		state.Pending = &pendingState{
@@ -287,13 +296,18 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 			WaitReasons: compactSorted(current.WaitReasons),
 			Since:       now,
 		}
-		return
+		return true
 	}
-	state.Pending.State = current.State
-	state.Pending.Causes = compactSorted(current.Causes)
-	state.Pending.WaitReasons = compactSorted(current.WaitReasons)
+	causes := compactSorted(current.Causes)
+	waitReasons := compactSorted(current.WaitReasons)
+	if state.Pending.State != current.State || !slices.Equal(state.Pending.Causes, causes) || !slices.Equal(state.Pending.WaitReasons, waitReasons) {
+		changed = true
+		state.Pending.State = current.State
+		state.Pending.Causes = causes
+		state.Pending.WaitReasons = waitReasons
+	}
 	if now.Before(state.Pending.Since.Add(m.cfg.Debounce)) {
-		return
+		return changed
 	}
 	pending := *state.Pending
 	state.Pending = nil
@@ -303,12 +317,13 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 		state.Causes = append([]string(nil), pending.Causes...)
 		state.WaitReasons = append([]string(nil), pending.WaitReasons...)
 		state.Deliveries = append(state.Deliveries, deliveryState{Event: m.event(state, TransitionEntry, pending.State, pending.Since, pending.Since, now)})
-		return
+		return true
 	}
 	state.Deliveries = append(state.Deliveries, deliveryState{Event: m.event(state, TransitionRecovery, pending.State, pending.Since, state.NeedsAttentionEnteredAt, now)})
 	state.NeedsAttentionEnteredAt = time.Time{}
 	state.Causes = nil
 	state.WaitReasons = nil
+	return true
 }
 
 func (m *Manager) event(state *durableState, transition string, enteredState string, enteredAt time.Time, attentionEnteredAt time.Time, observedAt time.Time) Event {
@@ -338,6 +353,7 @@ func eventID(identity string, transition string, enteredAt time.Time) string {
 
 func (m *Manager) deliverDue(ctx context.Context, states map[string]*durableState, now time.Time) error {
 	type queued struct {
+		state    *durableState
 		delivery *deliveryState
 	}
 	queue := []queued{}
@@ -347,7 +363,7 @@ func (m *Manager) deliverDue(ctx context.Context, states map[string]*durableStat
 			if delivery.DeliveredAt != nil || delivery.FailedAt != nil || (delivery.NextAttemptAt != nil && now.Before(*delivery.NextAttemptAt)) {
 				continue
 			}
-			queue = append(queue, queued{delivery: delivery})
+			queue = append(queue, queued{state: state, delivery: delivery})
 		}
 	}
 	slices.SortFunc(queue, func(left queued, right queued) int {
@@ -359,9 +375,9 @@ func (m *Manager) deliverDue(ctx context.Context, states map[string]*durableStat
 	if len(queue) > maxDeliveriesPerCycle {
 		queue = queue[:maxDeliveriesPerCycle]
 	}
-	changed := false
+	changed := map[string]*durableState{}
 	for _, item := range queue {
-		changed = true
+		changed[item.state.Identity] = item.state
 		delivery := item.delivery
 		delivery.Attempts++
 		attemptedAt := now
@@ -384,10 +400,7 @@ func (m *Manager) deliverDue(ctx context.Context, states map[string]*durableStat
 		delivery.FailedAt = nil
 		delivery.LastError = ""
 	}
-	if !changed {
-		return nil
-	}
-	return m.saveStates(ctx, states, now)
+	return m.saveStates(ctx, changed, now)
 }
 
 func (m *Manager) retryDelay(attempts int) time.Duration {
@@ -424,6 +437,9 @@ func (m *Manager) loadStates(ctx context.Context) (map[string]*durableState, err
 }
 
 func (m *Manager) saveStates(ctx context.Context, states map[string]*durableState, now time.Time) error {
+	if len(states) == 0 {
+		return nil
+	}
 	identities := make([]string, 0, len(states))
 	for identity := range states {
 		identities = append(identities, identity)

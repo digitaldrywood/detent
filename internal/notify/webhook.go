@@ -72,21 +72,17 @@ func (w *Webhook) Send(ctx context.Context, payload any) error {
 		return fmt.Errorf("deliver webhook: %w", err)
 	}
 	defer response.Body.Close()
+	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, 4096)); err != nil {
+		return fmt.Errorf("drain webhook response: %w", err)
+	}
 	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
-		if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, 4096)); err != nil {
-			return fmt.Errorf("drain webhook response: %w", err)
-		}
 		return nil
 	}
-	body, err = io.ReadAll(io.LimitReader(response.Body, 4096))
-	if err != nil {
-		return fmt.Errorf("read webhook response: %w", err)
-	}
-	detail := strings.TrimSpace(string(body))
+	detail := http.StatusText(response.StatusCode)
 	if detail == "" {
-		detail = http.StatusText(response.StatusCode)
+		return fmt.Errorf("deliver webhook: HTTP %d", response.StatusCode)
 	}
-	return fmt.Errorf("deliver webhook: HTTP %d: %s", response.StatusCode, detail)
+	return fmt.Errorf("deliver webhook: HTTP %d %s", response.StatusCode, detail)
 }
 
 func cloneHeaders(headers map[string]string) map[string]string {

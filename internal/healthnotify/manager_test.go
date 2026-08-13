@@ -310,6 +310,23 @@ func TestManagerDeliveryRetriesAreBoundedAndSurfaced(t *testing.T) {
 	}
 }
 
+func TestManagerSkipsUnchangedStateWrites(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
+	stateStore := newMemoryStateStore()
+	manager := newTestManager(t, stateStore, &recordingSender{}, Config{Debounce: 10 * time.Minute})
+	health := readyHealth("detent")
+
+	managerReconcile(t, manager, telemetry.Snapshot{}, health, now)
+	if got := stateStore.SaveCalls(); got != 1 {
+		t.Fatalf("save calls after initial observation = %d, want 1", got)
+	}
+	managerReconcile(t, manager, telemetry.Snapshot{}, health, now.Add(time.Second))
+	if got := stateStore.SaveCalls(); got != 1 {
+		t.Fatalf("save calls after unchanged observation = %d, want 1", got)
+	}
+}
+
 func TestNewManagerUnconfiguredIsSilent(t *testing.T) {
 	t.Parallel()
 	manager, err := NewManager(Config{}, Dependencies{})
@@ -325,8 +342,9 @@ func TestNewManagerUnconfiguredIsSilent(t *testing.T) {
 }
 
 type memoryStateStore struct {
-	mu      sync.Mutex
-	records map[string]store.HealthNotificationState
+	mu        sync.Mutex
+	records   map[string]store.HealthNotificationState
+	saveCalls int
 }
 
 func newMemoryStateStore() *memoryStateStore {
@@ -347,11 +365,18 @@ func (s *memoryStateStore) ListHealthNotificationStates(context.Context) ([]stor
 func (s *memoryStateStore) SaveHealthNotificationStates(_ context.Context, records []store.HealthNotificationState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.saveCalls++
 	for _, record := range records {
 		record.StateJSON = append([]byte(nil), record.StateJSON...)
 		s.records[record.Identity] = record
 	}
 	return nil
+}
+
+func (s *memoryStateStore) SaveCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveCalls
 }
 
 type recordingSender struct {

@@ -48,12 +48,13 @@ func TestWebhookSend(t *testing.T) {
 func TestWebhookErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		url  string
-		want string
+		name    string
+		url     string
+		want    string
+		notWant string
 	}{
 		{name: "missing URL", want: "webhook URL is required"},
-		{name: "HTTP failure", url: "server", want: "HTTP 503: unavailable"},
+		{name: "HTTP failure", url: "server", want: "HTTP 503 Service Unavailable", notWant: "receiver-secret"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,7 +62,7 @@ func TestWebhookErrors(t *testing.T) {
 			url := tt.url
 			if url == "server" {
 				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-					http.Error(writer, "unavailable", http.StatusServiceUnavailable)
+					http.Error(writer, "receiver-secret", http.StatusServiceUnavailable)
 				}))
 				t.Cleanup(server.Close)
 				url = server.URL
@@ -73,7 +74,7 @@ func TestWebhookErrors(t *testing.T) {
 				}
 				return
 			}
-			if err := webhook.Send(t.Context(), struct{}{}); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err := webhook.Send(t.Context(), struct{}{}); err == nil || !strings.Contains(err.Error(), tt.want) || (tt.notWant != "" && strings.Contains(err.Error(), tt.notWant)) {
 				t.Fatalf("Send() error = %v, want containing %q", err, tt.want)
 			}
 		})

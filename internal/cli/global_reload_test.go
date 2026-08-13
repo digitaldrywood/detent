@@ -241,7 +241,7 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		}},
 		{name: "dashboard write access", field: "dashboard_access.allow_write", mutate: func(cfg *globalconfig.Config) { cfg.DashboardAccess.AllowWrite = true }},
 		{name: "port", field: "port", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 4101; cfg.Port = &value }},
-		{name: "instance name", field: "instance_name", mutate: func(cfg *globalconfig.Config) { cfg.InstanceName = "buildbox" }},
+		{name: "instance name", field: "instance_name", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.InstanceName = "buildbox" }},
 		{name: "notifications", field: "notifications", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
 			cfg.Notifications.Health.Webhook.URL = "https://alerts.example.test/detent"
 		}},
@@ -255,7 +255,7 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "active hours", field: "global.active_hours", mutate: func(cfg *globalconfig.Config) {
 			cfg.Global.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Sun 22:00-06:00"}}
 		}},
-		{name: "identity", field: "global.identity", mutate: func(cfg *globalconfig.Config) {
+		{name: "identity", field: "global.identity", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
 			cfg.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
 		}},
 		{name: "fair share", field: "global.fair_share", mutate: func(cfg *globalconfig.Config) { cfg.Global.FairShare = map[string]any{"half_life": "2h"} }},

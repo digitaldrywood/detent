@@ -276,7 +276,7 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 		fields = append(fields, globalConfigChange{Field: "port", RequiresRestart: true})
 	}
 	if previous.InstanceName != next.InstanceName {
-		fields = append(fields, globalConfigChange{Field: "instance_name", Old: previous.InstanceName, New: next.InstanceName})
+		fields = append(fields, globalConfigChange{Field: "instance_name", RequiresRestart: true})
 	}
 	if !reflect.DeepEqual(previous.Notifications, next.Notifications) {
 		fields = append(fields, globalConfigChange{Field: "notifications", RequiresRestart: true})
@@ -306,7 +306,7 @@ func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Set
 		fields = append(fields, globalConfigChange{Field: "global.active_hours", Old: previous.ActiveHours, New: next.ActiveHours})
 	}
 	if !reflect.DeepEqual(previous.Identity, next.Identity) {
-		fields = append(fields, globalConfigChange{Field: "global.identity", Old: previous.Identity, New: next.Identity})
+		fields = append(fields, globalConfigChange{Field: "global.identity", RequiresRestart: true})
 	}
 	if !reflect.DeepEqual(previous.FairShare, next.FairShare) {
 		fields = append(fields, globalConfigChange{Field: "global.fair_share", Old: previous.FairShare, New: next.FairShare})
