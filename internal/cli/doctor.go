@@ -498,7 +498,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		doctorCheckJob{
 			Name: "Remote Detent service",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorDetentService(jobCtx, liveBoot, deps)}
+				return checkDoctorDetentService(jobCtx, liveBoot, deps)
 			},
 		},
 		doctorCheckJob{

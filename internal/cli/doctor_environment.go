@@ -828,7 +828,7 @@ type doctorHealthResponse struct {
 	DispatchStalls    []telemetry.DispatchStatus   `json:"dispatch_stalls"`
 }
 
-func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDeps) doctorCheck {
+func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDeps) []doctorCheck {
 	probe, err := probeDoctorHealth(ctx, cfg, deps)
 	version := strings.TrimSpace(probe.Health.Version)
 	commit := strings.TrimSpace(probe.Health.Commit)
@@ -843,22 +843,17 @@ func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDe
 			check.Detail += "; health check: " + err.Error()
 			check.Hint = "Review the running Detent service health, then rerun detent doctor."
 		}
-		return check
+		return []doctorCheck{check}
 	}
 	if err != nil {
-		return doctorCheck{
-			Name:   "Remote Detent service",
-			Status: doctorWarn,
-			Detail: fmt.Sprintf("remote service build unavailable from %s: %v", probe.URL, err),
-			Hint:   "Start the configured Detent service, then rerun detent doctor.",
-		}
+		return nil
 	}
-	return doctorCheck{
+	return []doctorCheck{{
 		Name:   "Remote Detent service",
 		Status: doctorWarn,
 		Detail: fmt.Sprintf("remote service at %s did not report its complete build", probe.URL),
 		Hint:   "Upgrade the running Detent service, then rerun detent doctor.",
-	}
+	}}
 }
 
 type doctorHealthEnvironment struct {

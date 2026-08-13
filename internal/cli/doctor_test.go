@@ -4355,7 +4355,7 @@ func TestCheckDoctorDetentServiceReportsRemoteBuild(t *testing.T) {
 				t.Fatalf("Marshal() error = %v", err)
 			}
 			port := 4017
-			got := checkDoctorDetentService(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+			checks := checkDoctorDetentService(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
 				httpDo: func(request *http.Request) (*http.Response, error) {
 					if request.URL.String() != "http://127.0.0.1:4017/health" {
 						t.Errorf("URL = %q, want configured health endpoint", request.URL)
@@ -4364,6 +4364,10 @@ func TestCheckDoctorDetentServiceReportsRemoteBuild(t *testing.T) {
 				},
 			})
 
+			if len(checks) != 1 {
+				t.Fatalf("checks = %#v, want one remote service check", checks)
+			}
+			got := checks[0]
 			if got.Name != "Remote Detent service" || got.Status != doctorOK {
 				t.Fatalf("check = %#v, want remote service OK", got)
 			}
@@ -4371,6 +4375,33 @@ func TestCheckDoctorDetentServiceReportsRemoteBuild(t *testing.T) {
 				if !strings.Contains(got.Detail, want) {
 					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorDetentServiceSkipsAbsentService(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "connection refused", err: errors.New("connection refused")},
+		{name: "request timeout", err: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checks := checkDoctorDetentService(t.Context(), BootConfig{}, doctorDeps{
+				httpDo: func(*http.Request) (*http.Response, error) {
+					return nil, tt.err
+				},
+			})
+			if len(checks) != 0 {
+				t.Fatalf("checks = %#v, want absent service omitted", checks)
 			}
 		})
 	}
