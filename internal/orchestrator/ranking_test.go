@@ -356,6 +356,31 @@ func TestConfigFromWorkflowIncludesDispatchPriorityByState(t *testing.T) {
 	}
 }
 
+func TestConfigFromWorkflowIncludesBlockedCauseStatusLabelPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "label status source", source: workflowconfig.GitHubStatusSourceLabel, want: "workflow:"},
+		{name: "project status source", source: workflowconfig.GitHubStatusSourceProjectV2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := workflowconfig.Default()
+			workflow.Tracker.GitHubStatusSource = tt.source
+			workflow.Tracker.StatusLabelPrefix = " Workflow: "
+			if got := ConfigFromWorkflow(workflow).StatusLabelPrefix; got != tt.want {
+				t.Fatalf("StatusLabelPrefix = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func rankingIssue(id string, state string, priority int, createdAt time.Time) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id

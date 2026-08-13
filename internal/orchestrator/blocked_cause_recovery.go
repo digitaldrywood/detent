@@ -50,6 +50,22 @@ type blockedCauseSignals struct {
 	PRDiffFingerprint    string            `json:"pr_diff_fingerprint,omitempty"`
 }
 
+type blockedCauseIdentity struct {
+	Cause              string            `json:"cause,omitempty"`
+	ConfigFingerprint  string            `json:"config_fingerprint,omitempty"`
+	ToolingFingerprint string            `json:"tooling_fingerprint,omitempty"`
+	BaseFingerprint    string            `json:"base_fingerprint,omitempty"`
+	Health             string            `json:"health,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	ModelOverride      string            `json:"model_override,omitempty"`
+	Labels             []string          `json:"labels,omitempty"`
+	Fields             map[string]string `json:"fields,omitempty"`
+	PRNumber           int               `json:"pr_number,omitempty"`
+	PRHeadSHA          string            `json:"pr_head_sha,omitempty"`
+	PRBaseSHA          string            `json:"pr_base_sha,omitempty"`
+	PRDiffFingerprint  string            `json:"pr_diff_fingerprint,omitempty"`
+}
+
 func (o *Orchestrator) newBlockedRecoveryMetadata(
 	ctx context.Context,
 	issue connector.Issue,
@@ -59,14 +75,15 @@ func (o *Orchestrator) newBlockedRecoveryMetadata(
 	targetState string,
 	fallback DiffStats,
 ) workflowLaneMetadata {
+	cause = strings.TrimSpace(cause)
 	signals := o.blockedCauseSignals(ctx, issue, runMode, targetState, fallback)
 	targetState = blockedCauseTargetState(issue, signals, targetState)
 	return workflowLaneMetadata{
 		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
 			Owner:            blockedRecoveryOwnerOrchestrator,
-			Cause:            strings.TrimSpace(cause),
+			Cause:            cause,
 			Predicate:        strings.TrimSpace(predicate),
-			CauseFingerprint: blockedCauseFingerprint(signals),
+			CauseFingerprint: blockedCauseFingerprint(cause, signals),
 			TargetState:      targetState,
 			RunMode:          strings.TrimSpace(runMode),
 			IntentResumable:  blockedCauseResumable(issue, signals),
@@ -123,7 +140,7 @@ func (o *Orchestrator) blockedCauseSignals(
 		Health:               strings.TrimSpace(snapshot.Health),
 		Description:          strings.TrimSpace(issue.Description),
 		ModelOverride:        strings.TrimSpace(issue.ModelOverride),
-		Labels:               blockedCauseLabels(issue.Labels),
+		Labels:               blockedCauseLabels(issue.Labels, o.cfg.StatusLabelPrefix),
 		Workpad:              blockedCauseWorkpadSignal(issue.WorkpadSignal),
 		Fields:               blockedCauseFields(issue.Fields),
 	}
@@ -156,8 +173,14 @@ func blockedCauseWorkpadSignal(signal *workpad.Signal) *workpad.Signal {
 	return &cloned
 }
 
-func blockedCauseLabels(labels []string) []string {
+func blockedCauseLabels(labels []string, statusLabelPrefix string) []string {
 	normalized := normalizeLabels(labels)
+	statusLabelPrefix = strings.ToLower(strings.TrimSpace(statusLabelPrefix))
+	if statusLabelPrefix != "" {
+		normalized = slices.DeleteFunc(normalized, func(label string) bool {
+			return strings.HasPrefix(label, statusLabelPrefix)
+		})
+	}
 	slices.Sort(normalized)
 	return normalized
 }
@@ -179,8 +202,23 @@ func blockedCauseFields(fields map[string]string) map[string]string {
 	return cloned
 }
 
-func blockedCauseFingerprint(signals blockedCauseSignals) string {
-	data, err := json.Marshal(signals)
+func blockedCauseFingerprint(cause string, signals blockedCauseSignals) string {
+	identity := blockedCauseIdentity{
+		Cause:              strings.TrimSpace(cause),
+		ConfigFingerprint:  signals.ConfigFingerprint,
+		ToolingFingerprint: signals.ToolingFingerprint,
+		BaseFingerprint:    signals.BaseFingerprint,
+		Health:             signals.Health,
+		Description:        signals.Description,
+		ModelOverride:      signals.ModelOverride,
+		Labels:             signals.Labels,
+		Fields:             signals.Fields,
+		PRNumber:           signals.PRNumber,
+		PRHeadSHA:          signals.PRHeadSHA,
+		PRBaseSHA:          signals.PRBaseSHA,
+		PRDiffFingerprint:  signals.PRDiffFingerprint,
+	}
+	data, err := json.Marshal(identity)
 	if err != nil {
 		return blockedCauseHash(err.Error())
 	}
@@ -274,7 +312,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-	currentFingerprint := blockedCauseFingerprint(signals)
+	currentFingerprint := blockedCauseFingerprint(park.Cause, signals)
 	if park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
 		return false
