@@ -1478,7 +1478,8 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 
 			state := newMCPElicitationState(MCPElicitationPolicy{
 				DeliverableKind: "pull_request",
-				Repository:      "acme/widgets",
+				Repository:      "acme/delivery",
+				IssueRepository: "acme/widgets",
 				Allowlist: []MCPElicitationRule{{
 					Server: "codex_apps", Tool: tt.tool, Repository: "acme/widgets",
 				}},

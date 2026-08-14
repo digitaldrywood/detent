@@ -145,6 +145,7 @@ func TestMCPElicitationPolicyForTurn(t *testing.T) {
 			want: MCPElicitationPolicy{
 				DeliverableKind: "pull_request",
 				Repository:      "acme/widgets",
+				IssueRepository: "acme/issues",
 				Allowlist:       rules,
 			},
 		},
@@ -158,6 +159,7 @@ func TestMCPElicitationPolicyForTurn(t *testing.T) {
 			got := mcpElicitationPolicy(rules, runner.AgentTurnRequest{
 				DeliverableKind:       " pull_request ",
 				DeliverableRepository: " acme/widgets ",
+				IssueRepository:       " acme/issues ",
 			}, tt.restricted)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("mcpElicitationPolicy() = %#v, want %#v", got, tt.want)

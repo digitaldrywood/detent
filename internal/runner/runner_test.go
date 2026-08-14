@@ -32,6 +32,47 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func TestAgentTurnIssueRepository(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured string
+		issue      connector.Issue
+		want       string
+	}{
+		{
+			name: "issue identifier differs from linked PR repository",
+			issue: connector.Issue{
+				Identifier:   " acme/issues#42 ",
+				PRRepository: "acme/delivery",
+			},
+			want: "acme/issues",
+		},
+		{
+			name:       "tracker repository fallback",
+			configured: " acme/issues ",
+			issue:      connector.Issue{Identifier: "ISSUE-42", PRRepository: "acme/delivery"},
+			want:       "acme/issues",
+		},
+		{
+			name:  "missing repository",
+			issue: connector.Issue{Identifier: "ISSUE-42", PRRepository: "acme/delivery"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config.Config{Tracker: config.Tracker{Repository: tt.configured}}
+			if got := agentTurnIssueRepository(cfg, tt.issue); got != tt.want {
+				t.Fatalf("agentTurnIssueRepository() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	t.Parallel()
 
@@ -276,8 +317,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if codexClient.request.Workspace != workspacePath {
 		t.Fatalf("codex workspace = %q, want %q", codexClient.request.Workspace, workspacePath)
 	}
-	if codexClient.request.DeliverableKind != config.DeliverablePullRequest || codexClient.request.DeliverableRepository != "digitaldrywood/detent" {
-		t.Fatalf("codex deliverable = %q/%q, want pull request for digitaldrywood/detent", codexClient.request.DeliverableKind, codexClient.request.DeliverableRepository)
+	if codexClient.request.DeliverableKind != config.DeliverablePullRequest ||
+		codexClient.request.DeliverableRepository != "digitaldrywood/detent" ||
+		codexClient.request.IssueRepository != "digitaldrywood/detent" {
+		t.Fatalf("codex repositories = deliverable %q/%q, issue %q", codexClient.request.DeliverableKind, codexClient.request.DeliverableRepository, codexClient.request.IssueRepository)
 	}
 	cacheRoot := sharedWorkerCacheRoot(workspacePath, "detent")
 	for name, want := range map[string]string{

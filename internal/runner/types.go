@@ -253,6 +253,7 @@ type AgentTurnRequest struct {
 	ExtraWritableRoots    []string
 	DeliverableKind       string
 	DeliverableRepository string
+	IssueRepository       string
 	Environment           procgroup.Environment
 	cacheStrategy         string
 	projectID             string
