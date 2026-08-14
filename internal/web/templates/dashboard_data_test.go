@@ -524,6 +524,7 @@ func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testin
 		GitHubRESTBudgets: []telemetry.RESTBudget{
 			{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Remaining: 300, Limit: 5000, ResetAt: &coreReset},
 			{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "github-rest:app", EndpointFamily: "worker credential", Resource: "core", Used: 4980, Remaining: 20, Limit: 5000, MinRemainingReserve: 1000, ResetAt: &searchReset},
+			{Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:user", EndpointFamily: "shared credential pool", Resource: "core", Used: 2000, Remaining: 3000, Limit: 5000, MinRemainingReserve: 1250, ResetAt: &coreReset},
 		},
 		RESTUsage: &telemetry.RESTUsage{Contributors: []telemetry.RESTUsageContributor{
 			{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:user", EndpointFamily: "issues", Resource: "core", Count: 4, LastStatus: 200},
@@ -531,8 +532,8 @@ func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testin
 	}
 
 	rows := restBudgetContributorRows(limits)
-	if len(rows) != 2 {
-		t.Fatalf("rows len = %d, want 2: %#v", len(rows), rows)
+	if len(rows) != 3 {
+		t.Fatalf("rows len = %d, want 3: %#v", len(rows), rows)
 	}
 	tests := []struct {
 		index      int
@@ -547,6 +548,7 @@ func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testin
 	}{
 		{index: 0, consumer: telemetry.RESTConsumerOrchestrator, credential: "github-rest:user", family: "issues", resource: "core", count: "4 requests", status: "200", remaining: "300 / 5,000", resetAt: coreReset},
 		{index: 1, consumer: telemetry.RESTConsumerWorker, credential: "github-rest:app", family: "worker credential", resource: "core", count: "4,980 used", status: "reserved", remaining: "20 / 5,000", resetAt: searchReset},
+		{index: 2, consumer: telemetry.RESTConsumerSharedPool, credential: "github-rest:user", family: "shared credential pool", resource: "core", count: "usage indeterminate", status: "governed shared", remaining: "3,000 / 5,000", resetAt: coreReset},
 	}
 	for _, test := range tests {
 		t.Run(test.family, func(t *testing.T) {

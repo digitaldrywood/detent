@@ -160,9 +160,10 @@ tracker:
 polling:
   interval_ms: 120000
 worker:
-  # Put the environment reference in detent.local.yaml for a dedicated bot user.
-  github_token: $DETENT_WORKER_GITHUB_TOKEN
-  github_rest_min_remaining_reserve: 1000
+  # Resolve ambient gh once, then inject only the token into the isolated worker.
+  github_token: gh
+  # Brake workers before the default 1000-request orchestrator dispatch floor.
+  github_rest_min_remaining_reserve: 1250
   github_rest_poll_interval_ms: 60000
 workspace:
   root: /absolute/path/to/detent-workspaces

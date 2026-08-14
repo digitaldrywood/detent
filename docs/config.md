@@ -177,24 +177,32 @@ their review destination. `worker` distributes sessions across optional SSH
 hosts; per-state and global concurrency limits remain under `agent`.
 
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
-enterprise variants, or the host's GitHub CLI login. Leave
-`worker.github_token` empty to run workers with GitHub authentication disabled,
-or point it at a dedicated environment variable in a machine-local overlay:
+enterprise variants, or the host's GitHub CLI configuration. Leave
+`worker.github_token` empty to run workers with no GitHub credential policy.
+Set it to `gh` to resolve `gh auth token` in the Detent process and copy only
+the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
+reference remains available when permission or revocation isolation is useful:
 
 ```yaml
 worker:
-  github_token: $DETENT_WORKER_GITHUB_TOKEN
-  github_rest_min_remaining_reserve: 1000
+  github_token: gh
+  github_rest_min_remaining_reserve: 1250
   github_rest_poll_interval_ms: 60000
 ```
 
-The worker token must belong to a different GitHub user than the orchestrator
-token; a second token for the same user still shares that user's primary REST
-budget and is rejected before launch. Detent verifies the principals through
-GraphQL, probes the dedicated worker REST budget at launch and no more often
-than the configured interval, and stops or refuses a worker at the reserve.
-Worker and orchestrator budget rows carry an explicit `consumer` in telemetry.
-Keep the token itself out of checked-in project files.
+Detent classifies an exact orchestrator token, `gh`, or a different token that
+resolves to the same GitHub user as `shared_budget`: GitHub's primary REST limit
+is per user, so a second token changes permissions and revocation without
+creating another rate-limit pool. Shared-pool telemetry uses
+`consumer: shared_pool` and reports usage attribution as indeterminate rather
+than assigning the pool's global usage to workers. A different GitHub user or
+App installation is `distinct_principal`, the true rate-limit-isolation mode.
+
+The default worker reserve is 1250, above the default orchestrator dispatch
+floor of 1000. Shared-mode workers therefore brake first so dispatch can
+continue. Detent probes the worker credential at launch and no more often than
+the configured interval, and stops or refuses a worker at its reserve. Keep
+literal tokens out of checked-in project files.
 
 `workpad.structured_only` requires machine-readable workpad status instead of
 accepting legacy narrative signals. `dependencies.source` chooses whether
@@ -787,7 +795,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.github_graphql_warn_remaining` | `integer` | `500` | No | must be greater than 0 |
 | `tracker.github_rest_debug_logging` | `boolean` | `false` | No | None |
 | `tracker.github_rest_fanout_max_requests` | `integer` | `80` | No | must be greater than or equal to 0 |
-| `tracker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0 |
+| `tracker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0<br>worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication |
 | `tracker.github_status_source` | `string` | `"project_v2"` | No | must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.github_unstarted_check_threshold_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `tracker.github_webhook_secret` | `string` | `none` | No | None |
@@ -960,9 +968,9 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |
-| `worker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0 |
+| `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0<br>must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
-| `worker.github_token` | `string` | `none` | No | None |
+| `worker.github_token` | `string` | `none` | No | worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
 | `worker.ssh_hosts` | `list<string>` | `[]` | No | None |
 | `workpad` | `object` | `see child fields` | No | None |

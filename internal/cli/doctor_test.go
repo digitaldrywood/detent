@@ -1305,6 +1305,41 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			}
 		})
 	}
+	cfg := workflowconfig.Config{
+		Budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered},
+		Worker: workflowconfig.Worker{GitHubToken: "gh"},
+	}
+	if got, ok := checkDoctorBillingMode("detent", cfg, false); ok {
+		t.Fatalf("checkDoctorBillingMode() = %#v, want worker credential warning excluded", got)
+	}
+}
+
+func TestCheckDoctorWorkerGitHubCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		token    string
+		wantOK   bool
+		wantText string
+	}{
+		{name: "unset does not warn"},
+		{name: "ambient gh warns", token: "gh", wantOK: true, wantText: "shared-budget mode"},
+		{name: "configured token warns about same principal", token: "$DETENT_WORKER_GITHUB_TOKEN", wantOK: true, wantText: "true rate-limit isolation"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Config{Worker: workflowconfig.Worker{GitHubToken: tt.token}}
+			got, ok := checkDoctorWorkerGitHubCredential("detent", cfg)
+			if ok != tt.wantOK {
+				t.Fatalf("checkDoctorWorkerGitHubCredential() ok = %t, want %t: %#v", ok, tt.wantOK, got)
+			}
+			if tt.wantOK && (got.Status != doctorWarn || !strings.Contains(got.Detail+" "+got.Hint, tt.wantText)) {
+				t.Fatalf("checkDoctorWorkerGitHubCredential() = %#v, want warning containing %q", got, tt.wantText)
+			}
+		})
+	}
 }
 
 func TestCheckDoctorMeteredBillingAuth(t *testing.T) {

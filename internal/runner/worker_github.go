@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,13 +27,23 @@ import (
 const (
 	workerGitHubRateLimitBodyMaxBytes = 64 * 1024
 	workerGitHubProbeTimeout          = 10 * time.Second
+	workerGitHubAuthTokenTimeout      = 5 * time.Second
 )
 
 var (
-	ErrWorkerGitHubCredentialShared = errors.New("worker github credential shares the orchestrator credential")
-	ErrWorkerGitHubRESTReserved     = errors.New("worker github REST budget reached reserved headroom")
-	ErrWorkerGitHubBudgetMonitor    = errors.New("worker github REST budget monitor failed")
-	workerGitHubEnvNamePattern      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	ErrWorkerGitHubSharedReserve = errors.New("worker github shared-budget reserve must be above the orchestrator dispatch floor")
+	ErrWorkerGitHubRESTReserved  = errors.New("worker github REST budget reached reserved headroom")
+	ErrWorkerGitHubBudgetMonitor = errors.New("worker github REST budget monitor failed")
+	workerGitHubEnvNamePattern   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+type workerGitHubCredentialMode string
+
+const (
+	workerGitHubCredentialDisabled     workerGitHubCredentialMode = "isolated_disabled"
+	workerGitHubCredentialUnclassified workerGitHubCredentialMode = "unclassified"
+	workerGitHubCredentialShared       workerGitHubCredentialMode = "shared_budget"
+	workerGitHubCredentialDistinct     workerGitHubCredentialMode = "distinct_principal"
 )
 
 type workerGitHubHTTPClient interface {
@@ -41,21 +52,26 @@ type workerGitHubHTTPClient interface {
 
 type workerGitHubProbeContextFactory func(context.Context) (context.Context, context.CancelFunc)
 
+type workerGitHubTokenResolver func(context.Context) (string, error)
+
 type workerGitHubPolicy struct {
-	Enabled            bool
-	Token              string
-	OrchestratorToken  string
-	CredentialIdentity string
-	RateLimitURL       string
-	GraphQLURL         string
-	MinRemaining       int64
-	PollInterval       time.Duration
-	HTTPClient         workerGitHubHTTPClient
-	ProbeContext       workerGitHubProbeContextFactory
-	Poll               <-chan time.Time
-	Logger             *slog.Logger
-	ProjectID          string
-	IssueIdentifier    string
+	Enabled              bool
+	CredentialMode       workerGitHubCredentialMode
+	Token                string
+	OrchestratorToken    string
+	CredentialIdentity   string
+	RateLimitURL         string
+	GraphQLURL           string
+	MinRemaining         int64
+	OrchestratorFloor    int64
+	PollInterval         time.Duration
+	HTTPClient           workerGitHubHTTPClient
+	ProbeContext         workerGitHubProbeContextFactory
+	Poll                 <-chan time.Time
+	Logger               *slog.Logger
+	ProjectID            string
+	IssueIdentifier      string
+	classificationLogged bool
 }
 
 type workerGitHubBudget struct {
@@ -66,15 +82,22 @@ type workerGitHubBudget struct {
 	ObservedAt time.Time
 }
 
-func (r *Runner) workerGitHubPolicy(cfg config.Config, issueIdentifier string) (workerGitHubPolicy, error) {
-	return newWorkerGitHubPolicy(cfg, r.projectID, issueIdentifier, r.lookupEnv, nil, r.logger)
+func (r *Runner) workerGitHubPolicy(ctx context.Context, cfg config.Config, issueIdentifier string) (workerGitHubPolicy, error) {
+	policy, err := newWorkerGitHubPolicy(ctx, cfg, r.projectID, issueIdentifier, r.lookupEnv, nil, nil, r.logger)
+	if err != nil {
+		return workerGitHubPolicy{}, err
+	}
+	return policy.classifyCredential(ctx)
 }
 
 func workerGitHubPolicyName(policy workerGitHubPolicy) string {
-	if policy.Enabled {
-		return "dedicated"
+	if policy.CredentialMode != "" {
+		return string(policy.CredentialMode)
 	}
-	return "isolated_disabled"
+	if policy.Enabled {
+		return string(workerGitHubCredentialUnclassified)
+	}
+	return string(workerGitHubCredentialDisabled)
 }
 
 func mergeAgentRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimits) *telemetry.RateLimits {
@@ -146,9 +169,15 @@ func mergeAgentRESTBudgets(current []telemetry.RESTBudget, incoming []telemetry.
 	return out
 }
 
-func newWorkerGitHubPolicy(cfg config.Config, projectID string, issueIdentifier string, lookupEnv func(string) string, httpClient workerGitHubHTTPClient, logger *slog.Logger) (workerGitHubPolicy, error) {
+func newWorkerGitHubPolicy(ctx context.Context, cfg config.Config, projectID string, issueIdentifier string, lookupEnv func(string) string, resolveGHAuthToken workerGitHubTokenResolver, httpClient workerGitHubHTTPClient, logger *slog.Logger) (workerGitHubPolicy, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
+	}
+	if resolveGHAuthToken == nil {
+		resolveGHAuthToken = defaultWorkerGitHubToken
 	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -160,16 +189,18 @@ func newWorkerGitHubPolicy(cfg config.Config, projectID string, issueIdentifier 
 	rawWorkerToken := strings.TrimSpace(cfg.Worker.GitHubToken)
 	if rawWorkerToken == "" {
 		return workerGitHubPolicy{
-			MinRemaining:    int64(cfg.Worker.GitHubRESTMinReserve),
-			PollInterval:    time.Duration(cfg.Worker.GitHubRESTPollIntervalMS) * time.Millisecond,
-			HTTPClient:      httpClient,
-			Logger:          logger,
-			ProjectID:       strings.TrimSpace(projectID),
-			IssueIdentifier: strings.TrimSpace(issueIdentifier),
+			CredentialMode:    workerGitHubCredentialDisabled,
+			MinRemaining:      int64(cfg.Worker.GitHubRESTMinReserve),
+			OrchestratorFloor: int64(cfg.Tracker.GitHubRESTMinReserve),
+			PollInterval:      time.Duration(cfg.Worker.GitHubRESTPollIntervalMS) * time.Millisecond,
+			HTTPClient:        httpClient,
+			Logger:            logger,
+			ProjectID:         strings.TrimSpace(projectID),
+			IssueIdentifier:   strings.TrimSpace(issueIdentifier),
 		}, nil
 	}
 
-	workerToken, err := resolveWorkerGitHubSecret(rawWorkerToken, lookupEnv)
+	workerToken, err := resolveWorkerGitHubSecret(ctx, rawWorkerToken, lookupEnv, resolveGHAuthToken)
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
@@ -179,27 +210,31 @@ func newWorkerGitHubPolicy(cfg config.Config, projectID string, issueIdentifier 
 		graphQLEndpoint = cfg.Tracker.Endpoint
 		orchestratorCredential = cfg.Tracker.APIKey
 	}
-	orchestratorToken, err := resolveWorkerGitHubSecret(strings.TrimSpace(orchestratorCredential), lookupEnv)
+	orchestratorToken, err := resolveWorkerGitHubSecretReference(strings.TrimSpace(orchestratorCredential), lookupEnv)
 	if err != nil {
 		return workerGitHubPolicy{}, fmt.Errorf("resolve orchestrator github credential for worker isolation: %w", err)
 	}
-	if orchestratorToken != "" && workerToken == orchestratorToken {
-		return workerGitHubPolicy{}, ErrWorkerGitHubCredentialShared
-	}
-
 	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(graphQLEndpoint)
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
 	sum := sha256.Sum256([]byte(endpointIdentity + "\x00" + workerToken))
+	credentialMode := workerGitHubCredentialUnclassified
+	if config.IsGitHubTokenSentinel(rawWorkerToken) || orchestratorToken != "" && workerToken == orchestratorToken {
+		credentialMode = workerGitHubCredentialShared
+	} else if orchestratorToken == "" {
+		credentialMode = workerGitHubCredentialDistinct
+	}
 	return workerGitHubPolicy{
 		Enabled:            true,
+		CredentialMode:     credentialMode,
 		Token:              workerToken,
 		OrchestratorToken:  orchestratorToken,
 		CredentialIdentity: fmt.Sprintf("github-rest:%x", sum[:6]),
 		RateLimitURL:       rateLimitURL,
 		GraphQLURL:         graphQLURL,
 		MinRemaining:       int64(cfg.Worker.GitHubRESTMinReserve),
+		OrchestratorFloor:  int64(cfg.Tracker.GitHubRESTMinReserve),
 		PollInterval:       time.Duration(cfg.Worker.GitHubRESTPollIntervalMS) * time.Millisecond,
 		HTTPClient:         httpClient,
 		ProbeContext:       withWorkerGitHubProbeTimeout,
@@ -213,7 +248,26 @@ func withWorkerGitHubProbeTimeout(ctx context.Context) (context.Context, context
 	return context.WithTimeout(ctx, workerGitHubProbeTimeout)
 }
 
-func resolveWorkerGitHubSecret(value string, lookupEnv func(string) string) (string, error) {
+func resolveWorkerGitHubSecret(ctx context.Context, value string, lookupEnv func(string) string, resolveGHAuthToken workerGitHubTokenResolver) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if config.IsGitHubTokenSentinel(value) {
+		resolved, err := resolveGHAuthToken(ctx)
+		if err != nil {
+			return "", fmt.Errorf("resolve worker.github_token via gh auth token: %w", err)
+		}
+		resolved = strings.TrimSpace(resolved)
+		if resolved == "" {
+			return "", errors.New("resolve worker.github_token via gh auth token: empty token")
+		}
+		return resolved, nil
+	}
+	return resolveWorkerGitHubSecretReference(value, lookupEnv)
+}
+
+func resolveWorkerGitHubSecretReference(value string, lookupEnv func(string) string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil
@@ -227,6 +281,31 @@ func resolveWorkerGitHubSecret(value string, lookupEnv func(string) string) (str
 		return "", fmt.Errorf("worker github credential environment variable %s is empty", name)
 	}
 	return resolved, nil
+}
+
+func defaultWorkerGitHubToken(ctx context.Context) (string, error) {
+	path, err := exec.LookPath("gh")
+	if err != nil {
+		return "", errors.New("gh was not found on PATH")
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, workerGitHubAuthTokenTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, path, "auth", "token") // #nosec G204 -- gh path is PATH-resolved and arguments are fixed.
+	output, err := cmd.CombinedOutput()
+	if commandCtx.Err() != nil {
+		return "", commandCtx.Err()
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return "", fmt.Errorf("gh auth token failed: %w: %s", err, detail)
+		}
+		return "", fmt.Errorf("gh auth token failed: %w", err)
+	}
+	token := strings.TrimSpace(string(output))
+	if token == "" {
+		return "", errors.New("gh auth token returned an empty token")
+	}
+	return token, nil
 }
 
 func workerGitHubEndpoints(graphQLEndpoint string) (string, string, string, error) {
@@ -273,9 +352,11 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 	if !policy.Enabled {
 		return ctx, func() error { return nil }, nil
 	}
-	if err := policy.verifyDistinctPrincipal(ctx); err != nil {
+	classified, err := policy.classifyCredential(ctx)
+	if err != nil {
 		return ctx, func() error { return nil }, err
 	}
+	policy = classified
 	budget, err := policy.probe(ctx)
 	if err != nil {
 		return ctx, func() error { return nil }, fmt.Errorf("%w: %w", ErrWorkerGitHubBudgetMonitor, err)
@@ -337,22 +418,55 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 	return governedCtx, stop, nil
 }
 
-func (p workerGitHubPolicy) verifyDistinctPrincipal(ctx context.Context) error {
-	workerID, err := p.authenticatedUserID(ctx, p.Token)
-	if err != nil {
-		return fmt.Errorf("%w: verify worker credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHubPolicy, error) {
+	if !p.Enabled {
+		p.CredentialMode = workerGitHubCredentialDisabled
+		return p, nil
 	}
-	if strings.TrimSpace(p.OrchestratorToken) == "" {
-		return nil
+	if p.CredentialMode == "" {
+		p.CredentialMode = workerGitHubCredentialUnclassified
 	}
-	orchestratorID, err := p.authenticatedUserID(ctx, p.OrchestratorToken)
-	if err != nil {
-		return fmt.Errorf("%w: verify orchestrator credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+	if p.CredentialMode == workerGitHubCredentialUnclassified && strings.TrimSpace(p.OrchestratorToken) == "" {
+		p.CredentialMode = workerGitHubCredentialDistinct
 	}
-	if workerID == orchestratorID {
-		return ErrWorkerGitHubCredentialShared
+	if p.CredentialMode == workerGitHubCredentialUnclassified {
+		workerID, err := p.authenticatedUserID(ctx, p.Token)
+		if err != nil {
+			return workerGitHubPolicy{}, fmt.Errorf("%w: verify worker credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+		}
+		orchestratorID, err := p.authenticatedUserID(ctx, p.OrchestratorToken)
+		if err != nil {
+			return workerGitHubPolicy{}, fmt.Errorf("%w: verify orchestrator credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+		}
+		if workerID == orchestratorID {
+			p.CredentialMode = workerGitHubCredentialShared
+		} else {
+			p.CredentialMode = workerGitHubCredentialDistinct
+		}
 	}
-	return nil
+	if p.CredentialMode != workerGitHubCredentialShared {
+		return p, nil
+	}
+	if p.MinRemaining <= p.OrchestratorFloor {
+		return workerGitHubPolicy{}, fmt.Errorf("%w: worker reserve=%d orchestrator floor=%d", ErrWorkerGitHubSharedReserve, p.MinRemaining, p.OrchestratorFloor)
+	}
+	if !p.classificationLogged {
+		if p.Logger == nil {
+			p.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		}
+		p.Logger.Warn(
+			"worker github credential uses shared REST budget",
+			"credential_mode", p.CredentialMode,
+			"project_id", p.ProjectID,
+			"issue_identifier", p.IssueIdentifier,
+			"credential_identity", p.CredentialIdentity,
+			"usage_attribution", "indeterminate",
+			"worker_reserve", p.MinRemaining,
+			"orchestrator_dispatch_floor", p.OrchestratorFloor,
+		)
+		p.classificationLogged = true
+	}
+	return p, nil
 }
 
 func (p workerGitHubPolicy) authenticatedUserID(ctx context.Context, token string) (int64, error) {
@@ -453,9 +567,17 @@ func (p workerGitHubPolicy) probeContext(ctx context.Context) (context.Context, 
 }
 
 func (p workerGitHubPolicy) observe(budget workerGitHubBudget, onUpdate AgentUpdateHandler) error {
+	consumer := telemetry.RESTConsumerWorker
+	endpointFamily := "worker credential"
+	usageAttribution := "worker"
+	if p.CredentialMode == workerGitHubCredentialShared {
+		consumer = telemetry.RESTConsumerSharedPool
+		endpointFamily = "shared credential pool"
+		usageAttribution = "indeterminate"
+	}
 	p.Logger.Info(
 		"github rest budget summary",
-		"consumer", telemetry.RESTConsumerWorker,
+		"consumer", consumer,
 		"project_id", p.ProjectID,
 		"issue_identifier", p.IssueIdentifier,
 		"credential_identity", p.CredentialIdentity,
@@ -463,6 +585,7 @@ func (p workerGitHubPolicy) observe(budget workerGitHubBudget, onUpdate AgentUpd
 		"used", budget.Used,
 		"limit", budget.Limit,
 		"reserve", p.MinRemaining,
+		"usage_attribution", usageAttribution,
 		"reset_at", budget.ResetAt,
 	)
 	if onUpdate == nil {
@@ -473,9 +596,9 @@ func (p workerGitHubPolicy) observe(budget workerGitHubBudget, onUpdate AgentUpd
 	return onUpdate(AgentUpdate{
 		Type: AgentUpdateRateLimits,
 		RateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{
-			Consumer:            telemetry.RESTConsumerWorker,
+			Consumer:            consumer,
 			CredentialIdentity:  p.CredentialIdentity,
-			EndpointFamily:      "worker credential",
+			EndpointFamily:      endpointFamily,
 			Resource:            "core",
 			Remaining:           budget.Remaining,
 			Used:                budget.Used,
@@ -493,14 +616,22 @@ func (p workerGitHubPolicy) reserveError(budget workerGitHubBudget) error {
 	}
 	p.Logger.Warn(
 		"worker github rest budget reached reserved headroom",
-		"consumer", telemetry.RESTConsumerWorker,
+		"consumer", p.budgetConsumer(),
 		"project_id", p.ProjectID,
 		"issue_identifier", p.IssueIdentifier,
 		"credential_identity", p.CredentialIdentity,
 		"remaining", budget.Remaining,
-		"orchestrator_reserved_headroom", p.MinRemaining,
+		"worker_reserved_headroom", p.MinRemaining,
+		"orchestrator_dispatch_floor", p.OrchestratorFloor,
 		"limit", budget.Limit,
 		"reset_at", budget.ResetAt,
 	)
 	return fmt.Errorf("%w: remaining=%s reserve=%s reset_at=%s", ErrWorkerGitHubRESTReserved, strconv.FormatInt(budget.Remaining, 10), strconv.FormatInt(p.MinRemaining, 10), budget.ResetAt.Format(time.RFC3339))
+}
+
+func (p workerGitHubPolicy) budgetConsumer() string {
+	if p.CredentialMode == workerGitHubCredentialShared {
+		return telemetry.RESTConsumerSharedPool
+	}
+	return telemetry.RESTConsumerWorker
 }

@@ -330,6 +330,10 @@ func checkDoctorProjectWithProgress(
 	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config, false); ok {
 		checks = append(checks, billingCheck)
 	}
+	setDoctorCurrentCheck("Project " + id + " worker GitHub credential")
+	if workerGitHubCheck, ok := checkDoctorWorkerGitHubCredential(id, workflow.Config); ok {
+		checks = append(checks, workerGitHubCheck)
+	}
 	setDoctorCurrentCheck("Project " + id + " progress brake")
 	checks = append(checks, checkDoctorProgressBrake(id, workflow.Config))
 	if strings.TrimSpace(storePath) != "" {
@@ -850,7 +854,7 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAu
 				Hint:   "Set budget.billing_mode: subscription to make every notional USD brake inert. Do not rely on budget.enabled: false; it only disables budget.per_day_max_usd and budget.per_issue_max_usd.",
 			}, true
 		}
-		warnings := cfg.ValidationWarnings()
+		warnings := validationWarningsWithPrefix(cfg.ValidationWarnings(), "budget.")
 		if len(warnings) == 0 {
 			return doctorCheck{}, false
 		}
@@ -881,6 +885,29 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAu
 		Detail: modeDetail + " and USD enforcement is inert; Detent will not refuse or park work from: " + strings.Join(controls, ", "),
 		Hint:   "Use provider rate-window pacing and token or outcome-based brakes for subscription auth; set billing_mode=metered only for marginal API billing.",
 	}, true
+}
+
+func checkDoctorWorkerGitHubCredential(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
+	warnings := validationWarningsWithPrefix(cfg.ValidationWarnings(), "worker.github_token:")
+	if len(warnings) == 0 {
+		return doctorCheck{}, false
+	}
+	return doctorCheck{
+		Name:   "Project " + id + " worker GitHub credential",
+		Status: doctorWarn,
+		Detail: "configuration warning: " + strings.Join(warnings, "; "),
+		Hint:   "Keep the worker REST reserve above the orchestrator dispatch floor; use a different GitHub user or App installation only when true rate-limit isolation is required.",
+	}, true
+}
+
+func validationWarningsWithPrefix(warnings []string, prefix string) []string {
+	filtered := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if strings.HasPrefix(warning, prefix) {
+			filtered = append(filtered, warning)
+		}
+	}
+	return filtered
 }
 
 func checkDoctorProgressBrake(id string, cfg workflowconfig.Config) doctorCheck {

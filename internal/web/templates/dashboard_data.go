@@ -7308,6 +7308,9 @@ func restBudgetConsumerLabel(consumer string) string {
 }
 
 func restBudgetRowCount(budget telemetry.RESTBudget, contributor telemetry.RESTUsageContributor) string {
+	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerSharedPool {
+		return "usage indeterminate"
+	}
 	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerWorker {
 		return formatInt(budget.Used) + " used"
 	}
@@ -7320,6 +7323,9 @@ func restBudgetRowStatus(budget telemetry.RESTBudget, contributor telemetry.REST
 	}
 	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerWorker {
 		return "governed"
+	}
+	if restBudgetConsumerLabel(budget.Consumer) == telemetry.RESTConsumerSharedPool {
+		return "governed shared"
 	}
 	return restContributorStatus(contributor)
 }

@@ -38,7 +38,7 @@
 #   github_graphql_warn_remaining: 500
 #   # tracker.github_graphql_min_remaining_reserve | type: integer | default: 1000 | required: No | validation: must be greater than 0
 #   github_graphql_min_remaining_reserve: 1000
-#   # tracker.github_rest_min_remaining_reserve | type: integer | default: 1000 | required: No | validation: must be greater than 0
+#   # tracker.github_rest_min_remaining_reserve | type: integer | default: 1000 | required: No | validation: must be greater than 0; worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication
 #   github_rest_min_remaining_reserve: 1000
 #   # tracker.github_rest_fanout_max_requests | type: integer | default: 80 | required: No | validation: must be greater than or equal to 0
 #   github_rest_fanout_max_requests: 80
@@ -515,10 +515,10 @@
 #   ssh_hosts: []
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
-#   # worker.github_token | type: string | default: none | required: No | validation: None
+#   # worker.github_token | type: string | default: none | required: No | validation: worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication
 #   github_token: null
-#   # worker.github_rest_min_remaining_reserve | type: integer | default: 1000 | required: No | validation: must be greater than 0
-#   github_rest_min_remaining_reserve: 1000
+#   # worker.github_rest_min_remaining_reserve | type: integer | default: 1250 | required: No | validation: must be greater than 0; must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication
+#   github_rest_min_remaining_reserve: 1250
 #   # worker.github_rest_poll_interval_ms | type: integer | default: 60000 | required: No | validation: must be greater than or equal to 60000
 #   github_rest_poll_interval_ms: 60000
 # # agent | type: object | default: see child fields | required: No | validation: None

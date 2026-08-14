@@ -137,34 +137,50 @@ func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
 	}
 }
 
+func TestWorkerGitHubDefaultReserveBrakesBeforeOrchestrator(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	if cfg.Worker.GitHubRESTMinReserve <= cfg.Tracker.GitHubRESTMinReserve {
+		t.Fatalf("worker reserve = %d, want above orchestrator floor %d", cfg.Worker.GitHubRESTMinReserve, cfg.Tracker.GitHubRESTMinReserve)
+	}
+}
+
 func TestWorkerGitHubPolicyValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		mutate func(*Config)
-		want   string
+		name        string
+		mutate      func(*Config)
+		wantProblem string
 	}{
 		{
 			name: "reserve must be positive",
 			mutate: func(cfg *Config) {
 				cfg.Worker.GitHubRESTMinReserve = 0
 			},
-			want: "worker.github_rest_min_remaining_reserve must be greater than 0",
+			wantProblem: "worker.github_rest_min_remaining_reserve must be greater than 0",
 		},
 		{
 			name: "poll interval protects REST budget",
 			mutate: func(cfg *Config) {
 				cfg.Worker.GitHubRESTPollIntervalMS = 59999
 			},
-			want: "worker.github_rest_poll_interval_ms must be greater than or equal to 60000",
+			wantProblem: "worker.github_rest_poll_interval_ms must be greater than or equal to 60000",
 		},
 		{
-			name: "ambient gh credential rejected",
+			name: "ambient gh reserve must exceed orchestrator floor",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubToken = "gh"
+				cfg.Worker.GitHubRESTMinReserve = cfg.Tracker.GitHubRESTMinReserve
+			},
+			wantProblem: "worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication",
+		},
+		{
+			name: "ambient gh accepted with worker-first reserve",
 			mutate: func(cfg *Config) {
 				cfg.Worker.GitHubToken = "gh"
 			},
-			want: "worker.github_token must use a dedicated credential instead of ambient gh authentication",
 		},
 	}
 
@@ -175,8 +191,46 @@ func TestWorkerGitHubPolicyValidation(t *testing.T) {
 			cfg.Tracker.Kind = TrackerMemory
 			tt.mutate(&cfg)
 			err := cfg.Validate()
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Validate() error = %v, want containing %q", err, tt.want)
+			if tt.wantProblem == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantProblem) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.wantProblem)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubPolicyValidationWarnings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{name: "unset remains disabled"},
+		{name: "ambient gh warns", token: "gh", want: true},
+		{name: "configured token warns about same principal", token: "$DETENT_WORKER_GITHUB_TOKEN", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Worker.GitHubToken = tt.token
+			warnings := strings.Join(cfg.ValidationWarnings(), "; ")
+			if got := warnings != ""; got != tt.want {
+				t.Fatalf("ValidationWarnings() = %q, want warning=%t", warnings, tt.want)
+			}
+			if tt.want {
+				for _, want := range []string{"shared-budget mode", "attribution is indeterminate", "workers brake before", "different GitHub user or App installation"} {
+					if !strings.Contains(warnings, want) {
+						t.Fatalf("ValidationWarnings() = %q, want containing %q", warnings, want)
+					}
+				}
 			}
 		})
 	}

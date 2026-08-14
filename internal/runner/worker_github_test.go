@@ -29,14 +29,18 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 		workerToken       string
 		orchestratorToken string
 		environment       map[string]string
+		resolveGH         workerGitHubTokenResolver
 		wantEnabled       bool
-		wantErr           error
+		wantMode          workerGitHubCredentialMode
+		wantToken         string
 		wantErrText       string
 	}{
-		{name: "disabled isolates ambient authentication"},
-		{name: "dedicated literal", workerToken: "worker-token", orchestratorToken: "orchestrator-token", wantEnabled: true},
-		{name: "dedicated environment reference", workerToken: "$WORKER_TOKEN", orchestratorToken: "orchestrator-token", environment: map[string]string{"WORKER_TOKEN": "worker-token"}, wantEnabled: true},
-		{name: "shared credential rejected", workerToken: "$WORKER_TOKEN", orchestratorToken: "shared-token", environment: map[string]string{"WORKER_TOKEN": "shared-token"}, wantErr: ErrWorkerGitHubCredentialShared},
+		{name: "unset remains disabled", wantMode: workerGitHubCredentialDisabled},
+		{name: "dedicated literal", workerToken: "worker-token", orchestratorToken: "orchestrator-token", wantEnabled: true, wantMode: workerGitHubCredentialUnclassified, wantToken: "worker-token"},
+		{name: "dedicated environment reference", workerToken: "$WORKER_TOKEN", orchestratorToken: "orchestrator-token", environment: map[string]string{"WORKER_TOKEN": "worker-token"}, wantEnabled: true, wantMode: workerGitHubCredentialUnclassified, wantToken: "worker-token"},
+		{name: "exact token classifies shared", workerToken: "$WORKER_TOKEN", orchestratorToken: "shared-token", environment: map[string]string{"WORKER_TOKEN": "shared-token"}, wantEnabled: true, wantMode: workerGitHubCredentialShared, wantToken: "shared-token"},
+		{name: "gh sentinel resolves", workerToken: "gh", orchestratorToken: "ambient-token", resolveGH: func(context.Context) (string, error) { return " ambient-token\n", nil }, wantEnabled: true, wantMode: workerGitHubCredentialShared, wantToken: "ambient-token"},
+		{name: "gh sentinel resolution failure", workerToken: "gh", resolveGH: func(context.Context) (string, error) { return "", errors.New("not logged in") }, wantErrText: "resolve worker.github_token via gh auth token: not logged in"},
 		{name: "missing referenced credential", workerToken: "$WORKER_TOKEN", orchestratorToken: "orchestrator-token", wantErrText: "WORKER_TOKEN is empty"},
 	}
 
@@ -48,15 +52,10 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 			cfg.Tracker.Endpoint = "https://api.github.com/graphql"
 			cfg.Tracker.APIKey = tt.orchestratorToken
 			cfg.Worker.GitHubToken = tt.workerToken
-			policy, err := newWorkerGitHubPolicy(cfg, "detent", "digitaldrywood/detent#1724", func(key string) string {
+			var logs bytes.Buffer
+			policy, err := newWorkerGitHubPolicy(context.Background(), cfg, "detent", "digitaldrywood/detent#1724", func(key string) string {
 				return tt.environment[key]
-			}, nil, nil)
-			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("newWorkerGitHubPolicy() error = %v, want %v", err, tt.wantErr)
-				}
-				return
-			}
+			}, tt.resolveGH, nil, slog.New(slog.NewTextHandler(&logs, nil)))
 			if tt.wantErrText != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
 					t.Fatalf("newWorkerGitHubPolicy() error = %v, want containing %q", err, tt.wantErrText)
@@ -69,7 +68,20 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 			if policy.Enabled != tt.wantEnabled {
 				t.Fatalf("Enabled = %t, want %t", policy.Enabled, tt.wantEnabled)
 			}
-			if tt.wantEnabled && (!strings.HasPrefix(policy.CredentialIdentity, "github-rest:") || policy.Token != "worker-token") {
+			if policy.CredentialMode != tt.wantMode {
+				t.Fatalf("CredentialMode = %q, want %q", policy.CredentialMode, tt.wantMode)
+			}
+			if tt.wantMode == workerGitHubCredentialShared {
+				classified, classifyErr := policy.classifyCredential(context.Background())
+				if classifyErr != nil {
+					t.Fatalf("classifyCredential() error = %v", classifyErr)
+				}
+				policy = classified
+				if !strings.Contains(logs.String(), "worker github credential uses shared REST budget") {
+					t.Fatalf("logs = %q, want shared-budget warning", logs.String())
+				}
+			}
+			if tt.wantEnabled && (!strings.HasPrefix(policy.CredentialIdentity, "github-rest:") || policy.Token != tt.wantToken) {
 				t.Fatalf("policy = %#v, want redacted identity and resolved worker token", policy)
 			}
 			if tt.wantEnabled {
@@ -92,7 +104,7 @@ func TestNewWorkerGitHubPolicyUsesGitHubEndpointForNonGitHubTracker(t *testing.T
 	cfg.Tracker.Endpoint = "https://api.linear.app/graphql"
 	cfg.Tracker.APIKey = "linear-secret"
 	cfg.Worker.GitHubToken = "worker-token"
-	policy, err := newWorkerGitHubPolicy(cfg, "detent", "digitaldrywood/detent#1724", func(string) string { return "" }, nil, nil)
+	policy, err := newWorkerGitHubPolicy(context.Background(), cfg, "detent", "digitaldrywood/detent#1724", func(string) string { return "" }, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newWorkerGitHubPolicy() error = %v", err)
 	}
@@ -116,6 +128,7 @@ func TestConfigureWorkerGitHubEnvironment(t *testing.T) {
 	}{
 		{name: "disabled clears ambient tokens"},
 		{name: "dedicated token overrides ambient tokens", token: "worker-token"},
+		{name: "resolved ambient token overrides ambient tokens", token: "ambient-token"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,6 +163,48 @@ func TestConfigureWorkerGitHubEnvironment(t *testing.T) {
 			}
 			if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
 				t.Fatalf("worker github config directory = %v, %v", info, err)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubSentinelResolvesAndInjects(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		sentinel string
+	}{
+		{name: "gh", sentinel: "gh"},
+		{name: "gh auth alias", sentinel: "${gh auth token}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Default()
+			cfg.Worker.GitHubToken = tt.sentinel
+			policy, err := newWorkerGitHubPolicy(context.Background(), cfg, "detent", "digitaldrywood/detent#1796", nil, func(context.Context) (string, error) {
+				return "resolved-token", nil
+			}, nil, nil)
+			if err != nil {
+				t.Fatalf("newWorkerGitHubPolicy() error = %v", err)
+			}
+			request := AgentTurnRequest{
+				TempDir: t.TempDir(),
+				Environment: procgroup.Environment{Variables: map[string]string{
+					"GH_CONFIG_DIR": "/ambient/config",
+					"GH_TOKEN":      "ambient-token",
+				}},
+				workerGitHub: policy,
+			}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatalf("configureWorkerGitHubEnvironment() error = %v", err)
+			}
+			if request.Environment.Variables["GH_TOKEN"] != "resolved-token" || request.Environment.Variables["GITHUB_TOKEN"] != "resolved-token" {
+				t.Fatalf("worker token environment = %#v, want resolved token", request.Environment.Variables)
+			}
+			if request.Environment.Variables["GH_CONFIG_DIR"] == "/ambient/config" {
+				t.Fatal("GH_CONFIG_DIR preserved ambient GitHub CLI configuration")
 			}
 		})
 	}
@@ -197,38 +252,56 @@ func TestRunAgentBackendTurnAppliesWorkerGitHubPolicy(t *testing.T) {
 	}
 }
 
-func TestWorkerGitHubGovernorPublishesAttributedBudget(t *testing.T) {
+func TestWorkerGitHubGovernorPublishesBudgetAttribution(t *testing.T) {
 	t.Parallel()
 
-	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
-	defer server.Close()
-	var logs bytes.Buffer
-	policy := workerGitHubTestPolicy(server, &logs)
-	var update AgentUpdate
-	governedCtx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, func(got AgentUpdate) error {
-		update = got
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("startWorkerGitHubGovernor() error = %v", err)
+	tests := []struct {
+		name            string
+		mode            workerGitHubCredentialMode
+		reserve         int64
+		wantConsumer    string
+		wantFamily      string
+		wantAttribution string
+	}{
+		{name: "distinct principal attributes worker pool", mode: workerGitHubCredentialDistinct, reserve: 1000, wantConsumer: telemetry.RESTConsumerWorker, wantFamily: "worker credential", wantAttribution: "worker"},
+		{name: "shared principal leaves pool attribution indeterminate", mode: workerGitHubCredentialShared, reserve: 1250, wantConsumer: telemetry.RESTConsumerSharedPool, wantFamily: "shared credential pool", wantAttribution: "indeterminate"},
 	}
-	if governedCtx == nil {
-		t.Fatal("governed context is nil")
-	}
-	if err := stop(); err != nil {
-		t.Fatalf("stop governor error = %v", err)
-	}
-	if update.RateLimits == nil || len(update.RateLimits.GitHubRESTBudgets) != 1 {
-		t.Fatalf("RateLimits = %#v, want worker budget", update.RateLimits)
-	}
-	budget := update.RateLimits.GitHubRESTBudgets[0]
-	if budget.Consumer != telemetry.RESTConsumerWorker || budget.Remaining != 4200 || budget.MinRemainingReserve != 1000 {
-		t.Fatalf("budget = %#v, want attributed governed worker budget", budget)
-	}
-	for _, want := range []string{"consumer=worker", "remaining=4200", "reserve=1000", "credential_identity=github-rest:"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("logs = %q, want containing %q", logs.String(), want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
+			t.Cleanup(server.Close)
+			var logs bytes.Buffer
+			policy := workerGitHubTestPolicy(server, &logs)
+			policy.CredentialMode = tt.mode
+			policy.MinRemaining = tt.reserve
+			var update AgentUpdate
+			governedCtx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, func(got AgentUpdate) error {
+				update = got
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("startWorkerGitHubGovernor() error = %v", err)
+			}
+			if governedCtx == nil {
+				t.Fatal("governed context is nil")
+			}
+			if err := stop(); err != nil {
+				t.Fatalf("stop governor error = %v", err)
+			}
+			if update.RateLimits == nil || len(update.RateLimits.GitHubRESTBudgets) != 1 {
+				t.Fatalf("RateLimits = %#v, want one governed budget", update.RateLimits)
+			}
+			budget := update.RateLimits.GitHubRESTBudgets[0]
+			if budget.Consumer != tt.wantConsumer || budget.EndpointFamily != tt.wantFamily || budget.Remaining != 4200 || budget.MinRemainingReserve != tt.reserve {
+				t.Fatalf("budget = %#v, want consumer %q family %q reserve %d", budget, tt.wantConsumer, tt.wantFamily, tt.reserve)
+			}
+			for _, want := range []string{"consumer=" + tt.wantConsumer, "remaining=4200", "reserve=" + strconv.FormatInt(tt.reserve, 10), "credential_identity=github-rest:", "usage_attribution=" + tt.wantAttribution} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("logs = %q, want containing %q", logs.String(), want)
+				}
+			}
+		})
 	}
 }
 
@@ -237,14 +310,16 @@ func TestWorkerGitHubGovernorStopsAtReserve(t *testing.T) {
 
 	server := workerGitHubRateLimitServer(t, func(call int64) int64 {
 		if call == 1 {
-			return 1200
+			return 1300
 		}
-		return 1000
+		return 1200
 	})
-	defer server.Close()
+	t.Cleanup(server.Close)
 	var logs bytes.Buffer
 	poll := make(chan time.Time, 1)
 	policy := workerGitHubTestPolicy(server, &logs)
+	policy.CredentialMode = workerGitHubCredentialShared
+	policy.MinRemaining = 1250
 	policy.Poll = poll
 	governedCtx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
 	if err != nil {
@@ -258,8 +333,10 @@ func TestWorkerGitHubGovernorStopsAtReserve(t *testing.T) {
 	if err := stop(); !errors.Is(err, ErrWorkerGitHubRESTReserved) {
 		t.Fatalf("stop governor error = %v, want ErrWorkerGitHubRESTReserved", err)
 	}
-	if !strings.Contains(logs.String(), "orchestrator_reserved_headroom=1000") {
-		t.Fatalf("logs = %q, want reserved headroom warning", logs.String())
+	for _, want := range []string{"remaining=1200", "worker_reserved_headroom=1250", "orchestrator_dispatch_floor=1000"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want containing %q", logs.String(), want)
+		}
 	}
 }
 
@@ -274,21 +351,75 @@ func TestWorkerGitHubGovernorRefusesLaunchAtReserve(t *testing.T) {
 	if !errors.Is(err, ErrWorkerGitHubRESTReserved) {
 		t.Fatalf("startWorkerGitHubGovernor() error = %v, want ErrWorkerGitHubRESTReserved", err)
 	}
-	if !strings.Contains(logs.String(), "orchestrator_reserved_headroom=1000") {
+	if !strings.Contains(logs.String(), "worker_reserved_headroom=1000") {
 		t.Fatalf("logs = %q, want reserved headroom warning", logs.String())
 	}
 }
 
-func TestWorkerGitHubGovernorRejectsTokensForSameUser(t *testing.T) {
+func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 	t.Parallel()
 
-	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
-	defer server.Close()
-	policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-	policy.OrchestratorToken = "orchestrator-token"
-	_, _, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
-	if !errors.Is(err, ErrWorkerGitHubCredentialShared) {
-		t.Fatalf("startWorkerGitHubGovernor() error = %v, want ErrWorkerGitHubCredentialShared", err)
+	tests := []struct {
+		name               string
+		orchestratorUserID int64
+		wantMode           workerGitHubCredentialMode
+		wantWarning        bool
+	}{
+		{name: "same principal uses shared budget", orchestratorUserID: 42, wantMode: workerGitHubCredentialShared, wantWarning: true},
+		{name: "distinct principal remains isolated", orchestratorUserID: 84, wantMode: workerGitHubCredentialDistinct},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := workerGitHubPrincipalServer(t, tt.orchestratorUserID)
+			t.Cleanup(server.Close)
+			var logs bytes.Buffer
+			policy := workerGitHubTestPolicy(server, &logs)
+			policy.CredentialMode = workerGitHubCredentialUnclassified
+			policy.OrchestratorToken = "orchestrator-token"
+			policy.MinRemaining = 1250
+			classified, err := policy.classifyCredential(context.Background())
+			if err != nil {
+				t.Fatalf("classifyCredential() error = %v", err)
+			}
+			if classified.CredentialMode != tt.wantMode {
+				t.Fatalf("CredentialMode = %q, want %q", classified.CredentialMode, tt.wantMode)
+			}
+			warning := strings.Contains(logs.String(), "worker github credential uses shared REST budget")
+			if warning != tt.wantWarning {
+				t.Fatalf("shared-budget warning present = %t, want %t: %q", warning, tt.wantWarning, logs.String())
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubSharedReserveValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mode      workerGitHubCredentialMode
+		reserve   int64
+		wantError bool
+	}{
+		{name: "shared reserve above floor", mode: workerGitHubCredentialShared, reserve: 1250},
+		{name: "shared reserve equal to floor", mode: workerGitHubCredentialShared, reserve: 1000, wantError: true},
+		{name: "distinct reserve equal to floor remains valid", mode: workerGitHubCredentialDistinct, reserve: 1000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			policy := workerGitHubPolicy{
+				Enabled:           true,
+				CredentialMode:    tt.mode,
+				MinRemaining:      tt.reserve,
+				OrchestratorFloor: 1000,
+			}
+			_, err := policy.classifyCredential(context.Background())
+			if got := errors.Is(err, ErrWorkerGitHubSharedReserve); got != tt.wantError {
+				t.Fatalf("classifyCredential() error = %v, shared reserve error=%t, want %t", err, got, tt.wantError)
+			}
+		})
 	}
 }
 
@@ -381,14 +512,33 @@ func workerGitHubRateLimitServer(t *testing.T, remaining func(int64) int64) *htt
 	}))
 }
 
+func workerGitHubPrincipalServer(t *testing.T, orchestratorUserID int64) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			t.Errorf("path = %q, want /graphql", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		userID := int64(42)
+		if r.Header.Get("Authorization") == "Bearer orchestrator-token" {
+			userID = orchestratorUserID
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":%d}}}`, userID)
+	}))
+}
+
 func workerGitHubTestPolicy(server *httptest.Server, logs *bytes.Buffer) workerGitHubPolicy {
 	return workerGitHubPolicy{
 		Enabled:            true,
+		CredentialMode:     workerGitHubCredentialDistinct,
 		Token:              "worker-token",
 		CredentialIdentity: "github-rest:worker",
 		RateLimitURL:       server.URL + "/rate_limit",
 		GraphQLURL:         server.URL + "/graphql",
 		MinRemaining:       1000,
+		OrchestratorFloor:  1000,
 		PollInterval:       time.Hour,
 		HTTPClient:         server.Client(),
 		Logger:             slog.New(slog.NewTextHandler(logs, nil)),
