@@ -37,7 +37,7 @@ workspace:
   auto_branch: true
 
 # Reuse ambient gh authentication through an isolated worker config directory.
-# Workers brake above the orchestrator's 1000-request dispatch floor.
+# When principals match, workers brake above the 1000-request dispatch floor.
 worker:
   github_token: gh
   github_rest_min_remaining_reserve: 1250

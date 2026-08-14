@@ -564,15 +564,6 @@ func validationRules(fields []fieldDetails) (map[string][]string, error) {
 		return nil, err
 	}
 	problems = append(problems, optionProblems...)
-	sharedWorker := probeBase()
-	sharedWorker.Worker.GitHubToken = "gh"
-	sharedWorker.Worker.GitHubRESTMinReserve = sharedWorker.Tracker.GitHubRESTMinReserve
-	sharedWorkerProblems, err := validateNormalized(sharedWorker)
-	if err != nil {
-		return nil, err
-	}
-	problems = append(problems, sharedWorkerProblems...)
-
 	rules := make(map[string][]string, len(fields))
 	ordered := append([]fieldDetails(nil), fields...)
 	sort.SliceStable(ordered, func(left int, right int) bool {

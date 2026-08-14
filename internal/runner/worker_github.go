@@ -220,7 +220,7 @@ func newWorkerGitHubPolicy(ctx context.Context, cfg config.Config, projectID str
 	}
 	sum := sha256.Sum256([]byte(endpointIdentity + "\x00" + workerToken))
 	credentialMode := workerGitHubCredentialUnclassified
-	if config.IsGitHubTokenSentinel(rawWorkerToken) || orchestratorToken != "" && workerToken == orchestratorToken {
+	if orchestratorToken != "" && workerToken == orchestratorToken {
 		credentialMode = workerGitHubCredentialShared
 	} else if orchestratorToken == "" {
 		credentialMode = workerGitHubCredentialDistinct

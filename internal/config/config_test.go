@@ -169,17 +169,16 @@ func TestWorkerGitHubPolicyValidation(t *testing.T) {
 			wantProblem: "worker.github_rest_poll_interval_ms must be greater than or equal to 60000",
 		},
 		{
-			name: "ambient gh reserve must exceed orchestrator floor",
-			mutate: func(cfg *Config) {
-				cfg.Worker.GitHubToken = "gh"
-				cfg.Worker.GitHubRESTMinReserve = cfg.Tracker.GitHubRESTMinReserve
-			},
-			wantProblem: "worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication",
-		},
-		{
 			name: "ambient gh accepted with worker-first reserve",
 			mutate: func(cfg *Config) {
 				cfg.Worker.GitHubToken = "gh"
+			},
+		},
+		{
+			name: "ambient gh defers equal reserve validation until principal classification",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubToken = "gh"
+				cfg.Worker.GitHubRESTMinReserve = cfg.Tracker.GitHubRESTMinReserve
 			},
 		},
 	}

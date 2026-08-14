@@ -533,7 +533,7 @@ func (c Config) ValidationWarnings() []string {
 	}
 	if token := strings.TrimSpace(c.Worker.GitHubToken); token != "" {
 		if IsGitHubTokenSentinel(token) {
-			warnings = append(warnings, "worker.github_token: ambient gh authentication opts into shared-budget mode; primary REST usage attribution is indeterminate and workers brake before the orchestrator dispatch floor; use a different GitHub user or App installation for true rate-limit isolation")
+			warnings = append(warnings, "worker.github_token: ambient gh authentication is classified at launch; when it resolves to the orchestrator's GitHub principal it uses shared-budget mode, primary REST usage attribution is indeterminate, and workers brake before the orchestrator dispatch floor; use a different GitHub user or App installation for true rate-limit isolation")
 		} else {
 			warnings = append(warnings, "worker.github_token: credential principals are classified at launch; a token resolving to the orchestrator's GitHub principal uses shared-budget mode, primary REST usage attribution is indeterminate, and workers brake before the orchestrator dispatch floor; use a different GitHub user or App installation for true rate-limit isolation")
 		}
@@ -1505,9 +1505,6 @@ func (c *Config) Validate() error {
 	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
 	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
 		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
-	}
-	if IsGitHubTokenSentinel(c.Worker.GitHubToken) && c.Worker.GitHubRESTMinReserve <= c.Tracker.GitHubRESTMinReserve {
-		problems = append(problems, "worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication")
 	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)

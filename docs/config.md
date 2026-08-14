@@ -190,9 +190,9 @@ worker:
   github_rest_poll_interval_ms: 60000
 ```
 
-Detent classifies an exact orchestrator token, `gh`, or a different token that
-resolves to the same GitHub user as `shared_budget`: GitHub's primary REST limit
-is per user, so a second token changes permissions and revocation without
+After resolving `gh`, Detent classifies an exact orchestrator token or any token
+that resolves to the same GitHub user as `shared_budget`: GitHub's primary REST
+limit is per user, so a second token changes permissions and revocation without
 creating another rate-limit pool. Shared-pool telemetry uses
 `consumer: shared_pool` and reports usage attribution as indeterminate rather
 than assigning the pool's global usage to workers. A different GitHub user or
@@ -795,7 +795,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.github_graphql_warn_remaining` | `integer` | `500` | No | must be greater than 0 |
 | `tracker.github_rest_debug_logging` | `boolean` | `false` | No | None |
 | `tracker.github_rest_fanout_max_requests` | `integer` | `80` | No | must be greater than or equal to 0 |
-| `tracker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0<br>worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication |
+| `tracker.github_rest_min_remaining_reserve` | `integer` | `1000` | No | must be greater than 0 |
 | `tracker.github_status_source` | `string` | `"project_v2"` | No | must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.github_unstarted_check_threshold_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `tracker.github_webhook_secret` | `string` | `none` | No | None |
@@ -968,9 +968,9 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |
-| `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0<br>must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication |
+| `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
-| `worker.github_token` | `string` | `none` | No | worker.github_rest_min_remaining_reserve must be greater than tracker.github_rest_min_remaining_reserve when worker.github_token uses ambient gh authentication |
+| `worker.github_token` | `string` | `none` | No | None |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
 | `worker.ssh_hosts` | `list<string>` | `[]` | No | None |
 | `workpad` | `object` | `see child fields` | No | None |

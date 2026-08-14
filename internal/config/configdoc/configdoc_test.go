@@ -80,7 +80,6 @@ func TestConfigDocumentation(t *testing.T) {
 			{path: "agents.routes[].selector.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
 			{path: "tracker.github_app_id", required: "Conditional", ruleDetail: "required for github app"},
 			{path: "backlog_admission.target_state", required: "Conditional", ruleDetail: "configured workflow state"},
-			{path: "worker.github_rest_min_remaining_reserve", required: "No", ruleDetail: "greater than tracker.github_rest_min_remaining_reserve"},
 		}
 		for _, test := range tests {
 			test := test
