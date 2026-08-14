@@ -134,6 +134,7 @@ func mcpElicitationPolicy(allowlist []MCPElicitationRule, req runner.AgentTurnRe
 	return MCPElicitationPolicy{
 		DeliverableKind: strings.TrimSpace(req.DeliverableKind),
 		Repository:      strings.TrimSpace(req.DeliverableRepository),
+		IssueRepository: strings.TrimSpace(req.IssueRepository),
 		Allowlist:       append([]MCPElicitationRule(nil), allowlist...),
 	}
 }

@@ -215,6 +215,7 @@ type MCPElicitationRule struct {
 type MCPElicitationPolicy struct {
 	DeliverableKind string
 	Repository      string
+	IssueRepository string
 	Allowlist       []MCPElicitationRule
 }
 
@@ -1260,6 +1261,7 @@ func newMCPElicitationState(policy MCPElicitationPolicy, onUpdate UpdateHandler)
 		policy: MCPElicitationPolicy{
 			DeliverableKind: strings.TrimSpace(policy.DeliverableKind),
 			Repository:      strings.TrimSpace(policy.Repository),
+			IssueRepository: strings.TrimSpace(policy.IssueRepository),
 			Allowlist:       append([]MCPElicitationRule(nil), policy.Allowlist...),
 		},
 		pending:  map[string]pendingMCPToolCall{},
@@ -1484,7 +1486,7 @@ func mcpElicitationResponse(params json.RawMessage, state *mcpElicitationState) 
 			decision.Reason = "tool_not_allowlisted"
 			return decline()
 		}
-		repositoryArgument, deliverableTool := deliverableMCPRepositoryArgument(call.Server, call.Tool)
+		repositoryArgument, expectedRepository, deliverableTool := deliverableMCPRepository(policy, call.Server, call.Tool)
 		if !deliverableTool || policy.DeliverableKind != "pull_request" {
 			decision.Reason = "non_deliverable_mutation"
 			return decline()
@@ -1495,8 +1497,8 @@ func mcpElicitationResponse(params json.RawMessage, state *mcpElicitationState) 
 			return decline()
 		}
 		decision.Repository = repository
-		if policy.Repository == "" || !strings.EqualFold(repository, policy.Repository) ||
-			!state.hasRepositoryRule(call.Server, call.Tool, policy.Repository) {
+		if expectedRepository == "" || !strings.EqualFold(repository, expectedRepository) ||
+			!state.hasRepositoryRule(call.Server, call.Tool, expectedRepository) {
 			decision.Reason = "repository_mismatch"
 			return decline()
 		}
@@ -1510,15 +1512,19 @@ func mcpElicitationResponse(params json.RawMessage, state *mcpElicitationState) 
 	return map[string]any{"action": "accept", "content": map[string]any{}}, decision
 }
 
-func deliverableMCPRepositoryArgument(server string, tool string) (string, bool) {
+func deliverableMCPRepository(policy MCPElicitationPolicy, server string, tool string) (string, string, bool) {
 	if server != "codex_apps" {
-		return "", false
+		return "", "", false
 	}
 	switch tool {
+	case "github.add_comment_to_issue", "github.update_issue_comment":
+		return "repo_full_name", policy.IssueRepository, true
+	case "github.update_issue":
+		return "repository_full_name", policy.IssueRepository, true
 	case "github.create_pull_request", "github.update_pull_request":
-		return "repository_full_name", true
+		return "repository_full_name", policy.Repository, true
 	default:
-		return "", false
+		return "", "", false
 	}
 }
 

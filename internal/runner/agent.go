@@ -534,6 +534,17 @@ func agentTurnDeliverable(cfg config.Config, issue connector.Issue, mode string)
 	return strings.TrimSpace(cfg.Deliverable.Kind), repository
 }
 
+func agentTurnIssueRepository(cfg config.Config, issue connector.Issue) string {
+	identifier := strings.TrimSpace(issue.Identifier)
+	if githubIssueNumber(identifier) != "" {
+		repository := strings.TrimSpace(identifier[:strings.LastIndex(identifier, "#")])
+		if repository != "" {
+			return repository
+		}
+	}
+	return strings.TrimSpace(cfg.Tracker.Repository)
+}
+
 func runRole(mode string, issue connector.Issue) string {
 	switch normalizeRunMode(mode) {
 	case RunModePlan:
@@ -1304,6 +1315,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ExtraWritableRoots:    extraWritableRoots,
 		DeliverableKind:       deliverableKind,
 		DeliverableRepository: deliverableRepository,
+		IssueRepository:       agentTurnIssueRepository(workflow.Config, req.Issue),
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
 		projectID:             r.projectID,
 		workerGitHub:          workerGitHub,
