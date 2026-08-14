@@ -378,7 +378,8 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	if !implementProgressLinkedPullRequest(issue) {
-		if strings.TrimSpace(issue.BranchName) == "" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
+		issue.BranchName = blockedReadyPullRequestBranch(state, issue)
+		if issue.BranchName == "" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
 			return false, false
 		}
 		lookedUp, outcome, err := o.lookupBlockedReadyPullRequest(ctx, issue, signals)
@@ -439,6 +440,20 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 		Message: "reconciled " + issueLabel(issue) + " from Blocked to Merging with its ready pull request",
 	})
 	return true, true
+}
+
+func blockedReadyPullRequestBranch(state *State, issue connector.Issue) string {
+	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
+		return branch
+	}
+	if state == nil {
+		return ""
+	}
+	blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(blocked.Issue.BranchName)
 }
 
 func (o *Orchestrator) lookupBlockedReadyPullRequest(

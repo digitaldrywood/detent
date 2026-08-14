@@ -837,7 +837,6 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			t.Parallel()
 
 			issue := blockedReadyPullRequestIssue()
-			issue.BranchName = branch
 			if !tt.linked {
 				issue.PRNumber = nil
 				issue.PullRequest = nil
@@ -881,8 +880,10 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			}
 			state := newState(cfg)
 			parkedAt := time.Date(2026, 8, 14, 13, 15, 0, 0, time.UTC)
+			blockedIssue := cloneIssue(issue)
+			blockedIssue.BranchName = branch
 			state.Blocked[issue.ID] = Blocked{
-				Issue:     issue,
+				Issue:     blockedIssue,
 				Reason:    strandedUnpushedWorkReason,
 				BlockedAt: parkedAt,
 				Source:    BlockedSourceProjectStatus,
