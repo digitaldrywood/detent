@@ -2,7 +2,7 @@ module github.com/digitaldrywood/detent
 
 go 1.26
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	charm.land/bubbles/v2 v2.1.1
@@ -25,8 +25,8 @@ require (
 	github.com/spf13/pflag v1.0.9
 	github.com/templui/templui v1.12.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/crypto v0.50.0
-	golang.org/x/net v0.53.0
+	golang.org/x/crypto v0.51.0
+	golang.org/x/net v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0
@@ -65,7 +65,7 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
