@@ -778,6 +778,164 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 	}
 }
 
+func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
+	t.Parallel()
+
+	const (
+		branch     = "detent/exact-head-recovery"
+		repository = "digitaldrywood/detent"
+	)
+	readyPullRequest := *blockedReadyPullRequestIssue().PullRequest
+	readyPullRequest.BranchName = branch
+	tests := []struct {
+		name              string
+		linked            bool
+		lookupPullRequest connector.PullRequest
+		lookupFound       bool
+		lookupErr         error
+		invalidWorkpad    bool
+		wantLookupCalls   int
+		wantHydrateCalls  int
+		wantWaitCalls     int
+		wantAction        string
+		wantReason        string
+		wantMerging       bool
+	}{
+		{
+			name:              "unlinked exact-head open pull request reconciles",
+			lookupPullRequest: readyPullRequest,
+			lookupFound:       true,
+			wantLookupCalls:   1,
+			wantHydrateCalls:  1,
+			wantMerging:       true,
+		},
+		{
+			name:            "unlinked with no pull request holds accurately",
+			invalidWorkpad:  true,
+			wantLookupCalls: 1,
+			wantAction:      "hold",
+			wantReason:      blockedReadyPullRequestLookupNoneReason,
+		},
+		{
+			name:            "lookup unavailable defers after bounded retries",
+			lookupErr:       connector.ErrResourceExhausted,
+			invalidWorkpad:  true,
+			wantLookupCalls: blockedReadyPullRequestLookupAttempts,
+			wantWaitCalls:   blockedReadyPullRequestLookupAttempts - 1,
+			wantAction:      "defer",
+			wantReason:      blockedReadyPullRequestLookupUnavailableReason,
+		},
+		{
+			name:        "linked pull request fast path remains unchanged",
+			linked:      true,
+			wantMerging: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := blockedReadyPullRequestIssue()
+			if !tt.linked {
+				issue.PRNumber = nil
+				issue.PullRequest = nil
+			}
+			if tt.invalidWorkpad {
+				issue.WorkpadSignal = &workpad.Signal{
+					Source: workpad.SourceStructured,
+					Status: workpad.StatusBlocked,
+					Invalid: &workpad.Invalid{
+						Message: "status must be in_progress, blocked, or complete",
+					},
+				}
+			}
+			tracker := &blockedReadyPullRequestLookupConnector{
+				dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{},
+				pullRequest:                    tt.lookupPullRequest,
+				found:                          tt.lookupFound,
+				err:                            tt.lookupErr,
+			}
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:  1,
+				ActiveStates:         []string{"Todo", "In Progress", "Rework", autoPromoteMergingState},
+				TerminalStates:       []string{"Done", "Cancelled"},
+				MergeFastPathEnabled: true,
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true,
+					Gate:    gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff},
+				},
+			})
+			var logs bytes.Buffer
+			waitCalls := 0
+			orch := &Orchestrator{
+				cfg:               cfg,
+				connector:         tracker,
+				logger:            slog.New(slog.NewTextHandler(&logs, nil)),
+				recoveryInspector: staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{HeadSHA: readyPullRequest.HeadSHA, WorkspacePresent: true, WorkspaceStatus: "present", Health: "ready"}},
+				deliverableRecoveryWait: func(context.Context, time.Duration) bool {
+					waitCalls++
+					return true
+				},
+			}
+			state := newState(cfg)
+			parkedAt := time.Date(2026, 8, 14, 13, 15, 0, 0, time.UTC)
+			blockedIssue := cloneIssue(issue)
+			blockedIssue.BranchName = branch
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     blockedIssue,
+				Reason:    strandedUnpushedWorkReason,
+				BlockedAt: parkedAt,
+				Source:    BlockedSourceProjectStatus,
+				Recovery: &workflowLaneBlockedRecoveryMetadata{
+					Owner:       blockedRecoveryOwnerOrchestrator,
+					Cause:       strandedUnpushedWorkReason,
+					Predicate:   blockedRecoveryPredicateOncePerFingerprint,
+					TargetState: autoPromoteReworkState,
+					RunMode:     RunModeImplement,
+				},
+			}
+
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+
+			if tracker.lookupCalls != tt.wantLookupCalls {
+				t.Fatalf("lookup calls = %d, want %d", tracker.lookupCalls, tt.wantLookupCalls)
+			}
+			if tracker.hydrateCalls != tt.wantHydrateCalls {
+				t.Fatalf("hydrate calls = %d, want %d", tracker.hydrateCalls, tt.wantHydrateCalls)
+			}
+			if waitCalls != tt.wantWaitCalls {
+				t.Fatalf("retry waits = %d, want %d", waitCalls, tt.wantWaitCalls)
+			}
+			if tracker.lookupCalls > 0 && (tracker.repository != repository || tracker.branch != branch || tracker.headSHA != readyPullRequest.HeadSHA) {
+				t.Fatalf("lookup = (%q, %q, %q), want (%q, %q, %q)", tracker.repository, tracker.branch, tracker.headSHA, repository, branch, readyPullRequest.HeadSHA)
+			}
+			if tracker.lookupCalls > 0 {
+				wantOutcome := tt.wantReason
+				if tt.lookupFound {
+					wantOutcome = blockedReadyPullRequestLookupFoundReason
+				}
+				if !strings.Contains(logs.String(), "reason="+wantOutcome) {
+					t.Fatalf("logs = %q, want lookup outcome %q", logs.String(), wantOutcome)
+				}
+			}
+			if tt.wantMerging {
+				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: autoPromoteMergingState}) {
+					t.Fatalf("updates = %#v, want one Merging transition", tracker.updates)
+				}
+				return
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.RecoveryAction != tt.wantAction || blocked.RecoveryReason != tt.wantReason {
+				t.Fatalf("blocked recovery = %#v, want action %q reason %q", blocked, tt.wantAction, tt.wantReason)
+			}
+			if tt.wantReason == blockedReadyPullRequestLookupNoneReason && !strings.Contains(blocked.RecoveryRemedy, "No PR found") {
+				t.Fatalf("recovery remedy = %q, want accurate no-PR outcome", blocked.RecoveryRemedy)
+			}
+		})
+	}
+}
+
 func blockedReadyPullRequestIssue() connector.Issue {
 	prNumber := 1776
 	issue := dependencyAutoUnblockIssue("issue-ready-pr", blockedStatusState)
@@ -796,6 +954,31 @@ func blockedReadyPullRequestIssue() connector.Issue {
 		CheckRunCount:   1,
 	}
 	return issue
+}
+
+type blockedReadyPullRequestLookupConnector struct {
+	*dependencyAutoUnblockConnector
+	pullRequest  connector.PullRequest
+	found        bool
+	err          error
+	repository   string
+	branch       string
+	headSHA      string
+	lookupCalls  int
+	hydrateCalls int
+}
+
+func (c *blockedReadyPullRequestLookupConnector) LookupPullRequestByHead(_ context.Context, repository string, branch string, headSHA string) (connector.PullRequest, bool, error) {
+	c.lookupCalls++
+	c.repository = repository
+	c.branch = branch
+	c.headSHA = headSHA
+	return c.pullRequest, c.found, c.err
+}
+
+func (c *blockedReadyPullRequestLookupConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	c.hydrateCalls++
+	return issue, nil
 }
 
 func blockedCauseTestOrchestrator(tracker *dependencyAutoUnblockConnector) *Orchestrator {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -18,15 +19,20 @@ import (
 )
 
 const (
-	blockedRecoveryOwnerOrchestrator           = "orchestrator"
-	blockedRecoveryOwnerHuman                  = "human"
-	blockedRecoveryOwnerOperator               = "operator"
-	blockedRecoveryPredicateFingerprintChange  = "fingerprint_changed"
-	blockedRecoveryPredicateOncePerFingerprint = "once_per_fingerprint"
-	blockedRecoveryPredicateManaged            = "managed"
-	blockedCauseFingerprintVersion             = 2
-	workflowActionCauseBlockedRecovery         = "cause_blocked_recovery"
-	workflowActionBlockedReadyPRReconciliation = "blocked_ready_pr_reconciliation"
+	blockedRecoveryOwnerOrchestrator               = "orchestrator"
+	blockedRecoveryOwnerHuman                      = "human"
+	blockedRecoveryOwnerOperator                   = "operator"
+	blockedRecoveryPredicateFingerprintChange      = "fingerprint_changed"
+	blockedRecoveryPredicateOncePerFingerprint     = "once_per_fingerprint"
+	blockedRecoveryPredicateManaged                = "managed"
+	blockedCauseFingerprintVersion                 = 2
+	workflowActionCauseBlockedRecovery             = "cause_blocked_recovery"
+	workflowActionBlockedReadyPRReconciliation     = "blocked_ready_pr_reconciliation"
+	blockedReadyPullRequestLookupAttempts          = 3
+	blockedReadyPullRequestLookupBackoff           = 250 * time.Millisecond
+	blockedReadyPullRequestLookupFoundReason       = "ready_pr_lookup_found"
+	blockedReadyPullRequestLookupNoneReason        = "ready_pr_lookup_none"
+	blockedReadyPullRequestLookupUnavailableReason = "ready_pr_lookup_unavailable"
 )
 
 type blockedCauseSignals struct {
@@ -258,8 +264,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
-	if reason := o.blockedCauseHoldReason(issue, state, nil, dependencyCfg); reason != "" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", reason, nil, "")
+	holdReason := o.blockedCauseHoldReason(issue, state, nil, dependencyCfg)
+	if holdReason != "" && holdReason != "invalid_workpad_signal" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", holdReason, nil, "")
 		return false
 	}
 	if o.currentBlockedOperatorStop(ctx, state, issue) {
@@ -270,13 +277,14 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	withDependencies, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-	if reason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg); reason != "" {
+	holdReason = o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg)
+	if holdReason != "" && holdReason != "invalid_workpad_signal" {
 		o.recordBlockedRecoveryDecision(
 			ctx,
 			state,
 			withDependencies,
 			"hold",
-			reason,
+			holdReason,
 			nil,
 			"",
 			dependencyBlockersNotReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates)...,
@@ -285,6 +293,15 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	if len(withDependencies.BlockedBy) > 0 {
 		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "")
+		return false
+	}
+	if holdReason == "invalid_workpad_signal" {
+		if park, ok := o.currentBlockedRecoveryPark(ctx, state, issue); ok {
+			if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
+				return transitioned
+			}
+		}
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", holdReason, nil, "")
 		return false
 	}
 	if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
@@ -356,10 +373,32 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 	park workflowLaneBlockedRecoveryMetadata,
 	now time.Time,
 ) (bool, bool) {
-	if !blockedReadyPullRequestRecoverableCause(park) || !implementProgressLinkedPullRequest(issue) {
+	if !blockedReadyPullRequestRecoverableCause(park) {
 		return false, false
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+	if !implementProgressLinkedPullRequest(issue) {
+		issue.BranchName = blockedReadyPullRequestBranch(state, issue)
+		if issue.BranchName == "" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
+			return false, false
+		}
+		lookedUp, outcome, err := o.lookupBlockedReadyPullRequest(ctx, issue, signals)
+		switch outcome {
+		case blockedReadyPullRequestLookupFoundReason:
+			issue = lookedUp
+			signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "evaluate", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
+		case blockedReadyPullRequestLookupNoneReason:
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
+			return true, false
+		default:
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
+			if err != nil && o.logger != nil {
+				o.logger.Warn("blocked ready pull request lookup unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+			}
+			return true, false
+		}
+	}
 	if reason := o.blockedReadyPullRequestDeferredReason(ctx, state, issue, signals, now); reason != "" {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(park.Cause, signals))
 		return true, false
@@ -401,6 +440,90 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 		Message: "reconciled " + issueLabel(issue) + " from Blocked to Merging with its ready pull request",
 	})
 	return true, true
+}
+
+func blockedReadyPullRequestBranch(state *State, issue connector.Issue) string {
+	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
+		return branch
+	}
+	if state == nil {
+		return ""
+	}
+	blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(blocked.Issue.BranchName)
+}
+
+func (o *Orchestrator) lookupBlockedReadyPullRequest(
+	ctx context.Context,
+	issue connector.Issue,
+	signals blockedCauseSignals,
+) (connector.Issue, string, error) {
+	repository := pullRequestRepository(issue)
+	branch := strings.TrimSpace(issue.BranchName)
+	headSHA := strings.TrimSpace(signals.WorkspaceHeadSHA)
+	if repository == "" || branch == "" || headSHA == "" {
+		return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New(
+			"exact-head pull request lookup requires repository, branch, and workspace head",
+		)
+	}
+	lookup, ok := o.connector.(connector.PullRequestHeadLookup)
+	if !ok {
+		return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New("connector does not support exact-head pull request lookup")
+	}
+
+	var lookupErr error
+	for attempt := 1; attempt <= blockedReadyPullRequestLookupAttempts; attempt++ {
+		pullRequest, found, err := lookup.LookupPullRequestByHead(ctx, repository, branch, headSHA)
+		if err == nil {
+			if !found || normalizePullRequestState(pullRequest.State) != "open" {
+				return issue, blockedReadyPullRequestLookupNoneReason, nil
+			}
+			if strings.TrimSpace(pullRequest.BranchName) != branch || strings.TrimSpace(pullRequest.HeadSHA) != headSHA {
+				return issue, blockedReadyPullRequestLookupUnavailableReason, fmt.Errorf(
+					"exact-head pull request lookup returned branch %q head %q",
+					strings.TrimSpace(pullRequest.BranchName),
+					strings.TrimSpace(pullRequest.HeadSHA),
+				)
+			}
+			candidate := cloneIssue(issue)
+			candidate.PRRepository = repository
+			candidate.PullRequest = &pullRequest
+			candidate.PRNumber = &pullRequest.Number
+			hydrator, ok := o.connector.(connector.PullRequestHydrator)
+			if !ok {
+				return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New("connector does not support pull request hydration")
+			}
+			hydrated, err := hydrator.HydratePullRequest(ctx, candidate)
+			if err != nil {
+				return issue, blockedReadyPullRequestLookupUnavailableReason, fmt.Errorf("hydrate exact-head pull request: %w", err)
+			}
+			if hydrated.PullRequest == nil || hydrated.PullRequest.Number != pullRequest.Number ||
+				strings.TrimSpace(hydrated.PullRequest.BranchName) != branch || strings.TrimSpace(hydrated.PullRequest.HeadSHA) != headSHA {
+				return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New("exact-head pull request hydration returned inconsistent pull request data")
+			}
+			return hydrated, blockedReadyPullRequestLookupFoundReason, nil
+		}
+		lookupErr = err
+		if attempt == blockedReadyPullRequestLookupAttempts {
+			break
+		}
+		wait := o.deliverableRecoveryWait
+		if wait == nil {
+			wait = waitForDispatchBackoff
+		}
+		if !wait(ctx, blockedReadyPullRequestLookupBackoff*time.Duration(1<<(attempt-1))) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				lookupErr = ctxErr
+			} else {
+				lookupErr = errors.New("exact-head pull request lookup retry interrupted")
+			}
+			break
+		}
+	}
+	return issue, blockedReadyPullRequestLookupUnavailableReason, lookupErr
 }
 
 func blockedReadyPullRequestRecoverableCause(park workflowLaneBlockedRecoveryMetadata) bool {
@@ -659,6 +782,10 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 		return "Retry the lane transition after restoring tracker write access."
 	case "managed_recovery":
 		return "Review the configured recovery owner and move the issue manually if that owner cannot recover it."
+	case blockedReadyPullRequestLookupNoneReason:
+		return "No PR found for the current workspace branch and head."
+	case blockedReadyPullRequestLookupUnavailableReason:
+		return "Retry exact-head pull request lookup after connector access recovers."
 	case "no_recovery_predicate":
 		return "Add a durable recovery predicate or move the issue to a lane that starts fresh work."
 	default:
