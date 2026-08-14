@@ -1515,7 +1515,9 @@ func deliverableMCPRepositoryArgument(server string, tool string) (string, bool)
 		return "", false
 	}
 	switch tool {
-	case "github.create_pull_request", "github.update_pull_request":
+	case "github.add_comment_to_issue", "github.update_issue_comment":
+		return "repo_full_name", true
+	case "github.create_pull_request", "github.update_issue", "github.update_pull_request":
 		return "repository_full_name", true
 	default:
 		return "", false

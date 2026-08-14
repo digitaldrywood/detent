@@ -1386,6 +1386,128 @@ func TestMCPElicitationResponse(t *testing.T) {
 	}
 }
 
+func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) {
+	t.Parallel()
+
+	const request = `{
+		"threadId":"thread-1","turnId":"turn-1","serverName":"codex_apps","mode":"form",
+		"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
+	}`
+	tests := []struct {
+		name           string
+		tool           string
+		arguments      string
+		wantAction     string
+		wantReason     string
+		wantRepository string
+	}{
+		{
+			name:           "add issue comment matching repository",
+			tool:           "github.add_comment_to_issue",
+			arguments:      `{"repo_full_name":"acme/widgets","pr_number":18,"comment":"workpad"}`,
+			wantAction:     "accept",
+			wantReason:     "allowlisted_deliverable_tool",
+			wantRepository: "acme/widgets",
+		},
+		{
+			name:           "update issue comment matching repository",
+			tool:           "github.update_issue_comment",
+			arguments:      `{"repo_full_name":"acme/widgets","comment_id":42,"comment":"updated workpad"}`,
+			wantAction:     "accept",
+			wantReason:     "allowlisted_deliverable_tool",
+			wantRepository: "acme/widgets",
+		},
+		{
+			name:           "update issue matching repository",
+			tool:           "github.update_issue",
+			arguments:      `{"repository_full_name":"acme/widgets","issue_number":18,"labels":["detent:in-progress"]}`,
+			wantAction:     "accept",
+			wantReason:     "allowlisted_deliverable_tool",
+			wantRepository: "acme/widgets",
+		},
+		{
+			name:           "add issue comment mismatched repository",
+			tool:           "github.add_comment_to_issue",
+			arguments:      `{"repo_full_name":"acme/other","pr_number":18,"comment":"workpad"}`,
+			wantAction:     "decline",
+			wantReason:     "repository_mismatch",
+			wantRepository: "acme/other",
+		},
+		{
+			name:           "update issue comment mismatched repository",
+			tool:           "github.update_issue_comment",
+			arguments:      `{"repo_full_name":"acme/other","comment_id":42,"comment":"updated workpad"}`,
+			wantAction:     "decline",
+			wantReason:     "repository_mismatch",
+			wantRepository: "acme/other",
+		},
+		{
+			name:           "update issue mismatched repository",
+			tool:           "github.update_issue",
+			arguments:      `{"repository_full_name":"acme/other","issue_number":18,"labels":["detent:in-progress"]}`,
+			wantAction:     "decline",
+			wantReason:     "repository_mismatch",
+			wantRepository: "acme/other",
+		},
+		{
+			name:       "add issue comment wrong repository argument",
+			tool:       "github.add_comment_to_issue",
+			arguments:  `{"repository_full_name":"acme/widgets","pr_number":18,"comment":"workpad"}`,
+			wantAction: "decline",
+			wantReason: "invalid_tool_arguments",
+		},
+		{
+			name:       "update issue comment wrong repository argument",
+			tool:       "github.update_issue_comment",
+			arguments:  `{"repository_full_name":"acme/widgets","comment_id":42,"comment":"updated workpad"}`,
+			wantAction: "decline",
+			wantReason: "invalid_tool_arguments",
+		},
+		{
+			name:       "update issue wrong repository argument",
+			tool:       "github.update_issue",
+			arguments:  `{"repo_full_name":"acme/widgets","issue_number":18,"labels":["detent:in-progress"]}`,
+			wantAction: "decline",
+			wantReason: "invalid_tool_arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newMCPElicitationState(MCPElicitationPolicy{
+				DeliverableKind: "pull_request",
+				Repository:      "acme/widgets",
+				Allowlist: []MCPElicitationRule{{
+					Server: "codex_apps", Tool: tt.tool, Repository: "acme/widgets",
+				}},
+			}, nil)
+			pending := `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"` + tt.tool + `","arguments":` + tt.arguments + `}}`
+			if err := state.observe(notificationMessage(t, "item/started", pending)); err != nil {
+				t.Fatalf("observe() error = %v", err)
+			}
+
+			response, decision := mcpElicitationResponse(json.RawMessage(request), state)
+			if got := response["action"]; got != tt.wantAction {
+				t.Errorf("action = %v, want %q", got, tt.wantAction)
+			}
+			if decision.Action != tt.wantAction {
+				t.Errorf("decision action = %q, want %q", decision.Action, tt.wantAction)
+			}
+			if decision.Reason != tt.wantReason {
+				t.Errorf("decision reason = %q, want %q", decision.Reason, tt.wantReason)
+			}
+			if decision.Tool != tt.tool {
+				t.Errorf("decision tool = %q, want %q", decision.Tool, tt.tool)
+			}
+			if decision.Repository != tt.wantRepository {
+				t.Errorf("decision repository = %q, want %q", decision.Repository, tt.wantRepository)
+			}
+		})
+	}
+}
+
 func TestAppServerRunTurnRecordsDeclinedMCPElicitations(t *testing.T) {
 	t.Parallel()
 

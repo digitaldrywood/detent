@@ -369,17 +369,33 @@ codex:
     - server: codex_apps
       tool: github.update_pull_request
       repository: digitaldrywood/detent
+    - server: codex_apps
+      tool: github.add_comment_to_issue
+      repository: digitaldrywood/detent
+    - server: codex_apps
+      tool: github.update_issue_comment
+      repository: digitaldrywood/detent
+    - server: codex_apps
+      tool: github.update_issue
+      repository: digitaldrywood/detent
 ```
 
 The allowlist is a narrow exception to `codex.approval_policy`, not a broader
 approval mode. With either `never` or `on-request`, Detent accepts an MCP
 elicitation only when it correlates to exactly one pending tool call on the
-same server, thread, and turn; the correlated tool is a supported pull-request
-deliverable mutation; and both its `repository_full_name` argument and the
-active work item's pull-request repository match the configured tuple. Missing
-or ambiguous correlation, other mutation tools, and repository mismatches are
-declined. Command, file-change, permission, and user-input requests retain
-their existing handling.
+same server, thread, and turn; the correlated tool is a supported workflow
+deliverable mutation; and both its repository argument and the active work
+item's pull-request repository match the configured tuple. Pull-request and
+issue updates use `repository_full_name`; issue comment creation and updates
+use `repo_full_name`. Missing or ambiguous correlation, other mutation tools
+including `github.delete_issue`, and repository mismatches are declined.
+Command, file-change, permission, and user-input requests retain their existing
+handling.
+
+Allowlisting `github.update_issue` permits its full exposed mutation surface:
+title, body, state, assignees, milestone, and labels may all be replaced. The
+allowlist correlates and constrains the repository, but does not constrain the
+other approved arguments.
 
 With `approval_policy: never` and an empty allowlist, non-browser MCP
 elicitations are declined exactly as before. `chrome-devtools` empty-form tool
