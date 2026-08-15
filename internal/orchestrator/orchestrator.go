@@ -59,6 +59,8 @@ const (
 	mergeWorkerRetryExhaustedReason            = "merge_worker_retry_exhausted"
 	mergeWorkerCurrentHeadCIWaitExceededReason = "merge_worker_current_head_ci_wait_exceeded"
 	mergeWorkerDurationExceededReason          = "merge_worker_duration_exceeded"
+	mergeFallbackBudgetExceededReason          = "merge_fallback_budget_exceeded"
+	mergeFallbackRequiresReworkReason          = "merge_fallback_requires_rework"
 )
 
 var (

@@ -73,6 +73,7 @@ const (
 	DefaultOverloadRetryDelayMS              = 45000
 	DefaultMergeWorkerStartupTimeoutMS       = 4 * 60 * 1000
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
+	DefaultMergeFallbackMaxDurationMS        = 20 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
@@ -299,6 +300,7 @@ type Agent struct {
 	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
+	MergeFallbackMaxDurationMS   int                          `yaml:"merge_fallback_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
 	NoProgressTokenLimit         int64                        `yaml:"no_progress_token_limit"`
@@ -1366,6 +1368,7 @@ func Default() Config {
 			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
 			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
 			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
+			MergeFallbackMaxDurationMS:  DefaultMergeFallbackMaxDurationMS,
 			MaxRetryBackoffMS:           300000,
 			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
 			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
@@ -1695,6 +1698,9 @@ func (c *Config) normalize() {
 	}
 	if c.Agent.MergeWorkerMaxDurationMS == 0 {
 		c.Agent.MergeWorkerMaxDurationMS = DefaultMergeWorkerMaxDurationMS
+	}
+	if c.Agent.MergeFallbackMaxDurationMS == 0 {
+		c.Agent.MergeFallbackMaxDurationMS = DefaultMergeFallbackMaxDurationMS
 	}
 	if c.Agent.MergeFastPath.FairnessAgeSeconds == 0 {
 		c.Agent.MergeFastPath.FairnessAgeSeconds = DefaultMergeFairnessAgeSeconds
@@ -2115,6 +2121,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	validatePositive(prefix+".merge_worker_startup_timeout_ms", a.MergeWorkerStartupTimeoutMS, problems)
 	validatePositive(prefix+".merge_worker_max_duration_ms", a.MergeWorkerMaxDurationMS, problems)
+	validatePositive(prefix+".merge_fallback_max_duration_ms", a.MergeFallbackMaxDurationMS, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
 	validatePositive(prefix+".overload_retry_delay_ms", a.OverloadRetryDelayMS, problems)
 	if a.MaxSessionTokens < 0 {

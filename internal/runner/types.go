@@ -26,6 +26,7 @@ const (
 	FinalStateMergeRevoked          = "merge_revoked"
 	FinalStateCIUnavailable         = "ci_unavailable"
 	FinalStateMergeDurationExceeded = "merge_duration_exceeded"
+	FinalStateMergeFallbackExceeded = "merge_fallback_budget_exceeded"
 	FinalStateNeedsHumanAttention   = "needs_human_attention"
 	TokenCeilingSourceAbsolute      = "max_session_tokens"
 	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
@@ -38,6 +39,8 @@ const (
 	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
 	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
 	RunOutputMergeFallbackDeferred    = "merge_fallback_deferred"
+	RunOutputMergeFallbackResolved    = "merge_fallback_resolved"
+	RunOutputMergeFallbackRework      = "merge_fallback_rework"
 )
 
 var (
@@ -49,6 +52,7 @@ var (
 	ErrCIUnavailable                = errors.New("CI unavailable")
 	ErrMergeWorkerStartupTimeout    = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded  = errors.New("merge worker duration exceeded")
+	ErrMergeFallbackBudgetExceeded  = errors.New("merge fallback budget exceeded")
 	ErrModelPermitUnavailable       = errors.New("provider model permit unavailable")
 	ErrAgentTurnCleanup             = errors.New("agent turn cleanup failed")
 	ErrAgentResumeUnsupported       = errors.New("agent backend does not support resume verification")
@@ -510,6 +514,7 @@ type RunResult struct {
 	PullRequestHeadPushed   bool
 	CITriggerLabelReapplied bool
 	MergePrecheck           *MergePrecheck
+	MergeFallbackFindings   string
 	budgetProjection        *dispatchBudgetProjection
 }
 

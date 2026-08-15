@@ -537,6 +537,8 @@
 #   merge_worker_startup_timeout_ms: 240000
 #   # agent.merge_worker_max_duration_ms | type: integer | default: 21600000 | required: No | validation: must be greater than 0
 #   merge_worker_max_duration_ms: 21600000
+#   # agent.merge_fallback_max_duration_ms | type: integer | default: 1200000 | required: No | validation: must be greater than 0
+#   merge_fallback_max_duration_ms: 1200000
 #   # agent.max_retry_backoff_ms | type: integer | default: 300000 | required: No | validation: must be greater than 0
 #   max_retry_backoff_ms: 300000
 #   # agent.overload_retry_delay_ms | type: integer | default: 45000 | required: No | validation: must be greater than 0

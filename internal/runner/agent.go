@@ -626,6 +626,53 @@ func mergePrecheckFromWorkspace(precheck workspace.MergePrepareResult) MergePrec
 	}
 }
 
+func mergeFallbackResult(output string) string {
+	trimmed := strings.TrimSpace(output)
+	resolvedMarker := "DETENT_MERGE_FALLBACK: resolved"
+	reworkMarker := "DETENT_MERGE_FALLBACK: rework"
+	if strings.Count(trimmed, resolvedMarker) == 1 &&
+		strings.Count(trimmed, reworkMarker) == 0 &&
+		strings.HasSuffix(trimmed, resolvedMarker) {
+		return RunOutputMergeFallbackResolved
+	}
+	return RunOutputMergeFallbackRework
+}
+
+func (r *Runner) verifyMergeFallback(
+	ctx context.Context,
+	backend workspace.Backend,
+	info workspace.Info,
+	issue workspace.Issue,
+	targetBranch string,
+	result RunResult,
+) (RunResult, error) {
+	result.MergeFallbackFindings = strings.TrimSpace(result.Output)
+	result.Output = mergeFallbackResult(result.Output)
+	if result.Output == RunOutputMergeFallbackRework {
+		return result, nil
+	}
+	preparer, ok := backend.(workspace.MergePreparer)
+	if !ok {
+		result.Output = RunOutputMergeFallbackRework
+		return result, nil
+	}
+	precheck, err := preparer.PrepareMerge(ctx, info, issue, workspace.MergePrepareOptions{TargetBranch: strings.TrimSpace(targetBranch)})
+	if err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, ErrMergeFallbackBudgetExceeded) {
+			err = errors.Join(cause, err)
+		}
+		return result, fmt.Errorf("verify merge fallback: %w", err)
+	}
+	converted := mergePrecheckFromWorkspace(precheck)
+	result.MergePrecheck = &converted
+	if precheck.Status != workspace.MergePrepareStatusClean {
+		result.Output = RunOutputMergeFallbackRework
+		return result, nil
+	}
+	result.PullRequestHeadPushed = result.PullRequestHeadPushed || precheck.HeadChanged
+	return result, nil
+}
+
 func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {
 	if precheck == nil {
 		return nil
@@ -815,6 +862,7 @@ func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit e
 func durationLimitError(err error) bool {
 	return errors.Is(err, ErrTurnDurationExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
+		errors.Is(err, ErrMergeFallbackBudgetExceeded) ||
 		errors.Is(err, ErrSessionTurnLimitExceeded) ||
 		errors.Is(err, ErrSessionNoProgress)
 }
@@ -1256,10 +1304,19 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
+	sessionLimitError := ErrSessionDurationExceeded
+	if mergeFallback {
+		sessionDuration = durationFromMillis(workflow.Config.Agent.MergeFallbackMaxDurationMS)
+		if sessionDuration <= 0 {
+			sessionDuration = durationFromMillis(config.DefaultMergeFallbackMaxDurationMS)
+		}
+		sessionLimitError = ErrMergeFallbackBudgetExceeded
+	}
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
-		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
-		ErrSessionDurationExceeded,
+		sessionDuration,
+		sessionLimitError,
 	)
 	defer cancelSession()
 	sessionCtx, cancelSessionBrake := context.WithCancelCause(sessionCtx)
@@ -1267,7 +1324,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	sessionBrake := newSessionBrakeController(
 		sessionCtx,
 		runStartedAt,
-		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
+		sessionDuration,
 		workflow.Config.Agent.MaxTurns,
 		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
 		cancelSessionBrake,
@@ -1319,6 +1376,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
 		projectID:             r.projectID,
 		workerGitHub:          workerGitHub,
+	}
+	if mergeFallback && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
+		turnRequest.MaxDuration = sessionDuration
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
@@ -1429,6 +1489,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	if mergeFallback && turnErr == nil {
+		targetBranch := ""
+		if req.Issue.PullRequest != nil {
+			targetBranch = req.Issue.PullRequest.BaseRef
+		}
+		result, turnErr = r.verifyMergeFallback(sessionCtx, runWorkspace, info, workspaceIssue, targetBranch, result)
+		if turnErr != nil {
+			result.FinalState = finalStateForTurnError(turnErr)
+		}
+	}
 	result.budgetProjection = budgetProjection
 	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
 		result.DiffStats = brakeDiff
@@ -2682,6 +2752,9 @@ func finalStateForTurnError(err error) string {
 	}
 	if errors.Is(err, ErrMergeWorkerDurationExceeded) {
 		return FinalStateMergeDurationExceeded
+	}
+	if errors.Is(err, ErrMergeFallbackBudgetExceeded) {
+		return FinalStateMergeFallbackExceeded
 	}
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded

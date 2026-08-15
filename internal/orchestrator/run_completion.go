@@ -194,6 +194,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleMergeWorkerDurationExceeded(ctx, state, event, running) {
 		return
 	}
+	if o.handleMergeFallbackBudgetExceeded(ctx, state, event, running) {
+		return
+	}
 	if o.handleSessionBrake(ctx, state, event, running) {
 		return
 	}
@@ -1131,6 +1134,10 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if !mergeWorkerTurnSucceeded(event) {
 		return false
 	}
+	if strings.TrimSpace(event.Result.Output) == runpkg.RunOutputMergeFallbackRework {
+		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, event.Result.MergeFallbackFindings)
+		return true
+	}
 	hydrator, ok := o.connector.(connector.PullRequestHydrator)
 	if !ok {
 		return false
@@ -1176,7 +1183,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
 				return true
 			}
-			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks)
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks, "")
 			return true
 		}
 		if mergeFastPathResult(event) && mergeWorkerMergeabilityPending(issue) {
@@ -1188,7 +1195,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 		if mergeFastPathResult(event) {
-			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerFastPathNotReadyReason, nil)
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerFastPathNotReadyReason, nil, "")
 			return true
 		}
 		return false
@@ -1579,7 +1586,7 @@ func mergeFastPathResult(event runpkg.Completion) bool {
 		return false
 	}
 	switch strings.TrimSpace(event.Result.Output) {
-	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead:
+	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead, runpkg.RunOutputMergeFallbackResolved:
 		return true
 	default:
 		return false
@@ -1882,6 +1889,7 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 	issue connector.Issue,
 	reason string,
 	missingChecks []string,
+	findings string,
 ) {
 	issueID := strings.TrimSpace(event.IssueID)
 	running.Issue = issue
@@ -1889,15 +1897,23 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
 		return
 	}
-	if comment := mergeWorkerReworkComment(issue, reason, missingChecks); comment != "" {
+	if comment := mergeWorkerReworkComment(issue, reason, missingChecks, findings); comment != "" {
 		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
 			o.logger.Warn("merge worker rework comment failed", "issue_id", issueID, "reason", reason, "error", err)
 		}
 	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "rework", "merge worker routed current head to Rework")
-	o.logMergeWorkerFailure(issue, reason, nil)
-	o.recordMergeFailed(state, issue, event.CompletedAt, reason, nil)
+	terminalState := store.WorkAttemptTerminalSuccess
+	errorClass := ""
+	errorMessage := ""
+	if event.Err != nil {
+		terminalState = store.WorkAttemptTerminalTimedOut
+		errorClass = reason
+		errorMessage = event.Err.Error()
+	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, "rework", "merge worker routed current head to Rework")
+	o.logMergeWorkerFailure(issue, reason, event.Err)
+	o.recordMergeFailed(state, issue, event.CompletedAt, reason, event.Err)
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon merge worker rework claim failed", "issue_id", issueID, "error", err)
 	}
@@ -1913,7 +1929,7 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 	})
 }
 
-func mergeWorkerReworkComment(issue connector.Issue, reason string, missingChecks []string) string {
+func mergeWorkerReworkComment(issue connector.Issue, reason string, missingChecks []string, findings string) string {
 	var b strings.Builder
 	b.WriteString("Merge worker routed this issue from Merging to Rework.")
 	b.WriteString("\n\n- reason: ")
@@ -1921,6 +1937,11 @@ func mergeWorkerReworkComment(issue connector.Issue, reason string, missingCheck
 	if len(missingChecks) > 0 {
 		b.WriteString("\n- missing_required_checks: ")
 		b.WriteString(strings.Join(missingChecks, ", "))
+	}
+	if findings = strings.TrimSpace(findings); findings != "" {
+		b.WriteString("\n\nMerge-fallback findings:\n\n```text\n")
+		b.WriteString(findings)
+		b.WriteString("\n```")
 	}
 	if issue.PullRequest != nil {
 		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
