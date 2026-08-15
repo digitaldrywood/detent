@@ -14,9 +14,41 @@ import (
 )
 
 const (
-	repositoryIssuesPageSize = 100
-	labelStatusConflictState = "Blocked"
+	repositoryIssuesPageSize     = 100
+	labelIssueReferenceBatchSize = 100
+	labelIssueReferencePageLimit = 10
+	labelStatusConflictState     = "Blocked"
 )
+
+const labelIssuePullRequestReferencesQuery = `
+query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
+  nodes(ids: $issueIds) {
+    __typename
+    ... on Issue {
+      id
+      closedByPullRequestsReferences(first: 100) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number url state updatedAt repository { nameWithOwner } }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const labelIssuePullRequestReferencesPageQuery = `
+query DetentGitHubLabelIssuePullRequestReferencesPage($issueId: ID!, $after: String!) {
+  node(id: $issueId) {
+    __typename
+    ... on Issue {
+      id
+      closedByPullRequestsReferences(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number url state updatedAt repository { nameWithOwner } }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
 
 type labelStatusResolution struct {
 	Status         string
@@ -92,6 +124,130 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 		return nil, err
 	}
 	return issues, nil
+}
+
+func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue) error {
+	indexesByID := make(map[string][]int, len(issues))
+	ids := make([]string, 0, len(issues))
+	for index, issue := range issues {
+		if issue.PRNumber != nil || issue.PullRequest != nil {
+			continue
+		}
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := indexesByID[id]; !ok {
+			ids = append(ids, id)
+		}
+		indexesByID[id] = append(indexesByID[id], index)
+	}
+	for start := 0; start < len(ids); start += labelIssueReferenceBatchSize {
+		end := min(start+labelIssueReferenceBatchSize, len(ids))
+		batch := ids[start:end]
+		var response struct {
+			Nodes []githubIssueNode `json:"nodes"`
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryPullRequests, labelIssuePullRequestReferencesQuery, map[string]any{"issueIds": batch}, &response); err != nil {
+			if state := c.pullRequestHydrationStateForError(c.repository, err); state.Reason != "" {
+				for _, id := range ids[start:] {
+					for _, index := range indexesByID[id] {
+						attachPullRequestHydrationUnavailableToIssue(&issues[index], c.repository, 0, state)
+					}
+				}
+				return nil
+			}
+			return fmt.Errorf("fetch github label issue pull request references: %w", err)
+		}
+
+		nodesByID := make(map[string]githubIssueNode, len(response.Nodes))
+		for _, node := range response.Nodes {
+			id := strings.TrimSpace(node.ID)
+			_, ok := indexesByID[id]
+			if node.TypeName != "Issue" || !ok {
+				continue
+			}
+			nodesByID[id] = node
+		}
+		for _, id := range batch {
+			if _, ok := nodesByID[id]; !ok {
+				return fmt.Errorf("fetch github label issue pull request references: %w: missing issue node %s", ErrInvalidResponse, id)
+			}
+		}
+
+		for batchIndex, id := range batch {
+			node := nodesByID[id]
+			pullRequests, state, err := c.fetchRemainingLabelIssuePullRequestReferences(ctx, id, node.ClosedByPullRequestsReferences)
+			if err != nil {
+				return fmt.Errorf("fetch github label issue pull request references: %w", err)
+			}
+			if state.Reason != "" {
+				for _, unavailableID := range batch[batchIndex:] {
+					for _, index := range indexesByID[unavailableID] {
+						attachPullRequestHydrationUnavailableToIssue(&issues[index], c.repository, 0, state)
+					}
+				}
+				for _, unavailableID := range ids[end:] {
+					for _, index := range indexesByID[unavailableID] {
+						attachPullRequestHydrationUnavailableToIssue(&issues[index], c.repository, 0, state)
+					}
+				}
+				return nil
+			}
+			ref, ok := firstPullRequestReference(pullRequests)
+			if !ok {
+				continue
+			}
+			for _, index := range indexesByID[id] {
+				number := ref.Number
+				issues[index].PRNumber = &number
+				issues[index].PRRepository = ref.Repository
+				if issues[index].PRRepository == "" {
+					issues[index].PRRepository = pullRequestRepoName(c.repository)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Connector) fetchRemainingLabelIssuePullRequestReferences(
+	ctx context.Context,
+	issueID string,
+	connection nodeConnection[pullRequest],
+) (nodeConnection[pullRequest], pullRequestHydrationState, error) {
+	for page := 2; connection.PageInfo.HasNextPage; page++ {
+		if page > labelIssueReferencePageLimit {
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, fmt.Errorf(
+				"%w: closing pull request references for issue %s exceed %d pages",
+				ErrInvalidResponse,
+				issueID,
+				labelIssueReferencePageLimit,
+			)
+		}
+		cursor := strings.TrimSpace(connection.PageInfo.EndCursor)
+		if cursor == "" {
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, ErrInvalidResponse
+		}
+		var response struct {
+			Node *githubIssueNode `json:"node"`
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryPullRequests, labelIssuePullRequestReferencesPageQuery, map[string]any{
+			"issueId": issueID,
+			"after":   cursor,
+		}, &response); err != nil {
+			if state := c.pullRequestHydrationStateForError(c.repository, err); state.Reason != "" {
+				return nodeConnection[pullRequest]{}, state, nil
+			}
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, err
+		}
+		if response.Node == nil || response.Node.TypeName != "Issue" || strings.TrimSpace(response.Node.ID) != issueID {
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, ErrInvalidResponse
+		}
+		connection.Nodes = append(connection.Nodes, response.Node.ClosedByPullRequestsReferences.Nodes...)
+		connection.PageInfo = response.Node.ClosedByPullRequestsReferences.PageInfo
+	}
+	return connection, pullRequestHydrationState{}, nil
 }
 
 func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift, error) {

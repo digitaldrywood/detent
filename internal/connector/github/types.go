@@ -108,7 +108,8 @@ type linkedIssue struct {
 }
 
 type nodeConnection[T any] struct {
-	Nodes []T `json:"nodes"`
+	PageInfo pageInfo `json:"pageInfo"`
+	Nodes    []T      `json:"nodes"`
 }
 
 type assignee struct {

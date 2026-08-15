@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -81,6 +82,9 @@ func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 			body:   `[{"node_id":"I_485","number":485,"title":"Installer packages","body":"Ship packages","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:ready"},{"name":"enhancement"}]}]`,
 		},
 		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_485","closedByPullRequestsReferences":{"nodes":[]}}]}}`,
+		},
+		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
 			body:   `[]`,
@@ -128,6 +132,9 @@ func TestConnectorFetchCandidateIssuesWithFilterIgnoresStatusLabels(t *testing.T
 			body:   `[{"node_id":"I_485","number":485,"title":"Installer packages","body":"Ship packages","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:ready"},{"name":"enhancement"}]}]`,
 		},
 		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_485","closedByPullRequestsReferences":{"nodes":[]}}]}}`,
+		},
+		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
 			body:   `[]`,
@@ -154,8 +161,8 @@ func TestConnectorFetchCandidateIssuesWithFilterIgnoresStatusLabels(t *testing.T
 	}
 
 	requests := server.requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want label issue list and pull request list", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want label issue list, relationship lookup, and pull request list", len(requests))
 	}
 	if requests[0]["path"] != "/repos/digitaldrywood/detent/issues?labels=detent%3Aready&page=1&per_page=100&state=all" {
 		t.Fatalf("label issue path = %q, want status label only", requests[0]["path"])
@@ -293,6 +300,199 @@ func routeGitHubTestRequests(t *testing.T, server *graphqlTestServer) HTTPClient
 	}}
 }
 
+func TestConnectorFetchLabelIssuesByStatesAttachesPreExistingLinkedPullRequest(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/corp/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_74","number":74,"title":"Add object lifecycle module","body":"","state":"open","html_url":"https://github.com/gopherguides/corp/issues/74","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
+		},
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"nodes":[{"number":185,"url":"https://github.com/gopherguides/corp/pull/185","state":"OPEN","updatedAt":"2025-12-27T12:00:00Z","repository":{"nameWithOwner":"gopherguides/corp"}},{"number":186,"url":"https://github.com/gopherguides/corp/pull/186","state":"OPEN","updatedAt":"2025-12-28T12:00:00Z","repository":{"nameWithOwner":"gopherguides/corp"}}]}}]}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/corp/pulls/186",
+			body:   `{"node_id":"PR_186","number":186,"html_url":"https://github.com/gopherguides/corp/pull/186","state":"open","draft":false,"mergeable_state":"clean","updated_at":"2026-08-15T12:00:00Z","head":{"ref":"claude/add-object-lifecycle-module-i6pKl","sha":"sha-186"},"base":{"ref":"main","sha":"base-186"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/corp/commits/sha-186/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/corp/commits/sha-186/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/corp/pulls/186/reviews?per_page=100",
+			body:   `[{"body":"No blocking findings.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-186","submitted_at":"2026-08-15T11:00:00Z"}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "gopherguides/corp",
+	})
+
+	got, err := c.FetchIssuesByStatesLimit(context.Background(), []string{"Human Review"}, 1)
+	if err != nil {
+		t.Fatalf("FetchIssuesByStatesLimit() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() len = %d, want 1", len(got))
+	}
+	if got[0].PRNumber == nil || *got[0].PRNumber != 186 {
+		t.Fatalf("PRNumber = %v, want newest open linked PR 186", got[0].PRNumber)
+	}
+	if got[0].PRRepository != "gopherguides/corp" {
+		t.Fatalf("PRRepository = %q, want gopherguides/corp", got[0].PRRepository)
+	}
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want linked PR 186")
+	}
+	if pr.Number != 186 || pr.URL != "https://github.com/gopherguides/corp/pull/186" || pr.BranchName != "claude/add-object-lifecycle-module-i6pKl" || pr.BaseRef != "main" || pr.State != "OPEN" || pr.MergeableState != "clean" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
+		t.Fatalf("PullRequest = %#v, want fully hydrated linked PR 186", pr)
+	}
+
+	requests := server.requests()
+	if len(requests) != 6 {
+		t.Fatalf("request count = %d, want label list, relationship lookup, and linked PR hydration", len(requests))
+	}
+	query, _ := requests[1]["query"].(string)
+	if !strings.Contains(query, "closedByPullRequestsReferences(first: 100)") || !strings.Contains(query, "pageInfo { hasNextPage endCursor }") {
+		t.Fatalf("relationship query does not request bounded closing PR references:\n%s", query)
+	}
+	for _, request := range requests {
+		path, _ := request["path"].(string)
+		if strings.Contains(path, "/pulls?") {
+			t.Fatalf("request path = %q, want explicit linked PR without repository-wide pull list", path)
+		}
+	}
+}
+
+func TestConnectorAttachLabelIssuePullRequestReferencesPaginates(t *testing.T) {
+	t.Parallel()
+
+	firstPage := make([]string, 100)
+	for index := range firstPage {
+		firstPage[index] = fmt.Sprintf(
+			`{"number":%d,"state":"CLOSED","updatedAt":"2025-12-27T12:00:00Z","repository":{"nameWithOwner":"gopherguides/corp"}}`,
+			index+1,
+		)
+	}
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: fmt.Sprintf(
+				`{"data":{"nodes":[{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[%s]}}]}}`,
+				strings.Join(firstPage, ","),
+			),
+		},
+		{
+			body: `{"data":{"node":{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false,"endCursor":"cursor-2"},"nodes":[{"number":186,"state":"OPEN","updatedAt":"2025-12-28T12:00:00Z","repository":{"nameWithOwner":"gopherguides/corp"}}]}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "gopherguides/corp",
+	})
+	issues := []connector.Issue{{ID: "I_74"}}
+
+	if err := c.attachLabelIssuePullRequestReferences(context.Background(), issues); err != nil {
+		t.Fatalf("attachLabelIssuePullRequestReferences() error = %v", err)
+	}
+	if issues[0].PRNumber == nil || *issues[0].PRNumber != 186 {
+		t.Fatalf("PRNumber = %v, want open PR 186 from the second relationship page", issues[0].PRNumber)
+	}
+	if issues[0].PRRepository != "gopherguides/corp" {
+		t.Fatalf("PRRepository = %q, want gopherguides/corp", issues[0].PRRepository)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want two relationship pages", len(requests))
+	}
+	variables, _ := requests[1]["variables"].(map[string]any)
+	if variables["issueId"] != "I_74" || variables["after"] != "cursor-1" {
+		t.Fatalf("second page variables = %#v, want issue I_74 after cursor-1", variables)
+	}
+}
+
+func TestConnectorFetchLabelIssuesByStatesMarksUnavailablePullRequestRelationships(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		status     int
+		headers    map[string]string
+		wantReason string
+	}{
+		{
+			name:       "secondary throttle",
+			status:     http.StatusTooManyRequests,
+			headers:    map[string]string{"Retry-After": "120"},
+			wantReason: connector.PullRequestHydrationReasonSecondaryThrottled,
+		},
+		{
+			name:       "primary exhaustion",
+			status:     http.StatusForbidden,
+			headers:    map[string]string{"X-RateLimit-Remaining": "0"},
+			wantReason: connector.PullRequestHydrationReasonPrimaryExhausted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{
+					method: http.MethodGet,
+					path:   "/repos/gopherguides/corp/issues?labels=detent%3Amerging&page=1&per_page=100&state=all",
+					body:   `[{"node_id":"I_74","number":74,"title":"Add object lifecycle module","body":"","state":"open","html_url":"https://github.com/gopherguides/corp/issues/74","assignees":[],"labels":[{"name":"detent:merging"},{"name":"bug"}]}]`,
+				},
+				{
+					status:  tt.status,
+					headers: tt.headers,
+					body:    `{"message":"relationship lookup unavailable"}`,
+				},
+			})
+			c := newGitHubTestConnector(t, server, Config{
+				GitHubStatusSource: GitHubStatusSourceLabel,
+				Repository:         "gopherguides/corp",
+			})
+
+			got, err := c.FetchIssuesByStatesLimit(context.Background(), []string{"Merging"}, 1)
+			if err != nil {
+				t.Fatalf("FetchIssuesByStatesLimit() error = %v", err)
+			}
+			if len(got) != 1 || got[0].PullRequest == nil {
+				t.Fatalf("FetchIssuesByStatesLimit() = %#v, want one issue with unavailable hydration marker", got)
+			}
+			if got[0].PullRequest.HydrationUnavailableReason != tt.wantReason {
+				t.Fatalf("HydrationUnavailableReason = %q, want %q", got[0].PullRequest.HydrationUnavailableReason, tt.wantReason)
+			}
+			if got[0].PRNumber != nil {
+				t.Fatalf("PRNumber = %v, want unknown while relationship lookup is unavailable", got[0].PRNumber)
+			}
+			requests := server.requests()
+			if len(requests) != 2 {
+				t.Fatalf("request count = %d, want label list and relationship lookup only", len(requests))
+			}
+			for _, request := range requests {
+				path, _ := request["path"].(string)
+				if strings.Contains(path, "/pulls?") {
+					t.Fatalf("request path = %q, want no branch fallback while relationship state is unknown", path)
+				}
+			}
+		})
+	}
+}
+
 func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(t *testing.T) {
 	t.Parallel()
 
@@ -301,6 +501,9 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/digitaldrywood/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
 			body:   `[{"node_id":"I_433","number":433,"title":"Human Review issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/digitaldrywood/issues/433","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
+		},
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_433","closedByPullRequestsReferences":{"nodes":[]}}]}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -396,6 +599,9 @@ func TestConnectorFetchIssuesByStatesScopesPullRequestHydrationByIssueState(t *t
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
 			body:   `[{"node_id":"I_20","number":20,"title":"Review issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/20","assignees":[],"labels":[{"name":"detent:human-review"}]}]`,
+		},
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_20","closedByPullRequestsReferences":{"nodes":[]}}]}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -733,6 +939,9 @@ func TestConnectorFetchCandidateIssuesSurfacesStatusLabelConflict(t *testing.T) 
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ain-progress&page=1&per_page=100&state=all",
 			body:   `[]`,
+		},
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_606","closedByPullRequestsReferences":{"nodes":[]}}]}}`,
 		},
 		{
 			method: http.MethodGet,
