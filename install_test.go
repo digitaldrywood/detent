@@ -358,6 +358,55 @@ func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *test
 	}
 }
 
+func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	tmp := t.TempDir()
+	source := filepath.Join(tmp, "source-detent")
+	if err := os.WriteFile(source, []byte("#!/usr/bin/env sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	fakeBin := filepath.Join(tmp, "fakebin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(fakebin) error = %v", err)
+	}
+	fakeSystemctl := filepath.Join(fakeBin, "systemctl")
+	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(systemctl) error = %v", err)
+	}
+
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"DETENT_INSTALL_SOURCE="+source,
+		"DETENT_INSTALL_DIR="+installDir,
+		"DETENT_STATE_DIR="+stateDir,
+		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+		"DETENT_INSTALL_TEST_UNAME_S=Linux",
+		"DETENT_INSTALL_TEST_UNAME_M=x86_64",
+	)
+
+	result := runInstall(t, root, env)
+	if result.err != nil {
+		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+	for _, want := range []string{
+		"running systemd user service was not restarted",
+		"systemctl --user restart detent.service",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("install stdout = %q, want containing %q", result.stdout, want)
+		}
+	}
+}
+
 func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
 	t.Parallel()
 

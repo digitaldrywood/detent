@@ -295,6 +295,26 @@ install_release_or_go() {
 	install_go
 }
 
+report_service_restart_required() {
+	if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet detent.service 2>/dev/null; then
+		printf '%s\n' "A running systemd user service was not restarted and is still using the previous Detent binary."
+		printf '%s\n' "Restart it to load this installation: systemctl --user restart detent.service"
+		return
+	fi
+	if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet detent.service 2>/dev/null; then
+		printf '%s\n' "A running systemd service was not restarted and is still using the previous Detent binary."
+		printf '%s\n' "Restart it to load this installation: sudo systemctl restart detent.service"
+		return
+	fi
+	if command -v launchctl >/dev/null 2>&1 && command -v id >/dev/null 2>&1; then
+		launchd_target="gui/$(id -u)/com.digitaldrywood.detent"
+		if launchctl print "$launchd_target" >/dev/null 2>&1; then
+			printf '%s\n' "A running launchd service was not restarted and is still using the previous Detent binary."
+			printf 'Restart it to load this installation: launchctl kickstart -k %s\n' "$launchd_target"
+		fi
+	fi
+}
+
 install_dir="$(choose_install_dir)"
 target="$install_dir/detent"
 
@@ -357,6 +377,7 @@ install_binary
 
 cleanup_lock=false
 echo "Installed Detent at $target"
+report_service_restart_required
 case ":${PATH:-}:" in
 	*":$install_dir:"*) ;;
 	*) printf 'Add %s to PATH before running detent: export PATH="%s:$PATH"\n' "$install_dir" "$install_dir" ;;

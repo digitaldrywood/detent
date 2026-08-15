@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -830,7 +831,7 @@ type doctorHealthResponse struct {
 	HealthNotificationFailures []healthnotify.Failure       `json:"health_notification_failures"`
 }
 
-func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDeps) []doctorCheck {
+func checkDoctorDetentService(ctx context.Context, cfg BootConfig, installedBuild buildinfo.Info, deps doctorDeps) []doctorCheck {
 	probe, err := probeDoctorHealth(ctx, cfg, deps)
 	version := strings.TrimSpace(probe.Health.Version)
 	commit := strings.TrimSpace(probe.Health.Commit)
@@ -845,7 +846,11 @@ func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDe
 			check.Detail += "; health check: " + err.Error()
 			check.Hint = "Review the running Detent service health, then rerun detent doctor."
 		}
-		return []doctorCheck{check}
+		checks := []doctorCheck{check}
+		if driftCheck, ok := checkDoctorBuildDrift(buildinfo.Info{Version: version, Commit: commit}, installedBuild); ok {
+			checks = append(checks, driftCheck)
+		}
+		return checks
 	}
 	if err != nil {
 		return nil
@@ -856,6 +861,26 @@ func checkDoctorDetentService(ctx context.Context, cfg BootConfig, deps doctorDe
 		Detail: fmt.Sprintf("remote service at %s did not report its complete build", probe.URL),
 		Hint:   "Upgrade the running Detent service, then rerun detent doctor.",
 	}}
+}
+
+func checkDoctorBuildDrift(runningBuild buildinfo.Info, installedBuild buildinfo.Info) (doctorCheck, bool) {
+	drift := buildinfo.DetectDrift(runningBuild, installedBuild)
+	if !drift.Comparable {
+		return doctorCheck{}, false
+	}
+	running := fmt.Sprintf("%s (%s)", strings.TrimSpace(runningBuild.Version), buildinfo.ShortCommit(runningBuild.Commit))
+	installed := fmt.Sprintf("%s (%s)", strings.TrimSpace(installedBuild.Version), buildinfo.ShortCommit(installedBuild.Commit))
+	check := doctorCheck{
+		Name:   "Detent build drift",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("running service build %s matches installed executable build %s", running, installed),
+	}
+	if drift.Detected {
+		check.Status = doctorWarn
+		check.Detail = fmt.Sprintf("running service build %s differs from installed executable build %s", running, installed)
+		check.Hint = "Run `detent start --restart` to load the installed build, then rerun detent doctor."
+	}
+	return check, true
 }
 
 type doctorHealthEnvironment struct {
