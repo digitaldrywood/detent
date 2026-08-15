@@ -418,12 +418,7 @@ func resolveRuntimeSecretValue(value string, lookupEnv func(string) string) stri
 }
 
 func githubTokenSentinel(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "gh", "gh-auth", "${gh auth token}", "$(gh auth token)":
-		return true
-	default:
-		return false
-	}
+	return workflowconfig.IsGitHubTokenSentinel(value)
 }
 
 func literalTokenWarnings(token string) []RuntimeWarning {

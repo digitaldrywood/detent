@@ -527,11 +527,26 @@ func (c Config) USDBrakes() USDBrakes {
 }
 
 func (c Config) ValidationWarnings() []string {
-	if !c.USDBrakes().NoProgress {
-		return nil
+	var warnings []string
+	if c.USDBrakes().NoProgress {
+		warnings = append(warnings, "budget.billing_mode: metered with agent.no_progress_spend_limit_usd > 0 arms a notional USD progress brake; budget.enabled: false does not disarm it; use budget.billing_mode: subscription to make USD enforcement inert")
 	}
-	return []string{
-		"budget.billing_mode: metered with agent.no_progress_spend_limit_usd > 0 arms a notional USD progress brake; budget.enabled: false does not disarm it; use budget.billing_mode: subscription to make USD enforcement inert",
+	if token := strings.TrimSpace(c.Worker.GitHubToken); token != "" {
+		if IsGitHubTokenSentinel(token) {
+			warnings = append(warnings, "worker.github_token: ambient gh authentication is classified at launch; when it resolves to the orchestrator's GitHub principal it uses shared-budget mode, primary REST usage attribution is indeterminate, and workers brake before the orchestrator dispatch floor; use a different GitHub user or App installation for true rate-limit isolation")
+		} else {
+			warnings = append(warnings, "worker.github_token: credential principals are classified at launch; a token resolving to the orchestrator's GitHub principal uses shared-budget mode, primary REST usage attribution is indeterminate, and workers brake before the orchestrator dispatch floor; use a different GitHub user or App installation for true rate-limit isolation")
+		}
+	}
+	return warnings
+}
+
+func IsGitHubTokenSentinel(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "gh", "gh-auth", "${gh auth token}", "$(gh auth token)":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1341,7 +1356,7 @@ func Default() Config {
 		},
 		Worker: Worker{
 			SSHHosts:                 []string{},
-			GitHubRESTMinReserve:     1000,
+			GitHubRESTMinReserve:     1250,
 			GitHubRESTPollIntervalMS: 60000,
 		},
 		Agent: Agent{
@@ -1490,10 +1505,6 @@ func (c *Config) Validate() error {
 	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
 	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
 		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Worker.GitHubToken)) {
-	case "gh", "gh-auth", "${gh auth token}", "$(gh auth token)":
-		problems = append(problems, "worker.github_token must use a dedicated credential instead of ambient gh authentication")
 	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)

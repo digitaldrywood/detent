@@ -927,6 +927,7 @@ type RESTUsage struct {
 const (
 	RESTConsumerOrchestrator = "orchestrator"
 	RESTConsumerWorker       = "worker"
+	RESTConsumerSharedPool   = "shared_pool"
 )
 
 type RESTUsageContributor struct {

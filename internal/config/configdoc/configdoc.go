@@ -564,7 +564,6 @@ func validationRules(fields []fieldDetails) (map[string][]string, error) {
 		return nil, err
 	}
 	problems = append(problems, optionProblems...)
-
 	rules := make(map[string][]string, len(fields))
 	ordered := append([]fieldDetails(nil), fields...)
 	sort.SliceStable(ordered, func(left int, right int) bool {

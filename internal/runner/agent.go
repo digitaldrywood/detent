@@ -1047,7 +1047,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			Output:     RunOutputMergeFastPathCheckedHead,
 		}, nil
 	}
-	workerGitHub, err := r.workerGitHubPolicy(workflow.Config, req.Issue.Identifier)
+	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
 		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
 		return RunResult{}, err
@@ -1768,7 +1768,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
-	workerGitHub, err := r.workerGitHubPolicy(workflow.Config, req.Issue.Identifier)
+	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
 		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
 		return gate.ValidatorResult{}, err
