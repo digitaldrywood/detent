@@ -567,13 +567,16 @@ type BudgetRefusal struct {
 }
 
 type DiffStats struct {
-	FilesChanged    int
-	AddedLines      int
-	RemovedLines    int
-	UnpushedCommits int
-	HeadSHA         string
-	Fingerprint     string
-	Status          string
+	FilesChanged         int
+	AddedLines           int
+	RemovedLines         int
+	UnpushedCommits      int
+	CommitsAhead         int
+	RemoteBranchExists   bool
+	DeliveryStateChecked bool
+	HeadSHA              string
+	Fingerprint          string
+	Status               string
 }
 
 type TokenTotals struct {

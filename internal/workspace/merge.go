@@ -122,6 +122,21 @@ func remoteDefaultBranch(ctx context.Context, workspacePath string, remote strin
 	return "", fmt.Errorf("remote %s HEAD is not a branch", remote)
 }
 
+func remoteDefaultBranchHead(ctx context.Context, workspacePath string, remote string) (string, string, error) {
+	branch, err := remoteDefaultBranch(ctx, workspacePath, remote)
+	if err != nil {
+		return "", "", err
+	}
+	head, exists, err := remoteBranchHead(ctx, workspacePath, remote, branch)
+	if err != nil {
+		return "", "", err
+	}
+	if !exists {
+		return "", "", fmt.Errorf("remote %s default branch %s is missing", remote, branch)
+	}
+	return branch, head, nil
+}
+
 func remoteBranchHead(ctx context.Context, workspacePath string, remote string, branch string) (string, bool, error) {
 	ref := "refs/heads/" + branch
 	output, err := runGitAt(ctx, workspacePath, "ls-remote", remote, ref)

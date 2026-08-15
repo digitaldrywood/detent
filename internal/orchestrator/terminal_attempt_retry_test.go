@@ -144,6 +144,9 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		wantReason       string
 		wantLookupCalls  int
 		wantMergedReason bool
+		wantReasonCode   string
+		commitsAhead     int
+		remoteBranch     bool
 	}{
 		{
 			name: "open pull request on exact current head reconciles",
@@ -151,12 +154,30 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
 			},
 			wantLookupCalls: 1,
+			commitsAhead:    1,
+			remoteBranch:    true,
 		},
 		{
 			name:            "no pull request parks",
 			wantBlocked:     true,
 			wantReason:      "no exact-head pull request",
 			wantLookupCalls: 3,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "zero commits ahead parks without pull request lookup",
+			wantBlocked:     true,
+			wantReason:      "no_commits_to_deliver",
+			wantReasonCode:  noCommitsToDeliverReason,
+			wantLookupCalls: 0,
+		},
+		{
+			name:            "deleted remote branch parks accurately",
+			wantBlocked:     true,
+			wantReason:      "remote branch is missing",
+			wantLookupCalls: 0,
+			commitsAhead:    1,
 		},
 		{
 			name: "transient not found retries then reconciles",
@@ -165,6 +186,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			},
 			lookupFoundAfter: 3,
 			wantLookupCalls:  3,
+			commitsAhead:     1,
+			remoteBranch:     true,
 		},
 		{
 			name: "merged pull request routes to merged deliverable reconciliation",
@@ -174,6 +197,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			},
 			wantLookupCalls:  1,
 			wantMergedReason: true,
+			commitsAhead:     1,
+			remoteBranch:     true,
 		},
 		{
 			name: "closed unmerged pull request parks accurately",
@@ -183,6 +208,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantBlocked:     true,
 			wantReason:      "closed without merge",
 			wantLookupCalls: 1,
+			commitsAhead:    1,
+			remoteBranch:    true,
 		},
 		{
 			name: "lookup unavailable retries then parks",
@@ -194,6 +221,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantBlocked:     true,
 			wantReason:      "PR lookup unavailable",
 			wantLookupCalls: 3,
+			commitsAhead:    1,
+			remoteBranch:    true,
 		},
 		{
 			name: "stale cached hydration is not trusted",
@@ -203,6 +232,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantBlocked:     true,
 			wantReason:      "lookup result: no exact-head pull request",
 			wantLookupCalls: 3,
+			commitsAhead:    1,
+			remoteBranch:    true,
 		},
 	}
 	for _, tt := range tests {
@@ -233,7 +264,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			state.Running[issue.ID] = Running{
 				Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement,
 				StartedAt: now.Add(-time.Minute), WorkProductPushed: true, WorkspacePath: "/work/" + branch,
-				DiffStats: DiffStats{Status: "clean", HeadSHA: headSHA},
+				DiffStats: DiffStats{
+					Status: "clean", HeadSHA: headSHA,
+					DeliveryStateChecked: true, CommitsAhead: tt.commitsAhead, RemoteBranchExists: tt.remoteBranch,
+				},
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			commandErr := &runpkg.DeliverableCommandError{
@@ -245,7 +279,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				IssueID: issue.ID,
 				Result: runpkg.RunResult{
 					FinalState: runpkg.FinalStateNeedsHumanAttention, PullRequestHeadPushed: true,
-					DiffStats: runpkg.DiffStats{Status: "clean", HeadSHA: headSHA},
+					DiffStats: runpkg.DiffStats{
+						Status: "clean", HeadSHA: headSHA,
+						DeliveryStateChecked: true, CommitsAhead: tt.commitsAhead, RemoteBranchExists: tt.remoteBranch,
+					},
 				},
 				Err:         &runpkg.DeliverableRecoveryError{Branch: branch, Err: commandErr},
 				CompletedAt: now,
@@ -254,7 +291,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			if tracker.lookupCalls != tt.wantLookupCalls {
 				t.Fatalf("lookup calls = %d, want %d", tracker.lookupCalls, tt.wantLookupCalls)
 			}
-			if tracker.lookupRepository != "acme/widgets" || tracker.lookupBranch != branch || tracker.lookupHeadSHA != headSHA {
+			if tt.wantLookupCalls > 0 && (tracker.lookupRepository != "acme/widgets" || tracker.lookupBranch != branch || tracker.lookupHeadSHA != headSHA) {
 				t.Fatalf(
 					"lookup target = %q/%q@%q, want acme/widgets/%s@%s",
 					tracker.lookupRepository,
@@ -269,12 +306,19 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				t.Fatalf("Blocked[%q] present = %v, want %v: %#v", issue.ID, ok, tt.wantBlocked, blocked)
 			}
 			if tt.wantBlocked {
+				wantReasonCode := tt.wantReasonCode
+				if wantReasonCode == "" {
+					wantReasonCode = deliverableRecoveryNeedsHumanReason
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != wantReasonCode {
+					t.Fatalf("work attempt error class = %#v, want %q", attempts.completions, wantReasonCode)
+				}
 				if !strings.Contains(blocked.Reason, branch) || !strings.Contains(blocked.Reason, tt.wantReason) {
 					t.Fatalf("Blocked[%q].Reason = %q, want branch and %q", issue.ID, blocked.Reason, tt.wantReason)
 				}
-				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "hydration state:") ||
-					!strings.Contains(tracker.comments[0], "lookup result:") || !strings.Contains(tracker.comments[0], tt.wantReason) {
-					t.Fatalf("comments = %#v, want hydration and lookup diagnostics containing %q", tracker.comments, tt.wantReason)
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "local commits ahead: ") ||
+					!strings.Contains(tracker.comments[0], "remote branch exists: ") || !strings.Contains(tracker.comments[0], tt.wantReason) {
+					t.Fatalf("comments = %#v, want delivery diagnostics containing %q", tracker.comments, tt.wantReason)
 				}
 				if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
 					t.Fatalf("state transitions = %v, want [%s]", got, blockedStatusState)

@@ -920,6 +920,9 @@ func diffStatsPresent(diffStats DiffStats) bool {
 		diffStats.AddedLines != 0 ||
 		diffStats.RemovedLines != 0 ||
 		diffStats.UnpushedCommits != 0 ||
+		diffStats.CommitsAhead != 0 ||
+		diffStats.RemoteBranchExists ||
+		diffStats.DeliveryStateChecked ||
 		diffStats.HeadSHA != "" ||
 		diffStats.Fingerprint != "" ||
 		diffStats.Status != ""

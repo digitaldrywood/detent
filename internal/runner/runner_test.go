@@ -717,12 +717,15 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			workspaceBackend := &fakeWorkspaceBackend{
-				info: workspace.Info{Path: t.TempDir(), Branch: branch},
-				recoveryStates: []workspace.RecoveryState{
-					{HeadSHA: "dispatch-head"},
-					{HeadSHA: "current-head"},
+			workspaceBackend := &fakeDeliverableWorkspaceBackend{
+				fakeWorkspaceBackend: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: t.TempDir(), Branch: branch},
+					recoveryStates: []workspace.RecoveryState{
+						{HeadSHA: "dispatch-head"},
+						{HeadSHA: "current-head"},
+					},
 				},
+				deliverableState: workspace.DeliverableState{CommitsAhead: 1, RemoteBranchExists: true},
 			}
 			backend := &deliverableRecoveryAgentBackend{turns: [][]AgentUpdate{
 				{
@@ -762,6 +765,9 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				}
 				if result.DiffStats.HeadSHA != "current-head" {
 					t.Fatalf("DiffStats.HeadSHA = %q, want fresh current head", result.DiffStats.HeadSHA)
+				}
+				if !result.DiffStats.DeliveryStateChecked || result.DiffStats.CommitsAhead != 1 || !result.DiffStats.RemoteBranchExists {
+					t.Fatalf("DiffStats delivery state = %#v, want checked pushed commit", result.DiffStats)
 				}
 				for _, want := range []string{"codex_apps/github.create_pull_request", "status=failed", arguments, "HTTP 503: unavailable", `{"status":503,"message":"unavailable"}`} {
 					if !strings.Contains(runErr.Error(), want) {
@@ -4999,6 +5005,15 @@ type fakeWorkspaceBackend struct {
 	recoveryStates []workspace.RecoveryState
 	recoveryErr    error
 	recoveryCalls  int
+}
+
+type fakeDeliverableWorkspaceBackend struct {
+	*fakeWorkspaceBackend
+	deliverableState workspace.DeliverableState
+}
+
+func (b *fakeDeliverableWorkspaceBackend) DeliverableState(context.Context, workspace.Info, workspace.Issue) (workspace.DeliverableState, error) {
+	return b.deliverableState, nil
 }
 
 func (b *fakeWorkspaceBackend) RecoveryState(context.Context, workspace.Info, workspace.Issue) (workspace.RecoveryState, error) {

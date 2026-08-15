@@ -1433,6 +1433,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
 		result.DiffStats = brakeDiff
 	}
+	var deliverableState *workspace.DeliverableState
 	var exhaustedDeliverable *DeliverableRecoveryError
 	if mode == RunModeImplement && result.PullRequestHeadPushed && errors.As(turnErr, &exhaustedDeliverable) {
 		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "deliverable_recovery"); recoveryState != nil {
@@ -1440,6 +1441,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
 			result.DiffStats.HeadSHA = strings.TrimSpace(recoveryState.HeadSHA)
 		}
+		deliverableState = r.workspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue)
+		applyDeliverableState(&result.DiffStats, deliverableState)
 	}
 	commandFinishedAttrs := []any{
 		"workspace_path", info.Path,
@@ -1527,6 +1530,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			result.DiffStats.HeadSHA = strings.TrimSpace(recoveryState.HeadSHA)
 		}
 	}
+	applyDeliverableState(&result.DiffStats, deliverableState)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 	if err := r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID); err != nil {
@@ -1697,6 +1701,39 @@ func (r *Runner) workspaceRecoveryState(
 		slog.String("error", err.Error()),
 	)
 	return nil
+}
+
+func (r *Runner) workspaceDeliverableState(
+	backend workspace.Backend,
+	ctx context.Context,
+	info workspace.Info,
+	issue workspace.Issue,
+) *workspace.DeliverableState {
+	provider, ok := backend.(workspace.DeliverableStateProvider)
+	if !ok {
+		return nil
+	}
+	state, err := provider.DeliverableState(ctx, info, issue)
+	if err == nil {
+		return &state
+	}
+	r.logger.Warn(
+		"workspace deliverable state failed",
+		slog.String("issue_id", issue.ID),
+		slog.String("issue_identifier", issue.Identifier),
+		slog.String("workspace_path", info.Path),
+		slog.String("error", err.Error()),
+	)
+	return nil
+}
+
+func applyDeliverableState(diffStats *DiffStats, state *workspace.DeliverableState) {
+	if diffStats == nil || state == nil {
+		return
+	}
+	diffStats.CommitsAhead = state.CommitsAhead
+	diffStats.RemoteBranchExists = state.RemoteBranchExists
+	diffStats.DeliveryStateChecked = true
 }
 
 func (r *Runner) checkDispatchBudget(ctx context.Context, checker BudgetChecker, estimator DispatchEstimator, issue connector.Issue, model string, now time.Time) (RunResult, bool, error) {

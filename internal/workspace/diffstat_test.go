@@ -227,6 +227,75 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	}
 }
 
+func TestLocalGitDeliverableState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		push               bool
+		advanceRemoteBase  bool
+		deleteRemoteBranch bool
+		wantCommitsAhead   int
+		wantRemoteBranch   bool
+	}{
+		{name: "zero ahead without remote branch"},
+		{name: "pushed commit", push: true, wantCommitsAhead: 1, wantRemoteBranch: true},
+		{name: "pushed commit after remote base advances", push: true, advanceRemoteBase: true, wantCommitsAhead: 1, wantRemoteBranch: true},
+		{name: "pushed then deleted remote branch", push: true, deleteRemoteBranch: true, wantCommitsAhead: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatalf("NewBackend() error = %v", err)
+			}
+			provider := backend.(DeliverableStateProvider)
+			issue := Issue{Identifier: "DD-DELIVERABLE-" + tt.name}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if tt.push {
+				path := filepath.Join(info.Path, "delivered.txt")
+				if err := os.WriteFile(path, []byte("delivered\n"), 0o600); err != nil {
+					t.Fatalf("write delivered file: %v", err)
+				}
+				runGit(t, info.Path, "add", "delivered.txt")
+				runGit(t, info.Path, "commit", "-m", "test: add delivered work")
+				runGit(t, info.Path, "push", "-u", "origin", "HEAD:"+info.Branch)
+			}
+			if tt.advanceRemoteBase {
+				path := filepath.Join(source, "remote-base.txt")
+				if err := os.WriteFile(path, []byte("remote base\n"), 0o600); err != nil {
+					t.Fatalf("write remote base file: %v", err)
+				}
+				runGit(t, source, "add", "remote-base.txt")
+				runGit(t, source, "commit", "-m", "test: advance remote base")
+				runGit(t, source, "push", "origin", "main")
+			}
+			if tt.deleteRemoteBranch {
+				runGit(t, info.Path, "push", "origin", "--delete", info.Branch)
+			}
+
+			got, err := provider.DeliverableState(t.Context(), info, issue)
+			if err != nil {
+				t.Fatalf("DeliverableState() error = %v", err)
+			}
+			if got.CommitsAhead != tt.wantCommitsAhead || got.RemoteBranchExists != tt.wantRemoteBranch {
+				t.Fatalf("DeliverableState() = %+v, want commits ahead=%d remote branch=%t", got, tt.wantCommitsAhead, tt.wantRemoteBranch)
+			}
+		})
+	}
+}
+
 func TestLocalGitRecoveryStateDetectsAmendedCommit(t *testing.T) {
 	t.Parallel()
 
