@@ -62,6 +62,40 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			},
 		},
 		{
+			name: "promotes pre-existing linked pull request with arbitrary branch",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			},
+			issue: func() connector.Issue {
+				issue := autoPromoteTickIssue("I_74", []string{"bug"}, &connector.PullRequest{
+					Number:                 186,
+					URL:                    "https://github.com/gopherguides/corp/pull/186",
+					BranchName:             "claude/add-object-lifecycle-module-i6pKl",
+					State:                  "OPEN",
+					MergeableState:         "clean",
+					CIStatus:               "success",
+					CodexReviewState:       "COMMENTED",
+					CodexReviewSubmittedAt: &oldReview,
+				})
+				issue.Identifier = "gopherguides/corp#74"
+				issue.PRRepository = "gopherguides/corp"
+				return issue
+			}(),
+			wantUpdates: []autoPromoteTickUpdate{{
+				issueID: "I_74",
+				state:   "Merging",
+			}},
+			wantCommentFragments: []string{
+				"Auto-promoted this issue from Human Review to Merging.",
+				"reason: ready",
+				"https://github.com/gopherguides/corp/pull/186",
+			},
+			rejectLogFragments: []string{
+				"reason=missing_pull_request",
+			},
+		},
+		{
 			name: "linked pull request without required automated review waits for review",
 			cfg: AutoPromoteConfig{
 				Enabled:       true,
@@ -3696,6 +3730,47 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 	}
 	if running := state.Running[conflicting.ID]; running.cancel != nil {
 		running.cancel()
+	}
+}
+
+func TestStaleMergingLinkedPullRequestDoesNotDependOnBranchName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		branch string
+	}{
+		{name: "pre-existing arbitrary branch", branch: "claude/add-object-lifecycle-module-i6pKl"},
+		{name: "Detent-generated branch", branch: "detent/gopherguides_corp_74"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:           "I_74",
+				Identifier:   "gopherguides/corp#74",
+				State:        "Merging",
+				PRRepository: "gopherguides/corp",
+				PullRequest: &connector.PullRequest{
+					Number:         186,
+					URL:            "https://github.com/gopherguides/corp/pull/186",
+					BranchName:     tt.branch,
+					State:          "OPEN",
+					MergeableState: "clean",
+					CIStatus:       "success",
+				},
+			}
+
+			decision := staleMergingPullRequestDecisionForIssue(issue, normalizeConfig(Config{
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			}))
+			if decision != (staleMergingPullRequestDecision{}) {
+				t.Fatalf("staleMergingPullRequestDecisionForIssue() = %#v, want issue retained in Merging", decision)
+			}
+		})
 	}
 }
 

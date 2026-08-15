@@ -64,6 +64,11 @@ func (c *Connector) attachFreshPullRequests(ctx context.Context, issues []connec
 }
 
 func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []connector.Issue, useStatusCache bool) error {
+	if c.usesLabelStatus() {
+		if err := c.attachLabelIssuePullRequestReferences(ctx, issues); err != nil {
+			return err
+		}
+	}
 	byRepo := make(map[pullRequestRepo][]issuePullRequestCandidate)
 	for index, issue := range issues {
 		repo, ok := pullRequestRepoFromIdentifier(issue.Identifier)
