@@ -16,21 +16,24 @@ func TestEnabled(t *testing.T) {
 	tests := []struct {
 		name       string
 		tmux       string
+		pane       string
 		configured *bool
 		want       bool
 	}{
 		{name: "outside tmux defaults off", want: false},
-		{name: "outside tmux explicit on stays off", configured: &trueValue, want: false},
-		{name: "inside tmux defaults on", tmux: "/tmp/tmux-501/default,1,0", want: true},
-		{name: "inside tmux explicit on", tmux: "/tmp/tmux-501/default,1,0", configured: &trueValue, want: true},
-		{name: "inside tmux explicit off", tmux: "/tmp/tmux-501/default,1,0", configured: &falseValue, want: false},
-		{name: "blank tmux is absent", tmux: "  ", want: false},
+		{name: "outside tmux explicit on stays off", pane: "%7", configured: &trueValue, want: false},
+		{name: "inside tmux without pane stays off", tmux: "/tmp/tmux-501/default,1,0", want: false},
+		{name: "inside tmux defaults on", tmux: "/tmp/tmux-501/default,1,0", pane: "%7", want: true},
+		{name: "inside tmux explicit on", tmux: "/tmp/tmux-501/default,1,0", pane: "%7", configured: &trueValue, want: true},
+		{name: "inside tmux explicit off", tmux: "/tmp/tmux-501/default,1,0", pane: "%7", configured: &falseValue, want: false},
+		{name: "blank tmux is absent", tmux: "  ", pane: "%7", want: false},
+		{name: "blank pane is absent", tmux: "/tmp/tmux-501/default,1,0", pane: "  ", want: false},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := Enabled(test.tmux, test.configured); got != test.want {
+			if got := Enabled(test.tmux, test.pane, test.configured); got != test.want {
 				t.Fatalf("Enabled() = %t, want %t", got, test.want)
 			}
 		})
@@ -61,8 +64,8 @@ func TestFormat(t *testing.T) {
 
 func TestStatusLifecycle(t *testing.T) {
 	t.Parallel()
-	runner := &recordingRunner{output: "@7\tDetent:2\n"}
-	status, err := newStatus(context.Background(), runner)
+	runner := &recordingRunner{output: "Detent:2\n"}
+	status, err := newStatus(context.Background(), runner, "%7")
 	if err != nil {
 		t.Fatalf("newStatus() error = %v", err)
 	}
@@ -86,9 +89,9 @@ func TestStatusLifecycle(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"display-message", "-p", "#{window_id}\t#{window_name}"},
-		{"rename-window", "-t", "@7", "detent 2r/1q/3b"},
-		{"rename-window", "-t", "@7", "Detent:2"},
+		{"display-message", "-t", "%7", "-p", "#{window_name}"},
+		{"rename-window", "-t", "%7", "detent 2r/1q/3b"},
+		{"rename-window", "-t", "%7", "Detent:2"},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("commands = %#v, want %#v", runner.calls, want)
@@ -97,8 +100,8 @@ func TestStatusLifecycle(t *testing.T) {
 
 func TestStatusRetriesFailedRename(t *testing.T) {
 	t.Parallel()
-	runner := &recordingRunner{output: "@7\tDetent:2\n"}
-	status, err := newStatus(context.Background(), runner)
+	runner := &recordingRunner{output: "Detent:2\n"}
+	status, err := newStatus(context.Background(), runner, "%7")
 	if err != nil {
 		t.Fatalf("newStatus() error = %v", err)
 	}
@@ -113,7 +116,7 @@ func TestStatusRetriesFailedRename(t *testing.T) {
 		t.Fatalf("retry Update() error = %v", err)
 	}
 
-	wantRename := []string{"rename-window", "-t", "@7", "detent 1r/0q/0b"}
+	wantRename := []string{"rename-window", "-t", "%7", "detent 1r/0q/0b"}
 	if len(runner.calls) != 3 || !reflect.DeepEqual(runner.calls[1], wantRename) || !reflect.DeepEqual(runner.calls[2], wantRename) {
 		t.Fatalf("commands = %#v, want two rename attempts %#v", runner.calls, wantRename)
 	}

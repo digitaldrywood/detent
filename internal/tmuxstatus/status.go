@@ -25,38 +25,38 @@ type Status struct {
 	closeErr     error
 }
 
-func Enabled(tmux string, configured *bool) bool {
-	if strings.TrimSpace(tmux) == "" {
+func Enabled(tmux, pane string, configured *bool) bool {
+	if strings.TrimSpace(tmux) == "" || strings.TrimSpace(pane) == "" {
 		return false
 	}
 	return configured == nil || *configured
 }
 
-func New(ctx context.Context) (*Status, error) {
-	return newStatus(ctx, execCommandRunner{})
+func New(ctx context.Context, pane string) (*Status, error) {
+	return newStatus(ctx, execCommandRunner{}, pane)
 }
 
-func newStatus(ctx context.Context, runner commandRunner) (*Status, error) {
+func newStatus(ctx context.Context, runner commandRunner, pane string) (*Status, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if runner == nil {
 		return nil, errors.New("tmux command runner is required")
 	}
+	target := strings.TrimSpace(pane)
+	if target == "" {
+		return nil, errors.New("tmux pane target is required")
+	}
 
-	current, err := runner.Output(ctx, "display-message", "-p", "#{window_id}\t#{window_name}")
+	current, err := runner.Output(ctx, "display-message", "-t", target, "-p", "#{window_name}")
 	if err != nil {
 		return nil, fmt.Errorf("read current tmux window: %w", err)
-	}
-	target, originalName, ok := strings.Cut(strings.TrimSuffix(current, "\n"), "\t")
-	if !ok || strings.TrimSpace(target) == "" {
-		return nil, errors.New("read current tmux window: unexpected response")
 	}
 
 	return &Status{
 		runner:       runner,
-		target:       strings.TrimSpace(target),
-		originalName: originalName,
+		target:       target,
+		originalName: strings.TrimSuffix(current, "\n"),
 	}, nil
 }
 
