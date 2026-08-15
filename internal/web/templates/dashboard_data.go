@@ -627,6 +627,7 @@ type projectKanbanCard struct {
 	Comments              []telemetry.IssueComment
 	Blockers              []string
 	ClearedBlockers       []string
+	BlockerSummary        string
 	HasPullRequest        bool
 	IssueID               string
 	PRNumber              int
@@ -3055,6 +3056,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		Comments:              append([]telemetry.IssueComment(nil), issue.Comments...),
 		Blockers:              blockers,
 		ClearedBlockers:       clearedBlockers,
+		BlockerSummary:        strings.Join(append(append([]string(nil), blockers...), clearedBlockers...), " · "),
 		HasPullRequest:        issue.PullRequest != nil,
 		Movable:               strings.TrimSpace(issue.ID) != "" && issue.Metadata[projectKanbanRecentCompletionMetadataKey] != "true",
 		RecentCompletion:      issue.Metadata[projectKanbanRecentCompletionMetadataKey] == "true",
@@ -3158,7 +3160,17 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 		if label == "" {
 			continue
 		}
-		if state := strings.TrimSpace(ref.State); state != "" {
+		trackerState := strings.ToLower(strings.TrimSpace(ref.TrackerState))
+		if trackerState != "" {
+			switch trackerState {
+			case "open":
+				label += " (live)"
+			case "closed":
+				label += " (resolved)"
+			default:
+				label += " (" + trackerState + ")"
+			}
+		} else if state := strings.TrimSpace(ref.State); state != "" {
 			label += " " + state
 		}
 		if projectKanbanBlockedRefCleared(ref, terminalStates) {
@@ -3174,6 +3186,9 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 }
 
 func projectKanbanBlockedRefCleared(ref telemetry.BlockedRef, terminalStates map[string]struct{}) bool {
+	if strings.EqualFold(strings.TrimSpace(ref.TrackerState), "closed") {
+		return true
+	}
 	return projectKanbanTerminalState(ref.State, terminalStates)
 }
 

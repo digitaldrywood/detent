@@ -1666,6 +1666,72 @@ func TestBoardHumanBlockedCardsUseErrorTreatment(t *testing.T) {
 	}
 }
 
+func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
+	t.Parallel()
+
+	openRef := telemetry.BlockedRef{
+		Identifier:   "gopherguides/corp#492",
+		State:        "In Progress",
+		TrackerState: "open",
+		Source:       "workpad",
+	}
+	closedRef := telemetry.BlockedRef{
+		Identifier:   "gopherguides/corp#491",
+		State:        "Done",
+		TrackerState: "closed",
+		Source:       "workpad",
+	}
+	duplicateClosedRef := closedRef
+	duplicateClosedRef.Source = "native"
+	tests := []struct {
+		name     string
+		refs     []telemetry.BlockedRef
+		wantRefs []string
+	}{
+		{name: "open ref renders live", refs: []telemetry.BlockedRef{openRef}, wantRefs: []string{"gopherguides/corp#492 (live)"}},
+		{name: "closed ref renders resolved", refs: []telemetry.BlockedRef{closedRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)"}},
+		{name: "closed workpad ref duplicated by native relation renders resolved", refs: []telemetry.BlockedRef{duplicateClosedRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)"}},
+		{name: "mixed refs retain operative hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)", "gopherguides/corp#492 (live)"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := boardTestData()
+			blockedAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
+			data.Snapshot.Blocked = []telemetry.Blocked{{
+				Issue: telemetry.Issue{
+					ID:         "issue-workpad-resolution",
+					Identifier: "gopherguides/corp#486",
+					Number:     486,
+					ProjectID:  "detent",
+					Title:      "Surface resolved Workpad refs",
+					State:      "Blocked",
+					BlockedBy:  tt.refs,
+				},
+				Error:               "the workflow emits Test (Go 1.26.5)",
+				Source:              telemetry.BlockedSourceProjectStatus,
+				RecoveryAction:      "hold",
+				RecoveryReason:      "human_action",
+				RecoveryRemedy:      "approve the remaining deployment",
+				NeedsHumanAttention: true,
+				BlockedAt:           &blockedAt,
+			}}
+
+			html := renderBoardComponent(t, BoardSnapshot(data))
+			for _, want := range append(tt.wantRefs, "needs review - human action — approve the remaining deployment") {
+				if !strings.Contains(html, want) {
+					t.Fatalf("board card missing %q:\n%s", want, html)
+				}
+			}
+			if !strings.Contains(html, "data-board-card-blockers") {
+				t.Fatalf("board card missing blocker-ref annotation:\n%s", html)
+			}
+		})
+	}
+}
+
 func TestBoardCardIdentityToken(t *testing.T) {
 	tests := []struct {
 		name       string

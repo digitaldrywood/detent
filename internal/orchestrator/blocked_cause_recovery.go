@@ -264,11 +264,6 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
-	holdReason := o.blockedCauseHoldReason(issue, state, nil, dependencyCfg)
-	if holdReason != "" && holdReason != "invalid_workpad_signal" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", holdReason, nil, "")
-		return false
-	}
 	if o.currentBlockedOperatorStop(ctx, state, issue) {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "operator_stop", nil, "")
 		return false
@@ -276,7 +271,22 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	withDependencies := o.issueWithDependencyRefs(issue)
 	withDependencies, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
+	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg)
+	if holdReason != "" && holdReason != "invalid_workpad_signal" {
+		o.recordBlockedRecoveryDecision(
+			ctx,
+			state,
+			withDependencies,
+			"hold",
+			holdReason,
+			nil,
+			"",
+			dependencyBlockersNotReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates)...,
+		)
+		return false
+	}
 	holdReason = o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg)
 	if holdReason != "" && holdReason != "invalid_workpad_signal" {
 		o.recordBlockedRecoveryDecision(

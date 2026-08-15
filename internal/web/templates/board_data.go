@@ -639,6 +639,7 @@ type boardCardView struct {
 	RuntimeBadge      bool
 	ParkSummary       string
 	ParkDetail        string
+	BlockerSummary    string
 	Labels            []string
 	Effort            string
 	Activity          string
@@ -1080,6 +1081,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	view.BlockerSummary = card.BlockerSummary
 	view.ParkSummary, view.ParkDetail = boardCardParkSummary(card.ParkSummary)
 	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
 	view.AuthorDetail = boardCardAuthorDetail(card.AuthorID, card.OriginActor)

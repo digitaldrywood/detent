@@ -1,8 +1,10 @@
 package web_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hub"
@@ -97,6 +99,61 @@ func TestAPIIssuePrecedenceAndScope(t *testing.T) {
 	}
 	if payload["retry"] != nil || payload["blocked"] != nil {
 		t.Fatalf("runtime precedence payload = %#v, want exactly one running overlay", payload)
+	}
+}
+
+func TestAPIIssueSurfacesWorkpadBlockerResolution(t *testing.T) {
+	t.Parallel()
+
+	openRef := telemetry.BlockedRef{Identifier: "gopherguides/corp#492", State: "In Progress", TrackerState: "open", Source: "workpad"}
+	closedRef := telemetry.BlockedRef{Identifier: "gopherguides/corp#491", State: "Done", TrackerState: "closed", Source: "workpad"}
+	tests := []struct {
+		name     string
+		refs     []telemetry.BlockedRef
+		wantJSON []string
+	}{
+		{name: "open ref is live", refs: []telemetry.BlockedRef{openRef}, wantJSON: []string{`"tracker_state":"open"`}},
+		{name: "closed ref is resolved", refs: []telemetry.BlockedRef{closedRef}, wantJSON: []string{`"tracker_state":"closed"`}},
+		{name: "mixed refs retain human hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantJSON: []string{`"tracker_state":"closed"`, `"tracker_state":"open"`, `"recovery_reason":"human_action"`, `"recovery_remedy":"approve the remaining deployment"`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := telemetry.Issue{ID: "issue-486", Identifier: "gopherguides/corp#486", Number: 486, ProjectID: "corp", State: "Blocked", BlockedBy: tt.refs}
+			snapshots := hub.New[telemetry.Snapshot]()
+			if err := snapshots.Publish(telemetry.Snapshot{Blocked: []telemetry.Blocked{{
+				Issue:               issue,
+				Error:               "stale Workpad blocker reason",
+				RecoveryAction:      "hold",
+				RecoveryReason:      "human_action",
+				RecoveryRemedy:      "approve the remaining deployment",
+				NeedsHumanAttention: true,
+			}}}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			deps := testDeps(t)
+			deps.Hub = snapshots
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			for _, path := range []string{"/api/v1/issue-486", "/api/v1/state"} {
+				payload := requestJSON(t, server, http.MethodGet, path, http.StatusOK)
+				encoded, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatalf("json.Marshal() error = %v", err)
+				}
+				body := string(encoded)
+				for _, want := range tt.wantJSON {
+					if !strings.Contains(body, want) {
+						t.Fatalf("GET %s missing %q: %s", path, want, body)
+					}
+				}
+			}
+		})
 	}
 }
 

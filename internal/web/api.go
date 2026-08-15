@@ -705,6 +705,7 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 			RecoveryReachability:    optionalString(entry.RecoveryReachability),
 			RecoveryIntentResumable: entry.RecoveryIntentResumable,
 			NeedsHumanAttention:     entry.NeedsHumanAttention,
+			BlockedBy:               append([]telemetry.BlockedRef{}, entry.BlockedBy...),
 			RecoveryRoot:            entry.RecoveryRoot,
 			WorkerHost:              optionalString(entry.WorkerHost),
 			WorkspacePath:           optionalString(entry.WorkspacePath),
@@ -801,6 +802,7 @@ func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 		RecoveryReachability:    optionalString(entry.RecoveryReachability),
 		RecoveryIntentResumable: entry.RecoveryIntentResumable,
 		NeedsHumanAttention:     entry.NeedsHumanAttention,
+		BlockedBy:               append([]telemetry.BlockedRef{}, entry.BlockedBy...),
 		RecoveryRoot:            entry.RecoveryRoot,
 		BlockedAt:               timestampStringPtr(entry.BlockedAt),
 		LastEvent:               optionalString(entry.LastEvent),
@@ -1541,6 +1543,7 @@ type blockedAPIResponse struct {
 	RecoveryReachability    *string                        `json:"recovery_reachability"`
 	RecoveryIntentResumable bool                           `json:"recovery_intent_resumable"`
 	NeedsHumanAttention     bool                           `json:"needs_human_attention"`
+	BlockedBy               []telemetry.BlockedRef         `json:"blocked_by"`
 	RecoveryRoot            *telemetry.BlockedRecoveryRoot `json:"recovery_root"`
 	WorkerHost              *string                        `json:"worker_host"`
 	WorkspacePath           *string                        `json:"workspace_path"`
@@ -1807,6 +1810,7 @@ type blockedIssueAPIResponse struct {
 	RecoveryReachability    *string                        `json:"recovery_reachability"`
 	RecoveryIntentResumable bool                           `json:"recovery_intent_resumable"`
 	NeedsHumanAttention     bool                           `json:"needs_human_attention"`
+	BlockedBy               []telemetry.BlockedRef         `json:"blocked_by"`
 	RecoveryRoot            *telemetry.BlockedRecoveryRoot `json:"recovery_root"`
 	BlockedAt               *string                        `json:"blocked_at"`
 	LastEvent               *string                        `json:"last_event"`

@@ -522,6 +522,11 @@ templ boardCardView2(card boardCardView) {
 				</div>
 			}
 		}
+		if card.BlockerSummary != "" {
+			<div class="min-w-0 text-2xs text-sec" data-board-card-blockers data-board-card-expanded>
+				<span class="text-dim">Blocker refs</span> { card.BlockerSummary }
+			</div>
+		}
 		if card.ParkSummary != "" {
 			<div
 				id={ card.DomID + "-park-summary" }
