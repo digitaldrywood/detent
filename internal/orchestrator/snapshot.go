@@ -131,15 +131,16 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 
 func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.Duration, now time.Time) telemetry.DispatchStatus {
 	result := telemetry.DispatchStatus{
-		ProjectID:             strings.TrimSpace(status.ProjectID),
-		CandidateCount:        status.CandidateCount,
-		SelectedCount:         status.SelectedCount,
-		SkippedCount:          status.SkippedCount,
-		WaitReason:            strings.TrimSpace(status.WaitReason),
-		AllSkippedSince:       cloneTimePointer(status.AllSkippedSince),
-		LastSelectedAt:        cloneTimePointer(status.LastSelectedAt),
-		StallThresholdSeconds: int64(threshold / time.Second),
-		ObservedAt:            status.ObservedAt,
+		ProjectID:              strings.TrimSpace(status.ProjectID),
+		CandidateCount:         status.CandidateCount,
+		EligibleCandidateCount: status.EligibleCandidateCount,
+		SelectedCount:          status.SelectedCount,
+		SkippedCount:           status.SkippedCount,
+		WaitReason:             strings.TrimSpace(status.WaitReason),
+		AllSkippedSince:        cloneTimePointer(status.AllSkippedSince),
+		LastSelectedAt:         cloneTimePointer(status.LastSelectedAt),
+		StallThresholdSeconds:  int64(threshold / time.Second),
+		ObservedAt:             status.ObservedAt,
 	}
 	if status.LastSelectedAt != nil && !status.LastSelectedAt.IsZero() && !now.IsZero() {
 		seconds := max(int64(now.Sub(*status.LastSelectedAt)/time.Second), 0)
@@ -263,7 +264,7 @@ func projectFailureBreakerSnapshots(state State) []telemetry.FailureBreaker {
 	if attemptCount == 0 {
 		attemptCount = breaker.Count
 	}
-	candidateCount := state.DispatchStatus.CandidateCount
+	candidateCount := state.DispatchStatus.EligibleCandidateCount
 	row := telemetry.FailureBreaker{
 		Class:                  breaker.Class,
 		Count:                  breaker.Count,

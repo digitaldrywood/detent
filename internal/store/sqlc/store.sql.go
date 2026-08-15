@@ -1850,7 +1850,7 @@ func (q *Queries) GetLatestIssueAgentSession(ctx context.Context, arg GetLatestI
 }
 
 const getProjectDispatchStatus = `-- name: GetProjectDispatchStatus :one
-SELECT project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at
+SELECT project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at, eligible_candidate_count
 FROM project_dispatch_status
 WHERE project_id = ?
 `
@@ -1868,6 +1868,7 @@ func (q *Queries) GetProjectDispatchStatus(ctx context.Context, projectID string
 		&i.AllSkippedSince,
 		&i.LastSelectedAt,
 		&i.ObservedAt,
+		&i.EligibleCandidateCount,
 	)
 	return i, err
 }
@@ -4344,6 +4345,7 @@ const upsertProjectDispatchStatus = `-- name: UpsertProjectDispatchStatus :one
 INSERT INTO project_dispatch_status (
   project_id,
   candidate_count,
+  eligible_candidate_count,
   candidate_fingerprint,
   selected_count,
   skipped_count,
@@ -4351,9 +4353,10 @@ INSERT INTO project_dispatch_status (
   all_skipped_since,
   last_selected_at,
   observed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id) DO UPDATE SET
   candidate_count = excluded.candidate_count,
+  eligible_candidate_count = excluded.eligible_candidate_count,
   candidate_fingerprint = excluded.candidate_fingerprint,
   selected_count = excluded.selected_count,
   skipped_count = excluded.skipped_count,
@@ -4361,25 +4364,27 @@ ON CONFLICT(project_id) DO UPDATE SET
   all_skipped_since = excluded.all_skipped_since,
   last_selected_at = excluded.last_selected_at,
   observed_at = excluded.observed_at
-RETURNING project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at
+RETURNING project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at, eligible_candidate_count
 `
 
 type UpsertProjectDispatchStatusParams struct {
-	ProjectID            string         `json:"project_id"`
-	CandidateCount       int64          `json:"candidate_count"`
-	CandidateFingerprint string         `json:"candidate_fingerprint"`
-	SelectedCount        int64          `json:"selected_count"`
-	SkippedCount         int64          `json:"skipped_count"`
-	WaitReason           sql.NullString `json:"wait_reason"`
-	AllSkippedSince      sql.NullString `json:"all_skipped_since"`
-	LastSelectedAt       sql.NullString `json:"last_selected_at"`
-	ObservedAt           string         `json:"observed_at"`
+	ProjectID              string         `json:"project_id"`
+	CandidateCount         int64          `json:"candidate_count"`
+	EligibleCandidateCount int64          `json:"eligible_candidate_count"`
+	CandidateFingerprint   string         `json:"candidate_fingerprint"`
+	SelectedCount          int64          `json:"selected_count"`
+	SkippedCount           int64          `json:"skipped_count"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	AllSkippedSince        sql.NullString `json:"all_skipped_since"`
+	LastSelectedAt         sql.NullString `json:"last_selected_at"`
+	ObservedAt             string         `json:"observed_at"`
 }
 
 func (q *Queries) UpsertProjectDispatchStatus(ctx context.Context, arg UpsertProjectDispatchStatusParams) (ProjectDispatchStatus, error) {
 	row := q.db.QueryRowContext(ctx, upsertProjectDispatchStatus,
 		arg.ProjectID,
 		arg.CandidateCount,
+		arg.EligibleCandidateCount,
 		arg.CandidateFingerprint,
 		arg.SelectedCount,
 		arg.SkippedCount,
@@ -4399,6 +4404,7 @@ func (q *Queries) UpsertProjectDispatchStatus(ctx context.Context, arg UpsertPro
 		&i.AllSkippedSince,
 		&i.LastSelectedAt,
 		&i.ObservedAt,
+		&i.EligibleCandidateCount,
 	)
 	return i, err
 }

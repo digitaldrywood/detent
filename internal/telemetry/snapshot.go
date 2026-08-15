@@ -268,6 +268,7 @@ type ProjectSnapshot struct {
 type DispatchStatus struct {
 	ProjectID                string     `json:"project_id,omitempty"`
 	CandidateCount           int        `json:"candidate_count"`
+	EligibleCandidateCount   int        `json:"eligible_candidate_count"`
 	SelectedCount            int        `json:"selected_count"`
 	SkippedCount             int        `json:"skipped_count"`
 	WaitReason               string     `json:"wait_reason,omitempty"`

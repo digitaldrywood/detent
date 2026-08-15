@@ -129,7 +129,9 @@ operator cause, backend/provider identity, any matching capacity outage, the
 absolute resume time, and the current eligible-candidate count. The board keeps
 the cause and project-only scope concise while progressively disclosing this
 evidence and clarifying that canary eligibility does not make a parked item
-retryable.
+retryable. The eligible count includes only candidates that dispatched or were
+held solely by the project breaker; dependency, budget, provider-capacity, and
+other dispatch gates remain separate reasons that can leave the count at zero.
 
 Daily budget caps are scoped to the configured project. Session rows persist
 the project ID; on upgrade, Detent backfills older rows first from work

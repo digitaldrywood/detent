@@ -938,6 +938,7 @@ LIMIT sqlc.arg(limit);
 INSERT INTO project_dispatch_status (
   project_id,
   candidate_count,
+  eligible_candidate_count,
   candidate_fingerprint,
   selected_count,
   skipped_count,
@@ -945,9 +946,10 @@ INSERT INTO project_dispatch_status (
   all_skipped_since,
   last_selected_at,
   observed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id) DO UPDATE SET
   candidate_count = excluded.candidate_count,
+  eligible_candidate_count = excluded.eligible_candidate_count,
   candidate_fingerprint = excluded.candidate_fingerprint,
   selected_count = excluded.selected_count,
   skipped_count = excluded.skipped_count,
