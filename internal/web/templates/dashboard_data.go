@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -612,6 +613,7 @@ type projectKanbanCard struct {
 	MergeLaneStatus       string
 	MergeLaneDetail       string
 	MergeLaneClass        string
+	MergeLaneKind         primitives.Kind
 	Stage                 string
 	StageAt               time.Time
 	AuthorID              string
@@ -2315,6 +2317,7 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 			card.MergeLaneStatus = status.Label
 			card.MergeLaneDetail = status.Detail
 			card.MergeLaneClass = status.Class
+			card.MergeLaneKind = status.Kind
 		}
 		cardsByState[projectKanbanStateKey(state)] = append(cardsByState[projectKanbanStateKey(state)], card)
 	}
@@ -3499,6 +3502,7 @@ type mergeLaneCardStatus struct {
 	URL       string
 	Suffix    string
 	Class     string
+	Kind      primitives.Kind
 }
 
 type mergeLaneIssueRecord struct {
@@ -3508,6 +3512,8 @@ type mergeLaneIssueRecord struct {
 	active     bool
 	stageAt    time.Time
 	step       string
+	phase      string
+	fresh      bool
 	queueError string
 	rank       int
 	index      int
@@ -3544,15 +3550,14 @@ func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStat
 			return issueIdentifier(groupRecords[i].issue) < issueIdentifier(groupRecords[j].issue)
 		})
 
-		activePRNumber := 0
-		activePRURL := ""
+		var holder mergeLaneIssueRecord
 		for _, record := range groupRecords {
 			if record.active {
-				activePRNumber = pullRequestNumber(record.issue)
-				activePRURL = pullRequestURL(record.issue)
+				holder = record
 				break
 			}
 		}
+		notDraining := mergeLaneGroupNotDraining(snapshot, groupRecords)
 
 		for i, record := range groupRecords {
 			position := i + 1
@@ -3564,7 +3569,7 @@ func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStat
 				statuses[record.key] = mergeLaneActiveStatus(record)
 				continue
 			}
-			statuses[record.key] = mergeLaneQueuedStatus(record, position, activePRNumber, activePRURL)
+			statuses[record.key] = mergeLaneQueuedStatus(record, position, holder, notDraining)
 		}
 	}
 	return statuses
@@ -3603,6 +3608,7 @@ func nativeMergeQueueCardStatus(record mergeLaneIssueRecord) mergeLaneCardStatus
 		Prefix: strings.Join(details, "; "),
 		URL:    strings.TrimSpace(entry.URL),
 		Class:  "border-accent/15 bg-accent/15 text-accent",
+		Kind:   primitives.KindInfo,
 	}
 }
 
@@ -3649,11 +3655,20 @@ func mergeLaneIssueRecords(snapshot telemetry.Snapshot) []mergeLaneIssueRecord {
 		})
 	}
 	for _, row := range snapshot.Running {
+		attempt, hasAttempt := mergeLaneRunningAttempt(snapshot, row)
+		phase := ""
+		fresh := false
+		if hasAttempt {
+			phase = strings.TrimSpace(attempt.Phase)
+			fresh = mergeLaneAttemptFresh(snapshot.GeneratedAt, attempt)
+		}
 		upsert(mergeLaneIssueRecord{
 			issue:   row.Issue,
 			active:  true,
 			stageAt: row.StartedAt.UTC(),
 			step:    mergeLaneActiveStep(row),
+			phase:   phase,
+			fresh:   fresh,
 			rank:    30,
 		})
 	}
@@ -3663,6 +3678,61 @@ func mergeLaneIssueRecords(snapshot telemetry.Snapshot) []mergeLaneIssueRecord {
 		records = append(records, record)
 	}
 	return records
+}
+
+func mergeLaneRunningAttempt(snapshot telemetry.Snapshot, row telemetry.Running) (telemetry.WorkAttempt, bool) {
+	for _, attempt := range snapshot.WorkAttempts {
+		if row.WorkAttemptID > 0 && attempt.AttemptID == row.WorkAttemptID {
+			return attempt, true
+		}
+	}
+	var fallback telemetry.WorkAttempt
+	found := false
+	for _, attempt := range snapshot.WorkAttempts {
+		if !mergeLaneAttemptMatchesIssue(attempt, row.Issue) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(attempt.Status), "active") {
+			return attempt, true
+		}
+		if !found {
+			fallback = attempt
+			found = true
+		}
+	}
+	return fallback, found
+}
+
+func mergeLaneAttemptMatchesIssue(attempt telemetry.WorkAttempt, issue telemetry.Issue) bool {
+	if projectID := strings.TrimSpace(issue.ProjectID); projectID != "" && !strings.EqualFold(projectID, strings.TrimSpace(attempt.ProjectID)) {
+		return false
+	}
+	if issueID := strings.TrimSpace(issue.ID); issueID != "" && issueID == strings.TrimSpace(attempt.IssueID) {
+		return true
+	}
+	identifier := strings.TrimSpace(issue.Identifier)
+	return identifier != "" && strings.EqualFold(identifier, strings.TrimSpace(attempt.Identifier))
+}
+
+func mergeLaneAttemptFresh(generatedAt time.Time, attempt telemetry.WorkAttempt) bool {
+	if !strings.EqualFold(strings.TrimSpace(attempt.Status), "active") || attempt.HeartbeatAt == nil || attempt.Stale {
+		return false
+	}
+	return generatedAt.IsZero() || attempt.LeaseExpiresAt == nil || !attempt.LeaseExpiresAt.Before(generatedAt)
+}
+
+func mergeLaneGroupNotDraining(snapshot telemetry.Snapshot, records []mergeLaneIssueRecord) bool {
+	for _, warning := range snapshot.StalenessWarnings {
+		if warning.Kind != staleness.KindMergeLiveness {
+			continue
+		}
+		for _, record := range records {
+			if strings.EqualFold(strings.TrimSpace(warning.ProjectID), strings.TrimSpace(record.issue.ProjectID)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mergeLaneIssue(issue telemetry.Issue) bool {
@@ -3725,6 +3795,7 @@ func mergeLaneActiveStatus(record mergeLaneIssueRecord) mergeLaneCardStatus {
 		Label:  "Merging now",
 		Detail: detail,
 		Class:  "border-accent/15 bg-accent/15 text-accent",
+		Kind:   primitives.KindInfo,
 	}
 	if number := pullRequestNumber(record.issue); number > 0 {
 		status.Prefix = detail + " for "
@@ -3744,7 +3815,7 @@ func mergeLaneActiveStatus(record mergeLaneIssueRecord) mergeLaneCardStatus {
 	return status
 }
 
-func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNumber int, activePRURL string) mergeLaneCardStatus {
+func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, holder mergeLaneIssueRecord, notDraining bool) mergeLaneCardStatus {
 	details := []string{}
 	if queueError := strings.TrimSpace(record.queueError); queueError != "" {
 		details = append(details, "Waiting: "+queueError)
@@ -3754,12 +3825,25 @@ func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNu
 	status := mergeLaneCardStatus{
 		Label: "Queued #" + strconv.Itoa(position),
 		Class: "border-warn/15 bg-warn/15 text-warn",
+		Kind:  primitives.KindWarn,
 	}
-	if activePRNumber > 0 {
-		status.Prefix = strings.Join(append(details, waiting+" behind "), "; ")
-		status.Reference = "PR #" + strconv.Itoa(activePRNumber)
-		status.URL = activePRURL
-		waiting += " behind " + status.Reference
+	if notDraining {
+		status.Label = "Not draining #" + strconv.Itoa(position)
+		status.Class = "border-err/15 bg-err/15 text-err"
+		status.Kind = primitives.KindErr
+		waiting = "merge queue is not advancing"
+	} else if mergeLaneCapacityQueued(record) && holder.fresh {
+		status.Label = "Draining #" + strconv.Itoa(position)
+		status.Class = "border-ok/15 bg-ok/15 text-ok"
+		status.Kind = primitives.KindOK
+		waiting = "lane draining"
+	}
+	if holder.active {
+		status.Reference, status.URL, status.Suffix = mergeLaneHolderAttribution(holder)
+		if status.Reference != "" {
+			status.Prefix = strings.Join(append(details, waiting+" behind "), "; ")
+			waiting += " behind " + status.Reference + status.Suffix
+		}
 	}
 	details = append(details, waiting)
 	status.Detail = strings.Join(details, "; ")
@@ -3767,6 +3851,38 @@ func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNu
 		status.Prefix = status.Detail
 	}
 	return status
+}
+
+func mergeLaneCapacityQueued(record mergeLaneIssueRecord) bool {
+	switch strings.TrimSpace(record.queueError) {
+	case "lane_capacity_full", "project_state_capacity_full", "local_slot_unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeLaneHolderAttribution(holder mergeLaneIssueRecord) (string, string, string) {
+	reference := strings.TrimSpace(issueIdentifier(holder.issue))
+	url := strings.TrimSpace(holder.issue.URL)
+	suffix := ""
+	if number := pullRequestNumber(holder.issue); number > 0 {
+		prReference := "PR #" + strconv.Itoa(number)
+		if reference == "" {
+			reference = prReference
+			url = pullRequestURL(holder.issue)
+		} else {
+			suffix = " / " + prReference
+		}
+	}
+	phase := strings.TrimSpace(holder.phase)
+	if phase == "" {
+		phase = strings.TrimSpace(holder.step)
+	}
+	if phase != "" {
+		suffix += "; phase " + phase
+	}
+	return reference, url, suffix
 }
 
 func mergeLaneOrdinal(position int) string {

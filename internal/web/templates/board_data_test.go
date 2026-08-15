@@ -522,6 +522,36 @@ func TestBoardCardExtraShowsWaitReasonAheadOfCI(t *testing.T) {
 	}
 }
 
+func TestBoardCardRendersMergeLaneProgress(t *testing.T) {
+	t.Parallel()
+
+	card := projectKanbanCard{
+		IssueID:         "queued",
+		Identifier:      "digitaldrywood/video-studio#114",
+		IssueNumber:     "#114",
+		ProjectID:       "video-studio",
+		Title:           "Queued merge",
+		Stage:           "Merging",
+		MergeLaneStatus: "Draining #2",
+		MergeLaneDetail: "2nd in merge queue; lane draining behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+		MergeLaneKind:   primitives.KindOK,
+	}
+
+	view := boardCardViewFromCard(DashboardData{}, projectKanbanLane{Title: "Merging"}, card, false, "fleet", "")
+	if view.CompactSignal != card.MergeLaneStatus {
+		t.Fatalf("CompactSignal = %q, want %q", view.CompactSignal, card.MergeLaneStatus)
+	}
+	html := renderBoardComponent(t, boardCardView2(view))
+	for _, want := range []string{`data-board-card-merge-lane`, "Draining #2", card.MergeLaneDetail, "text-ok"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("merge-lane card missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "dt-pulse") {
+		t.Fatalf("merge-lane progress dot must remain static:\n%s", html)
+	}
+}
+
 func TestBoardCardExtraShowsTokenCeilingFailure(t *testing.T) {
 	t.Parallel()
 

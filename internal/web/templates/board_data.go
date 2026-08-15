@@ -649,6 +649,9 @@ type boardCardView struct {
 	PriorityTitle     string
 	PriorityDetail    string
 	PriorityTop       bool
+	MergeLaneStatus   string
+	MergeLaneDetail   string
+	MergeLaneKind     primitives.Kind
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -1102,6 +1105,9 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.RuntimeDetail = runtimeIdentityFlyoutDetail(card.RuntimeIdentity, providerSessionID, detentSessionID)
 	}
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
+	view.MergeLaneStatus = card.MergeLaneStatus
+	view.MergeLaneDetail = card.MergeLaneDetail
+	view.MergeLaneKind = card.MergeLaneKind
 	view.CompactSignal = boardCardCompactSignal(view)
 	return view
 }
@@ -1146,6 +1152,8 @@ func boardCardAuthorDetail(author string, originActor string) string {
 
 func boardCardCompactSignal(card boardCardView) string {
 	switch {
+	case card.MergeLaneStatus != "":
+		return card.MergeLaneStatus
 	case card.RuntimeBadge && card.ExtraText == "agent working":
 		return card.RuntimeCozyText
 	case card.ExtraText != "":
