@@ -3161,7 +3161,7 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 			continue
 		}
 		trackerState := strings.ToLower(strings.TrimSpace(ref.TrackerState))
-		if strings.EqualFold(strings.TrimSpace(ref.Source), "workpad") && trackerState != "" {
+		if trackerState != "" {
 			switch trackerState {
 			case "open":
 				label += " (live)"

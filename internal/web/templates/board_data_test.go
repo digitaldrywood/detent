@@ -1681,6 +1681,8 @@ func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
 		TrackerState: "closed",
 		Source:       "workpad",
 	}
+	duplicateClosedRef := closedRef
+	duplicateClosedRef.Source = "native"
 	tests := []struct {
 		name     string
 		refs     []telemetry.BlockedRef
@@ -1688,6 +1690,7 @@ func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
 	}{
 		{name: "open ref renders live", refs: []telemetry.BlockedRef{openRef}, wantRefs: []string{"gopherguides/corp#492 (live)"}},
 		{name: "closed ref renders resolved", refs: []telemetry.BlockedRef{closedRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)"}},
+		{name: "closed workpad ref duplicated by native relation renders resolved", refs: []telemetry.BlockedRef{duplicateClosedRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)"}},
 		{name: "mixed refs retain operative hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)", "gopherguides/corp#492 (live)"}},
 	}
 
