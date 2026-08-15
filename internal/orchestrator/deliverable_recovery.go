@@ -16,18 +16,22 @@ import (
 
 const (
 	deliverableRecoveryNeedsHumanReason = "deliverable_recovery_needs_human_attention"
+	noCommitsToDeliverReason            = "no_commits_to_deliver"
 	deliverableRecoveryLookupAttempts   = 3
 	deliverableRecoveryLookupBackoff    = 250 * time.Millisecond
 )
 
 type deliverableRecoveryLookupResult struct {
-	Branch         string
-	Repository     string
-	HeadSHA        string
-	HydrationState string
-	LookupResult   string
-	Attempts       int
-	PullRequest    *connector.PullRequest
+	Branch               string
+	Repository           string
+	HeadSHA              string
+	HydrationState       string
+	LookupResult         string
+	Attempts             int
+	PullRequest          *connector.PullRequest
+	CommitsAhead         int
+	RemoteBranchExists   bool
+	DeliveryStateChecked bool
 }
 
 func (r deliverableRecoveryLookupResult) reconciles() bool {
@@ -44,10 +48,25 @@ func (o *Orchestrator) lookupDeliverableRecovery(
 	recoveryErr *runpkg.DeliverableRecoveryError,
 ) deliverableRecoveryLookupResult {
 	result := deliverableRecoveryLookupResult{
-		Branch:         deliverableRecoveryBranch(recoveryErr, running),
-		Repository:     pullRequestRepository(running.Issue),
-		HeadSHA:        strings.TrimSpace(running.DiffStats.HeadSHA),
-		HydrationState: deliverableRecoveryHydrationState(running.Issue.PullRequest),
+		Branch:               deliverableRecoveryBranch(recoveryErr, running),
+		Repository:           pullRequestRepository(running.Issue),
+		HeadSHA:              strings.TrimSpace(running.DiffStats.HeadSHA),
+		HydrationState:       deliverableRecoveryHydrationState(running.Issue.PullRequest),
+		CommitsAhead:         running.DiffStats.CommitsAhead,
+		RemoteBranchExists:   running.DiffStats.RemoteBranchExists,
+		DeliveryStateChecked: running.DiffStats.DeliveryStateChecked,
+	}
+	if !result.DeliveryStateChecked {
+		result.LookupResult = "PR lookup skipped: delivery state check unavailable"
+		return result
+	}
+	if result.CommitsAhead == 0 {
+		result.LookupResult = "PR lookup skipped: no local commits ahead"
+		return result
+	}
+	if !result.RemoteBranchExists {
+		result.LookupResult = "PR lookup skipped: remote branch is missing"
+		return result
 	}
 	if result.Repository == "" {
 		result.LookupResult = "PR lookup unavailable: repository is unknown"
@@ -204,8 +223,11 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 	issue.StageUpdatedAt = &blockedAt
 	if o.connector != nil {
 		comment := "Pull request delivery remains unrecoverable and needs human attention.\n\n" +
+			"- reason: `" + reason + "`\n" +
 			"- branch: `" + branch + "`\n" +
 			"- workspace head: `" + lookup.HeadSHA + "`\n" +
+			"- local commits ahead: " + deliverableRecoveryCommitsAheadText(lookup) + "\n" +
+			"- remote branch exists: " + deliverableRecoveryRemoteBranchText(lookup) + "\n" +
 			"- hydration state: " + lookup.HydrationState + "\n" +
 			"- lookup result: " + lookup.LookupResult + "\n" +
 			"- lookup attempts: " + strconv.Itoa(lookup.Attempts) + "\n" +
@@ -234,13 +256,17 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 		Source:         BlockedSourceProjectStatus,
 		Recovery:       metadata.BlockedRecovery,
 	}
+	reasonCode := deliverableRecoveryReasonCode(lookup)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
-		Event:   deliverableRecoveryNeedsHumanReason,
-		Message: "parked " + issueLabel(issue) + " with recoverable pushed branch " + branch,
+		Event:   reasonCode,
+		Message: "parked " + issueLabel(issue) + ": " + reason,
 	})
-	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, deliverableRecoveryNeedsHumanReason, o.runningLifecycleCorrelation(issue, running),
+	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, reasonCode, o.runningLifecycleCorrelation(issue, running),
 		"workspace_branch", branch,
+		"local_commits_ahead", lookup.CommitsAhead,
+		"remote_branch_exists", lookup.RemoteBranchExists,
+		"delivery_state_checked", lookup.DeliveryStateChecked,
 		"deliverable_command", deliverableRecoveryCommand(recoveryErr),
 		"error", recoveryErr,
 	)
@@ -252,7 +278,16 @@ func deliverableRecoveryParkReason(lookup deliverableRecoveryLookupResult) (stri
 	lookupResult := strings.TrimSpace(lookup.LookupResult)
 	base := deliverableRecoveryNeedsHumanReason + ": pushed branch " + branch + " has no recoverable pull request"
 	humanAction := "open or adopt a pull request manually for pushed branch " + branch + ", then move the issue to Rework"
-	if strings.HasPrefix(lookupResult, "PR lookup unavailable") {
+	if lookup.DeliveryStateChecked && lookup.CommitsAhead == 0 {
+		base = noCommitsToDeliverReason + ": branch " + branch + " has no local commits ahead"
+		humanAction = "return the issue to Todo when implementation work is ready to resume"
+	} else if lookup.DeliveryStateChecked && !lookup.RemoteBranchExists {
+		base = deliverableRecoveryNeedsHumanReason + ": remote branch is missing for branch " + branch
+		humanAction = "push the local branch, then move the issue to Rework"
+	} else if !lookup.DeliveryStateChecked {
+		base = deliverableRecoveryNeedsHumanReason + ": delivery state check unavailable for branch " + branch
+		humanAction = "restore workspace delivery inspection, then move the issue to Rework"
+	} else if strings.HasPrefix(lookupResult, "PR lookup unavailable") {
 		base = deliverableRecoveryNeedsHumanReason + ": PR lookup unavailable for pushed branch " + branch
 		humanAction = "restore pull request lookup availability, then move the issue to Rework"
 	} else if lookup.PullRequest != nil && normalizePullRequestState(lookup.PullRequest.State) == "closed" {
@@ -260,6 +295,27 @@ func deliverableRecoveryParkReason(lookup deliverableRecoveryLookupResult) (stri
 		humanAction = "reopen the exact-head pull request or open a replacement, then move the issue to Rework"
 	}
 	return base + " (hydration state: " + lookup.HydrationState + "; lookup result: " + lookupResult + ")", humanAction
+}
+
+func deliverableRecoveryReasonCode(lookup deliverableRecoveryLookupResult) string {
+	if lookup.DeliveryStateChecked && lookup.CommitsAhead == 0 {
+		return noCommitsToDeliverReason
+	}
+	return deliverableRecoveryNeedsHumanReason
+}
+
+func deliverableRecoveryCommitsAheadText(lookup deliverableRecoveryLookupResult) string {
+	if !lookup.DeliveryStateChecked {
+		return "unavailable"
+	}
+	return strconv.Itoa(lookup.CommitsAhead)
+}
+
+func deliverableRecoveryRemoteBranchText(lookup deliverableRecoveryLookupResult) string {
+	if !lookup.DeliveryStateChecked {
+		return "unavailable"
+	}
+	return strconv.FormatBool(lookup.RemoteBranchExists)
 }
 
 func deliverableRecoveryBranch(recoveryErr *runpkg.DeliverableRecoveryError, running Running) string {

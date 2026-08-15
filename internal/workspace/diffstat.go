@@ -79,6 +79,18 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	}, nil
 }
 
+func (l *LocalGit) DeliverableState(ctx context.Context, info Info, issue Issue) (DeliverableState, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return DeliverableState{}, err
+	}
+	commitsAhead, remoteBranchExists, err := gitDeliveryState(ctx, normalized.Path, normalized.Branch, issue.BaseRef)
+	if err != nil {
+		return DeliverableState{}, err
+	}
+	return DeliverableState{CommitsAhead: commitsAhead, RemoteBranchExists: remoteBranchExists}, nil
+}
+
 func (l *LocalGit) Diff(ctx context.Context, info Info, issue Issue, maxBytes int) (Diff, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
@@ -201,6 +213,37 @@ func gitUnpushedCommitCount(ctx context.Context, workspacePath string) (int, err
 		return 0, fmt.Errorf("parse unpushed commit count: %w", err)
 	}
 	return count, nil
+}
+
+func gitDeliveryState(ctx context.Context, workspacePath string, branch string, baseRef string) (int, bool, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return 0, false, errors.New("inspect delivery state: workspace branch is required")
+	}
+	base := strings.TrimSpace(baseRef)
+	if base == "" {
+		branch, head, err := remoteDefaultBranchHead(ctx, workspacePath, defaultGitRemote)
+		if err != nil {
+			return 0, false, fmt.Errorf("inspect delivery base: %w", err)
+		}
+		if _, err := runGitAt(ctx, workspacePath, "fetch", "--no-tags", defaultGitRemote, "refs/heads/"+branch); err != nil {
+			return 0, false, fmt.Errorf("fetch delivery base %s/%s: %w", defaultGitRemote, branch, err)
+		}
+		base = head
+	}
+	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", base+"..HEAD")
+	if err != nil {
+		return 0, false, fmt.Errorf("count local commits ahead: %w", err)
+	}
+	commitsAhead, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil {
+		return 0, false, fmt.Errorf("parse local commits ahead: %w", err)
+	}
+	_, remoteBranchExists, err := remoteBranchHead(ctx, workspacePath, defaultGitRemote, branch)
+	if err != nil {
+		return 0, false, fmt.Errorf("inspect remote branch %s/%s: %w", defaultGitRemote, branch, err)
+	}
+	return commitsAhead, remoteBranchExists, nil
 }
 
 func gitRecoveryBaseFingerprint(ctx context.Context, workspacePath string, baseRef string) string {

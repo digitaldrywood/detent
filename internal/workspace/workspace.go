@@ -63,6 +63,10 @@ type RecoveryStateProvider interface {
 	RecoveryState(context.Context, Info, Issue) (RecoveryState, error)
 }
 
+type DeliverableStateProvider interface {
+	DeliverableState(context.Context, Info, Issue) (DeliverableState, error)
+}
+
 type IssueRecoveryStateProvider interface {
 	IssueRecoveryState(context.Context, Issue) (RecoveryState, error)
 }
@@ -73,6 +77,11 @@ type RecoveryState struct {
 	HeadSHA              string
 	WorkspaceFingerprint string
 	UnpushedCommits      int
+}
+
+type DeliverableState struct {
+	CommitsAhead       int
+	RemoteBranchExists bool
 }
 
 type MergePreparer interface {

@@ -275,9 +275,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		statusMessage := "worker failed"
 		deliverableRecoveryErr = nil
 		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
-			errorClass = deliverableRecoveryNeedsHumanReason
+			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
 			phase = "blocked"
-			statusMessage = "pushed branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs human attention"
+			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
 		}
 		if spendProgress.Block && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
