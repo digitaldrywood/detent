@@ -506,7 +506,7 @@ templ boardCardView2(card boardCardView) {
 		}
 		if card.MergeLaneStatus != "" {
 			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.MergeLaneKind) } data-board-card-merge-lane data-board-card-expanded title={ card.MergeLaneDetail }>
-				@primitives.StatusDot(card.MergeLaneKind, card.MergeLaneKind == primitives.KindOK)
+				@primitives.StatusDot(card.MergeLaneKind, false)
 				<span class="font-medium">{ card.MergeLaneStatus }</span>
 				<span class="min-w-0 truncate font-mono">{ card.MergeLaneDetail }</span>
 			</div>

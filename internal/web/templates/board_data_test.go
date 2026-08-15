@@ -547,6 +547,9 @@ func TestBoardCardRendersMergeLaneProgress(t *testing.T) {
 			t.Fatalf("merge-lane card missing %q:\n%s", want, html)
 		}
 	}
+	if strings.Contains(html, "dt-pulse") {
+		t.Fatalf("merge-lane progress dot must remain static:\n%s", html)
+	}
 }
 
 func TestBoardCardExtraShowsTokenCeilingFailure(t *testing.T) {
