@@ -284,6 +284,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if !reflect.DeepEqual(previous.Auth, next.Auth) {
 		fields = append(fields, globalConfigChange{Field: "auth", RequiresRestart: true})
 	}
+	if !reflect.DeepEqual(previous.Ops, next.Ops) {
+		fields = append(fields, globalConfigChange{Field: "ops.tmux_window_status", RequiresRestart: true})
+	}
 	if !reflect.DeepEqual(previous.Projects, next.Projects) {
 		fields = append(fields, globalConfigChange{Field: "projects", Old: globalProjectIDs(previous.Projects), New: globalProjectIDs(next.Projects)})
 	}

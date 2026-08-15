@@ -39,6 +39,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tmuxstatus"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
@@ -327,6 +328,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
+	var windowStatus *tmuxstatus.Status
+	if tmuxstatus.Enabled(os.Getenv("TMUX"), cfg.Global.Ops.TmuxWindowStatus) {
+		windowStatus, err = tmuxstatus.New(runCtx)
+		if err != nil {
+			logger.Warn("initialize tmux window status failed", "error", err)
+		}
+	}
+	if windowStatus != nil {
+		defer closeTmuxWindowStatus(windowStatus, logger)
+	}
 	healthNotifications, err := newHealthNotificationManager(cfg.Global, runtimeStore, logger)
 	if err != nil {
 		return err
@@ -378,6 +389,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	resourceWorkers.Go(func() {
 		runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
 	})
+	if windowStatus != nil {
+		resourceWorkers.Go(func() {
+			runTmuxWindowStatus(runCtx, snapshotHub, windowStatus, defaultSnapshotInterval, logger)
+		})
+	}
 	resourceWorkers.Go(func() {
 		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	})

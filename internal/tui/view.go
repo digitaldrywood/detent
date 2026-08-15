@@ -158,7 +158,8 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 		lines = append(lines, frameContent(line, width))
 	}
 
-	runningTotal := countOrLen(snapshot.Counts.Running, len(snapshot.Running))
+	counts := snapshot.EffectiveCounts()
+	runningTotal := counts.Running
 	if m.collapsed[runningSection] {
 		lines = append(lines, collapsedSectionLine("RUNNING", runningTotal, width, m.styles, m.focusedSection == runningSection))
 	} else {
@@ -170,7 +171,7 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 	sections := []dashboardSection{
 		{
 			label:       "QUEUE",
-			total:       countOrLen(snapshot.Counts.Queue, len(snapshot.Queue)),
+			total:       counts.Queue,
 			rows:        queueRows,
 			emptyLabel:  "No queued retries",
 			visibleRows: caps.queue,
@@ -181,7 +182,7 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 		},
 		{
 			label:       "BLOCKED",
-			total:       countOrLen(snapshot.Counts.Blocked, len(snapshot.Blocked)),
+			total:       counts.Blocked,
 			rows:        blockedRows,
 			emptyLabel:  "No blocked work",
 			visibleRows: caps.blocked,
@@ -192,7 +193,7 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 		},
 		{
 			label:       "COMPLETED",
-			total:       countOrLen(snapshot.Counts.Completed, len(snapshot.Completed)),
+			total:       counts.Completed,
 			rows:        completedRows,
 			emptyLabel:  "No completed work",
 			visibleRows: caps.completed,
@@ -232,13 +233,14 @@ func (m Model) snapshotHeader(snapshot telemetry.Snapshot) []string {
 	instance := formatOptionalInfo(formatInstance(snapshot.Instance), m.styles)
 	scope := formatOptionalInfo(formatAuthorizationScope(snapshot.Instance), m.styles)
 
-	counts := m.styles.ok.Render(fmt.Sprintf("● %d running", countOrLen(snapshot.Counts.Running, len(snapshot.Running)))) +
+	effectiveCounts := snapshot.EffectiveCounts()
+	counts := m.styles.ok.Render(fmt.Sprintf("● %d running", effectiveCounts.Running)) +
 		m.styles.muted.Render("   ") +
-		m.styles.warn.Render(fmt.Sprintf("◐ %d queued", countOrLen(snapshot.Counts.Queue, len(snapshot.Queue)))) +
+		m.styles.warn.Render(fmt.Sprintf("◐ %d queued", effectiveCounts.Queue)) +
 		m.styles.muted.Render("   ") +
-		m.styles.error.Render(fmt.Sprintf("✗ %d blocked", countOrLen(snapshot.Counts.Blocked, len(snapshot.Blocked)))) +
+		m.styles.error.Render(fmt.Sprintf("✗ %d blocked", effectiveCounts.Blocked)) +
 		m.styles.muted.Render("   ") +
-		m.styles.info.Render(fmt.Sprintf("✓ %d completed", countOrLen(snapshot.Counts.Completed, len(snapshot.Completed))))
+		m.styles.info.Render(fmt.Sprintf("✓ %d completed", effectiveCounts.Completed))
 
 	refresh := formatNextRefresh(snapshot.Refresh)
 	if refresh == "" {

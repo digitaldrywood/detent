@@ -245,6 +245,10 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "notifications", field: "notifications", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
 			cfg.Notifications.Health.Webhook.URL = "https://alerts.example.test/detent"
 		}},
+		{name: "tmux window status", field: "ops.tmux_window_status", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
+			enabled := false
+			cfg.Ops.TmuxWindowStatus = &enabled
+		}},
 		{name: "projects", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects = []globalconfig.Project{{ID: "bravo", Weight: 2}} }},
 		{name: "project pool", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects[0].Pool = "video" }},
 		{name: "maximum concurrent agents", field: "global.max_concurrent_agents", mutate: func(cfg *globalconfig.Config) { cfg.Global.MaxConcurrentAgents = 4 }},

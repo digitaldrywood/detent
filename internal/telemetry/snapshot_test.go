@@ -366,6 +366,46 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 }
 
+func TestSnapshotEffectiveCounts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     telemetry.Counts
+	}{
+		{
+			name: "uses aggregate counts",
+			snapshot: telemetry.Snapshot{
+				Counts:    telemetry.Counts{Running: 7, Queue: 6, Blocked: 5, Completed: 4},
+				Running:   []telemetry.Running{{}},
+				Queue:     []telemetry.Queued{{}},
+				Blocked:   []telemetry.Blocked{{}},
+				Completed: []telemetry.Completed{{}},
+			},
+			want: telemetry.Counts{Running: 7, Queue: 6, Blocked: 5, Completed: 4},
+		},
+		{
+			name: "falls back to row lengths",
+			snapshot: telemetry.Snapshot{
+				Running:   []telemetry.Running{{}, {}},
+				Queue:     []telemetry.Queued{{}},
+				Blocked:   []telemetry.Blocked{{}, {}, {}},
+				Completed: []telemetry.Completed{{}, {}, {}, {}},
+			},
+			want: telemetry.Counts{Running: 2, Queue: 1, Blocked: 3, Completed: 4},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.snapshot.EffectiveCounts(); got != test.want {
+				t.Fatalf("EffectiveCounts() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSnapshotOmitsUnavailableRuntimeIdentityFields(t *testing.T) {
 	t.Parallel()
 

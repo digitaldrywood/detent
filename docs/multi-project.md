@@ -245,6 +245,7 @@ can include `--workflow-ref origin/main` during registration or add
 | `auth` | Restart required; persisted sessions remain valid until their configured expiry |
 | `global.startup` | Live reload |
 | `instance_name` | Live reload |
+| `ops.tmux_window_status` | Restart required |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
 | `global.active_hours` | Live reload at the next dispatch decision; running agents drain when a window closes |
 | `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
