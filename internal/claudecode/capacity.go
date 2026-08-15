@@ -20,6 +20,7 @@ var claudeCapacityRules = backendcapacity.Rules{
 		"usage limit reached",
 		"rate limit reached",
 		"you've hit your limit",
+		"you've hit your session limit",
 		"quota exceeded",
 	},
 	RequireReset: true,

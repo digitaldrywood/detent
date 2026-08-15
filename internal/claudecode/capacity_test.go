@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 )
 
 func TestAgentBackendClassifyCapacityError(t *testing.T) {
@@ -33,5 +35,23 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 				t.Fatalf("ClassifyCapacityError() ok = %v, want %v", ok, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyCapacityErrorProductionSessionLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 20, 47, 49, 0, time.UTC)
+	details, ok := ClassifyCapacityError(
+		errors.New("You've hit your session limit · resets 4:10pm (America/Chicago)"),
+		nil,
+		now,
+	)
+	if !ok {
+		t.Fatal("ClassifyCapacityError() ok = false, want true")
+	}
+	want := time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC)
+	if details.Type != backendcapacity.ErrorTypeUsageLimit || details.ResetAt == nil || !details.ResetAt.Equal(want) {
+		t.Fatalf("ClassifyCapacityError() = %#v, want usage limit reset at %s", details, want)
 	}
 }

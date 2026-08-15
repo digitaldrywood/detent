@@ -11,12 +11,55 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 20, 47, 49, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "claude-video", BackendKind: "claude_code", Provider: "anthropic"}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"In Progress"},
+		TerminalStates: []string{"Done"},
+		FailureBreaker: FailureBreakerConfig{SameClassLimit: 5, Window: time.Hour, Cooldown: time.Hour},
+	})
+	orch := &Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	message := "You've hit your session limit · resets 4:10pm (America/Chicago)"
+	issue := connector.Issue{ID: "issue-capacity", State: "In Progress"}
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		state.Running[issue.ID] = Running{Issue: issue, Attempt: attempt, StartedAt: now.Add(-time.Minute)}
+		state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+		details, ok := claudecode.ClassifyCapacityError(errors.New(message), nil, now)
+		if !ok {
+			t.Fatalf("attempt %d did not classify production output as capacity", attempt)
+		}
+		capacityErr := backendcapacity.NewError(scope, details, errors.New(message))
+		orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+			IssueID:     issue.ID,
+			Request:     runpkg.RunRequest{Issue: issue, Attempt: attempt},
+			Err:         capacityErr,
+			CompletedAt: now,
+		})
+	}
+
+	if len(state.BackendOutages) != 1 {
+		t.Fatalf("BackendOutages = %#v, want one scoped outage", state.BackendOutages)
+	}
+	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+		t.Fatalf("FailureBreaker = %#v, want no capacity strikes", state.FailureBreaker)
+	}
+	if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
+		t.Fatalf("issue failure breakers = instant %#v repeated %#v, want no capacity strikes", state.InstantFailures, state.RepeatedFailures)
+	}
+}
 
 func TestBackendCapacityDispatchAllowsOneResetProbe(t *testing.T) {
 	t.Parallel()

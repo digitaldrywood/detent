@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type streamItem struct {
@@ -34,6 +35,14 @@ type claudeEvent struct {
 	Result       string         `json:"result"`
 	DurationMS   int64          `json:"duration_ms"`
 	TotalCostUSD float64        `json:"total_cost_usd"`
+	RateLimit    *rateLimitInfo `json:"rate_limit_info"`
+}
+
+type rateLimitInfo struct {
+	Status        string  `json:"status"`
+	ResetsAt      int64   `json:"resetsAt"`
+	RateLimitType string  `json:"rateLimitType"`
+	Utilization   float64 `json:"utilization"`
 }
 
 type claudeMessage struct {
@@ -143,6 +152,8 @@ func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpda
 			return err
 		}
 		return s.applyStreamEvent(event, includePartialMessages, onUpdate)
+	case "rate_limit_event":
+		return s.applyRateLimit(event, onUpdate)
 	case "result":
 		if err := s.emitModelChange(previousModel, onUpdate); err != nil {
 			return err
@@ -151,6 +162,43 @@ func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpda
 	default:
 		return nil
 	}
+}
+
+func (s *turnState) applyRateLimit(event claudeEvent, onUpdate runner.AgentUpdateHandler) error {
+	if event.RateLimit == nil {
+		return nil
+	}
+	info := event.RateLimit
+	bucket := &telemetry.RateLimitBucket{Status: strings.TrimSpace(info.Status)}
+	if strings.EqualFold(bucket.Status, "rejected") {
+		bucket.Status = telemetry.RateLimitStatusExhausted
+	}
+	if info.ResetsAt > 0 {
+		resetAt := time.Unix(info.ResetsAt, 0).UTC()
+		bucket.ResetAt = &resetAt
+	}
+	if info.Utilization > 0 {
+		bucket.Limit = 100
+		bucket.Used = min(max(int64(info.Utilization*100), 0), 100)
+		bucket.Remaining = 100 - bucket.Used
+	}
+	limitType := strings.TrimSpace(info.RateLimitType)
+	limits := &telemetry.RateLimits{LimitID: "claude", LimitName: "Claude"}
+	if strings.EqualFold(strings.TrimSpace(info.Status), "rejected") {
+		limits.ReachedType = limitType
+	}
+	if limitType == "" || strings.EqualFold(limitType, "five_hour") {
+		limits.Primary = bucket
+	} else {
+		limits.Secondary = bucket
+	}
+	return emitUpdate(onUpdate, runner.AgentUpdate{
+		Type:       runner.AgentUpdateRateLimits,
+		ThreadID:   s.sessionID,
+		TurnID:     s.sessionID,
+		Model:      s.model,
+		RateLimits: limits,
+	})
 }
 
 func (s *turnState) applyInit(event claudeEvent, onUpdate runner.AgentUpdateHandler) error {
@@ -337,7 +385,7 @@ func (s *turnState) applyResult(event claudeEvent, onUpdate runner.AgentUpdateHa
 	s.resultSubtype = event.Subtype
 	s.resultText = strings.TrimSpace(event.Result)
 	s.resultIsError = event.IsError
-	// Non-goals: --resume continuity, rate-limit telemetry, and total_cost_usd budget ingest.
+	// Non-goals: --resume continuity and total_cost_usd budget ingest.
 	if event.Usage != nil && !event.Usage.empty() {
 		s.usage = event.Usage.agentUsage()
 		return s.emitUsage(onUpdate)

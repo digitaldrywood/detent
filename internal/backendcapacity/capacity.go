@@ -27,7 +27,7 @@ const (
 	ErrorTypeTransientOverload ErrorType = "transient_overload"
 )
 
-var retryAtPattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+at\s+([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))`)
+var retryAtPattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+(?:at\s+)?([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))(?:\s*\(([A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)\))?`)
 var http5xxPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(5[0-9]{2})\b`)
 
 type Scope struct {
@@ -219,17 +219,26 @@ func resetFromText(text string, now time.Time) *time.Time {
 		}
 	}
 	match := retryAtPattern.FindStringSubmatch(text)
-	if len(match) != 2 {
+	if len(match) != 3 {
 		return nil
 	}
 	location := now.Location()
-	parsed, err := time.ParseInLocation("3:04 PM", strings.ToUpper(strings.TrimSpace(match[1])), location)
+	if timezone := strings.TrimSpace(match[2]); timezone != "" {
+		var err error
+		location, err = time.LoadLocation(timezone)
+		if err != nil {
+			return nil
+		}
+	}
+	now = now.In(location)
+	clock := strings.ToUpper(strings.Join(strings.Fields(match[1]), ""))
+	parsed, err := time.ParseInLocation("3:04PM", clock, location)
 	if err != nil {
 		return nil
 	}
 	resetAt := time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), 0, 0, location)
 	if !resetAt.After(now) {
-		resetAt = resetAt.Add(24 * time.Hour)
+		resetAt = resetAt.AddDate(0, 0, 1)
 	}
 	resetAt = resetAt.UTC()
 	return &resetAt

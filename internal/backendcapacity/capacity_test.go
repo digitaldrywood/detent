@@ -131,3 +131,54 @@ func TestClassifyUsageLimitCanRequireReset(t *testing.T) {
 		t.Fatalf("Classify() = %#v, %v, want reset-bearing usage limit", details, ok)
 	}
 }
+
+func TestResetFromText(t *testing.T) {
+	t.Parallel()
+
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		text string
+		now  time.Time
+		want time.Time
+	}{
+		{
+			name: "try again at local time",
+			text: "You've hit your limit. Try again at 9:39 PM",
+			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, chicago),
+			want: time.Date(2026, 8, 16, 2, 39, 0, 0, time.UTC),
+		},
+		{
+			name: "resets at local time",
+			text: "resets at 4:10pm",
+			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, chicago),
+			want: time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC),
+		},
+		{
+			name: "resets in explicit IANA timezone",
+			text: "resets 4:10pm (America/Chicago)",
+			now:  time.Date(2026, 8, 15, 20, 47, 49, 0, time.UTC),
+			want: time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC),
+		},
+		{
+			name: "resets in single-component IANA timezone",
+			text: "resets 4:10pm (UTC)",
+			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, time.UTC),
+			want: time.Date(2026, 8, 15, 16, 10, 0, 0, time.UTC),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resetFromText(tt.text, tt.now)
+			if got == nil || !got.Equal(tt.want) {
+				t.Fatalf("resetFromText() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
