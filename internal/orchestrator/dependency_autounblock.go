@@ -759,8 +759,20 @@ func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue conn
 		blockers[index].Ref.ID = firstNonBlank(blocker.ID, blockers[index].Ref.ID)
 		blockers[index].Ref.Identifier = firstNonBlank(blocker.Identifier, blockers[index].Ref.Identifier)
 		blockers[index].Ref.State = firstNonBlank(blocker.State, blockers[index].Ref.State)
+		blockers[index].Ref.TrackerState = connector.BlockedRefTrackerStateOpen
+		if blocker.Closed {
+			blockers[index].Ref.TrackerState = connector.BlockedRefTrackerStateClosed
+		}
 	}
 	return blockers
+}
+
+func dependencyResolvedBlockerRefs(blockers []dependencyBlocker) []connector.BlockedRef {
+	refs := make([]connector.BlockedRef, 0, len(blockers))
+	for _, blocker := range blockers {
+		refs = append(refs, blocker.Ref)
+	}
+	return refs
 }
 
 func dependencyBlockersReady(blockers []dependencyBlocker, cfg DependencyAutoUnblockConfig, terminalStates []string) bool {

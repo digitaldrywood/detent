@@ -78,6 +78,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "human_action",
+			wantWorkpadLookup:   true,
 		},
 		{
 			name:                "resolved refs with opt-out label",
@@ -87,6 +88,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "human_action",
+			wantWorkpadLookup:   true,
 		},
 		{
 			name:                "invalid signal",
@@ -225,6 +227,122 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			}
 			if tt.name == "stale blocker list from prior blocked entry" && strings.Contains(logs.String(), "reason=workpad_blocker") {
 				t.Fatalf("stale Workpad blocker held current entry:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+func TestBlockedRecoverySurfacesWorkpadBlockerResolution(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	openBlocker := dependencyAutoUnblockIssue("issue-workpad-open", "In Progress")
+	openBlocker.Identifier = "digitaldrywood/ghostreel#491"
+	closedBlocker := dependencyAutoUnblockIssue("issue-workpad-closed", "Done")
+	closedBlocker.Identifier = "digitaldrywood/ghostreel#492"
+	closedBlocker.Closed = true
+
+	tests := []struct {
+		name         string
+		blockers     []connector.Issue
+		wantStates   []string
+		wantTracker  []string
+		wantHold     string
+		wantRemedy   string
+		verifyResume bool
+	}{
+		{
+			name:        "open ref renders live",
+			blockers:    []connector.Issue{openBlocker},
+			wantStates:  []string{"In Progress"},
+			wantTracker: []string{connector.BlockedRefTrackerStateOpen},
+			wantHold:    "human_action",
+			wantRemedy:  "approve the remaining deployment",
+		},
+		{
+			name:         "closed ref renders resolved",
+			blockers:     []connector.Issue{closedBlocker},
+			wantStates:   []string{"Done"},
+			wantTracker:  []string{connector.BlockedRefTrackerStateClosed},
+			wantHold:     "human_action",
+			wantRemedy:   "approve the remaining deployment",
+			verifyResume: true,
+		},
+		{
+			name:        "mixed refs keep human action operative",
+			blockers:    []connector.Issue{closedBlocker, openBlocker},
+			wantStates:  []string{"Done", "In Progress"},
+			wantTracker: []string{connector.BlockedRefTrackerStateClosed, connector.BlockedRefTrackerStateOpen},
+			wantHold:    "human_action",
+			wantRemedy:  "approve the remaining deployment",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			waiting := dependencyAutoUnblockIssue("issue-workpad-surface", blockedStatusState)
+			waiting.StageUpdatedAt = &parkedAt
+			waiting.WorkpadSignal = &workpad.Signal{
+				Source:      workpad.SourceStructured,
+				Status:      workpad.StatusBlocked,
+				HumanAction: "approve the remaining deployment",
+			}
+			for _, blocker := range tt.blockers {
+				waiting.WorkpadSignal.Blockers = append(waiting.WorkpadSignal.Blockers, workpad.Blocker{
+					Ref:        blocker.Identifier,
+					Identifier: blocker.Identifier,
+				})
+			}
+			waiting.BlockerReason = workpad.Reason(waiting.WorkpadSignal)
+			tracker := &dependencyAutoUnblockConnector{
+				stateIssues: []connector.Issue{waiting},
+				blockers:    tt.blockers,
+			}
+			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+				Enabled:      true,
+				SourceStates: []string{blockedStatusState},
+				TargetState:  "Todo",
+				Readiness:    DependencyReadinessTerminalOrMerged,
+			})
+			state := newState(orch.cfg)
+			state.Blocked[waiting.ID] = Blocked{
+				Issue:     waiting,
+				Reason:    waiting.BlockerReason,
+				BlockedAt: parkedAt,
+				Source:    BlockedSourceProjectStatus,
+			}
+
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{waiting}, parkedAt.Add(time.Minute))
+
+			got := state.Blocked[waiting.ID]
+			if got.RecoveryAction != "hold" || got.RecoveryReason != tt.wantHold {
+				t.Fatalf("recovery = %q/%q, want hold/%s", got.RecoveryAction, got.RecoveryReason, tt.wantHold)
+			}
+			if len(got.Issue.BlockedBy) != len(tt.wantStates) {
+				t.Fatalf("BlockedBy = %#v, want %d annotated Workpad refs", got.Issue.BlockedBy, len(tt.wantStates))
+			}
+			for index, wantState := range tt.wantStates {
+				if got.Issue.BlockedBy[index].State != wantState {
+					t.Fatalf("BlockedBy[%d].State = %q, want %q", index, got.Issue.BlockedBy[index].State, wantState)
+				}
+				if got.Issue.BlockedBy[index].TrackerState != tt.wantTracker[index] {
+					t.Fatalf("BlockedBy[%d].TrackerState = %q, want %q", index, got.Issue.BlockedBy[index].TrackerState, tt.wantTracker[index])
+				}
+			}
+			if got.RecoveryRemedy != tt.wantRemedy {
+				t.Fatalf("RecoveryRemedy = %q, want operative hold %q", got.RecoveryRemedy, tt.wantRemedy)
+			}
+			if tt.verifyResume {
+				cleared := cloneIssue(waiting)
+				cleared.WorkpadSignal.HumanAction = ""
+				cleared.BlockerReason = workpad.Reason(cleared.WorkpadSignal)
+				tracker.stateIssues = []connector.Issue{cleared}
+				transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, parkedAt.Add(2*time.Minute))
+				if _, ok := transitioned[waiting.ID]; !ok {
+					t.Fatalf("transitioned = %#v, want closed-ref issue to resume after human action clears", transitioned)
+				}
 			}
 		})
 	}

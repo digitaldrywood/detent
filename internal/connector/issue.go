@@ -77,16 +77,19 @@ type Issue struct {
 }
 
 type BlockedRef struct {
-	ID         string `json:"id,omitempty" yaml:"id,omitempty"`
-	Identifier string `json:"identifier" yaml:"identifier"`
-	State      string `json:"state,omitempty" yaml:"state,omitempty"`
-	Source     string `json:"source,omitempty" yaml:"source,omitempty"`
+	ID           string `json:"id,omitempty" yaml:"id,omitempty"`
+	Identifier   string `json:"identifier" yaml:"identifier"`
+	State        string `json:"state,omitempty" yaml:"state,omitempty"`
+	TrackerState string `json:"tracker_state,omitempty" yaml:"-"`
+	Source       string `json:"source,omitempty" yaml:"source,omitempty"`
 }
 
 const (
-	BlockedRefSourceNative  = "native"
-	BlockedRefSourceProse   = "prose"
-	BlockedRefSourceWorkpad = "workpad"
+	BlockedRefSourceNative       = "native"
+	BlockedRefSourceProse        = "prose"
+	BlockedRefSourceWorkpad      = "workpad"
+	BlockedRefTrackerStateOpen   = "open"
+	BlockedRefTrackerStateClosed = "closed"
 )
 
 type DependencyCapability struct {
