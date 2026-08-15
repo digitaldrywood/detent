@@ -73,6 +73,7 @@ type Config struct {
 	APIToken              string          `yaml:"api_token,omitempty"`
 	TrustLoopbackPeerRead bool            `yaml:"trust_loopback_peer_read,omitempty"`
 	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
+	Ops                   Ops             `yaml:"ops,omitempty"`
 	Port                  *int            `yaml:"port,omitempty"`
 	InstanceName          string          `yaml:"instance_name,omitempty"`
 	Notifications         Notifications   `yaml:"notifications,omitempty"`
@@ -86,6 +87,14 @@ type DashboardAccess struct {
 	Mode       string `yaml:"mode,omitempty"`
 	Token      string `yaml:"token,omitempty"`
 	AllowWrite bool   `yaml:"allow_write,omitempty"`
+}
+
+type Ops struct {
+	TmuxWindowStatus *bool `yaml:"tmux_window_status,omitempty"`
+}
+
+func (o Ops) IsZero() bool {
+	return o.TmuxWindowStatus == nil
 }
 
 func (a DashboardAccess) IsZero() bool {
@@ -948,6 +957,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 		problems = append(problems, err.Error())
 	}
 	problems = append(problems, dashboardAccessRawErrors(attrs["dashboard_access"])...)
+	problems = append(problems, opsRawErrors(attrs["ops"])...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
 	problems = append(problems, notificationsRawErrors(attrs["notifications"])...)
@@ -1731,6 +1741,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	ops, err := buildOps(attrs["ops"])
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	instanceName, err := optionalString(attrs["instance_name"], "instance_name")
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1772,6 +1786,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		APIToken:              apiToken,
 		TrustLoopbackPeerRead: trustLoopbackPeerRead,
 		DashboardAccess:       dashboardAccess,
+		Ops:                   ops,
 		Port:                  port,
 		InstanceName:          instanceName,
 		Notifications:         notifications,
@@ -1780,6 +1795,38 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		Global:                settings,
 		Projects:              builtProjects,
 	}, nil
+}
+
+func opsRawErrors(value any) []string {
+	if value == nil {
+		return nil
+	}
+	attrs, ok := value.(map[string]any)
+	if !ok {
+		return []string{"ops: must be a mapping"}
+	}
+	if _, err := optionalBool(attrs["tmux_window_status"], "ops.tmux_window_status"); err != nil {
+		return []string{err.Error()}
+	}
+	return nil
+}
+
+func buildOps(value any) (Ops, error) {
+	if value == nil {
+		return Ops{}, nil
+	}
+	attrs, err := mapValue(value, "ops")
+	if err != nil {
+		return Ops{}, err
+	}
+	if _, configured := attrs["tmux_window_status"]; !configured {
+		return Ops{}, nil
+	}
+	enabled, err := optionalBool(attrs["tmux_window_status"], "ops.tmux_window_status")
+	if err != nil {
+		return Ops{}, err
+	}
+	return Ops{TmuxWindowStatus: &enabled}, nil
 }
 
 func dashboardAccessRawErrors(value any) []string {

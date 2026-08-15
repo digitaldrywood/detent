@@ -542,14 +542,6 @@ func compactSessionID(sessionID string) string {
 	return string(runes[:4]) + "..." + string(runes[len(runes)-6:])
 }
 
-func countOrLen(count int, length int) int {
-	if count > 0 {
-		return count
-	}
-
-	return length
-}
-
 func formatTimestamp(value time.Time) string {
 	if value.IsZero() {
 		return "n/a"

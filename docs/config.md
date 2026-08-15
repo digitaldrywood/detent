@@ -41,6 +41,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
 | Loopback peer read trust | | | `trust_loopback_peer_read` | `false` |
 | Private dashboard URL | | | `dashboard_access` | disabled |
+| tmux window status | | `$TMUX` detection | `ops.tmux_window_status` | enabled inside tmux |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
 | Health webhook | | | `notifications.health.webhook.url` | disabled |
@@ -53,6 +54,11 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
 `global.yaml` key.
+
+When Detent starts inside tmux, it renames the current window to a compact
+running, queued, and blocked count summary. It restores the original name on
+clean shutdown. Set `ops.tmux_window_status: false` to disable this behavior;
+Detent never invokes tmux when `$TMUX` is absent.
 
 Use `github_token: gh` in `global.yaml` to resolve the token from
 `gh auth token` at startup. Literal token values also work but should not be

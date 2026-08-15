@@ -19,15 +19,16 @@ func (m Model) ExitSummary() string {
 		now = time.Now
 	}
 	snapshot := m.snapshot
+	counts := snapshot.EffectiveCounts()
 	lines := []string{
 		"Detent exit summary",
 		"Timestamp: " + formatTimestamp(now()),
 		fmt.Sprintf(
 			"Counts: ● %d running | ◐ %d queued | ✗ %d blocked | ✓ %d completed",
-			countOrLen(snapshot.Counts.Running, len(snapshot.Running)),
-			countOrLen(snapshot.Counts.Queue, len(snapshot.Queue)),
-			countOrLen(snapshot.Counts.Blocked, len(snapshot.Blocked)),
-			countOrLen(snapshot.Counts.Completed, len(snapshot.Completed)),
+			counts.Running,
+			counts.Queue,
+			counts.Blocked,
+			counts.Completed,
 		),
 	}
 

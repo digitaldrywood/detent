@@ -445,6 +445,22 @@ type Counts struct {
 	Completed int `json:"completed"`
 }
 
+func (s Snapshot) EffectiveCounts() Counts {
+	return Counts{
+		Running:   countOrLength(s.Counts.Running, len(s.Running)),
+		Queue:     countOrLength(s.Counts.Queue, len(s.Queue)),
+		Blocked:   countOrLength(s.Counts.Blocked, len(s.Blocked)),
+		Completed: countOrLength(s.Counts.Completed, len(s.Completed)),
+	}
+}
+
+func countOrLength(count int, length int) int {
+	if count > 0 {
+		return count
+	}
+	return length
+}
+
 type TrackerDrift struct {
 	UntrackedOpen []Issue `json:"untracked_open,omitempty"`
 	OpenTerminal  []Issue `json:"open_terminal,omitempty"`
