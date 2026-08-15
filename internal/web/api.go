@@ -123,7 +123,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
-	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
+	projects := s.cachedProjectSmallMultiples(snapshot)
 	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
@@ -134,7 +134,6 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		URL:         project.URL,
 		Pool:        project.Pool,
 	})
-	scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(c.Request().Context(), scopedSnapshot)
 	scopedSnapshot = s.withManualRefresh(scopedSnapshot)
 
 	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName(), s.build))

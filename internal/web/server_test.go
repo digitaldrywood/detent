@@ -6668,6 +6668,50 @@ func TestProjectStateAPIScopesSnapshot(t *testing.T) {
 	}
 }
 
+func TestStateAPICachesEnrichmentQueries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "fleet", path: "/api/v1/state"},
+		{name: "project", path: "/api/v1/projects/detent/state"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &enrichmentQueryCountingStore{}
+			deps := testDeps(t)
+			deps.Store = backend
+			mustSetWebProject(t, deps.Registry, "detent", false)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 8, 15, 22, 16, 27, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Projects: []telemetry.ProjectSnapshot{{
+					Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
+			requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
+			if got := backend.workflowMetricsCalls.Load(); got != 6 {
+				t.Fatalf("WorkflowMetricsReport() calls = %d, want 6", got)
+			}
+			if got := backend.budgetCostCalls.Load(); got != 1 {
+				t.Fatalf("BudgetCostEvents() calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
 func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	t.Parallel()
 
@@ -11915,6 +11959,23 @@ type renderBlockingStore struct {
 
 	release <-chan struct{}
 	calls   atomic.Int64
+}
+
+type enrichmentQueryCountingStore struct {
+	storeProbe
+
+	workflowMetricsCalls atomic.Int64
+	budgetCostCalls      atomic.Int64
+}
+
+func (s *enrichmentQueryCountingStore) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+	s.workflowMetricsCalls.Add(1)
+	return store.WorkflowMetricsReport{}, nil
+}
+
+func (s *enrichmentQueryCountingStore) BudgetCostEvents(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+	s.budgetCostCalls.Add(1)
+	return nil, nil
 }
 
 func (s *renderBlockingStore) wait(ctx context.Context) error {

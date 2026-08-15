@@ -198,6 +198,11 @@ Useful endpoints:
 | `/api/v1/webhooks/github` | Accept signed GitHub webhook deliveries with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a known board, pipeline, running, retrying, or blocked issue. |
 
+Project state scopes workflow metrics from the fleet snapshot enrichment cache
+instead of rerunning historical database reports for each request. The project
+diagnostics page is the opt-in detail path that loads project-specific runtime
+store evidence and history.
+
 The wildcard issue route accepts an issue ID, canonical identifier, issue URL,
 bare number, or `#number`. Add `?project=<id>` when a number or other reference
 exists in more than one project; an unscoped collision returns
