@@ -1149,14 +1149,14 @@ func TestMCPElicitationResponse(t *testing.T) {
 				"requestedSchema":{"type":"object","properties":{}},
 				"_meta":{"codex_approval_kind":"mcp_tool_call"}
 			}`,
-			policy: MCPElicitationPolicy{DeliverableKind: "pull_request", Repository: "acme/widgets"},
+			policy: MCPElicitationPolicy{DeliverableKind: "pull_request", IssueRepository: "acme/widgets"},
 			pending: []string{`{
 				"threadId":"thread-1","turnId":"turn-1",
-				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_pull_request","arguments":{"repository_full_name":"acme/widgets"}}
+				"item":{"id":"item-1","type":"mcpToolCall","server":"codex_apps","tool":"github.create_issue","arguments":{"repository_full_name":"acme/widgets","title":"Follow-up"}}
 			}`},
 			wantAction: "decline",
 			wantReason: "unsupported_server",
-			wantTool:   "github.create_pull_request",
+			wantTool:   "github.create_issue",
 		},
 		{
 			name: "allowlisted deliverable tuple",
@@ -1402,6 +1402,14 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 		wantRepository string
 	}{
 		{
+			name:           "create issue matching repository",
+			tool:           "github.create_issue",
+			arguments:      `{"repository_full_name":"acme/widgets","title":"Follow-up"}`,
+			wantAction:     "accept",
+			wantReason:     "allowlisted_deliverable_tool",
+			wantRepository: "acme/widgets",
+		},
+		{
 			name:           "add issue comment matching repository",
 			tool:           "github.add_comment_to_issue",
 			arguments:      `{"repo_full_name":"acme/widgets","pr_number":18,"comment":"workpad"}`,
@@ -1426,6 +1434,14 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 			wantRepository: "acme/widgets",
 		},
 		{
+			name:           "create issue mismatched repository",
+			tool:           "github.create_issue",
+			arguments:      `{"repository_full_name":"acme/other","title":"Follow-up"}`,
+			wantAction:     "decline",
+			wantReason:     "repository_mismatch",
+			wantRepository: "acme/other",
+		},
+		{
 			name:           "add issue comment mismatched repository",
 			tool:           "github.add_comment_to_issue",
 			arguments:      `{"repo_full_name":"acme/other","pr_number":18,"comment":"workpad"}`,
@@ -1448,6 +1464,13 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 			wantAction:     "decline",
 			wantReason:     "repository_mismatch",
 			wantRepository: "acme/other",
+		},
+		{
+			name:       "create issue wrong repository argument",
+			tool:       "github.create_issue",
+			arguments:  `{"repo_full_name":"acme/widgets","title":"Follow-up"}`,
+			wantAction: "decline",
+			wantReason: "invalid_tool_arguments",
 		},
 		{
 			name:       "add issue comment wrong repository argument",

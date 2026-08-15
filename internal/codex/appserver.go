@@ -1519,7 +1519,7 @@ func deliverableMCPRepository(policy MCPElicitationPolicy, server string, tool s
 	switch tool {
 	case "github.add_comment_to_issue", "github.update_issue_comment":
 		return "repo_full_name", policy.IssueRepository, true
-	case "github.update_issue":
+	case "github.create_issue", "github.update_issue":
 		return "repository_full_name", policy.IssueRepository, true
 	case "github.create_pull_request", "github.update_pull_request":
 		return "repository_full_name", policy.Repository, true
