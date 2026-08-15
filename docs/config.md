@@ -386,6 +386,9 @@ codex:
     - server: codex_apps
       tool: github.update_issue
       repository: digitaldrywood/detent
+    - server: codex_apps
+      tool: github.create_issue
+      repository: digitaldrywood/detent
 ```
 
 The allowlist is a narrow exception to `codex.approval_policy`, not a broader
@@ -396,11 +399,18 @@ deliverable mutation; and both its repository argument and the corresponding
 active work-item repository match the configured tuple. Pull-request mutations
 match the linked pull-request repository. Issue and Workpad mutations match the
 tracked issue repository, including when the linked pull request is in another
-repository. Pull-request and issue updates use `repository_full_name`; issue
-comment creation and updates use `repo_full_name`. Missing or ambiguous
-correlation, other mutation tools including `github.delete_issue`, and
-repository mismatches are declined. Command, file-change, permission, and
-user-input requests retain their existing handling.
+repository. Pull-request and issue creation and updates use
+`repository_full_name`; issue comment creation and updates use
+`repo_full_name`. Missing or ambiguous correlation, other mutation tools
+including `github.delete_issue`, and repository mismatches are declined.
+Command, file-change, permission, and user-input requests retain their existing
+handling.
+
+Allowlisting `github.create_issue` authorizes issue creation only on the
+workflow's own tracked repository. This supports workers filing scoped issues
+they discover while delivering the current work item; it does not authorize
+issue deletion, transfer, or creation in any other repository. Those mutations
+remain non-deliverable.
 
 Allowlisting `github.update_issue` permits its full exposed mutation surface:
 title, body, state, assignees, milestone, and labels may all be replaced. The
