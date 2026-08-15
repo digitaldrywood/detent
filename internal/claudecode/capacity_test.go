@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestAgentBackendClassifyCapacityError(t *testing.T) {
@@ -53,5 +54,56 @@ func TestClassifyCapacityErrorProductionSessionLimit(t *testing.T) {
 	want := time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC)
 	if details.Type != backendcapacity.ErrorTypeUsageLimit || details.ResetAt == nil || !details.ResetAt.Equal(want) {
 		t.Fatalf("ClassifyCapacityError() = %#v, want usage limit reset at %s", details, want)
+	}
+}
+
+func TestClaudeCapacityResetAtUsesReachedWindow(t *testing.T) {
+	t.Parallel()
+
+	primaryReset := time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC)
+	secondaryReset := time.Date(2026, 8, 22, 21, 10, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		reachedType     string
+		primaryStatus   string
+		secondaryStatus string
+		want            time.Time
+	}{
+		{
+			name:            "five-hour window",
+			reachedType:     "five_hour",
+			primaryStatus:   telemetry.RateLimitStatusExhausted,
+			secondaryStatus: telemetry.RateLimitStatusUnknown,
+			want:            primaryReset,
+		},
+		{
+			name:            "weekly window",
+			reachedType:     "seven_day",
+			primaryStatus:   telemetry.RateLimitStatusUnknown,
+			secondaryStatus: telemetry.RateLimitStatusExhausted,
+			want:            secondaryReset,
+		},
+		{name: "missing reached type", want: primaryReset},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := claudeCapacityResetAt(&telemetry.RateLimits{
+				ReachedType: tt.reachedType,
+				Primary: &telemetry.RateLimitBucket{
+					Status:  tt.primaryStatus,
+					ResetAt: &primaryReset,
+				},
+				Secondary: &telemetry.RateLimitBucket{
+					Status:  tt.secondaryStatus,
+					ResetAt: &secondaryReset,
+				},
+			})
+			if got == nil || !got.Equal(tt.want) {
+				t.Fatalf("claudeCapacityResetAt() = %v, want %s", got, tt.want)
+			}
+		})
 	}
 }
