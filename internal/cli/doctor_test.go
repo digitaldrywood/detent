@@ -4390,7 +4390,7 @@ func TestCheckDoctorDetentServiceReportsRemoteBuild(t *testing.T) {
 				t.Fatalf("Marshal() error = %v", err)
 			}
 			port := 4017
-			checks := checkDoctorDetentService(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+			checks := checkDoctorDetentService(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, buildinfo.Info{}, doctorDeps{
 				httpDo: func(request *http.Request) (*http.Response, error) {
 					if request.URL.String() != "http://127.0.0.1:4017/health" {
 						t.Errorf("URL = %q, want configured health endpoint", request.URL)
@@ -4430,13 +4430,77 @@ func TestCheckDoctorDetentServiceSkipsAbsentService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			checks := checkDoctorDetentService(t.Context(), BootConfig{}, doctorDeps{
+			checks := checkDoctorDetentService(t.Context(), BootConfig{}, buildinfo.Info{}, doctorDeps{
 				httpDo: func(*http.Request) (*http.Response, error) {
 					return nil, tt.err
 				},
 			})
 			if len(checks) != 0 {
 				t.Fatalf("checks = %#v, want absent service omitted", checks)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorDetentServiceReportsBuildDrift(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		running    buildinfo.Info
+		installed  buildinfo.Info
+		wantStatus doctorStatus
+		wantDetail string
+		wantHint   string
+	}{
+		{
+			name:       "matching build",
+			running:    buildinfo.Info{Version: "v1.2.3", Commit: "abcdef123456"},
+			installed:  buildinfo.Info{Version: "v1.2.3", Commit: "abcdef123456"},
+			wantStatus: doctorOK,
+			wantDetail: "matches installed executable build",
+		},
+		{
+			name:       "stale running build",
+			running:    buildinfo.Info{Version: "v1.2.2", Commit: "123456abcdef"},
+			installed:  buildinfo.Info{Version: "v1.2.3", Commit: "abcdef123456"},
+			wantStatus: doctorWarn,
+			wantDetail: "differs from installed executable build",
+			wantHint:   "detent start --restart",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload, err := json.Marshal(map[string]any{
+				"status":  "ok",
+				"version": tt.running.Version,
+				"commit":  tt.running.Commit,
+				"mode":    "running",
+				"checks": map[string]string{
+					"hub": "configured", "store": "configured", "registry": "configured", "connector": "configured",
+				},
+			})
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			port := 4017
+			checks := checkDoctorDetentService(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, tt.installed, doctorDeps{
+				httpDo: func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(payload))}, nil
+				},
+			})
+			if len(checks) != 2 {
+				t.Fatalf("checks = %#v, want remote service and build drift checks", checks)
+			}
+			got := checks[1]
+			if got.Name != "Detent build drift" || got.Status != tt.wantStatus {
+				t.Fatalf("check = %#v, want status %s", got, tt.wantStatus)
+			}
+			if !strings.Contains(got.Detail, tt.wantDetail) || !strings.Contains(got.Hint, tt.wantHint) {
+				t.Fatalf("check = %#v, want detail %q and hint %q", got, tt.wantDetail, tt.wantHint)
 			}
 		})
 	}

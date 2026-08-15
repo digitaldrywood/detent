@@ -161,6 +161,8 @@ type startRunningDependencies struct {
 	boardSnapshotStore    boardsnapshot.Store
 	boardSnapshotInterval time.Duration
 	backgroundWaitStarted func()
+	buildDriftInterval    time.Duration
+	readInstalledBuild    installedBuildReader
 	managerDependencies   project.ManagerDependencies
 }
 
@@ -369,6 +371,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		resourceWorkers.Wait()
 	}()
+	readInstalledBuild := deps.readInstalledBuild
+	if readInstalledBuild == nil {
+		readInstalledBuild = readInstalledExecutableBuild
+	}
+	resourceWorkers.Go(func() {
+		runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
+	})
 	resourceWorkers.Go(func() {
 		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	})
