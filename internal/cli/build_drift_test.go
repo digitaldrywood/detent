@@ -12,6 +12,34 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 )
 
+func TestNewInstalledExecutableBuildReaderCapturesPath(t *testing.T) {
+	t.Parallel()
+
+	executableCalls := 0
+	var paths []string
+	read := newInstalledExecutableBuildReader(func() (string, error) {
+		executableCalls++
+		return "/opt/detent/bin/detent (deleted)", nil
+	}, func(_ context.Context, path string, _ ...string) (string, error) {
+		paths = append(paths, path)
+		return `{"version":"v1.2.3","commit":"abcdef123456","build_date":"2026-08-14T00:00:00Z"}`, nil
+	})
+
+	for range 2 {
+		if _, _, err := read(context.Background()); err != nil {
+			t.Fatalf("read() error = %v", err)
+		}
+	}
+	if executableCalls != 1 {
+		t.Fatalf("executable calls = %d, want 1", executableCalls)
+	}
+	for _, path := range paths {
+		if path != "/opt/detent/bin/detent" {
+			t.Fatalf("binary path = %q, want captured pathname without deleted suffix", path)
+		}
+	}
+}
+
 func TestRunRuntimeBuildDriftMonitor(t *testing.T) {
 	t.Parallel()
 

@@ -373,7 +373,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}()
 	readInstalledBuild := deps.readInstalledBuild
 	if readInstalledBuild == nil {
-		readInstalledBuild = readInstalledExecutableBuild
+		readInstalledBuild = newInstalledExecutableBuildReader(os.Executable, defaultCommandRunner)
 	}
 	resourceWorkers.Go(func() {
 		runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)

@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -81,14 +80,16 @@ func runRuntimeBuildDriftMonitor(
 	}
 }
 
-func readInstalledExecutableBuild(ctx context.Context) (buildinfo.Info, string, error) {
-	path, err := os.Executable()
-	if err != nil {
-		return buildinfo.Info{}, "", err
+func newInstalledExecutableBuildReader(executable func() (string, error), run buildinfo.BinaryRunner) installedBuildReader {
+	path, pathErr := executable()
+	path = strings.TrimSuffix(strings.TrimSpace(path), " (deleted)")
+	return func(ctx context.Context) (buildinfo.Info, string, error) {
+		if pathErr != nil {
+			return buildinfo.Info{}, path, pathErr
+		}
+		info, err := buildinfo.ReadBinary(ctx, path, run)
+		return info, path, err
 	}
-	path = strings.TrimSpace(path)
-	info, err := buildinfo.ReadBinary(ctx, path, defaultCommandRunner)
-	return info, path, err
 }
 
 func waitForBuildDriftCheck(ctx context.Context, interval time.Duration) bool {
