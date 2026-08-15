@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -20,6 +21,7 @@ var claudeCapacityRules = backendcapacity.Rules{
 		"usage limit reached",
 		"rate limit reached",
 		"you've hit your limit",
+		"you've hit your session limit",
 		"quota exceeded",
 	},
 	RequireReset: true,
@@ -60,7 +62,19 @@ func claudeCapacityResetAt(limits *telemetry.RateLimits) *time.Time {
 	if limits == nil {
 		return nil
 	}
-	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
+	buckets := []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary}
+	reachedType := strings.TrimSpace(limits.ReachedType)
+	if reachedType != "" && !strings.EqualFold(reachedType, "five_hour") {
+		buckets[0], buckets[1] = buckets[1], buckets[0]
+	}
+	for _, bucket := range buckets {
+		if bucket == nil || bucket.ResetAt == nil || bucket.Status != telemetry.RateLimitStatusExhausted {
+			continue
+		}
+		resetAt := bucket.ResetAt.UTC()
+		return &resetAt
+	}
+	for _, bucket := range buckets {
 		if bucket == nil || bucket.ResetAt == nil {
 			continue
 		}

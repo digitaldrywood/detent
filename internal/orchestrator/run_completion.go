@@ -209,7 +209,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.handleTransientOverload(ctx, state, event, running, capacityErr)
 			return
 		}
-		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "backend_capacity", errorString(event.Err))
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, "backend_capacity", errorString(event.Err))
 		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
 		return
 	}
