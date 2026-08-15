@@ -266,13 +266,6 @@ func (p dispatchPlanner) retryAction(
 		}
 		return dispatchAction{}, false, dispatchSkipGitHubRESTCapacity
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
-		if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
-			retry.DueAt = state.FailureBreaker.ResumeAt
-			state.Retry[retry.Issue.ID] = retry
-		}
-		return dispatchAction{}, false, dispatchSkipProjectFailureBreaker
-	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchAction{}, false, reason
 	}
@@ -288,6 +281,13 @@ func (p dispatchPlanner) retryAction(
 		modelPermitRequired,
 	)
 	if !decision.dispatchable {
+		if decision.reason == dispatchSkipProjectFailureBreaker {
+			if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
+				retry.DueAt = state.FailureBreaker.ResumeAt
+			}
+			state.Retry[retry.Issue.ID] = retry
+			return dispatchAction{}, false, decision.reason
+		}
 		if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 			if reason == dispatchSkipBudgetCooldown {
 				p.rescheduleRetry(state, retry, now, "budget cooldown active", false)
@@ -640,9 +640,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
-		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
-	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchableDecision{reason: reason}
 	}
@@ -699,6 +696,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
+	}
+	if !projectFailureBreakerAllowsDispatch(state, now) {
+		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	return dispatchableDecision{dispatchable: true}
 }

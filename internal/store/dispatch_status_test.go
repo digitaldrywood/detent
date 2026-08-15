@@ -20,14 +20,15 @@ func TestProjectDispatchStatusRoundTrip(t *testing.T) {
 	lastSelectedAt := allSkippedSince.Add(-3 * time.Hour)
 	observedAt := allSkippedSince.Add(2 * time.Hour)
 	want := ProjectDispatchStatus{
-		ProjectID:            "detent",
-		CandidateCount:       8,
-		CandidateFingerprint: "candidate-set",
-		SkippedCount:         8,
-		WaitReason:           "github_rest_capacity",
-		AllSkippedSince:      &allSkippedSince,
-		LastSelectedAt:       &lastSelectedAt,
-		ObservedAt:           observedAt,
+		ProjectID:              "detent",
+		CandidateCount:         8,
+		EligibleCandidateCount: 3,
+		CandidateFingerprint:   "candidate-set",
+		SkippedCount:           8,
+		WaitReason:             "github_rest_capacity",
+		AllSkippedSince:        &allSkippedSince,
+		LastSelectedAt:         &lastSelectedAt,
+		ObservedAt:             observedAt,
 	}
 
 	if err := backend.RecordProjectDispatchStatus(ctx, want); err != nil {
@@ -37,7 +38,7 @@ func TestProjectDispatchStatusRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectDispatchStatus() error = %v", err)
 	}
-	if got.ProjectID != want.ProjectID || got.CandidateCount != want.CandidateCount || got.CandidateFingerprint != want.CandidateFingerprint || got.SelectedCount != 0 || got.SkippedCount != want.SkippedCount || got.WaitReason != want.WaitReason {
+	if got.ProjectID != want.ProjectID || got.CandidateCount != want.CandidateCount || got.EligibleCandidateCount != want.EligibleCandidateCount || got.CandidateFingerprint != want.CandidateFingerprint || got.SelectedCount != 0 || got.SkippedCount != want.SkippedCount || got.WaitReason != want.WaitReason {
 		t.Fatalf("ProjectDispatchStatus() = %#v, want %#v", got, want)
 	}
 	if got.AllSkippedSince == nil || !got.AllSkippedSince.Equal(allSkippedSince) {
@@ -52,11 +53,12 @@ func TestProjectDispatchStatusRoundTrip(t *testing.T) {
 
 	selectedAt := observedAt.Add(time.Minute)
 	if err := backend.RecordProjectDispatchStatus(ctx, ProjectDispatchStatus{
-		ProjectID:      "detent",
-		CandidateCount: 1,
-		SelectedCount:  1,
-		LastSelectedAt: &selectedAt,
-		ObservedAt:     selectedAt,
+		ProjectID:              "detent",
+		CandidateCount:         1,
+		EligibleCandidateCount: 1,
+		SelectedCount:          1,
+		LastSelectedAt:         &selectedAt,
+		ObservedAt:             selectedAt,
 	}); err != nil {
 		t.Fatalf("RecordProjectDispatchStatus() update error = %v", err)
 	}
@@ -64,7 +66,7 @@ func TestProjectDispatchStatusRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectDispatchStatus() after update error = %v", err)
 	}
-	if got.CandidateCount != 1 || got.SelectedCount != 1 || got.SkippedCount != 0 || got.WaitReason != "" || got.AllSkippedSince != nil {
+	if got.CandidateCount != 1 || got.EligibleCandidateCount != 1 || got.SelectedCount != 1 || got.SkippedCount != 0 || got.WaitReason != "" || got.AllSkippedSince != nil {
 		t.Fatalf("ProjectDispatchStatus() after selection = %#v", got)
 	}
 	if got.LastSelectedAt == nil || !got.LastSelectedAt.Equal(selectedAt) {

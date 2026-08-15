@@ -658,19 +658,40 @@ func demoBoardScheduledPacingSnapshot() telemetry.Snapshot {
 func demoBoardDegradedHealthBannersSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	now := snapshot.GeneratedAt
+	resetAt := now.Add(30 * time.Minute)
+	eligibleCandidates := 0
+	capacityOutage := telemetry.BackendOutage{
+		ProjectID:   demoPrimaryProjectID,
+		BackendID:   "claude-code",
+		BackendKind: "claude_code",
+		Provider:    "anthropic",
+		Kind:        "usage_limit_exceeded",
+		Reason:      "provider usage limit reached",
+		ResetAt:     &resetAt,
+		ResumeAt:    resetAt,
+	}
 	snapshot.FailureBreakers = []telemetry.FailureBreaker{
-		{ProjectID: demoPrimaryProjectID, Class: "backend_startup_timeout", Count: 4, WindowSeconds: 3600, ResumeAt: now.Add(12 * time.Minute)},
-		{ProjectID: "docs-site", Class: "session_token_ceiling", Count: 3, WindowSeconds: 3600, ResumeAt: now.Add(18 * time.Minute)},
+		{
+			ProjectID: demoPrimaryProjectID, Class: "runner_error:b6c174a86dfb", Count: 5, AttemptCount: 5, DistinctItemCount: 1,
+			Cause: "provider usage limit reached", RepresentativeError: "You've hit your limit. Try again after the provider reset.",
+			BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", EligibleCandidateCount: &eligibleCandidates,
+			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-blocked", Identifier: "digitaldrywood/detent-core#5280", IssueURL: "https://github.com/digitaldrywood/detent-core/issues/5280", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true}},
+			BackendOutage: &capacityOutage, WindowSeconds: 3600, ResumeAt: now.Add(12 * time.Minute),
+		},
+		{
+			ProjectID: "docs-site", Class: "runner_error:opaque123", Count: 3, AttemptCount: 3, DistinctItemCount: 2, Cause: "runner failed",
+			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-docs-1", Identifier: "digitaldrywood/docs-site#901", AttemptCount: 2}, {IssueID: "demo-docs-2", Identifier: "digitaldrywood/docs-site#902", AttemptCount: 1}},
+			WindowSeconds: 3600, ResumeAt: now.Add(18 * time.Minute),
+		},
 	}
 	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
 		{ProjectID: demoPrimaryProjectID, Kind: "github_rest", Reason: "primary quota exhausted", Status: "waiting", StartedAt: now.Add(-3 * time.Minute), ResumeAt: now.Add(20 * time.Minute), MaxConcurrent: 6},
 		{ProjectID: "docs-site", Kind: "github_rest", Reason: "automatic retry did not recover", Status: "waiting", StartedAt: now.Add(-12 * time.Minute), ResumeAt: now.Add(-2 * time.Minute), MaxConcurrent: 6},
 		{ProjectID: "billing-api", Kind: "backend_capacity", Status: "ramping", StartedAt: now.Add(-time.Minute), Limit: 1, MaxConcurrent: 6, Admitted: 1},
 	}
-	resumeAt := now.Add(30 * time.Minute)
 	snapshot.BackendOutages = []telemetry.BackendOutage{
-		{ProjectID: demoPrimaryProjectID, BackendID: "codex", BackendKind: "codex", Provider: "openai", Reason: "provider usage limit reached", ResumeAt: resumeAt},
-		{ProjectID: "docs-site", BackendID: "codex", BackendKind: "codex", Provider: "openai", Reason: "provider usage limit reached", ResumeAt: resumeAt},
+		capacityOutage,
+		{ProjectID: "docs-site", BackendID: "codex", BackendKind: "codex", Provider: "openai", Reason: "provider usage limit reached", ResumeAt: resetAt},
 	}
 	snapshot.OverloadRetriesLastHour = 3
 	return snapshot

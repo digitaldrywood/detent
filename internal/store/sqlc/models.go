@@ -244,15 +244,16 @@ type MergeRequiredCheckStreak struct {
 }
 
 type ProjectDispatchStatus struct {
-	ProjectID            string         `json:"project_id"`
-	CandidateCount       int64          `json:"candidate_count"`
-	CandidateFingerprint string         `json:"candidate_fingerprint"`
-	SelectedCount        int64          `json:"selected_count"`
-	SkippedCount         int64          `json:"skipped_count"`
-	WaitReason           sql.NullString `json:"wait_reason"`
-	AllSkippedSince      sql.NullString `json:"all_skipped_since"`
-	LastSelectedAt       sql.NullString `json:"last_selected_at"`
-	ObservedAt           string         `json:"observed_at"`
+	ProjectID              string         `json:"project_id"`
+	CandidateCount         int64          `json:"candidate_count"`
+	CandidateFingerprint   string         `json:"candidate_fingerprint"`
+	SelectedCount          int64          `json:"selected_count"`
+	SkippedCount           int64          `json:"skipped_count"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	AllSkippedSince        sql.NullString `json:"all_skipped_since"`
+	LastSelectedAt         sql.NullString `json:"last_selected_at"`
+	ObservedAt             string         `json:"observed_at"`
+	EligibleCandidateCount int64          `json:"eligible_candidate_count"`
 }
 
 type ProvenanceAttributionBoundary struct {

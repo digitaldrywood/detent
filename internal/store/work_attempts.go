@@ -469,15 +469,16 @@ func (s *sqliteStore) RecordProjectDispatchStatus(ctx context.Context, status Pr
 		return err
 	}
 	row, err := s.queries.UpsertProjectDispatchStatus(ctx, sqlc.UpsertProjectDispatchStatusParams{
-		ProjectID:            projectID,
-		CandidateCount:       nonNegative(int64(status.CandidateCount)),
-		CandidateFingerprint: strings.TrimSpace(status.CandidateFingerprint),
-		SelectedCount:        nonNegative(int64(status.SelectedCount)),
-		SkippedCount:         nonNegative(int64(status.SkippedCount)),
-		WaitReason:           nullString(status.WaitReason),
-		AllSkippedSince:      allSkippedSince,
-		LastSelectedAt:       lastSelectedAt,
-		ObservedAt:           observedAt,
+		ProjectID:              projectID,
+		CandidateCount:         nonNegative(int64(status.CandidateCount)),
+		EligibleCandidateCount: nonNegative(int64(status.EligibleCandidateCount)),
+		CandidateFingerprint:   strings.TrimSpace(status.CandidateFingerprint),
+		SelectedCount:          nonNegative(int64(status.SelectedCount)),
+		SkippedCount:           nonNegative(int64(status.SkippedCount)),
+		WaitReason:             nullString(status.WaitReason),
+		AllSkippedSince:        allSkippedSince,
+		LastSelectedAt:         lastSelectedAt,
+		ObservedAt:             observedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("recording project dispatch status: %w", err)
@@ -521,15 +522,16 @@ func projectDispatchStatusFromRow(row sqlc.ProjectDispatchStatus) (ProjectDispat
 		return ProjectDispatchStatus{}, err
 	}
 	return ProjectDispatchStatus{
-		ProjectID:            row.ProjectID,
-		CandidateCount:       int(row.CandidateCount),
-		CandidateFingerprint: row.CandidateFingerprint,
-		SelectedCount:        int(row.SelectedCount),
-		SkippedCount:         int(row.SkippedCount),
-		WaitReason:           row.WaitReason.String,
-		AllSkippedSince:      optionalTimePointer(allSkippedSince),
-		LastSelectedAt:       optionalTimePointer(lastSelectedAt),
-		ObservedAt:           observedAt,
+		ProjectID:              row.ProjectID,
+		CandidateCount:         int(row.CandidateCount),
+		EligibleCandidateCount: int(row.EligibleCandidateCount),
+		CandidateFingerprint:   row.CandidateFingerprint,
+		SelectedCount:          int(row.SelectedCount),
+		SkippedCount:           int(row.SkippedCount),
+		WaitReason:             row.WaitReason.String,
+		AllSkippedSince:        optionalTimePointer(allSkippedSince),
+		LastSelectedAt:         optionalTimePointer(lastSelectedAt),
+		ObservedAt:             observedAt,
 	}, nil
 }
 

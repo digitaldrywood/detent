@@ -194,6 +194,99 @@ func TestStateSnapshotIncludesBackendOutage(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotExplainsProjectFailureBreakerEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(39 * time.Minute)
+	tests := []struct {
+		name               string
+		failures           []ProjectFailure
+		blocked            map[string]Blocked
+		outage             *BackendOutage
+		wantAttempts       int
+		wantItems          int
+		wantCause          string
+		wantRepresentative string
+		wantBackendOutage  bool
+		wantParked         bool
+	}{
+		{
+			name: "five usage-limit attempts from one blocked item",
+			failures: []ProjectFailure{
+				{IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", Cause: "provider usage limit reached", ErrorMessage: "You've hit your limit. Try again at 9:39 PM", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", At: now.Add(-5 * time.Minute)},
+				{IssueID: "video-1", At: now.Add(-4 * time.Minute)},
+				{IssueID: "video-1", At: now.Add(-3 * time.Minute)},
+				{IssueID: "video-1", At: now.Add(-2 * time.Minute)},
+				{IssueID: "video-1", At: now.Add(-time.Minute)},
+			},
+			blocked: map[string]Blocked{
+				"video-1": {Issue: connector.Issue{ID: "video-1", State: "Blocked"}, RecoveryAction: "move to Rework after provider reset", RecoveryReason: "provider_capacity"},
+			},
+			outage: &BackendOutage{
+				Scope: backendcapacity.Scope{BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic"},
+				Kind:  "usage_limit_exceeded", Reason: "provider usage limit reached", ResetAt: resetAt, ResumeAt: resetAt.Add(5 * time.Second),
+			},
+			wantAttempts:       5,
+			wantItems:          1,
+			wantCause:          "provider usage limit reached",
+			wantRepresentative: "You've hit your limit. Try again at 9:39 PM",
+			wantBackendOutage:  true,
+			wantParked:         true,
+		},
+		{
+			name: "same opaque failure class across multiple items",
+			failures: []ProjectFailure{
+				{IssueID: "issue-a", Identifier: "ITEM-A", ErrorMessage: "runner transport closed", At: now.Add(-2 * time.Minute)},
+				{IssueID: "issue-b", Identifier: "ITEM-B", ErrorMessage: "runner transport closed", At: now.Add(-time.Minute)},
+			},
+			wantAttempts:       2,
+			wantItems:          2,
+			wantCause:          "runner transport closed",
+			wantRepresentative: "runner transport closed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			class := "runner_error:b6c174a86dfb"
+			state := newState(normalizeConfig(Config{}))
+			state.FailureBreaker.Class = class
+			state.FailureBreaker.Count = len(tt.failures)
+			state.FailureBreaker.Failures[class] = tt.failures
+			state.FailureBreaker.FirstFailureAt = tt.failures[0].At
+			state.FailureBreaker.TrippedAt = tt.failures[len(tt.failures)-1].At
+			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
+			state.Blocked = tt.blocked
+			if tt.outage != nil {
+				state.BackendOutages[tt.outage.Scope.Key()] = *tt.outage
+			}
+
+			snapshot := state.Snapshot(now)
+			if len(snapshot.FailureBreakers) != 1 {
+				t.Fatalf("FailureBreakers = %#v, want one", snapshot.FailureBreakers)
+			}
+			breaker := snapshot.FailureBreakers[0]
+			if breaker.AttemptCount != tt.wantAttempts || breaker.DistinctItemCount != tt.wantItems {
+				t.Fatalf("attempt/item counts = %d/%d, want %d/%d", breaker.AttemptCount, breaker.DistinctItemCount, tt.wantAttempts, tt.wantItems)
+			}
+			if breaker.Cause != tt.wantCause || breaker.RepresentativeError != tt.wantRepresentative {
+				t.Fatalf("cause/error = %q/%q, want %q/%q", breaker.Cause, breaker.RepresentativeError, tt.wantCause, tt.wantRepresentative)
+			}
+			if (breaker.BackendOutage != nil) != tt.wantBackendOutage {
+				t.Fatalf("BackendOutage = %#v, want present %t", breaker.BackendOutage, tt.wantBackendOutage)
+			}
+			if len(breaker.Items) != tt.wantItems || breaker.Items[0].Parked != tt.wantParked {
+				t.Fatalf("Items = %#v, want %d items with first parked %t", breaker.Items, tt.wantItems, tt.wantParked)
+			}
+			if breaker.EligibleCandidateCount == nil || *breaker.EligibleCandidateCount != 0 {
+				t.Fatalf("EligibleCandidateCount = %v, want 0", breaker.EligibleCandidateCount)
+			}
+		})
+	}
+}
+
 func TestStateSnapshotUsesActiveThenMostRecentPersistedRuntimeIdentity(t *testing.T) {
 	t.Parallel()
 

@@ -6950,15 +6950,138 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 }
 
 func failureBreakerDetailParts(breaker telemetry.FailureBreaker, now time.Time) (string, time.Time, bool) {
-	detail := formatCount(breaker.Count) + " failures with class " + strings.TrimSpace(breaker.Class) +
-		" in " + formatDurationWindow(time.Duration(breaker.WindowSeconds)*time.Second) + "."
+	attemptCount := breaker.AttemptCount
+	if attemptCount == 0 {
+		attemptCount = breaker.Count
+	}
+	detail := boardCountLabel(attemptCount, "failed attempt", "failed attempts")
+	itemCount := breaker.DistinctItemCount
+	if itemCount == 0 && len(breaker.Items) > 0 {
+		itemCount = len(breaker.Items)
+	}
+	if itemCount > 0 {
+		detail += " across " + boardCountLabel(itemCount, "item", "items")
+	}
+	detail += " in " + formatDurationWindow(time.Duration(breaker.WindowSeconds)*time.Second) + "."
+	if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
+		detail += " Pause scope: project " + projectID + " only."
+	}
+	if backend := failureBreakerBackendLabel(breaker); backend != "" {
+		detail += " Backend: " + backend + "."
+	}
+	if cause := failureBreakerCauseLabel(breaker); cause != "" {
+		detail += " Cause: " + cause + "."
+	}
+	if message := strings.TrimSpace(breaker.RepresentativeError); message != "" && !strings.EqualFold(message, strings.TrimSpace(breaker.Cause)) {
+		detail += " Representative error: " + message + "."
+	}
+	if class := strings.TrimSpace(breaker.Class); class != "" {
+		detail += " Diagnostic class: " + class + "."
+	}
+	if outage := breaker.BackendOutage; outage != nil {
+		detail += " A backend capacity pause is also active"
+		if outage.ResetAt != nil && !outage.ResetAt.IsZero() {
+			detail += "; provider reset " + localTimeToken(*outage.ResetAt, LocalDateTimeZone)
+			if now.Before(*outage.ResetAt) {
+				detail += " (in " + formatDuration(outage.ResetAt.Sub(now).Seconds()) + ")"
+			}
+		}
+		detail += "."
+	}
+	parkedCopy := failureBreakerParkedCopy(breaker)
 	if strings.TrimSpace(breaker.CanaryIssueID) != "" {
-		return detail + " One canary attempt is in progress.", time.Time{}, false
+		return detail + " The project is dispatching one canary candidate." + parkedCopy, time.Time{}, false
 	}
 	if !breaker.ResumeAt.IsZero() && breaker.ResumeAt.After(now) {
-		return detail + " One canary attempt becomes eligible", breaker.ResumeAt, true
+		copy := detail + " The project may dispatch one eligible candidate after the project cooldown at"
+		if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 {
+			copy += "; no candidate is currently eligible"
+		}
+		return copy + parkedCopy, breaker.ResumeAt, true
 	}
-	return detail + " One canary attempt is ready.", time.Time{}, false
+	if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 {
+		return detail + " Project canary dispatch is ready, but no eligible candidate is currently available." + parkedCopy, time.Time{}, false
+	}
+	return detail + " The project may dispatch one eligible candidate now." + parkedCopy, time.Time{}, false
+}
+
+func failureBreakerCauseLabel(breaker telemetry.FailureBreaker) string {
+	if cause := strings.TrimSpace(breaker.Cause); cause != "" {
+		return failureBreakerSentenceCase(cause)
+	}
+	class := strings.TrimSpace(breaker.Class)
+	prefix, suffix, _ := strings.Cut(class, ":")
+	switch prefix {
+	case "session_token_ceiling":
+		return "Agent session token ceiling reached"
+	case "deliverable_command_failure":
+		if suffix != "" {
+			return "Deliverable command failed: " + strings.ReplaceAll(suffix, "_", " ")
+		}
+		return "Deliverable command failed"
+	case "no_progress":
+		return "Agent made no work-product progress"
+	case "runner_final_state":
+		return "Runner ended in a failed state"
+	case "backend_error":
+		return "Agent backend returned an error"
+	case "runner_error":
+		return "Runner failed"
+	}
+	return failureBreakerSentenceCase(strings.ReplaceAll(class, "_", " "))
+}
+
+func failureBreakerSentenceCase(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func failureBreakerBackendLabel(breaker telemetry.FailureBreaker) string {
+	parts := make([]string, 0, 3)
+	if value := strings.TrimSpace(breaker.BackendID); value != "" {
+		parts = append(parts, value)
+	}
+	if value := strings.TrimSpace(breaker.BackendKind); value != "" && !strings.EqualFold(value, strings.TrimSpace(breaker.BackendID)) {
+		parts = append(parts, "kind "+value)
+	}
+	if value := strings.TrimSpace(breaker.Provider); value != "" {
+		parts = append(parts, "provider "+value)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func failureBreakerParkedCopy(breaker telemetry.FailureBreaker) string {
+	parked := 0
+	for _, item := range breaker.Items {
+		if item.Parked || strings.EqualFold(strings.TrimSpace(item.CurrentState), "Blocked") {
+			parked++
+		}
+	}
+	if parked == 0 {
+		return ""
+	}
+	if parked == 1 {
+		return " The affected Blocked item will not retry merely because the project canary is eligible; it needs recovery or operator action."
+	}
+	return " The " + formatCount(parked) + " affected Blocked items will not retry merely because the project canary is eligible; they need recovery or operator action."
+}
+
+func failureBreakerItemLabel(item telemetry.FailureBreakerItem) string {
+	title := strings.TrimSpace(item.Title)
+	identifier := strings.TrimSpace(item.Identifier)
+	switch {
+	case title != "" && identifier != "":
+		return title + " — " + identifier
+	case title != "":
+		return title
+	case identifier != "":
+		return identifier
+	default:
+		return strings.TrimSpace(item.IssueID)
+	}
 }
 
 func dispatchRecoveryTitle(recovery telemetry.DispatchRecovery) string {
@@ -7020,7 +7143,7 @@ func boardFailureBreakerSummary(breakers []telemetry.FailureBreaker) (boardBanne
 	})
 	return boardBannerSummary{
 		ID:    "board-failure-breaker-summary",
-		Title: boardBannerProjectTitle("Project dispatch paused by correlated failures", count),
+		Title: boardBannerProjectTitle("Project failure breaker active", count),
 	}, true
 }
 

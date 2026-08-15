@@ -17,15 +17,16 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 	fingerprint := dispatchCandidateFingerprint(dispatchCandidateIdentities([]connector.Issue{alpha, beta}))
 
 	tests := []struct {
-		name        string
-		previous    store.ProjectDispatchStatus
-		candidates  []connector.Issue
-		decisions   []dispatchPlanDecision
-		outcomes    map[string]dispatchIssueOutcome
-		wantCount   int
-		wantSkipped int
-		wantReason  string
-		wantStall   bool
+		name         string
+		previous     store.ProjectDispatchStatus
+		candidates   []connector.Issue
+		decisions    []dispatchPlanDecision
+		outcomes     map[string]dispatchIssueOutcome
+		wantCount    int
+		wantEligible int
+		wantSkipped  int
+		wantReason   string
+		wantStall    bool
 	}{
 		{
 			name: "no candidates is healthy",
@@ -38,11 +39,12 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			},
 		},
 		{
-			name:       "candidate selected is healthy",
-			candidates: []connector.Issue{alpha},
-			decisions:  []dispatchPlanDecision{{Issue: alpha, Selected: true}},
-			outcomes:   dispatchStatusOutcomes(alpha, dispatchIssueOutcome{dispatched: true}),
-			wantCount:  1,
+			name:         "candidate selected is healthy",
+			candidates:   []connector.Issue{alpha},
+			decisions:    []dispatchPlanDecision{{Issue: alpha, Selected: true}},
+			outcomes:     dispatchStatusOutcomes(alpha, dispatchIssueOutcome{dispatched: true}),
+			wantCount:    1,
+			wantEligible: 1,
 		},
 		{
 			name: "uniform skips under threshold are healthy",
@@ -82,6 +84,26 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantStall:   true,
 		},
 		{
+			name:       "failure breaker counts only otherwise eligible candidates",
+			candidates: []connector.Issue{alpha, beta},
+			decisions: []dispatchPlanDecision{
+				{Issue: alpha, SkipReason: dispatchSkipProjectFailureBreaker},
+				{Issue: beta, SkipReason: dispatchSkipBlockedByDependency},
+			},
+			wantCount:    2,
+			wantEligible: 1,
+			wantSkipped:  2,
+		},
+		{
+			name:        "capacity rejection is not an eligible candidate",
+			candidates:  []connector.Issue{alpha},
+			decisions:   []dispatchPlanDecision{{Issue: alpha, Selected: true}},
+			outcomes:    dispatchStatusOutcomes(alpha, dispatchIssueOutcome{reason: dispatchIssueFailureBackendCapacityPaused}),
+			wantCount:   1,
+			wantSkipped: 1,
+			wantReason:  schedulerDecisionWaitReason(dispatchIssueFailureBackendCapacityPaused),
+		},
+		{
 			name:        "failed selection does not advance dispatch",
 			candidates:  []connector.Issue{alpha},
 			decisions:   []dispatchPlanDecision{{Issue: alpha, Selected: true}},
@@ -107,8 +129,8 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			t.Parallel()
 			status := projectDispatchStatusFromCycle(tt.previous, "detent", tt.candidates, tt.decisions, tt.outcomes, now)
 			got := dispatchStatusSnapshot(status, threshold, now)
-			if got.CandidateCount != tt.wantCount || got.SkippedCount != tt.wantSkipped || got.WaitReason != tt.wantReason || got.Stalled != tt.wantStall {
-				t.Fatalf("dispatch status = %#v, want count=%d skipped=%d reason=%q stalled=%t", got, tt.wantCount, tt.wantSkipped, tt.wantReason, tt.wantStall)
+			if got.CandidateCount != tt.wantCount || got.EligibleCandidateCount != tt.wantEligible || got.SkippedCount != tt.wantSkipped || got.WaitReason != tt.wantReason || got.Stalled != tt.wantStall {
+				t.Fatalf("dispatch status = %#v, want count=%d eligible=%d skipped=%d reason=%q stalled=%t", got, tt.wantCount, tt.wantEligible, tt.wantSkipped, tt.wantReason, tt.wantStall)
 			}
 			if got.NeedsHumanAttention != tt.wantStall {
 				t.Fatalf("NeedsHumanAttention = %t, want %t", got.NeedsHumanAttention, tt.wantStall)

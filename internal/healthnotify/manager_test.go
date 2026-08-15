@@ -121,6 +121,65 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 	}
 }
 
+func TestManagerBreakerPayloadCarriesOperatorEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
+	resetAt := now.Add(39 * time.Minute)
+	eligibleCandidates := 0
+	breaker := telemetry.FailureBreaker{
+		ProjectID:              "digitaldrywood-video",
+		Class:                  "runner_error:b6c174a86dfb",
+		Count:                  5,
+		AttemptCount:           5,
+		DistinctItemCount:      1,
+		Cause:                  "provider usage limit reached",
+		RepresentativeError:    "You've hit your limit. Try again at 9:39 PM",
+		BackendID:              "claude-code",
+		BackendKind:            "claude_code",
+		Provider:               "anthropic",
+		EligibleCandidateCount: &eligibleCandidates,
+		Items: []telemetry.FailureBreakerItem{{
+			IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true,
+		}},
+		ResumeAt: now.Add(time.Hour),
+	}
+	outage := telemetry.BackendOutage{
+		ProjectID: "digitaldrywood-video", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", Kind: "usage_limit_exceeded", Reason: "provider usage limit reached", ResetAt: &resetAt, ResumeAt: resetAt.Add(5 * time.Second),
+	}
+	breaker.BackendOutage = &outage
+	snapshot := telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{breaker}, BackendOutages: []telemetry.BackendOutage{outage}}
+	stateStore := newMemoryStateStore()
+	sender := &recordingSender{}
+	manager := newTestManager(t, stateStore, sender, Config{Debounce: time.Minute})
+	health := readyHealth("digitaldrywood-video")
+
+	managerReconcile(t, manager, snapshot, health, now)
+	managerReconcile(t, manager, snapshot, health, now.Add(time.Minute))
+
+	var breakerEvent *Event
+	for _, event := range sender.Events() {
+		if event.ProjectID == "digitaldrywood-video" && slices.Equal(event.Causes, []string{CauseProjectFailureBreaker}) {
+			value := event
+			breakerEvent = &value
+			break
+		}
+	}
+	if breakerEvent == nil {
+		t.Fatalf("events = %#v, want project failure breaker event", sender.Events())
+	}
+	if len(breakerEvent.FailureBreakers) != 1 || breakerEvent.FailureBreakers[0].AttemptCount != 5 || breakerEvent.FailureBreakers[0].DistinctItemCount != 1 {
+		t.Fatalf("FailureBreakers = %#v", breakerEvent.FailureBreakers)
+	}
+	if len(breakerEvent.BackendOutages) != 1 || breakerEvent.BackendOutages[0].Provider != "anthropic" || breakerEvent.BackendOutages[0].ResetAt == nil {
+		t.Fatalf("BackendOutages = %#v", breakerEvent.BackendOutages)
+	}
+	item := breakerEvent.FailureBreakers[0].Items[0]
+	if item.Title != "Author beat visuals" || item.IssueURL == "" || !item.Parked {
+		t.Fatalf("breaker item = %#v", item)
+	}
+}
+
 func TestManagerSuppressesFlapInsideDebounce(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)

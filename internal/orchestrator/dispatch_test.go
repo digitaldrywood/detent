@@ -661,6 +661,27 @@ func TestDispatchableBudgetRefusalWaitReasons(t *testing.T) {
 	}
 }
 
+func TestDispatchableIssueDecisionReportsEarlierGateBeforeFailureBreaker(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 22, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	})
+	issue := dispatchTestIssue("issue-dependent", "Todo")
+	issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#1", State: "Todo"}}
+	state := newState(cfg)
+	state.FailureBreaker.Class = "runner_error:opaque"
+	state.FailureBreaker.ResumeAt = now.Add(time.Hour)
+
+	decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, now, "")
+	if decision.dispatchable || decision.reason != dispatchSkipBlockedByDependency {
+		t.Fatalf("dispatch decision = %#v, want skipped for %q", decision, dispatchSkipBlockedByDependency)
+	}
+}
+
 func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 	t.Parallel()
 

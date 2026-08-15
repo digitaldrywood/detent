@@ -86,14 +86,21 @@ func projectDispatchStatusFromCycle(
 			outcome, attempted := outcomes[identity]
 			if attempted && outcome.dispatched {
 				status.SelectedCount++
+				status.EligibleCandidateCount++
 				allSkipped = false
 				continue
 			}
 			if attempted {
 				waitReason = schedulerDecisionWaitReason(outcome.reason)
+				if outcome.reason == projectFailureBreakerDispatchPaused {
+					status.EligibleCandidateCount++
+				}
 			}
 		} else {
 			waitReason = schedulerDecisionWaitReason(decision.SkipReason)
+			if decision.SkipReason == dispatchSkipProjectFailureBreaker {
+				status.EligibleCandidateCount++
+			}
 		}
 		status.SkippedCount++
 		if waitReason == "" {

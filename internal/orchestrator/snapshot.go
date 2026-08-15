@@ -106,7 +106,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		RateLimits:              cloneRateLimits(s.RateLimits),
 		CIUnavailable:           ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
-		FailureBreakers:         projectFailureBreakerSnapshots(s.FailureBreaker),
+		FailureBreakers:         projectFailureBreakerSnapshots(s),
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
 		StrandedActiveIssues:    strandedActiveIssues,
@@ -131,15 +131,16 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 
 func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.Duration, now time.Time) telemetry.DispatchStatus {
 	result := telemetry.DispatchStatus{
-		ProjectID:             strings.TrimSpace(status.ProjectID),
-		CandidateCount:        status.CandidateCount,
-		SelectedCount:         status.SelectedCount,
-		SkippedCount:          status.SkippedCount,
-		WaitReason:            strings.TrimSpace(status.WaitReason),
-		AllSkippedSince:       cloneTimePointer(status.AllSkippedSince),
-		LastSelectedAt:        cloneTimePointer(status.LastSelectedAt),
-		StallThresholdSeconds: int64(threshold / time.Second),
-		ObservedAt:            status.ObservedAt,
+		ProjectID:              strings.TrimSpace(status.ProjectID),
+		CandidateCount:         status.CandidateCount,
+		EligibleCandidateCount: status.EligibleCandidateCount,
+		SelectedCount:          status.SelectedCount,
+		SkippedCount:           status.SkippedCount,
+		WaitReason:             strings.TrimSpace(status.WaitReason),
+		AllSkippedSince:        cloneTimePointer(status.AllSkippedSince),
+		LastSelectedAt:         cloneTimePointer(status.LastSelectedAt),
+		StallThresholdSeconds:  int64(threshold / time.Second),
+		ObservedAt:             status.ObservedAt,
 	}
 	if status.LastSelectedAt != nil && !status.LastSelectedAt.IsZero() && !now.IsZero() {
 		seconds := max(int64(now.Sub(*status.LastSelectedAt)/time.Second), 0)
@@ -227,20 +228,132 @@ func telemetryIssueLaneKey(issue telemetry.Issue) string {
 	return identity + "\x00" + state
 }
 
-func projectFailureBreakerSnapshots(breaker ProjectFailureBreaker) []telemetry.FailureBreaker {
+func projectFailureBreakerSnapshots(state State) []telemetry.FailureBreaker {
+	breaker := state.FailureBreaker
 	if !breaker.Active() {
 		return nil
 	}
-	return []telemetry.FailureBreaker{{
-		Class:           breaker.Class,
-		Count:           breaker.Count,
-		WindowSeconds:   int64(breaker.Config.Window / time.Second),
-		CooldownSeconds: int64(breaker.Config.Cooldown / time.Second),
-		FirstFailureAt:  breaker.FirstFailureAt,
-		TrippedAt:       breaker.TrippedAt,
-		ResumeAt:        breaker.ResumeAt,
-		CanaryIssueID:   breaker.CanaryIssueID,
-	}}
+	failures := breaker.Failures[breaker.Class]
+	items := make([]telemetry.FailureBreakerItem, 0, len(failures))
+	itemIndexes := make(map[string]int, len(failures))
+	representative := ProjectFailure{}
+	for _, failure := range failures {
+		issueID := strings.TrimSpace(failure.IssueID)
+		index, ok := itemIndexes[issueID]
+		if !ok {
+			index = len(items)
+			itemIndexes[issueID] = index
+			items = append(items, telemetry.FailureBreakerItem{
+				IssueID:      issueID,
+				Identifier:   strings.TrimSpace(failure.Identifier),
+				IssueURL:     strings.TrimSpace(failure.IssueURL),
+				Title:        strings.TrimSpace(failure.Title),
+				AttemptCount: 1,
+			})
+		} else {
+			items[index].AttemptCount++
+		}
+		if failure.ErrorMessage != "" || failure.Cause != "" || failure.BackendID != "" || failure.BackendKind != "" || failure.Provider != "" {
+			representative = failure
+		}
+	}
+	for index := range items {
+		items[index] = failureBreakerItemCurrentState(state, items[index])
+	}
+	attemptCount := len(failures)
+	if attemptCount == 0 {
+		attemptCount = breaker.Count
+	}
+	candidateCount := state.DispatchStatus.EligibleCandidateCount
+	row := telemetry.FailureBreaker{
+		Class:                  breaker.Class,
+		Count:                  breaker.Count,
+		AttemptCount:           attemptCount,
+		DistinctItemCount:      len(items),
+		Cause:                  failureBreakerCause(breaker.Class, representative.Cause, representative.ErrorMessage),
+		RepresentativeError:    representative.ErrorMessage,
+		BackendID:              representative.BackendID,
+		BackendKind:            representative.BackendKind,
+		Provider:               representative.Provider,
+		EligibleCandidateCount: &candidateCount,
+		Items:                  items,
+		WindowSeconds:          int64(breaker.Config.Window / time.Second),
+		CooldownSeconds:        int64(breaker.Config.Cooldown / time.Second),
+		FirstFailureAt:         breaker.FirstFailureAt,
+		TrippedAt:              breaker.TrippedAt,
+		ResumeAt:               breaker.ResumeAt,
+		CanaryIssueID:          breaker.CanaryIssueID,
+	}
+	if scope := (backendcapacity.Scope{BackendID: row.BackendID, BackendKind: row.BackendKind, Provider: row.Provider}).Normalize(); scope.BackendID != "" || scope.BackendKind != "" || scope.Provider != "" {
+		if _, outage, ok := matchingBackendOutage(state.BackendOutages, scope); ok {
+			value := backendOutageSnapshot(outage)
+			row.BackendOutage = &value
+		}
+	}
+	return []telemetry.FailureBreaker{row}
+}
+
+func failureBreakerItemCurrentState(state State, item telemetry.FailureBreakerItem) telemetry.FailureBreakerItem {
+	issueID := strings.TrimSpace(item.IssueID)
+	if blocked, ok := state.Blocked[issueID]; ok {
+		item.CurrentState = strings.TrimSpace(blocked.Issue.State)
+		if item.CurrentState == "" {
+			item.CurrentState = "Blocked"
+		}
+		item.Parked = true
+		item.RecoveryAction = strings.TrimSpace(blocked.RecoveryAction)
+		item.RecoveryReason = strings.TrimSpace(blocked.RecoveryReason)
+		item.RecoveryIntentResumable = blocked.RecoveryIntentResumable
+		return item
+	}
+	if running, ok := state.Running[issueID]; ok {
+		item.CurrentState = strings.TrimSpace(running.Issue.State)
+		return item
+	}
+	if retry, ok := state.Retry[issueID]; ok {
+		item.CurrentState = strings.TrimSpace(retry.Issue.State)
+		return item
+	}
+	if completed, ok := state.Completed[issueID]; ok {
+		item.CurrentState = strings.TrimSpace(completed.Issue.State)
+		return item
+	}
+	for _, issues := range [][]connector.Issue{state.BoardIssues, state.Pipeline} {
+		for _, issue := range issues {
+			if strings.TrimSpace(issue.ID) == issueID {
+				item.CurrentState = strings.TrimSpace(issue.State)
+				return item
+			}
+		}
+	}
+	return item
+}
+
+func failureBreakerCause(class string, cause string, representativeError string) string {
+	if cause = strings.TrimSpace(cause); cause != "" {
+		return cause
+	}
+	if representativeError = strings.TrimSpace(representativeError); representativeError != "" {
+		return representativeError
+	}
+	normalized := strings.TrimSpace(class)
+	prefix, _, _ := strings.Cut(normalized, ":")
+	switch prefix {
+	case projectFailureClassSessionTokenCeiling:
+		return "agent session token ceiling reached"
+	case projectFailureClassDeliverableCommand:
+		return "deliverable command failed"
+	case projectFailureClassNoProgress:
+		return "agent made no work-product progress"
+	case projectFailureClassRunnerFinalState:
+		return "runner ended in a failed state"
+	case projectFailureClassBackendError:
+		return "agent backend returned an error"
+	case projectFailureClassRunnerError:
+		return "runner failed"
+	default:
+		return strings.ReplaceAll(normalized, "_", " ")
+	}
 }
 
 func overloadRetriesLastHour(attempts []telemetry.WorkAttempt, now time.Time) int {
@@ -278,30 +391,33 @@ func backendOutageSnapshots(outages map[string]BackendOutage) []telemetry.Backen
 	keys := sortedKeys(outages)
 	rows := make([]telemetry.BackendOutage, 0, len(keys))
 	for _, key := range keys {
-		outage := outages[key]
-		row := telemetry.BackendOutage{
-			BackendID:       outage.Scope.BackendID,
-			BackendKind:     outage.Scope.BackendKind,
-			Provider:        outage.Scope.Provider,
-			Kind:            outage.Kind,
-			Reason:          outage.Reason,
-			DetectedAt:      outage.DetectedAt,
-			LastObservedAt:  outage.LastObservedAt,
-			ResumeAt:        outage.ResumeAt,
-			NextProbeAt:     timePointer(outage.NextProbeAt),
-			LastProbeAt:     timePointer(outage.LastProbeAt),
-			LastProbeResult: outage.LastProbeResult,
-			LastProbeDetail: outage.LastProbeDetail,
-			ProbeAttempts:   outage.ProbeAttempts,
-			ProbeIssueID:    outage.ProbeIssueID,
-		}
-		if !outage.ResetAt.IsZero() {
-			resetAt := outage.ResetAt
-			row.ResetAt = &resetAt
-		}
-		rows = append(rows, row)
+		rows = append(rows, backendOutageSnapshot(outages[key]))
 	}
 	return rows
+}
+
+func backendOutageSnapshot(outage BackendOutage) telemetry.BackendOutage {
+	row := telemetry.BackendOutage{
+		BackendID:       outage.Scope.BackendID,
+		BackendKind:     outage.Scope.BackendKind,
+		Provider:        outage.Scope.Provider,
+		Kind:            outage.Kind,
+		Reason:          outage.Reason,
+		DetectedAt:      outage.DetectedAt,
+		LastObservedAt:  outage.LastObservedAt,
+		ResumeAt:        outage.ResumeAt,
+		NextProbeAt:     timePointer(outage.NextProbeAt),
+		LastProbeAt:     timePointer(outage.LastProbeAt),
+		LastProbeResult: outage.LastProbeResult,
+		LastProbeDetail: outage.LastProbeDetail,
+		ProbeAttempts:   outage.ProbeAttempts,
+		ProbeIssueID:    outage.ProbeIssueID,
+	}
+	if !outage.ResetAt.IsZero() {
+		resetAt := outage.ResetAt
+		row.ResetAt = &resetAt
+	}
+	return row
 }
 
 func (s State) applyGatePendingSnapshots(snapshots []telemetry.Issue, issues []connector.Issue) {

@@ -2680,10 +2680,28 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
+	eligibleCandidates := 1
 	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
-		ProjectID:     "detent",
-		Class:         "session_token_ceiling",
-		Count:         5,
+		ProjectID:              "detent",
+		Class:                  "runner_error:b6c174a86dfb",
+		Count:                  5,
+		AttemptCount:           5,
+		DistinctItemCount:      1,
+		Cause:                  "provider usage limit reached",
+		RepresentativeError:    "You've hit your limit. Try again at 9:39 PM",
+		BackendID:              "claude-code",
+		BackendKind:            "claude_code",
+		Provider:               "anthropic",
+		EligibleCandidateCount: &eligibleCandidates,
+		Items: []telemetry.FailureBreakerItem{{
+			IssueID:      "video-1",
+			Identifier:   "2026-07-10-detent-not-vibe-coding-short",
+			IssueURL:     "https://example.test/items/video-1",
+			Title:        "Author beat visuals",
+			CurrentState: "Blocked",
+			AttemptCount: 5,
+			Parked:       true,
+		}},
 		WindowSeconds: 3600,
 		ResumeAt:      data.Snapshot.GeneratedAt.Add(time.Hour),
 	}}
@@ -2692,13 +2710,23 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		`id="board-alerts"`,
 		`id="board-alert-failure-breaker"`,
 		`data-board-alert="project-failure-breaker"`,
-		"Project dispatch paused by correlated failures — 1 project",
+		"Project failure breaker active — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
 		}
 	}
-	for _, want := range []string{"5 failures with class", "One canary attempt"} {
+	for _, want := range []string{
+		"5 failed attempts across 1 item",
+		"The project may dispatch one eligible candidate",
+		"Author beat visuals — 2026-07-10-detent-not-vibe-coding-short",
+		`href="https://example.test/items/video-1"`,
+		"Provider usage limit reached",
+		"Backend: claude-code · kind claude_code · provider anthropic",
+		"Diagnostic class: runner_error:b6c174a86dfb",
+		"will not retry merely because the project canary is eligible",
+		localTimeToken(data.Snapshot.GeneratedAt.Add(time.Hour), LocalDateTimeZone),
+	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker overlay missing detail %q:\n%s", want, html)
 		}
@@ -2723,7 +2751,7 @@ func TestBoardSnapshotAttributesDeliverableFailureBreakerCommand(t *testing.T) {
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
-		"deliverable command failure:codex apps/github.create pull request",
+		"Deliverable command failed: codex apps/github.create pull request",
 		"deliverable_command_failure:codex_apps/github.create_pull_request",
 	} {
 		if !strings.Contains(html, want) {
@@ -2813,8 +2841,36 @@ func TestHealthSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
 		CanaryIssueID: "issue-canary",
 	}}
 	html := renderBoardComponent(t, HealthSnapshotV2(data))
-	if strings.Contains(html, "Run canary now") || !strings.Contains(html, "One canary attempt is in progress") {
+	if strings.Contains(html, "Run canary now") || !strings.Contains(html, "The project is dispatching one canary candidate") {
 		t.Fatalf("active canary controls are incorrect:\n%s", html)
+	}
+}
+
+func TestHealthSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	eligibleCandidates := 0
+	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
+		ProjectID:              "detent",
+		Class:                  "runner_error:b6c174a86dfb",
+		Count:                  5,
+		AttemptCount:           5,
+		DistinctItemCount:      1,
+		EligibleCandidateCount: &eligibleCandidates,
+		Items:                  []telemetry.FailureBreakerItem{{IssueID: "issue-1", CurrentState: "Blocked", Parked: true, AttemptCount: 5}},
+		WindowSeconds:          3600,
+		ResumeAt:               data.Snapshot.GeneratedAt,
+	}}
+
+	html := renderBoardComponent(t, HealthSnapshotV2(data))
+	for _, want := range []string{
+		"Project canary dispatch is ready, but no eligible candidate is currently available",
+		"affected Blocked item will not retry merely because the project canary is eligible",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("zero-candidate breaker evidence missing %q:\n%s", want, html)
+		}
 	}
 }
 

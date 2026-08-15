@@ -96,7 +96,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	if summary, ok := boardFailureBreakerSummary(snapshot.FailureBreakers); ok {
 		view.Kind = primitives.KindWarn
 		view.Verdict = summary.Title + "."
-		view.Detail = "Dispatch remains paused until a canary succeeds."
+		view.Detail = "Only the named projects are paused; expand breaker evidence for item and recovery details."
 		return view
 	}
 	if summaries := healthDispatchRecoverySummaries(snapshot.DispatchRecoveries); len(summaries) > 0 {

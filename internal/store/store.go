@@ -768,15 +768,16 @@ type SchedulerDecisionQuery struct {
 }
 
 type ProjectDispatchStatus struct {
-	ProjectID            string
-	CandidateCount       int
-	CandidateFingerprint string
-	SelectedCount        int
-	SkippedCount         int
-	WaitReason           string
-	AllSkippedSince      *time.Time
-	LastSelectedAt       *time.Time
-	ObservedAt           time.Time
+	ProjectID              string
+	CandidateCount         int
+	EligibleCandidateCount int
+	CandidateFingerprint   string
+	SelectedCount          int
+	SkippedCount           int
+	WaitReason             string
+	AllSkippedSince        *time.Time
+	LastSelectedAt         *time.Time
+	ObservedAt             time.Time
 }
 
 type HealthNotificationState struct {
