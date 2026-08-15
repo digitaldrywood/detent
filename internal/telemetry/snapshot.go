@@ -473,7 +473,7 @@ func (s Snapshot) EffectiveCounts() Counts {
 	return Counts{
 		Running:   countOrLength(s.Counts.Running, len(s.Running)),
 		Queue:     countOrLength(s.Counts.Queue, len(s.Queue)),
-		Blocked:   countOrLength(s.Counts.Blocked, len(s.Blocked)),
+		Blocked:   len(s.Blocked),
 		Completed: countOrLength(s.Counts.Completed, len(s.Completed)),
 	}
 }

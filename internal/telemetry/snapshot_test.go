@@ -374,7 +374,7 @@ func TestSnapshotEffectiveCounts(t *testing.T) {
 		want     telemetry.Counts
 	}{
 		{
-			name: "uses aggregate counts",
+			name: "uses aggregate counts except current blocked rows",
 			snapshot: telemetry.Snapshot{
 				Counts:    telemetry.Counts{Running: 7, Queue: 6, Blocked: 5, Completed: 4},
 				Running:   []telemetry.Running{{}},
@@ -382,7 +382,7 @@ func TestSnapshotEffectiveCounts(t *testing.T) {
 				Blocked:   []telemetry.Blocked{{}},
 				Completed: []telemetry.Completed{{}},
 			},
-			want: telemetry.Counts{Running: 7, Queue: 6, Blocked: 5, Completed: 4},
+			want: telemetry.Counts{Running: 7, Queue: 6, Blocked: 1, Completed: 4},
 		},
 		{
 			name: "falls back to row lengths",
