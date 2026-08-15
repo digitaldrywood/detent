@@ -177,6 +177,113 @@ func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 	}
 }
 
+func TestRunnerMergeFallbackUsesDedicatedBudget(t *testing.T) {
+	t.Parallel()
+
+	durationLimit := &controlledDurationLimit{}
+	agentBackend := &durationBlockingAgentBackend{expireDuration: durationLimit.Expire}
+	workspaceBackend := &fakeMergeWorkspaceBackend{
+		fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-merge-fallback"}},
+		prepareResult:        workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{
+			MaxSessionDurationMS:       int(time.Hour / time.Millisecond),
+			MergeFallbackMaxDurationMS: 25,
+		}}},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		sessionLimit: durationLimit.Context,
+		turnLimit: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{
+			ID:          "issue-merge-fallback",
+			Identifier:  "digitaldrywood/detent#1809",
+			BranchName:  "detent/fallback",
+			PullRequest: &connector.PullRequest{State: "open", BaseRef: "main"},
+		},
+		Mode: RunModeMerge,
+	})
+	if !errors.Is(err, ErrMergeFallbackBudgetExceeded) {
+		t.Fatalf("Run() error = %v, want ErrMergeFallbackBudgetExceeded", err)
+	}
+	if result.FinalState != FinalStateMergeFallbackExceeded {
+		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateMergeFallbackExceeded)
+	}
+	if result.Output != "workingworkingworking" {
+		t.Fatalf("Output = %q, want bounded partial findings", result.Output)
+	}
+	if durationLimit.duration != 25*time.Millisecond || !errors.Is(durationLimit.limit, ErrMergeFallbackBudgetExceeded) {
+		t.Fatalf("fallback limit = (%s, %v), want (25ms, ErrMergeFallbackBudgetExceeded)", durationLimit.duration, durationLimit.limit)
+	}
+	if agentBackend.request.MaxDuration != 25*time.Millisecond {
+		t.Fatalf("AgentTurnRequest.MaxDuration = %s, want 25ms", agentBackend.request.MaxDuration)
+	}
+	if workspaceBackend.prepareCalls != 1 {
+		t.Fatalf("PrepareMerge() calls = %d, want only the initial conflict precheck", workspaceBackend.prepareCalls)
+	}
+}
+
+func TestRunnerMergeFallbackBudgetExpiresDuringReverification(t *testing.T) {
+	t.Parallel()
+
+	durationLimit := &controlledDurationLimit{}
+	workspaceBackend := &fakeMergeWorkspaceBackend{
+		fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-merge-fallback-verify"}},
+		prepareFunc: func(ctx context.Context, call int) (workspace.MergePrepareResult, error) {
+			if call == 0 {
+				return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}, nil
+			}
+			durationLimit.Expire()
+			<-ctx.Done()
+			return workspace.MergePrepareResult{}, ctx.Err()
+		},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{
+			MergeFallbackMaxDurationMS: 25,
+		}}},
+		Workspace: workspaceBackend,
+		AgentBackend: &fakeCodexClient{updates: []AgentUpdate{{
+			Type:  AgentUpdateMessageDelta,
+			Delta: "Resolved the conflict.\nDETENT_MERGE_FALLBACK: resolved",
+		}}},
+		sessionLimit: durationLimit.Context,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{
+			ID:          "issue-merge-fallback-verify",
+			Identifier:  "digitaldrywood/detent#1809",
+			BranchName:  "detent/fallback",
+			PullRequest: &connector.PullRequest{State: "open", BaseRef: "main"},
+		},
+		Mode: RunModeMerge,
+	})
+	if !errors.Is(err, ErrMergeFallbackBudgetExceeded) {
+		t.Fatalf("Run() error = %v, want ErrMergeFallbackBudgetExceeded", err)
+	}
+	if result.FinalState != FinalStateMergeFallbackExceeded {
+		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateMergeFallbackExceeded)
+	}
+	if result.MergeFallbackFindings == "" {
+		t.Fatal("MergeFallbackFindings is empty")
+	}
+	if workspaceBackend.prepareCalls != 2 {
+		t.Fatalf("PrepareMerge() calls = %d, want initial precheck and re-verification", workspaceBackend.prepareCalls)
+	}
+}
+
 func TestRunAgentBackendTurnPreservesParentCancellation(t *testing.T) {
 	t.Parallel()
 

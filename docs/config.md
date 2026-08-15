@@ -515,6 +515,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.max_session_tokens` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.max_turn_duration_ms` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.max_turns` | `integer` | `20` | No | must be greater than 0 |
+| `agent.merge_fallback_max_duration_ms` | `integer` | `1200000` | No | must be greater than 0 |
 | `agent.merge_fast_path` | `object` | `see child fields` | No | None |
 | `agent.merge_fast_path.enabled` | `boolean` | `true` | No | None |
 | `agent.merge_fast_path.fairness_age_seconds` | `integer` | `7200` | No | must be greater than 0 |

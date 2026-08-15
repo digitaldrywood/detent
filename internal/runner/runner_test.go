@@ -2752,7 +2752,7 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
-			Config: config.Config{},
+			Config: config.Config{Agent: config.Agent{MergeFallbackMaxDurationMS: 20 * 60 * 1000}},
 			Prompt: "Full implement workflow playbook for {{ issue.identifier }}",
 		},
 		Workspace:    workspaceBackend,
@@ -2783,7 +2783,9 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 		"merge-worker fallback",
 		"Deterministic merge pre-check status: conflict",
 		"CONFLICT (content): Merge conflict in README.md",
-		"Re-run the fetch/rebase onto the target branch",
+		"Do not perform general code review",
+		"DETENT_MERGE_FALLBACK: resolved",
+		"DETENT_MERGE_FALLBACK: rework",
 		"https://github.com/digitaldrywood/detent/pull/900",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -2792,6 +2794,113 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Full implement workflow playbook") {
 		t.Fatalf("prompt included full workflow playbook:\n%s", prompt)
+	}
+	if codexClient.request.MaxDuration != 20*time.Minute {
+		t.Fatalf("merge fallback MaxDuration = %s, want 20m", codexClient.request.MaxDuration)
+	}
+	if !strings.HasSuffix(prompt, "Otherwise end with `DETENT_MERGE_FALLBACK: rework`.") {
+		t.Fatalf("prompt does not end with merge-fallback enforcement:\n%s", prompt)
+	}
+}
+
+func TestRunnerMergeFallbackOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		agentOutput      string
+		verification     workspace.MergePrepareResult
+		wantOutput       string
+		wantPrepareCalls int
+		wantHeadPushed   bool
+	}{
+		{
+			name:             "resolved conflict is deterministically reverified",
+			agentOutput:      "Resolved the README conflict and passed make check.\nDETENT_MERGE_FALLBACK: resolved",
+			verification:     workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadChanged: true},
+			wantOutput:       RunOutputMergeFallbackResolved,
+			wantPrepareCalls: 2,
+			wantHeadPushed:   true,
+		},
+		{
+			name:             "review finding exits to rework without investigation",
+			agentOutput:      "Found an unrelated authorization defect; no investigation performed.\nDETENT_MERGE_FALLBACK: rework",
+			wantOutput:       RunOutputMergeFallbackRework,
+			wantPrepareCalls: 1,
+		},
+		{
+			name:             "missing structured outcome exits to rework",
+			agentOutput:      "I completed another review pass.",
+			wantOutput:       RunOutputMergeFallbackRework,
+			wantPrepareCalls: 1,
+		},
+		{
+			name:             "ambiguous structured outcome exits to rework",
+			agentOutput:      "DETENT_MERGE_FALLBACK: rework\nDETENT_MERGE_FALLBACK: resolved",
+			wantOutput:       RunOutputMergeFallbackRework,
+			wantPrepareCalls: 1,
+		},
+		{
+			name:             "still-conflicted branch exits to rework",
+			agentOutput:      "Resolved the conflict.\nDETENT_MERGE_FALLBACK: resolved",
+			verification:     workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Message: "README.md still conflicts"},
+			wantOutput:       RunOutputMergeFallbackRework,
+			wantPrepareCalls: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeMergeWorkspaceBackend{
+				fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "detent/fallback"}},
+				prepareResults: []workspace.MergePrepareResult{
+					{Status: workspace.MergePrepareStatusConflict, Message: "README.md conflicts"},
+					tt.verification,
+				},
+			}
+			agentBackend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: tt.agentOutput}}}
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MergeFallbackMaxDurationMS: 20 * 60 * 1000}}},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, err := runner.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-fallback",
+					Identifier: "digitaldrywood/detent#1809",
+					BranchName: "detent/fallback",
+					PullRequest: &connector.PullRequest{
+						State:   "open",
+						BaseRef: "main",
+					},
+				},
+				Mode: RunModeMerge,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if result.Output != tt.wantOutput {
+				t.Fatalf("Run().Output = %q, want %q", result.Output, tt.wantOutput)
+			}
+			if result.MergeFallbackFindings != tt.agentOutput {
+				t.Fatalf("MergeFallbackFindings = %q, want agent output", result.MergeFallbackFindings)
+			}
+			if workspaceBackend.prepareCalls != tt.wantPrepareCalls {
+				t.Fatalf("PrepareMerge() calls = %d, want %d", workspaceBackend.prepareCalls, tt.wantPrepareCalls)
+			}
+			if result.PullRequestHeadPushed != tt.wantHeadPushed {
+				t.Fatalf("PullRequestHeadPushed = %t, want %t", result.PullRequestHeadPushed, tt.wantHeadPushed)
+			}
+			if workspaceBackend.prepareOptions.TargetBranch != "main" {
+				t.Fatalf("verification target branch = %q, want main", workspaceBackend.prepareOptions.TargetBranch)
+			}
+		})
 	}
 }
 
@@ -5077,19 +5186,34 @@ func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspa
 type fakeMergeWorkspaceBackend struct {
 	fakeWorkspaceBackend
 	prepareResult  workspace.MergePrepareResult
+	prepareResults []workspace.MergePrepareResult
 	prepareErr     error
+	prepareFunc    func(context.Context, int) (workspace.MergePrepareResult, error)
 	prepareCalled  bool
+	prepareCalls   int
 	prepareOptions workspace.MergePrepareOptions
 }
 
 func (b *fakeMergeWorkspaceBackend) PrepareMerge(
-	_ context.Context,
+	ctx context.Context,
 	_ workspace.Info,
 	_ workspace.Issue,
 	opts workspace.MergePrepareOptions,
 ) (workspace.MergePrepareResult, error) {
 	b.prepareCalled = true
 	b.prepareOptions = opts
+	call := b.prepareCalls
+	b.prepareCalls++
+	if b.prepareFunc != nil {
+		return b.prepareFunc(ctx, call)
+	}
+	if len(b.prepareResults) > 0 {
+		index := call
+		if index >= len(b.prepareResults) {
+			index = len(b.prepareResults) - 1
+		}
+		return b.prepareResults[index], b.prepareErr
+	}
 	return b.prepareResult, b.prepareErr
 }
 
