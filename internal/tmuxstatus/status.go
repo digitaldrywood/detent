@@ -48,15 +48,19 @@ func newStatus(ctx context.Context, runner commandRunner, pane string) (*Status,
 		return nil, errors.New("tmux pane target is required")
 	}
 
-	current, err := runner.Output(ctx, "display-message", "-t", target, "-p", "#{window_name}")
+	current, err := runner.Output(ctx, "display-message", "-t", target, "-p", "#{window_id}\t#{window_name}")
 	if err != nil {
 		return nil, fmt.Errorf("read current tmux window: %w", err)
+	}
+	windowID, originalName, ok := strings.Cut(strings.TrimSuffix(current, "\n"), "\t")
+	if !ok || strings.TrimSpace(windowID) == "" {
+		return nil, errors.New("read current tmux window: unexpected response")
 	}
 
 	return &Status{
 		runner:       runner,
-		target:       target,
-		originalName: strings.TrimSuffix(current, "\n"),
+		target:       strings.TrimSpace(windowID),
+		originalName: originalName,
 	}, nil
 }
 
