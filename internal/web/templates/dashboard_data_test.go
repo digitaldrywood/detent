@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
 func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
@@ -1970,7 +1971,7 @@ func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 	got := collectKanbanCards(board.AllLanes)
 	want := []kanbanCardSnapshot{
 		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "3m 0s", Metadata: "PR #143", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; running checks"},
-		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #144", MergeLaneStatus: "Queued #2", MergeLaneDetail: "Waiting: project_state_capacity_full; 2nd in merge queue; waiting for repo merge lane behind PR #143"},
+		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #144", MergeLaneStatus: "Queued #2", MergeLaneDetail: "Waiting: project_state_capacity_full; 2nd in merge queue; waiting for repo merge lane behind digitaldrywood/detent#143 / PR #143; phase running checks"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
@@ -3244,7 +3245,7 @@ func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
 
 	got := collectPipelineCards(prPipelineLanes(snapshot))
 	want := []pipelineCardSnapshot{
-		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", MergeLaneStatus: "Queued #2", MergeLaneDetail: "2nd in merge queue; waiting for repo merge lane behind PR #143"},
+		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", MergeLaneStatus: "Queued #2", MergeLaneDetail: "2nd in merge queue; waiting for repo merge lane behind digitaldrywood/detent#143 / PR #143; phase squash merging"},
 		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "4m 0s", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; squash merging"},
 	}
 	if len(got) != len(want) {
@@ -3254,6 +3255,131 @@ func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("pipeline card %d = %#v, want %#v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestMergeLaneStatusesDescribeCapacityQueueProgress(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 18, 0, 0, 0, time.UTC)
+	activeAt := now.Add(-5 * time.Minute)
+	heartbeatAt := now.Add(-5 * time.Second)
+	prNumber := int64(113)
+	activeIssue := telemetry.Issue{
+		ID:         "holder",
+		Identifier: "digitaldrywood/video-studio#106",
+		ProjectID:  "video-studio",
+		Title:      "Active merge",
+		State:      "Merging",
+		URL:        "https://github.com/digitaldrywood/video-studio/issues/106",
+		PullRequest: &telemetry.PullRequest{
+			Number: 113,
+			URL:    "https://github.com/digitaldrywood/video-studio/pull/113",
+		},
+	}
+	queuedIssue := func(id string, number int, enteredAt time.Time) telemetry.Issue {
+		return telemetry.Issue{
+			ID:             id,
+			Identifier:     "digitaldrywood/video-studio#" + strconv.Itoa(number),
+			ProjectID:      "video-studio",
+			Title:          "Queued merge",
+			State:          "Merging",
+			StageUpdatedAt: &enteredAt,
+			PullRequest: &telemetry.PullRequest{
+				Number: number + 1,
+				URL:    "https://github.com/digitaldrywood/video-studio/pull/" + strconv.Itoa(number+1),
+			},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		attempt    telemetry.WorkAttempt
+		warnings   []telemetry.StalenessWarning
+		wantLabels map[string]string
+		wantKind   primitives.Kind
+		wantDetail string
+	}{
+		{
+			name: "fresh holder heartbeat marks every capacity waiter as draining",
+			attempt: telemetry.WorkAttempt{
+				AttemptID:   41,
+				ProjectID:   "video-studio",
+				IssueID:     "holder",
+				Identifier:  activeIssue.Identifier,
+				PRNumber:    &prNumber,
+				Lane:        "Merging",
+				Status:      "active",
+				HeartbeatAt: &heartbeatAt,
+				Phase:       "watching current-head CI",
+			},
+			wantLabels: map[string]string{"queued-1": "Draining #2", "queued-2": "Draining #3"},
+			wantKind:   primitives.KindOK,
+			wantDetail: "lane draining behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+		},
+		{
+			name: "stale holder remains queued without inventing a stall",
+			attempt: telemetry.WorkAttempt{
+				AttemptID:   41,
+				ProjectID:   "video-studio",
+				IssueID:     "holder",
+				Identifier:  activeIssue.Identifier,
+				PRNumber:    &prNumber,
+				Lane:        "Merging",
+				Status:      "active",
+				HeartbeatAt: &heartbeatAt,
+				Phase:       "watching current-head CI",
+				Stale:       true,
+			},
+			wantLabels: map[string]string{"queued-1": "Queued #2", "queued-2": "Queued #3"},
+			wantKind:   primitives.KindWarn,
+			wantDetail: "waiting for repo merge lane behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+		},
+		{
+			name: "merge liveness warning is authoritative for not draining",
+			attempt: telemetry.WorkAttempt{
+				AttemptID:   41,
+				ProjectID:   "video-studio",
+				IssueID:     "holder",
+				Identifier:  activeIssue.Identifier,
+				PRNumber:    &prNumber,
+				Lane:        "Merging",
+				Status:      "active",
+				HeartbeatAt: &heartbeatAt,
+				Phase:       "watching current-head CI",
+			},
+			warnings:   []telemetry.StalenessWarning{{Kind: "merge_liveness", ProjectID: "video-studio", Lane: "Merging"}},
+			wantLabels: map[string]string{"queued-1": "Not draining #2", "queued-2": "Not draining #3"},
+			wantKind:   primitives.KindErr,
+			wantDetail: "merge queue is not advancing behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			firstAt := now.Add(-4 * time.Minute)
+			secondAt := now.Add(-3 * time.Minute)
+			first := queuedIssue("queued-1", 114, firstAt)
+			second := queuedIssue("queued-2", 116, secondAt)
+			snapshot := telemetry.Snapshot{
+				GeneratedAt:       now,
+				Pipeline:          []telemetry.Issue{activeIssue, first, second},
+				Running:           []telemetry.Running{{Issue: activeIssue, WorkAttemptID: 41, StartedAt: activeAt}},
+				Queue:             []telemetry.Queued{{Issue: first, Error: "lane_capacity_full"}, {Issue: second, Error: "lane_capacity_full"}},
+				WorkAttempts:      []telemetry.WorkAttempt{tt.attempt},
+				StalenessWarnings: tt.warnings,
+			}
+
+			statuses := mergeLaneStatuses(snapshot)
+			for issueID, wantLabel := range tt.wantLabels {
+				status := statuses["project:video-studio:id:"+issueID]
+				if status.Label != wantLabel || status.Kind != tt.wantKind || !strings.Contains(status.Detail, tt.wantDetail) {
+					t.Fatalf("status for %s = %#v, want label %q, kind %q, detail containing %q", issueID, status, wantLabel, tt.wantKind, tt.wantDetail)
+				}
+			}
+		})
 	}
 }
 

@@ -504,6 +504,13 @@ templ boardCardView2(card boardCardView) {
 		if card.RuntimeBadge {
 			@boardRuntimeBadge(card)
 		}
+		if card.MergeLaneStatus != "" {
+			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.MergeLaneKind) } data-board-card-merge-lane data-board-card-expanded title={ card.MergeLaneDetail }>
+				@primitives.StatusDot(card.MergeLaneKind, card.MergeLaneKind == primitives.KindOK)
+				<span class="font-medium">{ card.MergeLaneStatus }</span>
+				<span class="min-w-0 truncate font-mono">{ card.MergeLaneDetail }</span>
+			</div>
+		}
 		if card.OriginDetail != "" {
 			<div class="flex items-center gap-1.5 text-2xs text-info" data-board-card-origin data-board-card-expanded>
 				@primitives.StatusDot(primitives.KindInfo, false)
