@@ -9,8 +9,11 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -203,7 +206,103 @@ func (o *Orchestrator) recordProjectAttemptOutcome(
 	if class == "" {
 		return
 	}
-	o.recordProjectFailureBreakerFailure(state, strings.TrimSpace(issueID), class, completedAt)
+	o.recordProjectFailureBreakerEvidence(state, o.projectFailureEvidence(state, issueID, err, errorMessage, completedAt), class, completedAt)
+}
+
+func (o *Orchestrator) projectFailureEvidence(state *State, issueID string, err error, errorMessage string, at time.Time) ProjectFailure {
+	issueID = strings.TrimSpace(issueID)
+	issue, runtimeIdentity, capacityScope := projectFailureIssueContext(state, issueID)
+	backendID := strings.TrimSpace(capacityScope.BackendID)
+	backendKind := strings.TrimSpace(capacityScope.BackendKind)
+	provider := strings.TrimSpace(capacityScope.Provider)
+	if backendID == "" {
+		backendID = strings.TrimSpace(runtimeIdentity.BackendID)
+	}
+	if backendKind == "" {
+		backendKind = strings.TrimSpace(runtimeIdentity.BackendKind)
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(runtimeIdentity.Provider.Value)
+	}
+	if capacityErr, ok := backendcapacity.As(err); ok {
+		scope := capacityErr.Scope.Normalize()
+		backendID = scope.BackendID
+		backendKind = scope.BackendKind
+		provider = scope.Provider
+	}
+	representativeError := projectFailureRepresentativeError(o, err, errorMessage)
+	return ProjectFailure{
+		IssueID:      issueID,
+		Identifier:   strings.TrimSpace(issue.Identifier),
+		IssueURL:     strings.TrimSpace(issue.URL),
+		Title:        strings.TrimSpace(issue.Title),
+		ErrorMessage: representativeError,
+		Cause:        projectFailureOperatorCause(err, representativeError),
+		BackendID:    backendID,
+		BackendKind:  backendKind,
+		Provider:     provider,
+		At:           at,
+	}
+}
+
+func projectFailureIssueContext(state *State, issueID string) (connector.Issue, agentidentity.Identity, backendcapacity.Scope) {
+	if state == nil {
+		return connector.Issue{ID: issueID}, agentidentity.Identity{}, backendcapacity.Scope{}
+	}
+	if running, ok := state.Running[issueID]; ok {
+		return cloneIssue(running.Issue), running.RuntimeIdentity, running.CapacityScope
+	}
+	if blocked, ok := state.Blocked[issueID]; ok {
+		return cloneIssue(blocked.Issue), agentidentity.Identity{}, backendcapacity.Scope{}
+	}
+	if retry, ok := state.Retry[issueID]; ok {
+		return cloneIssue(retry.Issue), agentidentity.Identity{}, retry.CapacityScope
+	}
+	if completed, ok := state.Completed[issueID]; ok {
+		return cloneIssue(completed.Issue), completed.RuntimeIdentity, backendcapacity.Scope{}
+	}
+	for _, issues := range [][]connector.Issue{state.BoardIssues, state.Pipeline} {
+		for _, issue := range issues {
+			if strings.TrimSpace(issue.ID) == issueID {
+				return cloneIssue(issue), agentidentity.Identity{}, backendcapacity.Scope{}
+			}
+		}
+	}
+	return connector.Issue{ID: issueID}, agentidentity.Identity{}, backendcapacity.Scope{}
+}
+
+func projectFailureRepresentativeError(o *Orchestrator, err error, fallback string) string {
+	message := strings.TrimSpace(fallback)
+	var carrier interface {
+		BackendErrorMessage() string
+	}
+	if errors.As(err, &carrier) {
+		if value := strings.TrimSpace(carrier.BackendErrorMessage()); value != "" {
+			message = value
+		}
+	}
+	if message == "" && err != nil {
+		message = strings.TrimSpace(err.Error())
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	if o != nil {
+		message = o.operatorText(message)
+	}
+	return runtimeoutput.Truncate(message, 1024).Value
+}
+
+func projectFailureOperatorCause(err error, representativeError string) string {
+	if capacityErr, ok := backendcapacity.As(err); ok {
+		if cause := strings.TrimSpace(capacityErr.Details.Reason); cause != "" {
+			return cause
+		}
+		return "provider capacity exhausted"
+	}
+	lower := strings.ToLower(representativeError)
+	if strings.Contains(lower, "usage limit") || strings.Contains(lower, "you've hit your limit") || strings.Contains(lower, "you have hit your limit") {
+		return "provider usage limit reached"
+	}
+	return runtimeoutput.Truncate(representativeError, 240).Value
 }
 
 func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, issueID string, at time.Time) {
@@ -243,6 +342,10 @@ func (o *Orchestrator) closeProjectFailureBreakerAfterCanary(state *State, issue
 }
 
 func (o *Orchestrator) recordProjectFailureBreakerFailure(state *State, issueID string, class string, at time.Time) {
+	o.recordProjectFailureBreakerEvidence(state, ProjectFailure{IssueID: strings.TrimSpace(issueID), At: at}, class, at)
+}
+
+func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure ProjectFailure, class string, at time.Time) {
 	breaker := &state.FailureBreaker
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)
 	pruneProjectFailures(breaker, at)
@@ -257,7 +360,8 @@ func (o *Orchestrator) recordProjectFailureBreakerFailure(state *State, issueID 
 		})
 	}
 
-	failures := append(breaker.Failures[class], ProjectFailure{IssueID: issueID, At: at})
+	failure.At = at
+	failures := append(breaker.Failures[class], failure)
 	breaker.Failures[class] = failures
 	if breaker.Active() {
 		breaker.Count = len(failures)

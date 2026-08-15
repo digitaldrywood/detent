@@ -79,15 +79,38 @@ type AdmissionProposal struct {
 }
 
 type FailureBreaker struct {
-	ProjectID       string    `json:"project_id,omitempty"`
-	Class           string    `json:"class"`
-	Count           int       `json:"count"`
-	WindowSeconds   int64     `json:"window_seconds"`
-	CooldownSeconds int64     `json:"cooldown_seconds"`
-	FirstFailureAt  time.Time `json:"first_failure_at"`
-	TrippedAt       time.Time `json:"tripped_at"`
-	ResumeAt        time.Time `json:"resume_at"`
-	CanaryIssueID   string    `json:"canary_issue_id,omitempty"`
+	ProjectID              string               `json:"project_id,omitempty"`
+	Class                  string               `json:"class"`
+	Count                  int                  `json:"count"`
+	AttemptCount           int                  `json:"attempt_count"`
+	DistinctItemCount      int                  `json:"distinct_item_count"`
+	Cause                  string               `json:"cause,omitempty"`
+	RepresentativeError    string               `json:"representative_error,omitempty"`
+	BackendID              string               `json:"backend_id,omitempty"`
+	BackendKind            string               `json:"backend_kind,omitempty"`
+	Provider               string               `json:"provider,omitempty"`
+	EligibleCandidateCount *int                 `json:"eligible_candidate_count,omitempty"`
+	Items                  []FailureBreakerItem `json:"items,omitempty"`
+	BackendOutage          *BackendOutage       `json:"backend_outage,omitempty"`
+	WindowSeconds          int64                `json:"window_seconds"`
+	CooldownSeconds        int64                `json:"cooldown_seconds"`
+	FirstFailureAt         time.Time            `json:"first_failure_at"`
+	TrippedAt              time.Time            `json:"tripped_at"`
+	ResumeAt               time.Time            `json:"resume_at"`
+	CanaryIssueID          string               `json:"canary_issue_id,omitempty"`
+}
+
+type FailureBreakerItem struct {
+	IssueID                 string `json:"issue_id"`
+	Identifier              string `json:"identifier,omitempty"`
+	IssueURL                string `json:"issue_url,omitempty"`
+	Title                   string `json:"title,omitempty"`
+	CurrentState            string `json:"current_state,omitempty"`
+	AttemptCount            int    `json:"attempt_count"`
+	Parked                  bool   `json:"parked"`
+	RecoveryAction          string `json:"recovery_action,omitempty"`
+	RecoveryReason          string `json:"recovery_reason,omitempty"`
+	RecoveryIntentResumable bool   `json:"recovery_intent_resumable,omitempty"`
 }
 
 type DispatchRecovery struct {

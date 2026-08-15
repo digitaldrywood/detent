@@ -13,6 +13,7 @@ const (
 	LocalDateOnly        LocalTimeStyle = "date"
 	LocalDateTime        LocalTimeStyle = "date-time"
 	LocalDateTimeSeconds LocalTimeStyle = "date-time-seconds"
+	LocalDateTimeZone    LocalTimeStyle = "date-time-zone"
 )
 
 type LocalTimeOptions struct {

@@ -1064,6 +1064,7 @@ func (s *Server) health(c echo.Context) error {
 	sessionsRemaining := 0
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
+	failureBreakers := []telemetry.FailureBreaker{}
 	ciUnavailable := []telemetry.CICondition{}
 	stalenessWarnings := []telemetry.StalenessWarning{}
 	strandedActiveIssues := []telemetry.StrandedIssue{}
@@ -1074,6 +1075,7 @@ func (s *Server) health(c echo.Context) error {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
+			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
 			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
 			strandedActiveIssues = append(strandedActiveIssues, snapshot.StrandedActiveIssues...)
@@ -1104,13 +1106,13 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable, failureBreakers, backendOutages)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 {
+		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 {
 			status = "needs_attention"
 		}
 	}
@@ -1129,6 +1131,7 @@ func (s *Server) health(c echo.Context) error {
 		Workflows:            workflows,
 		CIUnavailable:        ciUnavailable,
 		BackendOutages:       backendOutages,
+		FailureBreakers:      failureBreakers,
 		StalenessWarnings:    stalenessWarnings,
 		StrandedIssues:       strandedActiveIssues,
 		Dispatch:             dispatch,
@@ -1138,8 +1141,8 @@ func (s *Server) health(c echo.Context) error {
 	})
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(ciUnavailable))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(ciUnavailable)+len(breakers)+len(outages))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
 			needsAttention[projectID] = struct{}{}
@@ -1147,6 +1150,16 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 	}
 	for _, condition := range ciUnavailable {
 		if projectID := strings.TrimSpace(condition.ProjectID); projectID != "" {
+			needsAttention[projectID] = struct{}{}
+		}
+	}
+	for _, breaker := range breakers {
+		if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
+			needsAttention[projectID] = struct{}{}
+		}
+	}
+	for _, outage := range outages {
+		if projectID := strings.TrimSpace(outage.ProjectID); projectID != "" {
 			needsAttention[projectID] = struct{}{}
 		}
 	}
@@ -1415,6 +1428,7 @@ type healthResponse struct {
 	Workflows            []healthWorkflowSource       `json:"workflows,omitempty"`
 	CIUnavailable        []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
 	BackendOutages       []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	FailureBreakers      []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
 	StalenessWarnings    []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
 	StrandedIssues       []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`
 	Dispatch             telemetry.DispatchStatus     `json:"dispatch"`

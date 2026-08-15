@@ -78,7 +78,7 @@ func TestHealthViewVerdicts(t *testing.T) {
 				}},
 			},
 			wantKind:    primitives.KindWarn,
-			wantVerdict: "Project dispatch paused by correlated failures — 1 project.",
+			wantVerdict: "Project failure breaker active — 1 project.",
 		},
 		{
 			name: "waiting recovery warns",

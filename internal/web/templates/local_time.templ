@@ -36,6 +36,8 @@ templ localTimeScript() {
 					return { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
 				case "date-time-seconds":
 					return { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" };
+				case "date-time-zone":
+					return { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" };
 				default:
 					return { hour: "numeric", minute: "2-digit" };
 				}

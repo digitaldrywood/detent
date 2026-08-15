@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -100,6 +102,48 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 				t.Fatalf("projectAttemptFailureClass() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProjectFailureBreakerCapturesOperatorEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
+	resetAt := now.Add(39 * time.Minute)
+	issue := connector.Issue{
+		ID:         "video-1",
+		Identifier: "2026-07-10-detent-not-vibe-coding-short",
+		URL:        "https://example.test/items/video-1",
+		Title:      "Author beat visuals",
+		State:      "In Progress",
+	}
+	scope := backendcapacity.Scope{BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic"}
+	state := newState(normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 1, Window: time.Hour, Cooldown: time.Hour}}))
+	state.Running[issue.ID] = Running{
+		Issue:           issue,
+		CapacityScope:   scope,
+		RuntimeIdentity: agentidentity.Configured("claude-code", "claude_code", "default", "code", "claude-opus", "anthropic", "high", "", now),
+	}
+	capacityErr := backendcapacity.NewError(scope, backendcapacity.Details{
+		Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usage_limit_exceeded", Reason: "provider usage limit reached", ResetAt: &resetAt,
+	}, errors.New("You've hit your limit. Try again at 9:39 PM"))
+
+	orch := &Orchestrator{}
+	orch.recordProjectAttemptOutcome(&state, issue.ID, now, store.WorkAttemptTerminalFailure, capacityErr, backendcapacity.ErrorClass, capacityErr.Error())
+
+	failures := state.FailureBreaker.Failures[backendcapacity.ErrorClass]
+	if len(failures) != 1 {
+		t.Fatalf("Failures = %#v, want one", state.FailureBreaker.Failures)
+	}
+	failure := failures[0]
+	if failure.Identifier != issue.Identifier || failure.IssueURL != issue.URL || failure.Title != issue.Title {
+		t.Fatalf("issue evidence = %#v", failure)
+	}
+	if failure.Cause != "provider usage limit reached" || failure.ErrorMessage != "You've hit your limit. Try again at 9:39 PM" {
+		t.Fatalf("cause/error = %q/%q", failure.Cause, failure.ErrorMessage)
+	}
+	if failure.BackendID != scope.BackendID || failure.BackendKind != scope.BackendKind || failure.Provider != scope.Provider {
+		t.Fatalf("backend evidence = %#v", failure)
 	}
 }
 

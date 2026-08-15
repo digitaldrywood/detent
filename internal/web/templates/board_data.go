@@ -311,12 +311,26 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		if label == "" {
 			label = "Project"
 		}
+		link := ""
+		if len(breaker.Items) == 1 {
+			if itemLabel := failureBreakerItemLabel(breaker.Items[0]); itemLabel != "" {
+				label = itemLabel
+			}
+			link = strings.TrimSpace(breaker.Items[0].IssueURL)
+		}
 		detail, detailAt, showDetailAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt)
-		detail = boardAlertDetailWithTime(detail, detailAt, snapshot.GeneratedAt, showDetailAt)
+		if showDetailAt && !detailAt.IsZero() {
+			detail += " " + localTimeToken(detailAt, LocalDateTimeZone)
+			if !snapshot.GeneratedAt.IsZero() && detailAt.After(snapshot.GeneratedAt) {
+				detail += " (in " + formatDuration(detailAt.Sub(snapshot.GeneratedAt).Seconds()) + ")"
+			}
+			detail += "."
+		}
 		rows = append(rows, boardAlertDetailRow{
 			ID:      "board-alert-failure-breaker-" + boardAlertRowSlug(projectID+"-"+breaker.Class, index),
 			Label:   label,
-			Summary: strings.ReplaceAll(strings.TrimSpace(breaker.Class), "_", " "),
+			Link:    link,
+			Summary: failureBreakerCauseLabel(breaker),
 			Detail:  detail,
 		})
 	}
@@ -331,7 +345,7 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		Kind:          boardAlertKindFailureBreaker,
 		Severity:      boardAlertSeverityFailureBreaker,
 		Tone:          primitives.KindErr,
-		TerseSummary:  "Dispatch halted (" + boardCountLabel(count, "project", "projects") + ")",
+		TerseSummary:  "Project failure breaker (" + boardCountLabel(count, "project", "projects") + ")",
 		DetailSummary: summary.Title,
 		DetailRows:    rows,
 		Overflow:      overflow,

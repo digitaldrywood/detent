@@ -206,20 +206,14 @@ templ failureBreakerBanner(snapshot telemetry.Snapshot) {
 			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
 			<div class="grid min-w-0 flex-1 gap-2">
 				for _, breaker := range snapshot.FailureBreakers {
-					<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+					<div class="grid min-w-0 gap-2">
+						<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 						<div class="min-w-0 break-words">
-							<p class="font-medium text-text">Project dispatch paused by correlated failures</p>
+							<p class="font-medium text-text">Project failure breaker active</p>
 							if strings.TrimSpace(breaker.ProjectID) != "" {
-								<p class="mt-0.5 text-xs font-medium text-sec">{ "Project " + strings.TrimSpace(breaker.ProjectID) }</p>
+								<p class="mt-0.5 text-xs font-medium text-sec">{ "Pause scope: project " + strings.TrimSpace(breaker.ProjectID) + " only" }</p>
 							}
-							{{ detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt) }}
-							<p class="mt-0.5 text-xs text-sec">
-								{ detail }
-								if showResumeAt {
-									{ " " }
-									@LocalTime(resumeAt, LocalTimeOptions{Relative: true})
-								}
-							</p>
+							<p class="mt-0.5 text-xs text-sec">{ failureBreakerCauseLabel(breaker) }</p>
 						</div>
 						if strings.TrimSpace(breaker.CanaryIssueID) == "" {
 							<form hx-post="/api/v1/failure-breaker/canary" hx-swap="none" class="shrink-0">
@@ -227,6 +221,39 @@ templ failureBreakerBanner(snapshot telemetry.Snapshot) {
 								<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-md border border-warn/50 bg-surface px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warn/50">Run canary now</button>
 							</form>
 						}
+						</div>
+						<details class="rounded-md border border-warn/25 bg-surface/50 px-3 py-2">
+							<summary class="cursor-pointer text-xs font-medium text-text">Breaker evidence and recovery</summary>
+							{{ detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt) }}
+							<p class="mt-2 break-words text-xs text-sec">
+								{ detail }
+								if showResumeAt {
+									{ " " }
+									@LocalTime(resumeAt, LocalTimeOptions{Style: LocalDateTimeZone, Relative: true})
+									{ "." }
+								}
+							</p>
+							if len(breaker.Items) > 0 {
+								<ul class="mt-2 grid gap-1 text-xs text-sec">
+									for _, item := range breaker.Items {
+										<li class="min-w-0 break-words">
+											if strings.TrimSpace(item.IssueURL) != "" {
+												<a class="font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(item.IssueURL) }>{ failureBreakerItemLabel(item) }</a>
+											} else {
+												<span class="font-medium text-text">{ failureBreakerItemLabel(item) }</span>
+											}
+											{ " · " + boardCountLabel(item.AttemptCount, "failed attempt", "failed attempts") }
+											if strings.TrimSpace(item.CurrentState) != "" {
+												{ " · " + strings.TrimSpace(item.CurrentState) }
+											}
+											if strings.TrimSpace(item.RecoveryAction) != "" {
+												{ " · " + strings.TrimSpace(item.RecoveryAction) }
+											}
+										</li>
+									}
+								</ul>
+							}
+						</details>
 					</div>
 				}
 			</div>

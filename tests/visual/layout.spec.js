@@ -536,13 +536,22 @@ test("board shows only health states needing attention", async ({
   await expect(bar).toHaveCount(1);
   await expect(bar).toHaveAttribute("data-board-alert-count", "2");
   await expect(bar).toHaveClass(/border-err/);
-  await expect(bar).toContainText("Dispatch halted (2 projects)");
+  await expect(bar).toContainText("Project failure breaker (2 projects)");
   await expect(page.locator("#project-failure-breaker")).toHaveCount(0);
   await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
   await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
   await page.locator("#board-alerts-toggle").click();
   await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
     "2 projects",
+  );
+  await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
+    "5 failed attempts across 1 item",
+  );
+  await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
+    "Author beat visuals — digitaldrywood/detent-core#5280",
+  );
+  await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
+    "Diagnostic class: runner_error:b6c174a86dfb",
   );
   await expect(overlay.locator("#board-alert-dispatch-recovery")).toContainText(
     "Dispatch retry overdue for GitHub REST capacity — 1 project",

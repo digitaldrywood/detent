@@ -6712,6 +6712,48 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	}
 }
 
+func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	now := time.Date(2026, 8, 15, 18, 0, 0, 0, time.UTC)
+	eligibleCandidates := 0
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		FailureBreakers: []telemetry.FailureBreaker{{
+			ProjectID: "digitaldrywood-video", Class: "runner_error:b6c174a86dfb", Count: 5, AttemptCount: 5, DistinctItemCount: 1,
+			Cause: "provider usage limit reached", RepresentativeError: "You've hit your limit. Try again at 9:39 PM", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", EligibleCandidateCount: &eligibleCandidates,
+			Items: []telemetry.FailureBreakerItem{{IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true}},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	breakers := state["failure_breakers"].([]any)
+	if len(breakers) != 1 {
+		t.Fatalf("failure_breakers = %#v", breakers)
+	}
+	breaker := breakers[0].(map[string]any)
+	if breaker["attempt_count"] != float64(5) || breaker["distinct_item_count"] != float64(1) || breaker["cause"] != "provider usage limit reached" || breaker["eligible_candidate_count"] != float64(0) {
+		t.Fatalf("failure breaker evidence = %#v", breaker)
+	}
+	items := breaker["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["title"] != "Author beat visuals" || items[0].(map[string]any)["parked"] != true {
+		t.Fatalf("failure breaker items = %#v", items)
+	}
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	healthBreakers := health["failure_breakers"].([]any)
+	if len(healthBreakers) != 1 || healthBreakers[0].(map[string]any)["provider"] != "anthropic" {
+		t.Fatalf("health failure_breakers = %#v", healthBreakers)
+	}
+}
+
 func TestHealthReportsCICondition(t *testing.T) {
 	t.Parallel()
 

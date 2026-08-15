@@ -273,8 +273,16 @@ type ProjectFailureBreaker struct {
 }
 
 type ProjectFailure struct {
-	IssueID string
-	At      time.Time
+	IssueID      string
+	Identifier   string
+	IssueURL     string
+	Title        string
+	ErrorMessage string
+	Cause        string
+	BackendID    string
+	BackendKind  string
+	Provider     string
+	At           time.Time
 }
 
 type TransientCheckRetry struct {

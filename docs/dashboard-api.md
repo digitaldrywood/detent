@@ -123,8 +123,13 @@ class reaches `same_class_limit` attempts inside `window_seconds`. The default
 is five matching failures in one hour, followed by a one-hour cooldown. After
 the cooldown or a workflow reload, Detent permits exactly one canary attempt;
 a success or different failure class closes the breaker, while the same class
-starts a fresh cooldown. The board banner shows the active class, count, and
-window.
+starts a fresh cooldown. The state and health APIs report failed-attempt and
+distinct-item counts, affected item links and parking state, a representative
+operator cause, backend/provider identity, any matching capacity outage, the
+absolute resume time, and the current eligible-candidate count. The board keeps
+the cause and project-only scope concise while progressively disclosing this
+evidence and clarifying that canary eligibility does not make a parked item
+retryable.
 
 Daily budget caps are scoped to the configured project. Session rows persist
 the project ID; on upgrade, Detent backfills older rows first from work
