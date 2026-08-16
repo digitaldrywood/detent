@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,8 +52,11 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		wantConsecutive    int
 		wantBlockReason    string
 		wantRejectedRef    string
+		wantProgressKinds  []string
 		workpadHumanAction string
 		workpadBlockerRef  string
+		runningWorkpadBody string
+		currentWorkpadBody string
 		resolvedBlockers   []connector.Issue
 		completionErr      error
 		wantClaimed        bool
@@ -335,11 +339,50 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "second-diff", Status: "changed"}, "", ""),
 				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 8, AddedLines: 119, RemovedLines: 30, Fingerprint: "first-diff", Status: "changed"}, "", ""),
 			},
-			diffStats:       DiffStats{FilesChanged: 10, AddedLines: 121, RemovedLines: 30, Fingerprint: "third-diff", Status: "changed"},
-			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
-			wantReason:      "workspace_diff_present_without_pull_request",
-			wantRetry:       true,
+			diffStats:         DiffStats{FilesChanged: 10, AddedLines: 121, RemovedLines: 30, Fingerprint: "third-diff", Status: "changed"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalSuccess,
+			wantReason:        "workspace_diff_present_without_pull_request",
+			wantProgressKinds: []string{"workspace_diff"},
+			wantRetry:         true,
+		},
+		{
+			name:               "verifiable non-diff audit field resets no-progress streak",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			history:            []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         "verifiable_non_diff_progress",
+			wantProgressKinds:  []string{"audit_artifact"},
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
+		},
+		{
+			name:               "prose-only workpad update counts as no progress",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			history:            []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "completed_clean_diff_without_pull_request",
+			wantConsecutive:    2,
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "baseline prose", nil),
+			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "expanded prose without a machine artifact", nil),
+		},
+		{
+			name:               "mixed diff and audit field records both progress kinds",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{FilesChanged: 1, AddedLines: 4, Fingerprint: "new-diff", Status: "changed"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         "workspace_diff_and_verifiable_non_diff_progress",
+			wantProgressKinds:  []string{"workspace_diff", "audit_artifact"},
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
 		},
 		{
 			name:         "repeated blocked human action trips despite diff noise",
@@ -380,7 +423,8 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			diffStats:          DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "new-diff", Status: "changed"},
 			noProgressLimit:    3,
 			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         "workspace_diff_present_without_pull_request",
+			wantReason:         implementProgressReasonMixed,
+			wantProgressKinds:  []string{"workspace_diff", "tracker_state_transition"},
 			wantRetry:          true,
 			workpadHumanAction: "Choose the review path.",
 			refreshedState:     "Rework",
@@ -434,12 +478,17 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			if tt.runningWorkpadBody != "" {
+				tt.runningIssue.Comments = []connector.IssueComment{{Body: tt.runningWorkpadBody, URL: "https://github.test/workpad"}}
+			}
 			var logs bytes.Buffer
 			refreshed := tt.runningIssue
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
 			}
-			if tt.workpadHumanAction != "" || tt.workpadBlockerRef != "" {
+			if tt.currentWorkpadBody != "" {
+				refreshed.Comments = []connector.IssueComment{{Body: tt.currentWorkpadBody, URL: "https://github.test/workpad"}}
+			} else if tt.workpadHumanAction != "" || tt.workpadBlockerRef != "" {
 				refreshed.Comments = []connector.IssueComment{{
 					Body: implementProgressWorkpadComment(tt.workpadBlockerRef, tt.workpadHumanAction),
 					URL:  "https://github.test/workpad",
@@ -468,12 +517,13 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			state := newState(cfg)
 			running := Running{
-				Issue:         tt.runningIssue,
-				Attempt:       1,
-				WorkAttemptID: 42,
-				Mode:          runpkg.RunModeImplement,
-				StartedAt:     base.Add(-time.Minute),
-				DiffStats:     tt.diffStats,
+				Issue:            tt.runningIssue,
+				Attempt:          1,
+				WorkAttemptID:    42,
+				Mode:             runpkg.RunModeImplement,
+				StartedAt:        base.Add(-time.Minute),
+				DiffStats:        tt.diffStats,
+				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.runningIssue, true),
 			}
 			state.Running[tt.runningIssue.ID] = running
 			state.Claimed[tt.runningIssue.ID] = Claimed{Issue: tt.runningIssue, ClaimedAt: running.StartedAt}
@@ -511,6 +561,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if record.BlockReason != tt.wantBlockReason {
 				t.Fatalf("block reason = %q, want %q", record.BlockReason, tt.wantBlockReason)
+			}
+			if tt.wantProgressKinds != nil && !reflect.DeepEqual(record.ProgressKinds, tt.wantProgressKinds) {
+				t.Fatalf("progress kinds = %#v, want %#v", record.ProgressKinds, tt.wantProgressKinds)
 			}
 			if tt.wantRejectedRef != "" && !strings.Contains(strings.Join(record.RejectedBlockerRefs, ","), tt.wantRejectedRef) {
 				t.Fatalf("rejected blocker refs = %#v, want %q", record.RejectedBlockerRefs, tt.wantRejectedRef)
@@ -1279,6 +1332,46 @@ func TestEvaluateImplementCompletionProgressFailureBoundaries(t *testing.T) {
 	}
 }
 
+func TestImplementProgressArtifactKinds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		previous implementProgressArtifactSnapshot
+		current  implementProgressArtifactSnapshot
+		want     []string
+	}{
+		{name: "unchanged structured record", previous: implementProgressArtifactSnapshot{TrackerState: "in progress", WorkpadRead: true}, current: implementProgressArtifactSnapshot{TrackerState: "in progress", WorkpadRead: true}, want: []string{}},
+		{name: "tracker transition", previous: implementProgressArtifactSnapshot{TrackerState: "in progress"}, current: implementProgressArtifactSnapshot{TrackerState: "blocked"}, want: []string{"tracker_state_transition"}},
+		{name: "linked blocker", previous: implementProgressArtifactSnapshot{}, current: implementProgressArtifactSnapshot{NativeBlockers: []string{"blocker-id"}}, want: []string{"linked_blocker"}},
+		{name: "typed workpad predicate", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadReason: "missing_current_head_ci"}, want: []string{"workpad_predicate"}},
+		{name: "audit artifact", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadFields: map[string]string{"duplicate_groups": "23"}}, want: []string{"audit_artifact"}},
+		{name: "unverified workpad is ignored", previous: implementProgressArtifactSnapshot{}, current: implementProgressArtifactSnapshot{WorkpadReason: "missing_current_head_ci", WorkpadFields: map[string]string{"duplicate_groups": "23"}}, want: []string{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := implementProgressArtifactKinds(tt.previous, tt.current); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("implementProgressArtifactKinds() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestImplementProgressDispatchArtifactSnapshotWithoutReader(t *testing.T) {
+	t.Parallel()
+
+	issue := implementProgressIssueWithoutPR()
+	issue.BlockedBy = []connector.BlockedRef{{ID: "blocker-id"}}
+	for _, orch := range []*Orchestrator{nil, {connector: &backendCapacityTestConnector{}}} {
+		snapshot := orch.implementProgressDispatchArtifactSnapshot(t.Context(), issue)
+		if snapshot.WorkpadRead || !reflect.DeepEqual(snapshot.NativeBlockers, []string{"blocker-id"}) {
+			t.Fatalf("snapshot = %#v", snapshot)
+		}
+	}
+}
+
 func implementProgressIssue(headSHA string, failedChecks ...string) connector.Issue {
 	prNumber := 1070
 	issue := connector.Issue{
@@ -1339,6 +1432,35 @@ func implementProgressWorkpadComment(blockerRef string, humanAction string) stri
 		body.WriteString(humanAction)
 		body.WriteString("\"\n```")
 	}
+	return body.String()
+}
+
+func implementProgressStructuredWorkpad(status string, prose string, fields map[string]string) string {
+	var body strings.Builder
+	body.WriteString("## Codex Workpad\n\n")
+	if prose != "" {
+		body.WriteString(prose)
+		body.WriteString("\n\n")
+	}
+	body.WriteString("```detent-status\nschema: 1\nstatus: ")
+	body.WriteString(status)
+	body.WriteString("\nblockers: []\nhuman_action: null\n")
+	if len(fields) > 0 {
+		body.WriteString("fields:\n")
+		names := make([]string, 0, len(fields))
+		for name := range fields {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			body.WriteString("  ")
+			body.WriteString(name)
+			body.WriteString(": \"")
+			body.WriteString(fields[name])
+			body.WriteString("\"\n")
+		}
+	}
+	body.WriteString("```")
 	return body.String()
 }
 

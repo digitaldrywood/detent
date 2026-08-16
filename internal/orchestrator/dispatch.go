@@ -602,6 +602,10 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	}
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
 	dispatchWorkpadHash, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(runCtx, issue)
+	dispatchProgress := implementProgressArtifactSnapshotFromIssue(issue, false)
+	if runMode == runpkg.RunModeImplement {
+		dispatchProgress = o.implementProgressDispatchArtifactSnapshot(runCtx, issue)
+	}
 	state.Running[issue.ID] = Running{
 		Issue:               issue,
 		Attempt:             attempt,
@@ -611,6 +615,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		DispatchTargetState: dispatchStartTargetState,
 		DispatchWorkpadHash: dispatchWorkpadHash,
 		DispatchWorkpadRead: dispatchWorkpadRead,
+		DispatchProgress:    dispatchProgress,
 		StartedAt:           now,
 		WorkerHost:          workerHost,
 		CapacityScope:       capacityScope,

@@ -82,6 +82,43 @@ func TestBoardCardRendersCumulativeParkSummary(t *testing.T) {
 	}
 }
 
+func TestBoardCardRendersCompletionProgressClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		progress telemetry.CompletionProgress
+		want     []string
+	}{
+		{
+			name:     "verifiable non-diff progress",
+			progress: telemetry.CompletionProgress{Outcome: "success", Reason: "verifiable_non_diff_progress", Kinds: []string{"audit_artifact"}},
+			want:     []string{"Last turn · audit artifact", "verifiable_non_diff_progress"},
+		},
+		{
+			name:     "prose-only no progress",
+			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "completed_clean_diff_without_pull_request", ConsecutiveNoProgress: 2, NoProgressLimit: 3},
+			want:     []string{"Last turn · no progress 2/3", "completed_clean_diff_without_pull_request"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			summary, detail, kind := boardCardCompletionProgress(tt.progress)
+			html := renderBoardComponent(t, boardCardView2(boardCardView{DomID: "card-progress", Title: tt.name, ProgressSummary: summary, ProgressDetail: detail, ProgressKind: kind}))
+			for _, want := range tt.want {
+				if !strings.Contains(html, want) {
+					t.Fatalf("card HTML missing %q:\n%s", want, html)
+				}
+			}
+			if !strings.Contains(html, "data-board-card-progress") {
+				t.Fatalf("card HTML missing progress marker:\n%s", html)
+			}
+		})
+	}
+}
+
 func TestBoardExceptionsIncludeFleetStalenessWarning(t *testing.T) {
 	t.Parallel()
 	data := DashboardData{

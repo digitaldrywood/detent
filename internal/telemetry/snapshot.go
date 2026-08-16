@@ -530,6 +530,21 @@ type Issue struct {
 	CurrentLaneAgeSeconds int64                  `json:"current_lane_age_seconds,omitempty"`
 	RuntimeIdentity       agentidentity.Identity `json:"runtime_identity,omitzero"`
 	ParkSummary           ParkSummary            `json:"park_summary,omitzero"`
+	CompletionProgress    CompletionProgress     `json:"completion_progress,omitzero"`
+}
+
+type CompletionProgress struct {
+	Outcome               string   `json:"outcome,omitempty"`
+	Reason                string   `json:"reason,omitempty"`
+	Kinds                 []string `json:"kinds,omitempty"`
+	ConsecutiveNoProgress int      `json:"consecutive_no_progress,omitempty"`
+	NoProgressLimit       int      `json:"no_progress_limit,omitempty"`
+}
+
+const CompletionProgressOutcomeNoProgress = "no_progress"
+
+func (p CompletionProgress) IsZero() bool {
+	return p.Outcome == "" && p.Reason == "" && len(p.Kinds) == 0 && p.ConsecutiveNoProgress == 0 && p.NoProgressLimit == 0
 }
 
 type ParkSummary struct {

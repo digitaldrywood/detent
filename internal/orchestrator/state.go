@@ -119,6 +119,7 @@ type Running struct {
 	DispatchTargetState   string
 	DispatchWorkpadHash   string
 	DispatchWorkpadRead   bool
+	DispatchProgress      implementProgressArtifactSnapshot
 	StartedAt             time.Time
 	WorkerHost            string
 	ProcessIdentity       string
