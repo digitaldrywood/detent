@@ -84,6 +84,10 @@ func (o *Orchestrator) reconcilePersistentlyMissingRequiredCheckPark(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "required_checks_still_missing", &park, "")
 		return true, false
 	}
+	if reason := o.mergeLaneUnavailableReason(); reason != "" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, "")
+		return true, false
+	}
 	signature := fmt.Sprintf("cause=%s;pr=%d;head=%s", blockedCauseHash(park.Cause), pullRequestNumber(issue), strings.TrimSpace(issue.PullRequest.HeadSHA))
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionMergeRequiredCheckParkRecovery, signature)
 	if err := o.updateIssueStateByIDStrictWithMetadata(

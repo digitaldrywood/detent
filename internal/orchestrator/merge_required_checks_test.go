@@ -117,9 +117,10 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		recovery    mergeRequiredCheckEvaluationStep
-		wantMerging bool
+		name         string
+		recovery     mergeRequiredCheckEvaluationStep
+		mutateConfig func(*Config)
+		wantMerging  bool
 	}{
 		{
 			name:        "check appears on current head",
@@ -129,6 +130,20 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 		{
 			name:     "check remains missing on current head",
 			recovery: mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-a", requiredChecks: []string{"Test"}},
+		},
+		{
+			name:     "check appears while merge fast path is disabled",
+			recovery: mergeRequiredCheckEvaluationStep{headSHA: "head-b", requiredChecks: []string{"Test"}},
+			mutateConfig: func(cfg *Config) {
+				cfg.MergeFastPathEnabled = false
+			},
+		},
+		{
+			name:     "check appears while merging lane is inactive",
+			recovery: mergeRequiredCheckEvaluationStep{headSHA: "head-b", requiredChecks: []string{"Test"}},
+			mutateConfig: func(cfg *Config) {
+				cfg.ActiveStates = []string{"Todo", "In Progress", "Rework"}
+			},
 		},
 	}
 
@@ -141,6 +156,10 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 			missing := mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-a", requiredChecks: []string{"Test"}}
 			for evaluation := range mergeWorkerMissingRequiredCheckLimit {
 				runMergeRequiredCheckEvaluation(t, orch, tracker, &state, missing, now.Add(time.Duration(evaluation)*time.Minute))
+			}
+			if tt.mutateConfig != nil {
+				tt.mutateConfig(&orch.cfg)
+				orch.cfg = normalizeConfig(orch.cfg)
 			}
 
 			issue := mergeRequiredCheckTestIssue(tt.recovery)
@@ -159,6 +178,8 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "head-b") {
 					t.Fatalf("comments = %#v, want current-head recovery audit", tracker.comments)
 				}
+			} else if _, ok := state.Blocked[issue.ID]; !ok {
+				t.Fatalf("Blocked[%q] missing after deferred recovery", issue.ID)
 			}
 		})
 	}

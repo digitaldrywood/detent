@@ -561,11 +561,8 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	signals blockedCauseSignals,
 	now time.Time,
 ) string {
-	if !o.cfg.MergeFastPathEnabled {
-		return "merge_fast_path_disabled"
-	}
-	if !stateIn(autoPromoteMergingState, o.cfg.ActiveStates) {
-		return "merging_lane_inactive"
+	if reason := o.mergeLaneUnavailableReason(); reason != "" {
+		return reason
 	}
 	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	if !autoPromoteCfg.Enabled {
@@ -593,6 +590,16 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	}
 	if !o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
 		return "pull_request_gate_not_ready"
+	}
+	return ""
+}
+
+func (o *Orchestrator) mergeLaneUnavailableReason() string {
+	if !o.cfg.MergeFastPathEnabled {
+		return "merge_fast_path_disabled"
+	}
+	if !stateIn(autoPromoteMergingState, o.cfg.ActiveStates) {
+		return "merging_lane_inactive"
 	}
 	return ""
 }
