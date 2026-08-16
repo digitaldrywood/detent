@@ -167,6 +167,39 @@ func TestRecoverDurableWorkAttemptsDoesNotResumeExpiredClaim(t *testing.T) {
 	}
 }
 
+func TestRecoverDurableWorkAttemptsDoesNotResumeOutsideActiveLane(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 18, 35, 0, 0, time.UTC)
+	issue := orphanRecoveryIssue()
+	issue.State = "Blocked"
+	attempts := &orphanRecoveryAttemptStore{
+		orphans: []store.OrphanedAgentSession{orphanRecoverySession(now)},
+	}
+	orch, err := New(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		ActiveStates:           []string{"Todo", "In Progress", "Merging"},
+		ObservedStates:         []string{"Blocked"},
+		ResumeOrphanedSessions: true,
+	}, Dependencies{
+		Connector:    hydratingDispatchConnector{issue: issue},
+		WorkAttempts: attempts,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state := newState(orch.cfg)
+
+	orch.recoverDurableWorkAttempts(context.Background(), &state, now)
+
+	if len(state.Retry) != 0 {
+		t.Fatalf("state.Retry = %#v, want no inactive-lane resume", state.Retry)
+	}
+	if len(attempts.marked) != 0 {
+		t.Fatalf("marked sessions = %#v, want inactive session left terminated", attempts.marked)
+	}
+}
+
 func orphanRecoverySession(now time.Time) store.OrphanedAgentSession {
 	return store.OrphanedAgentSession{
 		ResumeState: store.AgentResumeState{

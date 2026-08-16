@@ -434,8 +434,8 @@ func TestTerminateEscalatesSurvivingProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Terminate() error = %v", err)
 	}
-	if outcome != TerminationOutcomeTerminated {
-		t.Fatalf("Terminate() outcome = %q, want %q", outcome, TerminationOutcomeTerminated)
+	if outcome != TerminationOutcomeKilled {
+		t.Fatalf("Terminate() outcome = %q, want %q", outcome, TerminationOutcomeKilled)
 	}
 	assertKilled(t, waitForExit(t, proc.Wait))
 	assertKilled(t, waitForExit(t, proc.WaitGroupMember))

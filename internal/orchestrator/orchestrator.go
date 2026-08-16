@@ -276,10 +276,12 @@ type Orchestrator struct {
 	validatorCapacityEvents chan validatorCapacityEvent
 	done                    chan struct{}
 	pendingStops            map[string]*pendingStopRun
+	pendingLaneRevocations  map[string]*pendingLaneRevocation
 	pendingMergeRevocations map[string]mergeRevocation
 	mergeRevocationComments map[string]*mergeRevocationCommentState
 	completedStops          map[string]StopRunResult
 	refreshSeq              atomic.Uint64
+	workerGeneration        atomic.Uint64
 }
 
 type validatorStageResult struct {
@@ -541,6 +543,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
 		done:                    make(chan struct{}),
 		pendingStops:            map[string]*pendingStopRun{},
+		pendingLaneRevocations:  map[string]*pendingLaneRevocation{},
 		pendingMergeRevocations: map[string]mergeRevocation{},
 		mergeRevocationComments: map[string]*mergeRevocationCommentState{},
 		completedStops:          map[string]StopRunResult{},

@@ -612,10 +612,12 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 			dispatchProgress = o.implementProgressDispatchArtifactSnapshot(runCtx, issue)
 		}
 	}
+	generation := o.workerGeneration.Add(1)
 	state.Running[issue.ID] = Running{
 		Issue:               issue,
 		Attempt:             attempt,
 		WorkAttemptID:       workAttemptID,
+		Generation:          generation,
 		Mode:                runMode,
 		DispatchSourceState: dispatchStartSourceState,
 		DispatchTargetState: dispatchStartTargetState,
@@ -646,6 +648,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		Issue:               issue,
 		Attempt:             attempt,
 		WorkAttemptID:       workAttemptID,
+		Generation:          generation,
 		Mode:                runMode,
 		DispatchSourceState: dispatchSourceState,
 		DispatchTargetState: dispatchTargetState,

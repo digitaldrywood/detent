@@ -74,8 +74,13 @@ func (o *Orchestrator) applyTargetedReconcile(
 		clearBlockedStatusIssue(state, issue.ID)
 	}
 
-	if running, ok := state.Running[issue.ID]; ok && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-		o.completeTerminalRunning(ctx, state, issue.ID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
+	if running, ok := state.Running[issue.ID]; ok &&
+		(!stateIn(running.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates)) {
+		if running.Generation == 0 && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+			o.completeTerminalRunning(ctx, state, issue.ID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
+			return
+		}
+		o.beginLaneRevocation(ctx, state, running, running.Issue, now, laneRevocationStateChanged)
 	}
 }
 

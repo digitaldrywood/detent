@@ -134,6 +134,40 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 	}
 }
 
+func TestReconcileRunningIssuesStopsWorkerOutsideActiveLane(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 18, 35, 0, 0, time.UTC)
+	issue := connector.Issue{
+		ID:         "wi-0c7d736611a111641bd57b97",
+		Identifier: "digitaldrywood/video-studio#22",
+		State:      "Production",
+	}
+	parked := cloneIssue(issue)
+	parked.State = "Blocked"
+	runCtx, stop := context.WithCancelCause(context.Background())
+	state := newState(normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Blocked", "Review"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	}))
+	state.Running[issue.ID] = Running{Issue: issue, stop: stop}
+	tracker := &runningStateConnector{issues: []connector.Issue{parked}}
+	orch := &Orchestrator{
+		cfg:       normalizeConfig(Config{ActiveStates: []string{"Todo", "Production", "Rework"}}),
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.reconcileRunningIssues(t.Context(), &state, now)
+
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("worker context remains active after the item moved to Blocked")
+	}
+}
+
 func TestReconcileRunningIssuesRevokesIneligibleMerge(t *testing.T) {
 	t.Parallel()
 
