@@ -283,12 +283,12 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			if issue.WorkpadSignal != nil {
 				switch {
 				case issue.WorkpadSignal.Invalid != nil:
-					if park, ok := o.currentBlockedRecoveryPark(ctx, state, issue); ok {
-						if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
+					reason = BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel)
+					if reason == "invalid_workpad_signal" && len(withDependencies.BlockedBy) == 0 {
+						if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
 							return transitioned
 						}
 					}
-					reason = "invalid_workpad_signal"
 				case strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "":
 					reason = "human_action"
 				}
@@ -338,10 +338,8 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	if holdReason == "invalid_workpad_signal" {
-		if park, ok := o.currentBlockedRecoveryPark(ctx, state, issue); ok {
-			if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
-				return transitioned
-			}
+		if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
+			return transitioned
 		}
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", holdReason, nil, "")
 		return false
@@ -350,10 +348,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "rework_breaker_recovery", nil, park.Signature)
 		return false
 	}
-	park, ok := o.currentBlockedRecoveryPark(ctx, state, issue)
-	if !ok {
-		park, ok = o.currentLegacyRepeatedFailureGitHubRESTBudgetPark(ctx, issue)
-	}
+	park, ok := o.currentBlockedRecoveryParkWithLegacyRESTBudget(ctx, state, issue)
 	if !ok {
 		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
@@ -415,6 +410,25 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
+}
+
+func (o *Orchestrator) reconcileInvalidWorkpadPark(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	now time.Time,
+) (bool, bool) {
+	park, ok := o.currentBlockedRecoveryParkWithLegacyRESTBudget(ctx, state, issue)
+	if !ok {
+		return false, false
+	}
+	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
+		return true, transitioned
+	}
+	if !strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerOrchestrator) {
+		return false, false
+	}
+	return o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now)
 }
 
 func (o *Orchestrator) reconcileBlockedReadyPullRequest(
@@ -695,9 +709,6 @@ func workpadHasRecordedNonDependencyBlocker(signal *workpad.Signal) bool {
 
 func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) string {
 	if issue.WorkpadSignal != nil {
-		if issue.WorkpadSignal.Invalid != nil {
-			return "invalid_workpad_signal"
-		}
 		if strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" {
 			return "human_action"
 		}
@@ -708,6 +719,9 @@ func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) s
 		if normalized == "requires-human-review" || configuredOptout != "" && normalized == configuredOptout {
 			return "human_action"
 		}
+	}
+	if issue.WorkpadSignal != nil && issue.WorkpadSignal.Invalid != nil {
+		return "invalid_workpad_signal"
 	}
 	return ""
 }
@@ -747,6 +761,18 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
 	return *entry.Metadata.BlockedRecovery, true
+}
+
+func (o *Orchestrator) currentBlockedRecoveryParkWithLegacyRESTBudget(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+) (workflowLaneBlockedRecoveryMetadata, bool) {
+	park, ok := o.currentBlockedRecoveryPark(ctx, state, issue)
+	if ok {
+		return park, true
+	}
+	return o.currentLegacyRepeatedFailureGitHubRESTBudgetPark(ctx, issue)
 }
 
 func blockedCauseRecoverySignature(cause string, fingerprint string) string {

@@ -412,12 +412,14 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 		errorMessage     string
 		remaining        int64
 		consumed         bool
+		workpadStatus    string
 		wantTransition   bool
 		wantAction       string
 		wantReason       string
 		wantSurfaceParts []string
 	}{
 		{name: "budget recovers", errorMessage: budgetError, remaining: 4927, wantTransition: true},
+		{name: "current park recovers with invalid workpad", errorMessage: budgetError, remaining: 4927, workpadStatus: workpad.StatusBlocked, wantTransition: true},
 		{
 			name:             "budget remains exhausted",
 			errorMessage:     budgetError,
@@ -449,6 +451,13 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 			t.Parallel()
 
 			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			if tt.workpadStatus != "" {
+				issue.WorkpadSignal = &workpad.Signal{
+					Source:  workpad.SourceStructured,
+					Status:  tt.workpadStatus,
+					Invalid: &workpad.Invalid{Message: "status must be in_progress, blocked, or complete"},
+				}
+			}
 			tracker := &dependencyAutoUnblockConnector{}
 			orch := blockedCauseTestOrchestrator(tracker)
 			metadata := orch.newBlockedRecoveryMetadata(
@@ -572,12 +581,56 @@ func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(
 		identifier       string
 		stageUpdateDelay time.Duration
 		remaining        int64
+		workpadStatus    string
+		humanAction      string
+		blockedBy        []connector.BlockedRef
+		resolvedBlockers []connector.Issue
+		parkOwner        string
+		blockedSource    BlockedSource
 		wantTransition   bool
+		wantReason       string
 	}{
-		{name: "corp 519 label update lag", identifier: "gopherguides/corp#519", stageUpdateDelay: 7 * time.Second, remaining: 1012, wantTransition: true},
+		{name: "corp 519 invalid blocked workpad", identifier: "gopherguides/corp#519", stageUpdateDelay: 7 * time.Second, remaining: 1012, workpadStatus: workpad.StatusBlocked, wantTransition: true},
 		{name: "corp 520 label update lag", identifier: "gopherguides/corp#520", stageUpdateDelay: 4 * time.Second, remaining: 945, wantTransition: true},
-		{name: "corp 521 label update lag", identifier: "gopherguides/corp#521", stageUpdateDelay: 5 * time.Second, remaining: 944, wantTransition: true},
+		{name: "corp 521 invalid in progress workpad", identifier: "gopherguides/corp#521", stageUpdateDelay: 5 * time.Second, remaining: 944, workpadStatus: workpad.StatusInProgress, wantTransition: true},
 		{name: "later manual reblock", identifier: "gopherguides/corp#522", stageUpdateDelay: 15 * time.Second, remaining: 944},
+		{
+			name:             "invalid workpad with human action",
+			identifier:       "gopherguides/corp#523",
+			stageUpdateDelay: 5 * time.Second,
+			remaining:        944,
+			workpadStatus:    workpad.StatusBlocked,
+			humanAction:      "confirm the recovery",
+			wantReason:       "human_action",
+		},
+		{
+			name:             "invalid workpad with unresolved dependency",
+			identifier:       "gopherguides/corp#524",
+			stageUpdateDelay: 5 * time.Second,
+			remaining:        944,
+			workpadStatus:    workpad.StatusBlocked,
+			blockedBy:        []connector.BlockedRef{{Identifier: "gopherguides/corp#500"}},
+			resolvedBlockers: []connector.Issue{{ID: "issue-500", Identifier: "gopherguides/corp#500", State: "In Progress"}},
+			wantReason:       "invalid_workpad_signal",
+		},
+		{
+			name:             "invalid workpad with operator stop",
+			identifier:       "gopherguides/corp#525",
+			stageUpdateDelay: 5 * time.Second,
+			remaining:        944,
+			workpadStatus:    workpad.StatusInProgress,
+			blockedSource:    BlockedSourceOperatorStop,
+			wantReason:       "operator_stop",
+		},
+		{
+			name:             "invalid workpad with human owned park",
+			identifier:       "gopherguides/corp#526",
+			stageUpdateDelay: 5 * time.Second,
+			remaining:        944,
+			workpadStatus:    workpad.StatusBlocked,
+			parkOwner:        blockedRecoveryOwnerHuman,
+			wantReason:       "invalid_workpad_signal",
+		},
 	}
 
 	for _, tt := range tests {
@@ -586,9 +639,18 @@ func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(
 
 			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
 			issue.Identifier = tt.identifier
+			if tt.workpadStatus != "" {
+				issue.WorkpadSignal = &workpad.Signal{
+					Source:      workpad.SourceStructured,
+					Status:      tt.workpadStatus,
+					HumanAction: tt.humanAction,
+					Invalid:     &workpad.Invalid{Message: "status must be in_progress, blocked, or complete"},
+				}
+			}
+			issue.BlockedBy = tt.blockedBy
 			stageUpdatedAt := parkedAt.Add(tt.stageUpdateDelay)
 			issue.StageUpdatedAt = &stageUpdatedAt
-			tracker := &dependencyAutoUnblockConnector{}
+			tracker := &dependencyAutoUnblockConnector{blockers: tt.resolvedBlockers}
 			orch := blockedCauseTestOrchestrator(tracker)
 			orch.cfg.Project.ID = "gopher-corp"
 			metadata := orch.newBlockedRecoveryMetadata(
@@ -600,6 +662,9 @@ func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(
 				"Todo",
 				DiffStats{},
 			)
+			if tt.parkOwner != "" {
+				metadata.BlockedRecovery.Owner = tt.parkOwner
+			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
 			attempts := &implementProgressAttemptStore{}
@@ -635,9 +700,13 @@ func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(
 			}}
 			orch.githubRESTBudgetProber = prober
 			state := newState(orch.cfg)
+			blockedSource := tt.blockedSource
+			if blockedSource == "" {
+				blockedSource = BlockedSourceProjectStatus
+			}
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     issue,
-				Source:    BlockedSourceProjectStatus,
+				Source:    blockedSource,
 				BlockedAt: recoveredAt,
 			}
 
@@ -658,6 +727,9 @@ func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(
 			}
 			if prober.calls != boolInt(tt.wantTransition) {
 				t.Fatalf("probe calls = %d, want %d", prober.calls, boolInt(tt.wantTransition))
+			}
+			if tt.wantReason != "" && state.Blocked[issue.ID].RecoveryReason != tt.wantReason {
+				t.Fatalf("recovery reason = %q, want %q", state.Blocked[issue.ID].RecoveryReason, tt.wantReason)
 			}
 			if tt.wantTransition {
 				query := attempts.queries[0]
