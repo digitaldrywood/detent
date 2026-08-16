@@ -38,7 +38,7 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 		if state == "" {
 			state = fallback
 		}
-		if state == "" {
+		if state == "" && rank < 30 {
 			return
 		}
 		key := issueStateKey(issue)

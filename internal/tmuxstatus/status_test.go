@@ -68,7 +68,7 @@ func TestFormat(t *testing.T) {
 
 func TestStatusLifecycle(t *testing.T) {
 	t.Parallel()
-	runner := &recordingRunner{output: "@7\tDetent:2\n"}
+	runner := &recordingRunner{output: "@7\tDetent:2\n", windowName: "Detent:2"}
 	status, err := newStatus(context.Background(), runner, "%7", discardLogger())
 	if err != nil {
 		t.Fatalf("newStatus() error = %v", err)
@@ -95,6 +95,7 @@ func TestStatusLifecycle(t *testing.T) {
 	want := [][]string{
 		{"display-message", "-t", "%7", "-p", "#{window_id}\t#{window_name}"},
 		{"rename-window", "-t", "@7", "detent 2r/1q/3b"},
+		{"display-message", "-t", "@7", "-p", "#{window_name}"},
 		{"rename-window", "-t", "@7", "Detent:2"},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
@@ -102,7 +103,29 @@ func TestStatusLifecycle(t *testing.T) {
 	}
 }
 
-func TestStatusUpdateUsesCurrentBlockedRows(t *testing.T) {
+func TestStatusCorrectsExternalRenameOnNextUpdate(t *testing.T) {
+	t.Parallel()
+	runner := &recordingRunner{output: "@7\tDetent:2\n", windowName: "Detent:2"}
+	status, err := newStatus(context.Background(), runner, "%7", discardLogger())
+	if err != nil {
+		t.Fatalf("newStatus() error = %v", err)
+	}
+
+	snapshot := telemetry.Snapshot{Counts: telemetry.Counts{Running: 2, Queue: 3}}
+	if err := status.Update(context.Background(), snapshot); err != nil {
+		t.Fatalf("first Update() error = %v", err)
+	}
+	runner.windowName = "external-rename"
+	if err := status.Update(context.Background(), snapshot); err != nil {
+		t.Fatalf("second Update() error = %v", err)
+	}
+
+	if got, want := runner.windowName, "detent 2r/3q/0b"; got != want {
+		t.Fatalf("window name = %q, want %q", got, want)
+	}
+}
+
+func TestStatusUpdateUsesCurrentBoardCounts(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
@@ -110,18 +133,28 @@ func TestStatusUpdateUsesCurrentBlockedRows(t *testing.T) {
 		want     string
 	}{
 		{
-			name: "ignores historical blocked count",
+			name: "ignores aggregate blocked count",
 			snapshot: telemetry.Snapshot{
-				Counts: telemetry.Counts{Running: 7, Blocked: 10},
+				Counts: telemetry.Counts{Running: 7, Queue: 6, Blocked: 10},
 			},
-			want: "detent 7r/0q/0b",
+			want: "detent 7r/6q/0b",
 		},
 		{
-			name: "counts current blocked rows",
+			name: "current tracker rows override stale blocked runtime rows",
 			snapshot: telemetry.Snapshot{
-				Blocked: []telemetry.Blocked{{}, {}},
+				Counts: telemetry.Counts{Running: 2, Queue: 3, Blocked: 15},
+				BoardIssues: []telemetry.Issue{
+					{ID: "blocked-1", State: "Blocked"},
+					{ID: "blocked-2", State: "Blocked"},
+					{ID: "stale-1", State: "Done"},
+				},
+				Blocked: []telemetry.Blocked{
+					{Issue: telemetry.Issue{ID: "blocked-1", State: "Blocked"}},
+					{Issue: telemetry.Issue{ID: "blocked-2", State: "Blocked"}},
+					{Issue: telemetry.Issue{ID: "stale-1", State: "Blocked"}},
+				},
 			},
-			want: "detent 0r/0q/2b",
+			want: "detent 2r/3q/2b",
 		},
 	}
 
@@ -241,17 +274,24 @@ func discardLogger() *slog.Logger {
 }
 
 type recordingRunner struct {
-	output string
-	err    error
-	calls  [][]string
+	output     string
+	windowName string
+	err        error
+	calls      [][]string
 }
 
 func (r *recordingRunner) Output(_ context.Context, args ...string) (string, error) {
 	r.calls = append(r.calls, append([]string(nil), args...))
+	if len(args) == 5 && args[0] == "display-message" && args[4] == "#{window_name}" {
+		return r.windowName + "\n", r.err
+	}
 	return r.output, r.err
 }
 
 func (r *recordingRunner) Run(_ context.Context, args ...string) error {
 	r.calls = append(r.calls, append([]string(nil), args...))
+	if r.err == nil && len(args) == 4 && args[0] == "rename-window" {
+		r.windowName = args[3]
+	}
 	return r.err
 }

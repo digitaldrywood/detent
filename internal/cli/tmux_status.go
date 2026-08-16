@@ -58,7 +58,7 @@ func runTmuxWindowStatusUpdates(
 	logger *slog.Logger,
 ) {
 	var latest telemetry.Snapshot
-	pending := false
+	initialized := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -68,12 +68,11 @@ func runTmuxWindowStatusUpdates(
 				return
 			}
 			latest = snapshot
-			pending = true
+			initialized = true
 		case <-ticks:
-			if !pending {
+			if !initialized {
 				continue
 			}
-			pending = false
 			if err := status.Update(ctx, latest); err != nil {
 				logger.Warn("update tmux window status failed", "error", err)
 			}

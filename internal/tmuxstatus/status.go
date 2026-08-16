@@ -81,9 +81,17 @@ func (s *Status) Update(ctx context.Context, snapshot telemetry.Snapshot) error 
 	if s == nil {
 		return nil
 	}
-	name := Format(snapshot.EffectiveCounts())
+	counts := snapshot.EffectiveCounts()
+	counts.Blocked = telemetry.BoardWorkload(snapshot).Blocked
+	name := Format(counts)
 	if name == s.lastName {
-		return nil
+		currentName, err := s.runner.Output(ctx, "display-message", "-t", s.target, "-p", "#{window_name}")
+		if err != nil {
+			return fmt.Errorf("read current tmux window name: %w", err)
+		}
+		if strings.TrimSuffix(currentName, "\n") == name {
+			return nil
+		}
 	}
 	if err := s.runner.Run(ctx, "rename-window", "-t", s.target, name); err != nil {
 		return fmt.Errorf("rename tmux window: %w", err)
