@@ -1940,7 +1940,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 		t.Fatalf("state status = %#v, want running", state["status"])
 	}
 	counts := state["counts"].(map[string]any)
-	if counts["running"] != float64(3) || counts["retrying"] != float64(3) || counts["blocked"] != float64(2) {
+	if counts["running"] != float64(3) || counts["retrying"] != float64(3) || counts["ready"] != float64(5) || counts["waiting"] != float64(1) || counts["blocked"] != float64(1) {
 		t.Fatalf("state counts = %#v", counts)
 	}
 	if _, ok := boardStateCountOK(t, state, "Cancelled"); ok {
@@ -9034,6 +9034,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				WorkspacePath:           "/workspaces/DD-BLOCKED",
 				SessionID:               "thread-blocked",
 				Error:                   "dependency is not merged",
+				Source:                  telemetry.BlockedSourceDependency,
 				RecoveryAction:          "defer",
 				RecoveryReason:          "dependency_recovery",
 				RecoveryTarget:          "Rework",
@@ -9148,17 +9149,23 @@ func TestServerAPIRoutes(t *testing.T) {
 	if got := nestedString(t, state, "counts", "retrying"); got != "1" {
 		t.Fatalf("counts.retrying = %s, want 1", got)
 	}
-	if got := nestedString(t, state, "counts", "blocked"); got != "1" {
-		t.Fatalf("counts.blocked = %s, want 1", got)
+	if got := nestedString(t, state, "counts", "ready"); got != "1" {
+		t.Fatalf("counts.ready = %s, want 1", got)
 	}
-	if got := boardStateCount(t, state, "Todo"); got != "1" {
-		t.Fatalf("board Todo count = %s, want 1", got)
+	if got := nestedString(t, state, "counts", "waiting"); got != "1" {
+		t.Fatalf("counts.waiting = %s, want 1", got)
+	}
+	if got := nestedString(t, state, "counts", "blocked"); got != "0" {
+		t.Fatalf("counts.blocked = %s, want 0", got)
+	}
+	if got := boardStateCount(t, state, "Todo"); got != "2" {
+		t.Fatalf("board Todo count = %s, want 2", got)
 	}
 	if got := boardStateCount(t, state, "In Progress"); got != "1" {
 		t.Fatalf("board In Progress count = %s, want 1", got)
 	}
-	if got := boardStateCount(t, state, "Blocked"); got != "1" {
-		t.Fatalf("board Blocked count = %s, want 1", got)
+	if got, ok := boardStateCountOK(t, state, "Blocked"); ok {
+		t.Fatalf("board Blocked count = %s, want missing", got)
 	}
 	if got, ok := boardStateCountOK(t, state, "Done"); ok {
 		t.Fatalf("board Done count = %s, want missing because completed sessions are history", got)
@@ -9333,6 +9340,73 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 	if operations := refresh["operations"].([]any); len(operations) != 2 || operations[0] != "poll" || operations[1] != "reconcile" {
 		t.Fatalf("refresh operations = %#v", refresh["operations"])
+	}
+}
+
+func TestServerAPIStateSeparatesReadyWaitingAndBlocked(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		waiting telemetry.Blocked
+	}{
+		{
+			name: "dependency source",
+			waiting: telemetry.Blocked{
+				Issue:  telemetry.Issue{ID: "waiting", State: "Todo"},
+				Source: telemetry.BlockedSourceDependency,
+			},
+		},
+		{
+			name: "dependency reference",
+			waiting: telemetry.Blocked{
+				Issue: telemetry.Issue{
+					ID:        "waiting",
+					State:     "Todo",
+					BlockedBy: []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#512", State: "In Progress"}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			snapshot := telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "ready", State: "Todo"},
+					tt.waiting.Issue,
+					{ID: "blocked", State: "Blocked"},
+				},
+				Blocked: []telemetry.Blocked{
+					tt.waiting,
+					{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
+				},
+			}
+			if err := deps.Hub.Publish(snapshot); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+			counts := state["counts"].(map[string]any)
+			for key, want := range map[string]float64{"ready": 1, "waiting": 1, "blocked": 1} {
+				if got := counts[key]; got != want {
+					t.Fatalf("counts[%q] = %#v, want %v; counts = %#v", key, got, want, counts)
+				}
+			}
+			if got := boardStateCount(t, state, "Todo"); got != "2" {
+				t.Fatalf("board Todo count = %s, want 2", got)
+			}
+			if got := boardStateCount(t, state, "Blocked"); got != "1" {
+				t.Fatalf("board Blocked count = %s, want 1", got)
+			}
+		})
 	}
 }
 

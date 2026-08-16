@@ -56,9 +56,9 @@ The web host resolves from `--host`, then the first registered workflow's
 `global.yaml` key.
 
 When Detent starts inside tmux, it renames the current window to a compact
-running, queued, and blocked count summary. It restores the original name on
-clean shutdown. Set `ops.tmux_window_status: false` to disable this behavior;
-Detent never invokes tmux when `$TMUX` is absent.
+running, ready, waiting, and blocked count summary. It restores the original
+name on clean shutdown. Set `ops.tmux_window_status: false` to disable this
+behavior; Detent never invokes tmux when `$TMUX` is absent.
 
 Use `github_token: gh` in `global.yaml` to resolve the token from
 `gh auth token` at startup. Literal token values also work but should not be

@@ -70,7 +70,7 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 		add(row.Issue, "In Progress", 10, false)
 	}
 	for _, row := range snapshot.Blocked {
-		waiting := blockedRowDependencyWaiting(row)
+		waiting := BlockedRowDependencyWaiting(row)
 		fallback := "Blocked"
 		if waiting {
 			fallback = "Todo"
@@ -82,6 +82,19 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 	}
 	for _, issue := range snapshot.Pipeline {
 		add(issue, "", 40, false)
+	}
+	for _, row := range snapshot.Blocked {
+		if BlockedRowDependencyWaiting(row) || !boardWorkloadProjectMatches(row.Issue, snapshot.Project.ID, projectID) {
+			continue
+		}
+		key := issueStateKey(row.Issue)
+		current, ok := issues[key]
+		if !ok || current.state == "" {
+			continue
+		}
+		current.state = "Blocked"
+		current.waiting = false
+		issues[key] = current
 	}
 
 	var counts BoardWorkloadCounts
@@ -141,7 +154,7 @@ func nonWorkloadBoardState(state string) bool {
 	return false
 }
 
-func blockedRowDependencyWaiting(row Blocked) bool {
+func BlockedRowDependencyWaiting(row Blocked) bool {
 	if strings.EqualFold(strings.TrimSpace(row.State), "Blocked") {
 		return false
 	}

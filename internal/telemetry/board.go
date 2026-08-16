@@ -47,13 +47,10 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 		}
 		counts[state] += count
 	}
-	addIssueState := func(issue Issue, fallback string, rank int, preferFallback bool) {
-		state := fallback
-		if !preferFallback {
-			state = normalizeBoardState(issue.State)
-			if state == "" {
-				state = fallback
-			}
+	addIssueState := func(issue Issue, fallback string, rank int) {
+		state := normalizeBoardState(issue.State)
+		if state == "" {
+			state = fallback
 		}
 		if state == "" {
 			return
@@ -70,21 +67,27 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 	}
 
 	for _, issue := range snapshot.BoardIssues {
-		addIssueState(issue, "", 5, false)
+		addIssueState(issue, "", 5)
 	}
 	for _, issue := range snapshot.Pipeline {
-		addIssueState(issue, "", 10, false)
+		addIssueState(issue, "", 10)
 	}
 	for _, row := range snapshot.Queue {
-		addIssueState(row.Issue, "Todo", 20, false)
+		addIssueState(row.Issue, "Todo", 20)
 	}
 	addStateCount("", "Todo", aggregateDelta(snapshot.Counts.Queue, len(snapshot.Queue)))
 	for _, row := range snapshot.Running {
-		addIssueState(row.Issue, "In Progress", 30, false)
+		addIssueState(row.Issue, "In Progress", 30)
 	}
 	addStateCount("", "In Progress", aggregateDelta(snapshot.Counts.Running, len(snapshot.Running)))
 	for _, row := range snapshot.Blocked {
-		addIssueState(row.Issue, "Blocked", 40, true)
+		issue := row.Issue
+		if BlockedRowDependencyWaiting(row) {
+			addIssueState(issue, "Todo", 40)
+			continue
+		}
+		issue.State = "Blocked"
+		addIssueState(issue, "", 40)
 	}
 	addStateCount("", "Blocked", aggregateDelta(snapshot.Counts.Blocked, len(snapshot.Blocked)))
 

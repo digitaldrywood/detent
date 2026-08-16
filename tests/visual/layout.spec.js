@@ -249,7 +249,7 @@ test("sidebar project badges keep load, activity, blocked tint, and breakdown di
   await expect(detent.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toHaveClass(/bg-ok/);
   await expect(detent).toHaveAttribute(
     "data-help-description",
-    "1 todo · 3 active · 0 waiting · 1 blocked",
+    "1 ready · 3 active · 0 waiting · 1 blocked",
   );
 
   const docs = page.locator('[data-sidebar-project="docs-site"]');
@@ -282,12 +282,12 @@ test("sidebar project badges keep load, activity, blocked tint, and breakdown di
   const tooltip = page.locator("body > #help-tooltip");
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText(
-    "1 todo · 3 active · 0 waiting · 1 blocked",
+    "1 ready · 3 active · 0 waiting · 1 blocked",
   );
   await waitForSnapshotWithoutSidebarMorph(page);
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText(
-    "1 todo · 3 active · 0 waiting · 1 blocked",
+    "1 ready · 3 active · 0 waiting · 1 blocked",
   );
 
   await expect(page.locator("#fig-waiting")).toContainText("1 waiting");

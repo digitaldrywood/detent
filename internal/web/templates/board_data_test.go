@@ -1354,8 +1354,8 @@ func TestBoardFigures(t *testing.T) {
 	if byID["fig-blocked"].Value != "1" || !byID["fig-blocked"].Err {
 		t.Fatalf("blocked figure should be err-colored when > 0: %+v", byID["fig-blocked"])
 	}
-	if byID["fig-queued"].Err {
-		t.Fatalf("zero queued figure must stay neutral")
+	if byID["fig-ready"].Err {
+		t.Fatalf("zero ready figure must stay neutral")
 	}
 
 	data.Snapshot.Counts.Blocked = 0
@@ -1373,6 +1373,7 @@ func TestBoardFiguresSeparateWaitingFromBlockedLane(t *testing.T) {
 
 	snapshot := telemetry.Snapshot{
 		BoardIssues: []telemetry.Issue{
+			{ID: "ready", State: "Todo"},
 			{ID: "waiting", State: "Todo"},
 			{ID: "blocked", State: "Blocked"},
 		},
@@ -1385,6 +1386,9 @@ func TestBoardFiguresSeparateWaitingFromBlockedLane(t *testing.T) {
 	byID := map[string]primitives.Figure{}
 	for _, figure := range boardFigures(snapshot) {
 		byID[figure.ID] = figure
+	}
+	if byID["fig-ready"].Value != "1" {
+		t.Fatalf("ready figure = %+v, want 1", byID["fig-ready"])
 	}
 	if byID["fig-waiting"].Value != "1" {
 		t.Fatalf("waiting figure = %+v, want 1", byID["fig-waiting"])
@@ -1654,7 +1658,7 @@ func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
 				Identifier: "digitaldrywood/detent#176",
 				ProjectID:  "detent",
 				Title:      "Wait for parent issue",
-				State:      "Blocked",
+				State:      "Todo",
 				BlockedBy:  []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#170", State: "In Progress"}},
 			},
 			Error:     "blocked by non-terminal dependency",
@@ -1666,7 +1670,7 @@ func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
 	view := boardViewFromDashboard(data)
 	var card boardCardView
 	for _, lane := range view.Lanes {
-		if lane.Title != "Blocked" {
+		if lane.Title != "Todo" {
 			continue
 		}
 		for _, candidate := range lane.Cards {
@@ -1677,7 +1681,7 @@ func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
 	}
 
 	if card.Number != "#176" {
-		t.Fatalf("missing blocked waiting card in view: %+v", view.Lanes)
+		t.Fatalf("missing dependency-waiting card in Todo lane: %+v", view.Lanes)
 	}
 	if card.ExtraKind != primitives.KindWarn || !card.ExtraChip {
 		t.Fatalf("card extra = %q chip %t, want warn chip; card = %+v", card.ExtraKind, card.ExtraChip, card)

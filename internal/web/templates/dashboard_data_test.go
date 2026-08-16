@@ -1779,6 +1779,79 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanIssuesAgreeWithReportedLaneCounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		waiting telemetry.Blocked
+	}{
+		{
+			name: "dependency source",
+			waiting: telemetry.Blocked{
+				Issue:  telemetry.Issue{ID: "waiting", State: "Todo"},
+				Source: telemetry.BlockedSourceDependency,
+			},
+		},
+		{
+			name: "dependency reference",
+			waiting: telemetry.Blocked{
+				Issue: telemetry.Issue{
+					ID:        "waiting",
+					State:     "Todo",
+					BlockedBy: []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#512", State: "In Progress"}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			snapshot := telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "ready", State: "Todo"},
+					tt.waiting.Issue,
+					{ID: "blocked", State: "Todo"},
+				},
+				Blocked: []telemetry.Blocked{
+					tt.waiting,
+					{Issue: telemetry.Issue{ID: "blocked", State: "Todo"}, Source: telemetry.BlockedSourceOwnership},
+				},
+			}
+
+			cards := projectKanbanIssues(DashboardData{
+				Kanban:   KanbanData{States: []string{"Todo", "Blocked"}},
+				Snapshot: snapshot,
+			})
+			cardStates := make(map[string]string, len(cards))
+			cardCounts := map[string]int{}
+			for _, card := range cards {
+				cardStates[card.issue.ID] = card.state
+				cardCounts[card.state]++
+			}
+			for issueID, want := range map[string]string{"ready": "Todo", "waiting": "Todo", "blocked": "Blocked"} {
+				if got := cardStates[issueID]; got != want {
+					t.Fatalf("card state for %q = %q, want %q; cards = %#v", issueID, got, want, cards)
+				}
+			}
+
+			for _, count := range telemetry.BoardStateCounts(snapshot) {
+				if got := cardCounts[count.State]; got != count.Count {
+					t.Fatalf("card count for %q = %d, reported count = %d; cards = %#v", count.State, got, count.Count, cards)
+				}
+				delete(cardCounts, count.State)
+			}
+			for state, count := range cardCounts {
+				if count != 0 {
+					t.Fatalf("card count for unreported state %q = %d", state, count)
+				}
+			}
+		})
+	}
+}
+
 func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *testing.T) {
 	t.Parallel()
 

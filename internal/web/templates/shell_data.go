@@ -366,7 +366,7 @@ func appProjectDotKind(project appShellProject) primitives.Kind {
 
 func appProjectBreakdown(project appShellProject) string {
 	return strings.Join([]string{
-		strconv.Itoa(project.Todo) + " todo",
+		strconv.Itoa(project.Todo) + " ready",
 		strconv.Itoa(project.Active) + " active",
 		strconv.Itoa(project.Waiting) + " waiting",
 		strconv.Itoa(project.Blocked) + " blocked",
