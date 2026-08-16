@@ -91,19 +91,26 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 		errCh <- orch.Run(runCtx)
 	}()
 
-	refusal := waitForSchedulerDecision(
-		t,
-		runtimeStore,
+	if _, err := orch.State(ctx); err != nil {
+		t.Fatalf("orchestrator State() error = %v", err)
+	}
+	decisions, err := runtimeStore.ListRecentSchedulerDecisions(
+		ctx,
+		store.SchedulerDecisionQuery{Limit: 100},
+	)
+	if err != nil {
+		t.Fatalf("ListRecentSchedulerDecisions() error = %v", err)
+	}
+	refusal, ok := schedulerDecisionWithReason(
+		decisions,
 		scheduler.DispatchGateReasonReservedForHigherPriorityProject,
 	)
+	if !ok {
+		t.Fatalf("scheduler decision %q not found; decisions = %#v", scheduler.DispatchGateReasonReservedForHigherPriorityProject, decisions)
+	}
 	cancel()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("orchestrator Run() error = %v, want context canceled", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for orchestrator to stop")
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("orchestrator Run() error = %v, want context canceled", err)
 	}
 
 	if refusal.ProjectID != cloudProject.ID || refusal.IssueID != issue.ID {
@@ -184,38 +191,11 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 	}
 }
 
-func waitForSchedulerDecision(
-	t *testing.T,
-	runtimeStore store.Store,
-	reason string,
-) store.SchedulerDecision {
-	t.Helper()
-
-	timeout := time.NewTimer(time.Second)
-	defer timeout.Stop()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	var last []store.SchedulerDecision
-	for {
-		decisions, err := runtimeStore.ListRecentSchedulerDecisions(
-			t.Context(),
-			store.SchedulerDecisionQuery{Limit: 100},
-		)
-		if err != nil {
-			t.Fatalf("ListRecentSchedulerDecisions() error = %v", err)
-		}
-		last = decisions
-		for _, decision := range decisions {
-			if decision.Reason == reason {
-				return decision
-			}
-		}
-
-		select {
-		case <-timeout.C:
-			t.Fatalf("timed out waiting for scheduler decision %q; decisions = %#v", reason, last)
-		case <-ticker.C:
+func schedulerDecisionWithReason(decisions []store.SchedulerDecision, reason string) (store.SchedulerDecision, bool) {
+	for _, decision := range decisions {
+		if decision.Reason == reason {
+			return decision, true
 		}
 	}
+	return store.SchedulerDecision{}, false
 }

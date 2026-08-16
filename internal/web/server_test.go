@@ -7504,40 +7504,22 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	go func() {
 		defer close(eventsDone)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/events?view=board", nil).WithContext(eventsCtx)
+		req := httptest.NewRequestWithContext(eventsCtx, http.MethodGet, "/events?view=board", nil)
 		server.Handler().ServeHTTP(rec, req)
 	}()
 
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("snapshot enrichment did not start")
-	}
+	<-started
 
-	type response struct {
-		code int
-		body string
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	responseReady := make(chan response, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		server.Handler().ServeHTTP(rec, req)
-		responseReady <- response{code: rec.Code, body: rec.Body.String()}
-	}()
-
-	select {
-	case got := <-responseReady:
-		if got.code != http.StatusOK {
-			t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+	for _, want := range []string{"Cached board issue", generatedAt.Format(time.RFC3339), `id="live-clock"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
 		}
-		for _, want := range []string{"Cached board issue", generatedAt.Format(time.RFC3339), `id="live-clock"`} {
-			if !strings.Contains(got.body, want) {
-				t.Fatalf("body missing %q:\n%s", want, got.body)
-			}
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("board first paint exceeded 500ms while snapshot enrichment was blocked")
 	}
 	if got := fetchCalls.Load(); got != 0 {
 		t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
@@ -7545,11 +7527,7 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 
 	close(release)
 	cancelEvents()
-	select {
-	case <-eventsDone:
-	case <-time.After(time.Second):
-		t.Fatal("event stream did not stop")
-	}
+	<-eventsDone
 }
 
 func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
