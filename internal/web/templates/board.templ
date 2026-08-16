@@ -500,6 +500,9 @@ templ boardCardView2(card boardCardView) {
 				<span aria-hidden="true">·</span>
 				<span class="min-w-0 truncate">{ card.CompactSignal }</span>
 			}
+			if card.MoveDisabledText != "" {
+				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+			}
 		</div>
 		if card.RuntimeBadge {
 			@boardRuntimeBadge(card)
@@ -1589,7 +1592,14 @@ templ boardKanbanDragScript() {
 			}
 			document.addEventListener("pointerdown", function (event) {
 				if (active || event.button !== 0 || event.isPrimary === false) return;
-				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card][data-kanban-action='move']") : null;
+				var pressedElement = event.target instanceof Element ? event.target : null;
+				var pressedCard = pressedElement ? pressedElement.closest("[data-kanban-card]") : null;
+				if (pressedCard && pressedCard.dataset.kanbanMoveDisabled === "true") {
+					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
+					feedback(pressedCard.dataset.kanbanMoveDisabledReason || "This card cannot be moved.", "error");
+					return;
+				}
+				var card = pressedCard && pressedCard.dataset.kanbanAction === "move" ? pressedCard : null;
 				if (!card) return;
 				if (card.dataset.kanbanPendingMove) return;
 				var issueID = card.dataset.kanbanIssueId || "";

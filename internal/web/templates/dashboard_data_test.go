@@ -2401,6 +2401,122 @@ func TestProjectKanbanCardMoveDisabledTextCapabilities(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanCardMoveDisabledTextScopesRefreshByCardSource(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	freshAt := now.Add(-time.Minute)
+	staleAt := now.Add(-3 * time.Minute)
+	refresh := func(candidateAt time.Time, statusAt time.Time, driftAt time.Time) telemetry.Refresh {
+		return telemetry.Refresh{
+			Status:            telemetry.RefreshStatusDegraded,
+			StaleAfterSeconds: 120,
+			FailureThreshold:  3,
+			Sources: []telemetry.RefreshSource{
+				{Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &candidateAt},
+				{Name: telemetry.RefreshSourceStatuses, LastSuccessAt: &statusAt},
+				{Name: telemetry.RefreshSourceDrift, LastSuccessAt: &driftAt},
+			},
+		}
+	}
+	kanban := KanbanData{
+		Mode:         "integration",
+		States:       []string{"Todo", "Blocked"},
+		ActiveStates: []string{"Todo"},
+		CanMoveCards: true,
+		AllowedTransitions: map[string][]string{
+			"Todo":    {"Blocked"},
+			"Blocked": {"Todo"},
+		},
+	}
+	tests := []struct {
+		name      string
+		refresh   telemetry.Refresh
+		stage     string
+		lastKnown bool
+		want      string
+	}{
+		{name: "fresh snapshot allows active card", refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}, stage: "Todo"},
+		{name: "last-known snapshot gates active card", refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}, stage: "Todo", lastKnown: true, want: "Tracker snapshot is not ready; moves are disabled until data is current."},
+		{name: "unrelated drift staleness allows active card", refresh: refresh(freshAt, freshAt, staleAt), stage: "Todo"},
+		{name: "unrelated drift staleness allows observed card", refresh: refresh(freshAt, freshAt, staleAt), stage: "Blocked"},
+		{name: "candidate staleness gates active card", refresh: refresh(staleAt, freshAt, freshAt), stage: "Todo", want: "Tracker candidate data for this card is stale; moves are disabled until it refreshes."},
+		{name: "candidate staleness does not gate observed card", refresh: refresh(staleAt, freshAt, freshAt), stage: "Blocked"},
+		{name: "status staleness does not gate active card", refresh: refresh(freshAt, staleAt, freshAt), stage: "Todo"},
+		{name: "status staleness gates observed card", refresh: refresh(freshAt, staleAt, freshAt), stage: "Blocked", want: "Tracker status data for this card is stale; moves are disabled until it refreshes."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := DashboardData{
+				ProjectID: "detent",
+				Snapshot: telemetry.Snapshot{
+					GeneratedAt: now,
+					LastKnown:   tt.lastKnown,
+					Project:     telemetry.Project{ID: "detent"},
+					Refresh:     tt.refresh,
+				},
+				Kanban: kanban,
+			}
+			card := projectKanbanCard{IssueID: "I_kw1842", ProjectID: "detent", Stage: tt.stage, Movable: true}
+			if got := projectKanbanCardMoveDisabledText(data, card); got != tt.want {
+				t.Fatalf("projectKanbanCardMoveDisabledText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectKanbanCardMoveDisabledTextScopesRefreshByProject(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	freshAt := now.Add(-time.Minute)
+	staleAt := now.Add(-3 * time.Minute)
+	projectRefresh := func(at time.Time) telemetry.Refresh {
+		return telemetry.Refresh{
+			Status:            telemetry.RefreshStatusDegraded,
+			StaleAfterSeconds: 120,
+			Sources: []telemetry.RefreshSource{
+				{Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &at},
+			},
+		}
+	}
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Projects: []telemetry.ProjectSnapshot{
+				{Project: telemetry.Project{ID: "alpha"}, Refresh: projectRefresh(staleAt)},
+				{Project: telemetry.Project{ID: "bravo"}, Refresh: projectRefresh(freshAt)},
+			},
+		},
+		Kanban: KanbanData{Projects: map[string]KanbanProjectData{
+			"alpha": {Mode: "integration", ProjectID: "alpha", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
+			"bravo": {Mode: "integration", ProjectID: "bravo", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
+		}},
+	}
+	tests := []struct {
+		name      string
+		projectID string
+		want      string
+	}{
+		{name: "stale project card gated", projectID: "alpha", want: "Tracker candidate data for this card is stale; moves are disabled until it refreshes."},
+		{name: "fresh project card allowed", projectID: "bravo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := projectKanbanCard{IssueID: "I_kw1842", ProjectID: tt.projectID, Stage: "Todo", Movable: true}
+			if got := projectKanbanCardMoveDisabledText(data, card); got != tt.want {
+				t.Fatalf("projectKanbanCardMoveDisabledText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectKanbanCardCanRemoveRespectsCapability(t *testing.T) {
 	t.Parallel()
 

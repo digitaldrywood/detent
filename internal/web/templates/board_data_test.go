@@ -2019,6 +2019,46 @@ func TestBoardMoveDisabledLabel(t *testing.T) {
 	}
 }
 
+func TestBoardCardSurfacesMoveRefusalInEveryDensity(t *testing.T) {
+	t.Parallel()
+
+	reason := "Tracker candidate data for this card is stale; moves are disabled until it refreshes."
+	html := renderBoardComponent(t, boardCardView2(boardCardView{
+		DomID:             "card-1842",
+		Title:             "Scoped stale card",
+		State:             "Todo",
+		DragDrop:          true,
+		MoveDisabledText:  reason,
+		MoveDisabledLabel: "Stale",
+	}))
+	tests := []struct {
+		name   string
+		marker string
+	}{
+		{name: "cozy", marker: `data-board-card-content="cozy"`},
+		{name: "compact", marker: `data-board-card-content="compact"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			start := strings.Index(html, tt.marker)
+			if start < 0 {
+				t.Fatalf("card missing %s density content:\n%s", tt.name, html)
+			}
+			section := html[start:]
+			if next := strings.Index(section[len(tt.marker):], `data-board-card-content=`); next >= 0 {
+				section = section[:len(tt.marker)+next]
+			}
+			for _, want := range []string{`data-kanban-move-disabled-label`, `title="` + reason + `"`, `>Stale</span>`} {
+				if !strings.Contains(section, want) {
+					t.Fatalf("%s density missing %q:\n%s", tt.name, want, section)
+				}
+			}
+		})
+	}
+}
+
 func renderBoardComponent(t *testing.T, component templ.Component) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -3239,6 +3279,7 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 		data       DashboardData
 		wantReason string
 		wantLabel  string
+		wantDrops  bool
 	}{
 		{
 			name: "read-only project board",
@@ -3273,6 +3314,7 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 			},
 			wantReason: "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready.",
 			wantLabel:  "Stale",
+			wantDrops:  true,
 		},
 	}
 	for _, tt := range tests {
@@ -3292,11 +3334,14 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 					t.Fatalf("disabled card missing %q:\n%s", want, card)
 				}
 			}
-			for _, forbidden := range []string{
-				`data-kanban-drop-state`,
-				`data-kanban-drag-move-form`,
-				`data-kanban-action="move"`,
-			} {
+			if tt.wantDrops {
+				if !strings.Contains(html, `data-kanban-drop-state`) {
+					t.Fatalf("disabled card board missing drop targets for other fresh cards:\n%s", html)
+				}
+			} else if strings.Contains(html, `data-kanban-drop-state`) {
+				t.Fatalf("disabled board rendered drop targets:\n%s", html)
+			}
+			for _, forbidden := range []string{`data-kanban-drag-move-form`, `data-kanban-action="move"`} {
 				if strings.Contains(html, forbidden) {
 					t.Fatalf("disabled board rendered %q:\n%s", forbidden, html)
 				}
@@ -3470,6 +3515,9 @@ func TestBoardKanbanDragScriptSubmitsAllowedDrop(t *testing.T) {
 		`lane.dataset.laneHidden = "false";`,
 		`lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";`,
 		`document.addEventListener("pointerdown"`,
+		`pressedCard.dataset.kanbanMoveDisabled === "true"`,
+		`pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")`,
+		`feedback(pressedCard.dataset.kanbanMoveDisabledReason || "This card cannot be moved.", "error");`,
 		`document.addEventListener("pointermove"`,
 		`document.addEventListener("pointerup"`,
 		`feedback("Move blocked by transition policy.", "error");`,
