@@ -61,7 +61,6 @@ func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
 				{missing: true, headSHA: "head-a", requiredChecks: []string{"Test"}},
 				{missing: true, headSHA: "head-b", requiredChecks: []string{"Test"}},
 			},
-			wantBlocked: true,
 		},
 		{
 			name: "auto-promote disabled",
@@ -109,6 +108,57 @@ func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
 			}
 			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "Test") {
 				t.Fatalf("comments = %#v, want persistent missing-check detail", tracker.comments)
+			}
+		})
+	}
+}
+
+func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		recovery    mergeRequiredCheckEvaluationStep
+		wantMerging bool
+	}{
+		{
+			name:        "check appears on current head",
+			recovery:    mergeRequiredCheckEvaluationStep{headSHA: "head-b", requiredChecks: []string{"Test"}},
+			wantMerging: true,
+		},
+		{
+			name:     "check remains missing on current head",
+			recovery: mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-a", requiredChecks: []string{"Test"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			orch, tracker, state, closeStore := newMergeRequiredCheckTestOrchestrator(t, true)
+			defer closeStore()
+			now := time.Date(2026, 8, 7, 16, 0, 0, 0, time.UTC)
+			missing := mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-a", requiredChecks: []string{"Test"}}
+			for evaluation := range mergeWorkerMissingRequiredCheckLimit {
+				runMergeRequiredCheckEvaluation(t, orch, tracker, &state, missing, now.Add(time.Duration(evaluation)*time.Minute))
+			}
+
+			issue := mergeRequiredCheckTestIssue(tt.recovery)
+			issue.State = blockedStatusState
+			gotMerging := orch.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(time.Hour))
+			if gotMerging != tt.wantMerging {
+				t.Fatalf("recoverCauseBlockedIssue() = %t, want %t", gotMerging, tt.wantMerging)
+			}
+			if tt.wantMerging {
+				if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != autoPromoteMergingState {
+					t.Fatalf("updates = %#v, want final Merging transition", tracker.updates)
+				}
+				if _, ok := state.Blocked[issue.ID]; ok {
+					t.Fatalf("Blocked[%q] still present after required check appeared", issue.ID)
+				}
+				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "head-b") {
+					t.Fatalf("comments = %#v, want current-head recovery audit", tracker.comments)
+				}
 			}
 		})
 	}

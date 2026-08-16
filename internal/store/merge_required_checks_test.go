@@ -48,6 +48,14 @@ func TestMergeRequiredCheckStreakLifecycle(t *testing.T) {
 			},
 		},
 		{
+			name: "head SHA change resets",
+			steps: []mergeRequiredCheckTestStep{
+				{headSHA: "head-a", missing: []string{"Test"}, want: map[string]int{"Test": 1}},
+				{headSHA: "head-a", missing: []string{"Test"}, want: map[string]int{"Test": 2}},
+				{headSHA: "head-b", missing: []string{"Test"}, want: map[string]int{"Test": 1}},
+			},
+		},
+		{
 			name: "terminal clear resets",
 			steps: []mergeRequiredCheckTestStep{
 				{missing: []string{"Test"}, want: map[string]int{"Test": 1}},
@@ -86,11 +94,16 @@ func TestMergeRequiredCheckStreakLifecycle(t *testing.T) {
 				if prNumber == 0 {
 					prNumber = 41
 				}
+				headSHA := step.headSHA
+				if headSHA == "" {
+					headSHA = "head-a"
+				}
 				streaks, err := backend.EvaluateMergeRequiredChecks(t.Context(), MergeRequiredCheckEvaluation{
 					ProjectID:                 "detent",
 					IssueID:                   "issue-1634",
 					Repository:                "digitaldrywood/detent",
 					PRNumber:                  prNumber,
+					HeadSHA:                   headSHA,
 					RequiredChecksFingerprint: fingerprint,
 					MissingChecks:             step.missing,
 					EvaluatedAt:               time.Date(2026, 8, 7, 15, index, 0, 0, time.UTC),
@@ -112,6 +125,7 @@ func TestMergeRequiredCheckStreakLifecycle(t *testing.T) {
 
 type mergeRequiredCheckTestStep struct {
 	prNumber    int
+	headSHA     string
 	fingerprint string
 	missing     []string
 	clear       bool
@@ -139,8 +153,9 @@ func TestMergeRequiredCheckStreakValidation(t *testing.T) {
 		{name: "project", evaluation: MergeRequiredCheckEvaluation{}, want: "project_id"},
 		{name: "issue", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent"}, want: "issue_id"},
 		{name: "pull request", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent", IssueID: "issue"}, want: "pr_number"},
-		{name: "fingerprint", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent", IssueID: "issue", PRNumber: 1}, want: "required_checks_fingerprint"},
-		{name: "timestamp", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent", IssueID: "issue", PRNumber: 1, RequiredChecksFingerprint: "config"}, want: "evaluated_at"},
+		{name: "head SHA", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent", IssueID: "issue", PRNumber: 1}, want: "head_sha"},
+		{name: "fingerprint", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent", IssueID: "issue", PRNumber: 1, HeadSHA: "head"}, want: "required_checks_fingerprint"},
+		{name: "timestamp", evaluation: MergeRequiredCheckEvaluation{ProjectID: "detent", IssueID: "issue", PRNumber: 1, HeadSHA: "head", RequiredChecksFingerprint: "config"}, want: "evaluated_at"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -149,6 +164,50 @@ func TestMergeRequiredCheckStreakValidation(t *testing.T) {
 				t.Fatalf("EvaluateMergeRequiredChecks() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestMergeRequiredCheckLegacyStreakDoesNotCarryToCurrentHead(t *testing.T) {
+	t.Parallel()
+
+	backend, err := Open(t.Context(), Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	sqliteBackend, ok := backend.(*sqliteStore)
+	if !ok {
+		t.Fatalf("Open() backend = %T, want *sqliteStore", backend)
+	}
+	if _, err := sqliteBackend.db.ExecContext(t.Context(), `
+INSERT INTO merge_required_check_streaks (
+  project_id, issue_id, repository, pr_number, check_name,
+  required_checks_fingerprint, consecutive_missing, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"detent", "issue-1634", "digitaldrywood/detent", 41, "Test", "config", 2, "2026-08-07T16:00:00Z",
+	); err != nil {
+		t.Fatalf("seed legacy streak error = %v", err)
+	}
+
+	streaks, err := backend.EvaluateMergeRequiredChecks(t.Context(), MergeRequiredCheckEvaluation{
+		ProjectID:                 "detent",
+		IssueID:                   "issue-1634",
+		Repository:                "digitaldrywood/detent",
+		PRNumber:                  41,
+		HeadSHA:                   "head-a",
+		RequiredChecksFingerprint: "config",
+		MissingChecks:             []string{"Test"},
+		EvaluatedAt:               time.Date(2026, 8, 7, 16, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("EvaluateMergeRequiredChecks() error = %v", err)
+	}
+	if len(streaks) != 1 || streaks[0].ConsecutiveMissing != 1 {
+		t.Fatalf("streaks = %#v, want fresh current-head count 1", streaks)
 	}
 }
 
@@ -165,6 +224,7 @@ func TestMergeRequiredCheckStreakPersistsAcrossStoreRestart(t *testing.T) {
 		IssueID:                   "issue-1634",
 		Repository:                "digitaldrywood/detent",
 		PRNumber:                  41,
+		HeadSHA:                   "head-a",
 		RequiredChecksFingerprint: "config",
 		MissingChecks:             []string{"Test"},
 		EvaluatedAt:               time.Date(2026, 8, 7, 16, 0, 0, 0, time.UTC),

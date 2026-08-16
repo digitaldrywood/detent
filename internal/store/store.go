@@ -721,6 +721,7 @@ type MergeRequiredCheckEvaluation struct {
 	IssueID                   string
 	Repository                string
 	PRNumber                  int
+	HeadSHA                   string
 	RequiredChecksFingerprint string
 	MissingChecks             []string
 	EvaluatedAt               time.Time

@@ -12,6 +12,7 @@ import (
 type mergeRequiredCheckRow struct {
 	repository                string
 	prNumber                  int
+	headSHA                   string
 	checkName                 string
 	requiredChecksFingerprint string
 	consecutiveMissing        int
@@ -28,6 +29,10 @@ func (s *sqliteStore) EvaluateMergeRequiredChecks(ctx context.Context, evaluatio
 	}
 	if evaluation.PRNumber <= 0 {
 		return nil, errors.New("pr_number must be greater than zero")
+	}
+	headSHA := strings.TrimSpace(evaluation.HeadSHA)
+	if headSHA == "" {
+		return nil, errors.New("head_sha is required")
 	}
 	fingerprint := strings.TrimSpace(evaluation.RequiredChecksFingerprint)
 	if fingerprint == "" {
@@ -67,18 +72,20 @@ WHERE project_id = ? AND issue_id = ?`, projectID, issueID); err != nil {
 		if row, ok := previous[checkName]; ok &&
 			row.repository == repository &&
 			row.prNumber == evaluation.PRNumber &&
+			row.headSHA == headSHA &&
 			row.requiredChecksFingerprint == fingerprint {
 			count = row.consecutiveMissing + 1
 		}
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO merge_required_check_streaks (
-  project_id, issue_id, repository, pr_number, check_name,
+  project_id, issue_id, repository, pr_number, head_sha, check_name,
   required_checks_fingerprint, consecutive_missing, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			projectID,
 			issueID,
 			repository,
 			evaluation.PRNumber,
+			headSHA,
 			checkName,
 			fingerprint,
 			count,
@@ -118,7 +125,7 @@ WHERE project_id = ? AND issue_id = ?`, projectID, issueID); err != nil {
 
 func mergeRequiredCheckRows(ctx context.Context, tx *sql.Tx, projectID string, issueID string) (map[string]mergeRequiredCheckRow, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT repository, pr_number, check_name, required_checks_fingerprint, consecutive_missing
+SELECT repository, pr_number, head_sha, check_name, required_checks_fingerprint, consecutive_missing
 FROM merge_required_check_streaks
 WHERE project_id = ? AND issue_id = ?`, projectID, issueID)
 	if err != nil {
@@ -132,6 +139,7 @@ WHERE project_id = ? AND issue_id = ?`, projectID, issueID)
 		if err := rows.Scan(
 			&row.repository,
 			&row.prNumber,
+			&row.headSHA,
 			&row.checkName,
 			&row.requiredChecksFingerprint,
 			&row.consecutiveMissing,

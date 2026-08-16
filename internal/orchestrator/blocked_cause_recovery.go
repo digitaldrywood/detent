@@ -329,6 +329,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		}
 		return false
 	}
+	if handled, transitioned := o.reconcilePersistentlyMissingRequiredCheckPark(ctx, state, issue, park, now); handled {
+		return transitioned
+	}
 	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
 		return transitioned
 	}
