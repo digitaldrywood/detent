@@ -82,7 +82,7 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 	addStateCount("", "In Progress", aggregateDelta(snapshot.Counts.Running, len(snapshot.Running)))
 	for _, row := range snapshot.Blocked {
 		issue := row.Issue
-		if blockedRowDependencyWaiting(row) {
+		if BlockedRowDependencyWaiting(row) {
 			addIssueState(issue, "Todo", 40)
 			continue
 		}

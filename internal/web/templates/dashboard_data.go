@@ -2468,7 +2468,12 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey] = row.RecoveryAction
 		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
 		issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey] = row.RecoveryRemedy
-		appendSnapshotIssue(issue, "Blocked", stageAt, 40)
+		fallback := "Todo"
+		if !telemetry.BlockedRowDependencyWaiting(row) {
+			issue.State = "Blocked"
+			fallback = "Blocked"
+		}
+		appendSnapshotIssue(issue, fallback, stageAt, 40)
 	}
 
 	issues := make([]projectKanbanIssueCard, 0, len(byIssue))
