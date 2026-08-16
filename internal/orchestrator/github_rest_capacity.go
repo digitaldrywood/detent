@@ -27,6 +27,7 @@ const (
 	githubRESTBudgetRearmConsumedReason      = "github_rest_budget_rearm_consumed"
 	repeatedFailureCircuitBreakerCause       = "repeated_failure_circuit_breaker"
 	githubRESTBudgetProbeRetryInterval       = time.Minute
+	legacyGitHubRESTBudgetStageUpdateSkew    = 10 * time.Second
 )
 
 var githubRESTCapacityScope = backendcapacity.Scope{
@@ -331,6 +332,37 @@ func (o *Orchestrator) repeatedFailureGitHubRESTBudgetEvidence(
 		}
 	}
 	return evidence, true
+}
+
+func (o *Orchestrator) currentLegacyRepeatedFailureGitHubRESTBudgetPark(
+	ctx context.Context,
+	issue connector.Issue,
+) (workflowLaneBlockedRecoveryMetadata, bool) {
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok ||
+		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
+		entry.Metadata.BlockedRecovery == nil ||
+		issue.StageUpdatedAt == nil ||
+		issue.StageUpdatedAt.IsZero() ||
+		entry.Event.StartedAt.IsZero() ||
+		entry.Event.StartedAt.Before(issue.StageUpdatedAt.Add(-legacyGitHubRESTBudgetStageUpdateSkew)) {
+		return workflowLaneBlockedRecoveryMetadata{}, false
+	}
+	park := *entry.Metadata.BlockedRecovery
+	if !strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerOrchestrator) ||
+		strings.TrimSpace(park.Cause) != repeatedFailureCircuitBreakerCause ||
+		strings.TrimSpace(park.Predicate) != blockedRecoveryPredicateFingerprintChange ||
+		strings.TrimSpace(park.ResourceKind) != "" {
+		return workflowLaneBlockedRecoveryMetadata{}, false
+	}
+	evidence, ok := o.repeatedFailureGitHubRESTBudgetEvidence(ctx, issue, park)
+	if !ok {
+		return workflowLaneBlockedRecoveryMetadata{}, false
+	}
+	park.Predicate = blockedRecoveryPredicateGitHubRESTBudget
+	park.TargetState = o.repeatedFailureRecoveryTarget(evidence.TargetState)
+	applyGitHubRESTBudgetEvidence(&park, evidence)
+	return park, true
 }
 
 func currentGitHubRESTBudget(state *State, match githubRESTBudgetEvidence) (githubRESTBudgetEvidence, bool) {
