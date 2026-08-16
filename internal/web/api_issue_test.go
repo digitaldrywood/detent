@@ -114,7 +114,7 @@ func TestAPIIssueSurfacesWorkpadBlockerResolution(t *testing.T) {
 	}{
 		{name: "open ref is live", refs: []telemetry.BlockedRef{openRef}, wantJSON: []string{`"tracker_state":"open"`}},
 		{name: "closed ref is resolved", refs: []telemetry.BlockedRef{closedRef}, wantJSON: []string{`"tracker_state":"closed"`}},
-		{name: "mixed refs retain human hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantJSON: []string{`"tracker_state":"closed"`, `"tracker_state":"open"`, `"recovery_reason":"human_action"`, `"recovery_remedy":"approve the remaining deployment"`}},
+		{name: "mixed refs retain human hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantJSON: []string{`"tracker_state":"closed"`, `"tracker_state":"open"`, `"recovery_reason":"human_action"`, `"recovery_remedy":"approve the remaining deployment"`, `"type":"free_text"`, `"owner":"human"`, `"unverifiable":true`, `"age_seconds":3600`}},
 	}
 
 	for _, tt := range tests {
@@ -130,6 +130,13 @@ func TestAPIIssueSurfacesWorkpadBlockerResolution(t *testing.T) {
 				RecoveryReason:      "human_action",
 				RecoveryRemedy:      "approve the remaining deployment",
 				NeedsHumanAttention: true,
+				BlockerEvidence: []telemetry.BlockerEvidence{{
+					Type:         "free_text",
+					Owner:        "human",
+					Status:       "unverifiable",
+					Unverifiable: true,
+					AgeSeconds:   3600,
+				}},
 			}}}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}

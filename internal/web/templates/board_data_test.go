@@ -1648,6 +1648,24 @@ func TestBoardExceptionsDistinguishHeldRecoveryFromDefer(t *testing.T) {
 	}
 }
 
+func TestBoardBlockerEvidenceDetailSurfacesUnverifiableAgeAndOwner(t *testing.T) {
+	t.Parallel()
+
+	recordedAt := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	detail := boardBlockerEvidenceDetail(telemetry.Blocked{BlockerEvidence: []telemetry.BlockerEvidence{{
+		Type:         "free_text",
+		Owner:        "human",
+		Status:       "unverifiable",
+		Unverifiable: true,
+		RecordedAt:   &recordedAt,
+	}}}, recordedAt.Add(90*time.Minute))
+	for _, want := range []string{"unverifiable free text", "owner human", "age 1h 30m"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail = %q, want containing %q", detail, want)
+		}
+	}
+}
+
 func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
 	data := boardTestData()
 	blockedAt := data.Snapshot.GeneratedAt.Add(-15 * time.Minute)

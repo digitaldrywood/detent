@@ -273,8 +273,14 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 			"blockers:\n" +
 			"  - ref: \"owner/repo#123\"\n" +
 			"    reason: \"waiting for the dependency to merge\"\n" +
+			"    owner: orchestrator\n" +
+			"    predicate:\n" +
+			"      type: issue_state\n" +
+			"      states: [open]\n" +
+			"    recheck_interval: tick\n" +
 			"human_action: null\n" +
 			"```",
+		"A bare free-text blocker is accepted for compatibility but is surfaced as unverifiable with its owner and age",
 		"```detent-status\n" +
 			"schema: 1\n" +
 			"status: complete\n" +

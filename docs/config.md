@@ -881,6 +881,15 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].pull_request.base_sha` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.branch_name` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.check_run_count` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.checks` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.checks[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.checks[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.checks[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.checks[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.checks[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.checks[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.ci_duration_seconds` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.ci_queue_seconds` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.ci_status` | `string` | `none` | No | None |

@@ -705,8 +705,16 @@ func appendBlockedHandoffBlock(prompt string) string {
 		"blockers:\n" +
 		"  - ref: \"owner/repo#123\"\n" +
 		"    reason: \"waiting for the dependency to merge\"\n" +
+		"    owner: orchestrator\n" +
+		"    predicate:\n" +
+		"      type: issue_state\n" +
+		"      states: [open]\n" +
+		"    recheck_interval: tick\n" +
 		"human_action: null\n" +
 		"```\n\n" +
+		"Every blocker should include a typed predicate, an owner (`orchestrator` or `human`), and either `recheck_interval` or `expires_at`. " +
+		"Supported predicate types are `issue_state`, `pull_request_state`, `check_presence`, `budget_capacity`, and `config_fingerprint`. " +
+		"A bare free-text blocker is accepted for compatibility but is surfaced as unverifiable with its owner and age, and Detent never auto-clears it.\n\n" +
 		"When `tracker.blocked_recovery` is enabled and the workflow intentionally parks agent-recoverable PR maintenance in a configured source lane, " +
 		"set `reason_code` to `merge_conflict`, `stale_base`, or `missing_current_head_ci` in the blocked status block. " +
 		"Do not set a recovery reason code for manual or human-only parking.\n\n" +

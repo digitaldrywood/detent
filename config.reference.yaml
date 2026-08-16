@@ -222,6 +222,25 @@
 #         hydration_next_retry_at: null
 #         # tracker.issues[].pull_request.ci_status | type: string | default: none | required: No | validation: None
 #         ci_status: null
+#         # tracker.issues[].pull_request.checks | type: list<object> | default: [] | required: No | validation: None
+#         checks:
+#           -
+#             # tracker.issues[].pull_request.checks[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.checks[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.checks[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.checks[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.checks[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.checks[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.checks[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
 #         # tracker.issues[].pull_request.check_run_count | type: integer | default: 0 when configured | required: No | validation: None
 #         check_run_count: 0
 #         # tracker.issues[].pull_request.status_context_count | type: integer | default: 0 when configured | required: No | validation: None

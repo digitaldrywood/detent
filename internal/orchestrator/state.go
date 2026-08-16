@@ -177,6 +177,7 @@ type Blocked struct {
 	RecoveryReachability    string
 	RecoveryIntentResumable bool
 	NeedsHumanAttention     bool
+	BlockerEvidence         []telemetry.BlockerEvidence
 	RecoveryRoot            *telemetry.BlockedRecoveryRoot
 	BlockedAt               time.Time
 	Source                  BlockedSource
@@ -444,6 +445,7 @@ func (s State) clone() State {
 	}
 	for id, blocked := range s.Blocked {
 		blocked.Issue = cloneIssue(blocked.Issue)
+		blocked.BlockerEvidence = cloneBlockerEvidence(blocked.BlockerEvidence)
 		cloned.Blocked[id] = blocked
 	}
 	for id, completed := range s.Completed {
@@ -480,6 +482,21 @@ func (s State) clone() State {
 	maps.Copy(cloned.ReapedWorkspaces, s.ReapedWorkspaces)
 	maps.Copy(cloned.planRework, s.planRework)
 
+	return cloned
+}
+
+func cloneBlockerEvidence(evidence []telemetry.BlockerEvidence) []telemetry.BlockerEvidence {
+	cloned := append([]telemetry.BlockerEvidence(nil), evidence...)
+	for index := range cloned {
+		if evidence[index].RecordedAt != nil {
+			recordedAt := *evidence[index].RecordedAt
+			cloned[index].RecordedAt = &recordedAt
+		}
+		if evidence[index].ExpiresAt != nil {
+			expiresAt := *evidence[index].ExpiresAt
+			cloned[index].ExpiresAt = &expiresAt
+		}
+	}
 	return cloned
 }
 
@@ -601,6 +618,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 			nextRetryAt := *issue.PullRequest.HydrationNextRetryAt
 			pullRequest.HydrationNextRetryAt = &nextRetryAt
 		}
+		pullRequest.Checks = append([]connector.PullRequestCheck(nil), issue.PullRequest.Checks...)
 		pullRequest.SlowChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.SlowChecks...)
 		pullRequest.RunningChecks = append([]string(nil), issue.PullRequest.RunningChecks...)
 		pullRequest.UnstartedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.UnstartedChecks...)

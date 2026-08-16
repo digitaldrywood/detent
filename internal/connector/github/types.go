@@ -329,6 +329,7 @@ type restCommitStatus struct {
 
 type pullRequestCI struct {
 	State                 string
+	Checks                []connector.PullRequestCheck
 	CheckRunCount         int
 	StatusContextCount    int
 	CIQueueSeconds        int64

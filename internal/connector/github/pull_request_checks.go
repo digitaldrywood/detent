@@ -64,6 +64,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	}
 	return pullRequestCI{
 		State:                 state,
+		Checks:                pullRequestCheckInventory(effectiveRuns, statuses),
 		CheckRunCount:         len(checkRuns),
 		StatusContextCount:    len(statuses),
 		CIQueueSeconds:        telemetry.QueueSeconds,
@@ -76,6 +77,44 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		RequiredFailures:      requiredFailures,
 		TransientFailures:     transientFailures,
 	}, nil
+}
+
+func pullRequestCheckInventory(checkRuns []restCheckRun, statuses []restCommitStatus) []connector.PullRequestCheck {
+	checks := make([]connector.PullRequestCheck, 0, len(checkRuns)+len(statuses))
+	seen := map[string]struct{}{}
+	for _, checkRun := range checkRuns {
+		name := strings.TrimSpace(checkRun.Name)
+		key := strings.ToLower(name)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		checks = append(checks, connector.PullRequestCheck{
+			ID:            checkRun.ID,
+			WorkflowRunID: checkRunWorkflowRunID(checkRun),
+			Name:          name,
+			Status:        normalizedCheckRunStatus(checkRun),
+			Conclusion:    strings.ToLower(strings.TrimSpace(checkRun.Conclusion)),
+			DetailsURL:    firstNonBlank(checkRun.DetailsURL, checkRun.HTMLURL),
+		})
+	}
+	for _, status := range statuses {
+		name := strings.TrimSpace(status.Context)
+		key := strings.ToLower(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		checks = append(checks, connector.PullRequestCheck{
+			Name:       name,
+			Status:     strings.ToLower(strings.TrimSpace(status.State)),
+			Conclusion: strings.ToLower(strings.TrimSpace(status.State)),
+		})
+	}
+	return checks
 }
 
 func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequestRepo, checkRuns []restCheckRun) ([]connector.PullRequestCheck, error) {

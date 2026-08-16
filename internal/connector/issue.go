@@ -121,6 +121,7 @@ type PullRequest struct {
 	HydrationDegradedReason      string                      `json:"hydration_degraded_reason,omitempty" yaml:"hydration_degraded_reason,omitempty"`
 	HydrationNextRetryAt         *time.Time                  `json:"hydration_next_retry_at,omitempty" yaml:"hydration_next_retry_at,omitempty"`
 	CIStatus                     string                      `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
+	Checks                       []PullRequestCheck          `json:"checks,omitempty" yaml:"checks,omitempty"`
 	CheckRunCount                int                         `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
 	StatusContextCount           int                         `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
 	CIQueueSeconds               int64                       `json:"ci_queue_seconds,omitempty" yaml:"ci_queue_seconds,omitempty"`

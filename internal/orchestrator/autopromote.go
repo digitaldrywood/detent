@@ -572,9 +572,11 @@ func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool
 			continue
 		}
 		if signal, ok := workpad.SignalFromComment(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
+			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
 		if signal := autoPromoteWorkpadProseSignalFromBody(body, comment.URL); signal != nil {
+			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
 		return nil, false
@@ -589,6 +591,18 @@ func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool
 		}, true
 	}
 	return nil, false
+}
+
+func autoPromoteWorkpadRecordedAt(comment connector.IssueComment) *time.Time {
+	if comment.UpdatedAt != nil && !comment.UpdatedAt.IsZero() {
+		updatedAt := comment.UpdatedAt.UTC()
+		return &updatedAt
+	}
+	if comment.CreatedAt != nil && !comment.CreatedAt.IsZero() {
+		createdAt := comment.CreatedAt.UTC()
+		return &createdAt
+	}
+	return nil
 }
 
 func autoPromoteIsWorkpadComment(body string) bool {

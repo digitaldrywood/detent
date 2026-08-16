@@ -707,6 +707,7 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 			RecoveryReachability:    optionalString(entry.RecoveryReachability),
 			RecoveryIntentResumable: entry.RecoveryIntentResumable,
 			NeedsHumanAttention:     entry.NeedsHumanAttention,
+			BlockerEvidence:         append([]telemetry.BlockerEvidence(nil), entry.BlockerEvidence...),
 			BlockedBy:               append([]telemetry.BlockedRef{}, entry.BlockedBy...),
 			RecoveryRoot:            entry.RecoveryRoot,
 			WorkerHost:              optionalString(entry.WorkerHost),
@@ -804,6 +805,7 @@ func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 		RecoveryReachability:    optionalString(entry.RecoveryReachability),
 		RecoveryIntentResumable: entry.RecoveryIntentResumable,
 		NeedsHumanAttention:     entry.NeedsHumanAttention,
+		BlockerEvidence:         append([]telemetry.BlockerEvidence(nil), entry.BlockerEvidence...),
 		BlockedBy:               append([]telemetry.BlockedRef{}, entry.BlockedBy...),
 		RecoveryRoot:            entry.RecoveryRoot,
 		BlockedAt:               timestampStringPtr(entry.BlockedAt),
@@ -1547,6 +1549,7 @@ type blockedAPIResponse struct {
 	RecoveryReachability    *string                        `json:"recovery_reachability"`
 	RecoveryIntentResumable bool                           `json:"recovery_intent_resumable"`
 	NeedsHumanAttention     bool                           `json:"needs_human_attention"`
+	BlockerEvidence         []telemetry.BlockerEvidence    `json:"blocker_evidence,omitempty"`
 	BlockedBy               []telemetry.BlockedRef         `json:"blocked_by"`
 	RecoveryRoot            *telemetry.BlockedRecoveryRoot `json:"recovery_root"`
 	WorkerHost              *string                        `json:"worker_host"`
@@ -1814,6 +1817,7 @@ type blockedIssueAPIResponse struct {
 	RecoveryReachability    *string                        `json:"recovery_reachability"`
 	RecoveryIntentResumable bool                           `json:"recovery_intent_resumable"`
 	NeedsHumanAttention     bool                           `json:"needs_human_attention"`
+	BlockerEvidence         []telemetry.BlockerEvidence    `json:"blocker_evidence,omitempty"`
 	BlockedBy               []telemetry.BlockedRef         `json:"blocked_by"`
 	RecoveryRoot            *telemetry.BlockedRecoveryRoot `json:"recovery_root"`
 	BlockedAt               *string                        `json:"blocked_at"`

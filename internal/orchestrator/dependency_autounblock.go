@@ -461,7 +461,13 @@ func workpadDependencyRefs(issue connector.Issue) []connector.BlockedRef {
 	repo := dependencyIssueRepo(issue.Identifier)
 	refs := make([]connector.BlockedRef, 0, len(signal.Blockers))
 	for _, blocker := range signal.Blockers {
+		if blocker.Predicate != nil && blocker.Predicate.Type != workpad.PredicateIssueState {
+			continue
+		}
 		identifier := strings.TrimSpace(blocker.Identifier)
+		if identifier == "" && blocker.Predicate != nil {
+			identifier = strings.TrimSpace(blocker.Predicate.Identifier)
+		}
 		if identifier == "" {
 			parsed, err := workpad.ParseRef(blocker.Ref, repo)
 			if err != nil {

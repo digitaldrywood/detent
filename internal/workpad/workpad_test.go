@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSignalFromComment(t *testing.T) {
@@ -196,4 +197,131 @@ func TestParseRef(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseStatusBlockTypedBlockers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		blocker            string
+		wantType           string
+		wantOwner          string
+		wantIdentifier     string
+		wantState          string
+		wantCheck          string
+		wantScope          string
+		wantFingerprint    string
+		wantPresent        *bool
+		wantUnverifiable   bool
+		wantRecheck        string
+		wantExpiry         string
+		wantErrorSubstring string
+	}{
+		{
+			name:           "issue state",
+			blocker:        "ref: '#42'\n    reason: waiting for closure\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\n    recheck_interval: 30s",
+			wantType:       PredicateIssueState,
+			wantOwner:      BlockerOwnerOrchestrator,
+			wantIdentifier: "digitaldrywood/detent#42",
+			wantState:      "open",
+			wantRecheck:    "30s",
+		},
+		{
+			name:        "pull request state",
+			blocker:     "owner: orchestrator\n    predicate:\n      kind: pull-request-state\n      state: open",
+			wantType:    PredicatePullRequestState,
+			wantOwner:   BlockerOwnerOrchestrator,
+			wantState:   "open",
+			wantRecheck: "tick",
+		},
+		{
+			name:        "check presence",
+			blocker:     "owner: orchestrator\n    predicate:\n      type: check_presence\n      check: Test\n      present: false",
+			wantType:    PredicateCheckPresence,
+			wantOwner:   BlockerOwnerOrchestrator,
+			wantCheck:   "Test",
+			wantPresent: boolPointer(false),
+			wantRecheck: "tick",
+		},
+		{
+			name:        "budget capacity",
+			blocker:     "owner: orchestrator\n    predicate:\n      type: budget_capacity\n      scope: daily-budget\n      condition: exhausted",
+			wantType:    PredicateBudgetCapacity,
+			wantOwner:   BlockerOwnerOrchestrator,
+			wantScope:   "daily_budget",
+			wantRecheck: "tick",
+		},
+		{
+			name:            "config fingerprint",
+			blocker:         "owner: orchestrator\n    predicate:\n      type: config_fingerprint\n      fingerprint: config-a\n    expires_at: '2026-08-17T12:00:00Z'",
+			wantType:        PredicateConfigFingerprint,
+			wantOwner:       BlockerOwnerOrchestrator,
+			wantFingerprint: "config-a",
+			wantRecheck:     "tick",
+			wantExpiry:      "2026-08-17T12:00:00Z",
+		},
+		{
+			name:             "free text accepted and flagged",
+			blocker:          "reason: waiting for somebody to investigate",
+			wantOwner:        BlockerOwnerHuman,
+			wantUnverifiable: true,
+		},
+		{
+			name:               "typed predicate validation",
+			blocker:            "owner: orchestrator\n    predicate:\n      type: check_presence\n      check: Test",
+			wantErrorSubstring: "predicate.present is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			content := "schema: 1\nstatus: blocked\nblockers:\n  - " + tt.blocker + "\nhuman_action: null"
+			signal, err := ParseStatusBlock(content, "digitaldrywood/detent")
+			if tt.wantErrorSubstring != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrorSubstring) {
+					t.Fatalf("ParseStatusBlock() error = %v, want containing %q", err, tt.wantErrorSubstring)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseStatusBlock() error = %v", err)
+			}
+			if len(signal.Blockers) != 1 {
+				t.Fatalf("Blockers = %#v, want one", signal.Blockers)
+			}
+			blocker := signal.Blockers[0]
+			if blocker.Owner != tt.wantOwner || blocker.Unverifiable != tt.wantUnverifiable || blocker.RecheckInterval != tt.wantRecheck {
+				t.Fatalf("blocker metadata = %#v", blocker)
+			}
+			if tt.wantExpiry != "" && (blocker.ExpiresAt == nil || blocker.ExpiresAt.Format(time.RFC3339) != tt.wantExpiry) {
+				t.Fatalf("ExpiresAt = %v, want %s", blocker.ExpiresAt, tt.wantExpiry)
+			}
+			if tt.wantType == "" {
+				if blocker.Predicate != nil {
+					t.Fatalf("Predicate = %#v, want nil", blocker.Predicate)
+				}
+				return
+			}
+			predicate := blocker.Predicate
+			if predicate == nil {
+				t.Fatal("Predicate = nil")
+			}
+			if predicate.Type != tt.wantType || predicate.Identifier != tt.wantIdentifier || predicate.Check != tt.wantCheck || predicate.Scope != tt.wantScope || predicate.Fingerprint != tt.wantFingerprint {
+				t.Fatalf("Predicate = %#v", predicate)
+			}
+			if tt.wantState != "" && (len(predicate.States) != 1 || predicate.States[0] != tt.wantState) {
+				t.Fatalf("States = %#v, want %q", predicate.States, tt.wantState)
+			}
+			if tt.wantPresent != nil && (predicate.Present == nil || *predicate.Present != *tt.wantPresent) {
+				t.Fatalf("Present = %v, want %t", predicate.Present, *tt.wantPresent)
+			}
+		})
+	}
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
