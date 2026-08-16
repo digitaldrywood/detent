@@ -46,6 +46,14 @@ func TestBoardWorkload(t *testing.T) {
 			want: BoardWorkloadCounts{Blocked: 1},
 		},
 		{
+			name: "runtime block wins over stale ready tracker state",
+			snapshot: Snapshot{
+				BoardIssues: []Issue{{ID: "blocked", State: "Todo"}},
+				Blocked:     []Blocked{{Issue: Issue{ID: "blocked", State: "Todo"}, Source: BlockedSourceOwnership}},
+			},
+			want: BoardWorkloadCounts{Blocked: 1},
+		},
+		{
 			name: "tracker terminal state removes stale blocked runtime state",
 			snapshot: Snapshot{
 				BoardIssues: []Issue{{ID: "done", State: "Done"}},

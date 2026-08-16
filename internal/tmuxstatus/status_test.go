@@ -48,12 +48,12 @@ func TestFormat(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
-		counts telemetry.Counts
+		counts Counts
 		want   string
 	}{
-		{name: "idle", want: "detent 0r/0q/0b"},
-		{name: "active", counts: telemetry.Counts{Running: 2, Queue: 1, Blocked: 3}, want: "detent 2r/1q/3b"},
-		{name: "large counts stay compact", counts: telemetry.Counts{Running: 120, Queue: 45, Blocked: 8}, want: "detent 120r/45q/8b"},
+		{name: "idle", want: "detent 0r/0q/0w/0b"},
+		{name: "active", counts: Counts{Running: 2, Ready: 1, Waiting: 4, Blocked: 3}, want: "detent 2r/1q/4w/3b"},
+		{name: "large counts stay compact", counts: Counts{Running: 120, Ready: 45, Waiting: 18, Blocked: 8}, want: "detent 120r/45q/18w/8b"},
 	}
 
 	for _, test := range tests {
@@ -94,7 +94,7 @@ func TestStatusLifecycle(t *testing.T) {
 
 	want := [][]string{
 		{"display-message", "-t", "%7", "-p", "#{window_id}\t#{window_name}"},
-		{"rename-window", "-t", "@7", "detent 2r/1q/3b"},
+		{"rename-window", "-t", "@7", "detent 2r/1q/0w/3b"},
 		{"display-message", "-t", "@7", "-p", "#{window_name}"},
 		{"rename-window", "-t", "@7", "Detent:2"},
 	}
@@ -111,7 +111,10 @@ func TestStatusCorrectsExternalRenameOnNextUpdate(t *testing.T) {
 		t.Fatalf("newStatus() error = %v", err)
 	}
 
-	snapshot := telemetry.Snapshot{Counts: telemetry.Counts{Running: 2, Queue: 3}}
+	snapshot := telemetry.Snapshot{
+		Counts: telemetry.Counts{Running: 2, Queue: 3},
+		Queue:  []telemetry.Queued{{}, {}, {}},
+	}
 	if err := status.Update(context.Background(), snapshot); err != nil {
 		t.Fatalf("first Update() error = %v", err)
 	}
@@ -120,7 +123,7 @@ func TestStatusCorrectsExternalRenameOnNextUpdate(t *testing.T) {
 		t.Fatalf("second Update() error = %v", err)
 	}
 
-	if got, want := runner.windowName, "detent 2r/3q/0b"; got != want {
+	if got, want := runner.windowName, "detent 2r/3q/0w/0b"; got != want {
 		t.Fatalf("window name = %q, want %q", got, want)
 	}
 }
@@ -133,11 +136,27 @@ func TestStatusUpdateUsesCurrentBoardCounts(t *testing.T) {
 		want     string
 	}{
 		{
+			name: "separates ready dependency waiting and blocked lanes",
+			snapshot: telemetry.Snapshot{
+				Counts: telemetry.Counts{Running: 1},
+				BoardIssues: []telemetry.Issue{
+					{ID: "ready", State: "Todo"},
+					{ID: "waiting", State: "Todo"},
+					{ID: "blocked", State: "Blocked"},
+				},
+				Blocked: []telemetry.Blocked{
+					{Issue: telemetry.Issue{ID: "waiting", State: "Todo"}, Source: telemetry.BlockedSourceDependency},
+					{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
+				},
+			},
+			want: "detent 1r/1q/1w/1b",
+		},
+		{
 			name: "ignores aggregate blocked count",
 			snapshot: telemetry.Snapshot{
 				Counts: telemetry.Counts{Running: 7, Queue: 6, Blocked: 10},
 			},
-			want: "detent 7r/6q/0b",
+			want: "detent 7r/0q/0w/0b",
 		},
 		{
 			name: "current tracker rows override stale blocked runtime rows",
@@ -147,6 +166,9 @@ func TestStatusUpdateUsesCurrentBoardCounts(t *testing.T) {
 					{ID: "blocked-1", State: "Blocked"},
 					{ID: "blocked-2", State: "Blocked"},
 					{ID: "stale-1", State: "Done"},
+					{ID: "ready-1", State: "Todo"},
+					{ID: "ready-2", State: "Todo"},
+					{ID: "ready-3", State: "Todo"},
 				},
 				Blocked: []telemetry.Blocked{
 					{Issue: telemetry.Issue{ID: "blocked-1", State: "Blocked"}},
@@ -154,7 +176,7 @@ func TestStatusUpdateUsesCurrentBoardCounts(t *testing.T) {
 					{Issue: telemetry.Issue{ID: "stale-1", State: "Blocked"}},
 				},
 			},
-			want: "detent 2r/3q/2b",
+			want: "detent 2r/3q/0w/2b",
 		},
 	}
 
@@ -196,7 +218,7 @@ func TestStatusRetriesFailedRename(t *testing.T) {
 		t.Fatalf("retry Update() error = %v", err)
 	}
 
-	wantRename := []string{"rename-window", "-t", "@7", "detent 1r/0q/0b"}
+	wantRename := []string{"rename-window", "-t", "@7", "detent 1r/0q/0w/0b"}
 	if len(runner.calls) != 3 || !reflect.DeepEqual(runner.calls[1], wantRename) || !reflect.DeepEqual(runner.calls[2], wantRename) {
 		t.Fatalf("commands = %#v, want two rename attempts %#v", runner.calls, wantRename)
 	}
@@ -215,14 +237,14 @@ func TestStatusLogsLifecycle(t *testing.T) {
 			name:          "logs first successful rename only",
 			firstCounts:   telemetry.Counts{Running: 1},
 			secondCounts:  telemetry.Counts{Running: 2},
-			wantFirstName: "detent 1r/0q/0b",
+			wantFirstName: "detent 1r/0q/0w/0b",
 		},
 		{
 			name:          "failed rename does not consume first success log",
 			firstFails:    true,
 			firstCounts:   telemetry.Counts{Running: 1},
 			secondCounts:  telemetry.Counts{Running: 2},
-			wantFirstName: "detent 2r/0q/0b",
+			wantFirstName: "detent 2r/0q/0w/0b",
 		},
 	}
 

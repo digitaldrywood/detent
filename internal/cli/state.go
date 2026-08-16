@@ -88,6 +88,8 @@ func writeStatePretty(writer io.Writer, state DashboardState) error {
 		lines = append(lines,
 			"Running: "+stateString(counts["running"]),
 			"Retrying: "+stateString(counts["retrying"]),
+			"Ready: "+stateString(counts["ready"]),
+			"Waiting: "+stateString(counts["waiting"]),
 			"Blocked: "+stateString(counts["blocked"]),
 		)
 	}

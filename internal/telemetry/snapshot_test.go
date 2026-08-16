@@ -2,6 +2,7 @@ package telemetry_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -816,6 +817,65 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("BoardStateCounts()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
 		}
+	}
+}
+
+func TestBoardStateCountsKeepDependencyWaitsInTrackerLane(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		waiting telemetry.Blocked
+	}{
+		{
+			name: "dependency source",
+			waiting: telemetry.Blocked{
+				Issue:  telemetry.Issue{ID: "waiting", State: "Todo"},
+				Source: telemetry.BlockedSourceDependency,
+			},
+		},
+		{
+			name: "dependency reference",
+			waiting: telemetry.Blocked{
+				Issue: telemetry.Issue{
+					ID:        "waiting",
+					State:     "Todo",
+					BlockedBy: []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#512", State: "In Progress"}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			snapshot := telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "ready", State: "Todo"},
+					tt.waiting.Issue,
+					{ID: "blocked", State: "Todo"},
+				},
+				Blocked: []telemetry.Blocked{
+					tt.waiting,
+					{Issue: telemetry.Issue{ID: "blocked", State: "Todo"}},
+				},
+			}
+
+			got := telemetry.BoardStateCounts(snapshot)
+			want := []telemetry.BoardStateCount{
+				{State: "Todo", Count: 2},
+				{State: "Blocked", Count: 1},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("BoardStateCounts() = %#v, want %#v", got, want)
+			}
+
+			workload := telemetry.BoardWorkload(snapshot)
+			if workload.Todo+workload.Waiting != want[0].Count || workload.Blocked != want[1].Count {
+				t.Fatalf("workload = %+v, lane counts = %#v", workload, want)
+			}
+		})
 	}
 }
 

@@ -1297,7 +1297,7 @@ func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
 
 func projectWorkloadBreakdown(project ProjectSmallMultiple) string {
 	return strings.Join([]string{
-		formatCount(project.BoardTodo) + " todo",
+		formatCount(project.BoardTodo) + " ready",
 		formatCount(project.BoardActive) + " active",
 		formatCount(project.BoardWaiting) + " waiting",
 		formatCount(project.BoardBlocked) + " blocked",

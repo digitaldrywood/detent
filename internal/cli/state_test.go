@@ -212,7 +212,7 @@ func TestStateCommandOutput(t *testing.T) {
 		wantJSONBuild bool
 	}{
 		{name: "JSON projection", args: []string{"--project", "detent"}, wantJSONBuild: true},
-		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Running: 2", "Truncated: false"}},
+		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Running: 2", "Ready: 3", "Waiting: 4", "Blocked: 1", "Truncated: false"}},
 	}
 
 	for _, tt := range tests {
@@ -351,7 +351,7 @@ func stateFixture() map[string]any {
 				map[string]any{"name": "candidates", "degraded": true},
 			},
 		},
-		"counts": map[string]any{"running": 2, "retrying": 1, "blocked": 1},
+		"counts": map[string]any{"running": 2, "retrying": 1, "ready": 3, "waiting": 4, "blocked": 1},
 		"running": []any{
 			map[string]any{"issue_identifier": "digitaldrywood/detent#1644"},
 			map[string]any{"issue_identifier": "digitaldrywood/detent#1643"},

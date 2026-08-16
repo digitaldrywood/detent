@@ -83,6 +83,19 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 	for _, issue := range snapshot.Pipeline {
 		add(issue, "", 40, false)
 	}
+	for _, row := range snapshot.Blocked {
+		if blockedRowDependencyWaiting(row) || !boardWorkloadProjectMatches(row.Issue, snapshot.Project.ID, projectID) {
+			continue
+		}
+		key := issueStateKey(row.Issue)
+		current, ok := issues[key]
+		if !ok || current.state == "" {
+			continue
+		}
+		current.state = "Blocked"
+		current.waiting = false
+		issues[key] = current
+	}
 
 	var counts BoardWorkloadCounts
 	for _, issue := range issues {

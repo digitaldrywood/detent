@@ -73,17 +73,29 @@ func newStatus(ctx context.Context, runner commandRunner, pane string, logger *s
 	return status, nil
 }
 
-func Format(counts telemetry.Counts) string {
-	return fmt.Sprintf("detent %dr/%dq/%db", counts.Running, counts.Queue, counts.Blocked)
+type Counts struct {
+	Running int
+	Ready   int
+	Waiting int
+	Blocked int
+}
+
+func Format(counts Counts) string {
+	return fmt.Sprintf("detent %dr/%dq/%dw/%db", counts.Running, counts.Ready, counts.Waiting, counts.Blocked)
 }
 
 func (s *Status) Update(ctx context.Context, snapshot telemetry.Snapshot) error {
 	if s == nil {
 		return nil
 	}
-	counts := snapshot.EffectiveCounts()
-	counts.Blocked = telemetry.BoardWorkload(snapshot).Blocked
-	name := Format(counts)
+	effective := snapshot.EffectiveCounts()
+	workload := telemetry.BoardWorkload(snapshot)
+	name := Format(Counts{
+		Running: effective.Running,
+		Ready:   workload.Todo,
+		Waiting: workload.Waiting,
+		Blocked: workload.Blocked,
+	})
 	if name == s.lastName {
 		currentName, err := s.runner.Output(ctx, "display-message", "-t", s.target, "-p", "#{window_name}")
 		if err != nil {
