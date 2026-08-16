@@ -241,6 +241,7 @@ type MergeRequiredCheckStreak struct {
 	RequiredChecksFingerprint string `json:"required_checks_fingerprint"`
 	ConsecutiveMissing        int64  `json:"consecutive_missing"`
 	UpdatedAt                 string `json:"updated_at"`
+	HeadSha                   string `json:"head_sha"`
 }
 
 type ProjectDispatchStatus struct {

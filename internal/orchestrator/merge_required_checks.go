@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 const (
 	mergeWorkerMissingRequiredCheckLimit            = 3
 	mergeWorkerPersistentMissingRequiredCheckReason = "merge_worker_required_checks_persistently_missing"
+	workflowActionMergeRequiredCheckParkRecovery    = "merge_required_check_park_recovery"
 )
 
 func (o *Orchestrator) evaluateMergeRequiredCheckStreaks(
@@ -44,6 +46,7 @@ func (o *Orchestrator) evaluateMergeRequiredCheckStreaks(
 		IssueID:                   issueID,
 		Repository:                pullRequestRepository(issue),
 		PRNumber:                  prNumber,
+		HeadSHA:                   strings.TrimSpace(issue.PullRequest.HeadSHA),
 		RequiredChecksFingerprint: mergeRequiredCheckConfigFingerprint(requiredChecks),
 		MissingChecks:             missingChecks,
 		EvaluatedAt:               evaluatedAt,
@@ -61,6 +64,67 @@ func (o *Orchestrator) evaluateMergeRequiredCheckStreaks(
 		return nil
 	}
 	return streaks
+}
+
+func (o *Orchestrator) reconcilePersistentlyMissingRequiredCheckPark(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park workflowLaneBlockedRecoveryMetadata,
+	now time.Time,
+) (bool, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(park.Cause), mergeWorkerPersistentMissingRequiredCheckReason) {
+		return false, false
+	}
+	if issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) || pullRequestNumber(issue) <= 0 || strings.TrimSpace(issue.PullRequest.HeadSHA) == "" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "pull_request_hydration_unavailable", &park, "")
+		return true, false
+	}
+	if len(mergeWorkerMissingRequiredChecks(issue)) > 0 {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "required_checks_still_missing", &park, "")
+		return true, false
+	}
+	if reason := o.mergeLaneUnavailableReason(); reason != "" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, "")
+		return true, false
+	}
+	signature := fmt.Sprintf("cause=%s;pr=%d;head=%s", blockedCauseHash(park.Cause), pullRequestNumber(issue), strings.TrimSpace(issue.PullRequest.HeadSHA))
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionMergeRequiredCheckParkRecovery, signature)
+	if err := o.updateIssueStateByIDStrictWithMetadata(
+		ctx,
+		state,
+		issue.ID,
+		issue,
+		autoPromoteMergingState,
+		now,
+		workflowActionMergeRequiredCheckParkRecovery,
+		metadata,
+	); err != nil {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "required_check_recovery_transition_failed", &park, signature)
+		return true, false
+	}
+	if o.connector != nil {
+		body := fmt.Sprintf(
+			"Auto-released this issue from Blocked to Merging after the current pull request head published all required checks.\n\n- cause: %s\n- pull request: %s\n- head_sha: %s",
+			strings.TrimSpace(park.Cause),
+			strings.TrimSpace(issue.PullRequest.URL),
+			strings.TrimSpace(issue.PullRequest.HeadSHA),
+		)
+		if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil && o.logger != nil {
+			o.logger.Warn("required check park recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	o.clearMergeRequiredCheckStreaks(ctx, issue)
+	delete(state.Blocked, issue.ID)
+	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+	promoted := promotedIssue(issue, autoPromoteMergingState, now)
+	o.recordMergeQueueEntered(state, promoted, now, workflowActionMergeRequiredCheckParkRecovery)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   workflowActionMergeRequiredCheckParkRecovery,
+		Message: "auto-released " + issueLabel(issue) + " after required checks appeared on the current head",
+	})
+	return true, true
 }
 
 func mergeRequiredCheckConfigFingerprint(checkNames []string) string {
