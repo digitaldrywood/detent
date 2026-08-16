@@ -7457,6 +7457,7 @@ func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	t.Parallel()
 
+	const synchronizationWatchdog = 2 * time.Minute
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startedOnce sync.Once
@@ -7508,18 +7509,39 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 		server.Handler().ServeHTTP(rec, req)
 	}()
 
-	<-started
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
-	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	select {
+	case <-started:
+	case <-time.After(synchronizationWatchdog):
+		t.Fatal("snapshot enrichment did not start before synchronization watchdog")
 	}
-	for _, want := range []string{"Cached board issue", generatedAt.Format(time.RFC3339), `id="live-clock"`} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+
+	type response struct {
+		code int
+		body string
+	}
+	responseReady := make(chan response, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		server.Handler().ServeHTTP(rec, req)
+		responseReady <- response{code: rec.Code, body: rec.Body.String()}
+	}()
+
+	select {
+	case got := <-responseReady:
+		if got.code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
 		}
+		for _, want := range []string{"Cached board issue", generatedAt.Format(time.RFC3339), `id="live-clock"`} {
+			if !strings.Contains(got.body, want) {
+				t.Fatalf("body missing %q:\n%s", want, got.body)
+			}
+		}
+	case <-time.After(synchronizationWatchdog):
+		close(release)
+		cancelEvents()
+		<-responseReady
+		t.Fatal("board first paint waited for blocked enrichment until synchronization watchdog")
 	}
 	if got := fetchCalls.Load(); got != 0 {
 		t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
@@ -7527,7 +7549,11 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 
 	close(release)
 	cancelEvents()
-	<-eventsDone
+	select {
+	case <-eventsDone:
+	case <-time.After(synchronizationWatchdog):
+		t.Fatal("event stream did not stop before synchronization watchdog")
+	}
 }
 
 func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {

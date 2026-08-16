@@ -21,6 +21,7 @@ import (
 func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 	t.Parallel()
 
+	const synchronizationWatchdog = 2 * time.Minute
 	ctx := t.Context()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	runtimeStore, err := store.Open(ctx, store.Config{
@@ -91,7 +92,9 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 		errCh <- orch.Run(runCtx)
 	}()
 
-	if _, err := orch.State(ctx); err != nil {
+	stateCtx, cancelState := context.WithTimeout(ctx, synchronizationWatchdog)
+	defer cancelState()
+	if _, err := orch.State(stateCtx); err != nil {
 		t.Fatalf("orchestrator State() error = %v", err)
 	}
 	decisions, err := runtimeStore.ListRecentSchedulerDecisions(
@@ -109,8 +112,13 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 		t.Fatalf("scheduler decision %q not found; decisions = %#v", scheduler.DispatchGateReasonReservedForHigherPriorityProject, decisions)
 	}
 	cancel()
-	if err := <-errCh; !errors.Is(err, context.Canceled) {
-		t.Fatalf("orchestrator Run() error = %v, want context canceled", err)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("orchestrator Run() error = %v, want context canceled", err)
+		}
+	case <-time.After(synchronizationWatchdog):
+		t.Fatal("orchestrator did not stop before synchronization watchdog")
 	}
 
 	if refusal.ProjectID != cloudProject.ID || refusal.IssueID != issue.ID {
