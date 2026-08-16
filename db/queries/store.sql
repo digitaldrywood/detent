@@ -683,24 +683,8 @@ FROM workflow_phase_events AS event
 WHERE event.finished_at IS NOT NULL
   AND event.phase_type IN ('agent_session', 'local_check', 'ci')
   AND (sqlc.narg(project_id) IS NULL OR event.project_id = sqlc.narg(project_id))
-  AND EXISTS (
-    SELECT 1
-    FROM workflow_phase_events AS lane
-    WHERE lane.finished_at IS NOT NULL
-      AND lane.phase_type = 'lane'
-      AND (sqlc.narg(project_id) IS NULL OR lane.project_id = sqlc.narg(project_id))
-      AND (sqlc.narg(from_time) IS NULL OR lane.finished_at >= sqlc.narg(from_time))
-      AND (sqlc.narg(to_time) IS NULL OR lane.finished_at < sqlc.narg(to_time))
-      AND event.project_id = lane.project_id
-      AND event.started_at < lane.finished_at
-      AND event.finished_at > lane.started_at
-      AND (
-        (event.issue_id IS NOT NULL AND event.issue_id <> '' AND event.issue_id = lane.issue_id)
-        OR (event.identifier IS NOT NULL AND event.identifier <> '' AND event.identifier = lane.identifier)
-        OR (event.issue_url IS NOT NULL AND event.issue_url <> '' AND event.issue_url = lane.issue_url)
-        OR (event.pr_number IS NOT NULL AND event.pr_number = lane.pr_number)
-      )
-  )
+  AND (sqlc.narg(from_time) IS NULL OR event.finished_at > sqlc.narg(from_time))
+  AND (sqlc.narg(to_time) IS NULL OR event.started_at < sqlc.narg(to_time))
 ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id;
 
 -- name: IssueWorkflowTimelineRows :many

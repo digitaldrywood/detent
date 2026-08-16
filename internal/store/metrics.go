@@ -125,10 +125,22 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 		}
 	}
 
+	flowFrom, flowTo, ok := workflowLaneFlowBounds(flowRows)
+	if !ok {
+		return workflowMetricsReport(metricRows, flowRows, query.From, query.To), nil
+	}
+	flowFromTime, err := optionalTimestamp("flow_from", flowFrom)
+	if err != nil {
+		return WorkflowMetricsReport{}, err
+	}
+	flowToTime, err := optionalTimestamp("flow_to", flowTo)
+	if err != nil {
+		return WorkflowMetricsReport{}, err
+	}
 	activeRows, err := s.queries.WorkflowPhaseFlowRows(ctx, sqlc.WorkflowPhaseFlowRowsParams{
 		ProjectID: nullString(query.ProjectID),
-		FromTime:  from,
-		ToTime:    to,
+		FromTime:  flowFromTime,
+		ToTime:    flowToTime,
 	})
 	if err != nil {
 		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow flow metrics: %w", err)
@@ -214,6 +226,24 @@ type workflowLaneTrendAccumulator struct {
 	phaseName  string
 	buckets    []workflowLaneTrendBucket
 	totalCount int64
+}
+
+func workflowLaneFlowBounds(rows []workflowMetricRow) (time.Time, time.Time, bool) {
+	var from time.Time
+	var to time.Time
+	for _, row := range rows {
+		event := row.event
+		if event.PhaseType != WorkflowPhaseTypeLane || !workflowEventHasInterval(event) {
+			continue
+		}
+		if from.IsZero() || event.StartedAt.Before(from) {
+			from = event.StartedAt
+		}
+		if to.IsZero() || event.FinishedAt.After(to) {
+			to = event.FinishedAt
+		}
+	}
+	return from, to, !from.IsZero() && from.Before(to)
 }
 
 func workflowMetricRowsFromEvents(rows []sqlc.WorkflowPhaseEvent) ([]workflowMetricRow, error) {
