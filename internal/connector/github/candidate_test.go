@@ -67,13 +67,99 @@ func TestConnectorReadProjectCandidatesStopsAtBoundAndSorts(t *testing.T) {
 	}
 }
 
+func TestConnectorReadProjectCandidatesBoundsMatchingCandidates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		responses     []graphqlTestResponse
+		wantIDs       []string
+		wantItemsRead int
+		wantPagesRead int
+		wantTruncated bool
+	}{
+		{
+			name: "eligible candidate follows terminal prefix",
+			responses: []graphqlTestResponse{
+				{
+					body: projectItemsPageResponseWithTotal(3, true, "cursor-1", []string{
+						`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_1","number":1,"title":"Done first","state":"CLOSED","url":"https://github.com/digitaldrywood/detent/issues/1","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Done"}}`,
+						`{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_2","number":2,"title":"Done second","state":"CLOSED","url":"https://github.com/digitaldrywood/detent/issues/2","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Done"}}`,
+					}),
+				},
+				{
+					body: projectItemsPageResponseWithTotal(3, false, "", []string{
+						`{"id":"PVTI_3","content":{"__typename":"Issue","id":"I_3","number":3,"title":"Backlog","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/3","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"}}`,
+					}),
+				},
+			},
+			wantIDs:       []string{"I_3"},
+			wantItemsRead: 3,
+			wantPagesRead: 2,
+		},
+		{
+			name: "probe limit counts only eligible candidates",
+			responses: []graphqlTestResponse{
+				{
+					body: projectItemsPageResponseWithTotal(4, true, "cursor-1", []string{
+						`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_1","number":1,"title":"Done","state":"CLOSED","url":"https://github.com/digitaldrywood/detent/issues/1","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Done"}}`,
+						`{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_2","number":2,"title":"First backlog","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/2","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"}}`,
+					}),
+				},
+				{
+					body: projectItemsPageResponseWithTotal(4, true, "cursor-2", []string{
+						`{"id":"PVTI_3","content":{"__typename":"Issue","id":"I_3","number":3,"title":"Second backlog","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/3","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"}}`,
+						`{"id":"PVTI_4","content":{"__typename":"Issue","id":"I_4","number":4,"title":"Third backlog","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/4","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"}}`,
+					}),
+				},
+			},
+			wantIDs:       []string{"I_2"},
+			wantItemsRead: 4,
+			wantPagesRead: 2,
+			wantTruncated: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, test.responses)
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug:    "PVT_1",
+				ObservedStates: []string{"Backlog"},
+				TerminalStates: []string{"Done"},
+			})
+
+			got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+				Selector: connector.CandidateSelectorStates,
+				States:   []string{"Backlog"},
+				Limit:    1,
+				PageSize: 2,
+			})
+			if err != nil {
+				t.Fatalf("ReadCandidates() error = %v", err)
+			}
+			if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, test.wantIDs) {
+				t.Fatalf("candidate IDs = %#v, want %#v", ids, test.wantIDs)
+			}
+			if got.ItemsRead != test.wantItemsRead || got.PagesRead != test.wantPagesRead || got.Truncated != test.wantTruncated {
+				t.Fatalf("result = %#v, want items_read=%d pages_read=%d truncated=%t", got, test.wantItemsRead, test.wantPagesRead, test.wantTruncated)
+			}
+		})
+	}
+}
+
 func TestConnectorReadProjectCandidatesBoundsEmptyCursorPages(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{body: projectItemsPageResponseWithTotal(3, true, "cursor-1", nil)},
-		{body: projectItemsPageResponseWithTotal(3, true, "cursor-2", nil)},
-	})
+	responses := make([]graphqlTestResponse, projectCandidatePageLimit)
+	for index := range responses {
+		responses[index] = graphqlTestResponse{
+			body: projectItemsPageResponseWithTotal(3, true, "cursor-"+strconv.Itoa(index+1), nil),
+		}
+	}
+	server := newGraphQLTestServer(t, responses)
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
 	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
@@ -85,8 +171,8 @@ func TestConnectorReadProjectCandidatesBoundsEmptyCursorPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCandidates() error = %v", err)
 	}
-	if len(got.Issues) != 0 || !got.Truncated || got.PagesRead != 2 {
-		t.Fatalf("result = %#v, want empty bounded truncation after two pages", got)
+	if len(got.Issues) != 0 || !got.Truncated || got.PagesRead != projectCandidatePageLimit {
+		t.Fatalf("result = %#v, want empty truncation at the independent page bound", got)
 	}
 }
 

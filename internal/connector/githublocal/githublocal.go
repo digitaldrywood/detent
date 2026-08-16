@@ -309,7 +309,9 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	if err != nil {
 		return connector.CandidateResult{}, err
 	}
-	return connector.NewCandidateResult(issues, request, result.PagesRead, result.Truncated), nil
+	hydrated := connector.NewCandidateResult(issues, request, result.PagesRead, result.Truncated)
+	hydrated.ItemsRead = result.ItemsRead
+	return hydrated, nil
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {

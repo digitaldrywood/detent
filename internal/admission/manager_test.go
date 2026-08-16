@@ -1,9 +1,11 @@
 package admission
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -191,7 +193,9 @@ func TestManagerRecordsCandidateReaderTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	if result.Truncated["candidate_reader"] != 1 || result.CandidatesFound != connector.DefaultCandidatePageSize {
+	if result.Truncated["candidate_reader"] != 1 ||
+		result.CandidatesFound != connector.DefaultCandidatePageSize ||
+		result.ItemsRead != len(issues) {
 		t.Fatalf("result = %#v, want reader truncation at %d candidates", result, connector.DefaultCandidatePageSize)
 	}
 	if agent.calls != 0 {
@@ -203,6 +207,64 @@ func TestManagerRecordsCandidateReaderTruncation(t *testing.T) {
 	}
 	if record.Truncated["candidate_reader"] != 1 {
 		t.Fatalf("run ledger truncation = %#v, want candidate_reader=1", record.Truncated)
+	}
+}
+
+func TestManagerLogsScheduledAdmissionScan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		result         Result
+		wantTruncated  bool
+		wantTruncation int
+	}{
+		{
+			name: "exhausted scan",
+			result: Result{
+				ProjectID: "pyroapex",
+				ItemsRead: 425,
+				Truncated: map[string]int{},
+			},
+		},
+		{
+			name: "bounded scan",
+			result: Result{
+				ProjectID: "pyroapex",
+				ItemsRead: 100,
+				Truncated: map[string]int{"candidate_reader": 1},
+			},
+			wantTruncated:  true,
+			wantTruncation: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var output bytes.Buffer
+			manager := &Manager{logger: slog.New(slog.NewJSONHandler(&output, nil))}
+			manager.logScheduledCompletion(t.Context(), test.result)
+
+			var record struct {
+				Event           string         `json:"event"`
+				ItemsRead       int            `json:"items_read"`
+				CandidatesFound int            `json:"candidates_found"`
+				Truncated       bool           `json:"truncated"`
+				Truncations     map[string]int `json:"truncations"`
+			}
+			if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+				t.Fatalf("decode log record: %v", err)
+			}
+			if record.Event != "scheduled_backlog_admission_completed" ||
+				record.ItemsRead != test.result.ItemsRead ||
+				record.CandidatesFound != test.result.CandidatesFound ||
+				record.Truncated != test.wantTruncated ||
+				record.Truncations["candidate_reader"] != test.wantTruncation {
+				t.Fatalf("log record = %#v", record)
+			}
+		})
 	}
 }
 
@@ -2382,7 +2444,7 @@ func TestReadAdmissionCandidatesPushesAuthorsOnlyToStates(t *testing.T) {
 	cfg.Sources.Labels = []string{"sentry"}
 	cfg.Authors.Allow = []string{"octocat"}
 
-	_, _, _, err := readAdmissionCandidates(context.Background(), tracker, cfg)
+	_, _, _, _, err := readAdmissionCandidates(context.Background(), tracker, cfg)
 	if err != nil {
 		t.Fatalf("readAdmissionCandidates() error = %v", err)
 	}
