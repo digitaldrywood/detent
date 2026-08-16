@@ -46,6 +46,26 @@ func TestBoardWorkload(t *testing.T) {
 			want: BoardWorkloadCounts{Blocked: 1},
 		},
 		{
+			name: "tracker terminal state removes stale blocked runtime state",
+			snapshot: Snapshot{
+				BoardIssues: []Issue{{ID: "done", State: "Done"}},
+				Blocked:     []Blocked{{Issue: Issue{ID: "done", State: "Blocked"}}},
+			},
+			want: BoardWorkloadCounts{},
+		},
+		{
+			name: "custom tracker states preserve runtime workload state",
+			snapshot: Snapshot{
+				BoardIssues: []Issue{
+					{ID: "running", State: "Research"},
+					{ID: "queued", State: "Draft"},
+				},
+				Running: []Running{{Issue: Issue{ID: "running"}}},
+				Queue:   []Queued{{Issue: Issue{ID: "queued"}}},
+			},
+			want: BoardWorkloadCounts{Load: 2, Todo: 1, Active: 1},
+		},
+		{
 			name: "runtime rows fill absent board details without double counting",
 			snapshot: Snapshot{
 				Project: Project{ID: "detent"},

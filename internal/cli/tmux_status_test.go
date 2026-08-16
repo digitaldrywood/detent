@@ -34,6 +34,15 @@ func TestRunTmuxWindowStatusUpdatesCoalescesSnapshots(t *testing.T) {
 	if got := <-status.updates; got.Counts != want.Counts {
 		t.Fatalf("Update() counts = %#v, want %#v", got.Counts, want.Counts)
 	}
+	ticks <- time.Now()
+	select {
+	case got := <-status.updates:
+		if got.Counts != want.Counts {
+			t.Fatalf("reasserted Update() counts = %#v, want %#v", got.Counts, want.Counts)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Update() was not called on the next tick")
+	}
 	select {
 	case got := <-status.updates:
 		t.Fatalf("extra Update() = %#v", got)

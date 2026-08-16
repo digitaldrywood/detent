@@ -34,12 +34,15 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 		if !boardWorkloadProjectMatches(issue, snapshot.Project.ID, projectID) {
 			return
 		}
-		state := normalizedWorkloadState(issue.State)
+		boardState := normalizeBoardState(strings.ReplaceAll(issue.State, "_", " "))
+		state := normalizedWorkloadState(boardState)
 		if state == "" {
 			state = fallback
 		}
 		if state == "" {
-			return
+			if rank < 30 || !nonWorkloadBoardState(boardState) {
+				return
+			}
 		}
 		key := issueStateKey(issue)
 		if key == "" {
@@ -128,6 +131,14 @@ func normalizedWorkloadState(state string) string {
 		return "Blocked"
 	}
 	return ""
+}
+
+func nonWorkloadBoardState(state string) bool {
+	switch state {
+	case "Backlog", "Done":
+		return true
+	}
+	return false
 }
 
 func blockedRowDependencyWaiting(row Blocked) bool {
