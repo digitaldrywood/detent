@@ -2,6 +2,8 @@ package web_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,48 +19,25 @@ import (
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
-func BenchmarkProjectStateAPIWarmCache(b *testing.B) {
-	ctx := context.Background()
-	backend, err := store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(b.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		b.Fatalf("store.Open() error = %v", err)
-	}
-	b.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			b.Fatalf("Close() error = %v", err)
-		}
-	})
+const projectStatePerformanceDeadline = 2 * time.Second
 
-	now := time.Date(2026, 8, 15, 22, 16, 27, 0, time.UTC)
-	seedBenchmarkWorkflowEvents(b, backend, now)
-	snapshot := benchmarkProjectStateSnapshot(now)
-	snapshotHub := hub.New[telemetry.Snapshot]()
-	if err := snapshotHub.Publish(snapshot); err != nil {
-		b.Fatalf("Publish() error = %v", err)
-	}
-	server, err := web.NewServer(web.Config{}, web.Dependencies{
-		Hub:       snapshotHub,
-		Store:     backend,
-		Registry:  project.NewRegistry(),
-		Connector: connectorProbe{name: "memory"},
-	})
-	if err != nil {
-		b.Fatalf("NewServer() error = %v", err)
-	}
+func BenchmarkProjectStateAPIWarmStoreChangingSnapshot(b *testing.B) {
+	server, snapshotHub, snapshot := newProjectStatePerformanceServer(b, 5000, 2600)
 
-	warm := httptest.NewRecorder()
-	server.Handler().ServeHTTP(warm, httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/api/v1/projects/detent/state", nil))
+	warm := projectStatePerformanceRequest(b.Context(), server, 0)
 	if warm.Code != http.StatusOK {
 		b.Fatalf("warm status = %d, want %d; body = %s", warm.Code, http.StatusOK, warm.Body.String())
 	}
 	responseBytes := warm.Body.Len()
 	b.ResetTimer()
+	index := 0
 	for b.Loop() {
-		recorder := httptest.NewRecorder()
-		server.Handler().ServeHTTP(recorder, httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/api/v1/projects/detent/state", nil))
+		index++
+		snapshot.GeneratedAt = snapshot.GeneratedAt.Add(time.Second)
+		if err := snapshotHub.Publish(snapshot); err != nil {
+			b.Fatalf("Publish() error = %v", err)
+		}
+		recorder := projectStatePerformanceRequest(b.Context(), server, index)
 		if recorder.Code != http.StatusOK {
 			b.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
 		}
@@ -67,15 +46,90 @@ func BenchmarkProjectStateAPIWarmCache(b *testing.B) {
 	b.ReportMetric(float64(responseBytes), "bytes/response")
 }
 
-func seedBenchmarkWorkflowEvents(b *testing.B, backend store.Store, now time.Time) {
-	b.Helper()
-	const laneEvents = 1670
-	const activeEvents = 870
+func TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline(t *testing.T) {
+	server, snapshotHub, snapshot := newProjectStatePerformanceServer(t, 1000, 500)
+
+	warm := projectStatePerformanceRequest(t.Context(), server, 0)
+	if warm.Code != http.StatusOK {
+		t.Fatalf("warm status = %d, want %d; body = %s", warm.Code, http.StatusOK, warm.Body.String())
+	}
+	snapshot.GeneratedAt = snapshot.GeneratedAt.Add(time.Second)
+	if err := snapshotHub.Publish(snapshot); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), projectStatePerformanceDeadline)
+	defer cancel()
+	recorder := projectStatePerformanceRequest(ctx, server, 1)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("project state request exceeded %s", projectStatePerformanceDeadline)
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+}
+
+func newProjectStatePerformanceServer(
+	tb testing.TB,
+	laneEvents int,
+	activeEvents int,
+) (*web.Server, *hub.Hub[telemetry.Snapshot], telemetry.Snapshot) {
+	tb.Helper()
+	ctx := context.Background()
+	backend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(tb.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		tb.Fatalf("store.Open() error = %v", err)
+	}
+	tb.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			tb.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, 8, 15, 22, 16, 27, 0, time.UTC)
+	seedProjectStatePerformanceEvents(tb, ctx, backend, now, laneEvents, activeEvents)
+	snapshot := benchmarkProjectStateSnapshot(now)
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	if err := snapshotHub.Publish(snapshot); err != nil {
+		tb.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, web.Dependencies{
+		Hub:       snapshotHub,
+		Store:     backend,
+		Registry:  project.NewRegistry(),
+		Connector: connectorProbe{name: "memory"},
+	})
+	if err != nil {
+		tb.Fatalf("NewServer() error = %v", err)
+	}
+	return server, snapshotHub, snapshot
+}
+
+func projectStatePerformanceRequest(ctx context.Context, server *web.Server, index int) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/projects/detent/state", nil)
+	request.RemoteAddr = fmt.Sprintf("[2001:db8::%x]:1234", index+1)
+	server.Handler().ServeHTTP(recorder, request)
+	return recorder
+}
+
+func seedProjectStatePerformanceEvents(
+	tb testing.TB,
+	ctx context.Context,
+	backend store.Store,
+	now time.Time,
+	laneEvents int,
+	activeEvents int,
+) {
+	tb.Helper()
 
 	for index := range laneEvents {
 		finishedAt := now.Add(-time.Duration(index%720) * time.Hour)
 		issueIndex := index % activeEvents
-		_, err := backend.RecordWorkflowPhaseEvent(b.Context(), store.WorkflowPhaseEvent{
+		_, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 			ProjectID:       "detent",
 			IssueID:         "issue-" + strconv.Itoa(issueIndex),
 			Identifier:      "digitaldrywood/detent#" + strconv.Itoa(issueIndex+1),
@@ -87,12 +141,12 @@ func seedBenchmarkWorkflowEvents(b *testing.B, backend store.Store, now time.Tim
 			DurationSeconds: 600,
 		})
 		if err != nil {
-			b.Fatalf("RecordWorkflowPhaseEvent(lane %d) error = %v", index, err)
+			tb.Fatalf("RecordWorkflowPhaseEvent(lane %d) error = %v", index, err)
 		}
 	}
 	for index := range activeEvents {
 		finishedAt := now.Add(-time.Duration(index%720) * time.Hour)
-		_, err := backend.RecordWorkflowPhaseEvent(b.Context(), store.WorkflowPhaseEvent{
+		_, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 			ProjectID:       "detent",
 			IssueID:         "issue-" + strconv.Itoa(index),
 			Identifier:      "digitaldrywood/detent#" + strconv.Itoa(index+1),
@@ -107,13 +161,13 @@ func seedBenchmarkWorkflowEvents(b *testing.B, backend store.Store, now time.Tim
 			EndpointFamily:  "codex",
 		})
 		if err != nil {
-			b.Fatalf("RecordWorkflowPhaseEvent(active %d) error = %v", index, err)
+			tb.Fatalf("RecordWorkflowPhaseEvent(active %d) error = %v", index, err)
 		}
 	}
 }
 
 func benchmarkProjectStateSnapshot(now time.Time) telemetry.Snapshot {
-	const workAttempts = 600
+	const workAttempts = 300
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
 		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
