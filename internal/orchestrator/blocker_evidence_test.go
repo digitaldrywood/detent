@@ -301,6 +301,35 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 	}
 }
 
+func TestExplicitIssueStatePredicateDoesNotBecomeLegacyDependency(t *testing.T) {
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	referenced := dependencyAutoUnblockIssue("issue-reference-open", "In Progress")
+	referenced.Identifier = "digitaldrywood/detent#42"
+	tracker := &dependencyAutoUnblockConnector{blockers: []connector.Issue{referenced}}
+	orch := blockedCauseTestOrchestrator(tracker)
+	issue := dependencyAutoUnblockIssue("issue-explicit-state", blockedStatusState)
+	issue.WorkpadSignal = &workpad.Signal{
+		Source: workpad.SourceStructured,
+		Status: workpad.StatusBlocked,
+		Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{
+			Type:       workpad.PredicateIssueState,
+			Identifier: referenced.Identifier,
+			States:     []string{"closed"},
+		})},
+	}
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}
+
+	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing after explicit state stopped matching", issue.ID)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Todo" {
+		t.Fatalf("updates = %#v, want Todo transition", tracker.updates)
+	}
+}
+
 func typedTestBlocker(predicate workpad.Predicate) workpad.Blocker {
 	return workpad.Blocker{
 		Owner:           workpad.BlockerOwnerOrchestrator,

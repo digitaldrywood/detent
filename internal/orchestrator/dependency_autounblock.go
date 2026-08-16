@@ -112,8 +112,8 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if !ok {
 			continue
 		}
-		hydrated, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
-		if reason := o.blockedCauseHoldReason(hydrated, state, nil, cfg); reason != "" {
+		hydrated, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
+		if reason := o.blockedCauseHoldReason(hydrated, state, nil, cfg, workpadCurrent); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, nil, "")
 			continue
 		}
@@ -127,7 +127,7 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		o.logDependencyProseOnly(hydrated)
 		blockers := o.resolveDependencyBlockers(ctx, hydrated)
 		workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-		if reason := o.blockedCauseHoldReason(hydrated, state, workpadBlockers, cfg); reason != "" {
+		if reason := o.blockedCauseHoldReason(hydrated, state, workpadBlockers, cfg, workpadCurrent); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, blockers, "")
 			continue
 		}
@@ -382,15 +382,15 @@ func (o *Orchestrator) issueWithDependencyRefs(issue connector.Issue) connector.
 func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
 	ctx context.Context,
 	issue connector.Issue,
-) (connector.Issue, []connector.BlockedRef) {
+) (connector.Issue, []connector.BlockedRef, bool) {
 	if !o.workpadBlockersMatchCurrentBlockedEntry(ctx, issue) {
-		return issue, nil
+		return issue, nil, false
 	}
 	refs := workpadDependencyRefs(issue)
 	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, refs)
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 	refs = dependencyBlockedRefsWithoutSelf(refs, issue.Identifier)
-	return issue, refs
+	return issue, refs, true
 }
 
 func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Context, issue connector.Issue) bool {
@@ -461,8 +461,10 @@ func workpadDependencyRefs(issue connector.Issue) []connector.BlockedRef {
 	repo := dependencyIssueRepo(issue.Identifier)
 	refs := make([]connector.BlockedRef, 0, len(signal.Blockers))
 	for _, blocker := range signal.Blockers {
-		if blocker.Predicate != nil && blocker.Predicate.Type != workpad.PredicateIssueState {
-			continue
+		if blocker.Predicate != nil {
+			if blocker.Predicate.Type != workpad.PredicateIssueState || len(blocker.Predicate.States) > 0 {
+				continue
+			}
 		}
 		identifier := strings.TrimSpace(blocker.Identifier)
 		if identifier == "" && blocker.Predicate != nil {

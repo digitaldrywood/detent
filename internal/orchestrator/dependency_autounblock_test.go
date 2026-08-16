@@ -27,19 +27,20 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 	unresolved.Identifier = "digitaldrywood/ghostreel#35"
 
 	tests := []struct {
-		name                string
-		blockers            []connector.Issue
-		humanAction         string
-		invalid             *workpad.Invalid
-		labels              []string
-		stickyReason        string
-		nativeDuplicate     bool
-		workpadUpdatedAt    time.Time
-		previousLaneStarted time.Time
-		wantTransition      bool
-		wantHoldReason      string
-		wantUnresolved      string
-		wantWorkpadLookup   bool
+		name                  string
+		blockers              []connector.Issue
+		humanAction           string
+		invalid               *workpad.Invalid
+		labels                []string
+		stickyReason          string
+		nativeDuplicate       bool
+		recordedNonDependency bool
+		workpadUpdatedAt      time.Time
+		previousLaneStarted   time.Time
+		wantTransition        bool
+		wantHoldReason        string
+		wantUnresolved        string
+		wantWorkpadLookup     bool
 	}{
 		{
 			name:                "all refs resolved after no progress limit",
@@ -146,6 +147,13 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			workpadUpdatedAt:    parkedAt.Add(-2 * time.Hour),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 		},
+		{
+			name:                  "stale non-dependency blocker from prior blocked entry",
+			recordedNonDependency: true,
+			stickyReason:          noProgressLimitReason,
+			workpadUpdatedAt:      parkedAt.Add(-2 * time.Hour),
+			previousLaneStarted:   parkedAt.Add(-time.Hour),
+		},
 	}
 
 	for _, tt := range tests {
@@ -168,6 +176,12 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 					Ref:        blocker.Identifier,
 					Identifier: blocker.Identifier,
 				})
+			}
+			if tt.recordedNonDependency {
+				waiting.WorkpadSignal.Blockers = append(waiting.WorkpadSignal.Blockers, typedTestBlocker(workpad.Predicate{
+					Type:        workpad.PredicateConfigFingerprint,
+					Fingerprint: "stale-config",
+				}))
 			}
 			if tt.nativeDuplicate {
 				waiting.BlockedBy = []connector.BlockedRef{{
@@ -227,6 +241,9 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			}
 			if tt.name == "stale blocker list from prior blocked entry" && strings.Contains(logs.String(), "reason=workpad_blocker") {
 				t.Fatalf("stale Workpad blocker held current entry:\n%s", logs.String())
+			}
+			if tt.recordedNonDependency && strings.Contains(logs.String(), "reason=recorded_blocker") {
+				t.Fatalf("stale recorded blocker held current entry:\n%s", logs.String())
 			}
 		})
 	}

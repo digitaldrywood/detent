@@ -64,7 +64,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	}
 	return pullRequestCI{
 		State:                 state,
-		Checks:                pullRequestCheckInventory(effectiveRuns, statuses),
+		Checks:                pullRequestCheckInventory(checkRuns, statuses),
 		CheckRunCount:         len(checkRuns),
 		StatusContextCount:    len(statuses),
 		CIQueueSeconds:        telemetry.QueueSeconds,
@@ -82,7 +82,8 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 func pullRequestCheckInventory(checkRuns []restCheckRun, statuses []restCommitStatus) []connector.PullRequestCheck {
 	checks := make([]connector.PullRequestCheck, 0, len(checkRuns)+len(statuses))
 	seen := map[string]struct{}{}
-	for _, checkRun := range checkRuns {
+	for _, group := range groupedCheckRuns(checkRuns) {
+		checkRun := latestCheckRun(group)
 		name := strings.TrimSpace(checkRun.Name)
 		key := strings.ToLower(name)
 		if key == "" {
@@ -591,12 +592,7 @@ func selectCheckRunContext(checkRuns []restCheckRun) checkRunContextResult {
 	if len(checkRuns) == 0 {
 		return checkRunContextResult{}
 	}
-	latest := checkRuns[0]
-	for _, checkRun := range checkRuns[1:] {
-		if restCheckRunAfter(checkRun, latest) {
-			latest = checkRun
-		}
-	}
+	latest := latestCheckRun(checkRuns)
 	status := normalizedCheckRunStatus(latest)
 	conclusion := strings.ToLower(strings.TrimSpace(latest.Conclusion))
 	if (status != "" && status != "completed") || conclusion == "" {
@@ -606,6 +602,19 @@ func selectCheckRunContext(checkRuns []restCheckRun) checkRunContextResult {
 		return checkRunContextResult{}
 	}
 	return checkRunContextResult{Run: latest, Settled: true}
+}
+
+func latestCheckRun(checkRuns []restCheckRun) restCheckRun {
+	if len(checkRuns) == 0 {
+		return restCheckRun{}
+	}
+	latest := checkRuns[0]
+	for _, checkRun := range checkRuns[1:] {
+		if restCheckRunAfter(checkRun, latest) {
+			latest = checkRun
+		}
+	}
+	return latest
 }
 
 func ignoredCheckRunConclusion(conclusion string) bool {

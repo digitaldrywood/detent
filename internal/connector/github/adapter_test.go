@@ -6200,6 +6200,25 @@ func TestPullRequestCheckInventoryRetainsSettledNames(t *testing.T) {
 	}
 }
 
+func TestPullRequestCheckInventoryRetainsIgnoredNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{"cancelled", "canceled", "skipped"}
+	for _, conclusion := range tests {
+		t.Run(conclusion, func(t *testing.T) {
+			t.Parallel()
+
+			checks := pullRequestCheckInventory(
+				[]restCheckRun{{ID: 1, Name: "Optional", Status: "completed", Conclusion: conclusion}},
+				nil,
+			)
+			if len(checks) != 1 || checks[0].Name != "Optional" || checks[0].Conclusion != conclusion {
+				t.Fatalf("checks = %#v, want ignored check name retained", checks)
+			}
+		})
+	}
+}
+
 type contextValueCaptureClient struct {
 	base   HTTPClient
 	key    any

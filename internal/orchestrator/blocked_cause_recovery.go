@@ -264,8 +264,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	withDependencies := o.issueWithDependencyRefs(issue)
-	workpadCurrent := o.workpadBlockersMatchCurrentBlockedEntry(ctx, issue)
-	withDependencies, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
+	withDependencies, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
 	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
 	references := make(map[string]connector.Issue, len(blockers))
@@ -320,7 +319,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg)
+	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
 	if holdReason != "" && holdReason != "invalid_workpad_signal" {
 		o.recordBlockedRecoveryDecision(
 			ctx,
@@ -663,17 +662,16 @@ func (o *Orchestrator) blockedCauseHoldReason(
 	state *State,
 	workpadBlockers []dependencyBlocker,
 	dependencyCfg DependencyAutoUnblockConfig,
+	workpadCurrent bool,
 ) string {
 	if reason := BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel); reason != "" {
 		return reason
 	}
-	if issue.WorkpadSignal != nil {
-		if workpadHasRecordedNonDependencyBlocker(issue.WorkpadSignal) {
-			return "recorded_blocker"
-		}
-		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
-			return "workpad_blocker"
-		}
+	if workpadCurrent && workpadHasRecordedNonDependencyBlocker(issue.WorkpadSignal) {
+		return "recorded_blocker"
+	}
+	if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
+		return "workpad_blocker"
 	}
 	if state != nil {
 		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
