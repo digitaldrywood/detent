@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
@@ -21,6 +22,8 @@ type Status struct {
 	target       string
 	originalName string
 	lastName     string
+	logger       *slog.Logger
+	renameOnce   sync.Once
 	closeOnce    sync.Once
 	closeErr     error
 }
@@ -32,13 +35,16 @@ func Enabled(tmux, pane string, configured *bool) bool {
 	return configured == nil || *configured
 }
 
-func New(ctx context.Context, pane string) (*Status, error) {
-	return newStatus(ctx, execCommandRunner{}, pane)
+func New(ctx context.Context, pane string, logger *slog.Logger) (*Status, error) {
+	return newStatus(ctx, execCommandRunner{}, pane, logger)
 }
 
-func newStatus(ctx context.Context, runner commandRunner, pane string) (*Status, error) {
+func newStatus(ctx context.Context, runner commandRunner, pane string, logger *slog.Logger) (*Status, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	if runner == nil {
 		return nil, errors.New("tmux command runner is required")
@@ -57,11 +63,14 @@ func newStatus(ctx context.Context, runner commandRunner, pane string) (*Status,
 		return nil, errors.New("read current tmux window: unexpected response")
 	}
 
-	return &Status{
+	status := &Status{
 		runner:       runner,
 		target:       strings.TrimSpace(windowID),
 		originalName: originalName,
-	}, nil
+		logger:       logger,
+	}
+	logger.Info("initialized tmux window status", "window_id", status.target, "original_name", status.originalName)
+	return status, nil
 }
 
 func Format(counts telemetry.Counts) string {
@@ -80,6 +89,9 @@ func (s *Status) Update(ctx context.Context, snapshot telemetry.Snapshot) error 
 		return fmt.Errorf("rename tmux window: %w", err)
 	}
 	s.lastName = name
+	s.renameOnce.Do(func() {
+		s.logger.Info("tmux window status renamed", "window_id", s.target, "name", name)
+	})
 	return nil
 }
 

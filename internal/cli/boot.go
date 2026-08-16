@@ -331,7 +331,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	var windowStatus *tmuxstatus.Status
 	tmuxPane := os.Getenv("TMUX_PANE")
 	if tmuxstatus.Enabled(os.Getenv("TMUX"), tmuxPane, cfg.Global.Ops.TmuxWindowStatus) {
-		windowStatus, err = tmuxstatus.New(runCtx, tmuxPane)
+		windowStatus, err = tmuxstatus.New(runCtx, tmuxPane, logger)
 		if err != nil {
 			logger.Warn("initialize tmux window status failed", "error", err)
 		}
