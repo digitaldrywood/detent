@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -553,6 +554,115 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 			for _, part := range tt.wantSurfaceParts {
 				if !strings.Contains(blocked.Reason, part) {
 					t.Fatalf("blocked reason = %q, want %q", blocked.Reason, part)
+				}
+			}
+		})
+	}
+}
+
+func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 15, 23, 29, 55, 0, time.UTC)
+	recoveredAt := parkedAt.Add(17 * time.Hour)
+	resetAt := recoveredAt.Add(time.Hour)
+	observedAt := recoveredAt.Add(time.Second)
+	tests := []struct {
+		name             string
+		identifier       string
+		stageUpdateDelay time.Duration
+		remaining        int64
+		wantTransition   bool
+	}{
+		{name: "corp 519 label update lag", identifier: "gopherguides/corp#519", stageUpdateDelay: 7 * time.Second, remaining: 1012, wantTransition: true},
+		{name: "corp 520 label update lag", identifier: "gopherguides/corp#520", stageUpdateDelay: 4 * time.Second, remaining: 945, wantTransition: true},
+		{name: "corp 521 label update lag", identifier: "gopherguides/corp#521", stageUpdateDelay: 5 * time.Second, remaining: 944, wantTransition: true},
+		{name: "later manual reblock", identifier: "gopherguides/corp#522", stageUpdateDelay: 15 * time.Second, remaining: 944},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			issue.Identifier = tt.identifier
+			stageUpdatedAt := parkedAt.Add(tt.stageUpdateDelay)
+			issue.StageUpdatedAt = &stageUpdatedAt
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			orch.cfg.Project.ID = "gopher-corp"
+			metadata := orch.newBlockedRecoveryMetadata(
+				t.Context(),
+				issue,
+				RunModeImplement,
+				repeatedFailureCircuitBreakerCause,
+				blockedRecoveryPredicateFingerprintChange,
+				"Todo",
+				DiffStats{},
+			)
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+			attempts := &implementProgressAttemptStore{}
+			for attempt := repeatedFailureThreshold; attempt >= 1; attempt-- {
+				attempts.history = append(attempts.history, store.WorkAttempt{
+					ID:            int64(attempt),
+					ProjectID:     "gopher-corp",
+					IssueID:       issue.ID,
+					Identifier:    issue.Identifier,
+					Lane:          "Todo",
+					AttemptNumber: attempt,
+					Status:        store.WorkAttemptStatusTerminal,
+					TerminalState: store.WorkAttemptTerminalFailure,
+					ErrorClass:    workAttemptErrorRunner,
+					ErrorMessage: fmt.Sprintf(
+						"run agent turn: worker github REST budget reached reserved headroom: remaining=%d reserve=1250 reset_at=2026-08-15T23:35:48Z",
+						tt.remaining,
+					),
+					CompletedAt: parkedAt.Add(-time.Duration(repeatedFailureThreshold-attempt) * time.Minute),
+				})
+			}
+
+			orch.workflowMetrics = metrics
+			orch.workAttempts = attempts
+			prober := &staticGitHubRESTBudgetProber{budget: telemetry.RESTBudget{
+				Consumer:            telemetry.RESTConsumerSharedPool,
+				CredentialIdentity:  "github-rest:worker",
+				Remaining:           4791,
+				Limit:               5000,
+				MinRemainingReserve: 1250,
+				ResetAt:             &resetAt,
+				ObservedAt:          &observedAt,
+			}}
+			orch.githubRESTBudgetProber = prober
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     issue,
+				Source:    BlockedSourceProjectStatus,
+				BlockedAt: recoveredAt,
+			}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, recoveredAt)
+
+			_, didTransition := transitioned[issue.ID]
+			if didTransition != tt.wantTransition {
+				t.Fatalf("transitioned = %v, want %v; blocked = %#v; history calls = %d", didTransition, tt.wantTransition, state.Blocked[issue.ID], attempts.historyCalls)
+			}
+			if len(tracker.updates) != boolInt(tt.wantTransition) {
+				t.Fatalf("updates = %#v, want transition %v", tracker.updates, tt.wantTransition)
+			}
+			if tt.wantTransition && tracker.updates[0].state != "Todo" {
+				t.Fatalf("update state = %q, want Todo", tracker.updates[0].state)
+			}
+			if attempts.historyCalls != boolInt(tt.wantTransition) {
+				t.Fatalf("history calls = %d, want %d", attempts.historyCalls, boolInt(tt.wantTransition))
+			}
+			if prober.calls != boolInt(tt.wantTransition) {
+				t.Fatalf("probe calls = %d, want %d", prober.calls, boolInt(tt.wantTransition))
+			}
+			if tt.wantTransition {
+				query := attempts.queries[0]
+				if query.ProjectID != "gopher-corp" || query.IssueID != issue.ID || query.Identifier != issue.Identifier || query.Limit != repeatedFailureThreshold {
+					t.Fatalf("history query = %#v, want current project and issue identity", query)
 				}
 			}
 		})

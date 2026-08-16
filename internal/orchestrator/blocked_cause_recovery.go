@@ -320,6 +320,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	park, ok := o.currentBlockedRecoveryPark(ctx, state, issue)
 	if !ok {
+		park, ok = o.currentLegacyRepeatedFailureGitHubRESTBudgetPark(ctx, issue)
+	}
+	if !ok {
 		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
 		if recoveryCfg.Enabled && reasonFound && blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
