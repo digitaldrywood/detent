@@ -934,6 +934,9 @@ func (o *Orchestrator) recordRepeatedFailure(state *State, event runpkg.Completi
 		failure.FirstFailureAt = event.CompletedAt
 	}
 	failure.Count++
+	if isGitHubRESTBudgetHeadroomError(event.Err) {
+		failure.GitHubRESTBudgetFailures++
+	}
 	failure.Issue = cloneIssue(running.Issue)
 	failure.Error = o.operatorText(event.Err.Error())
 	failure.LastFailureAt = event.CompletedAt
@@ -951,15 +954,33 @@ func (o *Orchestrator) parkRepeatedFailure(
 ) {
 	targetState := o.instantFailureParkState()
 	issue := cloneIssue(running.Issue)
+	recoveryPredicate := blockedRecoveryPredicateFingerprintChange
+	recoveryTarget := "Todo"
+	budgetEvidence := githubRESTBudgetEvidence{}
+	budgetPark := failure.GitHubRESTBudgetFailures == failure.Count
+	if budgetPark {
+		var ok bool
+		budgetEvidence, ok = o.githubRESTBudgetParkEvidence(state, event.Err, issue.State)
+		budgetPark = ok
+		if budgetPark {
+			recoveryPredicate = blockedRecoveryPredicateGitHubRESTBudget
+			recoveryTarget = budgetEvidence.TargetState
+		}
+	}
 	metadata := o.newBlockedRecoveryMetadata(
 		ctx,
 		issue,
 		running.Mode,
-		"repeated_failure_circuit_breaker",
-		blockedRecoveryPredicateFingerprintChange,
-		"Todo",
+		repeatedFailureCircuitBreakerCause,
+		recoveryPredicate,
+		recoveryTarget,
 		running.DiffStats,
 	)
+	if budgetPark {
+		metadata.BlockedRecovery.TargetState = recoveryTarget
+		metadata.BlockedRecovery.IntentResumable = true
+		applyGitHubRESTBudgetEvidence(metadata.BlockedRecovery, budgetEvidence)
+	}
 	if targetState != "" {
 		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker", metadata); err != nil {
 			if o.logger != nil {
@@ -976,7 +997,7 @@ func (o *Orchestrator) parkRepeatedFailure(
 		}
 	}
 	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, repeatedFailureComment(issue, event.Err, failure, attempt, targetState, o.cfg.OutputTruncationMaxBytes)); err != nil && o.logger != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, repeatedFailureComment(issue, event.Err, failure, attempt, targetState, o.cfg.OutputTruncationMaxBytes, budgetPark)); err != nil && o.logger != nil {
 			o.logger.Error("repeated failure circuit breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}
 	}
@@ -992,15 +1013,24 @@ func (o *Orchestrator) parkRepeatedFailure(
 	if state.Blocked == nil {
 		state.Blocked = map[string]Blocked{}
 	}
-	state.Blocked[issue.ID] = Blocked{
+	blocked := Blocked{
 		Issue:          issue,
 		Reason:         repeatedFailureBlockedReasonPrefix + failure.Error,
-		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
-		RecoveryTarget: "Todo",
+		RecoveryReason: recoveryPredicate,
+		RecoveryTarget: recoveryTarget,
 		BlockedAt:      event.CompletedAt,
 		Source:         BlockedSourceProjectStatus,
 		Recovery:       metadata.BlockedRecovery,
 	}
+	if budgetPark {
+		blocked.Reason = githubRESTBudgetStatusMessage("waiting for capacity", budgetEvidence)
+		blocked.RecoveryAction = "defer"
+		blocked.RecoveryReason = githubRESTBudgetWaitingReason
+		blocked.RecoveryRemedy = BlockedRecoveryOperatorRemedy(issue, githubRESTBudgetWaitingReason)
+		blocked.RecoveryReachability = blockedRecoveryReachability("defer")
+		blocked.RecoveryIntentResumable = true
+	}
+	state.Blocked[issue.ID] = blocked
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "worker_repeated_failure_circuit_breaker_tripped",
@@ -1017,11 +1047,19 @@ func (o *Orchestrator) parkRepeatedFailure(
 	}
 }
 
-func repeatedFailureComment(issue connector.Issue, err error, failure RepeatedFailure, attempt int, targetState string, maxBytes int) string {
+func repeatedFailureComment(issue connector.Issue, err error, failure RepeatedFailure, attempt int, targetState string, maxBytes int, budgetPark bool) string {
 	var b strings.Builder
-	b.WriteString("Detent stopped retrying this worker after ")
+	if budgetPark {
+		b.WriteString("Detent paused this worker after ")
+	} else {
+		b.WriteString("Detent stopped retrying this worker after ")
+	}
 	b.WriteString(strconv.Itoa(failure.Count))
-	b.WriteString(" consecutive failed attempts. Each attempt ran to failure and spent real agent time, so retrying without a change is waste.")
+	if budgetPark {
+		b.WriteString(" consecutive attempts reached the worker's GitHub REST reserve. This is a transient resource wait; Detent will re-evaluate it when the matching credential budget recovers.")
+	} else {
+		b.WriteString(" consecutive failed attempts. Each attempt ran to failure and spent real agent time, so retrying without a change is waste.")
+	}
 	if targetState = strings.TrimSpace(targetState); targetState != "" {
 		b.WriteString("\n\nIssue parked in `")
 		b.WriteString(targetState)
@@ -1036,7 +1074,11 @@ func repeatedFailureComment(issue connector.Issue, err error, failure RepeatedFa
 	b.WriteString("\n- last error:\n\n```text\n")
 	b.WriteString(runtimeoutput.Truncate(strings.TrimSpace(err.Error()), maxBytes).Value)
 	b.WriteString("\n```")
-	b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail. Detent requeues the issue when the cause fingerprint changes.")
+	if budgetPark {
+		b.WriteString("\n\nDetent returns the issue to its prior lane once per GitHub REST exhaustion episode after remaining capacity rises above the recorded worker reserve.")
+	} else {
+		b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail. Detent requeues the issue when the cause fingerprint changes.")
+	}
 	return b.String()
 }
 

@@ -254,11 +254,12 @@ type InstantFailure struct {
 // counts and other attempt-specific details vary between otherwise identical
 // failures, and each retry of a long-running failure spends real money.
 type RepeatedFailure struct {
-	Issue          connector.Issue
-	Error          string
-	Count          int
-	FirstFailureAt time.Time
-	LastFailureAt  time.Time
+	Issue                    connector.Issue
+	Error                    string
+	Count                    int
+	GitHubRESTBudgetFailures int
+	FirstFailureAt           time.Time
+	LastFailureAt            time.Time
 }
 
 type ProjectFailureBreaker struct {

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -396,6 +397,298 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 15, 23, 50, 0, 0, time.UTC)
+	observedAt := parkedAt.Add(time.Hour)
+	resetAt := observedAt.Add(time.Hour)
+	budgetError := "run agent turn: worker github REST budget reached reserved headroom: remaining=940 reserve=1250 reset_at=2026-08-16T01:00:00Z"
+	tests := []struct {
+		name             string
+		errorMessage     string
+		remaining        int64
+		consumed         bool
+		wantTransition   bool
+		wantAction       string
+		wantReason       string
+		wantSurfaceParts []string
+	}{
+		{name: "budget recovers", errorMessage: budgetError, remaining: 4927, wantTransition: true},
+		{
+			name:             "budget remains exhausted",
+			errorMessage:     budgetError,
+			remaining:        940,
+			wantAction:       "defer",
+			wantReason:       githubRESTBudgetWaitingReason,
+			wantSurfaceParts: []string{"transient GitHub REST budget", "remaining=940/5000", "reserve=1250"},
+		},
+		{
+			name:         "non-transient failure stays parked",
+			errorMessage: "run agent turn: runner transport closed",
+			remaining:    4927,
+			wantAction:   "hold",
+			wantReason:   "cause_unchanged",
+		},
+		{
+			name:             "same exhaustion episode does not rearm twice",
+			errorMessage:     budgetError,
+			remaining:        4927,
+			consumed:         true,
+			wantAction:       "hold",
+			wantReason:       githubRESTBudgetRearmConsumedReason,
+			wantSurfaceParts: []string{"capacity recovered", "automatic re-arm already used", "remaining=4927/5000"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			metadata := orch.newBlockedRecoveryMetadata(
+				t.Context(),
+				issue,
+				RunModeImplement,
+				"repeated_failure_circuit_breaker",
+				blockedRecoveryPredicateFingerprintChange,
+				"Todo",
+				DiffStats{},
+			)
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			if tt.consumed {
+				signature := githubRESTBudgetRecoverySignature(githubRESTBudgetEvidence{
+					Consumer:           telemetry.RESTConsumerSharedPool,
+					CredentialIdentity: "github-rest:worker",
+					ResetAt:            resetAt,
+				}, 1250)
+				consumedMetadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionGitHubRESTBudgetRecovery, signature)
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID:    defaultWorkflowMetricsProjectID,
+					IssueID:      issue.ID,
+					Identifier:   issue.Identifier,
+					IssueURL:     issue.URL,
+					PhaseType:    store.WorkflowPhaseTypeLane,
+					PhaseName:    "In Progress",
+					Reason:       workflowActionGitHubRESTBudgetRecovery,
+					Status:       "entered",
+					StartedAt:    parkedAt.Add(-time.Minute),
+					MetadataJSON: workflowLaneMetadataJSON(issue, consumedMetadata),
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent() consumed recovery error = %v", err)
+				}
+			}
+			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+			attempts := &implementProgressAttemptStore{}
+			for attempt := repeatedFailureThreshold; attempt >= 1; attempt-- {
+				attempts.history = append(attempts.history, store.WorkAttempt{
+					ID:            int64(attempt),
+					ProjectID:     defaultWorkflowMetricsProjectID,
+					IssueID:       issue.ID,
+					Identifier:    issue.Identifier,
+					Lane:          "In Progress",
+					AttemptNumber: attempt,
+					Status:        store.WorkAttemptStatusTerminal,
+					TerminalState: store.WorkAttemptTerminalFailure,
+					ErrorClass:    workAttemptErrorRunner,
+					ErrorMessage:  tt.errorMessage,
+					CompletedAt:   parkedAt.Add(-time.Duration(repeatedFailureThreshold-attempt) * time.Minute),
+				})
+			}
+
+			orch.workflowMetrics = metrics
+			orch.workAttempts = attempts
+			state := newState(orch.cfg)
+			state.RateLimits = &telemetry.RateLimits{
+				GitHubREST: &telemetry.RateLimitBucket{
+					Remaining:  4999,
+					Limit:      5000,
+					ResetAt:    &resetAt,
+					ObservedAt: &observedAt,
+				},
+				GitHubRESTBudgets: []telemetry.RESTBudget{{
+					Consumer:            telemetry.RESTConsumerSharedPool,
+					CredentialIdentity:  "github-rest:worker",
+					EndpointFamily:      "shared credential pool",
+					Resource:            "core",
+					Remaining:           tt.remaining,
+					Limit:               5000,
+					MinRemainingReserve: 1250,
+					ResetAt:             &resetAt,
+					ObservedAt:          &observedAt,
+				}},
+			}
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     issue,
+				Source:    BlockedSourceProjectStatus,
+				BlockedAt: parkedAt,
+				Recovery:  metadata.BlockedRecovery,
+			}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, observedAt)
+
+			if tt.wantTransition {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "In Progress" {
+					t.Fatalf("updates = %#v, want recovery to prior lane In Progress", tracker.updates)
+				}
+				if _, ok := transitioned[issue.ID]; !ok {
+					t.Fatalf("transitioned[%q] missing", issue.ID)
+				}
+				return
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want park held", tracker.updates)
+			}
+			if _, ok := transitioned[issue.ID]; ok {
+				t.Fatalf("transitioned[%q] present for held park", issue.ID)
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.RecoveryAction != tt.wantAction || blocked.RecoveryReason != tt.wantReason {
+				t.Fatalf("blocked recovery = %q/%q, want %q/%q", blocked.RecoveryAction, blocked.RecoveryReason, tt.wantAction, tt.wantReason)
+			}
+			for _, part := range tt.wantSurfaceParts {
+				if !strings.Contains(blocked.Reason, part) {
+					t.Fatalf("blocked reason = %q, want %q", blocked.Reason, part)
+				}
+			}
+		})
+	}
+}
+
+func TestRepeatedFailureRESTBudgetParkProbesAfterReset(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 15, 23, 50, 0, 0, time.UTC)
+	exhaustedResetAt := parkedAt.Add(10 * time.Minute)
+	recoveryAt := exhaustedResetAt.Add(time.Minute)
+	nextResetAt := recoveryAt.Add(time.Hour)
+	oldObservedAt := parkedAt
+	newObservedAt := recoveryAt
+	budgetError := "run agent turn: worker github REST budget reached reserved headroom: consumer=worker credential_identity=github-rest:worker remaining=940 reserve=1250 reset_at=" + exhaustedResetAt.Format(time.RFC3339)
+	tests := []struct {
+		name           string
+		probeBudget    telemetry.RESTBudget
+		repetitions    int
+		wantTransition bool
+		wantProbeCalls int
+	}{
+		{
+			name: "matching worker credential recovers",
+			probeBudget: telemetry.RESTBudget{
+				Consumer:            telemetry.RESTConsumerWorker,
+				CredentialIdentity:  "github-rest:worker",
+				EndpointFamily:      "worker credential",
+				Resource:            "core",
+				Remaining:           4927,
+				Limit:               5000,
+				MinRemainingReserve: 1250,
+				ResetAt:             &nextResetAt,
+				ObservedAt:          &newObservedAt,
+			},
+			wantTransition: true,
+			wantProbeCalls: 1,
+		},
+		{
+			name: "different credential cannot recover park",
+			probeBudget: telemetry.RESTBudget{
+				Consumer:            telemetry.RESTConsumerWorker,
+				CredentialIdentity:  "github-rest:tracker",
+				EndpointFamily:      "worker credential",
+				Resource:            "core",
+				Remaining:           4927,
+				Limit:               5000,
+				MinRemainingReserve: 1250,
+				ResetAt:             &nextResetAt,
+				ObservedAt:          &newObservedAt,
+			},
+			repetitions:    2,
+			wantProbeCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := dependencyAutoUnblockIssue("issue-probe-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			metadata := orch.newBlockedRecoveryMetadata(
+				t.Context(),
+				issue,
+				RunModeImplement,
+				repeatedFailureCircuitBreakerCause,
+				blockedRecoveryPredicateGitHubRESTBudget,
+				"In Progress",
+				DiffStats{},
+			)
+			evidence, ok := githubRESTBudgetEvidenceFromMessage(budgetError)
+			if !ok {
+				t.Fatal("budget error did not parse")
+			}
+			evidence.TargetState = "In Progress"
+			applyGitHubRESTBudgetEvidence(metadata.BlockedRecovery, evidence)
+			recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+			prober := &staticGitHubRESTBudgetProber{budget: tt.probeBudget}
+			orch.workflowMetrics = metrics
+			orch.githubRESTBudgetProber = prober
+
+			state := newState(orch.cfg)
+			state.RateLimits = &telemetry.RateLimits{
+				GitHubREST: &telemetry.RateLimitBucket{
+					Remaining:  4999,
+					Limit:      5000,
+					ResetAt:    &nextResetAt,
+					ObservedAt: &newObservedAt,
+				},
+				GitHubRESTBudgets: []telemetry.RESTBudget{{
+					Consumer:            telemetry.RESTConsumerWorker,
+					CredentialIdentity:  "github-rest:worker",
+					EndpointFamily:      "worker credential",
+					Resource:            "core",
+					Remaining:           940,
+					Limit:               5000,
+					MinRemainingReserve: 1250,
+					ResetAt:             &exhaustedResetAt,
+					ObservedAt:          &oldObservedAt,
+				}},
+			}
+			state.Blocked[issue.ID] = Blocked{
+				Issue:     issue,
+				Source:    BlockedSourceProjectStatus,
+				BlockedAt: parkedAt,
+				Recovery:  metadata.BlockedRecovery,
+			}
+
+			var transitioned map[string]struct{}
+			for range max(1, tt.repetitions) {
+				transitioned = orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, recoveryAt)
+			}
+
+			if prober.calls != tt.wantProbeCalls {
+				t.Fatalf("probe calls = %d, want %d", prober.calls, tt.wantProbeCalls)
+			}
+			_, didTransition := transitioned[issue.ID]
+			if didTransition != tt.wantTransition {
+				t.Fatalf("transitioned = %v, want %v", didTransition, tt.wantTransition)
+			}
+		})
+	}
+}
+
+type staticGitHubRESTBudgetProber struct {
+	budget telemetry.RESTBudget
+	calls  int
+}
+
+func (p *staticGitHubRESTBudgetProber) ProbeGitHubRESTBudget(context.Context, connector.Issue) (telemetry.RESTBudget, bool, error) {
+	p.calls++
+	return p.budget, true, nil
 }
 
 func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {

@@ -147,6 +147,10 @@ type BlockedRecoveryInspector interface {
 	BlockedRecoverySnapshot(context.Context, RunRequest) BlockedRecoverySnapshot
 }
 
+type GitHubRESTBudgetProber interface {
+	ProbeGitHubRESTBudget(context.Context, connector.Issue) (telemetry.RESTBudget, bool, error)
+}
+
 type BlockedRecoverySnapshot struct {
 	ConfigFingerprint    string
 	ToolingFingerprint   string
