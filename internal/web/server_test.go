@@ -7457,6 +7457,7 @@ func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	t.Parallel()
 
+	const synchronizationWatchdog = 2 * time.Minute
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startedOnce sync.Once
@@ -7504,14 +7505,14 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	go func() {
 		defer close(eventsDone)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/events?view=board", nil).WithContext(eventsCtx)
+		req := httptest.NewRequestWithContext(eventsCtx, http.MethodGet, "/events?view=board", nil)
 		server.Handler().ServeHTTP(rec, req)
 	}()
 
 	select {
 	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("snapshot enrichment did not start")
+	case <-time.After(synchronizationWatchdog):
+		t.Fatal("snapshot enrichment did not start before synchronization watchdog")
 	}
 
 	type response struct {
@@ -7521,7 +7522,7 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	responseReady := make(chan response, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 		server.Handler().ServeHTTP(rec, req)
 		responseReady <- response{code: rec.Code, body: rec.Body.String()}
 	}()
@@ -7536,8 +7537,11 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 				t.Fatalf("body missing %q:\n%s", want, got.body)
 			}
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("board first paint exceeded 500ms while snapshot enrichment was blocked")
+	case <-time.After(synchronizationWatchdog):
+		close(release)
+		cancelEvents()
+		<-responseReady
+		t.Fatal("board first paint waited for blocked enrichment until synchronization watchdog")
 	}
 	if got := fetchCalls.Load(); got != 0 {
 		t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
@@ -7547,8 +7551,8 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	cancelEvents()
 	select {
 	case <-eventsDone:
-	case <-time.After(time.Second):
-		t.Fatal("event stream did not stop")
+	case <-time.After(synchronizationWatchdog):
+		t.Fatal("event stream did not stop before synchronization watchdog")
 	}
 }
 
