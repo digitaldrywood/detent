@@ -20,6 +20,7 @@ type TerminationOutcome string
 
 const (
 	TerminationOutcomeTerminated    TerminationOutcome = "terminated"
+	TerminationOutcomeKilled        TerminationOutcome = "killed_after_timeout"
 	TerminationOutcomeAlreadyExited TerminationOutcome = "already_exited"
 	TerminationOutcomeStaleIdentity TerminationOutcome = "stale_identity"
 )

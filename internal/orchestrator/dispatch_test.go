@@ -2873,6 +2873,7 @@ func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 	selected := dispatchTestIssue("issue-selected", "Todo")
 	selected.Fields = map[string]string{"Status": "Todo"}
 	selected.UpdatedAt = timePointer(now.Add(-2 * time.Minute))
+	orch.connector = hydratingDispatchConnector{issue: selected}
 
 	ctx := t.Context()
 	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{running, selected}, now)

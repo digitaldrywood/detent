@@ -109,7 +109,38 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event runpkg.Completion) {
 	running, ok := state.Running[event.IssueID]
 	if !ok {
+		if event.Request.Generation > 0 || event.Request.WorkAttemptID > 0 {
+			o.rejectWorkerCompletion(ctx, state, event, Running{}, "worker lease is no longer active", nil)
+		}
 		return
+	}
+	if !completionMatchesRunning(event, running) {
+		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
+		return
+	}
+	if o.handleLaneRevocationCompletion(ctx, state, event, running) {
+		return
+	}
+	if running.Generation > 0 {
+		refreshed, err := o.refreshCompletionLane(ctx, running)
+		if err != nil {
+			o.rejectWorkerCompletion(ctx, state, event, running, laneRevocationCompletionFenceUnavailable, err)
+			o.beginLaneRevocation(ctx, state, running, running.Issue, event.CompletedAt, laneRevocationCompletionFenceUnavailable)
+			o.handleLaneRevocationCompletion(ctx, state, event, running)
+			return
+		}
+		running.Issue = refreshed
+		state.Running[event.IssueID] = running
+		if claimed, found := state.Claimed[event.IssueID]; found {
+			claimed.Issue = cloneIssue(refreshed)
+			state.Claimed[event.IssueID] = claimed
+		}
+		if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
+			o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
+			o.beginLaneRevocation(ctx, state, running, refreshed, event.CompletedAt, laneRevocationStateChanged)
+			o.handleLaneRevocationCompletion(ctx, state, event, running)
+			return
+		}
 	}
 	o.heartbeats.remove(event.IssueID)
 	if o.retrospector != nil {

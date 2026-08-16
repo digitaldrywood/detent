@@ -26,6 +26,7 @@ const (
 	OrphanRecoveryResumed             = "resumed"
 	OrphanRecoveryFresh               = "fresh"
 	WorkerProcessOutcomeTerminated    = "terminated"
+	WorkerProcessOutcomeKilled        = "killed_after_timeout"
 	WorkerProcessOutcomeAlreadyExited = "already_exited"
 	WorkerProcessOutcomeStaleIdentity = "stale_identity"
 )
@@ -323,6 +324,7 @@ const (
 	WorkAttemptTerminalCapacity        WorkAttemptTerminalState = "capacity"
 	WorkAttemptTerminalOperatorStopped WorkAttemptTerminalState = "operator_stopped"
 	WorkAttemptTerminalMergeRevoked    WorkAttemptTerminalState = "merge_revoked"
+	WorkAttemptTerminalLaneRevoked     WorkAttemptTerminalState = "lane_revoked"
 )
 
 type SchedulerDecisionResult string

@@ -138,6 +138,25 @@ func TestSupervisorDoesNotRetryMergeRevokedRun(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotRetryLaneRevokedRun(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(laneRevokedBackend{}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1849"}, Attempt: 4})
+	if !errors.Is(completion.Err, ErrLaneRevoked) {
+		t.Fatalf("Err = %v, want ErrLaneRevoked", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want no retry", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if got := finalStateForTurnError(ErrLaneRevoked); got != FinalStateLaneRevoked {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateLaneRevoked)
+	}
+}
+
 func TestMergeWorkerDurationExceededFinalState(t *testing.T) {
 	t.Parallel()
 
@@ -164,9 +183,12 @@ func TestSupervisorPropagatesCancellationCause(t *testing.T) {
 		name          string
 		cause         error
 		wantCI        bool
+		wantLane      bool
+		wantFinal     string
 		wantRetryable bool
 	}{
 		{name: "CI unavailable remains cooperative", cause: ErrCIUnavailable, wantCI: true},
+		{name: "lane revocation remains cooperative", cause: ErrLaneRevoked, wantLane: true, wantFinal: FinalStateLaneRevoked},
 		{name: "ordinary cancellation remains retryable", cause: context.Canceled, wantRetryable: true},
 	}
 
@@ -187,6 +209,12 @@ func TestSupervisorPropagatesCancellationCause(t *testing.T) {
 			})
 			if got := errors.Is(completion.Err, ErrCIUnavailable); got != tt.wantCI {
 				t.Fatalf("errors.Is(Err, ErrCIUnavailable) = %v, want %v; Err = %v", got, tt.wantCI, completion.Err)
+			}
+			if got := errors.Is(completion.Err, ErrLaneRevoked); got != tt.wantLane {
+				t.Fatalf("errors.Is(Err, ErrLaneRevoked) = %v, want %v; Err = %v", got, tt.wantLane, completion.Err)
+			}
+			if completion.Result.FinalState != tt.wantFinal {
+				t.Fatalf("FinalState = %q, want %q", completion.Result.FinalState, tt.wantFinal)
 			}
 			if completion.Retryable != tt.wantRetryable {
 				t.Fatalf("Retryable = %v, want %v", completion.Retryable, tt.wantRetryable)
@@ -525,6 +553,12 @@ type mergeRevokedBackend struct{}
 
 func (mergeRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{FinalState: FinalStateMergeRevoked}, ErrMergeRevoked
+}
+
+type laneRevokedBackend struct{}
+
+func (laneRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateLaneRevoked}, ErrLaneRevoked
 }
 
 type contextErrorBackend struct{}

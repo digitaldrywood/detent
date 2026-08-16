@@ -230,7 +230,7 @@ func Terminate(ctx context.Context, identity Identity, grace time.Duration) (Ter
 	if !waitForProcessTargetExit(context.Background(), identity.PID, groupID, grace) {
 		return "", fmt.Errorf("process group %d remained alive after SIGKILL", groupID)
 	}
-	return TerminationOutcomeTerminated, nil
+	return TerminationOutcomeKilled, nil
 }
 
 func inspectProcess(pid int) (Identity, error) {

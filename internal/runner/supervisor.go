@@ -193,10 +193,14 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	result, err := s.backend.Run(ctx, request)
 	if cause := context.Cause(ctx); errors.Is(cause, ErrMergeWorkerStartupTimeout) ||
 		errors.Is(cause, ErrMergeWorkerDurationExceeded) ||
-		errors.Is(cause, ErrCIUnavailable) {
+		errors.Is(cause, ErrCIUnavailable) ||
+		errors.Is(cause, ErrLaneRevoked) {
 		err = errors.Join(cause, err)
 		if errors.Is(cause, ErrMergeWorkerDurationExceeded) {
 			result.FinalState = FinalStateMergeDurationExceeded
+		}
+		if errors.Is(cause, ErrLaneRevoked) {
+			result.FinalState = FinalStateLaneRevoked
 		}
 	}
 	completion.CompletedAt = s.now()
@@ -208,6 +212,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 func cooperativeStopError(err error) bool {
 	return errors.Is(err, ErrOperatorStopped) ||
 		errors.Is(err, ErrMergeRevoked) ||
+		errors.Is(err, ErrLaneRevoked) ||
 		errors.Is(err, ErrCIUnavailable) ||
 		errors.Is(err, ErrModelPermitUnavailable) ||
 		errors.Is(err, ErrMergeWorkerStartupTimeout) ||

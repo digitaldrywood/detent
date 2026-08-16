@@ -114,6 +114,7 @@ type Running struct {
 	Issue                 connector.Issue
 	Attempt               int
 	WorkAttemptID         int64
+	Generation            uint64
 	Mode                  string
 	DispatchSourceState   string
 	DispatchTargetState   string

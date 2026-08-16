@@ -272,13 +272,35 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		}
 
 		running := state.Running[id]
-		mergeWorker := running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)
-		running.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
-		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-			o.completeTerminalRunning(ctx, state, id, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
+		if pending, revoking := o.pendingLaneRevocations[id]; revoking {
+			if !pending.reapDone {
+				o.reapPendingLaneRevocation(ctx, state, pending)
+			}
+			if pending.completion != nil && pending.reapDone {
+				o.finishLaneRevocation(ctx, state, pending)
+			}
 			continue
 		}
-		if mergeWorker {
+		mergeWorker := running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)
+		refreshedRunning := running
+		refreshedRunning.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
+		if mergeWorker && running.Generation == 0 {
+			var revoked bool
+			refreshedRunning, revoked = o.revokeRunningMergeIfIneligible(ctx, state, refreshedRunning, now)
+			if revoked {
+				continue
+			}
+		}
+		if !stateIn(refreshedRunning.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshedRunning.Issue, o.cfg.TerminalStates) {
+			if running.Generation == 0 && workspaceIssueTerminal(refreshedRunning.Issue, o.cfg.TerminalStates) {
+				o.completeTerminalRunning(ctx, state, id, refreshedRunning, terminalCompletedAt(refreshedRunning.Issue, o.cfg.TerminalStates, now), refreshedRunning.Tokens)
+				continue
+			}
+			o.beginLaneRevocation(ctx, state, running, refreshedRunning.Issue, now, laneRevocationStateChanged)
+			continue
+		}
+		running = refreshedRunning
+		if mergeWorker && running.Generation > 0 {
 			var revoked bool
 			running, revoked = o.revokeRunningMergeIfIneligible(ctx, state, running, now)
 			if revoked {

@@ -321,31 +321,12 @@ func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state
 }
 
 func (o *Orchestrator) reapOperatorStopWorker(ctx context.Context, running Running, identity procgroup.Identity) (procgroup.TerminationOutcome, procgroup.Identity, error) {
-	found := identity.PID > 0
-	if !found {
-		var err error
-		identity, found, err = o.persistedWorkerProcess(ctx, running)
-		if err != nil {
-			return "", procgroup.Identity{}, fmt.Errorf("%w: load persisted identity: %w", ErrStopRunWorkerProcess, err)
-		}
-	}
-	if !found {
-		return procgroup.TerminationOutcomeAlreadyExited, procgroup.Identity{}, nil
-	}
-	outcome, err := o.reapWorkerProcess(context.WithoutCancel(ctx), identity, o.workerReapGrace)
+	outcome, identity, err := o.reapRunningWorker(ctx, running, identity)
 	if err != nil {
 		return "", identity, fmt.Errorf("%w: %w", ErrStopRunWorkerProcess, err)
 	}
 	if outcome == procgroup.TerminationOutcomeStaleIdentity {
 		return outcome, identity, fmt.Errorf("%w: persisted PID, PGID, or start time is stale", ErrStopRunWorkerProcess)
-	}
-	if o.workerProcesses != nil && running.DetentSessionID > 0 {
-		if err := o.workerProcesses.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), running.DetentSessionID, store.WorkerProcessReap{
-			ReapedAt: o.clockNow().UTC(),
-			Outcome:  string(outcome),
-		}); err != nil {
-			return outcome, identity, fmt.Errorf("%w: persist reap outcome: %w", ErrStopRunWorkerProcess, err)
-		}
 	}
 	return outcome, identity, nil
 }
@@ -362,7 +343,7 @@ func (o *Orchestrator) persistedWorkerProcess(ctx context.Context, running Runni
 			}
 		}
 		if running.WorkerProcess.PID > 0 {
-			return procgroup.Identity{}, false, fmt.Errorf("active worker identity for session %d was not persisted", running.DetentSessionID)
+			return running.WorkerProcess, true, nil
 		}
 		return procgroup.Identity{}, false, nil
 	}

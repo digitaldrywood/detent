@@ -232,9 +232,9 @@ func TestNormalDurationMergeIsUnaffected(t *testing.T) {
 	if completion.Err != nil {
 		t.Fatalf("completion error = %v, want nil", completion.Err)
 	}
-	running := state.Running[issue.ID]
-	running.Issue.State = "Done"
-	state.Running[issue.ID] = running
+	if err := tracker.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+		t.Fatalf("UpdateIssueState(Done) error = %v", err)
+	}
 	orch.handleRunResult(t.Context(), &state, completion)
 
 	if _, ok := state.Blocked[issue.ID]; ok {

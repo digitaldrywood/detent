@@ -24,6 +24,7 @@ const (
 	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
 	FinalStateOperatorStopped       = "operator_stopped"
 	FinalStateMergeRevoked          = "merge_revoked"
+	FinalStateLaneRevoked           = "lane_revoked"
 	FinalStateCIUnavailable         = "ci_unavailable"
 	FinalStateMergeDurationExceeded = "merge_duration_exceeded"
 	FinalStateMergeFallbackExceeded = "merge_fallback_budget_exceeded"
@@ -49,6 +50,7 @@ var (
 	ErrSessionDurationExceeded      = errors.New("agent session duration exceeded")
 	ErrOperatorStopped              = errors.New("operator stopped run")
 	ErrMergeRevoked                 = errors.New("merge eligibility revoked")
+	ErrLaneRevoked                  = errors.New("worker-owned lane revoked")
 	ErrCIUnavailable                = errors.New("CI unavailable")
 	ErrMergeWorkerStartupTimeout    = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded  = errors.New("merge worker duration exceeded")
@@ -412,6 +414,7 @@ type RunRequest struct {
 	Issue                     connector.Issue
 	Attempt                   int
 	WorkAttemptID             int64
+	Generation                uint64
 	Mode                      string
 	DispatchSourceState       string
 	DispatchTargetState       string

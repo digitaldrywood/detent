@@ -79,11 +79,35 @@ The recommended GitHub Project board states are:
 
 Manual `Cancelled` means Detent should stop managing the work item, not that
 GitHub issues or pull requests are automatically closed. On the next poll that
-observes the cancelled terminal state, Detent cancels any running agent context,
-releases the global dispatch slot, clears configured claim lease state, records
-the run as completed with final state `Cancelled`, and asks the workspace
-backend to remove the Detent worktree, prune git worktrees, delete the generated
-`detent/` branch when safe, and reap workspace processes.
+observes the cancelled terminal state, Detent revokes the running worker lease,
+cancels its context, and terminates its persisted process group. The same
+revocation occurs when an item moves from any configured active state to any
+non-active state, including `Blocked` and review lanes. Detent first sends the
+graceful termination signal, waits 250 milliseconds by default, escalates to a
+forced kill, and waits another 250 milliseconds to verify exit. Process
+identity includes the recorded start time so a stale PID or process group is
+never signaled.
+
+Regular tracker polling observes a lane change within
+`max(polling.interval_ms, 2 minutes)`; a targeted refresh begins revocation as
+soon as that refresh is applied. These observation bounds are followed by the
+two bounded process-stop waits above. Stop request, result, escalation, and
+failure events are exposed in `/api/v1/state` telemetry.
+
+Worker completion is fenced by both the dispatch generation and durable work
+attempt ID. Detent also reads the current tracker lane before publishing normal
+completion state or artifact-gate fields. A stale generation, a revoked lease,
+or a non-active lane rejects the completion without changing the tracker. If
+the final tracker read fails, Detent fails closed and stops the worker. Moving
+the item back to an active state creates a fresh generation; output from the
+prior generation remains invalid.
+
+After the worker has exited, Detent releases the global dispatch slot, clears
+configured claim lease state, and records the work attempt as `lane_revoked`.
+For a terminal destination, it records the run as completed with that terminal
+state and asks the workspace backend to remove the Detent worktree, prune git
+worktrees, delete the generated `detent/` branch when safe, and reap workspace
+processes.
 
 Terminal cleanup is attempted on each poll for terminal states so a cancelled
 non-running issue can still clean up an existing Detent workspace without
