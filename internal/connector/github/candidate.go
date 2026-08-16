@@ -24,6 +24,7 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	var (
 		issues         []connector.Issue
 		pagesRead      int
+		itemsRead      int
 		incomplete     bool
 		authorRejected int
 		err            error
@@ -46,7 +47,7 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 		case c.usesIssueFieldStatus():
 			issues, pagesRead, incomplete, authorRejected, err = c.readIssueFieldCandidates(ctx, request)
 		default:
-			issues, pagesRead, incomplete, err = c.readProjectCandidates(ctx, request)
+			issues, pagesRead, itemsRead, incomplete, err = c.readProjectCandidates(ctx, request)
 		}
 	}
 	if err != nil {
@@ -54,6 +55,9 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	}
 
 	result := connector.NewCandidateResult(issues, request, pagesRead, incomplete)
+	if itemsRead > 0 {
+		result.ItemsRead = itemsRead
+	}
 	if authorRejected > 0 {
 		result.Filtered["author"] = authorRejected
 	}
@@ -355,13 +359,13 @@ func (c *Connector) issueFieldAuthorRejections(
 func (c *Connector) readProjectCandidates(
 	ctx context.Context,
 	request connector.CandidateRequest,
-) ([]connector.Issue, int, bool, error) {
+) ([]connector.Issue, int, int, bool, error) {
 	if c.projectID == "" {
-		return nil, 0, false, ErrMissingProject
+		return nil, 0, 0, false, ErrMissingProject
 	}
 	wantedStates := normalizedStateSet(request.States)
 	if len(wantedStates) == 0 {
-		return []connector.Issue{}, 0, false, nil
+		return []connector.Issue{}, 0, 0, false, nil
 	}
 
 	scanLimit := request.ProbeLimit()
@@ -373,37 +377,30 @@ func (c *Connector) readProjectCandidates(
 	totalItems := 0
 	pagesRead := 0
 	for {
-		if itemsRead >= scanLimit {
-			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, true, nil
-		}
 		var response struct {
 			Node *struct {
 				Items projectItemsConnection `json:"items"`
 			} `json:"node"`
 		}
-		pageSize := min(request.EffectivePageSize(), projectItemsPageSize, scanLimit-itemsRead)
+		pageSize := min(request.EffectivePageSize(), projectItemsPageSize)
 		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, observedStatusProjectItemsQuery, map[string]any{
 			"projectId": c.projectID,
 			"first":     pageSize,
 			"after":     after,
 		}, &response); err != nil {
-			return nil, 0, false, fmt.Errorf("fetch github project candidates: %w", err)
+			return nil, 0, 0, false, fmt.Errorf("fetch github project candidates: %w", err)
 		}
 		pagesRead++
 		if response.Node == nil {
-			return nil, 0, false, ErrProjectNotFound
+			return nil, 0, 0, false, ErrProjectNotFound
 		}
 		pageItems := response.Node.Items.Nodes
-		if remaining := scanLimit - itemsRead; len(pageItems) > remaining {
-			pageItems = pageItems[:remaining]
-		}
 		itemsRead += len(pageItems)
 		totalItems = max(totalItems, response.Node.Items.TotalCount)
 		for _, item := range pageItems {
 			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
-				return nil, 0, false, err
+				return nil, 0, 0, false, err
 			}
 			if !ok {
 				continue
@@ -411,26 +408,26 @@ func (c *Connector) readProjectCandidates(
 			if blankStatusItemID != "" && repairBlankStatuses {
 				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
 			}
-			if _, ok := wantedStates[normalizeStateName(issue.State)]; ok {
+			if _, ok := wantedStates[normalizeStateName(issue.State)]; ok && len(issues) < scanLimit {
 				issues = append(issues, issue)
 			}
 		}
-		if len(pageItems) < len(response.Node.Items.Nodes) {
+		if len(issues) >= scanLimit {
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, true, nil
+			return issues, pagesRead, itemsRead, true, nil
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, totalItems > itemsRead, nil
+			return issues, pagesRead, itemsRead, totalItems > itemsRead, nil
 		}
-		if itemsRead >= scanLimit || pagesRead >= scanLimit {
+		if pagesRead >= projectCandidatePageLimit {
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, true, nil
+			return issues, pagesRead, itemsRead, true, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
 		if cursor == "" {
-			return nil, 0, false, ErrInvalidResponse
+			return nil, 0, 0, false, ErrInvalidResponse
 		}
 		after = &cursor
 	}

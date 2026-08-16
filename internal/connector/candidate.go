@@ -138,6 +138,7 @@ func (r CandidateRequest) ProbeLimit() int {
 type CandidateResult struct {
 	Issues    []Issue        `json:"issues" yaml:"issues"`
 	PagesRead int            `json:"pages_read" yaml:"pages_read"`
+	ItemsRead int            `json:"items_read" yaml:"items_read"`
 	Truncated bool           `json:"truncated" yaml:"truncated"`
 	Filtered  map[string]int `json:"filtered,omitempty" yaml:"filtered,omitempty"`
 }
@@ -149,6 +150,7 @@ type CandidateReader interface {
 
 func NewCandidateResult(issues []Issue, request CandidateRequest, pagesRead int, incomplete bool) CandidateResult {
 	issues = append([]Issue(nil), issues...)
+	itemsRead := len(issues)
 	SortCandidateIssues(issues)
 	truncated := incomplete || len(issues) > request.Limit
 	if len(issues) > request.Limit {
@@ -157,6 +159,7 @@ func NewCandidateResult(issues []Issue, request CandidateRequest, pagesRead int,
 	return CandidateResult{
 		Issues:    issues,
 		PagesRead: pagesRead,
+		ItemsRead: itemsRead,
 		Truncated: truncated,
 		Filtered:  map[string]int{},
 	}

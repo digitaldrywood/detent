@@ -209,8 +209,8 @@ func TestNewCandidateResultSortsBeforeApplyingLimit(t *testing.T) {
 	if !reflect.DeepEqual(ids, []string{"1", "2"}) {
 		t.Fatalf("candidate IDs = %#v, want [1 2]", ids)
 	}
-	if !got.Truncated || got.PagesRead != 2 {
-		t.Fatalf("result = %#v, want two pages and truncation", got)
+	if !got.Truncated || got.PagesRead != 2 || got.ItemsRead != 3 {
+		t.Fatalf("result = %#v, want three read items, two pages, and truncation", got)
 	}
 	if issues[0].ID != "3" {
 		t.Fatalf("NewCandidateResult mutated input = %#v", issues)

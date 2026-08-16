@@ -95,6 +95,7 @@ type Result struct {
 	ProjectID       string
 	CandidatesFound int
 	Candidates      int
+	ItemsRead       int
 	Proposals       []admissionmodel.Proposal
 	Skipped         map[string]int
 	Truncated       map[string]int
@@ -366,10 +367,11 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		runErr = errors.Join(runErr, release())
 	}()
 
-	candidates, readerTruncations, readerFiltered, err := readAdmissionCandidates(ctx, settings.Issues, settings.Config)
+	candidates, readerTruncations, itemsRead, readerFiltered, err := readAdmissionCandidates(ctx, settings.Issues, settings.Config)
 	if err != nil {
 		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
 	}
+	result.ItemsRead = itemsRead
 	if readerTruncations > 0 {
 		result.Truncated["candidate_reader"] += readerTruncations
 	}
@@ -464,7 +466,7 @@ func readAdmissionCandidates(
 	ctx context.Context,
 	issues IssueStore,
 	cfg config.BacklogAdmission,
-) ([]connector.Issue, int, map[string]int, error) {
+) ([]connector.Issue, int, int, map[string]int, error) {
 	requests := make([]connector.CandidateRequest, 0, 3)
 	if len(cfg.Sources.States) > 0 {
 		requests = append(requests, connector.CandidateRequest{
@@ -488,6 +490,7 @@ func readAdmissionCandidates(
 	candidates := []connector.Issue{}
 	seen := map[string]struct{}{}
 	truncations := 0
+	itemsRead := 0
 	filtered := map[string]int{}
 	for _, request := range requests {
 		request.Limit = limit
@@ -499,8 +502,9 @@ func readAdmissionCandidates(
 		}
 		result, err := issues.ReadCandidates(ctx, request)
 		if err != nil {
-			return nil, 0, nil, fmt.Errorf("read %s selector: %w", request.Selector, err)
+			return nil, 0, 0, nil, fmt.Errorf("read %s selector: %w", request.Selector, err)
 		}
+		itemsRead += result.ItemsRead
 		if result.Truncated {
 			truncations++
 		}
@@ -516,7 +520,7 @@ func readAdmissionCandidates(
 			candidates = append(candidates, issue)
 		}
 	}
-	return candidates, truncations, filtered, nil
+	return candidates, truncations, itemsRead, filtered, nil
 }
 
 func (m *Manager) reconcileOpenProposals(
@@ -1838,9 +1842,17 @@ func (m *Manager) runAndLog(ctx context.Context, scheduledFor time.Time) {
 		}
 		return
 	}
+	m.logScheduledCompletion(ctx, result)
+}
+
+func (m *Manager) logScheduledCompletion(ctx context.Context, result Result) {
 	telemetry.LogLifecycleMessageContext(ctx, m.logger, slog.LevelInfo, telemetry.LifecycleAdmission, "scheduled_backlog_admission_completed", "scheduled backlog admission completed", telemetry.LifecycleCorrelation{ProjectID: result.ProjectID},
+		"items_read", result.ItemsRead,
+		"candidates_found", result.CandidatesFound,
 		"candidates", result.Candidates,
 		"proposals", len(result.Proposals),
+		"truncated", len(result.Truncated) > 0,
+		"truncations", result.Truncated,
 		"deferred_reason", result.DeferredReason,
 	)
 }
