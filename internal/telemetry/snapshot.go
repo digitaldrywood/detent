@@ -815,6 +815,7 @@ type Blocked struct {
 	RecoveryReachability    string               `json:"recovery_reachability,omitempty"`
 	RecoveryIntentResumable bool                 `json:"recovery_intent_resumable,omitempty"`
 	NeedsHumanAttention     bool                 `json:"needs_human_attention,omitempty"`
+	BlockerEvidence         []BlockerEvidence    `json:"blocker_evidence,omitempty"`
 	RecoveryRoot            *BlockedRecoveryRoot `json:"recovery_root,omitempty"`
 	BlockedAt               *time.Time           `json:"blocked_at,omitempty"`
 	LastEventAt             *time.Time           `json:"last_event_at,omitempty"`
@@ -827,6 +828,20 @@ type Blocked struct {
 	Priority                int                  `json:"priority,omitempty"`
 	PriorityName            string               `json:"priority_name,omitempty"`
 	StopReason              string               `json:"stop_reason,omitempty"`
+}
+
+type BlockerEvidence struct {
+	Type            string     `json:"type"`
+	Owner           string     `json:"owner"`
+	Status          string     `json:"status"`
+	Reference       string     `json:"reference,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	Detail          string     `json:"detail,omitempty"`
+	Unverifiable    bool       `json:"unverifiable,omitempty"`
+	AgeSeconds      int64      `json:"age_seconds,omitempty"`
+	RecordedAt      *time.Time `json:"recorded_at,omitempty"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	RecheckInterval string     `json:"recheck_interval,omitempty"`
 }
 
 type BlockedRecoveryRoot struct {

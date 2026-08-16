@@ -1017,6 +1017,9 @@ func boardMoreBlockedLabel(count int) string {
 
 func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
 	detail := boardBlockedDetail(row.Source, row.RecoveryAction, row.RecoveryReason, row.RecoveryRemedy, row.Error)
+	if evidence := boardBlockerEvidenceDetail(row, now); evidence != "" {
+		detail = strings.TrimSpace(detail + " · " + evidence)
+	}
 	if detail == "" && boardBlockedWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
 		if boardBlockedDependencyWaiting(row.Source, row.RecoveryReason, row.Error, row.BlockedBy) {
 			detail = "dependency not ready"
@@ -1031,6 +1034,25 @@ func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
 		detail += " · waiting " + prPipelineAge(*row.BlockedAt, now)
 	}
 	return detail
+}
+
+func boardBlockerEvidenceDetail(row telemetry.Blocked, now time.Time) string {
+	for _, evidence := range row.BlockerEvidence {
+		if !evidence.Unverifiable {
+			continue
+		}
+		parts := []string{"unverifiable " + strings.ReplaceAll(strings.TrimSpace(evidence.Type), "_", " ")}
+		if owner := strings.TrimSpace(evidence.Owner); owner != "" {
+			parts = append(parts, "owner "+owner)
+		}
+		if evidence.RecordedAt != nil && !now.IsZero() {
+			parts = append(parts, "age "+prPipelineAge(*evidence.RecordedAt, now))
+		} else if evidence.AgeSeconds > 0 {
+			parts = append(parts, "age "+formatDuration(float64(evidence.AgeSeconds)))
+		}
+		return strings.Join(parts, " · ")
+	}
+	return ""
 }
 
 func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card projectKanbanCard, terminal bool, scope string, fallbackProjectID string) boardCardView {

@@ -167,18 +167,13 @@ func (o *Orchestrator) blockedCauseSignals(
 }
 
 func blockedCauseWorkpadSignal(signal *workpad.Signal) *workpad.Signal {
-	if signal == nil {
+	cloned := workpad.CloneSignal(signal)
+	if cloned == nil {
 		return nil
 	}
-	cloned := *signal
 	cloned.CommentURL = ""
-	cloned.Blockers = append([]workpad.Blocker(nil), signal.Blockers...)
-	cloned.Fields = blockedCauseFields(signal.Fields)
-	if signal.Invalid != nil {
-		invalid := *signal.Invalid
-		cloned.Invalid = &invalid
-	}
-	return &cloned
+	cloned.Fields = blockedCauseFields(cloned.Fields)
+	return cloned
 }
 
 func blockedCauseLabels(labels []string, statusLabelPrefix string) []string {
@@ -269,25 +264,62 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	withDependencies := o.issueWithDependencyRefs(issue)
-	withDependencies, workpadRefs := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
+	withDependencies, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
 	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
-	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg)
-	if holdReason != "" && holdReason != "invalid_workpad_signal" {
-		o.recordBlockedRecoveryDecision(
-			ctx,
-			state,
-			withDependencies,
-			"hold",
-			holdReason,
-			nil,
-			"",
-			dependencyBlockersNotReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates)...,
-		)
+	references := make(map[string]connector.Issue, len(blockers))
+	for _, blocker := range blockers {
+		if blocker.Resolved {
+			references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
+		}
+	}
+	recorded := recordedBlockerEvaluation{}
+	if issue.WorkpadSignal == nil || len(issue.WorkpadSignal.Blockers) == 0 || workpadCurrent {
+		recorded = o.evaluateRecordedBlockers(ctx, state, issue, references, now)
+	}
+	if recorded.Found {
+		if recorded.Unverifiable {
+			reason := "unverifiable_blocker"
+			if issue.WorkpadSignal != nil {
+				switch {
+				case issue.WorkpadSignal.Invalid != nil:
+					if park, ok := o.currentBlockedRecoveryPark(ctx, state, issue); ok {
+						if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
+							return transitioned
+						}
+					}
+					reason = "invalid_workpad_signal"
+				case strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "":
+					reason = "human_action"
+				}
+			}
+			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", reason, nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			return false
+		}
+		if recorded.Holds {
+			action := "defer"
+			if recorded.HumanOwned {
+				action = "hold"
+			}
+			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, action, "recorded_blocker_holds", nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			return false
+		}
+		if len(blockers) > 0 && !dependencyBlockersReady(blockers, dependencyCfg, o.cfg.TerminalStates) {
+			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			return false
+		}
+		if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
+			return true
+		}
+		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
+		setBlockedEvidence(state, issue.ID, recorded.Evidence)
 		return false
 	}
-	holdReason = o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg)
+	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
+	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
 	if holdReason != "" && holdReason != "invalid_workpad_signal" {
 		o.recordBlockedRecoveryDecision(
 			ctx,
@@ -630,14 +662,16 @@ func (o *Orchestrator) blockedCauseHoldReason(
 	state *State,
 	workpadBlockers []dependencyBlocker,
 	dependencyCfg DependencyAutoUnblockConfig,
+	workpadCurrent bool,
 ) string {
 	if reason := BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel); reason != "" {
 		return reason
 	}
-	if issue.WorkpadSignal != nil {
-		if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
-			return "workpad_blocker"
-		}
+	if workpadCurrent && workpadHasRecordedNonDependencyBlocker(issue.WorkpadSignal) {
+		return "recorded_blocker"
+	}
+	if len(workpadBlockers) > 0 && !dependencyBlockersReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates) {
+		return "workpad_blocker"
 	}
 	if state != nil {
 		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blocked.Source == BlockedSourceOperatorStop {
@@ -645,6 +679,18 @@ func (o *Orchestrator) blockedCauseHoldReason(
 		}
 	}
 	return ""
+}
+
+func workpadHasRecordedNonDependencyBlocker(signal *workpad.Signal) bool {
+	if signal == nil || signal.Invalid != nil || strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
+		return false
+	}
+	for _, blocker := range signal.Blockers {
+		if blocker.Unverifiable || blocker.Predicate != nil && blocker.Predicate.Type != workpad.PredicateIssueState {
+			return true
+		}
+	}
+	return false
 }
 
 func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) string {
@@ -753,6 +799,7 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 	entry.RecoveryRemedy = BlockedRecoveryOperatorRemedy(issue, reason)
 	entry.RecoveryReachability = blockedRecoveryReachability(action)
 	entry.NeedsHumanAttention = strings.EqualFold(strings.TrimSpace(action), "hold")
+	entry.BlockerEvidence = nil
 	entry.RecoveryRoot = nil
 	if park != nil {
 		current := *park
@@ -794,6 +841,12 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 			return strings.TrimSpace(issue.WorkpadSignal.HumanAction)
 		}
 		return "Complete the requested human action, then update the Workpad."
+	case "unverifiable_blocker":
+		return "Replace the free-text blocker with a typed predicate, or resolve it and update the Workpad."
+	case "recorded_blocker_holds":
+		return "Detent will re-check the recorded blocker predicate on the next tick."
+	case "recorded_blocker":
+		return "Detent is retaining the issue while its recorded blocker predicate is active."
 	case "workpad_blocker":
 		return "Resolve or remove the current Workpad blocker references."
 	case "operator_stop":

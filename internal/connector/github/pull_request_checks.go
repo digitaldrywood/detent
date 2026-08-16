@@ -64,6 +64,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	}
 	return pullRequestCI{
 		State:                 state,
+		Checks:                pullRequestCheckInventory(checkRuns, statuses),
 		CheckRunCount:         len(checkRuns),
 		StatusContextCount:    len(statuses),
 		CIQueueSeconds:        telemetry.QueueSeconds,
@@ -76,6 +77,45 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		RequiredFailures:      requiredFailures,
 		TransientFailures:     transientFailures,
 	}, nil
+}
+
+func pullRequestCheckInventory(checkRuns []restCheckRun, statuses []restCommitStatus) []connector.PullRequestCheck {
+	checks := make([]connector.PullRequestCheck, 0, len(checkRuns)+len(statuses))
+	seen := map[string]struct{}{}
+	for _, group := range groupedCheckRuns(checkRuns) {
+		checkRun := latestCheckRun(group)
+		name := strings.TrimSpace(checkRun.Name)
+		key := strings.ToLower(name)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		checks = append(checks, connector.PullRequestCheck{
+			ID:            checkRun.ID,
+			WorkflowRunID: checkRunWorkflowRunID(checkRun),
+			Name:          name,
+			Status:        normalizedCheckRunStatus(checkRun),
+			Conclusion:    strings.ToLower(strings.TrimSpace(checkRun.Conclusion)),
+			DetailsURL:    firstNonBlank(checkRun.DetailsURL, checkRun.HTMLURL),
+		})
+	}
+	for _, status := range statuses {
+		name := strings.TrimSpace(status.Context)
+		key := strings.ToLower(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		checks = append(checks, connector.PullRequestCheck{
+			Name:       name,
+			Status:     strings.ToLower(strings.TrimSpace(status.State)),
+			Conclusion: strings.ToLower(strings.TrimSpace(status.State)),
+		})
+	}
+	return checks
 }
 
 func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequestRepo, checkRuns []restCheckRun) ([]connector.PullRequestCheck, error) {
@@ -552,12 +592,7 @@ func selectCheckRunContext(checkRuns []restCheckRun) checkRunContextResult {
 	if len(checkRuns) == 0 {
 		return checkRunContextResult{}
 	}
-	latest := checkRuns[0]
-	for _, checkRun := range checkRuns[1:] {
-		if restCheckRunAfter(checkRun, latest) {
-			latest = checkRun
-		}
-	}
+	latest := latestCheckRun(checkRuns)
 	status := normalizedCheckRunStatus(latest)
 	conclusion := strings.ToLower(strings.TrimSpace(latest.Conclusion))
 	if (status != "" && status != "completed") || conclusion == "" {
@@ -567,6 +602,19 @@ func selectCheckRunContext(checkRuns []restCheckRun) checkRunContextResult {
 		return checkRunContextResult{}
 	}
 	return checkRunContextResult{Run: latest, Settled: true}
+}
+
+func latestCheckRun(checkRuns []restCheckRun) restCheckRun {
+	if len(checkRuns) == 0 {
+		return restCheckRun{}
+	}
+	latest := checkRuns[0]
+	for _, checkRun := range checkRuns[1:] {
+		if restCheckRunAfter(checkRun, latest) {
+			latest = checkRun
+		}
+	}
+	return latest
 }
 
 func ignoredCheckRunConclusion(conclusion string) bool {

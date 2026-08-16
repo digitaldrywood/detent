@@ -6182,6 +6182,43 @@ func newGitHubTestConnector(t *testing.T, server *graphqlTestServer, cfg Config)
 	return c
 }
 
+func TestPullRequestCheckInventoryRetainsSettledNames(t *testing.T) {
+	t.Parallel()
+
+	checks := pullRequestCheckInventory(
+		[]restCheckRun{{ID: 1, Name: "Test", Status: "completed", Conclusion: "success"}},
+		[]restCommitStatus{{Context: "Deploy", State: "pending"}, {Context: "test", State: "success"}},
+	)
+	if len(checks) != 2 {
+		t.Fatalf("checks = %#v, want check run and distinct status context", checks)
+	}
+	if checks[0].Name != "Test" || checks[0].Status != "completed" || checks[0].Conclusion != "success" {
+		t.Fatalf("check run = %#v", checks[0])
+	}
+	if checks[1].Name != "Deploy" || checks[1].Status != "pending" {
+		t.Fatalf("status context = %#v", checks[1])
+	}
+}
+
+func TestPullRequestCheckInventoryRetainsIgnoredNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{"cancelled", "canceled", "skipped"}
+	for _, conclusion := range tests {
+		t.Run(conclusion, func(t *testing.T) {
+			t.Parallel()
+
+			checks := pullRequestCheckInventory(
+				[]restCheckRun{{ID: 1, Name: "Optional", Status: "completed", Conclusion: conclusion}},
+				nil,
+			)
+			if len(checks) != 1 || checks[0].Name != "Optional" || checks[0].Conclusion != conclusion {
+				t.Fatalf("checks = %#v, want ignored check name retained", checks)
+			}
+		})
+	}
+}
+
 type contextValueCaptureClient struct {
 	base   HTTPClient
 	key    any

@@ -710,6 +710,7 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 			RecoveryReachability:    entry.RecoveryReachability,
 			RecoveryIntentResumable: entry.RecoveryIntentResumable,
 			NeedsHumanAttention:     entry.NeedsHumanAttention,
+			BlockerEvidence:         cloneBlockerEvidence(entry.BlockerEvidence),
 			RecoveryRoot:            entry.RecoveryRoot,
 			Attempt:                 entry.Attempt,
 			WorkAttemptID:           entry.WorkAttemptID,

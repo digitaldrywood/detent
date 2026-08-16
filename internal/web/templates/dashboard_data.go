@@ -4781,6 +4781,7 @@ func blockedLastUpdateMeta(row telemetry.Blocked) string {
 }
 
 func blockedRecoverySummary(row telemetry.Blocked) string {
+	evidenceDetail := boardBlockerEvidenceDetail(row, time.Time{})
 	action := strings.ToLower(strings.TrimSpace(row.RecoveryAction))
 	reason := strings.ReplaceAll(strings.TrimSpace(row.RecoveryReason), "_", " ")
 	remedy := strings.TrimSpace(row.RecoveryRemedy)
@@ -4791,6 +4792,9 @@ func blockedRecoverySummary(row telemetry.Blocked) string {
 		}
 		if remedy != "" {
 			detail += ". " + remedy
+		}
+		if evidenceDetail != "" {
+			detail += ". " + evidenceDetail
 		}
 		return detail
 	}
@@ -4810,6 +4814,9 @@ func blockedRecoverySummary(row telemetry.Blocked) string {
 			if rootReason := strings.ReplaceAll(strings.TrimSpace(row.RecoveryRoot.Reason), "_", " "); rootReason != "" {
 				detail += " (" + rootReason + ")"
 			}
+		}
+		if evidenceDetail != "" {
+			detail += "; " + evidenceDetail
 		}
 		return detail
 	}

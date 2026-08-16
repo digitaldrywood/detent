@@ -847,6 +847,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		HydrationDegradedReason:      strings.TrimSpace(pullRequest.HydrationDegradedReason),
 		HydrationNextRetryAt:         cloneGitHubTime(pullRequest.HydrationNextRetryAt),
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+		Checks:                       append([]connector.PullRequestCheck(nil), pullRequest.CI.Checks...),
 		CheckRunCount:                pullRequest.CI.CheckRunCount,
 		StatusContextCount:           pullRequest.CI.StatusContextCount,
 		CIQueueSeconds:               pullRequest.CI.CIQueueSeconds,

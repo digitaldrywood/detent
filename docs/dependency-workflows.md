@@ -5,6 +5,32 @@
 Detent supports two dependency patterns. Use the one that matches how much of
 the wait should be visible on the board.
 
+Workpad blockers may declare live evidence directly. Each typed blocker names
+an `owner`, a `predicate`, and a `recheck_interval` or `expires_at`. Detent
+re-evaluates these records on every blocked-lane tick and clears the park when
+all predicates are false. The supported predicate types are `issue_state`,
+`pull_request_state`, `check_presence`, `budget_capacity`, and
+`config_fingerprint`.
+
+```detent-status
+schema: 1
+status: blocked
+blockers:
+  - ref: "owner/repo#123"
+    reason: "waiting for the dependency to close"
+    owner: orchestrator
+    predicate:
+      type: issue_state
+      states: [open]
+    recheck_interval: tick
+human_action: null
+```
+
+Free-text blocker entries remain valid for compatibility, but Detent marks
+them unverifiable, surfaces their owner and age, and never clears them
+automatically. An expired predicate that still holds is also unverifiable;
+orchestrator-owned unverifiable parks are escalated for operator attention.
+
 - **Keep the issue in `Todo`.** Add a machine-readable dependency line such as
   `Depends on: #123`, `Blocked by: owner/repo#123`, or
   `Depends on: https://github.com/owner/repo/issues/123`. Detent keeps the

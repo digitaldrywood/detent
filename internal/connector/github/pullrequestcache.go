@@ -226,6 +226,7 @@ func clonePullRequestStatus(status pullRequestStatus) pullRequestStatus {
 func clonePullRequestCI(ci pullRequestCI) pullRequestCI {
 	return pullRequestCI{
 		State:                 ci.State,
+		Checks:                append([]connector.PullRequestCheck(nil), ci.Checks...),
 		CheckRunCount:         ci.CheckRunCount,
 		StatusContextCount:    ci.StatusContextCount,
 		CIQueueSeconds:        ci.CIQueueSeconds,
