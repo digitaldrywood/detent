@@ -640,6 +640,7 @@ type projectKanbanCard struct {
 	DisabledText          string
 	RuntimeIdentity       agentidentity.Identity
 	ParkSummary           telemetry.ParkSummary
+	CompletionProgress    telemetry.CompletionProgress
 }
 
 const (
@@ -3065,6 +3066,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		RecentCompletion:      issue.Metadata[projectKanbanRecentCompletionMetadataKey] == "true",
 		RuntimeIdentity:       issue.RuntimeIdentity,
 		ParkSummary:           issue.ParkSummary,
+		CompletionProgress:    issue.CompletionProgress,
 	}
 	if projectKanbanCardUsesInternalIssueView(data, card) {
 		card.URL = workitem.WorkItemURL(data.DashboardURL, projectKanbanCardProjectID(data, card), card.Identifier)

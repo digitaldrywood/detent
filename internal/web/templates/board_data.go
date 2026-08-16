@@ -653,6 +653,9 @@ type boardCardView struct {
 	RuntimeBadge      bool
 	ParkSummary       string
 	ParkDetail        string
+	ProgressSummary   string
+	ProgressDetail    string
+	ProgressKind      primitives.Kind
 	BlockerSummary    string
 	Labels            []string
 	Effort            string
@@ -1100,6 +1103,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	view.BlockerSummary = card.BlockerSummary
 	view.ParkSummary, view.ParkDetail = boardCardParkSummary(card.ParkSummary)
+	view.ProgressSummary, view.ProgressDetail, view.ProgressKind = boardCardCompletionProgress(card.CompletionProgress)
 	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
 	view.AuthorDetail = boardCardAuthorDetail(card.AuthorID, card.OriginActor)
 	view.Activity = boardCardActivity(data.Snapshot, card)
@@ -1140,6 +1144,28 @@ func boardCardParkSummary(summary telemetry.ParkSummary) (string, string) {
 		details = append(details, cause.Cause+": "+formatInt(cause.Count)+"; first "+cause.FirstAt.Format(time.RFC3339)+"; last "+cause.LastAt.Format(time.RFC3339))
 	}
 	return line, strings.Join(details, "\n")
+}
+
+func boardCardCompletionProgress(progress telemetry.CompletionProgress) (string, string, primitives.Kind) {
+	if strings.TrimSpace(progress.Outcome) == telemetry.CompletionProgressOutcomeNoProgress {
+		summary := "Last turn · no progress"
+		if progress.ConsecutiveNoProgress > 0 && progress.NoProgressLimit > 0 {
+			summary += " " + strconv.Itoa(progress.ConsecutiveNoProgress) + "/" + strconv.Itoa(progress.NoProgressLimit)
+		}
+		return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindWarn
+	}
+	labels := make([]string, 0, len(progress.Kinds))
+	for _, kind := range progress.Kinds {
+		label := strings.ReplaceAll(strings.TrimSpace(kind), "_", " ")
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	if len(labels) > 0 {
+		summary := "Last turn · " + strings.Join(labels, " + ")
+		return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindInfo
+	}
+	return "", "", ""
 }
 
 func boardCardOriginDetail(origin string, actor string) string {

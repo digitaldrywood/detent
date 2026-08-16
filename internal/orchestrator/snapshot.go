@@ -77,12 +77,14 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
 	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now, s.laneEntries)
 	applyIssueRuntimeIdentities(boardIssueSnapshots, s.Running, s.WorkAttempts)
+	applyIssueCompletionProgress(boardIssueSnapshots, s.WorkAttempts)
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
 	s.applyArtifactGateWaitDispatchSnapshots(boardIssueSnapshots, boardIssues)
 	strandedActiveIssues := strandedActiveIssueSnapshots(s, boardIssueSnapshots, now)
 	pipelineIssueSnapshots := pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now, s.laneEntries)
 	applyIssueRuntimeIdentities(pipelineIssueSnapshots, s.Running, s.WorkAttempts)
+	applyIssueCompletionProgress(pipelineIssueSnapshots, s.WorkAttempts)
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	s.applyArtifactGateWaitDispatchSnapshots(pipelineIssueSnapshots, pipeline)
 	snapshot := telemetry.Snapshot{
@@ -766,6 +768,39 @@ func applyIssueRuntimeIdentities(issues []telemetry.Issue, running map[string]Ru
 				issues[index].RuntimeIdentity = attempt.RuntimeIdentity
 				break
 			}
+		}
+	}
+}
+
+func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry.WorkAttempt) {
+	for index := range issues {
+		var latest *telemetry.WorkAttempt
+		for attemptIndex := range attempts {
+			attempt := &attempts[attemptIndex]
+			if !strings.EqualFold(strings.TrimSpace(attempt.Status), string(store.WorkAttemptStatusTerminal)) ||
+				!snapshotIssueMatches(issues[index], attempt.IssueID, attempt.Identifier, attempt.IssueURL) {
+				continue
+			}
+			if latest == nil || workAttemptCompletedAfter(*attempt, *latest) {
+				latest = attempt
+			}
+		}
+		if latest == nil {
+			continue
+		}
+		record, ok := implementProgressRecordFromAttempt(store.WorkAttempt{
+			TerminalState:      store.WorkAttemptTerminalState(strings.TrimSpace(latest.TerminalState)),
+			WorkerMetadataJSON: latest.WorkerMetadataJSON,
+		})
+		if !ok {
+			continue
+		}
+		issues[index].CompletionProgress = telemetry.CompletionProgress{
+			Outcome:               strings.TrimSpace(record.Outcome),
+			Reason:                strings.TrimSpace(record.Reason),
+			Kinds:                 append([]string(nil), record.ProgressKinds...),
+			ConsecutiveNoProgress: record.ConsecutiveNoProgress,
+			NoProgressLimit:       record.NoProgressLimit,
 		}
 	}
 }

@@ -550,6 +550,12 @@ templ boardCardView2(card boardCardView) {
 				data-help-description={ card.ParkDetail }
 			>{ card.ParkSummary }</div>
 		}
+		if card.ProgressSummary != "" {
+			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ProgressKind) } title={ card.ProgressDetail } data-board-card-progress data-board-card-expanded>
+				@primitives.StatusDot(card.ProgressKind, false)
+				<span class="min-w-0 truncate font-mono">{ card.ProgressSummary }</span>
+			</div>
+		}
 		if card.AgeFooter != "" {
 			<div class="mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer data-board-card-expanded>
 				<span class="min-w-0 truncate">In lane</span>

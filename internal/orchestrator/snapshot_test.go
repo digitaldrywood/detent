@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -57,6 +59,37 @@ func TestStateSnapshotCarriesIssueAuthor(t *testing.T) {
 	snapshot := state.Snapshot(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
 	if got := snapshot.BoardIssues[0].AuthorID; got != "corylanou" {
 		t.Fatalf("BoardIssues[0].AuthorID = %q, want corylanou", got)
+	}
+}
+
+func TestStateSnapshotCarriesLatestCompletionProgress(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	state := newState(normalizeConfig(Config{}))
+	state.BoardIssues = []connector.Issue{{ID: "issue-1838", Identifier: "digitaldrywood/detent#1838"}}
+	state.WorkAttempts = []telemetry.WorkAttempt{
+		{
+			AttemptID:          1,
+			IssueID:            "issue-1838",
+			Status:             string(store.WorkAttemptStatusTerminal),
+			TerminalState:      string(store.WorkAttemptTerminalNoProgress),
+			CompletedAt:        timePointer(now.Add(-time.Minute)),
+			WorkerMetadataJSON: `{"completion_progress":{"outcome":"no_progress","reason":"completed_clean_diff_without_pull_request","consecutive_no_progress":1,"no_progress_limit":3}}`,
+		},
+		{
+			AttemptID:          2,
+			IssueID:            "issue-1838",
+			Status:             string(store.WorkAttemptStatusTerminal),
+			TerminalState:      string(store.WorkAttemptTerminalSuccess),
+			CompletedAt:        timePointer(now),
+			WorkerMetadataJSON: `{"completion_progress":{"outcome":"success","reason":"verifiable_non_diff_progress","progress_kinds":["audit_artifact"],"no_progress_limit":3}}`,
+		},
+	}
+
+	progress := state.Snapshot(now).BoardIssues[0].CompletionProgress
+	if progress.Outcome != "success" || progress.Reason != implementProgressReasonNonDiff || !reflect.DeepEqual(progress.Kinds, []string{"audit_artifact"}) {
+		t.Fatalf("CompletionProgress = %#v", progress)
 	}
 }
 

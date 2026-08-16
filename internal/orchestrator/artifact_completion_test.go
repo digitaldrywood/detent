@@ -421,13 +421,19 @@ func TestArtifactGateDispatchWorkpadSnapshot(t *testing.T) {
 		connector: tracker,
 	}
 
-	hash, ok := orch.artifactGateDispatchWorkpadSnapshot(context.Background(), issue)
+	hash, comments, ok := orch.artifactGateDispatchWorkpadSnapshot(context.Background(), issue)
 
 	if !ok {
 		t.Fatal("artifactGateDispatchWorkpadSnapshot() ok = false")
 	}
 	if want := artifactGateWorkpadStatusHash([]connector.IssueComment{comment}); hash != want {
 		t.Fatalf("artifactGateDispatchWorkpadSnapshot() hash = %q, want %q", hash, want)
+	}
+	progressIssue := cloneIssue(issue)
+	progressIssue.Comments = comments
+	progress := implementProgressArtifactSnapshotFromIssue(progressIssue, ok)
+	if !progress.WorkpadRead {
+		t.Fatal("dispatch progress Workpad snapshot was not reused")
 	}
 	if !reflect.DeepEqual(tracker.fetchComments, []string{issue.ID}) {
 		t.Fatalf("FetchIssueComments() issues = %#v, want %#v", tracker.fetchComments, []string{issue.ID})

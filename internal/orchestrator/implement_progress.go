@@ -18,6 +18,8 @@ import (
 const (
 	implementProgressMetadataKey       = "completion_progress"
 	implementProgressOutcomeNoProgress = "no_progress"
+	implementProgressReasonNonDiff     = "verifiable_non_diff_progress"
+	implementProgressReasonMixed       = "workspace_diff_and_verifiable_non_diff_progress"
 	implementDependencyDeferralReason  = "dependency_deferral"
 	implementMergedCompletionReason    = "merged_pull_request_completion"
 	noProgressLimitReason              = "no_progress_limit"
@@ -51,6 +53,7 @@ type implementCompletionProgressDecision struct {
 	DependencyDeferral     bool
 	DependencyBlockers     []implementDependencyBlocker
 	RejectedBlockerRefs    []string
+	ProgressKinds          []string
 }
 
 type implementProgressRecord struct {
@@ -74,6 +77,15 @@ type implementProgressRecord struct {
 	DependencyDeferral     bool                              `json:"dependency_deferral,omitempty"`
 	DependencyBlockers     []implementDependencyBlocker      `json:"dependency_blockers,omitempty"`
 	RejectedBlockerRefs    []string                          `json:"rejected_blocker_refs,omitempty"`
+	ProgressKinds          []string                          `json:"progress_kinds,omitempty"`
+}
+
+type implementProgressArtifactSnapshot struct {
+	TrackerState   string
+	NativeBlockers []string
+	WorkpadRead    bool
+	WorkpadReason  string
+	WorkpadFields  map[string]string
 }
 
 type implementDependencyBlocker struct {
@@ -119,11 +131,16 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 	if !implementProgressLinkedPullRequest(running.Issue) {
 		if pullRequestUpdated {
 			decision.Reason = "pull_request_created_or_updated"
+			decision.ProgressKinds = []string{"pull_request"}
 			return decision
 		}
 		issue, workpadCurrent := o.refreshImplementCompletionIssue(ctx, running.Issue)
 		decision.Issue = issue
 		decision.TrackerState = strings.TrimSpace(issue.State)
+		decision.ProgressKinds = implementProgressArtifactKinds(
+			running.DispatchProgress,
+			implementProgressArtifactSnapshotFromIssue(issue, workpadCurrent),
+		)
 		if workpadCurrent {
 			decision.WorkpadStatus, decision.HumanAction = implementProgressBlockedHumanAction(issue)
 		}
@@ -219,7 +236,15 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				decision.HumanAction,
 			)
 			if matchingAttempts == 0 {
+				decision.ProgressKinds = append([]string{"workspace_diff"}, decision.ProgressKinds...)
 				decision.Reason = "workspace_diff_present_without_pull_request"
+				if len(decision.ProgressKinds) > 1 {
+					decision.Reason = implementProgressReasonMixed
+				}
+				return decision
+			}
+			if len(decision.ProgressKinds) > 0 {
+				decision.Reason = implementProgressReasonNonDiff
 				return decision
 			}
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -229,6 +254,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 			if decision.Block {
 				decision.BlockReason = noProgressLimitReason
 			}
+			return decision
+		}
+		if len(decision.ProgressKinds) > 0 {
+			decision.Reason = implementProgressReasonNonDiff
 			return decision
 		}
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -261,8 +290,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		o.warnImplementProgressHydration(issue, reason, nil)
 		return decision
 	}
+	var workpadCurrent bool
 	if pullRequestMerged(issue.PullRequest) {
-		refreshed, workpadCurrent := o.refreshImplementCompletionIssue(ctx, issue)
+		var refreshed connector.Issue
+		refreshed, workpadCurrent = o.refreshImplementCompletionIssue(ctx, issue)
 		decision.Issue = refreshed
 		decision.TrackerState = strings.TrimSpace(refreshed.State)
 		if workpadCurrent && implementProgressMergedCompletion(refreshed, running.DiffStats) {
@@ -272,7 +303,17 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 			return decision
 		}
 		issue = refreshed
+	} else {
+		var refreshed connector.Issue
+		refreshed, workpadCurrent = o.refreshImplementCompletionIssue(ctx, issue)
+		issue = refreshed
 	}
+	decision.Issue = issue
+	decision.TrackerState = strings.TrimSpace(issue.State)
+	decision.ProgressKinds = implementProgressArtifactKinds(
+		running.DispatchProgress,
+		implementProgressArtifactSnapshotFromIssue(issue, workpadCurrent),
+	)
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	decision.CurrentSignature = signature
 	if !implementProgressSignatureUsable(signature) {
@@ -319,6 +360,7 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 	}
 	if !implementProgressSignatureEqual(previous, signature) {
 		decision.Reason = "signature_changed"
+		decision.ProgressKinds = append([]string{"pull_request"}, decision.ProgressKinds...)
 		return decision
 	}
 	if !implementProgressDiffStatsClean(running.DiffStats) {
@@ -326,7 +368,15 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 			decision.Reason = "workspace_diffstat_unavailable"
 			return decision
 		}
+		decision.ProgressKinds = append([]string{"workspace_diff"}, decision.ProgressKinds...)
 		decision.Reason = "workspace_diff_present"
+		if len(decision.ProgressKinds) > 1 {
+			decision.Reason = implementProgressReasonMixed
+		}
+		return decision
+	}
+	if len(decision.ProgressKinds) > 0 {
+		decision.Reason = implementProgressReasonNonDiff
 		return decision
 	}
 
@@ -338,6 +388,97 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		decision.BlockReason = noProgressLimitReason
 	}
 	return decision
+}
+
+func (o *Orchestrator) implementProgressDispatchArtifactSnapshot(ctx context.Context, issue connector.Issue) implementProgressArtifactSnapshot {
+	snapshot := implementProgressArtifactSnapshotFromIssue(issue, false)
+	if o == nil || o.connector == nil {
+		return snapshot
+	}
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return snapshot
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("implement progress dispatch artifact snapshot failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return snapshot
+	}
+	issue.Comments = comments
+	return implementProgressArtifactSnapshotFromIssue(issue, true)
+}
+
+func implementProgressArtifactSnapshotFromIssue(issue connector.Issue, workpadRead bool) implementProgressArtifactSnapshot {
+	snapshot := implementProgressArtifactSnapshot{
+		TrackerState:   normalizeState(issue.State),
+		NativeBlockers: implementProgressBlockedRefIdentifiers(issue.BlockedBy),
+		WorkpadRead:    workpadRead,
+	}
+	if !workpadRead {
+		return snapshot
+	}
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured {
+		return snapshot
+	}
+	snapshot.WorkpadReason = strings.TrimSpace(signal.ReasonCode)
+	snapshot.WorkpadFields = cloneStringMap(signal.Fields)
+	return snapshot
+}
+
+func implementProgressArtifactKinds(previous, current implementProgressArtifactSnapshot) []string {
+	kinds := make([]string, 0, 5)
+	if previous.TrackerState != "" && current.TrackerState != "" && previous.TrackerState != current.TrackerState {
+		kinds = append(kinds, "tracker_state_transition")
+	}
+	if implementProgressHasNewString(current.NativeBlockers, previous.NativeBlockers) {
+		kinds = append(kinds, "linked_blocker")
+	}
+	if !previous.WorkpadRead || !current.WorkpadRead {
+		return kinds
+	}
+	if current.WorkpadReason != "" && current.WorkpadReason != previous.WorkpadReason {
+		kinds = append(kinds, "workpad_predicate")
+	}
+	if implementProgressFieldsAdvanced(previous.WorkpadFields, current.WorkpadFields) {
+		kinds = append(kinds, "audit_artifact")
+	}
+	return kinds
+}
+
+func implementProgressBlockedRefIdentifiers(refs []connector.BlockedRef) []string {
+	identifiers := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		identifier := strings.TrimSpace(ref.Identifier)
+		if identifier == "" {
+			identifier = strings.TrimSpace(ref.ID)
+		}
+		if identifier != "" {
+			identifiers = append(identifiers, identifier)
+		}
+	}
+	slices.Sort(identifiers)
+	return slices.Compact(identifiers)
+}
+
+func implementProgressHasNewString(current, previous []string) bool {
+	for _, value := range current {
+		if !slices.Contains(previous, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func implementProgressFieldsAdvanced(previous, current map[string]string) bool {
+	for name, value := range current {
+		if previousValue, ok := previous[name]; !ok || strings.TrimSpace(previousValue) != strings.TrimSpace(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) recentImplementCompletionAttempts(
@@ -372,6 +513,9 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 		return cloneIssue(issue), false
 	}
 	refreshed := connector.Issue{}
+	hydratedPullRequest := issue.PullRequest
+	hydratedPRNumber := issue.PRNumber
+	hydratedPRRepository := issue.PRRepository
 	for _, candidate := range issues {
 		if strings.TrimSpace(candidate.ID) == strings.TrimSpace(issue.ID) {
 			refreshed = mergeIssueTrackerFields(issue, candidate)
@@ -381,6 +525,11 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 	if strings.TrimSpace(refreshed.ID) == "" {
 		o.warnImplementProgressRefresh(issue, "tracker issue was not returned", nil)
 		return cloneIssue(issue), false
+	}
+	if hydratedPullRequest != nil {
+		refreshed.PullRequest = hydratedPullRequest
+		refreshed.PRNumber = hydratedPRNumber
+		refreshed.PRRepository = hydratedPRRepository
 	}
 	reader, ok := o.connector.(connector.IssueCommentReader)
 	if !ok {
@@ -587,6 +736,7 @@ func implementCompletionProgressMetadata(decision implementCompletionProgressDec
 		DependencyDeferral:     decision.DependencyDeferral,
 		DependencyBlockers:     append([]implementDependencyBlocker(nil), decision.DependencyBlockers...),
 		RejectedBlockerRefs:    append([]string(nil), decision.RejectedBlockerRefs...),
+		ProgressKinds:          append([]string(nil), decision.ProgressKinds...),
 	}
 	if decision.PreviousSignatureFound {
 		previous := implementProgressSignatureRecordFromSignature(decision.PreviousSignature)
