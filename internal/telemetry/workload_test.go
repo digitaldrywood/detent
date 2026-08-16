@@ -54,6 +54,18 @@ func TestBoardWorkload(t *testing.T) {
 			want: BoardWorkloadCounts{},
 		},
 		{
+			name: "custom tracker states preserve runtime workload state",
+			snapshot: Snapshot{
+				BoardIssues: []Issue{
+					{ID: "running", State: "Research"},
+					{ID: "queued", State: "Draft"},
+				},
+				Running: []Running{{Issue: Issue{ID: "running"}}},
+				Queue:   []Queued{{Issue: Issue{ID: "queued"}}},
+			},
+			want: BoardWorkloadCounts{Load: 2, Todo: 1, Active: 1},
+		},
+		{
 			name: "runtime rows fill absent board details without double counting",
 			snapshot: Snapshot{
 				Project: Project{ID: "detent"},
