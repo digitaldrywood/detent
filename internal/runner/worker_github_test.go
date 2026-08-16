@@ -335,6 +335,11 @@ func TestWorkerGitHubGovernorStopsAtReserve(t *testing.T) {
 	if err := stop(); !errors.Is(err, ErrWorkerGitHubRESTReserved) {
 		t.Fatalf("stop governor error = %v, want ErrWorkerGitHubRESTReserved", err)
 	}
+	for _, want := range []string{"consumer=shared_pool", "credential_identity=github-rest:worker"} {
+		if !strings.Contains(context.Cause(governedCtx).Error(), want) {
+			t.Fatalf("context cause = %q, want containing %q", context.Cause(governedCtx), want)
+		}
+	}
 	for _, want := range []string{"remaining=1200", "worker_reserved_headroom=1250", "orchestrator_dispatch_floor=1000"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want containing %q", logs.String(), want)

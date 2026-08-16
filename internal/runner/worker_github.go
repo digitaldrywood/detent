@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -88,6 +89,22 @@ func (r *Runner) workerGitHubPolicy(ctx context.Context, cfg config.Config, issu
 		return workerGitHubPolicy{}, err
 	}
 	return policy.classifyCredential(ctx)
+}
+
+func (r *Runner) ProbeGitHubRESTBudget(ctx context.Context, issue connector.Issue) (telemetry.RESTBudget, bool, error) {
+	workflow, _, _, _ := r.runtimeSnapshot()
+	policy, err := r.workerGitHubPolicy(ctx, workflow.Config, issue.Identifier)
+	if err != nil {
+		return telemetry.RESTBudget{}, true, err
+	}
+	if !policy.Enabled {
+		return telemetry.RESTBudget{}, false, nil
+	}
+	budget, err := policy.probe(ctx)
+	if err != nil {
+		return telemetry.RESTBudget{}, true, err
+	}
+	return policy.restBudget(budget), true, nil
 }
 
 func workerGitHubPolicyName(policy workerGitHubPolicy) string {
@@ -568,11 +585,9 @@ func (p workerGitHubPolicy) probeContext(ctx context.Context) (context.Context, 
 
 func (p workerGitHubPolicy) observe(budget workerGitHubBudget, onUpdate AgentUpdateHandler) error {
 	consumer := telemetry.RESTConsumerWorker
-	endpointFamily := "worker credential"
 	usageAttribution := "worker"
 	if p.CredentialMode == workerGitHubCredentialShared {
 		consumer = telemetry.RESTConsumerSharedPool
-		endpointFamily = "shared credential pool"
 		usageAttribution = "indeterminate"
 	}
 	p.Logger.Info(
@@ -591,23 +606,31 @@ func (p workerGitHubPolicy) observe(budget workerGitHubBudget, onUpdate AgentUpd
 	if onUpdate == nil {
 		return nil
 	}
+	return onUpdate(AgentUpdate{
+		Type:       AgentUpdateRateLimits,
+		RateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{p.restBudget(budget)}},
+	})
+}
+
+func (p workerGitHubPolicy) restBudget(budget workerGitHubBudget) telemetry.RESTBudget {
 	resetAt := budget.ResetAt
 	observedAt := budget.ObservedAt
-	return onUpdate(AgentUpdate{
-		Type: AgentUpdateRateLimits,
-		RateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{
-			Consumer:            consumer,
-			CredentialIdentity:  p.CredentialIdentity,
-			EndpointFamily:      endpointFamily,
-			Resource:            "core",
-			Remaining:           budget.Remaining,
-			Used:                budget.Used,
-			Limit:               budget.Limit,
-			MinRemainingReserve: p.MinRemaining,
-			ResetAt:             &resetAt,
-			ObservedAt:          &observedAt,
-		}}},
-	})
+	endpointFamily := "worker credential"
+	if p.CredentialMode == workerGitHubCredentialShared {
+		endpointFamily = "shared credential pool"
+	}
+	return telemetry.RESTBudget{
+		Consumer:            p.budgetConsumer(),
+		CredentialIdentity:  p.CredentialIdentity,
+		EndpointFamily:      endpointFamily,
+		Resource:            "core",
+		Remaining:           budget.Remaining,
+		Used:                budget.Used,
+		Limit:               budget.Limit,
+		MinRemainingReserve: p.MinRemaining,
+		ResetAt:             &resetAt,
+		ObservedAt:          &observedAt,
+	}
 }
 
 func (p workerGitHubPolicy) reserveError(budget workerGitHubBudget) error {
@@ -626,7 +649,15 @@ func (p workerGitHubPolicy) reserveError(budget workerGitHubBudget) error {
 		"limit", budget.Limit,
 		"reset_at", budget.ResetAt,
 	)
-	return fmt.Errorf("%w: remaining=%s reserve=%s reset_at=%s", ErrWorkerGitHubRESTReserved, strconv.FormatInt(budget.Remaining, 10), strconv.FormatInt(p.MinRemaining, 10), budget.ResetAt.Format(time.RFC3339))
+	return fmt.Errorf(
+		"%w: consumer=%s credential_identity=%s remaining=%s reserve=%s reset_at=%s",
+		ErrWorkerGitHubRESTReserved,
+		p.budgetConsumer(),
+		p.CredentialIdentity,
+		strconv.FormatInt(budget.Remaining, 10),
+		strconv.FormatInt(p.MinRemaining, 10),
+		budget.ResetAt.Format(time.RFC3339),
+	)
 }
 
 func (p workerGitHubPolicy) budgetConsumer() string {

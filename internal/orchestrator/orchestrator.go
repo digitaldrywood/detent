@@ -235,6 +235,8 @@ type Orchestrator struct {
 	recoveryInspector       runpkg.BlockedRecoveryInspector
 	dailyBudgetStatus       runpkg.DailyBudgetStatusProvider
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
+	githubRESTBudgetProber  runpkg.GitHubRESTBudgetProber
+	githubRESTBudgetProbes  map[string]time.Time
 	now                     func() time.Time
 	retrospector            Retrospector
 	workerProcesses         WorkerProcessStore
@@ -380,6 +382,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if candidate, ok := runner.(runpkg.IssueBudgetStatusProvider); ok {
 		issueBudgetStatus = candidate
 	}
+	var githubRESTBudgetProber runpkg.GitHubRESTBudgetProber
+	if candidate, ok := runner.(runpkg.GitHubRESTBudgetProber); ok {
+		githubRESTBudgetProber = candidate
+	}
 
 	logger := deps.Logger
 	if logger == nil {
@@ -513,6 +519,8 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		recoveryInspector:       blockedRecoveryInspector,
 		dailyBudgetStatus:       dailyBudgetStatus,
 		issueBudgetStatus:       issueBudgetStatus,
+		githubRESTBudgetProber:  githubRESTBudgetProber,
+		githubRESTBudgetProbes:  map[string]time.Time{},
 		now:                     now,
 		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
 		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},

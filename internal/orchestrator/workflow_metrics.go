@@ -68,6 +68,14 @@ type workflowLaneBlockedRecoveryMetadata struct {
 	Reachability            string `json:"reachability,omitempty"`
 	HoldReason              string `json:"hold_reason,omitempty"`
 	OperatorRemedy          string `json:"operator_remedy,omitempty"`
+	ResourceKind            string `json:"resource_kind,omitempty"`
+	ResourceConsumer        string `json:"resource_consumer,omitempty"`
+	ResourceCredential      string `json:"resource_credential,omitempty"`
+	ResourceRemaining       int64  `json:"resource_remaining,omitempty"`
+	ResourceLimit           int64  `json:"resource_limit,omitempty"`
+	ResourceReserve         int64  `json:"resource_reserve,omitempty"`
+	ResourceResetAt         string `json:"resource_reset_at,omitempty"`
+	ResourceObservedAt      string `json:"resource_observed_at,omitempty"`
 }
 
 func (m workflowLaneBlockedRecoveryMetadata) intentResumable() bool {

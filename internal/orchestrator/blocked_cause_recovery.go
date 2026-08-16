@@ -336,6 +336,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_recovery", &park, park.CauseFingerprint)
 		return false
 	}
+	if handled, transitioned := o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now); handled {
+		return transitioned
+	}
 	if park.Predicate == blockedRecoveryPredicateManaged {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false
@@ -790,6 +793,10 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 		return "Review the blocking cause, then move the issue to a lane that starts fresh work."
 	case "transition_failed":
 		return "Retry the lane transition after restoring tracker write access."
+	case githubRESTBudgetWaitingReason, githubRESTBudgetObservationPendingReason:
+		return "Detent will return the issue to its prior lane after the matching GitHub REST budget rises above the worker reserve."
+	case githubRESTBudgetRearmConsumedReason:
+		return "Wait for the next GitHub REST reset window, or move the issue manually after confirming capacity is stable."
 	case "managed_recovery":
 		return "Review the configured recovery owner and move the issue manually if that owner cannot recover it."
 	case blockedReadyPullRequestLookupNoneReason:
