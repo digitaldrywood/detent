@@ -1147,6 +1147,13 @@ func boardCardParkSummary(summary telemetry.ParkSummary) (string, string) {
 }
 
 func boardCardCompletionProgress(progress telemetry.CompletionProgress) (string, string, primitives.Kind) {
+	if strings.TrimSpace(progress.Outcome) == telemetry.CompletionProgressOutcomeNoProgress {
+		summary := "Last turn · no progress"
+		if progress.ConsecutiveNoProgress > 0 && progress.NoProgressLimit > 0 {
+			summary += " " + strconv.Itoa(progress.ConsecutiveNoProgress) + "/" + strconv.Itoa(progress.NoProgressLimit)
+		}
+		return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindWarn
+	}
 	labels := make([]string, 0, len(progress.Kinds))
 	for _, kind := range progress.Kinds {
 		label := strings.ReplaceAll(strings.TrimSpace(kind), "_", " ")
@@ -1158,14 +1165,7 @@ func boardCardCompletionProgress(progress telemetry.CompletionProgress) (string,
 		summary := "Last turn · " + strings.Join(labels, " + ")
 		return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindInfo
 	}
-	if strings.TrimSpace(progress.Outcome) != telemetry.CompletionProgressOutcomeNoProgress {
-		return "", "", ""
-	}
-	summary := "Last turn · no progress"
-	if progress.ConsecutiveNoProgress > 0 && progress.NoProgressLimit > 0 {
-		summary += " " + strconv.Itoa(progress.ConsecutiveNoProgress) + "/" + strconv.Itoa(progress.NoProgressLimit)
-	}
-	return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindWarn
+	return "", "", ""
 }
 
 func boardCardOriginDetail(origin string, actor string) string {

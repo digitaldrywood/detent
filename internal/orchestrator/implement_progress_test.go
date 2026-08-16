@@ -320,6 +320,22 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantComment:     "consecutive_no_progress_attempts: 3",
 		},
 		{
+			name:         "audit field resets streak despite identical non-empty diff",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"}, "", ""),
+				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"}, "", ""),
+			},
+			diffStats:          DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         implementProgressReasonNonDiff,
+			wantProgressKinds:  []string{"audit_artifact"},
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
+		},
+		{
 			name:         "unpushed arithmetic without linked pull request defers",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{

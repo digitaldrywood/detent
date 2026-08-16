@@ -100,6 +100,11 @@ func TestBoardCardRendersCompletionProgressClassification(t *testing.T) {
 			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "completed_clean_diff_without_pull_request", ConsecutiveNoProgress: 2, NoProgressLimit: 3},
 			want:     []string{"Last turn · no progress 2/3", "completed_clean_diff_without_pull_request"},
 		},
+		{
+			name:     "safety no-progress overrides observed artifact",
+			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "stranded_unpushed_work", Kinds: []string{"audit_artifact"}, ConsecutiveNoProgress: 3, NoProgressLimit: 3},
+			want:     []string{"Last turn · no progress 3/3", "stranded_unpushed_work"},
+		},
 	}
 
 	for _, tt := range tests {

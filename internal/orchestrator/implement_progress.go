@@ -243,6 +243,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				}
 				return decision
 			}
+			if len(decision.ProgressKinds) > 0 {
+				decision.Reason = implementProgressReasonNonDiff
+				return decision
+			}
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "unchanged_workspace_diff_without_pull_request"
 			decision.ConsecutiveNoProgress = 1 + matchingAttempts

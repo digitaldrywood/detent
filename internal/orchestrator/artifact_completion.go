@@ -159,9 +159,9 @@ func artifactGateWorkpadStatusHash(comments []connector.IssueComment) string {
 	return ""
 }
 
-func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, issue connector.Issue) (string, bool) {
+func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, issue connector.Issue) (string, []connector.IssueComment, bool) {
 	if o == nil || o.connector == nil || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact {
-		return "", false
+		return "", nil, false
 	}
 	reader, ok := o.connector.(connector.IssueCommentReader)
 	if !ok {
@@ -172,7 +172,7 @@ func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, 
 				"reason", "issue comment reader unavailable",
 			)
 		}
-		return "", false
+		return "", nil, false
 	}
 	comments, err := reader.FetchIssueComments(ctx, issue)
 	if err != nil {
@@ -183,9 +183,9 @@ func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, 
 				"error", err,
 			)
 		}
-		return "", false
+		return "", nil, false
 	}
-	return artifactGateWorkpadStatusHash(comments), true
+	return artifactGateWorkpadStatusHash(comments), comments, true
 }
 
 func (o *Orchestrator) evaluateArtifactGateConvergence(
