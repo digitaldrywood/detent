@@ -418,10 +418,9 @@ func runningIssueIDs(running map[string]Running) []string {
 }
 
 func (o *Orchestrator) markRefresh(state *State, now time.Time) {
-	state.PollInterval = o.cfg.PollInterval
 	state.MaxConcurrentAgents = o.cfg.MaxConcurrentAgents
-	if o.cfg.PollInterval > 0 {
-		state.NextRefreshAt = now.Add(o.cfg.PollInterval)
+	if state.PollInterval > 0 {
+		state.NextRefreshAt = now.Add(state.PollInterval)
 		return
 	}
 	state.NextRefreshAt = time.Time{}

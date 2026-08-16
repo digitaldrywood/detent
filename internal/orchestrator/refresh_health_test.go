@@ -85,6 +85,43 @@ func TestTrackerRefreshHealthTracksConsecutiveSourceFailures(t *testing.T) {
 	}
 }
 
+func TestMarkRefreshKeepsEffectiveIntervalForStaleness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		configured        time.Duration
+		effective         time.Duration
+		wantStaleAfter    time.Duration
+		wantNextRefreshAt time.Time
+	}{
+		{name: "base cadence", configured: time.Minute, effective: time.Minute, wantStaleAfter: 2 * time.Minute, wantNextRefreshAt: now.Add(time.Minute)},
+		{name: "rate limit adjusted cadence", configured: time.Minute, effective: 4 * time.Minute, wantStaleAfter: 8 * time.Minute, wantNextRefreshAt: now.Add(4 * time.Minute)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{PollInterval: tt.configured})
+			state := newState(cfg)
+			state.PollInterval = tt.effective
+			orch := &Orchestrator{cfg: cfg}
+			orch.markRefresh(&state, now)
+
+			if state.PollInterval != tt.effective {
+				t.Fatalf("PollInterval = %s, want effective interval %s", state.PollInterval, tt.effective)
+			}
+			if !state.NextRefreshAt.Equal(tt.wantNextRefreshAt) {
+				t.Fatalf("NextRefreshAt = %s, want %s", state.NextRefreshAt, tt.wantNextRefreshAt)
+			}
+			if got := refreshStaleAfter(state.PollInterval); got != tt.wantStaleAfter {
+				t.Fatalf("refreshStaleAfter() = %s, want %s", got, tt.wantStaleAfter)
+			}
+		})
+	}
+}
+
 type refreshHealthConnector struct {
 	candidateErr error
 	driftErr     error

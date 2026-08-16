@@ -117,6 +117,7 @@ type KanbanData struct {
 	ProjectID                   string
 	TrackerKind                 string
 	States                      []string
+	ActiveStates                []string
 	TerminalStates              []string
 	TerminalStatesByProject     map[string][]string
 	DispatchPriorityByLabel     []string
@@ -135,6 +136,7 @@ type KanbanProjectData struct {
 	ProjectID                   string
 	TrackerKind                 string
 	States                      []string
+	ActiveStates                []string
 	TerminalStates              []string
 	DispatchPriorityByLabel     []string
 	AllowedTransitions          map[string][]string
@@ -2660,9 +2662,6 @@ func projectKanbanBoardLoaded(data DashboardData) bool {
 // integration mode — per-card allowed targets still gate each move by the
 // owning project's transition policy.
 func projectKanbanDragDropEnabled(data DashboardData) bool {
-	if !snapshotReady(data.Snapshot) {
-		return false
-	}
 	if isProjectDashboard(data) {
 		return kanbanIntegrationEnabled(data)
 	}
@@ -2704,6 +2703,7 @@ func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) Kan
 		ProjectID:                   projectID,
 		TrackerKind:                 projectData.TrackerKind,
 		States:                      projectData.States,
+		ActiveStates:                projectData.ActiveStates,
 		TerminalStates:              projectData.TerminalStates,
 		DispatchPriorityByLabel:     projectData.DispatchPriorityByLabel,
 		AllowedTransitions:          projectData.AllowedTransitions,
@@ -3244,11 +3244,11 @@ func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
 // mode and transition policy (projectKanbanCardKanbanData), and cards from
 // read-only or unresolvable projects stay inert with a reason chip.
 func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCard) string {
-	if !snapshotReady(data.Snapshot) {
-		if snapshotDegraded(data.Snapshot) {
-			return "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready."
-		}
+	if data.Snapshot.LastKnown {
 		return "Tracker snapshot is not ready; moves are disabled until data is current."
+	}
+	if reason := projectKanbanCardRefreshDisabledText(data, card); reason != "" {
+		return reason
 	}
 	kanban := projectKanbanCardKanbanData(data, card)
 	if !strings.EqualFold(strings.TrimSpace(kanban.Mode), "integration") {
@@ -3271,6 +3271,56 @@ func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCar
 		return "No allowed transition is configured from " + state + "."
 	}
 	return ""
+}
+
+func projectKanbanCardRefreshDisabledText(data DashboardData, card projectKanbanCard) string {
+	refresh := projectKanbanCardRefresh(data, card)
+	if !snapshotHasRefreshSignal(refresh) {
+		if !snapshotHasRefreshSignal(data.Snapshot.Refresh) && (!data.Snapshot.GeneratedAt.IsZero() || snapshotHasLoadedData(data.Snapshot)) {
+			return ""
+		}
+		refresh = data.Snapshot.Refresh
+	}
+	if refresh.ReadinessStatus() == telemetry.RefreshStatusInitializing {
+		return "Tracker snapshot is not ready; moves are disabled until data is current."
+	}
+
+	kanban := projectKanbanCardKanbanData(data, card)
+	sourceName := telemetry.RefreshSourceStatuses
+	sourceLabel := "status"
+	if projectKanbanStateIn(card.Stage, kanban.ActiveStates) {
+		sourceName = telemetry.RefreshSourceCandidates
+		sourceLabel = "candidate"
+	}
+	if source, ok := refresh.Source(sourceName); ok {
+		if refreshSourceStale(refresh, source, data.Snapshot.GeneratedAt) {
+			return "Tracker " + sourceLabel + " data for this card is stale; moves are disabled until it refreshes."
+		}
+		return ""
+	}
+	if refresh.ReadinessStatus() == telemetry.RefreshStatusDegraded {
+		return "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready."
+	}
+	return ""
+}
+
+func projectKanbanCardRefresh(data DashboardData, card projectKanbanCard) telemetry.Refresh {
+	projectID := strings.TrimSpace(projectKanbanCardProjectID(data, card))
+	for _, project := range data.Snapshot.Projects {
+		if strings.EqualFold(strings.TrimSpace(project.Project.ID), projectID) && snapshotHasRefreshSignal(project.Refresh) {
+			return project.Refresh
+		}
+	}
+	return data.Snapshot.Refresh
+}
+
+func projectKanbanStateIn(state string, states []string) bool {
+	for _, candidate := range states {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(state)) {
+			return true
+		}
+	}
+	return false
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
