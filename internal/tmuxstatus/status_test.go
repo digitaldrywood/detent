@@ -98,6 +98,49 @@ func TestStatusLifecycle(t *testing.T) {
 	}
 }
 
+func TestStatusUpdateUsesCurrentBlockedRows(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     string
+	}{
+		{
+			name: "ignores historical blocked count",
+			snapshot: telemetry.Snapshot{
+				Counts: telemetry.Counts{Running: 7, Blocked: 10},
+			},
+			want: "detent 7r/0q/0b",
+		},
+		{
+			name: "counts current blocked rows",
+			snapshot: telemetry.Snapshot{
+				Blocked: []telemetry.Blocked{{}, {}},
+			},
+			want: "detent 0r/0q/2b",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runner := &recordingRunner{output: "@7\tDetent:2\n"}
+			status, err := newStatus(context.Background(), runner, "%7")
+			if err != nil {
+				t.Fatalf("newStatus() error = %v", err)
+			}
+
+			if err := status.Update(context.Background(), test.snapshot); err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+
+			if got := runner.calls[1][3]; got != test.want {
+				t.Fatalf("window name = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestStatusRetriesFailedRename(t *testing.T) {
 	t.Parallel()
 	runner := &recordingRunner{output: "@7\tDetent:2\n"}
