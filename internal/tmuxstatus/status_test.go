@@ -1,9 +1,13 @@
 package tmuxstatus
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -65,7 +69,7 @@ func TestFormat(t *testing.T) {
 func TestStatusLifecycle(t *testing.T) {
 	t.Parallel()
 	runner := &recordingRunner{output: "@7\tDetent:2\n"}
-	status, err := newStatus(context.Background(), runner, "%7")
+	status, err := newStatus(context.Background(), runner, "%7", discardLogger())
 	if err != nil {
 		t.Fatalf("newStatus() error = %v", err)
 	}
@@ -125,7 +129,7 @@ func TestStatusUpdateUsesCurrentBlockedRows(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			runner := &recordingRunner{output: "@7\tDetent:2\n"}
-			status, err := newStatus(context.Background(), runner, "%7")
+			status, err := newStatus(context.Background(), runner, "%7", discardLogger())
 			if err != nil {
 				t.Fatalf("newStatus() error = %v", err)
 			}
@@ -144,7 +148,7 @@ func TestStatusUpdateUsesCurrentBlockedRows(t *testing.T) {
 func TestStatusRetriesFailedRename(t *testing.T) {
 	t.Parallel()
 	runner := &recordingRunner{output: "@7\tDetent:2\n"}
-	status, err := newStatus(context.Background(), runner, "%7")
+	status, err := newStatus(context.Background(), runner, "%7", discardLogger())
 	if err != nil {
 		t.Fatalf("newStatus() error = %v", err)
 	}
@@ -163,6 +167,77 @@ func TestStatusRetriesFailedRename(t *testing.T) {
 	if len(runner.calls) != 3 || !reflect.DeepEqual(runner.calls[1], wantRename) || !reflect.DeepEqual(runner.calls[2], wantRename) {
 		t.Fatalf("commands = %#v, want two rename attempts %#v", runner.calls, wantRename)
 	}
+}
+
+func TestStatusLogsLifecycle(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		firstFails    bool
+		firstCounts   telemetry.Counts
+		secondCounts  telemetry.Counts
+		wantFirstName string
+	}{
+		{
+			name:          "logs first successful rename only",
+			firstCounts:   telemetry.Counts{Running: 1},
+			secondCounts:  telemetry.Counts{Running: 2},
+			wantFirstName: "detent 1r/0q/0b",
+		},
+		{
+			name:          "failed rename does not consume first success log",
+			firstFails:    true,
+			firstCounts:   telemetry.Counts{Running: 1},
+			secondCounts:  telemetry.Counts{Running: 2},
+			wantFirstName: "detent 2r/0q/0b",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			runner := &recordingRunner{output: "@7\tDetent:2\n"}
+			status, err := newStatus(context.Background(), runner, "%7", logger)
+			if err != nil {
+				t.Fatalf("newStatus() error = %v", err)
+			}
+
+			if test.firstFails {
+				runner.err = errors.New("tmux unavailable")
+			}
+			firstErr := status.Update(context.Background(), telemetry.Snapshot{Counts: test.firstCounts})
+			if test.firstFails && firstErr == nil {
+				t.Fatal("first Update() error = nil, want rename failure")
+			}
+			if !test.firstFails && firstErr != nil {
+				t.Fatalf("first Update() error = %v", firstErr)
+			}
+			runner.err = nil
+			if err := status.Update(context.Background(), telemetry.Snapshot{Counts: test.secondCounts}); err != nil {
+				t.Fatalf("second Update() error = %v", err)
+			}
+
+			output := logs.String()
+			if got := strings.Count(output, "msg=\"initialized tmux window status\""); got != 1 {
+				t.Fatalf("initialization log count = %d, want 1; logs:\n%s", got, output)
+			}
+			if !strings.Contains(output, "window_id=@7 original_name=Detent:2") {
+				t.Fatalf("initialization log missing window metadata; logs:\n%s", output)
+			}
+			if got := strings.Count(output, "msg=\"tmux window status renamed\""); got != 1 {
+				t.Fatalf("rename log count = %d, want 1; logs:\n%s", got, output)
+			}
+			if !strings.Contains(output, "window_id=@7 name=\""+test.wantFirstName+"\"") {
+				t.Fatalf("rename log missing first successful name %q; logs:\n%s", test.wantFirstName, output)
+			}
+		})
+	}
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 type recordingRunner struct {
