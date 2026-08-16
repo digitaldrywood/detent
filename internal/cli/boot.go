@@ -329,8 +329,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
 	var windowStatus *tmuxstatus.Status
-	if tmuxstatus.Enabled(os.Getenv("TMUX"), cfg.Global.Ops.TmuxWindowStatus) {
-		windowStatus, err = tmuxstatus.New(runCtx)
+	tmuxPane := os.Getenv("TMUX_PANE")
+	if tmuxstatus.Enabled(os.Getenv("TMUX"), tmuxPane, cfg.Global.Ops.TmuxWindowStatus) {
+		windowStatus, err = tmuxstatus.New(runCtx, tmuxPane)
 		if err != nil {
 			logger.Warn("initialize tmux window status failed", "error", err)
 		}
