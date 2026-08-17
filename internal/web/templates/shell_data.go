@@ -465,7 +465,10 @@ func appShellDensity(data DashboardShellData) string {
 }
 
 func appShellHTMLAttributes(data DashboardShellData) templ.Attributes {
-	attrs := templ.Attributes{"lang": "en"}
+	attrs := templ.Attributes{
+		"lang":                   "en",
+		"data-detent-connection": "connecting",
+	}
 	if strings.TrimSpace(data.Theme) == "light" {
 		attrs["data-theme"] = "light"
 	}

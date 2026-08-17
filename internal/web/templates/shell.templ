@@ -44,9 +44,13 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			<div id="kanban-feedback" role="status" aria-live="polite" hidden></div>
 			@DetailSheetHost()
 			@ChatPanelHost()
-			<div id="detent-build-update" class="fixed bottom-4 right-4 z-50 hidden items-center gap-3 rounded-card border border-line bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-build-update hidden>
+			<div id="detent-build-update" class="fixed bottom-20 right-4 z-50 hidden items-center gap-3 rounded-card border border-line bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-build-update hidden>
 				<span data-detent-build-update-message></span>
 				<button type="button" class="font-medium text-accent hover:underline" data-detent-build-reload>Reload</button>
+			</div>
+			<div id="detent-connection-notice" class="fixed left-1/2 top-16 z-50 hidden max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-card border border-warn/50 bg-surface px-4 py-3 text-sm text-text shadow-lg" role="alert" aria-live="assertive" data-detent-connection-notice hidden>
+				<span>Connection lost. Board moves are disabled until Detent reconnects.</span>
+				<button type="button" class="font-medium text-accent hover:underline" data-detent-connection-reload>Reload</button>
 			</div>
 			<div id="detent-action-notice" class="fixed right-4 top-16 z-50 hidden max-w-md items-center gap-3 rounded-card border border-accent/40 bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-action-notice hidden>
 				<span data-detent-action-notice-message></span>
@@ -256,6 +260,7 @@ templ LiveStatus(data DashboardShellData) {
 		id="live-indicator"
 		class={ "flex flex-none items-center gap-2 text-xs " + appLiveStatusTextClass(data) }
 		data-live-indicator
+		data-detent-live-version={ appShellVersionLabel(data) }
 		data-freshness-kind={ string(appLiveStatusKind(data)) }
 		data-freshness-label={ appLiveStatusLabel(data) }
 		sse-swap="live-status"
@@ -282,25 +287,82 @@ templ liveBehaviorScript() {
 		(function () {
 			var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 			var servedVersion = document.documentElement.getAttribute("data-detent-served-version") || "";
+			var buildConfirmed = false;
+			var connectedOnce = false;
+			var eventSources = new Map();
+			var createEventSource = window.htmx && window.htmx.createEventSource;
+			if (typeof createEventSource === "function") {
+				window.htmx.createEventSource = function (url) {
+					var existing = eventSources.get(url);
+					if (existing && existing.readyState !== EventSource.CLOSED) return existing;
+					var source = createEventSource(url);
+					eventSources.set(url, source);
+					return source;
+				};
+			}
+
+			function connectionNotice(visible) {
+				var notice = document.querySelector("[data-detent-connection-notice]");
+				if (!notice) return;
+				notice.hidden = !visible;
+				notice.classList.toggle("hidden", !visible);
+				notice.classList.toggle("flex", visible);
+			}
+
+			function setBoardMovesDisabled(disabled) {
+				document.querySelectorAll("[data-kanban-card]").forEach(function (card) {
+					if (!(card instanceof HTMLElement)) return;
+					if (disabled) {
+						if (card.dataset.kanbanAction === "move") {
+							card.dataset.kanbanConnectionAction = "move";
+							delete card.dataset.kanbanAction;
+						}
+						if (card.dataset.kanbanConnectionAction === "move") {
+							card.dataset.kanbanConnectionDisabled = "true";
+						}
+						return;
+					}
+					if (card.dataset.kanbanConnectionAction !== "move") return;
+					card.dataset.kanbanAction = "move";
+					delete card.dataset.kanbanConnectionAction;
+					delete card.dataset.kanbanConnectionDisabled;
+				});
+			}
+
+			function setConnectionState(state) {
+				document.documentElement.setAttribute("data-detent-connection", state);
+				var connected = state === "connected";
+				setBoardMovesDisabled(!connected);
+				connectionNotice(!connected && connectedOnce && state !== "reload-required");
+				document.dispatchEvent(new CustomEvent("detent:connectionChange", { detail: { state: state } }));
+			}
 
 			function applyBuildVersion(event) {
 				var target = event.target instanceof Element ? event.target : null;
-				if (!target || target.id !== "detent-build-version") return;
+				if (!target) return;
 				var detail = event.detail || {};
 				var markup = typeof detail.data === "string" ? detail.data : "";
 				if (!markup) return;
 				var template = document.createElement("template");
 				template.innerHTML = markup;
-				var incoming = template.content.querySelector("[data-detent-build-version]");
+				var incoming = target.id === "detent-build-version"
+					? template.content.querySelector("[data-detent-build-version]")
+					: template.content.querySelector("[data-detent-live-version]");
 				if (!incoming) return;
-				var liveVersion = incoming.getAttribute("data-detent-build-version") || "";
-				var footer = target;
+				var liveVersion = incoming.getAttribute("data-detent-build-version") || incoming.getAttribute("data-detent-live-version") || "";
+				var footer = target.id === "detent-build-version" ? target : null;
 				if (footer) {
 					footer.textContent = liveVersion;
 					footer.setAttribute("title", liveVersion);
 					footer.setAttribute("data-detent-build-version", liveVersion);
 				}
-				if (!servedVersion || !liveVersion || servedVersion === liveVersion) return;
+				if (!servedVersion || !liveVersion) return;
+				if (servedVersion === liveVersion) {
+					buildConfirmed = true;
+					return;
+				}
+				buildConfirmed = false;
+				setConnectionState("reload-required");
 				var notice = document.querySelector("[data-detent-build-update]");
 				if (!notice) return;
 				var message = notice.querySelector("[data-detent-build-update-message]");
@@ -312,7 +374,8 @@ templ liveBehaviorScript() {
 			document.addEventListener("htmx:sseBeforeMessage", applyBuildVersion);
 			document.addEventListener("click", function (event) {
 				var reload = event.target instanceof Element ? event.target.closest("[data-detent-build-reload]") : null;
-				if (reload) window.location.reload();
+				var connectionReload = event.target instanceof Element ? event.target.closest("[data-detent-connection-reload]") : null;
+				if (reload || connectionReload) window.location.reload();
 			});
 
 			function liveParts() {
@@ -326,6 +389,8 @@ templ liveBehaviorScript() {
 				};
 			}
 			function setDisconnected() {
+				buildConfirmed = false;
+				setConnectionState("disconnected");
 				var parts = liveParts();
 				if (!parts || document.documentElement.getAttribute("data-live") === "stale") return;
 				document.documentElement.setAttribute("data-live", "stale");
@@ -350,9 +415,17 @@ templ liveBehaviorScript() {
 				parts.indicator.classList.remove("text-warn", "text-err", "text-info", "text-sec");
 				parts.indicator.classList.add(kind === "warn" ? "text-warn" : kind === "err" ? "text-err" : kind === "info" ? "text-info" : "text-sec");
 			}
+			function setConnecting() {
+				if (document.documentElement.getAttribute("data-detent-connection") === "reload-required") return;
+				buildConfirmed = false;
+				setConnectionState("connecting");
+			}
 			function setConnected() {
+				if (!buildConfirmed || document.documentElement.getAttribute("data-detent-connection") === "reload-required") return;
 				var parts = liveParts();
 				if (!parts) return;
+				connectedOnce = true;
+				setConnectionState("connected");
 				document.documentElement.removeAttribute("data-live");
 				restoreFreshness(parts);
 				var snapshot = document.getElementById("snapshot");
@@ -360,8 +433,14 @@ templ liveBehaviorScript() {
 			}
 			document.addEventListener("htmx:sseError", setDisconnected);
 			document.addEventListener("htmx:sseClose", setDisconnected);
-			document.addEventListener("htmx:sseOpen", setConnected);
+			document.addEventListener("htmx:sseOpen", setConnecting);
 			document.addEventListener("htmx:sseBeforeMessage", setConnected);
+			document.addEventListener("htmx:afterSettle", function () {
+				setBoardMovesDisabled(document.documentElement.getAttribute("data-detent-connection") !== "connected");
+			});
+			document.addEventListener("DOMContentLoaded", function () {
+				setBoardMovesDisabled(document.documentElement.getAttribute("data-detent-connection") !== "connected");
+			});
 
 			var previousText = new Map();
 			var previousCounts = new Map();

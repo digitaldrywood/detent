@@ -1991,17 +1991,33 @@ func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 	defer conn.Close()
 	defer body.Close()
 
-	event := readRawSSEEvent(t, conn, reader)
-	if event.name != "snapshot" {
-		t.Fatalf("event name = %q, want snapshot", event.name)
+	buildEvent := readRawSSEFrame(t, conn, reader)
+	if buildEvent.name != "build" {
+		t.Fatalf("event name = %q, want build", buildEvent.name)
+	}
+	if !strings.Contains(buildEvent.data, `data-detent-build-version`) {
+		t.Fatalf("demo build SSE event missing version marker:\n%s", buildEvent.data)
+	}
+
+	snapshotEvent := readRawSSEEvent(t, conn, reader)
+	if snapshotEvent.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
 	for _, want := range []string{`id="board-lanes"`, `data-board-key="project.dogfood"`} {
-		if !strings.Contains(event.data, want) {
-			t.Fatalf("demo Kanban SSE event missing %q:\n%s", want, event.data)
+		if !strings.Contains(snapshotEvent.data, want) {
+			t.Fatalf("demo Kanban SSE event missing %q:\n%s", want, snapshotEvent.data)
 		}
 	}
-	if strings.Contains(event.data, "Fleet grid") {
-		t.Fatalf("demo Kanban SSE event rendered fleet snapshot:\n%s", event.data)
+	if strings.Contains(snapshotEvent.data, "Fleet grid") {
+		t.Fatalf("demo Kanban SSE event rendered fleet snapshot:\n%s", snapshotEvent.data)
+	}
+
+	liveStatusEvent := readRawSSEEvent(t, conn, reader)
+	if liveStatusEvent.name != "live-status" {
+		t.Fatalf("event name = %q, want live-status", liveStatusEvent.name)
+	}
+	if !strings.Contains(liveStatusEvent.data, `data-detent-live-version`) {
+		t.Fatalf("demo live-status SSE event missing version marker:\n%s", liveStatusEvent.data)
 	}
 }
 
