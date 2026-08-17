@@ -486,7 +486,7 @@ templ boardCardView2(card boardCardView) {
 				><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
 			}
 			if card.MetaRight != "" {
-				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
+				@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
 			} else if card.MoveDisabledText != "" {
 				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			} else if card.Done {
@@ -501,7 +501,7 @@ templ boardCardView2(card boardCardView) {
 				<span class="min-w-0 truncate">{ card.CompactSignal }</span>
 			}
 			if card.MetaRight != "" {
-				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
+				@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
 			} else if card.MoveDisabledText != "" {
 				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			}

@@ -3,13 +3,23 @@ package primitives
 import "strings"
 
 templ TrackerReferenceLink(label string, url string, class string) {
+	@trackerReferenceLink(label, url, class, false)
+}
+
+templ TrackerReferenceLinkIsolated(label string, url string, class string) {
+	@trackerReferenceLink(label, url, class, true)
+}
+
+templ trackerReferenceLink(label string, url string, class string, isolated bool) {
 	<span class={ class }>
 		if strings.TrimSpace(url) != "" {
 			<a
 				href={ strings.TrimSpace(url) }
 				target="_blank"
 				rel="noopener noreferrer"
-				onclick="event.stopPropagation()"
+				if isolated {
+					onclick="event.stopPropagation()"
+				}
 				class="text-accent underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 			>{ label }</a>
 		} else {

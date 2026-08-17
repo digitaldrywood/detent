@@ -1672,7 +1672,7 @@ func boardCardView2(card boardCardView) templ.Component {
 			}
 		}
 		if card.MetaRight != "" {
-			templ_7745c5c3_Err = primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1785,7 +1785,7 @@ func boardCardView2(card boardCardView) templ.Component {
 			}
 		}
 		if card.MetaRight != "" {
-			templ_7745c5c3_Err = primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
