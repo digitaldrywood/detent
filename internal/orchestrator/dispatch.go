@@ -165,11 +165,15 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return !mergeWorkerIssue(issue) || lastDispatchFailure != dispatchIssueFailureGlobalSlotUnavailable
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
+			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
+			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
+			rescheduled.ForgeHost = retry.ForgeHost
+			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
 			state.Retry[issue.ID] = rescheduled
 		},
 		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
@@ -300,6 +304,7 @@ const (
 	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
 	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
+	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
 )
@@ -378,11 +383,19 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
 		return dispatchIssueOutcome{reason: dispatchSkipCompletionDeferred}
 	}
+	queuedRetry, retryQueued := state.Retry[issue.ID]
+	if retryState != nil {
+		queuedRetry = *retryState
+		retryQueued = true
+	}
 	if activeTrackerUnavailable(state) && (trackerDependentDispatch(issue) || trackerUnavailableRetry(state, issue.ID)) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable}
 	}
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || ciUnavailableRetry(state, issue.ID)) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureCIUnavailable}
+	}
+	if forgeAvailabilityBlocks(state, issue, queuedRetry, o.cfg.ForgeHost, now) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
@@ -392,11 +405,6 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchIssueOutcome{reason: reason}
-	}
-	queuedRetry, retryQueued := state.Retry[issue.ID]
-	if retryState != nil {
-		queuedRetry = *retryState
-		retryQueued = true
 	}
 	runMode := o.dispatchMode(ctx, state, issue)
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
@@ -635,6 +643,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		WorkerHost:          workerHost,
 		CapacityScope:       capacityScope,
 		CapacityProbe:       capacityProbeKey != "",
+		ForgeProbeHost:      reservedForgeProbeHost(state, issue.ID),
 		ModelPermitExempt:   !modelPermitRequired,
 		StopDestination:     o.cfg.StopRunTargetState,
 		StopPriorityOptions: stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
@@ -668,6 +677,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
 		ProgressProbe:       o.sessionProgressProbe(issue),
 		MergePrecheck:       cloneMergePrecheck(queuedRetry.MergePrecheck),
+		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
 	if !modelPermitRequired {
 		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)

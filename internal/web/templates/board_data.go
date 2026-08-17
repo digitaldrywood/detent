@@ -37,6 +37,7 @@ const (
 	boardAlertKindFailureBreaker         boardAlertKind = "project-failure-breaker"
 	boardAlertKindDispatchStall          boardAlertKind = "dispatch-stall"
 	boardAlertKindTrackerUnavailable     boardAlertKind = "tracker-unavailable"
+	boardAlertKindForgeUnavailable       boardAlertKind = "forge-unavailable"
 	boardAlertKindCIUnavailable          boardAlertKind = "ci-unavailable"
 	boardAlertKindStaleness              boardAlertKind = "staleness-warning"
 	boardAlertKindTrackerStale           boardAlertKind = "board-stale-data"
@@ -54,6 +55,7 @@ const (
 	boardAlertSeverityFailureBreaker                    = 500
 	boardAlertSeverityCIUnavailable                     = 550
 	boardAlertSeverityTrackerUnavailable                = 560
+	boardAlertSeverityForgeUnavailable                  = 565
 	boardAlertSeverityDispatchStall                     = 575
 	boardAlertSeverityLastKnown                         = 600
 )
@@ -99,6 +101,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardTrackerUnavailableAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardForgeUnavailableAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardDispatchStallAlert(snapshot); ok {
@@ -268,6 +273,73 @@ func boardTrackerUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool
 			Path:    path,
 			Target:  "#board-alert-tracker-unavailable",
 			Confirm: "Clear the tracker availability condition and resume dispatch?",
+		}
+	}
+	return alert, true
+}
+
+func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if len(snapshot.ForgeUnavailable) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.ForgeUnavailable))
+	for index, condition := range snapshot.ForgeUnavailable {
+		label := strings.TrimSpace(condition.ProjectID)
+		if label == "" {
+			label = strings.TrimSpace(condition.Host)
+		}
+		if label == "" {
+			label = "Forge"
+		}
+		host := strings.TrimSpace(condition.Host)
+		if host == "" {
+			host = "Configured"
+		}
+		detail := strings.Trim(strings.TrimSpace(condition.Operation)+" · "+strings.TrimSpace(condition.ErrorClass), " ·")
+		if !condition.NextProbeAt.IsZero() {
+			delay := condition.NextProbeAt.Sub(snapshot.GeneratedAt)
+			if delay < 0 {
+				delay = 0
+			}
+			detail += " · next write canary in " + formatDuration(delay.Seconds())
+		}
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-forge-unavailable-" + boardAlertRowSlug(label, index),
+			Label:   label,
+			Summary: host + " forge · forge_unavailable",
+			Detail:  strings.Trim(detail, " ·"),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	alert := boardAlert{
+		ID:            "board-alert-forge-unavailable",
+		Kind:          boardAlertKindForgeUnavailable,
+		Severity:      boardAlertSeverityForgeUnavailable,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Forge writes unavailable (" + boardCountLabel(len(snapshot.ForgeUnavailable), "host", "hosts") + ")",
+		DetailSummary: "Push and pull-request delivery are paused until a write canary succeeds; other work can proceed.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}
+	if len(snapshot.ForgeUnavailable) == 1 {
+		condition := snapshot.ForgeUnavailable[0]
+		query := url.Values{}
+		if projectID := strings.TrimSpace(condition.ProjectID); projectID != "" {
+			query.Set("project_id", projectID)
+		}
+		if host := strings.TrimSpace(condition.Host); host != "" {
+			query.Set("host", host)
+		}
+		path := "/api/v1/forge/availability/clear"
+		if encoded := query.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+		alert.Action = &boardAlertAction{
+			Label:   "Clear condition",
+			Path:    path,
+			Target:  "#board-alert-forge-unavailable",
+			Confirm: "Clear the forge availability condition and allow write delivery to resume?",
 		}
 	}
 	return alert, true

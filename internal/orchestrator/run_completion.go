@@ -183,6 +183,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
 		return
 	}
+	if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	o.finishForgeAvailabilityProbe(state, event, running)
 	deliverableLookup := deliverableRecoveryLookupResult{}
 	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
 	if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {

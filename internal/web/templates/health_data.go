@@ -57,6 +57,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = trackerUnavailableHealthDetail(snapshot.TrackerUnavailable)
 		return view
 	}
+	if len(snapshot.ForgeUnavailable) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Forge writes are unavailable."
+		view.Detail = forgeUnavailableHealthDetail(snapshot.ForgeUnavailable)
+		return view
+	}
 	if len(snapshot.CIUnavailable) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "CI is unavailable."
@@ -230,6 +236,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthDispatchStallRow(stall))
 	}
 	rows = append(rows, healthTrackerUnavailableRows(snapshot.TrackerUnavailable)...)
+	rows = append(rows, healthForgeUnavailableRows(snapshot.ForgeUnavailable)...)
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
 	for _, warning := range snapshot.StalenessWarnings {
 		rows = append(rows, healthStalenessRow(warning))
@@ -352,6 +359,32 @@ func healthTrackerUnavailableRows(conditions []telemetry.TrackerCondition) []hea
 	return rows
 }
 
+func healthForgeUnavailableRows(conditions []telemetry.ForgeCondition) []healthRow {
+	rows := make([]healthRow, 0, len(conditions))
+	for index, condition := range conditions {
+		projectID := strings.TrimSpace(condition.ProjectID)
+		if projectID == "" {
+			projectID = "project"
+		}
+		host := strings.TrimSpace(condition.Host)
+		if host == "" {
+			host = "configured forge"
+		}
+		detail := "forge_unavailable · " + strings.Trim(strings.TrimSpace(condition.Operation)+" · "+strings.TrimSpace(condition.ErrorClass), " ·")
+		rows = append(rows, healthRow{
+			ID:        "health-forge-unavailable-" + boardAlertRowSlug(projectID+"-"+host, index),
+			Component: "Forge writes · " + host + " · " + projectID,
+			Kind:      primitives.KindErr,
+			Status:    "Unavailable",
+			Detail:    detail,
+			Resets:    "on successful write canary",
+			ResetAt:   condition.NextProbeAt,
+			DetailAt:  condition.LastObservedAt,
+		})
+	}
+	return rows
+}
+
 func trackerUnavailableHealthDetail(conditions []telemetry.TrackerCondition) string {
 	if len(conditions) == 1 {
 		condition := conditions[0]
@@ -417,6 +450,17 @@ func healthNaturalList(values []string) string {
 	default:
 		return strings.Join(clean[:len(clean)-1], ", ") + ", and " + clean[len(clean)-1]
 	}
+}
+
+func forgeUnavailableHealthDetail(conditions []telemetry.ForgeCondition) string {
+	if len(conditions) == 1 {
+		host := strings.TrimSpace(conditions[0].Host)
+		if host == "" {
+			host = "The configured forge"
+		}
+		return host + " cannot accept push or pull-request writes; write-dependent dispatch is paused."
+	}
+	return boardCountLabel(len(conditions), "forge host cannot", "forge hosts cannot") + " accept writes; write-dependent dispatch is paused."
 }
 
 func ciUnavailableHealthDetail(conditions []telemetry.CICondition) string {

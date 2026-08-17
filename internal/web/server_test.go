@@ -257,6 +257,22 @@ func TestTrackerAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testin
 	}
 }
 
+func TestForgeAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	recorder := performForm(t, server.Handler(), http.MethodPost, "/api/v1/forge/availability/clear", nil)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	if recorder.Header().Get("HX-Trigger") != "forgeAvailabilityCleared" {
+		t.Fatalf("HX-Trigger = %q", recorder.Header().Get("HX-Trigger"))
+	}
+}
+
 func TestFailureBreakerCanaryEndpointIsIdempotentWithoutActiveBreakers(t *testing.T) {
 	t.Parallel()
 

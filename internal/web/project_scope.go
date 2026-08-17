@@ -72,6 +72,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.Blocked = scopedBlocked(snapshot.Blocked, selectedProjectID, fallbackProjectID)
 	out.Completed = scopedCompleted(snapshot.Completed, selectedProjectID, fallbackProjectID)
 	out.TrackerUnavailable = scopedTrackerUnavailable(snapshot.TrackerUnavailable, selectedProjectID, fallbackProjectID)
+	out.ForgeUnavailable = scopedForgeUnavailable(snapshot.ForgeUnavailable, selectedProjectID, fallbackProjectID)
 	out.CIUnavailable = scopedCIUnavailable(snapshot.CIUnavailable, selectedProjectID, fallbackProjectID)
 	out.FailureBreakers = scopedFailureBreakers(snapshot.FailureBreakers, selectedProjectID, fallbackProjectID)
 	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
@@ -136,6 +137,20 @@ func scopedCIUnavailable(conditions []telemetry.CICondition, selectedProjectID s
 
 func scopedTrackerUnavailable(conditions []telemetry.TrackerCondition, selectedProjectID string, fallbackProjectID string) []telemetry.TrackerCondition {
 	out := make([]telemetry.TrackerCondition, 0, len(conditions))
+	for _, condition := range conditions {
+		projectID := strings.TrimSpace(condition.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
+		if projectID == selectedProjectID {
+			out = append(out, condition)
+		}
+	}
+	return out
+}
+
+func scopedForgeUnavailable(conditions []telemetry.ForgeCondition, selectedProjectID string, fallbackProjectID string) []telemetry.ForgeCondition {
+	out := make([]telemetry.ForgeCondition, 0, len(conditions))
 	for _, condition := range conditions {
 		projectID := strings.TrimSpace(condition.ProjectID)
 		if projectID == "" {

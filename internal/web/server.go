@@ -435,6 +435,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/update/apply", s.apiUpdateApply, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/capacity/clear", s.apiCapacityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/tracker/availability/clear", s.apiTrackerAvailabilityClear, apiDashboardMutateAuth, apiAdminScope)
+	s.echo.POST("/api/v1/forge/availability/clear", s.apiForgeAvailabilityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/failure-breaker/canary", s.apiFailureBreakerCanary, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
 	s.echo.POST("/api/v1/intake/:project_id/:source", s.intakeWebhook)
@@ -1082,6 +1083,7 @@ func (s *Server) health(c echo.Context) error {
 	backendOutages := []telemetry.BackendOutage{}
 	failureBreakers := []telemetry.FailureBreaker{}
 	trackerUnavailable := []telemetry.TrackerCondition{}
+	forgeUnavailable := []telemetry.ForgeCondition{}
 	ciUnavailable := []telemetry.CICondition{}
 	stalenessWarnings := []telemetry.StalenessWarning{}
 	strandedActiveIssues := []telemetry.StrandedIssue{}
@@ -1103,6 +1105,7 @@ func (s *Server) health(c echo.Context) error {
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
 			trackerUnavailable = append(trackerUnavailable, snapshot.TrackerUnavailable...)
+			forgeUnavailable = append(forgeUnavailable, snapshot.ForgeUnavailable...)
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
 			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
 			strandedActiveIssues = append(strandedActiveIssues, snapshot.StrandedActiveIssues...)
@@ -1137,13 +1140,13 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, trackerUnavailable, ciUnavailable, failureBreakers, backendOutages, tickLiveness, refreshFailures)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, failureBreakers, backendOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 {
 			status = "needs_attention"
 		}
 	}
@@ -1161,6 +1164,7 @@ func (s *Server) health(c echo.Context) error {
 		Budgets:              budgets,
 		Workflows:            workflows,
 		TrackerUnavailable:   trackerUnavailable,
+		ForgeUnavailable:     forgeUnavailable,
 		CIUnavailable:        ciUnavailable,
 		BackendOutages:       backendOutages,
 		FailureBreakers:      failureBreakers,
@@ -1178,8 +1182,8 @@ func (s *Server) health(c echo.Context) error {
 	})
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
 	refreshByProject := make(map[string]telemetry.RefreshFailure, len(refreshFailures))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
@@ -1192,6 +1196,11 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 		}
 	}
 	for _, condition := range trackerUnavailable {
+		if projectID := strings.TrimSpace(condition.ProjectID); projectID != "" {
+			needsAttention[projectID] = struct{}{}
+		}
+	}
+	for _, condition := range forgeUnavailable {
 		if projectID := strings.TrimSpace(condition.ProjectID); projectID != "" {
 			needsAttention[projectID] = struct{}{}
 		}
@@ -1504,6 +1513,7 @@ type healthResponse struct {
 	Budgets              []healthBudget               `json:"budgets,omitempty"`
 	Workflows            []healthWorkflowSource       `json:"workflows,omitempty"`
 	TrackerUnavailable   []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	ForgeUnavailable     []telemetry.ForgeCondition   `json:"forge_unavailable,omitempty"`
 	CIUnavailable        []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
 	BackendOutages       []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	FailureBreakers      []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`

@@ -434,9 +434,18 @@ type RunRequest struct {
 	AgentToolHandler          AgentToolHandler
 	AcquireModelPermit        ModelPermitAcquirer
 	MergePrecheck             *MergePrecheck
+	ForgeRetry                *ForgeRetry
 	sessionBrake              *sessionBrakeController
 	deliverableRecoveryBranch string
 	sessionTurnOffset         int
+}
+
+type ForgeRetry struct {
+	Host              string
+	Operation         string
+	Arguments         string
+	Branch            string
+	WorkProductPushed bool
 }
 
 type SessionProgressProbe func(context.Context) (string, error)
@@ -520,6 +529,8 @@ type RunResult struct {
 	PullRequestUpdated      bool
 	PullRequestHeadPushed   bool
 	CITriggerLabelReapplied bool
+	ForgeWriteCompleted     bool
+	WorkspaceBranch         string
 	MergePrecheck           *MergePrecheck
 	MergeFallbackFindings   string
 	budgetProjection        *dispatchBudgetProjection

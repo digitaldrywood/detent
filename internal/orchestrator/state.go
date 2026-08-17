@@ -89,6 +89,7 @@ type State struct {
 	TrackerUnavailable       *TrackerCondition
 	trackerEvidence          map[string]trackerAvailabilityEvidence
 	deferredCompletions      map[string]deferredCompletion
+	ForgeUnavailable         map[string]ForgeCondition
 	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
@@ -144,6 +145,7 @@ type Running struct {
 	Tokens                      TokenTotals
 	CapacityScope               backendcapacity.Scope
 	CapacityProbe               bool
+	ForgeProbeHost              string
 	ModelPermitExempt           bool
 	CIStopRequested             bool
 	CompletionOwnershipReleased bool
@@ -238,6 +240,9 @@ type Retry struct {
 	CIUnavailable      bool
 	TrackerUnavailable bool
 	CompletionDeferred bool
+	ForgeUnavailable   bool
+	ForgeHost          string
+	ForgeRetry         *runpkg.ForgeRetry
 	Wait               RetryWait
 }
 
@@ -352,6 +357,7 @@ func newState(cfg Config) State {
 		StalenessWarnings:        map[string]StalenessWarning{},
 		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
 		deferredCompletions:      map[string]deferredCompletion{},
+		ForgeUnavailable:         map[string]ForgeCondition{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -429,6 +435,7 @@ func (s State) clone() State {
 		TrackerUnavailable:       cloneTrackerCondition(s.TrackerUnavailable),
 		trackerEvidence:          maps.Clone(s.trackerEvidence),
 		deferredCompletions:      cloneDeferredCompletions(s.deferredCompletions),
+		ForgeUnavailable:         maps.Clone(s.ForgeUnavailable),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
@@ -470,6 +477,7 @@ func (s State) clone() State {
 	for id, retry := range s.Retry {
 		retry.Issue = cloneIssue(retry.Issue)
 		retry.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
+		retry.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
 		retry.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 		cloned.Retry[id] = retry
 	}
@@ -520,6 +528,14 @@ func cloneMergePrecheck(precheck *runpkg.MergePrecheck) *runpkg.MergePrecheck {
 		return nil
 	}
 	cloned := *precheck
+	return &cloned
+}
+
+func cloneForgeRetry(retry *runpkg.ForgeRetry) *runpkg.ForgeRetry {
+	if retry == nil {
+		return nil
+	}
+	cloned := *retry
 	return &cloned
 }
 

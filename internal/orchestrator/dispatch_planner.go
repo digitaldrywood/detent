@@ -265,6 +265,9 @@ func (p dispatchPlanner) retryAction(
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || retry.CIUnavailable) {
 		return dispatchAction{}, false, dispatchSkipCIUnavailable
 	}
+	if forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
+		return dispatchAction{}, false, dispatchSkipForgeUnavailable
+	}
 	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
@@ -274,6 +277,15 @@ func (p dispatchPlanner) retryAction(
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchAction{}, false, reason
+	}
+	forgeProbeReserved := false
+	if retry.ForgeUnavailable {
+		if _, active := forgeCondition(state, retry.ForgeHost); active {
+			_, forgeProbeReserved = reserveForgeAvailabilityProbe(state, issue.ID, retry, now)
+			if !forgeProbeReserved {
+				return dispatchAction{}, false, dispatchSkipForgeUnavailable
+			}
+		}
 	}
 	delete(state.Retry, retry.Issue.ID)
 
@@ -287,6 +299,9 @@ func (p dispatchPlanner) retryAction(
 		modelPermitRequired,
 	)
 	if !decision.dispatchable {
+		if forgeProbeReserved {
+			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", decision.reason, now)
+		}
 		if decision.reason == dispatchSkipProjectFailureBreaker {
 			if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
 				retry.DueAt = state.FailureBreaker.ResumeAt
@@ -317,6 +332,9 @@ func (p dispatchPlanner) retryAction(
 
 	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true, modelPermitRequired, &retry)
 	if !ok {
+		if forgeProbeReserved {
+			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipWorkerHostUnavailable, now)
+		}
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
 	}
 	return action, true, ""
@@ -581,6 +599,7 @@ const (
 	dispatchSkipGitHubRESTCapacity        = "github_rest_capacity_paused"
 	dispatchSkipTrackerUnavailable        = "tracker_unavailable"
 	dispatchSkipCompletionDeferred        = "completion_deferred"
+	dispatchSkipForgeUnavailable          = "forge_unavailable"
 	dispatchSkipCIUnavailable             = "ci_unavailable"
 	dispatchSkipProjectFailureBreaker     = projectFailureBreakerDispatchPaused
 	dispatchSkipRateWindowBackpressure    = "provider_rate_window_backpressure"
@@ -644,6 +663,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if activeTrackerUnavailable(state) && trackerDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
+	}
+	if forgeAvailabilityBlocks(state, issue, Retry{}, p.cfg.ForgeHost, now) {
+		return dispatchableDecision{reason: dispatchSkipForgeUnavailable}
 	}
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipCIUnavailable}

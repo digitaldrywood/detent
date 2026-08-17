@@ -2554,6 +2554,37 @@ func TestBoardAlertsCorroborateTrackerIncident(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsNameForgeWriteConditionDistinctly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 18, 0, 0, 0, time.UTC)
+	alerts := boardAlerts(telemetry.Snapshot{
+		GeneratedAt: now,
+		ForgeUnavailable: []telemetry.ForgeCondition{{
+			ProjectID:   "detent",
+			Host:        "github.com",
+			Operation:   "git push",
+			ErrorClass:  "transport",
+			NextProbeAt: now.Add(30 * time.Second),
+		}},
+	})
+	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindForgeUnavailable || alerts[0].Tone != primitives.KindErr {
+		t.Fatalf("boardAlerts() = %#v, want forge-unavailable error", alerts)
+	}
+	combined := alerts[0].TerseSummary + " " + alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
+	for _, want := range []string{"Forge writes unavailable", "github.com forge", "forge_unavailable", "git push", "transport", "next write canary in 30s"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("forge alert = %q, want containing %q", combined, want)
+		}
+	}
+	if strings.Contains(combined, "Tracker unavailable") || strings.Contains(combined, "tracker reads") {
+		t.Fatalf("forge alert = %q, want no tracker-read label", combined)
+	}
+	if alerts[0].Action == nil || !strings.Contains(alerts[0].Action.Path, "host=github.com") || !strings.Contains(alerts[0].Action.Path, "project_id=detent") {
+		t.Fatalf("forge alert action = %#v, want host- and project-scoped clear", alerts[0].Action)
+	}
+}
+
 func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 	t.Parallel()
 

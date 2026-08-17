@@ -61,6 +61,7 @@ type Event struct {
 	Causes                  []string                     `json:"causes,omitempty"`
 	WaitReasons             []string                     `json:"wait_reasons,omitempty"`
 	TrackerConditions       []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	ForgeConditions         []telemetry.ForgeCondition   `json:"forge_unavailable,omitempty"`
 	FailureBreakers         []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
 	BackendOutages          []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	RefreshFailures         []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
@@ -104,6 +105,7 @@ type durableState struct {
 	Causes                  []string                     `json:"causes,omitempty"`
 	WaitReasons             []string                     `json:"wait_reasons,omitempty"`
 	TrackerConditions       []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	ForgeConditions         []telemetry.ForgeCondition   `json:"forge_unavailable,omitempty"`
 	FailureBreakers         []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
 	BackendOutages          []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	RefreshFailures         []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
@@ -116,6 +118,7 @@ type pendingState struct {
 	Causes            []string                     `json:"causes,omitempty"`
 	WaitReasons       []string                     `json:"wait_reasons,omitempty"`
 	TrackerConditions []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	ForgeConditions   []telemetry.ForgeCondition   `json:"forge_unavailable,omitempty"`
 	FailureBreakers   []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
 	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	RefreshFailures   []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
@@ -308,6 +311,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 			Causes:            compactSorted(current.Causes),
 			WaitReasons:       compactSorted(current.WaitReasons),
 			TrackerConditions: append([]telemetry.TrackerCondition(nil), current.TrackerConditions...),
+			ForgeConditions:   append([]telemetry.ForgeCondition(nil), current.ForgeConditions...),
 			FailureBreakers:   append([]telemetry.FailureBreaker(nil), current.FailureBreakers...),
 			BackendOutages:    append([]telemetry.BackendOutage(nil), current.BackendOutages...),
 			RefreshFailures:   append([]telemetry.RefreshFailure(nil), current.RefreshFailures...),
@@ -319,6 +323,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 	waitReasons := compactSorted(current.WaitReasons)
 	if state.Pending.State != current.State || !slices.Equal(state.Pending.Causes, causes) || !slices.Equal(state.Pending.WaitReasons, waitReasons) ||
 		!reflect.DeepEqual(state.Pending.TrackerConditions, current.TrackerConditions) ||
+		!reflect.DeepEqual(state.Pending.ForgeConditions, current.ForgeConditions) ||
 		!reflect.DeepEqual(state.Pending.FailureBreakers, current.FailureBreakers) || !reflect.DeepEqual(state.Pending.BackendOutages, current.BackendOutages) ||
 		!reflect.DeepEqual(state.Pending.RefreshFailures, current.RefreshFailures) {
 		changed = true
@@ -326,6 +331,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 		state.Pending.Causes = causes
 		state.Pending.WaitReasons = waitReasons
 		state.Pending.TrackerConditions = append([]telemetry.TrackerCondition(nil), current.TrackerConditions...)
+		state.Pending.ForgeConditions = append([]telemetry.ForgeCondition(nil), current.ForgeConditions...)
 		state.Pending.FailureBreakers = append([]telemetry.FailureBreaker(nil), current.FailureBreakers...)
 		state.Pending.BackendOutages = append([]telemetry.BackendOutage(nil), current.BackendOutages...)
 		state.Pending.RefreshFailures = append([]telemetry.RefreshFailure(nil), current.RefreshFailures...)
@@ -341,6 +347,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 		state.Causes = append([]string(nil), pending.Causes...)
 		state.WaitReasons = append([]string(nil), pending.WaitReasons...)
 		state.TrackerConditions = append([]telemetry.TrackerCondition(nil), pending.TrackerConditions...)
+		state.ForgeConditions = append([]telemetry.ForgeCondition(nil), pending.ForgeConditions...)
 		state.FailureBreakers = append([]telemetry.FailureBreaker(nil), pending.FailureBreakers...)
 		state.BackendOutages = append([]telemetry.BackendOutage(nil), pending.BackendOutages...)
 		state.RefreshFailures = append([]telemetry.RefreshFailure(nil), pending.RefreshFailures...)
@@ -352,6 +359,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 	state.Causes = nil
 	state.WaitReasons = nil
 	state.TrackerConditions = nil
+	state.ForgeConditions = nil
 	state.FailureBreakers = nil
 	state.BackendOutages = nil
 	state.RefreshFailures = nil
@@ -373,6 +381,7 @@ func (m *Manager) event(state *durableState, transition string, enteredState str
 		Causes:                  append([]string(nil), state.Causes...),
 		WaitReasons:             append([]string(nil), state.WaitReasons...),
 		TrackerConditions:       append([]telemetry.TrackerCondition(nil), state.TrackerConditions...),
+		ForgeConditions:         append([]telemetry.ForgeCondition(nil), state.ForgeConditions...),
 		FailureBreakers:         append([]telemetry.FailureBreaker(nil), state.FailureBreakers...),
 		BackendOutages:          append([]telemetry.BackendOutage(nil), state.BackendOutages...),
 		RefreshFailures:         append([]telemetry.RefreshFailure(nil), state.RefreshFailures...),
