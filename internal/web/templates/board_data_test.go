@@ -564,6 +564,30 @@ func TestBoardCardExtraShowsWaitReasonAheadOfCI(t *testing.T) {
 	}
 }
 
+func TestBoardCardViewSurfacesStrandedDuration(t *testing.T) {
+	t.Parallel()
+
+	card := projectKanbanCard{
+		IssueID:     "issue-1860",
+		Identifier:  "digitaldrywood/detent#1860",
+		IssueNumber: "#1860",
+		ProjectID:   "detent",
+		Title:       "Recover stranded active cards",
+		Stage:       "In Progress",
+	}
+	data := DashboardData{Snapshot: telemetry.Snapshot{StrandedActiveIssues: []telemetry.StrandedIssue{{
+		ProjectID: "detent", IssueID: card.IssueID, Identifier: card.Identifier, DurationSeconds: 31 * 24 * 60 * 60,
+	}}}}
+
+	view := boardCardViewFromCard(data, projectKanbanLane{Title: "In Progress"}, card, false, "fleet", "")
+	if view.ExtraKind != primitives.KindWarn || view.ExtraText != "Stranded 31d · no worker" || !view.ExtraChip {
+		t.Fatalf("stranded card signal = %q, %q, %t", view.ExtraKind, view.ExtraText, view.ExtraChip)
+	}
+	if view.CompactSignal != view.ExtraText {
+		t.Fatalf("CompactSignal = %q, want %q", view.CompactSignal, view.ExtraText)
+	}
+}
+
 func TestBoardCardRendersMergeLaneProgress(t *testing.T) {
 	t.Parallel()
 

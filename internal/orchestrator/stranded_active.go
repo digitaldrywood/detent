@@ -1,35 +1,30 @@
 package orchestrator
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-const strandedActiveState = "in progress"
+const (
+	strandedActiveState          = "in progress"
+	strandedActiveRecoveryReason = "stranded_active_recovery"
+)
+
+type strandedActiveRecoveryDecision struct {
+	TargetState string
+	Evidence    string
+	HoldReason  string
+}
 
 func strandedActiveIssueSnapshots(state State, issues []telemetry.Issue, now time.Time) []telemetry.StrandedIssue {
-	if state.StrandedActiveThreshold <= 0 || state.PoolAvailable <= 0 || state.PoolDraining || now.IsZero() {
-		return nil
-	}
-	if len(state.Running) >= state.MaxConcurrentAgents {
-		return nil
-	}
-
-	stateLimit := state.MaxConcurrentAgents
-	if configured, ok := state.MaxAgentsByState[strandedActiveState]; ok {
-		stateLimit = configured
-	}
-	stateUsed := 0
-	for _, running := range state.Running {
-		if normalizeState(running.Issue.State) == strandedActiveState {
-			stateUsed++
-		}
-	}
-	if stateUsed >= stateLimit {
+	if state.StrandedActiveThreshold <= 0 || now.IsZero() {
 		return nil
 	}
 
@@ -64,6 +59,177 @@ func strandedActiveIssueSnapshots(state State, issues []telemetry.Issue, now tim
 		return strandedActiveTarget(diagnostics[i]) < strandedActiveTarget(diagnostics[j])
 	})
 	return diagnostics
+}
+
+func (o *Orchestrator) recoverStrandedActiveIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) map[string]struct{} {
+	if o == nil || state == nil || len(issues) == 0 {
+		return nil
+	}
+	diagnostics := strandedActiveIssueSnapshots(
+		*state,
+		issueSnapshots(issues, 0, 0, now, state.laneEntries),
+		now,
+	)
+	transitioned := make(map[string]struct{}, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		issue, ok := strandedActiveConnectorIssue(diagnostic, issues)
+		if !ok || strings.TrimSpace(issue.ID) == "" {
+			continue
+		}
+		decision := o.strandedActiveRecoveryDecision(ctx, issue)
+		if strings.TrimSpace(decision.TargetState) == "" {
+			if o.logger != nil {
+				o.logger.Debug(
+					"stranded active issue recovery held",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"duration_seconds", diagnostic.DurationSeconds,
+					"reason", decision.HoldReason,
+				)
+			}
+			continue
+		}
+		if err := o.updateIssueStateByIDStrictWithMetadata(
+			ctx,
+			state,
+			issue.ID,
+			issue,
+			decision.TargetState,
+			now,
+			strandedActiveRecoveryReason,
+			workflowLaneMetadata{},
+		); err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"stranded active issue recovery failed",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"duration_seconds", diagnostic.DurationSeconds,
+					"target_state", decision.TargetState,
+					"evidence", decision.Evidence,
+					"error", err,
+				)
+			}
+			continue
+		}
+		transitioned[issue.ID] = struct{}{}
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "stranded_active_recovered",
+			Message: "recovered " + issueLabel(issue) + " to " + decision.TargetState + " after " + (time.Duration(diagnostic.DurationSeconds) * time.Second).String() + " without a live worker; evidence: " + decision.Evidence,
+		})
+		if o.logger != nil {
+			o.logger.Info(
+				"stranded active issue recovered",
+				"issue_id", issue.ID,
+				"identifier", issue.Identifier,
+				"duration_seconds", diagnostic.DurationSeconds,
+				"target_state", decision.TargetState,
+				"evidence", decision.Evidence,
+			)
+		}
+	}
+	if len(transitioned) == 0 {
+		return nil
+	}
+	return transitioned
+}
+
+func (o *Orchestrator) strandedActiveRecoveryDecision(ctx context.Context, issue connector.Issue) strandedActiveRecoveryDecision {
+	openPullRequest, pullRequestUncertain := strandedActivePullRequestEvidence(issue)
+	if openPullRequest {
+		return strandedActiveRecoveryDecision{TargetState: autoPromoteReworkState, Evidence: "open_pull_request"}
+	}
+
+	snapshot := runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "unavailable"}
+	if o.recoveryInspector != nil {
+		snapshot = o.recoveryInspector.BlockedRecoverySnapshot(ctx, runpkg.RunRequest{
+			Issue:           issue,
+			Mode:            RunModeImplement,
+			SelectorContext: o.selectorContext(),
+		})
+	}
+	workspaceWork, workspaceReady := strandedActiveWorkspaceEvidence(snapshot)
+	if workspaceWork {
+		evidence := "recoverable_workspace"
+		if snapshot.UnpushedCommits > 0 {
+			evidence = "unpushed_work"
+		}
+		return strandedActiveRecoveryDecision{TargetState: autoPromoteReworkState, Evidence: evidence}
+	}
+	if pullRequestUncertain {
+		return strandedActiveRecoveryDecision{HoldReason: "pull_request_evidence_unavailable"}
+	}
+	if !workspaceReady {
+		return strandedActiveRecoveryDecision{HoldReason: "workspace_evidence_unavailable"}
+	}
+	return strandedActiveRecoveryDecision{TargetState: "Todo", Evidence: "no_recovery_artifacts"}
+}
+
+func strandedActivePullRequestEvidence(issue connector.Issue) (bool, bool) {
+	if issue.PullRequest != nil {
+		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
+			return false, true
+		}
+		switch normalizePullRequestState(issue.PullRequest.State) {
+		case "open":
+			return true, false
+		case "closed", "merged":
+			return false, false
+		case "":
+			if issue.PullRequest.Number > 0 ||
+				strings.TrimSpace(issue.PullRequest.URL) != "" ||
+				strings.TrimSpace(issue.PullRequest.BranchName) != "" {
+				return false, true
+			}
+		default:
+			return false, true
+		}
+	}
+	return false, issue.PRNumber != nil && *issue.PRNumber > 0
+}
+
+func strandedActiveWorkspaceEvidence(snapshot runpkg.BlockedRecoverySnapshot) (bool, bool) {
+	status := strings.TrimSpace(snapshot.WorkspaceStatus)
+	if status == "missing" {
+		return false, true
+	}
+	if status != "present" || !snapshot.WorkspacePresent {
+		return false, false
+	}
+	if snapshot.UnpushedCommits > 0 || snapshot.WorkspaceFiles > 0 {
+		return true, true
+	}
+	head := strings.TrimSpace(snapshot.HeadSHA)
+	base := strings.TrimSpace(snapshot.BaseFingerprint)
+	if head != "" && base != "" {
+		return head != base, true
+	}
+	if head != "" || base != "" {
+		return false, false
+	}
+	return false, true
+}
+
+func strandedActiveConnectorIssue(diagnostic telemetry.StrandedIssue, issues []connector.Issue) (connector.Issue, bool) {
+	for _, issue := range issues {
+		if strandedActiveIdentityMatches(
+			diagnostic.IssueID,
+			diagnostic.Identifier,
+			diagnostic.IssueURL,
+			issue.ID,
+			issue.Identifier,
+			issue.URL,
+		) {
+			return issue, true
+		}
+	}
+	return connector.Issue{}, false
 }
 
 func strandedActiveIssueHasWorker(issue telemetry.Issue, running map[string]Running, attempts []telemetry.WorkAttempt, now time.Time) bool {
