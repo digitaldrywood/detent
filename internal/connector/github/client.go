@@ -164,6 +164,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	}
 
 	queryType = graphQLQueryType(queryType, query)
+	trackerRead := graphQLTrackerRead(queryType, query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, &body)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
@@ -185,9 +186,9 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, ctxErr)
 		}
-		return fmt.Errorf("%w: %w", ErrTransient, err)
+		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
@@ -205,7 +206,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
@@ -217,7 +218,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
 		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
-		return err
+		return c.trackerReadStatusError(trackerRead, token, c.endpoint, queryType, resp.StatusCode, err)
 	}
 
 	var envelope struct {
@@ -298,13 +299,14 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 
 	family := restEndpointFamily(method, path)
+	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest probe request", method, path, family, body != nil)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return restProbeResult{}, ctxErr
+			return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
 		}
-		return restProbeResult{}, fmt.Errorf("%w: %w", ErrTransient, err)
+		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
@@ -314,7 +316,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
@@ -403,13 +405,14 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 
 	family := restEndpointFamily(method, path)
+	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
 		}
-		return nil, fmt.Errorf("%w: %w", ErrTransient, err)
+		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
@@ -420,7 +423,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	c.logRESTResponse(ctx, "github rest response", method, path, family, resp.StatusCode)
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
@@ -448,7 +451,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
 		}
-		return nil, err
+		return nil, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), resp.StatusCode, err)
 	}
 	headers := resp.Header.Clone()
 	c.storeRESTConditionalEntry(method, path, headers, raw)
@@ -1526,6 +1529,58 @@ func graphQLQueryType(queryType string, query string) string {
 		}
 	}
 	return "graphql"
+}
+
+func graphQLTrackerRead(queryType string, query string) bool {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "mutation") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(queryType)) {
+	case graphQLQueryMergeQueue, graphQLQueryEnqueuePR:
+		return false
+	default:
+		return true
+	}
+}
+
+func restTrackerRead(method string, family string) bool {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodGet {
+		return false
+	}
+	switch strings.TrimSpace(family) {
+	case "label issues", "repository issues", "issue reads", "issue comments", "issue dependencies", "issue field values", "search":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) trackerReadAvailabilityError(trackerRead bool, token string, endpoint string, operation string, err error) error {
+	if !trackerRead || err == nil || errors.Is(err, context.Canceled) {
+		return err
+	}
+	class := connector.TrackerAvailabilityClassTransport
+	if errors.Is(err, context.DeadlineExceeded) {
+		class = connector.TrackerAvailabilityClassTimeout
+	}
+	return connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{
+		Connector:          connector.BackendGitHub.String(),
+		Endpoint:           endpoint,
+		Operation:          operation,
+		CredentialIdentity: c.restCredentialIdentity(token),
+	}, class, err)
+}
+
+func (c *Client) trackerReadStatusError(trackerRead bool, token string, endpoint string, operation string, status int, err error) error {
+	if !trackerRead || status < http.StatusInternalServerError {
+		return err
+	}
+	return connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{
+		Connector:          connector.BackendGitHub.String(),
+		Endpoint:           endpoint,
+		Operation:          operation,
+		CredentialIdentity: c.restCredentialIdentity(token),
+	}, connector.TrackerAvailabilityClassServer, err)
 }
 
 func sortedGraphQLQueryCosts(costs map[string]connector.GraphQLQueryCost) []connector.GraphQLQueryCost {

@@ -50,6 +50,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = boardCountLabel(len(snapshot.DispatchStalls), "Project needs", "Projects need") + " human attention."
 		return view
 	}
+	if len(snapshot.TrackerUnavailable) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Tracker is unavailable."
+		view.Detail = trackerUnavailableHealthDetail(snapshot.TrackerUnavailable)
+		return view
+	}
 	if len(snapshot.CIUnavailable) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "CI is unavailable."
@@ -222,6 +228,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	for _, stall := range snapshot.DispatchStalls {
 		rows = append(rows, healthDispatchStallRow(stall))
 	}
+	rows = append(rows, healthTrackerUnavailableRows(snapshot.TrackerUnavailable)...)
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
 	for _, warning := range snapshot.StalenessWarnings {
 		rows = append(rows, healthStalenessRow(warning))
@@ -307,6 +314,44 @@ func healthCIUnavailableRows(conditions []telemetry.CICondition) []healthRow {
 		})
 	}
 	return rows
+}
+
+func healthTrackerUnavailableRows(conditions []telemetry.TrackerCondition) []healthRow {
+	rows := make([]healthRow, 0, len(conditions))
+	for index, condition := range conditions {
+		projectID := strings.TrimSpace(condition.ProjectID)
+		if projectID == "" {
+			projectID = "project"
+		}
+		connectorName := strings.TrimSpace(condition.Connector)
+		if connectorName == "" {
+			connectorName = "Tracker"
+		}
+		detail := "tracker_unavailable · " + strings.Trim(strings.TrimSpace(condition.Operation)+" · "+strings.TrimSpace(condition.ErrorClass), " ·")
+		rows = append(rows, healthRow{
+			ID:        "health-tracker-unavailable-" + boardAlertRowSlug(projectID, index),
+			Component: connectorName + " tracker · " + projectID,
+			Kind:      primitives.KindErr,
+			Status:    "Unavailable",
+			Detail:    detail,
+			Resets:    "on successful canary",
+			ResetAt:   condition.NextProbeAt,
+			DetailAt:  condition.LastObservedAt,
+		})
+	}
+	return rows
+}
+
+func trackerUnavailableHealthDetail(conditions []telemetry.TrackerCondition) string {
+	if len(conditions) == 1 {
+		condition := conditions[0]
+		connectorName := strings.TrimSpace(condition.Connector)
+		if connectorName == "" {
+			connectorName = "Configured"
+		}
+		return connectorName + " tracker reads are unavailable; tracker-dependent dispatch is paused."
+	}
+	return boardCountLabel(len(conditions), "tracker connector is", "tracker connectors are") + " unavailable; tracker-dependent dispatch is paused."
 }
 
 func ciUnavailableHealthDetail(conditions []telemetry.CICondition) string {

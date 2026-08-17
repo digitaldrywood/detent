@@ -138,6 +138,9 @@ func appShellActiveNav(data DashboardShellData) string {
 }
 
 func appShellHealthKind(data DashboardShellData) primitives.Kind {
+	if len(data.Snapshot.TrackerUnavailable) > 0 || len(data.Snapshot.CIUnavailable) > 0 {
+		return primitives.KindErr
+	}
 	switch gitHubAPIHealth(data.Snapshot).State {
 	case gitHubAPIHealthStateBackoff, gitHubAPIHealthStateExhausted:
 		return primitives.KindErr

@@ -299,6 +299,7 @@ const (
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
 	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
 	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
+	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
 )
@@ -373,6 +374,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	defer o.finishDispatchStart()
 	if state.Draining {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
+	}
+	if activeTrackerUnavailable(state) && (trackerDependentDispatch(issue) || trackerUnavailableRetry(state, issue.ID)) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable}
 	}
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || ciUnavailableRetry(state, issue.ID)) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureCIUnavailable}

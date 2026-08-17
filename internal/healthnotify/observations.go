@@ -12,6 +12,7 @@ import (
 const (
 	ScopeFleet                   = "fleet"
 	ScopeProject                 = "project"
+	CauseTrackerUnavailable      = "tracker_unavailable"
 	CauseCIUnavailable           = "ci_unavailable"
 	CauseDispatchStall           = "dispatch_stall"
 	CauseProjectFailureBreaker   = "project_failure_breaker"
@@ -26,16 +27,17 @@ const (
 )
 
 type observation struct {
-	Identity        string
-	Scope           string
-	ProjectID       string
-	Active          bool
-	State           string
-	Causes          []string
-	WaitReasons     []string
-	FailureBreakers []telemetry.FailureBreaker
-	BackendOutages  []telemetry.BackendOutage
-	RefreshFailures []telemetry.RefreshFailure
+	Identity          string
+	Scope             string
+	ProjectID         string
+	Active            bool
+	State             string
+	Causes            []string
+	WaitReasons       []string
+	TrackerConditions []telemetry.TrackerCondition
+	FailureBreakers   []telemetry.FailureBreaker
+	BackendOutages    []telemetry.BackendOutage
+	RefreshFailures   []telemetry.RefreshFailure
 }
 
 func observations(snapshot telemetry.Snapshot, health []project.Health) []observation {
@@ -48,11 +50,24 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		projectStatuses[projectID] = strings.TrimSpace(string(current.Status))
 	}
 	projectCauses := map[string]map[string][]string{}
+	projectTrackerConditions := map[string][]telemetry.TrackerCondition{}
 	projectBreakers := map[string][]telemetry.FailureBreaker{}
 	projectOutages := map[string][]telemetry.BackendOutage{}
 	projectRefreshFailures := map[string][]telemetry.RefreshFailure{}
 	fleetCauses := []string{}
 	fleetWaitReasons := []string{}
+	for _, condition := range snapshot.TrackerUnavailable {
+		projectID := strings.TrimSpace(condition.ProjectID)
+		if projectID == "" {
+			continue
+		}
+		if projectCauses[projectID] == nil {
+			projectCauses[projectID] = map[string][]string{}
+		}
+		projectCauses[projectID][CauseTrackerUnavailable] = nil
+		projectTrackerConditions[projectID] = append(projectTrackerConditions[projectID], condition)
+		fleetCauses = append(fleetCauses, CauseTrackerUnavailable)
+	}
 	for _, stall := range snapshot.DispatchStalls {
 		if !stall.Stalled {
 			continue
@@ -136,7 +151,7 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		if recoveryState == "" {
 			recoveryState = unknownProjectRecoveryStatus
 		}
-		for _, cause := range []string{CauseCIUnavailable, CauseDispatchStall, CauseProjectFailureBreaker, CauseBackendCapacity, CauseRefreshFailure} {
+		for _, cause := range []string{CauseTrackerUnavailable, CauseCIUnavailable, CauseDispatchStall, CauseProjectFailureBreaker, CauseBackendCapacity, CauseRefreshFailure} {
 			waitReasons, active := projectCauses[projectID][cause]
 			state := recoveryState
 			causes := []string(nil)
@@ -149,16 +164,17 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 				refreshFailures = append(refreshFailures, projectRefreshFailures[projectID]...)
 			}
 			result = append(result, observation{
-				Identity:        projectIdentity(projectID, cause),
-				Scope:           ScopeProject,
-				ProjectID:       projectID,
-				Active:          active,
-				State:           state,
-				Causes:          causes,
-				WaitReasons:     compactSorted(waitReasons),
-				FailureBreakers: append([]telemetry.FailureBreaker(nil), projectBreakers[projectID]...),
-				BackendOutages:  append([]telemetry.BackendOutage(nil), projectOutages[projectID]...),
-				RefreshFailures: refreshFailures,
+				Identity:          projectIdentity(projectID, cause),
+				Scope:             ScopeProject,
+				ProjectID:         projectID,
+				Active:            active,
+				State:             state,
+				Causes:            causes,
+				WaitReasons:       compactSorted(waitReasons),
+				TrackerConditions: append([]telemetry.TrackerCondition(nil), projectTrackerConditions[projectID]...),
+				FailureBreakers:   append([]telemetry.FailureBreaker(nil), projectBreakers[projectID]...),
+				BackendOutages:    append([]telemetry.BackendOutage(nil), projectOutages[projectID]...),
+				RefreshFailures:   refreshFailures,
 			})
 		}
 	}
@@ -171,15 +187,16 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		fleetState = StateFleetNeedsAttention
 	}
 	result = append(result, observation{
-		Identity:        fleetIdentity,
-		Scope:           ScopeFleet,
-		Active:          len(fleetCauses) > 0,
-		State:           fleetState,
-		Causes:          fleetCauses,
-		WaitReasons:     compactSorted(fleetWaitReasons),
-		FailureBreakers: append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
-		BackendOutages:  append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
-		RefreshFailures: append([]telemetry.RefreshFailure(nil), snapshot.RefreshFailures()...),
+		Identity:          fleetIdentity,
+		Scope:             ScopeFleet,
+		Active:            len(fleetCauses) > 0,
+		State:             fleetState,
+		Causes:            fleetCauses,
+		WaitReasons:       compactSorted(fleetWaitReasons),
+		TrackerConditions: append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...),
+		FailureBreakers:   append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
+		BackendOutages:    append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
+		RefreshFailures:   append([]telemetry.RefreshFailure(nil), snapshot.RefreshFailures()...),
 	})
 	return result
 }

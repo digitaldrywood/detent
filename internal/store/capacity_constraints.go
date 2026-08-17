@@ -13,13 +13,14 @@ import (
 type CapacityConstraintReason string
 
 const (
-	CapacityConstraintSampleInterval                          = 5 * time.Minute
-	CapacityConstraintPool           CapacityConstraintReason = "pool_waits"
-	CapacityConstraintProject        CapacityConstraintReason = "project_capacity_full"
-	CapacityConstraintLane           CapacityConstraintReason = "lane_capacity_full"
-	CapacityConstraintWorkerHost     CapacityConstraintReason = "worker_host_capacity_full"
-	CapacityConstraintRateWindow     CapacityConstraintReason = "provider_rate_window_backpressure"
-	CapacityConstraintCIUnavailable  CapacityConstraintReason = "ci_unavailable"
+	CapacityConstraintSampleInterval                              = 5 * time.Minute
+	CapacityConstraintPool               CapacityConstraintReason = "pool_waits"
+	CapacityConstraintProject            CapacityConstraintReason = "project_capacity_full"
+	CapacityConstraintLane               CapacityConstraintReason = "lane_capacity_full"
+	CapacityConstraintWorkerHost         CapacityConstraintReason = "worker_host_capacity_full"
+	CapacityConstraintRateWindow         CapacityConstraintReason = "provider_rate_window_backpressure"
+	CapacityConstraintTrackerUnavailable CapacityConstraintReason = "tracker_unavailable"
+	CapacityConstraintCIUnavailable      CapacityConstraintReason = "ci_unavailable"
 )
 
 type CapacityConstraintQuery struct {
@@ -53,7 +54,7 @@ func QueryCapacityConstraintWaits(
 SELECT project_id, COALESCE(lane, ''), wait_reason, decision_at, capacity_snapshot_json
 FROM scheduler_decisions
 WHERE result = ?
-  AND wait_reason IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  AND wait_reason IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   AND decision_at >= ?`,
 		string(SchedulerDecisionResultSkipped),
 		poolCapacityWaitReason,
@@ -65,6 +66,7 @@ WHERE result = ?
 		string(CapacityConstraintWorkerHost),
 		"worker_host_unavailable",
 		string(CapacityConstraintRateWindow),
+		string(CapacityConstraintTrackerUnavailable),
 		string(CapacityConstraintCIUnavailable),
 		"local_slot_unavailable",
 		since,
@@ -164,6 +166,8 @@ func capacityConstraintReason(waitReason string, globalAvailable *int) (Capacity
 		return CapacityConstraintWorkerHost, true
 	case string(CapacityConstraintRateWindow):
 		return CapacityConstraintRateWindow, true
+	case string(CapacityConstraintTrackerUnavailable):
+		return CapacityConstraintTrackerUnavailable, true
 	case string(CapacityConstraintCIUnavailable):
 		return CapacityConstraintCIUnavailable, true
 	default:

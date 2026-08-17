@@ -110,6 +110,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:                 blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
 		Completed:               completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
 		RateLimits:              cloneRateLimits(s.RateLimits),
+		TrackerUnavailable:      trackerUnavailableSnapshots(s.TrackerUnavailable),
 		CIUnavailable:           ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s),
@@ -171,6 +172,13 @@ func ciUnavailableSnapshots(condition *CICondition) []telemetry.CICondition {
 		return nil
 	}
 	return []telemetry.CICondition{*condition}
+}
+
+func trackerUnavailableSnapshots(condition *TrackerCondition) []telemetry.TrackerCondition {
+	if condition == nil {
+		return nil
+	}
+	return []telemetry.TrackerCondition{*condition}
 }
 
 func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution) {

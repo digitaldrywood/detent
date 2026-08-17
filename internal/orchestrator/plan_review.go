@@ -254,17 +254,19 @@ func planReviewTargetState(action gate.Action) string {
 	}
 }
 
-func (o *Orchestrator) hydratePlanIssueComments(ctx context.Context, fetched *tickFetchedIssues) bool {
+func (o *Orchestrator) hydratePlanIssueComments(ctx context.Context, fetched *tickFetchedIssues) error {
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	if !cfg.Enabled {
-		return true
+		return nil
 	}
 	reader, ok := o.connector.(connector.IssueCommentReader)
 	if !ok {
-		return true
+		return nil
 	}
-	return o.hydratePlanIssueCommentsFor(ctx, reader, fetched.status, cfg) &&
-		o.hydratePlanIssueCommentsFor(ctx, reader, fetched.candidates, cfg)
+	if err := o.hydratePlanIssueCommentsFor(ctx, reader, fetched.status, cfg); err != nil {
+		return err
+	}
+	return o.hydratePlanIssueCommentsFor(ctx, reader, fetched.candidates, cfg)
 }
 
 func (o *Orchestrator) hydratePlanIssueCommentsFor(
@@ -272,7 +274,7 @@ func (o *Orchestrator) hydratePlanIssueCommentsFor(
 	reader connector.IssueCommentReader,
 	issues []connector.Issue,
 	cfg gate.PlanConfig,
-) bool {
+) error {
 	for index := range issues {
 		if !planCommentHydrationCandidate(cfg, issues[index]) || len(issues[index].Comments) > 0 {
 			continue
@@ -282,11 +284,11 @@ func (o *Orchestrator) hydratePlanIssueCommentsFor(
 			if o.logger != nil {
 				o.logger.Warn("fetch plan issue comments failed", "issue_id", issues[index].ID, "identifier", issues[index].Identifier, "error", err)
 			}
-			return false
+			return err
 		}
 		issues[index].Comments = comments
 	}
-	return true
+	return nil
 }
 
 func planCommentHydrationCandidate(cfg gate.PlanConfig, issue connector.Issue) bool {

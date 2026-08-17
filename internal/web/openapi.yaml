@@ -547,6 +547,32 @@ paths:
               schema: {$ref: "#/components/schemas/Status"}
         "404": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/tracker/availability/clear:
+    post:
+      operationId: clearTrackerAvailability
+      summary: Clear recorded tracker-availability conditions
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/tracker/availability/clear
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                project_id: {type: string}
+      responses:
+        "200":
+          description: Tracker availability records cleared.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/failure-breaker/canary:
     post:
       operationId: requestFailureBreakerCanary

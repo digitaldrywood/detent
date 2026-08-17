@@ -3,13 +3,17 @@ package linear
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -85,32 +89,38 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	req.Header.Set("Authorization", c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	c.logger.DebugContext(ctx, "linear graphql request", "operation", firstLine(query), "variables_present", len(variables) > 0)
+	operation := linearGraphQLOperation(query)
+	trackerRead := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "mutation")
+	c.logger.DebugContext(ctx, "linear graphql request", "operation", operation, "variables_present", len(variables) > 0)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return c.trackerReadAvailabilityError(trackerRead, operation, ctxErr)
 		}
-		return fmt.Errorf("%w: %w", ErrTransient, err)
+		return c.trackerReadAvailabilityError(trackerRead, operation, fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
 		if err != nil {
-			return fmt.Errorf("%w: read response: %w", ErrTransient, err)
+			return c.trackerReadAvailabilityError(trackerRead, operation, fmt.Errorf("%w: read response: %w", ErrTransient, err))
 		}
-		return &StatusError{
+		statusErr := &StatusError{
 			StatusCode: resp.StatusCode,
 			Body:       strings.TrimSpace(string(raw)),
 			Err:        ErrUnexpectedStatus,
 		}
+		if trackerRead && resp.StatusCode >= http.StatusInternalServerError {
+			return connector.NewTrackerAvailabilityError(c.trackerAvailabilityScope(operation), connector.TrackerAvailabilityClassServer, statusErr)
+		}
+		return statusErr
 	}
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		return c.trackerReadAvailabilityError(trackerRead, operation, fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 
 	var envelope struct {
@@ -134,6 +144,42 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	}
 
 	return nil
+}
+
+func (c *Client) trackerReadAvailabilityError(trackerRead bool, operation string, err error) error {
+	if !trackerRead || err == nil || errors.Is(err, context.Canceled) {
+		return err
+	}
+	class := connector.TrackerAvailabilityClassTransport
+	if errors.Is(err, context.DeadlineExceeded) {
+		class = connector.TrackerAvailabilityClassTimeout
+	}
+	return connector.NewTrackerAvailabilityError(c.trackerAvailabilityScope(operation), class, err)
+}
+
+func (c *Client) trackerAvailabilityScope(operation string) connector.TrackerAvailabilityScope {
+	sum := sha256.Sum256([]byte(c.endpoint + "\x00" + c.apiKey))
+	return connector.TrackerAvailabilityScope{
+		Connector:          connector.BackendLinear.String(),
+		Endpoint:           c.endpoint,
+		Operation:          operation,
+		CredentialIdentity: fmt.Sprintf("linear:%x", sum[:6]),
+	}
+}
+
+func linearGraphQLOperation(query string) string {
+	line := firstLine(query)
+	parts := strings.Fields(line)
+	if len(parts) >= 2 {
+		name := strings.Trim(parts[1], "{}")
+		if index := strings.IndexByte(name, '('); index >= 0 {
+			name = name[:index]
+		}
+		if name != "" {
+			return name
+		}
+	}
+	return "graphql"
 }
 
 func validateEndpoint(endpoint string) error {

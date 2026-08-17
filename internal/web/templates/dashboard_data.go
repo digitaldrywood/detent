@@ -7180,6 +7180,8 @@ func dispatchRecoveryDetailParts(recovery telemetry.DispatchRecovery, now time.T
 
 func dispatchRecoveryKindLabel(kind string) string {
 	switch strings.TrimSpace(kind) {
+	case "tracker_unavailable":
+		return "tracker availability"
 	case "github_rest":
 		return "GitHub REST capacity"
 	case "pull_request_hydration":

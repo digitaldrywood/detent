@@ -483,6 +483,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		WorkflowMetrics:    snapshot.WorkflowMetrics,
 		RecentSessions:     recentSessionEntries(snapshot.Completed),
 		RateLimits:         snapshot.RateLimits,
+		TrackerUnavailable: append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...),
 		CIUnavailable:      append([]telemetry.CICondition(nil), snapshot.CIUnavailable...),
 		BackendOutages:     append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
 		FailureBreakers:    append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
@@ -1435,6 +1436,7 @@ type stateAPIResponse struct {
 	WorkflowMetrics    telemetry.WorkflowMetrics    `json:"workflow_metrics"`
 	RecentSessions     []recentSessionAPIResponse   `json:"recent_sessions"`
 	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
+	TrackerUnavailable []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
 	CIUnavailable      []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
 	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
 	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`

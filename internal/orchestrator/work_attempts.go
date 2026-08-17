@@ -792,6 +792,9 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	if state != nil && state.CIUnavailable != nil {
 		snapshot["ci_unavailable"] = *state.CIUnavailable
 	}
+	if state != nil && state.TrackerUnavailable != nil {
+		snapshot["tracker_unavailable"] = *state.TrackerUnavailable
+	}
 	if state != nil && len(state.DispatchRecoveries) > 0 {
 		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, pool.Name, pool.Capacity)
 	}
