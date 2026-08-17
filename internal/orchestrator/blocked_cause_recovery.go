@@ -422,7 +422,10 @@ func (o *Orchestrator) reconcileInvalidWorkpadPark(
 	if !ok {
 		return false, false
 	}
-	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
+	readyPullRequestIssue := cloneIssue(issue)
+	readyPullRequestIssue.WorkpadSignal = nil
+	readyPullRequestIssue.Comments = nil
+	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, readyPullRequestIssue, park, now); handled {
 		return true, transitioned
 	}
 	if !strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerOrchestrator) {
@@ -600,7 +603,7 @@ func blockedReadyPullRequestRecoverableCause(park workflowLaneBlockedRecoveryMet
 	if owner != blockedRecoveryOwnerOrchestrator || strings.TrimSpace(park.RunMode) != RunModeImplement {
 		return false
 	}
-	return cause == strandedUnpushedWorkReason || cause == noProgressLimitReason
+	return cause == strandedUnpushedWorkReason || cause == noProgressLimitReason || cause == repeatedFailureCircuitBreakerCause
 }
 
 func (o *Orchestrator) blockedReadyPullRequestDeferredReason(

@@ -1049,10 +1049,24 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 		wantMerging  bool
 	}{
 		{name: "recoverable stranded work with ready pull request", cause: strandedUnpushedWorkReason, owner: blockedRecoveryOwnerOrchestrator, snapshot: baseSnapshot, wantMerging: true},
+		{
+			name:  "invalid workpad repeated failure with ready linked pull request",
+			cause: repeatedFailureCircuitBreakerCause,
+			owner: blockedRecoveryOwnerOrchestrator,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.WorkpadSignal = &workpad.Signal{
+					Source:  workpad.SourceStructured,
+					Status:  workpad.StatusBlocked,
+					Invalid: &workpad.Invalid{Message: "status must be in_progress, blocked, or complete"},
+				}
+			},
+			snapshot:    baseSnapshot,
+			wantMerging: true,
+		},
 		{name: "deliverable recovery with ready pull request", cause: deliverableRecoveryNeedsHumanReason + ": pushed branch ready has no recoverable pull request", owner: blockedRecoveryOwnerHuman, snapshot: baseSnapshot, wantMerging: true},
 		{
 			name:  "operator stop",
-			cause: strandedUnpushedWorkReason,
+			cause: repeatedFailureCircuitBreakerCause,
 			owner: blockedRecoveryOwnerOrchestrator,
 			mutateState: func(state *State, issue connector.Issue) {
 				blocked := state.Blocked[issue.ID]
@@ -1063,7 +1077,7 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 		},
 		{
 			name:  "human action",
-			cause: strandedUnpushedWorkReason,
+			cause: repeatedFailureCircuitBreakerCause,
 			owner: blockedRecoveryOwnerOrchestrator,
 			mutateIssue: func(issue *connector.Issue) {
 				issue.WorkpadSignal.Status = workpad.StatusBlocked
@@ -1071,10 +1085,10 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 			},
 			snapshot: baseSnapshot,
 		},
-		{name: "human-only cause", cause: "credentials_missing", owner: blockedRecoveryOwnerHuman, snapshot: baseSnapshot},
+		{name: "human-owned repeated failure", cause: repeatedFailureCircuitBreakerCause, owner: blockedRecoveryOwnerHuman, snapshot: baseSnapshot},
 		{
 			name:  "draft pull request",
-			cause: strandedUnpushedWorkReason,
+			cause: repeatedFailureCircuitBreakerCause,
 			owner: blockedRecoveryOwnerOrchestrator,
 			mutateIssue: func(issue *connector.Issue) {
 				issue.PullRequest.Draft = true
@@ -1083,7 +1097,7 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 		},
 		{
 			name:  "failing pull request",
-			cause: strandedUnpushedWorkReason,
+			cause: repeatedFailureCircuitBreakerCause,
 			owner: blockedRecoveryOwnerOrchestrator,
 			mutateIssue: func(issue *connector.Issue) {
 				issue.PullRequest.CIStatus = "failure"
@@ -1125,7 +1139,7 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 		},
 		{
 			name:  "dependency not ready",
-			cause: strandedUnpushedWorkReason,
+			cause: repeatedFailureCircuitBreakerCause,
 			owner: blockedRecoveryOwnerOrchestrator,
 			mutateIssue: func(issue *connector.Issue) {
 				issue.BlockedBy = []connector.BlockedRef{{ID: "blocker", Identifier: "digitaldrywood/detent#1700", State: "In Progress", Source: connector.BlockedRefSourceNative}}
@@ -1264,6 +1278,7 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 	readyPullRequest.BranchName = branch
 	tests := []struct {
 		name              string
+		cause             string
 		linked            bool
 		lookupPullRequest connector.PullRequest
 		lookupFound       bool
@@ -1285,7 +1300,18 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			wantMerging:       true,
 		},
 		{
+			name:              "invalid workpad repeated failure with unlinked exact-head pull request reconciles",
+			cause:             repeatedFailureCircuitBreakerCause,
+			lookupPullRequest: readyPullRequest,
+			lookupFound:       true,
+			invalidWorkpad:    true,
+			wantLookupCalls:   1,
+			wantHydrateCalls:  1,
+			wantMerging:       true,
+		},
+		{
 			name:            "unlinked with no pull request holds accurately",
+			cause:           repeatedFailureCircuitBreakerCause,
 			invalidWorkpad:  true,
 			wantLookupCalls: 1,
 			wantAction:      "hold",
@@ -1293,6 +1319,7 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 		},
 		{
 			name:            "lookup unavailable defers after bounded retries",
+			cause:           repeatedFailureCircuitBreakerCause,
 			lookupErr:       connector.ErrResourceExhausted,
 			invalidWorkpad:  true,
 			wantLookupCalls: blockedReadyPullRequestLookupAttempts,
@@ -1310,6 +1337,10 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			cause := tt.cause
+			if cause == "" {
+				cause = strandedUnpushedWorkReason
+			}
 
 			issue := blockedReadyPullRequestIssue()
 			if !tt.linked {
@@ -1324,6 +1355,9 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 						Message: "status must be in_progress, blocked, or complete",
 					},
 				}
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+				}}
 			}
 			tracker := &blockedReadyPullRequestLookupConnector{
 				dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{},
@@ -1359,12 +1393,12 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			blockedIssue.BranchName = branch
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     blockedIssue,
-				Reason:    strandedUnpushedWorkReason,
+				Reason:    cause,
 				BlockedAt: parkedAt,
 				Source:    BlockedSourceProjectStatus,
 				Recovery: &workflowLaneBlockedRecoveryMetadata{
 					Owner:       blockedRecoveryOwnerOrchestrator,
-					Cause:       strandedUnpushedWorkReason,
+					Cause:       cause,
 					Predicate:   blockedRecoveryPredicateOncePerFingerprint,
 					TargetState: autoPromoteReworkState,
 					RunMode:     RunModeImplement,
