@@ -259,7 +259,10 @@ release-readiness automation after merged work accumulates.
 
 `observability.stranded_active_threshold_seconds` controls when Health and
 `detent doctor` report an issue that remains in `In Progress` without a live
-worker while project capacity is available. The default is 600 seconds, which
+worker and when Detent recovers it automatically. Issues with an open pull
+request or recoverable workspace work move to `Rework`; issues confirmed to
+have no recovery artifacts move to `Todo`. Detent holds the issue in place
+when artifact evidence is unavailable. The default is 600 seconds, which
 tolerates normal gaps between a completed session and prompt re-dispatch.
 
 `hooks` run lifecycle commands around worktree creation, agent execution, and

@@ -1115,6 +1115,11 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	if stranded, ok := boardCardStrandedActiveIssue(data.Snapshot, card); ok {
+		view.ExtraKind = primitives.KindWarn
+		view.ExtraText = "Stranded " + boardCardStrandedAge(stranded.DurationSeconds) + " · no worker"
+		view.ExtraChip = true
+	}
 	view.BlockerSummary = card.BlockerSummary
 	view.ParkSummary, view.ParkDetail = boardCardParkSummary(card.ParkSummary)
 	view.ProgressSummary, view.ProgressDetail, view.ProgressKind = boardCardCompletionProgress(card.CompletionProgress)
@@ -1142,6 +1147,42 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.MergeLaneKind = card.MergeLaneKind
 	view.CompactSignal = boardCardCompactSignal(view)
 	return view
+}
+
+func boardCardStrandedActiveIssue(snapshot telemetry.Snapshot, card projectKanbanCard) (telemetry.StrandedIssue, bool) {
+	for _, issue := range snapshot.StrandedActiveIssues {
+		if strings.TrimSpace(issue.ProjectID) != "" && strings.TrimSpace(card.ProjectID) != "" &&
+			!strings.EqualFold(strings.TrimSpace(issue.ProjectID), strings.TrimSpace(card.ProjectID)) {
+			continue
+		}
+		if strings.TrimSpace(issue.IssueID) != "" && strings.TrimSpace(card.IssueID) != "" &&
+			strings.TrimSpace(issue.IssueID) == strings.TrimSpace(card.IssueID) {
+			return issue, true
+		}
+		if strings.TrimSpace(issue.Identifier) != "" && strings.TrimSpace(card.Identifier) != "" &&
+			strings.EqualFold(strings.TrimSpace(issue.Identifier), strings.TrimSpace(card.Identifier)) {
+			return issue, true
+		}
+		if strings.TrimSpace(issue.IssueURL) != "" && strings.TrimSpace(card.URL) != "" &&
+			strings.TrimSpace(issue.IssueURL) == strings.TrimSpace(card.URL) {
+			return issue, true
+		}
+	}
+	return telemetry.StrandedIssue{}, false
+}
+
+func boardCardStrandedAge(seconds int64) string {
+	duration := time.Duration(seconds) * time.Second
+	switch {
+	case duration >= 24*time.Hour:
+		return strconv.FormatInt(int64(duration/(24*time.Hour)), 10) + "d"
+	case duration >= time.Hour:
+		return strconv.FormatInt(int64(duration/time.Hour), 10) + "h"
+	case duration >= time.Minute:
+		return strconv.FormatInt(int64(duration/time.Minute), 10) + "m"
+	default:
+		return strconv.FormatInt(max(seconds, 0), 10) + "s"
+	}
 }
 
 func boardCardParkSummary(summary telemetry.ParkSummary) (string, string) {
