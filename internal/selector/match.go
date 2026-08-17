@@ -16,6 +16,26 @@ type Context struct {
 	Persona       string
 }
 
+type Rule string
+
+const (
+	RuleConfiguration Rule = "configuration"
+	RuleAssignee      Rule = "assignee"
+	RuleAuthor        Rule = "author"
+	RuleLabelInclude  Rule = "label_include"
+	RuleLabelExclude  Rule = "label_exclude"
+	RuleField         Rule = "field"
+	RulePriority      Rule = "priority"
+	RuleAlternative   Rule = "alternative"
+)
+
+type Decision struct {
+	Matched bool   `json:"matched"`
+	Rule    Rule   `json:"rule,omitempty"`
+	Value   string `json:"value,omitempty"`
+	Detail  string `json:"detail"`
+}
+
 type Selector struct {
 	AssigneeIn []string      `yaml:"assignee_in,omitempty"`
 	AuthorIn   []string      `yaml:"author_in,omitempty"`
@@ -253,6 +273,165 @@ func Match(issue connector.Issue, selector Selector, ctx Context) bool {
 		return false
 	}
 	return true
+}
+
+func Decide(issue connector.Issue, selector Selector, ctx Context) Decision {
+	if problems := selector.Validate("authorization"); len(problems) > 0 {
+		problem := problems[0]
+		return Decision{
+			Rule:   RuleConfiguration,
+			Value:  selectorProblemField(problem),
+			Detail: "authorization selector is invalid: " + problem,
+		}
+	}
+	if !selector.Configured() {
+		return Decision{
+			Matched: true,
+			Rule:    RuleConfiguration,
+			Detail:  "authorization selector is empty; all issues are allowed",
+		}
+	}
+	return decideConfigured(issue, selector, ctx)
+}
+
+func decideConfigured(issue connector.Issue, selector Selector, ctx Context) Decision {
+	if !matchIdentityList(issueAssignees(issue), selector.AssigneeIn, ctx) {
+		assignees := nonBlankStrings(issueAssignees(issue))
+		value := strings.Join(assignees, ", ")
+		detail := "issue does not match authorization selector: issue is unassigned; assignee allowlist is " + codeList(describeSelectorValues(selector.AssigneeIn, ctx))
+		if value != "" {
+			detail = "issue does not match authorization selector: assignee " + codeList(assignees) + " is not in allowlist " + codeList(describeSelectorValues(selector.AssigneeIn, ctx))
+		}
+		return Decision{Rule: RuleAssignee, Value: value, Detail: detail}
+	}
+	if !matchIdentityList([]string{issue.AuthorID}, selector.AuthorIn, ctx) {
+		author := strings.TrimSpace(issue.AuthorID)
+		detail := "issue does not match authorization selector: issue has no author; author allowlist is " + codeList(describeSelectorValues(selector.AuthorIn, ctx))
+		if author != "" {
+			detail = "issue does not match authorization selector: author `" + author + "` is not in allowlist " + codeList(describeSelectorValues(selector.AuthorIn, ctx))
+		}
+		return Decision{Rule: RuleAuthor, Value: author, Detail: detail}
+	}
+	if decision, matched := decideLabels(issue.Labels, selector.Labels); !matched {
+		return decision
+	}
+	if decision, matched := decideFields(issue.Fields, selector.Fields, ctx); !matched {
+		return decision
+	}
+	if !matchPriority(issue.Priority, selector.PriorityIn) {
+		value := ""
+		if issue.Priority != nil {
+			value = strconv.Itoa(*issue.Priority)
+		}
+		detail := "issue does not match authorization selector: issue has no priority; priority allowlist is " + integerCodeList(selector.PriorityIn)
+		if value != "" {
+			detail = "issue does not match authorization selector: priority `" + value + "` is not in allowlist " + integerCodeList(selector.PriorityIn)
+		}
+		return Decision{Rule: RulePriority, Value: value, Detail: detail}
+	}
+	for _, child := range selector.And {
+		decision := decideConfiguredOrEmpty(issue, child, ctx)
+		if !decision.Matched {
+			return decision
+		}
+	}
+	if len(selector.Or) > 0 {
+		details := make([]string, 0, len(selector.Or))
+		for _, child := range selector.Or {
+			decision := decideConfiguredOrEmpty(issue, child, ctx)
+			if decision.Matched {
+				return Decision{Matched: true, Detail: "issue matches authorization selector"}
+			}
+			details = append(details, strings.TrimPrefix(decision.Detail, "issue does not match authorization selector: "))
+		}
+		return Decision{
+			Rule:   RuleAlternative,
+			Detail: "issue does not match authorization selector: no alternative matched (" + strings.Join(details, "; ") + ")",
+		}
+	}
+	return Decision{Matched: true, Detail: "issue matches authorization selector"}
+}
+
+func decideConfiguredOrEmpty(issue connector.Issue, selector Selector, ctx Context) Decision {
+	if !selector.Configured() {
+		return Decision{Matched: true, Rule: RuleConfiguration, Detail: "authorization selector is empty; all issues are allowed"}
+	}
+	return decideConfigured(issue, selector, ctx)
+}
+
+func decideLabels(issueLabels []string, labels Labels) (Decision, bool) {
+	present := make(map[string]struct{}, len(issueLabels))
+	for _, label := range issueLabels {
+		if normalized := normalizeLabel(label); normalized != "" {
+			present[normalized] = struct{}{}
+		}
+	}
+	for _, label := range labels.Include {
+		label = strings.TrimSpace(label)
+		if _, ok := present[normalizeLabel(label)]; !ok {
+			return Decision{
+				Rule:   RuleLabelInclude,
+				Value:  label,
+				Detail: "issue does not match authorization selector: missing required label `" + label + "`",
+			}, false
+		}
+	}
+	for _, label := range labels.Exclude {
+		label = strings.TrimSpace(label)
+		if _, ok := present[normalizeLabel(label)]; ok {
+			return Decision{
+				Rule:   RuleLabelExclude,
+				Value:  label,
+				Detail: "issue does not match authorization selector: excluded label `" + label + "` is present",
+			}, false
+		}
+	}
+	return Decision{Matched: true}, true
+}
+
+func decideFields(fields map[string]string, rules []FieldEquals, ctx Context) (Decision, bool) {
+	for _, rule := range rules {
+		name := strings.TrimSpace(rule.Name)
+		value, ok := fieldValue(fields, name)
+		if !ok {
+			return Decision{
+				Rule:   RuleField,
+				Value:  name,
+				Detail: "issue does not match authorization selector: required field `" + name + "` is missing",
+			}, false
+		}
+		if !matchFieldValue(value, rule.Value, ctx) {
+			return Decision{
+				Rule:   RuleField,
+				Value:  value,
+				Detail: "issue does not match authorization selector: field `" + name + "` value `" + strings.TrimSpace(value) + "` does not equal `" + describeSelectorValue(rule.Value, ctx) + "`",
+			}, false
+		}
+	}
+	return Decision{Matched: true}, true
+}
+
+func selectorProblemField(problem string) string {
+	field, _, _ := strings.Cut(strings.TrimSpace(problem), " ")
+	return strings.TrimSuffix(field, ":")
+}
+
+func codeList(values []string) string {
+	formatted := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			formatted = append(formatted, "`"+value+"`")
+		}
+	}
+	return strings.Join(formatted, ", ")
+}
+
+func integerCodeList(values []int) string {
+	formatted := make([]string, 0, len(values))
+	for _, value := range values {
+		formatted = append(formatted, "`"+strconv.Itoa(value)+"`")
+	}
+	return strings.Join(formatted, ", ")
 }
 
 func matchPriority(priority *int, allowed []int) bool {

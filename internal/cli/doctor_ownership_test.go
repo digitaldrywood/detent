@@ -61,3 +61,90 @@ func TestDoctorOwnershipEligibility(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorAuthorizationEligibilityReportsLaneLabeledMismatch(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.StatusLabelPrefix = "detent:"
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.ObservedStates = []string{"Blocked"}
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	issues := []connector.Issue{
+		{ID: "issue-532", Identifier: "gopherguides/corp#532", State: "Todo", Labels: []string{"detent:todo"}},
+		{ID: "issue-authorized", Identifier: "gopherguides/corp#533", State: "Todo", Labels: []string{"detent:todo", "detent"}},
+		{ID: "issue-untracked", Identifier: "gopherguides/corp#534", State: "Todo"},
+		{ID: "issue-closed", Identifier: "gopherguides/corp#535", State: "Done", Closed: true, Labels: []string{"detent:done"}},
+	}
+	tracker := &doctorAuthorizationConnector{issues: issues}
+	check := checkDoctorAuthorizationEligibility(t.Context(), "corp", globalconfig.Project{
+		Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent"}}},
+	}, cfg, doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return tracker, nil
+		},
+	})
+
+	if check.Status != doctorWarn || len(check.AuthorizationAttention) != 1 {
+		t.Fatalf("check = %#v, want one authorization warning", check)
+	}
+	diagnostic := check.AuthorizationAttention[0]
+	if diagnostic.IssueIdentifier != "gopherguides/corp#532" || diagnostic.Rule != selector.RuleLabelInclude || diagnostic.Value != "detent" {
+		t.Fatalf("authorization diagnostic = %#v", diagnostic)
+	}
+	for _, want := range []string{"gopherguides/corp#532", "missing required label `detent`"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("check detail = %q, want containing %q", check.Detail, want)
+		}
+	}
+	wantStates := []string{"Blocked", "Done", "Todo"}
+	if len(tracker.states) != len(wantStates) {
+		t.Fatalf("states = %#v, want %#v", tracker.states, wantStates)
+	}
+	for index := range wantStates {
+		if tracker.states[index] != wantStates[index] {
+			t.Fatalf("states = %#v, want %#v", tracker.states, wantStates)
+		}
+	}
+}
+
+func TestDoctorAuthorizationEligibilityDistinguishesConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		project    globalconfig.Project
+		wantStatus doctorStatus
+		wantDetail string
+	}{
+		{name: "empty selector allows all", wantStatus: doctorOK, wantDetail: "authorization selector is empty; all issues are allowed"},
+		{
+			name: "malformed selector fails",
+			project: globalconfig.Project{Authorization: selector.Selector{
+				Labels: selector.Labels{Include: []string{""}},
+			}},
+			wantStatus: doctorFail,
+			wantDetail: "authorization selector is invalid: global.authorization.labels.include[0] must not be blank",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := checkDoctorAuthorizationEligibility(t.Context(), "corp", tt.project, workflowconfig.Default(), doctorDeps{})
+			if check.Status != tt.wantStatus || check.Detail != tt.wantDetail {
+				t.Fatalf("check = %#v, want status %s detail %q", check, tt.wantStatus, tt.wantDetail)
+			}
+		})
+	}
+}
+
+type doctorAuthorizationConnector struct {
+	issues []connector.Issue
+	states []string
+}
+
+func (c *doctorAuthorizationConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
+	c.states = append([]string(nil), states...)
+	return append([]connector.Issue(nil), c.issues...), nil
+}

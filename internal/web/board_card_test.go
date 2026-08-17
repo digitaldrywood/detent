@@ -64,6 +64,38 @@ func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
 	}
 }
 
+func TestAPIBoardCardRendersAuthorizationSelectorDetail(t *testing.T) {
+	t.Parallel()
+
+	const detail = "issue does not match authorization selector: missing required label `detent`"
+	at := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	issue := telemetry.Issue{ID: "issue-532", Identifier: "gopherguides/corp#532", ProjectID: "corp", Title: "Hand-filed issue", State: "Todo"}
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: at,
+		BoardIssues: []telemetry.Issue{issue},
+		SchedulerDecisions: []telemetry.SchedulerDecision{{
+			ID: 1, ProjectID: "corp", IssueID: issue.ID, Identifier: issue.Identifier, Result: "skipped", Reason: "authorization_selector_declined", WaitReason: detail, DecisionAt: at,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/activity?project=corp&issue=issue-532", http.StatusOK)
+	for _, want := range []string{"Dispatch skipped", detail} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("board activity missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, ">unauthorized<") {
+		t.Fatalf("board activity presents selector decline as credential failure:\n%s", body)
+	}
+}
+
 func TestBoardLiveSessionPageRendersActiveSessionFullWidth(t *testing.T) {
 	t.Parallel()
 

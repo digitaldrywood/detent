@@ -67,6 +67,7 @@ type Decision struct {
 	Merged       bool
 	Result       string
 	Reason       string
+	Detail       string
 	At           time.Time
 }
 
@@ -265,6 +266,10 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 		if current.count < cfg.RepeatedDecisionCount {
 			continue
 		}
+		detail := "the same scheduler decision has recurred beyond its configured threshold"
+		if decisionDetail := strings.TrimSpace(current.decision.Detail); decisionDetail != "" && decisionDetail != strings.TrimSpace(current.decision.Reason) {
+			detail = decisionDetail
+		}
 		warnings = append(warnings, Warning{
 			ID:               warningID(KindRepeatedDecision + "\x00" + key),
 			ProjectID:        strings.TrimSpace(input.ProjectID),
@@ -273,7 +278,7 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 			Identifier:       strings.TrimSpace(current.decision.Identifier),
 			IssueURL:         strings.TrimSpace(current.decision.IssueURL),
 			Reason:           strings.TrimSpace(current.decision.Reason),
-			Detail:           "the same scheduler decision has recurred beyond its configured threshold",
+			Detail:           detail,
 			Since:            current.first,
 			AgeSeconds:       int64(now.Sub(current.first) / time.Second),
 			ThresholdSeconds: int64(cfg.RepeatedDecisionWindow / time.Second),
