@@ -1168,6 +1168,9 @@ templ boardKanbanDragScript() {
 			var pending = null;
 			var active = null;
 			var recentTouchStart = null;
+			function connectionAllowsMoves() {
+				return document.documentElement.getAttribute("data-detent-connection") === "connected";
+			}
 			function clearPending() {
 				if (pending && pending.longPressTimer) window.clearTimeout(pending.longPressTimer);
 				pending = null;
@@ -1594,6 +1597,11 @@ templ boardKanbanDragScript() {
 				if (active || event.button !== 0 || event.isPrimary === false) return;
 				var pressedElement = event.target instanceof Element ? event.target : null;
 				var pressedCard = pressedElement ? pressedElement.closest("[data-kanban-card]") : null;
+				if (pressedCard && !connectionAllowsMoves()) {
+					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
+					feedback("Moves are disabled while the board reconnects. Reload if the connection does not recover.", "error");
+					return;
+				}
 				if (pressedCard && pressedCard.dataset.kanbanMoveDisabled === "true") {
 					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
 					feedback(pressedCard.dataset.kanbanMoveDisabledReason || "This card cannot be moved.", "error");
@@ -1673,6 +1681,11 @@ templ boardKanbanDragScript() {
 			}, { passive: false });
 			function dropAt(x, y) {
 				if (!active) return;
+				if (!connectionAllowsMoves()) {
+					cancelDrag();
+					feedback("Move cancelled because the board connection was lost.", "error");
+					return;
+				}
 				var lane = laneFromPoint(x, y);
 				var card = draggedCard(document);
 				if (!(lane instanceof HTMLElement)) {
@@ -1763,6 +1776,11 @@ templ boardKanbanDragScript() {
 			});
 			document.addEventListener("keydown", function (event) {
 				if (event.key === "Escape" && active) cancelDrag();
+			});
+			document.addEventListener("detent:connectionChange", function (event) {
+				if (!event.detail || event.detail.state === "connected") return;
+				if (active) cancelDrag();
+				else clearPending();
 			});
 			window.addEventListener("blur", function () {
 				if (active) cancelDrag();

@@ -1655,7 +1655,7 @@ func boardPriorityBadgeClass(card boardCardView) string {
 }
 
 func boardCardInteractionClass(card boardCardView) string {
-	base := " select-none data-[kanban-dragging=true]:opacity-60"
+	base := " select-none data-[kanban-dragging=true]:opacity-60 data-[kanban-connection-disabled=true]:cursor-not-allowed data-[kanban-connection-disabled=true]:opacity-60 data-[kanban-connection-disabled=true]:hover:border-line"
 	if card.CanDrag {
 		return base + " cursor-grab hover:border-accent/50 active:cursor-grabbing"
 	}

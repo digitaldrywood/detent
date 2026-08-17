@@ -619,6 +619,9 @@ func TestAppShellHTMLAttributes(t *testing.T) {
 			if got := attrs["data-density"]; got != tt.want {
 				t.Fatalf("data-density = %v, want %q", got, tt.want)
 			}
+			if got := attrs["data-detent-connection"]; got != "connecting" {
+				t.Fatalf("data-detent-connection = %v, want connecting", got)
+			}
 		})
 	}
 }

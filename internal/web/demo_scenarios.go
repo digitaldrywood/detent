@@ -849,6 +849,9 @@ func (s *Server) demoEvents(c echo.Context, scenario demoScenario) error {
 	res.Header().Set("Connection", "keep-alive")
 	res.Header().Set("X-Accel-Buffering", "no")
 	res.WriteHeader(http.StatusOK)
+	if err := writeSSEComponent(ctx, res.Writer, sseEventBuild, templates.LiveBuildVersion(s.version)); err != nil {
+		return err
+	}
 	stream := newSSEStream(s.logger, s.sseMetricsInterval)
 	if _, err := s.writeDemoSSE(ctx, res, stream, scenario, demoBaseTime, selectedProjectID, selectedNav, selectedView); err != nil {
 		return err
@@ -954,6 +957,11 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, stream *s
 		return false, err
 	}
 	shellData := templates.DashboardShellDataFromDashboard(data)
+	if ok, err := stream.sendComponent(ctx, res.Writer, sseEventLiveStatus, templates.LiveStatus(shellData), 0); err != nil {
+		return false, err
+	} else if ok {
+		sent = true
+	}
 	healthFingerprint, err := templates.GitHubAPIHealthSidebarFingerprint(shellData)
 	if err != nil {
 		return false, err

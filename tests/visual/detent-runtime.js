@@ -14,14 +14,15 @@ async function startDetentRuntime(name, args, options = {}) {
   }
 
   const host = options.host || "127.0.0.1";
+  const port = options.port ?? 0;
   const home = options.home || fs.mkdtempSync(path.join(os.tmpdir(), `detent-${name}-`));
   const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "runtime.log");
   fs.writeFileSync(logPath, "");
-  const child = spawn(binary, ["dev-runtime", "--home", home, "--host", host, "--port", "0", ...args], {
+  const child = spawn(binary, ["dev-runtime", "--home", home, "--host", host, "--port", String(port), ...args], {
     cwd: process.cwd(),
-    env: { ...process.env, ...options.env, NO_COLOR: "1" },
+    env: { ...process.env, DETENT_API_TOKEN: "", ...options.env, NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
