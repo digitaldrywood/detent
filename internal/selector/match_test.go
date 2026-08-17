@@ -235,6 +235,69 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+func TestDecideExplainsAuthorizationOutcome(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		issue       connector.Issue
+		selector    Selector
+		wantMatched bool
+		wantRule    Rule
+		wantValue   string
+		wantDetail  string
+	}{
+		{
+			name:       "missing include label",
+			issue:      connector.Issue{Labels: []string{"detent:todo"}},
+			selector:   Selector{Labels: Labels{Include: []string{"detent"}}},
+			wantRule:   RuleLabelInclude,
+			wantValue:  "detent",
+			wantDetail: "issue does not match authorization selector: missing required label `detent`",
+		},
+		{
+			name:       "present exclude label",
+			issue:      connector.Issue{Labels: []string{"detent", "manual"}},
+			selector:   Selector{Labels: Labels{Exclude: []string{"manual"}}},
+			wantRule:   RuleLabelExclude,
+			wantValue:  "manual",
+			wantDetail: "issue does not match authorization selector: excluded label `manual` is present",
+		},
+		{
+			name:       "author not allowlisted",
+			issue:      connector.Issue{AuthorID: "bob"},
+			selector:   Selector{AuthorIn: []string{"alice"}},
+			wantRule:   RuleAuthor,
+			wantValue:  "bob",
+			wantDetail: "issue does not match authorization selector: author `bob` is not in allowlist `alice`",
+		},
+		{
+			name:        "empty selector",
+			wantMatched: true,
+			wantRule:    RuleConfiguration,
+			wantDetail:  "authorization selector is empty; all issues are allowed",
+		},
+		{
+			name:       "malformed selector",
+			selector:   Selector{Labels: Labels{Include: []string{""}}},
+			wantRule:   RuleConfiguration,
+			wantValue:  "authorization.labels.include[0]",
+			wantDetail: "authorization selector is invalid: authorization.labels.include[0] must not be blank",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Decide(tt.issue, tt.selector, Context{})
+			if got.Matched != tt.wantMatched || got.Rule != tt.wantRule || got.Value != tt.wantValue || got.Detail != tt.wantDetail {
+				t.Fatalf("Decide() = %#v, want matched=%t rule=%q value=%q detail=%q", got, tt.wantMatched, tt.wantRule, tt.wantValue, tt.wantDetail)
+			}
+		})
+	}
+}
+
 func TestDescribe(t *testing.T) {
 	t.Parallel()
 

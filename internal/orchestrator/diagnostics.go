@@ -64,6 +64,7 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 	attrs := o.schedulerDecisionAttrs(state, now, decision.Issue,
 		"result", result,
 		"skip_reason", reason,
+		"skip_detail", strings.TrimSpace(decision.SkipDetail),
 		"selection_reason", strings.TrimSpace(decision.SelectionReason),
 		"queue_position", decision.QueuePosition,
 		"retry", decision.Retry,
@@ -71,6 +72,12 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		"worker_host", strings.TrimSpace(decision.WorkerHost),
 		"unblocker_count", decision.UnblockerCount,
 	)
+	if decision.AuthorizationDecision != nil {
+		attrs = append(attrs,
+			"authorization_rule", decision.AuthorizationDecision.Rule,
+			"authorization_value", decision.AuthorizationDecision.Value,
+		)
+	}
 	telemetry.LogLifecycle(o.logger, slog.LevelDebug, telemetry.LifecycleDispatch, "scheduler_dispatch_decision", o.issueLifecycleCorrelation(decision.Issue), attrs...)
 }
 

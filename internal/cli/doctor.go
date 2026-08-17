@@ -71,6 +71,7 @@ type doctorCheck struct {
 	HealthNotificationFailures []healthnotify.Failure                     `json:"health_notification_failures,omitempty"`
 	UntrackedIssues            []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues         []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
+	AuthorizationAttention     []doctorAuthorizationAttentionDiagnostic   `json:"authorization_attention,omitempty"`
 	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
 	ParkReviews                []doctorParkReviewDiagnostic               `json:"park_reviews,omitempty"`
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`

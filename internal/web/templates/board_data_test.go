@@ -2588,11 +2588,12 @@ func TestBoardAlertsNameForgeWriteConditionDistinctly(t *testing.T) {
 func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 	t.Parallel()
 
+	const authorizationDetail = "issue does not match authorization selector: missing required label `detent`"
 	secondsSinceLastSelected := int64(14_400)
 	alerts := boardAlerts(telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
 		ProjectID:                "detent",
 		CandidateCount:           8,
-		WaitReason:               "github_rest_capacity",
+		WaitReason:               authorizationDetail,
 		SecondsSinceLastSelected: &secondsSinceLastSelected,
 		StallDurationSeconds:     10_800,
 		Stalled:                  true,
@@ -2602,7 +2603,7 @@ func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 		t.Fatalf("boardAlerts() = %#v, want one dispatch-stall error", alerts)
 	}
 	combined := alerts[0].TerseSummary + " " + alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
-	for _, want := range []string{"Dispatch stalled", "human attention", "8 candidates", "3h", "github_rest_capacity"} {
+	for _, want := range []string{"Dispatch stalled", "human attention", "8 candidates", "3h", authorizationDetail} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("dispatch alert = %q, want containing %q", combined, want)
 		}

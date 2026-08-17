@@ -1288,6 +1288,81 @@ func TestDispatchableFiltersUnauthorizedCandidates(t *testing.T) {
 	}
 }
 
+func TestDispatchableAuthorizationDecisionCarriesSelectorDetail(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Authorization: selector.Selector{
+			Labels: selector.Labels{Include: []string{"detent"}},
+		},
+	})
+	issue := dispatchTestIssue("issue-selector-declined", "Todo")
+	issue.Labels = []string{"detent:todo"}
+
+	state := newState(cfg)
+	decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, time.Now(), "")
+	if decision.dispatchable || decision.reason != dispatchSkipAuthorizationSelector {
+		t.Fatalf("dispatchableIssueDecision() = %#v, want authorization selector decline", decision)
+	}
+	if decision.authorization == nil || decision.authorization.Rule != selector.RuleLabelInclude || decision.authorization.Value != "detent" {
+		t.Fatalf("authorization decision = %#v, want missing include label detail", decision.authorization)
+	}
+	if decision.detail != "issue does not match authorization selector: missing required label `detent`" {
+		t.Fatalf("decision detail = %q", decision.detail)
+	}
+}
+
+func TestAuthorizationSelectorDetailReachesDispatchTelemetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo"},
+		TerminalStates:         []string{"Done"},
+		DispatchStallThreshold: time.Hour,
+		Authorization: selector.Selector{
+			Labels: selector.Labels{Include: []string{"detent"}},
+		},
+	})
+	cfg.Project.ID = "corp"
+	issue := dispatchTestIssue("issue-532", "Todo")
+	issue.Labels = []string{"detent:todo"}
+	attempts := &recordingWorkAttemptStore{}
+	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	decisions := make([]dispatchPlanDecision, 0, 1)
+
+	newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+		decision: func(decision dispatchPlanDecision) {
+			decisions = append(decisions, decision)
+			orch.logDispatchPlanDecision(t.Context(), &state, now, decision)
+		},
+	})
+
+	if len(decisions) != 1 || len(attempts.decisions) != 1 {
+		t.Fatalf("plan decisions = %#v, persisted = %#v", decisions, attempts.decisions)
+	}
+	const wantDetail = "issue does not match authorization selector: missing required label `detent`"
+	persisted := attempts.decisions[0]
+	if persisted.Reason != dispatchSkipAuthorizationSelector || persisted.WaitReason != wantDetail {
+		t.Fatalf("persisted decision = %#v", persisted)
+	}
+	for _, want := range []string{`"rule":"label_include"`, `"value":"detent"`, `"detail":"` + wantDetail + `"`} {
+		if !strings.Contains(persisted.MetadataJSON, want) {
+			t.Fatalf("metadata = %q, want containing %q", persisted.MetadataJSON, want)
+		}
+	}
+	status := projectDispatchStatusFromCycle(store.ProjectDispatchStatus{}, "corp", []connector.Issue{issue}, decisions, nil, now)
+	snapshot := dispatchStatusSnapshot(status, cfg.DispatchStallThreshold, now.Add(2*time.Hour))
+	if snapshot.WaitReason != wantDetail {
+		t.Fatalf("dispatch payload wait_reason = %q, want %q", snapshot.WaitReason, wantDetail)
+	}
+}
+
 func TestDispatchPlanOwnershipEligibility(t *testing.T) {
 	t.Parallel()
 

@@ -222,6 +222,26 @@ func TestEvaluateRepeatedDecisions(t *testing.T) {
 	}
 }
 
+func TestEvaluateRepeatedDecisionRendersAuthorizationDetail(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	const detail = "issue does not match authorization selector: missing required label `detent`"
+	decisions := repeatedDecisions(now.Add(-time.Hour), 3, 20*time.Minute, "authorization_selector_declined", "Todo")
+	for index := range decisions {
+		decisions[index].Detail = detail
+	}
+	warnings := Evaluate(Config{
+		Enabled:                true,
+		RepeatedDecisionCount:  3,
+		RepeatedDecisionWindow: 24 * time.Hour,
+	}, Input{ProjectID: "corp", Decisions: decisions}, now)
+
+	if len(warnings) != 1 || warnings[0].Reason != "authorization_selector_declined" || warnings[0].Detail != detail {
+		t.Fatalf("warnings = %#v, want actionable authorization detail", warnings)
+	}
+}
+
 func TestEvaluateProviderRateWindowPacing(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 7, 15, 0, 0, 0, time.UTC)

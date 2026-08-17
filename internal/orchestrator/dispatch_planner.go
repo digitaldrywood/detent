@@ -40,15 +40,17 @@ type dispatchAction struct {
 }
 
 type dispatchPlanDecision struct {
-	Issue           connector.Issue
-	QueuePosition   int
-	Attempt         int
-	WorkerHost      string
-	Retry           bool
-	Selected        bool
-	SkipReason      string
-	SelectionReason string
-	UnblockerCount  int
+	Issue                 connector.Issue
+	QueuePosition         int
+	Attempt               int
+	WorkerHost            string
+	Retry                 bool
+	Selected              bool
+	SkipReason            string
+	SkipDetail            string
+	AuthorizationDecision *selector.Decision
+	SelectionReason       string
+	UnblockerCount        int
 }
 
 func newDispatchPlanner(cfg Config) dispatchPlanner {
@@ -231,6 +233,11 @@ func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Bl
 }
 
 func (p dispatchPlanner) logDecision(hooks dispatchPlanHooks, decision dispatchPlanDecision) {
+	if decision.SkipReason == dispatchSkipAuthorizationSelector && decision.AuthorizationDecision == nil {
+		authorization := p.authorizationDecision(decision.Issue)
+		decision.AuthorizationDecision = &authorization
+		decision.SkipDetail = authorization.Detail
+	}
 	decision.UnblockerCount = decision.Issue.UnblockerCount
 	if hooks.decision != nil {
 		hooks.decision(decision)
@@ -568,8 +575,10 @@ func (p dispatchPlanner) dispatchableIssue(
 }
 
 type dispatchableDecision struct {
-	dispatchable bool
-	reason       string
+	dispatchable  bool
+	reason        string
+	detail        string
+	authorization *selector.Decision
 }
 
 const (
@@ -581,7 +590,7 @@ const (
 	dispatchSkipArtifactGateWaitStatus    = "artifact_gate_wait_status"
 	dispatchSkipMergedPullRequest         = "merged_pull_request_reconciliation_pending"
 	dispatchSkipDuplicatePullRequest      = "duplicate_pull_request_work"
-	dispatchSkipUnauthorized              = "unauthorized"
+	dispatchSkipAuthorizationSelector     = "authorization_selector_declined"
 	dispatchSkipOwnershipAssigneeRequired = "ownership_assignee_required"
 	dispatchSkipBlockedByDependency       = "blocked_by_dependency"
 	dispatchSkipAlreadyRunning            = "already_running"
@@ -691,8 +700,12 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if duplicatePullRequestWork(issue) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
 	}
-	if !p.authorized(issue) {
-		return dispatchableDecision{reason: dispatchSkipUnauthorized}
+	if authorization := p.authorizationDecision(issue); !authorization.Matched {
+		return dispatchableDecision{
+			reason:        dispatchSkipAuthorizationSelector,
+			detail:        authorization.Detail,
+			authorization: &authorization,
+		}
 	}
 	if p.needsAssignee(issue) {
 		return dispatchableDecision{reason: dispatchSkipOwnershipAssigneeRequired}
@@ -792,6 +805,10 @@ func (p dispatchPlanner) authorized(issue connector.Issue) bool {
 		return true
 	}
 	return selector.Match(issue, p.cfg.Authorization, p.cfg.SelectorContext)
+}
+
+func (p dispatchPlanner) authorizationDecision(issue connector.Issue) selector.Decision {
+	return selector.Decide(issue, p.cfg.Authorization, p.cfg.SelectorContext)
 }
 
 func (p dispatchPlanner) needsAssignee(issue connector.Issue) bool {

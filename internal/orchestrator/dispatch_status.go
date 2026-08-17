@@ -97,7 +97,7 @@ func projectDispatchStatusFromCycle(
 				}
 			}
 		} else {
-			waitReason = schedulerDecisionWaitReason(decision.SkipReason)
+			waitReason = dispatchPlanDecisionWaitReason(decision)
 			if decision.SkipReason == dispatchSkipProjectFailureBreaker {
 				status.EligibleCandidateCount++
 			}
@@ -130,6 +130,13 @@ func projectDispatchStatusFromCycle(
 		status.AllSkippedSince = &now
 	}
 	return status
+}
+
+func dispatchPlanDecisionWaitReason(decision dispatchPlanDecision) string {
+	if detail := strings.TrimSpace(decision.SkipDetail); detail != "" {
+		return detail
+	}
+	return schedulerDecisionWaitReason(decision.SkipReason)
 }
 
 func dispatchStatusExcludesCandidate(decision dispatchPlanDecision) bool {

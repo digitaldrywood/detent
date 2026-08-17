@@ -509,6 +509,14 @@ func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State
 	if reason == "" {
 		reason = result
 	}
+	waitReason := schedulerDecisionWaitReason(reason)
+	metadata := map[string]any{}
+	if detail := strings.TrimSpace(decision.SkipDetail); detail != "" {
+		waitReason = detail
+	}
+	if authorization := decision.AuthorizationDecision; authorization != nil {
+		metadata["authorization_decision"] = authorization
+	}
 	record := store.SchedulerDecision{
 		ProjectID:              strings.TrimSpace(o.cfg.Project.ID),
 		IssueID:                strings.TrimSpace(decision.Issue.ID),
@@ -525,9 +533,12 @@ func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State
 		AttemptNumber:          decision.Attempt,
 		WorkerHost:             strings.TrimSpace(decision.WorkerHost),
 		DecisionAt:             now,
-		WaitReason:             schedulerDecisionWaitReason(reason),
+		WaitReason:             waitReason,
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, decision.Issue),
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
+	}
+	if len(metadata) > 0 {
+		record.MetadataJSON = marshalWorkAttemptJSON(metadata)
 	}
 	snapshot := telemetrySchedulerDecision(record)
 	if o.workAttempts != nil {
