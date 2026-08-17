@@ -68,7 +68,11 @@ templ HealthSnapshotV2(data DashboardData) {
 					{ row.Status }
 				</span>
 				<span class="min-w-0 break-words text-xs text-sec">
-					{ row.Detail }
+					if row.Link != "" {
+						<a class="font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(row.Link) }>{ row.Detail }</a>
+					} else {
+						{ row.Detail }
+					}
 					if !row.DetailAt.IsZero() {
 						{ " " }
 						@LocalTime(row.DetailAt, LocalTimeOptions{Relative: true})

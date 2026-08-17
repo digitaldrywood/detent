@@ -104,6 +104,31 @@ type TrackerCondition struct {
 	LastProbeDetail    string            `json:"last_probe_detail,omitempty"`
 	ProbeAttempts      int               `json:"probe_attempts,omitempty"`
 	LastError          string            `json:"last_error,omitempty"`
+	ProviderStatus     *ProviderStatus   `json:"provider_status,omitempty"`
+}
+
+const (
+	ProviderStatusPending      = "pending"
+	ProviderStatusCorroborated = "corroborated"
+	ProviderStatusNoMatch      = "no_matching_incident"
+	ProviderStatusUnavailable  = "unavailable"
+)
+
+type ProviderStatus struct {
+	Provider  string            `json:"provider"`
+	SourceURL string            `json:"source_url"`
+	State     string            `json:"state"`
+	CheckedAt time.Time         `json:"checked_at,omitzero"`
+	Incident  *ProviderIncident `json:"incident,omitempty"`
+}
+
+type ProviderIncident struct {
+	Name       string    `json:"name"`
+	URL        string    `json:"url"`
+	Status     string    `json:"status"`
+	Impact     string    `json:"impact,omitempty"`
+	Components []string  `json:"components,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type AdmissionProposal struct {

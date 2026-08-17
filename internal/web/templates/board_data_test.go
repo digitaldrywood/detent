@@ -2506,6 +2506,54 @@ func TestBoardAlertsNameTrackerAvailabilityCondition(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsCorroborateTrackerIncident(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		status      telemetry.ProviderStatus
+		wantSummary string
+		wantLink    string
+	}{
+		{
+			name: "incident names components and links shortlink",
+			status: telemetry.ProviderStatus{
+				Provider: "GitHub",
+				State:    telemetry.ProviderStatusCorroborated,
+				Incident: &telemetry.ProviderIncident{
+					Name:       "GitHub service disruption",
+					URL:        "https://stspg.io/example",
+					Status:     "mitigating",
+					Components: []string{"API Requests", "Issues"},
+				},
+			},
+			wantSummary: "GitHub incident affecting API Requests and Issues — mitigating",
+			wantLink:    "https://stspg.io/example",
+		},
+		{
+			name:        "missing incident is explicit corroboration information",
+			status:      telemetry.ProviderStatus{Provider: "GitHub", State: telemetry.ProviderStatusNoMatch},
+			wantSummary: "no matching provider incident",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			alerts := boardAlerts(telemetry.Snapshot{TrackerUnavailable: []telemetry.TrackerCondition{{
+				ProjectID: "detent", Connector: "github", Operation: "observed_status", ErrorClass: "server", ProviderStatus: &tt.status,
+			}}})
+			if len(alerts) != 1 || len(alerts[0].DetailRows) != 1 {
+				t.Fatalf("boardAlerts() = %#v, want one tracker alert row", alerts)
+			}
+			row := alerts[0].DetailRows[0]
+			combined := row.Label + " " + row.Summary + " " + row.Detail
+			if !strings.Contains(combined, tt.wantSummary) || row.Link != tt.wantLink {
+				t.Fatalf("tracker provider row = %#v, want summary %q and link %q", row, tt.wantSummary, tt.wantLink)
+			}
+		})
+	}
+}
+
 func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 	t.Parallel()
 

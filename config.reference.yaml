@@ -58,6 +58,8 @@
 #   github_webhook_secret: null
 #   # tracker.github_status_source | type: string | default: "project_v2" | required: No | validation: must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite
 #   github_status_source: "project_v2"
+#   # tracker.status_page_url | type: string | default: "https://linearstatus.com" for linear; "https://www.githubstatus.com" for github or github_local; unused otherwise | required: No | validation: must be an absolute http or https base URL without credentials, path, query, or fragment
+#   status_page_url: null
 #   # tracker.project_slug | type: string | default: none | required: Conditional | validation: is required for github project_v2; is required for linear
 #   project_slug: null
 #   # tracker.repository | type: string | default: none | required: Conditional | validation: is required for github_local; is required for intake sources; must be owner/name when release.enabled is true

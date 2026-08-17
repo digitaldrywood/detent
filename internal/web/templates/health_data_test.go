@@ -132,6 +132,48 @@ func TestHealthViewVerdicts(t *testing.T) {
 	}
 }
 
+func TestHealthTrackerProviderStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		status     telemetry.ProviderStatus
+		wantDetail string
+		wantLink   string
+	}{
+		{
+			name: "corroborating incident",
+			status: telemetry.ProviderStatus{
+				Provider: "GitHub",
+				State:    telemetry.ProviderStatusCorroborated,
+				Incident: &telemetry.ProviderIncident{
+					Name:       "GitHub service disruption",
+					URL:        "https://stspg.io/example",
+					Status:     "mitigating",
+					Components: []string{"API Requests", "Issues"},
+				},
+			},
+			wantDetail: "GitHub incident affecting API Requests and Issues — mitigating",
+			wantLink:   "https://stspg.io/example",
+		},
+		{name: "no incident", status: telemetry.ProviderStatus{Provider: "GitHub", State: telemetry.ProviderStatusNoMatch}, wantDetail: "no matching provider incident"},
+		{name: "unreachable provider", status: telemetry.ProviderStatus{Provider: "GitHub", State: telemetry.ProviderStatusUnavailable}, wantDetail: "provider status unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			condition := telemetry.TrackerCondition{ProjectID: "detent", Connector: "github", ErrorClass: "server", ProviderStatus: &tt.status}
+			rows := healthTrackerUnavailableRows([]telemetry.TrackerCondition{condition})
+			if len(rows) != 1 || !strings.Contains(rows[0].Detail, tt.wantDetail) || rows[0].Link != tt.wantLink {
+				t.Fatalf("healthTrackerUnavailableRows() = %#v, want detail %q and link %q", rows, tt.wantDetail, tt.wantLink)
+			}
+			if detail := trackerUnavailableHealthDetail([]telemetry.TrackerCondition{condition}); !strings.Contains(detail, tt.wantDetail) {
+				t.Fatalf("trackerUnavailableHealthDetail() = %q, want containing %q", detail, tt.wantDetail)
+			}
+		})
+	}
+}
+
 func TestHealthDispatchStallRows(t *testing.T) {
 	t.Parallel()
 

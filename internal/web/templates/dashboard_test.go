@@ -276,6 +276,37 @@ func TestHealthPageRendersOneClientLocalCapacityNotice(t *testing.T) {
 	}
 }
 
+func TestHealthPageRendersTrackerProviderIncidentLink(t *testing.T) {
+	t.Parallel()
+
+	html := renderHealthPageV2(t, templates.DashboardData{Snapshot: telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 8, 17, 17, 20, 0, 0, time.UTC),
+		TrackerUnavailable: []telemetry.TrackerCondition{{
+			ProjectID: "detent",
+			Connector: "github",
+			ProviderStatus: &telemetry.ProviderStatus{
+				Provider: "GitHub",
+				State:    telemetry.ProviderStatusCorroborated,
+				Incident: &telemetry.ProviderIncident{
+					Name:       "GitHub service disruption",
+					URL:        "https://stspg.io/example",
+					Status:     "mitigating",
+					Components: []string{"API Requests", "Issues"},
+				},
+			},
+		}},
+	}})
+	for _, want := range []string{
+		`href="https://stspg.io/example"`,
+		"GitHub incident affecting API Requests and Issues — mitigating",
+		"GitHub service disruption",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("health page missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestProjectDiagnosticsPageRendersWorkflowDiagnosticPromptCopyControls(t *testing.T) {
 	t.Parallel()
 

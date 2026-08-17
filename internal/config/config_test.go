@@ -3109,6 +3109,63 @@ Prompt
 	}
 }
 
+func TestTrackerStatusPageDefaultsAndOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		kind       string
+		configured string
+		want       string
+	}{
+		{name: "github default", kind: TrackerGitHub, want: defaultGitHubStatusPageURL},
+		{name: "github local default", kind: TrackerGitHubLocal, want: defaultGitHubStatusPageURL},
+		{name: "linear default", kind: TrackerLinear, want: defaultLinearStatusPageURL},
+		{name: "unknown connector has no source", kind: TrackerMemory},
+		{name: "configured source overrides default", kind: TrackerGitHub, configured: "https://status.example.com/", want: "https://status.example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = tt.kind
+			cfg.Tracker.StatusPageURL = tt.configured
+			cfg.normalize()
+			if cfg.Tracker.StatusPageURL != tt.want {
+				t.Fatalf("Tracker.StatusPageURL = %q, want %q", cfg.Tracker.StatusPageURL, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateStatusPageURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "empty optional", want: false},
+		{name: "https", value: "https://status.example.com", want: false},
+		{name: "http", value: "http://127.0.0.1:8080", want: false},
+		{name: "relative", value: "/status", want: true},
+		{name: "credentials", value: "https://user@example.com", want: true},
+		{name: "path", value: "https://status.example.com/status", want: true},
+		{name: "query", value: "https://status.example.com?tenant=one", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var problems []string
+			validateStatusPageURL(tt.value, &problems)
+			if got := len(problems) > 0; got != tt.want {
+				t.Fatalf("validateStatusPageURL(%q) problems = %v, want error %t", tt.value, problems, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowGitHubLocalRejectsGitHubStatusSource(t *testing.T) {
 	t.Parallel()
 
