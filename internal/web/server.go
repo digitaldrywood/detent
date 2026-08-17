@@ -62,6 +62,11 @@ type Dependencies struct {
 	Chat                chatpkg.Provider
 	IssueExplainer      IssueExplainer
 	HealthNotifications healthnotify.FailureReader
+	TickLiveness        TickLivenessSource
+}
+
+type TickLivenessSource interface {
+	TickLiveness(time.Time) []telemetry.TickLiveness
 }
 
 type Mode string
@@ -109,6 +114,7 @@ type Config struct {
 	RuntimeLogPath        string
 	ServerAddress         string
 	Demo                  DemoConfig
+	Now                   func() time.Time
 }
 
 type Server struct {
@@ -168,6 +174,8 @@ type Server struct {
 	chat                *chatpkg.Service
 	issueExplainer      IssueExplainer
 	healthNotifications healthnotify.FailureReader
+	tickLiveness        TickLivenessSource
+	now                 func() time.Time
 	operatorTools       *operatortool.Executor
 	mcpHTTP             *mcp.HTTPHandler
 }
@@ -220,6 +228,10 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	sessions := magicLinks
 	if oidcEnabled {
 		sessions = oidcSessions
+	}
+	tickLiveness := deps.TickLiveness
+	if tickLiveness == nil && deps.Registry != nil {
+		tickLiveness = deps.Registry
 	}
 
 	server := &Server{
@@ -277,6 +289,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		identityAllowlist:   identityAllowlist,
 		issueExplainer:      deps.IssueExplainer,
 		healthNotifications: deps.HealthNotifications,
+		tickLiveness:        tickLiveness,
+		now:                 cfg.now(),
 	}
 	if !magicLinksEnabled && !oidcEnabled {
 		server.sessions = nil
@@ -1040,20 +1054,20 @@ func (s *Server) sidebarProjectContext(selectedProjectID string, projects []temp
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return s.withManualRefresh(s.enrichSnapshot(ctx, telemetry.Snapshot{}))
+		return s.withManualRefresh(s.enrichSnapshot(ctx, telemetry.Snapshot{})).WithFreshness(s.now())
 	}
-	return s.withManualRefresh(s.cachedEnrichedSnapshot(ctx, snapshot))
+	return s.withManualRefresh(s.cachedEnrichedSnapshot(ctx, snapshot)).WithFreshness(s.now())
 }
 
 func (s *Server) latestBoardSnapshot() (telemetry.Snapshot, bool) {
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return s.withManualRefresh(telemetry.Snapshot{}), false
+		return s.withManualRefresh(telemetry.Snapshot{}).WithFreshness(s.now()), false
 	}
 	if enriched, ok := s.snapshots.get(snapshot); ok {
-		return s.withManualRefresh(enriched), true
+		return s.withManualRefresh(enriched).WithFreshness(s.now()), true
 	}
-	return s.withManualRefresh(snapshot), false
+	return s.withManualRefresh(snapshot).WithFreshness(s.now()), false
 }
 
 func (s *Server) health(c echo.Context) error {
@@ -1061,6 +1075,7 @@ func (s *Server) health(c echo.Context) error {
 		return err
 	}
 	status := "ok"
+	now := s.now().UTC()
 	sessionsRemaining := 0
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
@@ -1071,8 +1086,15 @@ func (s *Server) health(c echo.Context) error {
 	dispatch := telemetry.DispatchStatus{}
 	dispatchStalls := []telemetry.DispatchStatus{}
 	notificationFailures := []healthnotify.Failure{}
+	refresh := telemetry.Refresh{}
+	snapshotGeneratedAt := time.Time{}
+	snapshotAgeSeconds := int64(0)
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
+			snapshot = snapshot.WithFreshness(now)
+			snapshotGeneratedAt = snapshot.GeneratedAt
+			snapshotAgeSeconds = snapshot.AgeSeconds(now)
+			refresh = snapshot.Refresh
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
@@ -1086,6 +1108,10 @@ func (s *Server) health(c echo.Context) error {
 				sessionsRemaining = snapshot.Shutdown.SessionsRemaining
 			}
 		}
+	}
+	tickLiveness := []telemetry.TickLiveness{}
+	if s.tickLiveness != nil {
+		tickLiveness = s.tickLiveness.TickLiveness(now)
 	}
 	if s.healthNotifications != nil {
 		failures, err := s.healthNotifications.Failures(c.Request().Context())
@@ -1106,13 +1132,13 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable, failureBreakers, backendOutages)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable, failureBreakers, backendOutages, tickLiveness)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 {
+		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) {
 			status = "needs_attention"
 		}
 	}
@@ -1138,11 +1164,15 @@ func (s *Server) health(c echo.Context) error {
 		DispatchStalls:       dispatchStalls,
 		NotificationFailures: notificationFailures,
 		Projects:             projectHealth,
+		Refresh:              refresh,
+		SnapshotGeneratedAt:  snapshotGeneratedAt,
+		SnapshotAgeSeconds:   snapshotAgeSeconds,
+		TickLiveness:         tickLiveness,
 	})
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(ciUnavailable)+len(breakers)+len(outages))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
 			needsAttention[projectID] = struct{}{}
@@ -1163,12 +1193,26 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 			needsAttention[projectID] = struct{}{}
 		}
 	}
+	for _, liveness := range tickLiveness {
+		if projectID := strings.TrimSpace(liveness.ProjectID); projectID != "" && liveness.Status == telemetry.TickLivenessStatusNeedsAttention {
+			needsAttention[projectID] = struct{}{}
+		}
+	}
 	for index := range projects {
 		if _, ok := needsAttention[strings.TrimSpace(projects[index].ProjectID)]; ok {
 			projects[index].Status = "needs_human_attention"
 		}
 	}
 	return projects
+}
+
+func tickLivenessNeedsAttention(values []telemetry.TickLiveness) bool {
+	for _, value := range values {
+		if value.Status == telemetry.TickLivenessStatusNeedsAttention {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) projectHealth() (string, []healthProject) {
@@ -1179,7 +1223,7 @@ func (s *Server) projectHealth() (string, []healthProject) {
 	status := "ok"
 	projectHealth := s.registry.Health()
 	activeHoursByProject := make(map[string]telemetry.ActiveHours)
-	now := time.Now().UTC()
+	now := s.now().UTC()
 	for _, trackedProject := range s.registry.List() {
 		if trackedProject == nil {
 			continue
@@ -1282,6 +1326,13 @@ func (cfg Config) logger() *slog.Logger {
 		return cfg.Logger
 	}
 	return slog.Default()
+}
+
+func (cfg Config) now() func() time.Time {
+	if cfg.Now != nil {
+		return cfg.Now
+	}
+	return time.Now
 }
 
 func (cfg Config) mode() Mode {
@@ -1435,6 +1486,10 @@ type healthResponse struct {
 	DispatchStalls       []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
 	NotificationFailures []healthnotify.Failure       `json:"health_notification_failures,omitempty"`
 	Projects             []healthProject              `json:"projects,omitempty"`
+	Refresh              telemetry.Refresh            `json:"refresh"`
+	SnapshotGeneratedAt  time.Time                    `json:"snapshot_generated_at,omitzero"`
+	SnapshotAgeSeconds   int64                        `json:"snapshot_age_seconds"`
+	TickLiveness         []telemetry.TickLiveness     `json:"tick_liveness"`
 }
 
 type healthEnvironment struct {

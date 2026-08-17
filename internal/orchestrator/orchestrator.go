@@ -282,6 +282,7 @@ type Orchestrator struct {
 	completedStops          map[string]StopRunResult
 	refreshSeq              atomic.Uint64
 	workerGeneration        atomic.Uint64
+	tickWatchdog            *tickWatchdog
 }
 
 type validatorStageResult struct {
@@ -547,6 +548,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		pendingMergeRevocations: map[string]mergeRevocation{},
 		mergeRevocationComments: map[string]*mergeRevocationCommentState{},
 		completedStops:          map[string]StopRunResult{},
+		tickWatchdog:            newTickWatchdog(cfg.Project.ID, cfg.PollInterval, logger),
 	}
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger)
 	return orchestrator, nil
@@ -563,6 +565,16 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	defer close(o.done)
 	defer o.markGlobalProjectIdle()
+	watchdogCtx, stopWatchdog := context.WithCancel(ctx)
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		o.tickWatchdog.Run(watchdogCtx)
+	}()
+	defer func() {
+		stopWatchdog()
+		<-watchdogDone
+	}()
 	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
 	heartbeatsDone := make(chan struct{})
 	var heartbeatResults <-chan heartbeatResult
@@ -585,7 +597,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer o.validatorWG.Wait()
 	defer o.releaseRunningSlots(&state)
 	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
-	o.tick(ctx, &state, time.Now())
+	initialTickAt := time.Now()
+	o.startTick(&state, initialTickAt)
+	o.tick(ctx, &state, initialTickAt)
+	o.finishTick(&state)
 	resetTicker(ticker, state.PollInterval)
 
 	for {
@@ -593,13 +608,19 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case now := <-ticker.C:
+			o.startTick(&state, now)
 			o.tick(ctx, &state, now)
+			o.finishTick(&state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.refreshes:
+			o.startTick(&state, time.Now())
 			o.tickManual(ctx, &state, request)
+			o.finishTick(&state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.reconciles:
+			o.startTick(&state, time.Now())
 			o.reconcileTarget(ctx, &state, request)
+			o.finishTick(&state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
@@ -607,7 +628,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			result := o.requestProjectFailureBreakerCanary(&state, request.at)
 			request.reply <- result
 			if result.Requested {
+				o.startTick(&state, time.Now())
 				o.tick(ctx, &state, request.at)
+				o.finishTick(&state)
 				resetTicker(ticker, state.PollInterval)
 			}
 		case request := <-o.stopRequests:
@@ -634,11 +657,37 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- o.handleOperatorMove(&state, request.request, request.at)
 		case update := <-o.configUpdates:
 			o.applyRuntimeUpdate(&state, update.update, ticker)
+			o.finishTick(&state)
 			update.reply <- struct{}{}
 		case request := <-o.stateRequests:
 			request.reply <- state.clone()
 		}
 	}
+}
+
+func (o *Orchestrator) TickLiveness(now time.Time) telemetry.TickLiveness {
+	if o == nil || o.tickWatchdog == nil {
+		return telemetry.TickLiveness{Status: telemetry.TickLivenessStatusInitializing}
+	}
+	return o.tickWatchdog.Snapshot(now)
+}
+
+func (o *Orchestrator) startTick(state *State, at time.Time) {
+	if o == nil || o.tickWatchdog == nil || state == nil {
+		return
+	}
+	nextRefreshAt := time.Time{}
+	if state.PollInterval > 0 {
+		nextRefreshAt = at.Add(state.PollInterval)
+	}
+	o.tickWatchdog.Advance(at, nextRefreshAt, state.PollInterval)
+}
+
+func (o *Orchestrator) finishTick(state *State) {
+	if o == nil || o.tickWatchdog == nil || state == nil {
+		return
+	}
+	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
 }
 
 func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {

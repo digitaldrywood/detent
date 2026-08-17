@@ -69,9 +69,9 @@ func (s *Server) apiState(c echo.Context) error {
 			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
 		}
 		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
-		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), s.instanceName(), s.build))
+		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
-	now := apiNow()
+	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
@@ -81,7 +81,7 @@ func (s *Server) apiState(c echo.Context) error {
 		snapshot = s.withManualRefresh(snapshot)
 	}
 
-	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), s.instanceName(), s.build))
+	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), now, s.instanceName(), s.build))
 }
 
 func (s *Server) apiProject(c echo.Context) error {
@@ -115,9 +115,9 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
 		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Pool: project.Pool})
-		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), s.instanceName(), s.build))
+		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
-	now := apiNow()
+	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
@@ -136,7 +136,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 	})
 	scopedSnapshot = s.withManualRefresh(scopedSnapshot)
 
-	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName(), s.build))
+	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), now, s.instanceName(), s.build))
 }
 
 func (s *Server) apiTimeSeries(c echo.Context) error {
@@ -457,9 +457,11 @@ func (s *Server) handleHTTPError(err error, c echo.Context) {
 	}
 }
 
-func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceName string, build buildinfo.Info) stateAPIResponse {
+func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedAt time.Time, instanceName string, build buildinfo.Info) stateAPIResponse {
+	snapshot = snapshot.WithFreshness(observedAt)
 	return stateAPIResponse{
 		GeneratedAt:        generatedAt,
+		SnapshotAgeSeconds: snapshot.AgeSeconds(observedAt),
 		Status:             runtimeStatus(snapshot),
 		Shutdown:           shutdownResponse(snapshot.Shutdown),
 		Update:             snapshot.Update,
@@ -1411,6 +1413,7 @@ func snapshotErrorResponse(generatedAt time.Time, code string, message string) s
 
 type stateAPIResponse struct {
 	GeneratedAt        time.Time                    `json:"generated_at"`
+	SnapshotAgeSeconds int64                        `json:"snapshot_age_seconds"`
 	Status             string                       `json:"status"`
 	Shutdown           shutdownAPIResponse          `json:"shutdown"`
 	Update             telemetry.Update             `json:"update,omitzero"`
