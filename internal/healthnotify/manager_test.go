@@ -67,6 +67,7 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 		cause           string
 		wantWaitReasons []string
 		wantTracker     bool
+		wantForge       bool
 	}{
 		{
 			name: "dispatch payload carries wait reason",
@@ -83,6 +84,14 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 			}}},
 			cause:       CauseTrackerUnavailable,
 			wantTracker: true,
+		},
+		{
+			name: "forge payload carries scoped condition",
+			snapshot: telemetry.Snapshot{ForgeUnavailable: []telemetry.ForgeCondition{{
+				ProjectID: "detent", Host: "github.com", Operation: "git push", ErrorClass: "server",
+			}}},
+			cause:     CauseForgeUnavailable,
+			wantForge: true,
 		},
 		{
 			name:     "CI payload omits wait reason",
@@ -127,6 +136,9 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 				}
 				if got := len(event.TrackerConditions) > 0; got != tt.wantTracker {
 					t.Fatalf("TrackerConditions = %#v, want present %v", event.TrackerConditions, tt.wantTracker)
+				}
+				if got := len(event.ForgeConditions) > 0; got != tt.wantForge {
+					t.Fatalf("ForgeConditions = %#v, want present %v", event.ForgeConditions, tt.wantForge)
 				}
 			}
 		})

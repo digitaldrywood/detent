@@ -8,6 +8,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -112,6 +113,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		GitHubGraphQLWarnRemaining:    int64(cfg.Tracker.GitHubGraphQLWarnRemaining),
 		GitHubGraphQLMinReserve:       int64(cfg.Tracker.GitHubGraphQLMinReserve),
 		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
+		ForgeHost:                     forgeavailability.HostFromEndpoint(cfg.Tracker.Endpoint),
 		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
 		Lessons: LessonCaptureConfig{
 			Path:       cfg.Agent.Lessons.Path,
@@ -155,6 +157,7 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability, term
 }
 
 func normalizeConfig(cfg Config) Config {
+	cfg.ForgeHost = forgeavailability.NormalizeHost(cfg.ForgeHost)
 	cfg.BillingMode = strings.ToLower(strings.TrimSpace(cfg.BillingMode))
 	if cfg.BillingMode == "" {
 		cfg.BillingMode = workflowconfig.BillingModeSubscription

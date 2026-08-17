@@ -42,6 +42,7 @@ type Snapshot struct {
 	Budget                  Budget              `json:"budget"`
 	RateLimits              *RateLimits         `json:"rate_limits"`
 	TrackerUnavailable      []TrackerCondition  `json:"tracker_unavailable,omitempty"`
+	ForgeUnavailable        []ForgeCondition    `json:"forge_unavailable,omitempty"`
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
@@ -129,6 +130,22 @@ type ProviderIncident struct {
 	Impact     string    `json:"impact,omitempty"`
 	Components []string  `json:"components,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type ForgeCondition struct {
+	ProjectID       string    `json:"project_id,omitempty"`
+	Host            string    `json:"host"`
+	Operation       string    `json:"operation,omitempty"`
+	ErrorClass      string    `json:"error_class"`
+	DetectedAt      time.Time `json:"detected_at"`
+	LastObservedAt  time.Time `json:"last_observed_at"`
+	NextProbeAt     time.Time `json:"next_probe_at,omitzero"`
+	LastProbeAt     time.Time `json:"last_probe_at,omitzero"`
+	LastProbeResult string    `json:"last_probe_result,omitempty"`
+	LastProbeDetail string    `json:"last_probe_detail,omitempty"`
+	ProbeAttempts   int       `json:"probe_attempts,omitempty"`
+	ProbeIssueID    string    `json:"probe_issue_id,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
 }
 
 type AdmissionProposal struct {

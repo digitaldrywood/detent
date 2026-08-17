@@ -181,6 +181,9 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 }
 
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
+	if strings.TrimSpace(attempt.ErrorClass) == forgeUnavailableErrorClass {
+		return false
+	}
 	return terminalAttemptStateRetryDemotable(store.WorkAttemptTerminalState(strings.ToLower(strings.TrimSpace(attempt.TerminalState))))
 }
 

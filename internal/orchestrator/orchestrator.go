@@ -116,6 +116,7 @@ type Config struct {
 	GitHubGraphQLWarnRemaining    int64
 	GitHubGraphQLMinReserve       int64
 	GitHubRESTMinReserve          int64
+	ForgeHost                     string
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
 	Lessons                       LessonCaptureConfig
@@ -270,6 +271,7 @@ type Orchestrator struct {
 	reconciles              chan targetedRefreshRequest
 	capacityClearRequests   chan capacityClearRequest
 	trackerClearRequests    chan trackerClearRequest
+	forgeClearRequests      chan forgeClearRequest
 	failureCanaryRequests   chan failureBreakerCanaryRequest
 	stopRequests            chan stopRunRequest
 	modelPermitRequests     chan modelPermitRequest
@@ -345,6 +347,16 @@ type trackerClearRequest struct {
 
 type trackerClearReply struct {
 	cleared []TrackerCondition
+}
+
+type forgeClearRequest struct {
+	host  string
+	at    time.Time
+	reply chan forgeClearReply
+}
+
+type forgeClearReply struct {
+	cleared []ForgeCondition
 }
 
 type failureBreakerCanaryRequest struct {
@@ -548,6 +560,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		reconciles:              make(chan targetedRefreshRequest, 128),
 		capacityClearRequests:   make(chan capacityClearRequest),
 		trackerClearRequests:    make(chan trackerClearRequest),
+		forgeClearRequests:      make(chan forgeClearRequest),
 		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
 		stopRequests:            make(chan stopRunRequest),
 		modelPermitRequests:     make(chan modelPermitRequest),
@@ -638,6 +651,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
 		case request := <-o.trackerClearRequests:
 			request.reply <- trackerClearReply{cleared: o.clearTrackerAvailability(&state, request.at)}
+		case request := <-o.forgeClearRequests:
+			request.reply <- forgeClearReply{cleared: o.clearForgeAvailability(&state, request.host, request.at)}
 		case request := <-o.failureCanaryRequests:
 			result := o.requestProjectFailureBreakerCanary(&state, request.at)
 			request.reply <- result

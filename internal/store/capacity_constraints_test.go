@@ -74,6 +74,12 @@ func TestCapacityConstraintReason(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:       "forge unavailable",
+			waitReason: "forge_unavailable",
+			want:       CapacityConstraintForgeUnavailable,
+			wantOK:     true,
+		},
+		{
 			name:       "CI unavailable",
 			waitReason: "ci_unavailable",
 			want:       CapacityConstraintCIUnavailable,

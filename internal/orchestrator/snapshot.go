@@ -111,6 +111,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed:               completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
 		RateLimits:              cloneRateLimits(s.RateLimits),
 		TrackerUnavailable:      trackerUnavailableSnapshots(s.TrackerUnavailable),
+		ForgeUnavailable:        forgeUnavailableSnapshots(s.ForgeUnavailable),
 		CIUnavailable:           ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s),
@@ -179,6 +180,14 @@ func trackerUnavailableSnapshots(condition *TrackerCondition) []telemetry.Tracke
 		return nil
 	}
 	return []telemetry.TrackerCondition{*condition}
+}
+
+func forgeUnavailableSnapshots(conditions map[string]ForgeCondition) []telemetry.ForgeCondition {
+	result := make([]telemetry.ForgeCondition, 0, len(conditions))
+	for _, key := range sortedKeys(conditions) {
+		result = append(result, conditions[key])
+	}
+	return result
 }
 
 func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution) {

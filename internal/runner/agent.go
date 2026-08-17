@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
@@ -603,6 +604,7 @@ func (r *Runner) prepareMergeFastPath(
 			Output:                RunOutputMergeFastPathClean,
 			DiffStats:             diffStatsFromWorkspace(precheck.DiffStat),
 			PullRequestHeadPushed: precheck.HeadChanged,
+			ForgeWriteCompleted:   true,
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
@@ -952,6 +954,7 @@ func (r *Runner) runAgentTurn(
 	result.PullRequestUpdated = progress.pullRequestUpdated()
 	result.PullRequestHeadPushed = progress.pullRequestHeadPushed()
 	result.CITriggerLabelReapplied = progress.ciTriggerLabelReapplied()
+	result.ForgeWriteCompleted = progress.forgeWriteCompleted()
 	if turnErr == nil {
 		if deliverableErr := progress.deliverableError(); deliverableErr != nil {
 			turnErr = deliverableErr
@@ -1084,6 +1087,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
+	forgeHost := forgeavailability.HostFromEndpoint(workflow.Config.Tracker.Endpoint)
 	mode := normalizeRunMode(req.Mode)
 	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) {
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
@@ -1112,7 +1116,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("create workspace: %w", err)
+		return RunResult{}, classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
 	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -1143,7 +1147,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		} else {
 			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue)
 			if err != nil {
-				return RunResult{}, err
+				operation := "git fetch"
+				if strings.Contains(strings.ToLower(err.Error()), "git push") {
+					operation = "git push"
+				}
+				return RunResult{}, classifyForgeOperationError(err, operation, forgeHost)
 			}
 			mergePrecheck = mergePrecheckFromWorkspace(precheck)
 			if handled {
@@ -1195,6 +1203,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
+	}
+	if req.ForgeRetry != nil && !strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
+		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
+			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
+		}
 	}
 	role := runRole(req.Mode, req.Issue)
 	routeRole := agentRuntime.effectiveRunRole(role)
@@ -1350,7 +1364,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	commandStartedAttrs = append(commandStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_command_started", commandStartedAttrs...)
 	turnPrompt := prompt
-	if orphanRecovery && !agentResumeStateEmpty(resumeState) {
+	if req.ForgeRetry == nil && orphanRecovery && !agentResumeStateEmpty(resumeState) {
 		turnPrompt = orphanResumePrompt
 	}
 	var extraWritableRoots []string
@@ -1421,6 +1435,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
 	}
+	if req.ForgeRetry != nil && strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+		execution.result.ForgeWriteCompleted = true
+	}
+	if req.ForgeRetry != nil && req.ForgeRetry.WorkProductPushed {
+		execution.result.PullRequestHeadPushed = true
+	}
 	turns := int64(max(execution.turnCount, 1))
 	if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
 		branch := strings.TrimSpace(info.Branch)
@@ -1489,6 +1509,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	result.WorkspaceBranch = strings.TrimSpace(info.Branch)
 	if mergeFallback && turnErr == nil {
 		targetBranch := ""
 		if req.Issue.PullRequest != nil {
@@ -1499,6 +1520,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			result.FinalState = finalStateForTurnError(turnErr)
 		}
 	}
+	turnErr = classifyForgeDeliverableError(turnErr, forgeHost, result.PullRequestHeadPushed)
 	result.budgetProjection = budgetProjection
 	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
 		result.DiffStats = brakeDiff
@@ -1588,7 +1610,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
-			fmt.Errorf("workspace diff stat: %w", err),
+			classifyForgeOperationError(fmt.Errorf("workspace diff stat: %w", err), "git fetch", forgeHost),
 			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
@@ -1614,6 +1636,52 @@ func recoverablePullRequestDeliverable(execution agentTurnExecution) (*Deliverab
 		return nil, false
 	}
 	return pullRequestDeliverableFailure(execution.err)
+}
+
+func classifyForgeDeliverableError(err error, fallbackHost string, workProductPushed bool) error {
+	if err == nil {
+		return nil
+	}
+	if availabilityErr, ok := forgeavailability.As(err); ok && availabilityErr != nil {
+		return err
+	}
+	errorsFound, _ := deliverableCommandErrors(err)
+	for _, deliverableErr := range errorsFound {
+		if deliverableErr == nil {
+			continue
+		}
+		if workProductPushed && strings.Contains(strings.ToLower(deliverableErr.Arguments), "ci-trigger-label") {
+			continue
+		}
+		operation := strings.TrimSpace(deliverableErr.Operation)
+		if deliverableErr.OperationClass == "push" && !strings.Contains(strings.ToLower(operation), "git push") {
+			operation = "git push"
+		}
+		class, unavailable := forgeavailability.Classify(operation, deliverableErr.Error())
+		if !unavailable {
+			continue
+		}
+		host := forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+		if host == "" {
+			host = fallbackHost
+		}
+		return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+	}
+	return err
+}
+
+func classifyForgeOperationError(err error, operation string, host string) error {
+	if err == nil {
+		return nil
+	}
+	class, unavailable := forgeavailability.Classify(operation, err.Error())
+	if !unavailable {
+		return err
+	}
+	if observedHost := forgeavailability.HostFromText(err.Error()); observedHost != "" {
+		host = observedHost
+	}
+	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
 }
 
 func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
@@ -1691,6 +1759,38 @@ func deliverableRecoveryPrompt(branch string, repository string, deliverableErr 
 	return prompt.String()
 }
 
+func forgeRetryPrompt(retry ForgeRetry, issue connector.Issue) string {
+	branch := strings.TrimSpace(retry.Branch)
+	operation := strings.TrimSpace(retry.Operation)
+	if operation == "" {
+		operation = "the failed forge write"
+	}
+	var prompt strings.Builder
+	prompt.WriteString("The prior attempt completed its implementation work but the forge was unavailable. Retry only the deliverable write; do not edit files, change commits, rerun implementation, or perform unrelated work.\n\n")
+	if retry.WorkProductPushed {
+		prompt.WriteString("The branch is already pushed. Preserve it and recover the pull request create or update for branch `")
+		prompt.WriteString(branch)
+		prompt.WriteString("`.")
+	} else {
+		prompt.WriteString("Retry `")
+		prompt.WriteString(operation)
+		prompt.WriteString("` for branch `")
+		prompt.WriteString(branch)
+		prompt.WriteString("`. After the push succeeds, create or update the required pull request if one is not already open.")
+	}
+	if repository := strings.TrimSpace(issue.PRRepository); repository != "" {
+		prompt.WriteString(" Use repository `")
+		prompt.WriteString(repository)
+		prompt.WriteString("`.")
+	}
+	if arguments := strings.TrimSpace(retry.Arguments); arguments != "" {
+		prompt.WriteString("\n\nThe failed operation used these arguments:\n\n")
+		prompt.WriteString(arguments)
+	}
+	prompt.WriteString("\n\nComplete the existing Detent Workpad and handoff protocol after delivery succeeds.")
+	return prompt.String()
+}
+
 func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExecution) agentTurnExecution {
 	result := recovery.result
 	result.Output = joinAgentOutputs(initial.result.Output, recovery.result.Output)
@@ -1702,6 +1802,7 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 	result.PullRequestUpdated = initial.result.PullRequestUpdated || recovery.result.PullRequestUpdated
 	result.PullRequestHeadPushed = initial.result.PullRequestHeadPushed || recovery.result.PullRequestHeadPushed
 	result.CITriggerLabelReapplied = initial.result.CITriggerLabelReapplied || recovery.result.CITriggerLabelReapplied
+	result.ForgeWriteCompleted = initial.result.ForgeWriteCompleted || recovery.result.ForgeWriteCompleted
 	if result.DiffStats == (DiffStats{}) {
 		result.DiffStats = initial.result.DiffStats
 	}
@@ -3056,6 +3157,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		case "push":
 			delete(p.deliverableFailures, "push")
 			p.deliverableSuccesses["push"] = true
+			p.deliverableSuccesses["forge_write"] = true
 			if gitPushChanged(update, invocation.command) {
 				p.successfulPushes++
 				p.ciTriggerLabelValid = false
@@ -3070,6 +3172,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 			delete(p.deliverableFailures, "ci_trigger_label")
 			p.deliverableSuccesses["push"] = true
 			p.deliverableSuccesses["ci_trigger_label"] = true
+			p.deliverableSuccesses["forge_write"] = true
 			if gitPushChanged(update, invocation.command) {
 				p.successfulPushes++
 			}
@@ -3078,6 +3181,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		case "pull_request":
 			delete(p.deliverableFailures, "pull_request")
 			p.deliverableSuccesses["pull_request"] = true
+			p.deliverableSuccesses["forge_write"] = true
 		case "pull_request_lookup":
 			if pullRequestLookupAdopts(update, p.deliverableRecoveryBranch) {
 				delete(p.deliverableFailures, "pull_request")
@@ -3131,6 +3235,10 @@ func (p *agentRunProgress) pullRequestHeadPushed() bool {
 
 func (p *agentRunProgress) ciTriggerLabelReapplied() bool {
 	return p.successfulPushes > 0 && p.ciTriggerLabelValid && p.ciTriggerPushSequence == p.successfulPushes
+}
+
+func (p *agentRunProgress) forgeWriteCompleted() bool {
+	return p.deliverableSuccesses["forge_write"]
 }
 
 func (p *agentRunProgress) deliverableError() error {

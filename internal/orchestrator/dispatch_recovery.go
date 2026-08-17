@@ -13,6 +13,7 @@ const (
 	dispatchRecoveryPullRequestHydration  = "pull_request_hydration"
 	dispatchRecoveryBackendCapacity       = "backend_capacity"
 	dispatchRecoveryTrackerUnavailable    = connector.TrackerUnavailableCondition
+	dispatchRecoveryForgeUnavailable      = "forge_unavailable"
 	dispatchRecoveryProjectFailureBreaker = "project_failure_breaker"
 	dispatchRecoveryStatusWaiting         = "waiting"
 	dispatchRecoveryStatusRamping         = "ramping"

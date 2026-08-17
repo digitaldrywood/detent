@@ -57,6 +57,17 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "CI is unavailable.",
 		},
 		{
+			name: "forge write unavailability requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				ForgeUnavailable: []telemetry.ForgeCondition{{
+					ProjectID: "detent", Host: "github.com", Operation: "git push", ErrorClass: "server", NextProbeAt: now.Add(time.Minute),
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Forge writes are unavailable.",
+		},
+		{
 			name: "dispatch stall requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
