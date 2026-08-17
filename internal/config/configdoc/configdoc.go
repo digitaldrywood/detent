@@ -346,6 +346,9 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 	if node.path == "tracker.endpoint" {
 		return trackerEndpointDefault()
 	}
+	if node.path == "tracker.status_page_url" {
+		return trackerStatusPageURLDefault()
+	}
 	if node.path == "codex.shell" || node.path == "hooks.shell" {
 		return "platform default shell", "null"
 	}
@@ -382,6 +385,23 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 		description += " when configured"
 	}
 	return description, literal
+}
+
+func trackerStatusPageURLDefault() (string, string) {
+	statusURLFor := func(kind string) string {
+		cfg := config.Default()
+		cfg.Tracker.Kind = kind
+		cfg, err := normalized(cfg)
+		if err != nil {
+			return ""
+		}
+		return cfg.Tracker.StatusPageURL
+	}
+	return fmt.Sprintf(
+		"%s for linear; %s for github or github_local; unused otherwise",
+		strconv.Quote(statusURLFor(config.TrackerLinear)),
+		strconv.Quote(statusURLFor(config.TrackerGitHub)),
+	), "null"
 }
 
 func trackerEndpointDefault() (string, string) {

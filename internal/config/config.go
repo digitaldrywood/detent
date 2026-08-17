@@ -55,8 +55,10 @@ const (
 	DependencySourceMerged              = "merged"
 	DependencySourceNativeOnly          = "native_only"
 
-	defaultLinearEndpoint = "https://api.linear.app/graphql"
-	defaultGitHubEndpoint = "https://api.github.com/graphql"
+	defaultLinearEndpoint      = "https://api.linear.app/graphql"
+	defaultGitHubEndpoint      = "https://api.github.com/graphql"
+	defaultGitHubStatusPageURL = "https://www.githubstatus.com"
+	defaultLinearStatusPageURL = "https://linearstatus.com"
 
 	DefaultAgentBackendID                    = "codex"
 	AgentBackendCodex                        = "codex"
@@ -183,6 +185,7 @@ type Tracker struct {
 	GitHubAppInstallationID     string                `yaml:"github_app_installation_id"`
 	GitHubWebhookSecret         string                `yaml:"github_webhook_secret,omitempty"`
 	GitHubStatusSource          string                `yaml:"github_status_source"`
+	StatusPageURL               string                `yaml:"status_page_url,omitempty"`
 	ProjectSlug                 string                `yaml:"project_slug"`
 	Repository                  string                `yaml:"repository"`
 	StatusField                 string                `yaml:"status_field"`
@@ -1668,6 +1671,7 @@ func (c *Config) normalize() {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
 	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
+	c.Tracker.StatusPageURL = normalizeStatusPageURL(c.Tracker.Kind, c.Tracker.StatusPageURL)
 	c.Tracker.GitHubWebhookSecret = strings.TrimSpace(c.Tracker.GitHubWebhookSecret)
 	c.Tracker.Repository = strings.TrimSpace(c.Tracker.Repository)
 	c.Tracker.StatusField = strings.TrimSpace(c.Tracker.StatusField)
@@ -1806,8 +1810,34 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_rest_min_remaining_reserve", c.Tracker.GitHubRESTMinReserve, problems)
 	validateNonNegative("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
 	validatePositive("tracker.github_unstarted_check_threshold_seconds", c.Tracker.GitHubUnstartedSeconds, problems)
+	validateStatusPageURL(c.Tracker.StatusPageURL, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
+}
+
+func normalizeStatusPageURL(kind string, value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value != "" {
+		return value
+	}
+	switch kind {
+	case TrackerGitHub, TrackerGitHubLocal:
+		return defaultGitHubStatusPageURL
+	case TrackerLinear:
+		return defaultLinearStatusPageURL
+	default:
+		return ""
+	}
+}
+
+func validateStatusPageURL(value string, problems *[]string) {
+	if value == "" {
+		return
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		*problems = append(*problems, "tracker.status_page_url must be an absolute http or https base URL without credentials, path, query, or fragment")
+	}
 }
 
 func (c *Config) validateAgentInstructions(problems *[]string) {

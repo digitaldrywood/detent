@@ -25,6 +25,7 @@ import (
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
@@ -48,6 +49,10 @@ type autoUpdateStatusSource interface {
 
 type agentPoolSnapshotSource interface {
 	PoolSnapshots() []scheduler.PoolSnapshot
+}
+
+type providerStatusEnricher interface {
+	Enrich(telemetry.Snapshot, []statuspage.Source) telemetry.Snapshot
 }
 
 // withRunnerFactory returns a project.Factory that constructs a
@@ -320,6 +325,7 @@ func publishSnapshots(
 	shutdown *ShutdownController,
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
+	providerStatus providerStatusEnricher,
 	interval time.Duration,
 	now func() time.Time,
 	updateSources ...autoUpdateStatusSource,
@@ -342,7 +348,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotHub, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, updateSources...); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotHub, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, providerStatus, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -549,6 +555,7 @@ func publishSnapshotOnce(
 	trend *tokenTrendRecorder,
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
+	providerStatus providerStatusEnricher,
 	updateSources ...autoUpdateStatusSource,
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
@@ -636,6 +643,9 @@ func publishSnapshotOnce(
 		})
 	}
 	merged = dedupeSnapshotIssues(merged)
+	if providerStatus != nil {
+		merged = providerStatus.Enrich(merged, providerStatusSources(registry))
+	}
 	merged.AgentPools = telemetryAgentPools(poolSource)
 	if trend != nil {
 		merged = trend.apply(merged)
@@ -653,6 +663,25 @@ func publishSnapshotOnce(
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	return nil
+}
+
+func providerStatusSources(registry *project.Registry) []statuspage.Source {
+	if registry == nil {
+		return nil
+	}
+	projects := registry.List()
+	sources := make([]statuspage.Source, 0, len(projects))
+	for _, trackedProject := range projects {
+		if trackedProject == nil {
+			continue
+		}
+		tracker := trackedProject.Workflow().Config.Tracker
+		if strings.TrimSpace(tracker.StatusPageURL) == "" {
+			continue
+		}
+		sources = append(sources, statuspage.SourceForTracker(string(trackedProject.ID()), tracker.Kind, tracker.StatusPageURL))
+	}
+	return sources
 }
 
 func telemetryUpdateStatus(sources []autoUpdateStatusSource) telemetry.Update {

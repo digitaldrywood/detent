@@ -28,6 +28,7 @@ type healthRow struct {
 	Kind      primitives.Kind
 	Status    string
 	Detail    string
+	Link      string
 	Quota     string
 	QuotaPct  int
 	QuotaWarn bool
@@ -328,12 +329,21 @@ func healthTrackerUnavailableRows(conditions []telemetry.TrackerCondition) []hea
 			connectorName = "Tracker"
 		}
 		detail := "tracker_unavailable · " + strings.Trim(strings.TrimSpace(condition.Operation)+" · "+strings.TrimSpace(condition.ErrorClass), " ·")
+		link := ""
+		if providerSummary, providerLink := trackerProviderStatusSummary(condition); providerSummary != "" {
+			detail = providerSummary
+			link = providerLink
+			if condition.ProviderStatus != nil && condition.ProviderStatus.Incident != nil {
+				detail += " · " + condition.ProviderStatus.Incident.Name
+			}
+		}
 		rows = append(rows, healthRow{
 			ID:        "health-tracker-unavailable-" + boardAlertRowSlug(projectID, index),
 			Component: connectorName + " tracker · " + projectID,
 			Kind:      primitives.KindErr,
 			Status:    "Unavailable",
 			Detail:    detail,
+			Link:      link,
 			Resets:    "on successful canary",
 			ResetAt:   condition.NextProbeAt,
 			DetailAt:  condition.LastObservedAt,
@@ -345,6 +355,9 @@ func healthTrackerUnavailableRows(conditions []telemetry.TrackerCondition) []hea
 func trackerUnavailableHealthDetail(conditions []telemetry.TrackerCondition) string {
 	if len(conditions) == 1 {
 		condition := conditions[0]
+		if providerSummary, _ := trackerProviderStatusSummary(condition); providerSummary != "" {
+			return providerSummary + "; tracker-dependent dispatch is paused."
+		}
 		connectorName := strings.TrimSpace(condition.Connector)
 		if connectorName == "" {
 			connectorName = "Configured"
@@ -352,6 +365,58 @@ func trackerUnavailableHealthDetail(conditions []telemetry.TrackerCondition) str
 		return connectorName + " tracker reads are unavailable; tracker-dependent dispatch is paused."
 	}
 	return boardCountLabel(len(conditions), "tracker connector is", "tracker connectors are") + " unavailable; tracker-dependent dispatch is paused."
+}
+
+func trackerProviderStatusSummary(condition telemetry.TrackerCondition) (string, string) {
+	status := condition.ProviderStatus
+	if status == nil {
+		return "", ""
+	}
+	switch status.State {
+	case telemetry.ProviderStatusCorroborated:
+		if status.Incident == nil {
+			return "provider status corroborated the outage", ""
+		}
+		provider := strings.TrimSpace(status.Provider)
+		if provider == "" {
+			provider = "Provider"
+		}
+		summary := provider + " incident"
+		if len(status.Incident.Components) > 0 {
+			summary += " affecting " + healthNaturalList(status.Incident.Components)
+		}
+		if phase := strings.TrimSpace(status.Incident.Status); phase != "" {
+			summary += " — " + phase
+		}
+		return summary, strings.TrimSpace(status.Incident.URL)
+	case telemetry.ProviderStatusNoMatch:
+		return "no matching provider incident", ""
+	case telemetry.ProviderStatusUnavailable:
+		return "provider status unavailable", ""
+	case telemetry.ProviderStatusPending:
+		return "provider status check pending", ""
+	default:
+		return "", ""
+	}
+}
+
+func healthNaturalList(values []string) string {
+	clean := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			clean = append(clean, value)
+		}
+	}
+	switch len(clean) {
+	case 0:
+		return ""
+	case 1:
+		return clean[0]
+	case 2:
+		return clean[0] + " and " + clean[1]
+	default:
+		return strings.Join(clean[:len(clean)-1], ", ") + ", and " + clean[len(clean)-1]
+	}
 }
 
 func ciUnavailableHealthDetail(conditions []telemetry.CICondition) string {

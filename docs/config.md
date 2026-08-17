@@ -178,6 +178,16 @@ the first advances work whose dependencies cleared, the second revives
 agent-recoverable PR maintenance, and the third promotes blockers when they
 enter configured states.
 
+GitHub and Linear trackers also receive a default Statuspage base URL through
+`tracker.status_page_url`; set that key to override the provider endpoint.
+Detent follows redirects and polls the unauthenticated Statuspage summary and
+unresolved-incident feeds at a low-frequency baseline, increasing freshness
+only while a Detent-observed `tracker_unavailable` condition is active. These
+feeds decorate health output only: malformed, slow, or unreachable status
+pages never create a condition or influence dispatch and recovery. Statuspage
+incident webhooks are a possible future optimization, not part of the current
+polling integration.
+
 ### Workspace, deliverable, and worker placement
 
 `workspace` controls isolation, source and output roots, branch creation, cache
@@ -998,6 +1008,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.state_map` | `string or mapping` | `{}` | No | state names must not be blank |
 | `tracker.status_field` | `string` | `"Status"` | No | None |
 | `tracker.status_label_prefix` | `string` | `"detent:"` | No | None |
+| `tracker.status_page_url` | `string` | `"https://linearstatus.com" for linear; "https://www.githubstatus.com" for github or github_local; unused otherwise` | No | must be an absolute http or https base URL without credentials, path, query, or fragment |
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |

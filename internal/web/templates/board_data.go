@@ -205,12 +205,12 @@ func boardTrackerUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool
 	}
 	rows := make([]boardAlertDetailRow, 0, len(snapshot.TrackerUnavailable))
 	for index, condition := range snapshot.TrackerUnavailable {
-		label := strings.TrimSpace(condition.ProjectID)
-		if label == "" {
-			label = strings.TrimSpace(condition.ConnectorInstance)
+		projectLabel := strings.TrimSpace(condition.ProjectID)
+		if projectLabel == "" {
+			projectLabel = strings.TrimSpace(condition.ConnectorInstance)
 		}
-		if label == "" {
-			label = "Tracker"
+		if projectLabel == "" {
+			projectLabel = "Tracker"
 		}
 		summary := strings.TrimSpace(condition.Connector) + " tracker · tracker_unavailable"
 		if strings.TrimSpace(condition.Connector) == "" {
@@ -224,9 +224,23 @@ func boardTrackerUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool
 			}
 			detail += " · next canary in " + formatDuration(delay.Seconds())
 		}
+		label := projectLabel
+		link := ""
+		if providerSummary, providerLink := trackerProviderStatusSummary(condition); providerSummary != "" {
+			summary = providerSummary
+			if providerLink != "" {
+				label = providerSummary
+				link = providerLink
+				summary = projectLabel
+			}
+			if condition.ProviderStatus != nil && condition.ProviderStatus.Incident != nil {
+				detail = condition.ProviderStatus.Incident.Name + " · " + detail
+			}
+		}
 		rows = append(rows, boardAlertDetailRow{
-			ID:      "board-alert-tracker-unavailable-" + boardAlertRowSlug(label, index),
+			ID:      "board-alert-tracker-unavailable-" + boardAlertRowSlug(projectLabel, index),
 			Label:   label,
+			Link:    link,
 			Summary: summary,
 			Detail:  strings.Trim(detail, " ·"),
 		})

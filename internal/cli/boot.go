@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tmuxstatus"
@@ -165,6 +166,7 @@ type startRunningDependencies struct {
 	buildDriftInterval    time.Duration
 	readInstalledBuild    installedBuildReader
 	managerDependencies   project.ManagerDependencies
+	providerStatusManager *statuspage.Manager
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -328,6 +330,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
+	providerStatus := deps.providerStatusManager
+	if providerStatus == nil {
+		providerStatus = statuspage.NewManager(statuspage.ManagerConfig{}, statuspage.ManagerDependencies{Logger: logger})
+	}
 	var windowStatus *tmuxstatus.Status
 	tmuxPane := os.Getenv("TMUX_PANE")
 	if tmuxstatus.Enabled(os.Getenv("TMUX"), tmuxPane, cfg.Global.Ops.TmuxWindowStatus) {
@@ -396,7 +402,18 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		})
 	}
 	resourceWorkers.Go(func() {
-		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
+		providerStatus.Run(runCtx, func() []statuspage.Source {
+			return providerStatusSources(manager.Registry())
+		}, func() []telemetry.TrackerCondition {
+			snapshot, ok := snapshotHub.Latest()
+			if !ok {
+				return nil
+			}
+			return append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...)
+		}, time.Now)
+	})
+	resourceWorkers.Go(func() {
+		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, time.Now, updateScheduler)
 	})
 	if healthNotifications.Enabled() {
 		resourceWorkers.Go(func() {
