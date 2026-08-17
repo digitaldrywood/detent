@@ -3147,6 +3147,16 @@ func TestPRPipelineWaitDetailExplainsHumanReviewReasons(t *testing.T) {
 			},
 			want: "PR hydration using stale cached data",
 		},
+		{
+			name: "hydration explains missing current head checks",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					HydrationUnavailableReason: "checks_unavailable",
+				},
+			},
+			want: "PR checks unavailable: current head SHA not found",
+		},
 	}
 
 	for _, tt := range tests {
