@@ -79,6 +79,7 @@ const (
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
 
 	DefaultPollingIntervalMS              = 120000
+	DefaultRefreshFailureThreshold        = 3
 	MinPollingIntervalMS                  = 60000
 	DefaultShutdownDrainTimeoutMS         = 75000
 	DefaultBoardSnapshotStaleAfterSeconds = 15 * 60
@@ -244,8 +245,9 @@ type Identity struct {
 }
 
 type Polling struct {
-	IntervalMS  int  `yaml:"interval_ms"`
-	Conditional bool `yaml:"conditional"`
+	IntervalMS              int  `yaml:"interval_ms"`
+	Conditional             bool `yaml:"conditional"`
+	RefreshFailureThreshold int  `yaml:"refresh_failure_threshold"`
 }
 
 type Claims struct {
@@ -1338,8 +1340,9 @@ func Default() Config {
 			AutoProvision: true,
 		},
 		Polling: Polling{
-			IntervalMS:  DefaultPollingIntervalMS,
-			Conditional: true,
+			IntervalMS:              DefaultPollingIntervalMS,
+			Conditional:             true,
+			RefreshFailureThreshold: DefaultRefreshFailureThreshold,
 		},
 		Workspace: Workspace{
 			Kind:                   WorkspaceLocalGit,
@@ -1501,6 +1504,7 @@ func (c *Config) Validate() error {
 	c.validateTracker(&problems)
 	problems = append(problems, c.Dependencies.Validate("dependencies")...)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
+	validatePositive("polling.refresh_failure_threshold", c.Polling.RefreshFailureThreshold, &problems)
 	c.Workspace.validate(&problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)

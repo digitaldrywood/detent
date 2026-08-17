@@ -70,6 +70,7 @@ var (
 
 type Config struct {
 	PollInterval                  time.Duration
+	RefreshFailureThreshold       int
 	MaxConcurrentAgents           int
 	MaxConcurrentAgentsByState    map[string]int
 	DispatchPriorityByState       []string
@@ -968,6 +969,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		OverloadRetryDelay:    cfg.OverloadRetryDelay,
 	})
 	state.PollInterval = cfg.PollInterval
+	state.RefreshFailureThreshold = cfg.RefreshFailureThreshold
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold

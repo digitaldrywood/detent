@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -119,6 +120,19 @@ func TestMarkRefreshKeepsEffectiveIntervalForStaleness(t *testing.T) {
 				t.Fatalf("refreshStaleAfter() = %s, want %s", got, tt.wantStaleAfter)
 			}
 		})
+	}
+}
+
+func TestRefreshFailureThresholdFlowsFromWorkflow(t *testing.T) {
+	t.Parallel()
+
+	workflow := workflowconfig.Default()
+	workflow.Polling.RefreshFailureThreshold = 5
+	cfg := normalizeConfig(ConfigFromWorkflow(workflow))
+	state := newState(cfg)
+	snapshot := state.Snapshot(time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC))
+	if snapshot.Refresh.FailureThreshold != 5 {
+		t.Fatalf("Refresh.FailureThreshold = %d, want 5", snapshot.Refresh.FailureThreshold)
 	}
 }
 

@@ -23,6 +23,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 
 	return Config{
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
+		RefreshFailureThreshold:    cfg.Polling.RefreshFailureThreshold,
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
 		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
@@ -160,6 +161,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
+	}
+	if cfg.RefreshFailureThreshold <= 0 {
+		cfg.RefreshFailureThreshold = workflowconfig.DefaultRefreshFailureThreshold
 	}
 	if cfg.MaxConcurrentAgents <= 0 {
 		cfg.MaxConcurrentAgents = defaultMaxConcurrentAgents

@@ -7014,6 +7014,127 @@ func TestHealthReportsTickLivenessAndSnapshotAge(t *testing.T) {
 	}
 }
 
+func TestHealthReportsProjectRefreshFailures(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
+	lastErrorAt := now.Add(-30 * time.Second)
+	tests := []struct {
+		name             string
+		refresh          telemetry.Refresh
+		wantHealthStatus string
+		wantFailures     int
+	}{
+		{
+			name: "single transient failure remains healthy",
+			refresh: telemetry.Refresh{
+				Status:           telemetry.RefreshStatusDegraded,
+				FailureThreshold: 3,
+				LastRefreshAt:    &lastRefreshAt,
+				LastError:        "candidate endpoint unavailable",
+				LastErrorAt:      &lastErrorAt,
+				Sources: []telemetry.RefreshSource{{
+					Name: telemetry.RefreshSourceCandidates, FailureStreak: 1, LastError: "candidate endpoint unavailable", LastErrorAt: &lastErrorAt,
+				}},
+			},
+			wantHealthStatus: "ok",
+		},
+		{
+			name: "consecutive failures need attention",
+			refresh: telemetry.Refresh{
+				Status:           telemetry.RefreshStatusDegraded,
+				FailureThreshold: 3,
+				LastRefreshAt:    &lastRefreshAt,
+				LastError:        "candidate endpoint unavailable",
+				LastErrorAt:      &lastErrorAt,
+				Sources: []telemetry.RefreshSource{{
+					Name: telemetry.RefreshSourceCandidates, FailureStreak: 3, LastError: "candidate endpoint unavailable", LastErrorAt: &lastErrorAt,
+				}},
+			},
+			wantHealthStatus: "needs_attention",
+			wantFailures:     1,
+		},
+		{
+			name: "never refreshed failure needs attention immediately",
+			refresh: telemetry.Refresh{
+				Status:           telemetry.RefreshStatusDegraded,
+				FailureThreshold: 3,
+				LastError:        "Bad credentials",
+				LastErrorAt:      &lastErrorAt,
+				Sources: []telemetry.RefreshSource{{
+					Name: telemetry.RefreshSourceCandidates, FailureStreak: 1, LastError: "Bad credentials", LastErrorAt: &lastErrorAt,
+				}},
+			},
+			wantHealthStatus: "needs_attention",
+			wantFailures:     1,
+		},
+		{
+			name: "successful refresh clears attention",
+			refresh: telemetry.Refresh{
+				Status:           telemetry.RefreshStatusReady,
+				FailureThreshold: 3,
+				LastRefreshAt:    &lastRefreshAt,
+				Sources: []telemetry.RefreshSource{{
+					Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &lastRefreshAt,
+				}},
+			},
+			wantHealthStatus: "ok",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			mustSetWebProject(t, deps.Registry, "pyroapex", true)
+			deps.TickLiveness = tickLivenessProbe{values: []telemetry.TickLiveness{{
+				ProjectID: "pyroapex", Status: telemetry.TickLivenessStatusReady, LastTickAt: &now,
+			}}}
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: now,
+				Project:     telemetry.Project{ID: "pyroapex"},
+				Projects: []telemetry.ProjectSnapshot{{
+					Project: telemetry.Project{ID: "pyroapex"},
+					Refresh: tt.refresh,
+				}},
+				Refresh: tt.refresh,
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			if health["status"] != tt.wantHealthStatus {
+				t.Fatalf("health status = %#v, want %q", health["status"], tt.wantHealthStatus)
+			}
+			failures, _ := health["refresh_failures"].([]any)
+			if len(failures) != tt.wantFailures {
+				t.Fatalf("refresh_failures = %#v, want %d entries", health["refresh_failures"], tt.wantFailures)
+			}
+			if tt.wantFailures > 0 {
+				failure := failures[0].(map[string]any)
+				if failure["project_id"] != "pyroapex" || failure["last_error"] != tt.refresh.LastError {
+					t.Fatalf("refresh failure = %#v", failure)
+				}
+				projects := health["projects"].([]any)
+				project := projects[0].(map[string]any)
+				if project["status"] != "needs_human_attention" || project["last_error"] != tt.refresh.LastError {
+					t.Fatalf("project health = %#v", project)
+				}
+			}
+			liveness := health["tick_liveness"].([]any)
+			if len(liveness) != 1 || liveness[0].(map[string]any)["status"] != string(telemetry.TickLivenessStatusReady) {
+				t.Fatalf("tick_liveness = %#v, want advancing loop", liveness)
+			}
+		})
+	}
+}
+
 func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.T) {
 	t.Parallel()
 

@@ -492,6 +492,8 @@
 #   interval_ms: 120000
 #   # polling.conditional | type: boolean | default: true | required: No | validation: None
 #   conditional: true
+#   # polling.refresh_failure_threshold | type: integer | default: 3 | required: No | validation: must be greater than 0
+#   refresh_failure_threshold: 3
 # # workspace | type: object | default: see child fields | required: No | validation: agent.lessons.path must be a relative path inside the workspace; agent.skills.path must be a relative path inside the workspace
 # workspace:
 #   # workspace.kind | type: string | default: "local_git" | required: No | validation: must be one of local_git, filesystem

@@ -400,6 +400,23 @@ type Refresh struct {
 	Manual              *RefreshAttempt `json:"manual,omitempty"`
 }
 
+type RefreshFailureReason string
+
+const (
+	RefreshFailureReasonConsecutiveFailures RefreshFailureReason = "consecutive_failures"
+	RefreshFailureReasonNeverRefreshed      RefreshFailureReason = "never_refreshed"
+)
+
+type RefreshFailure struct {
+	ProjectID        string               `json:"project_id"`
+	Reason           RefreshFailureReason `json:"reason"`
+	Source           RefreshSourceName    `json:"source,omitempty"`
+	FailureStreak    int                  `json:"failure_streak"`
+	FailureThreshold int                  `json:"failure_threshold"`
+	LastError        string               `json:"last_error"`
+	LastErrorAt      *time.Time           `json:"last_error_at,omitempty"`
+}
+
 type RefreshSource struct {
 	ProjectID     string            `json:"project_id,omitempty"`
 	Name          RefreshSourceName `json:"name"`
@@ -520,6 +537,92 @@ func (r Refresh) Stale(now time.Time) bool {
 		}
 	}
 	return false
+}
+
+func (s Snapshot) RefreshFailures() []RefreshFailure {
+	projects := s.Projects
+	if len(projects) == 0 && (strings.TrimSpace(s.Project.ID) != "" || refreshHasReadinessSignal(s.Refresh)) {
+		projects = []ProjectSnapshot{{Project: s.Project, Refresh: s.Refresh}}
+	}
+	failures := make([]RefreshFailure, 0, len(projects))
+	for _, project := range projects {
+		if failure, ok := project.Refresh.failure(strings.TrimSpace(project.Project.ID)); ok {
+			failures = append(failures, failure)
+		}
+	}
+	return failures
+}
+
+func (r Refresh) failure(projectID string) (RefreshFailure, bool) {
+	threshold := r.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	source := mostRelevantFailedRefreshSource(r.Sources, threshold, r.LastRefreshAt == nil)
+	lastError := strings.TrimSpace(r.LastError)
+	lastErrorAt := r.LastErrorAt
+	if lastError == "" {
+		lastError = strings.TrimSpace(source.LastError)
+	}
+	if lastErrorAt == nil {
+		lastErrorAt = source.LastErrorAt
+	}
+	if r.LastRefreshAt == nil && lastError != "" {
+		return RefreshFailure{
+			ProjectID:        projectID,
+			Reason:           RefreshFailureReasonNeverRefreshed,
+			Source:           source.Name,
+			FailureStreak:    source.FailureStreak,
+			FailureThreshold: threshold,
+			LastError:        lastError,
+			LastErrorAt:      copyTimePointer(lastErrorAt),
+		}, true
+	}
+	if source.FailureStreak < threshold {
+		return RefreshFailure{}, false
+	}
+	return RefreshFailure{
+		ProjectID:        projectID,
+		Reason:           RefreshFailureReasonConsecutiveFailures,
+		Source:           source.Name,
+		FailureStreak:    source.FailureStreak,
+		FailureThreshold: threshold,
+		LastError:        lastError,
+		LastErrorAt:      copyTimePointer(lastErrorAt),
+	}, true
+}
+
+func mostRelevantFailedRefreshSource(sources []RefreshSource, threshold int, neverRefreshed bool) RefreshSource {
+	var selected RefreshSource
+	for _, source := range sources {
+		eligible := source.FailureStreak >= threshold
+		if neverRefreshed {
+			eligible = source.FailureStreak > 0 || strings.TrimSpace(source.LastError) != ""
+		}
+		if !eligible {
+			continue
+		}
+		if selected.Name == "" || source.FailureStreak > selected.FailureStreak ||
+			(source.FailureStreak == selected.FailureStreak && refreshSourceErrorAt(source).After(refreshSourceErrorAt(selected))) {
+			selected = source
+		}
+	}
+	return selected
+}
+
+func refreshSourceErrorAt(source RefreshSource) time.Time {
+	if source.LastErrorAt == nil {
+		return time.Time{}
+	}
+	return source.LastErrorAt.UTC()
+}
+
+func copyTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 type Counts struct {

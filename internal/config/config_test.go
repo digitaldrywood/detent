@@ -137,6 +137,31 @@ func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
 	}
 }
 
+func TestRefreshFailureThresholdConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{name: "default", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultRefreshFailureThreshold},
+		{name: "override", raw: "---\ntracker:\n  kind: memory\npolling:\n  refresh_failure_threshold: 5\n---\nPrompt\n", want: 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.raw))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.Polling.RefreshFailureThreshold; got != tt.want {
+				t.Fatalf("Polling.RefreshFailureThreshold = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorkerGitHubDefaultReserveBrakesBeforeOrchestrator(t *testing.T) {
 	t.Parallel()
 

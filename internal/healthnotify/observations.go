@@ -16,6 +16,7 @@ const (
 	CauseDispatchStall           = "dispatch_stall"
 	CauseProjectFailureBreaker   = "project_failure_breaker"
 	CauseBackendCapacity         = "backend_capacity"
+	CauseRefreshFailure          = "refresh_failure"
 	StateFleetNeedsAttention     = "needs_attention"
 	StateProjectNeedsAttention   = "needs_human_attention"
 	TransitionEntry              = "entry"
@@ -34,6 +35,7 @@ type observation struct {
 	WaitReasons     []string
 	FailureBreakers []telemetry.FailureBreaker
 	BackendOutages  []telemetry.BackendOutage
+	RefreshFailures []telemetry.RefreshFailure
 }
 
 func observations(snapshot telemetry.Snapshot, health []project.Health) []observation {
@@ -48,6 +50,7 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 	projectCauses := map[string]map[string][]string{}
 	projectBreakers := map[string][]telemetry.FailureBreaker{}
 	projectOutages := map[string][]telemetry.BackendOutage{}
+	projectRefreshFailures := map[string][]telemetry.RefreshFailure{}
 	fleetCauses := []string{}
 	fleetWaitReasons := []string{}
 	for _, stall := range snapshot.DispatchStalls {
@@ -101,6 +104,18 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		projectOutages[projectID] = append(projectOutages[projectID], outage)
 		fleetCauses = append(fleetCauses, CauseBackendCapacity)
 	}
+	for _, failure := range snapshot.RefreshFailures() {
+		projectID := strings.TrimSpace(failure.ProjectID)
+		if projectID == "" {
+			continue
+		}
+		if projectCauses[projectID] == nil {
+			projectCauses[projectID] = map[string][]string{}
+		}
+		projectCauses[projectID][CauseRefreshFailure] = nil
+		projectRefreshFailures[projectID] = append(projectRefreshFailures[projectID], failure)
+		fleetCauses = append(fleetCauses, CauseRefreshFailure)
+	}
 
 	projectIDs := make([]string, 0, len(projectStatuses)+len(projectCauses))
 	seen := map[string]struct{}{}
@@ -115,19 +130,23 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		projectIDs = append(projectIDs, projectID)
 	}
 	slices.Sort(projectIDs)
-	result := make([]observation, 0, len(projectIDs)*4+1)
+	result := make([]observation, 0, len(projectIDs)*5+1)
 	for _, projectID := range projectIDs {
 		recoveryState := strings.TrimSpace(projectStatuses[projectID])
 		if recoveryState == "" {
 			recoveryState = unknownProjectRecoveryStatus
 		}
-		for _, cause := range []string{CauseCIUnavailable, CauseDispatchStall, CauseProjectFailureBreaker, CauseBackendCapacity} {
+		for _, cause := range []string{CauseCIUnavailable, CauseDispatchStall, CauseProjectFailureBreaker, CauseBackendCapacity, CauseRefreshFailure} {
 			waitReasons, active := projectCauses[projectID][cause]
 			state := recoveryState
 			causes := []string(nil)
 			if active {
 				state = StateProjectNeedsAttention
 				causes = []string{cause}
+			}
+			refreshFailures := []telemetry.RefreshFailure(nil)
+			if cause == CauseRefreshFailure {
+				refreshFailures = append(refreshFailures, projectRefreshFailures[projectID]...)
 			}
 			result = append(result, observation{
 				Identity:        projectIdentity(projectID, cause),
@@ -139,6 +158,7 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 				WaitReasons:     compactSorted(waitReasons),
 				FailureBreakers: append([]telemetry.FailureBreaker(nil), projectBreakers[projectID]...),
 				BackendOutages:  append([]telemetry.BackendOutage(nil), projectOutages[projectID]...),
+				RefreshFailures: refreshFailures,
 			})
 		}
 	}
@@ -159,6 +179,7 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		WaitReasons:     compactSorted(fleetWaitReasons),
 		FailureBreakers: append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
 		BackendOutages:  append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
+		RefreshFailures: append([]telemetry.RefreshFailure(nil), snapshot.RefreshFailures()...),
 	})
 	return result
 }
