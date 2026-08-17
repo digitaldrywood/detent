@@ -26,6 +26,7 @@ import (
 
 type State struct {
 	PollInterval             time.Duration
+	RefreshFailureThreshold  int
 	MaxConcurrentAgents      int
 	MaxAgentsByState         map[string]int
 	PoolName                 string
@@ -307,6 +308,7 @@ type DependencyAutoUnblockRecord struct {
 func newState(cfg Config) State {
 	return State{
 		PollInterval:             cfg.PollInterval,
+		RefreshFailureThreshold:  cfg.RefreshFailureThreshold,
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
 		MaxAgentsByState:         cloneStateLimits(cfg.MaxConcurrentAgentsByState),
 		StrandedActiveThreshold:  cfg.StrandedActiveThreshold,
@@ -356,6 +358,7 @@ func newState(cfg Config) State {
 func (s State) clone() State {
 	cloned := State{
 		PollInterval:             s.PollInterval,
+		RefreshFailureThreshold:  s.RefreshFailureThreshold,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
 		MaxAgentsByState:         cloneStateLimits(s.MaxAgentsByState),
 		PoolName:                 s.PoolName,

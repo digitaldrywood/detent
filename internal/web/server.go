@@ -1086,12 +1086,14 @@ func (s *Server) health(c echo.Context) error {
 	dispatch := telemetry.DispatchStatus{}
 	dispatchStalls := []telemetry.DispatchStatus{}
 	notificationFailures := []healthnotify.Failure{}
+	refreshFailures := []telemetry.RefreshFailure{}
 	refresh := telemetry.Refresh{}
 	snapshotGeneratedAt := time.Time{}
 	snapshotAgeSeconds := int64(0)
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			snapshot = snapshot.WithFreshness(now)
+			refreshFailures = snapshot.RefreshFailures()
 			snapshotGeneratedAt = snapshot.GeneratedAt
 			snapshotAgeSeconds = snapshot.AgeSeconds(now)
 			refresh = snapshot.Refresh
@@ -1132,13 +1134,13 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable, failureBreakers, backendOutages, tickLiveness)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, ciUnavailable, failureBreakers, backendOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) {
+		if len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 {
 			status = "needs_attention"
 		}
 	}
@@ -1163,6 +1165,7 @@ func (s *Server) health(c echo.Context) error {
 		Dispatch:             dispatch,
 		DispatchStalls:       dispatchStalls,
 		NotificationFailures: notificationFailures,
+		RefreshFailures:      refreshFailures,
 		Projects:             projectHealth,
 		Refresh:              refresh,
 		SnapshotGeneratedAt:  snapshotGeneratedAt,
@@ -1171,8 +1174,9 @@ func (s *Server) health(c echo.Context) error {
 	})
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness) []healthProject {
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
 	needsAttention := make(map[string]struct{}, len(stalls)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
+	refreshByProject := make(map[string]telemetry.RefreshFailure, len(refreshFailures))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
 			needsAttention[projectID] = struct{}{}
@@ -1198,9 +1202,22 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 			needsAttention[projectID] = struct{}{}
 		}
 	}
+	for _, failure := range refreshFailures {
+		if projectID := strings.TrimSpace(failure.ProjectID); projectID != "" {
+			needsAttention[projectID] = struct{}{}
+			refreshByProject[projectID] = failure
+		}
+	}
 	for index := range projects {
-		if _, ok := needsAttention[strings.TrimSpace(projects[index].ProjectID)]; ok {
+		projectID := strings.TrimSpace(projects[index].ProjectID)
+		if _, ok := needsAttention[projectID]; ok {
 			projects[index].Status = "needs_human_attention"
+		}
+		if failure, ok := refreshByProject[projectID]; ok {
+			projects[index].LastError = failure.LastError
+			if failure.LastErrorAt != nil {
+				projects[index].LastErrorAt = failure.LastErrorAt.UTC()
+			}
 		}
 	}
 	return projects
@@ -1485,6 +1502,7 @@ type healthResponse struct {
 	Dispatch             telemetry.DispatchStatus     `json:"dispatch"`
 	DispatchStalls       []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
 	NotificationFailures []healthnotify.Failure       `json:"health_notification_failures,omitempty"`
+	RefreshFailures      []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
 	Projects             []healthProject              `json:"projects,omitempty"`
 	Refresh              telemetry.Refresh            `json:"refresh"`
 	SnapshotGeneratedAt  time.Time                    `json:"snapshot_generated_at,omitzero"`

@@ -238,6 +238,59 @@ func TestManagerPairsOneRecoveryWithEachEntry(t *testing.T) {
 	}
 }
 
+func TestManagerNotifiesRefreshFailureAndRecovery(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
+	lastErrorAt := now.Add(-30 * time.Second)
+	failed := telemetry.Snapshot{Projects: []telemetry.ProjectSnapshot{{
+		Project: telemetry.Project{ID: "pyroapex"},
+		Refresh: telemetry.Refresh{
+			FailureThreshold: 3,
+			LastRefreshAt:    &lastRefreshAt,
+			LastError:        "candidate endpoint unavailable",
+			LastErrorAt:      &lastErrorAt,
+			Sources: []telemetry.RefreshSource{{
+				Name: telemetry.RefreshSourceCandidates, FailureStreak: 3, LastError: "candidate endpoint unavailable", LastErrorAt: &lastErrorAt,
+			}},
+		},
+	}}}
+	recoveredAt := now.Add(2 * time.Minute)
+	recovered := telemetry.Snapshot{Projects: []telemetry.ProjectSnapshot{{
+		Project: telemetry.Project{ID: "pyroapex"},
+		Refresh: telemetry.Refresh{
+			FailureThreshold: 3,
+			LastRefreshAt:    &recoveredAt,
+			Sources: []telemetry.RefreshSource{{
+				Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &recoveredAt,
+			}},
+		},
+	}}}
+	stateStore := newMemoryStateStore()
+	sender := &recordingSender{}
+	manager := newTestManager(t, stateStore, sender, Config{Debounce: time.Minute})
+	health := readyHealth("pyroapex")
+
+	managerReconcile(t, manager, failed, health, now)
+	managerReconcile(t, manager, failed, health, now.Add(time.Minute))
+	managerReconcile(t, manager, recovered, health, now.Add(2*time.Minute))
+	managerReconcile(t, manager, recovered, health, now.Add(3*time.Minute))
+
+	events := sender.Events()
+	if len(events) != 4 {
+		t.Fatalf("events = %#v, want project and fleet entry plus recovery", events)
+	}
+	for _, event := range events {
+		if !slices.Equal(event.Causes, []string{CauseRefreshFailure}) {
+			t.Fatalf("event causes = %v, want refresh failure", event.Causes)
+		}
+		if len(event.RefreshFailures) != 1 || event.RefreshFailures[0].ProjectID != "pyroapex" || event.RefreshFailures[0].LastError != "candidate endpoint unavailable" {
+			t.Fatalf("event refresh failures = %#v", event.RefreshFailures)
+		}
+	}
+}
+
 func TestManagerFleetRecoveryWaitsForEveryProjectCause(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)

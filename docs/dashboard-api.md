@@ -205,7 +205,11 @@ publication stops. Refresh objects include `next_refresh_overdue`; an explicit
 `/health` also reports `snapshot_generated_at`, `snapshot_age_seconds`, the
 current refresh object, and per-project `tick_liveness`. A tick loop that misses
 two effective polling intervals reports `needs_attention`, its last tick,
-overdue next refresh, missed interval count, and `frozen_at` timestamp.
+overdue next refresh, missed interval count, and `frozen_at` timestamp. A loop
+that continues ticking while tracker refreshes fail reports separate
+`refresh_failures` entries with the project, reason, threshold, streak, and last
+error. A failed first refresh is reported immediately because dispatch has
+never observed the project.
 
 Project state scopes workflow metrics from the fleet snapshot enrichment cache
 instead of rerunning historical database reports for each request. The project

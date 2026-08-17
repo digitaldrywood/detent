@@ -37,10 +37,14 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	}
 	staleAfter := refreshStaleAfter(s.PollInterval)
 	sources := refreshSourceSnapshots(s.RefreshSources)
+	failureThreshold := s.RefreshFailureThreshold
+	if failureThreshold <= 0 {
+		failureThreshold = refreshFailureDegradedThreshold
+	}
 	refresh := telemetry.Refresh{
 		PollIntervalSeconds: int64(s.PollInterval / time.Second),
 		StaleAfterSeconds:   int64(staleAfter / time.Second),
-		FailureThreshold:    refreshFailureDegradedThreshold,
+		FailureThreshold:    failureThreshold,
 		DataSeq:             s.DataSeq,
 		LastRefreshAt:       timePointer(s.LastRefreshAt),
 		NextRefreshAt:       timePointer(s.NextRefreshAt),

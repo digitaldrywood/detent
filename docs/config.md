@@ -166,7 +166,10 @@ persona to GitHub, Linear, an embedded SQLite board, or the in-memory tracker.
 The tracker declares active, observed, and terminal workflow states; state maps,
 transition automation, admission, planning, stop behavior, and routing all
 refer back to those names. `polling` controls how often Detent refreshes the
-tracker when no event gives it a fresher signal.
+tracker when no event gives it a fresher signal. Its
+`refresh_failure_threshold` controls how many consecutive failures after a
+successful refresh promote project and fleet health to `needs_attention`; a
+project whose first refresh fails needs attention immediately.
 
 Choose exactly one GitHub status source: ProjectV2, the repository issue
 `Status` field, or repository labels. `dependency_auto_unblock`,
@@ -732,6 +735,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `polling` | `object` | `see child fields` | No | None |
 | `polling.conditional` | `boolean` | `true` | No | None |
 | `polling.interval_ms` | `integer` | `120000` | No | must be at least 60000<br>must be greater than 0 |
+| `polling.refresh_failure_threshold` | `integer` | `3` | No | must be greater than 0 |
 | `release` | `object` | `see child fields` | No | None |
 | `release.enabled` | `boolean` | `false` | No | release.max_age_hours must be greater than 0 when release.enabled is true<br>release.min_merged_issues must be greater than 0 when release.enabled is true<br>release.require_green_ci must be true when release.enabled is true<br>requires tracker.kind github or github_local<br>tracker.repository must be owner/name when release.enabled is true |
 | `release.flaky_check_names` | `list<string>` | `[]` | No | must not be empty when release.rerun_flaky_once is true |
