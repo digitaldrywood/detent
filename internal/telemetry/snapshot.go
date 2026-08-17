@@ -57,6 +57,25 @@ type Snapshot struct {
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
 }
 
+func (s Snapshot) AgeSeconds(now time.Time) int64 {
+	if s.GeneratedAt.IsZero() || now.IsZero() || now.Before(s.GeneratedAt) {
+		return 0
+	}
+	return int64(now.Sub(s.GeneratedAt) / time.Second)
+}
+
+func (s Snapshot) WithFreshness(now time.Time) Snapshot {
+	s.Refresh = s.Refresh.WithFreshness(now)
+	if len(s.Projects) == 0 {
+		return s
+	}
+	s.Projects = append([]ProjectSnapshot(nil), s.Projects...)
+	for index := range s.Projects {
+		s.Projects[index].Refresh = s.Projects[index].Refresh.WithFreshness(now)
+	}
+	return s
+}
+
 type CICondition struct {
 	ProjectID           string    `json:"project_id,omitempty"`
 	UnstartedCheckCount int       `json:"unstarted_check_count"`
@@ -328,6 +347,25 @@ const (
 	RefreshStatusDegraded     RefreshStatus = "degraded"
 )
 
+type TickLivenessStatus string
+
+const (
+	TickLivenessStatusInitializing   TickLivenessStatus = "initializing"
+	TickLivenessStatusReady          TickLivenessStatus = "ready"
+	TickLivenessStatusNeedsAttention TickLivenessStatus = "needs_attention"
+)
+
+type TickLiveness struct {
+	ProjectID             string             `json:"project_id,omitempty"`
+	Status                TickLivenessStatus `json:"status"`
+	LastTickAt            *time.Time         `json:"last_tick_at,omitempty"`
+	NextRefreshAt         *time.Time         `json:"next_refresh_at,omitempty"`
+	NextRefreshOverdue    bool               `json:"next_refresh_overdue"`
+	FrozenAt              *time.Time         `json:"frozen_at,omitempty"`
+	MissedIntervals       int64              `json:"missed_intervals"`
+	WatchdogIntervalCount int64              `json:"watchdog_interval_count"`
+}
+
 type RefreshAttemptStatus string
 
 const (
@@ -355,6 +393,7 @@ type Refresh struct {
 	Status              RefreshStatus   `json:"status,omitempty"`
 	LastRefreshAt       *time.Time      `json:"last_refresh_at,omitempty"`
 	NextRefreshAt       *time.Time      `json:"next_refresh_at,omitempty"`
+	NextRefreshOverdue  bool            `json:"next_refresh_overdue"`
 	LastError           string          `json:"last_error,omitempty"`
 	LastErrorAt         *time.Time      `json:"last_error_at,omitempty"`
 	Sources             []RefreshSource `json:"sources,omitempty"`
@@ -402,6 +441,9 @@ func (r Refresh) ReadinessStatus() RefreshStatus {
 	case RefreshStatusInitializing:
 		return RefreshStatusInitializing
 	case RefreshStatusReady:
+		if r.NextRefreshOverdue {
+			return RefreshStatusDegraded
+		}
 		return RefreshStatusReady
 	case RefreshStatusDegraded:
 		return RefreshStatusDegraded
@@ -413,6 +455,24 @@ func (r Refresh) ReadinessStatus() RefreshStatus {
 		return RefreshStatusReady
 	}
 	return RefreshStatusInitializing
+}
+
+func (r Refresh) WithFreshness(now time.Time) Refresh {
+	r.NextRefreshOverdue = r.NextRefreshAt != nil && !now.IsZero() && now.After(*r.NextRefreshAt)
+	if !refreshHasReadinessSignal(r) {
+		return r
+	}
+	r.Status = r.ReadinessStatus()
+	return r
+}
+
+func refreshHasReadinessSignal(r Refresh) bool {
+	return strings.TrimSpace(string(r.Status)) != "" ||
+		r.LastRefreshAt != nil ||
+		r.NextRefreshAt != nil ||
+		strings.TrimSpace(r.LastError) != "" ||
+		r.LastErrorAt != nil ||
+		len(r.Sources) > 0
 }
 
 func (r Refresh) Ready() bool {

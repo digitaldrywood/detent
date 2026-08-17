@@ -1055,9 +1055,10 @@ components:
       enum: [available, live, last_known, expired, unavailable, corrupt]
     State:
       type: object
-      required: [generated_at, status, shutdown, instance, projects, stats, board]
+      required: [generated_at, snapshot_age_seconds, status, shutdown, instance, projects, stats, board]
       properties:
         generated_at: {type: string, format: date-time}
+        snapshot_age_seconds: {type: integer, format: int64, minimum: 0}
         status: {type: string, enum: [running, draining]}
         shutdown: {$ref: "#/components/schemas/GenericObject"}
         instance: {$ref: "#/components/schemas/GenericObject"}

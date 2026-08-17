@@ -198,6 +198,15 @@ Useful endpoints:
 | `/api/v1/webhooks/github` | Accept signed GitHub webhook deliveries with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a known board, pipeline, running, retrying, or blocked issue. |
 
+State responses calculate `snapshot_age_seconds` when the request is served,
+so counts remain attributable to their producer timestamp even if snapshot
+publication stops. Refresh objects include `next_refresh_overdue`; an explicit
+`ready` status becomes `degraded` once `next_refresh_at` is in the past.
+`/health` also reports `snapshot_generated_at`, `snapshot_age_seconds`, the
+current refresh object, and per-project `tick_liveness`. A tick loop that misses
+two effective polling intervals reports `needs_attention`, its last tick,
+overdue next refresh, missed interval count, and `frozen_at` timestamp.
+
 Project state scopes workflow metrics from the fleet snapshot enrichment cache
 instead of rerunning historical database reports for each request. The project
 diagnostics page is the opt-in detail path that loads project-specific runtime

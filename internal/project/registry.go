@@ -6,6 +6,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type HealthStatus string
@@ -171,6 +172,25 @@ func (r *Registry) Health() []Health {
 		health = append(health, pendingHealth(pending[id]))
 	}
 	return health
+}
+
+func (r *Registry) TickLiveness(now time.Time) []telemetry.TickLiveness {
+	if r == nil {
+		return nil
+	}
+	projects := r.List()
+	liveness := make([]telemetry.TickLiveness, 0, len(projects))
+	for _, trackedProject := range projects {
+		if trackedProject == nil {
+			continue
+		}
+		orchestrator := trackedProject.Orchestrator()
+		if orchestrator == nil {
+			continue
+		}
+		liveness = append(liveness, orchestrator.TickLiveness(now))
+	}
+	return liveness
 }
 
 func projectHealth(trackedProject *Project) Health {

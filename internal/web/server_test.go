@@ -6903,6 +6903,101 @@ func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
 	}
 }
 
+func TestHealthReportsTickLivenessAndSnapshotAge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 1, 39, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		generatedAt      time.Time
+		nextRefreshAt    time.Time
+		liveness         telemetry.TickLiveness
+		wantHealthStatus string
+		wantRefresh      telemetry.RefreshStatus
+		wantAgeSeconds   string
+	}{
+		{
+			name:          "healthy loop remains ready",
+			generatedAt:   now.Add(-time.Second),
+			nextRefreshAt: now.Add(time.Minute),
+			liveness: telemetry.TickLiveness{
+				ProjectID:     "detent",
+				Status:        telemetry.TickLivenessStatusReady,
+				LastTickAt:    new(now.Add(-time.Second)),
+				NextRefreshAt: new(now.Add(time.Minute)),
+			},
+			wantHealthStatus: "ok",
+			wantRefresh:      telemetry.RefreshStatusReady,
+			wantAgeSeconds:   "1",
+		},
+		{
+			name:          "frozen loop needs attention",
+			generatedAt:   now.Add(-18 * time.Minute),
+			nextRefreshAt: now.Add(-9 * time.Minute),
+			liveness: telemetry.TickLiveness{
+				ProjectID:             "detent",
+				Status:                telemetry.TickLivenessStatusNeedsAttention,
+				LastTickAt:            new(now.Add(-18 * time.Minute)),
+				NextRefreshAt:         new(now.Add(-9 * time.Minute)),
+				NextRefreshOverdue:    true,
+				FrozenAt:              new(now.Add(-18 * time.Minute)),
+				MissedIntervals:       2,
+				WatchdogIntervalCount: 2,
+			},
+			wantHealthStatus: "needs_attention",
+			wantRefresh:      telemetry.RefreshStatusDegraded,
+			wantAgeSeconds:   "1080",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			deps.TickLiveness = tickLivenessProbe{values: []telemetry.TickLiveness{tt.liveness}}
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: tt.generatedAt,
+				Refresh: telemetry.Refresh{
+					Status:        telemetry.RefreshStatusReady,
+					LastRefreshAt: &tt.generatedAt,
+					NextRefreshAt: &tt.nextRefreshAt,
+				},
+				Counts: telemetry.Counts{Running: 1},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			if health["status"] != tt.wantHealthStatus {
+				t.Fatalf("health status = %#v, want %q", health["status"], tt.wantHealthStatus)
+			}
+			if got := nestedString(t, health, "snapshot_age_seconds"); got != tt.wantAgeSeconds {
+				t.Fatalf("health snapshot_age_seconds = %s, want %s", got, tt.wantAgeSeconds)
+			}
+			if got := nestedString(t, health, "refresh", "status"); got != string(tt.wantRefresh) {
+				t.Fatalf("health refresh.status = %q, want %q", got, tt.wantRefresh)
+			}
+			liveness := health["tick_liveness"].([]any)
+			if len(liveness) != 1 || liveness[0].(map[string]any)["status"] != string(tt.liveness.Status) {
+				t.Fatalf("health tick_liveness = %#v", liveness)
+			}
+
+			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+			if got := nestedString(t, state, "snapshot_age_seconds"); got != tt.wantAgeSeconds {
+				t.Fatalf("state snapshot_age_seconds = %s, want %s", got, tt.wantAgeSeconds)
+			}
+			if got := nestedString(t, state, "refresh", "status"); got != string(tt.wantRefresh) {
+				t.Fatalf("state refresh.status = %q, want %q", got, tt.wantRefresh)
+			}
+		})
+	}
+}
+
 func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.T) {
 	t.Parallel()
 
@@ -13031,6 +13126,14 @@ type refreshProbe struct {
 	response web.RefreshResponse
 	err      error
 	calls    int
+}
+
+type tickLivenessProbe struct {
+	values []telemetry.TickLiveness
+}
+
+func (p tickLivenessProbe) TickLiveness(time.Time) []telemetry.TickLiveness {
+	return append([]telemetry.TickLiveness(nil), p.values...)
 }
 
 type operatorMoveProbe struct {

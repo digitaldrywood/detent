@@ -726,6 +726,83 @@ func TestRefreshReadinessStatus(t *testing.T) {
 	}
 }
 
+func TestRefreshReadinessStatusAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 1, 39, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-18 * time.Minute)
+	tests := []struct {
+		name          string
+		nextRefreshAt time.Time
+		wantStatus    telemetry.RefreshStatus
+		wantOverdue   bool
+	}{
+		{
+			name:          "healthy refresh remains ready",
+			nextRefreshAt: now.Add(time.Minute),
+			wantStatus:    telemetry.RefreshStatusReady,
+		},
+		{
+			name:          "past due refresh becomes degraded",
+			nextRefreshAt: now.Add(-9 * time.Minute),
+			wantStatus:    telemetry.RefreshStatusDegraded,
+			wantOverdue:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			refresh := (telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+				NextRefreshAt: &tt.nextRefreshAt,
+			}).WithFreshness(now)
+			if got := refresh.ReadinessStatus(); got != tt.wantStatus {
+				t.Fatalf("ReadinessStatus() = %q, want %q", got, tt.wantStatus)
+			}
+			if refresh.NextRefreshOverdue != tt.wantOverdue {
+				t.Fatalf("NextRefreshOverdue = %v, want %v", refresh.NextRefreshOverdue, tt.wantOverdue)
+			}
+		})
+	}
+}
+
+func TestSnapshotWithFreshness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 1, 39, 0, 0, time.UTC)
+	generatedAt := now.Add(-18 * time.Minute)
+	nextRefreshAt := now.Add(-9 * time.Minute)
+	snapshot := (telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Refresh: telemetry.Refresh{
+			Status:        telemetry.RefreshStatusReady,
+			LastRefreshAt: &generatedAt,
+			NextRefreshAt: &nextRefreshAt,
+		},
+		Projects: []telemetry.ProjectSnapshot{{
+			Project: telemetry.Project{ID: "detent"},
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &generatedAt,
+				NextRefreshAt: &nextRefreshAt,
+			},
+		}},
+	}).WithFreshness(now)
+
+	if got := snapshot.AgeSeconds(now); got != int64((18*time.Minute)/time.Second) {
+		t.Fatalf("AgeSeconds() = %d, want 1080", got)
+	}
+	if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusDegraded || !snapshot.Refresh.NextRefreshOverdue {
+		t.Fatalf("Refresh = %#v, want overdue degraded refresh", snapshot.Refresh)
+	}
+	if snapshot.Projects[0].Refresh.ReadinessStatus() != telemetry.RefreshStatusDegraded || !snapshot.Projects[0].Refresh.NextRefreshOverdue {
+		t.Fatalf("Projects[0].Refresh = %#v, want overdue degraded refresh", snapshot.Projects[0].Refresh)
+	}
+}
+
 func TestRefreshReadinessJSON(t *testing.T) {
 	t.Parallel()
 
