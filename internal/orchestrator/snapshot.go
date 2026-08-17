@@ -695,6 +695,9 @@ func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, mergeTimi
 			queued.WorkspaceCreateCount = entry.Wait.WorkspaceCreateCount
 			queued.WorkspaceDestroyCount = entry.Wait.WorkspaceDestroyCount
 		}
+		if entry.CompletionDeferred {
+			queued.QueueState = telemetry.QueueStateWaitingOnTracker
+		}
 		if !entry.DueAt.IsZero() {
 			dueAt := entry.DueAt
 			queued.DueAt = &dueAt

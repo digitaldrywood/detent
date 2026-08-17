@@ -375,6 +375,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	if state.Draining {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
 	}
+	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
+		return dispatchIssueOutcome{reason: dispatchSkipCompletionDeferred}
+	}
 	if activeTrackerUnavailable(state) && (trackerDependentDispatch(issue) || trackerUnavailableRetry(state, issue.ID)) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable}
 	}

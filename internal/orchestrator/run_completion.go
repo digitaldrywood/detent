@@ -126,7 +126,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if err != nil {
 			availabilityErr, unavailable := connector.AsTrackerAvailability(err)
 			if unavailable && availabilityErr != nil {
-				event.Err = err
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, availabilityErr)
+				return
 			} else {
 				o.rejectWorkerCompletion(ctx, state, event, running, laneRevocationCompletionFenceUnavailable, err)
 				o.beginLaneRevocation(ctx, state, running, running.Issue, event.CompletedAt, laneRevocationCompletionFenceUnavailable)
@@ -155,25 +156,28 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleOperatorStopCompletion(ctx, state, event, running) {
 		return
 	}
-	o.releaseGlobalDispatchSlot(running.globalSlot)
-	o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
-		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
-		telemetry.DetentSessionIDKey, running.DetentSessionID,
-		telemetry.ProviderSessionIDKey, running.SessionID,
-		"attempt", running.Attempt,
-		"worker_host", strings.TrimSpace(running.WorkerHost),
-		"reason", "run_completed",
-	)
+	if !running.CompletionOwnershipReleased {
+		o.releaseGlobalDispatchSlot(running.globalSlot)
+		o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"reason", "run_completed",
+		)
+		if running.cancel != nil {
+			running.cancel()
+		}
+	}
 	running.globalSlot = scheduler.Slot{}
+	running.CompletionOwnershipReleased = true
 	if !event.Result.RuntimeIdentity.IsZero() {
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
 	}
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-	}
-	if running.cancel != nil {
-		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
