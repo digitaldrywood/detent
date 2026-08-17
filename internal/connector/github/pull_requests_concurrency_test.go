@@ -66,6 +66,84 @@ func TestConnectorHydratesLinkedPullRequestsConcurrently(t *testing.T) {
 	}
 }
 
+func TestConnectorKeepsHydratingCandidatesWhenChecksReferenceIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		notFoundPath string
+	}{
+		{
+			name:         "check runs",
+			notFoundPath: "/commits/sha-1/check-runs",
+		},
+		{
+			name:         "commit statuses",
+			notFoundPath: "/commits/sha-1/statuses",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var notFoundRequests atomic.Int64
+			var stalePullRequestReviews atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(r.URL.Path, tt.notFoundPath) {
+					notFoundRequests.Add(1)
+					http.Error(w, "reference not found", http.StatusNotFound)
+					return
+				}
+				if strings.Contains(r.URL.Path, "/commits/sha-2/check-runs") {
+					_, _ = w.Write([]byte(`{"check_runs":[{"status":"completed","conclusion":"success"}]}`))
+					return
+				}
+				if pullRequestNumber, ok := pullRequestDetailNumber(r.URL.Path); ok {
+					_, _ = fmt.Fprintf(w, `{"number":%d,"html_url":"https://github.com/digitaldrywood/detent/pull/%d","state":"open","head":{"ref":"detent/issue-%d","sha":"sha-%d"}}`, pullRequestNumber, pullRequestNumber, pullRequestNumber, pullRequestNumber)
+					return
+				}
+				if strings.Contains(r.URL.Path, "/pulls/1/reviews") {
+					stalePullRequestReviews.Store(true)
+				}
+				writePullRequestStatusResponse(w, r.URL.Path)
+			}))
+			t.Cleanup(server.Close)
+
+			githubConnector, err := NewConnector(Config{
+				Endpoint:                   server.URL,
+				APIKey:                     "token",
+				HTTPClient:                 server.Client(),
+				RESTFanoutMaxRequests:      80,
+				DisableConditionalRequests: true,
+			})
+			if err != nil {
+				t.Fatalf("NewConnector() error = %v", err)
+			}
+
+			for cycle := 1; cycle <= 2; cycle++ {
+				issues := linkedPullRequestIssues(1, 2)
+				if err := githubConnector.attachPullRequests(context.Background(), issues); err != nil {
+					t.Fatalf("cycle %d attachPullRequests() error = %v", cycle, err)
+				}
+				if issues[0].PullRequest == nil || issues[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonChecksUnavailable {
+					t.Fatalf("cycle %d stale PullRequest = %#v, want checks-unavailable hydration", cycle, issues[0].PullRequest)
+				}
+				if issues[1].PullRequest == nil || issues[1].PullRequest.Number != 2 || issues[1].PullRequest.CIStatus != "pass" {
+					t.Fatalf("cycle %d healthy PullRequest = %#v, want fully hydrated PR 2", cycle, issues[1].PullRequest)
+				}
+			}
+			if !stalePullRequestReviews.Load() {
+				t.Fatal("stale pull request reviews were not hydrated")
+			}
+			if got := notFoundRequests.Load(); got != 2 {
+				t.Fatalf("not-found request count = %d, want 2 so incomplete checks are not cached", got)
+			}
+		})
+	}
+}
+
 func TestConnectorFiniteFanoutCompletesPriorityHydrationBeforeConcurrentTail(t *testing.T) {
 	t.Parallel()
 

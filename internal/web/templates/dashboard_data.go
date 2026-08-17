@@ -4506,6 +4506,8 @@ func pullRequestHydrationWaitDetail(unavailableReason string, degradedReason str
 		detail = "PR hydration primary exhausted"
 	case "rest_budget_reserved":
 		detail = "PR hydration waiting for REST budget"
+	case "checks_unavailable":
+		detail = "PR checks unavailable: current head SHA not found"
 	}
 	if detail == "" && strings.TrimSpace(degradedReason) == "stale_cached_pull_request" {
 		detail = "PR hydration using stale cached data"

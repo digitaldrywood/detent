@@ -1006,16 +1006,23 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	}
 
 	status := pullRequestStatus{}
+	checksUnavailable := false
 	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
 		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
-			state := c.pullRequestHydrationStateForError(repo, err)
-			if c.applyCachedPullRequestStatusAfterThrottle(ctx, repo, pullRequest, state) {
-				return nil
+			if errors.Is(err, ErrNotFound) {
+				pullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonChecksUnavailable
+				checksUnavailable = true
+			} else {
+				state := c.pullRequestHydrationStateForError(repo, err)
+				if c.applyCachedPullRequestStatusAfterThrottle(ctx, repo, pullRequest, state) {
+					return nil
+				}
+				return err
 			}
-			return err
+		} else {
+			status.ci = ci
 		}
-		status.ci = ci
 	}
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
 	if err != nil {
@@ -1026,7 +1033,7 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 		return err
 	}
 	status.reviews = reviews
-	if c.pullRequests != nil {
+	if c.pullRequests != nil && !checksUnavailable {
 		c.pullRequests.Set(repo, pullRequest.Number, pullRequest.HeadSHA, status)
 		c.logPullRequestCache(ctx, repo, pullRequest, false, false, "stored")
 	}
