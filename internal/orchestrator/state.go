@@ -88,6 +88,7 @@ type State struct {
 	StalenessWarnings        map[string]StalenessWarning
 	TrackerUnavailable       *TrackerCondition
 	trackerEvidence          map[string]trackerAvailabilityEvidence
+	deferredCompletions      map[string]deferredCompletion
 	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
@@ -114,43 +115,44 @@ type StalenessWarning struct {
 }
 
 type Running struct {
-	Issue                 connector.Issue
-	Attempt               int
-	WorkAttemptID         int64
-	Generation            uint64
-	Mode                  string
-	DispatchSourceState   string
-	DispatchTargetState   string
-	DispatchWorkpadHash   string
-	DispatchWorkpadRead   bool
-	DispatchProgress      implementProgressArtifactSnapshot
-	StartedAt             time.Time
-	WorkerHost            string
-	ProcessIdentity       string
-	WorkerProcess         procgroup.Identity
-	WorkspacePath         string
-	SessionID             string
-	DetentSessionID       int64
-	RuntimeIdentity       agentidentity.Identity
-	TurnCount             int
-	LastEventAt           time.Time
-	LastEvent             string
-	LastMessage           string
-	LastMessageTruncation *runtimeoutput.Truncation
-	RecentEvents          []telemetry.ActivityEvent
-	DiffStats             DiffStats
-	WorkProductPushed     bool
-	Tokens                TokenTotals
-	CapacityScope         backendcapacity.Scope
-	CapacityProbe         bool
-	ModelPermitExempt     bool
-	CIStopRequested       bool
-	StopDestination       string
-	StopPriorityOptions   []telemetry.StopRunPriorityOption
-	globalSlot            scheduler.Slot
-	cancel                context.CancelFunc
-	stop                  context.CancelCauseFunc
-	done                  <-chan struct{}
+	Issue                       connector.Issue
+	Attempt                     int
+	WorkAttemptID               int64
+	Generation                  uint64
+	Mode                        string
+	DispatchSourceState         string
+	DispatchTargetState         string
+	DispatchWorkpadHash         string
+	DispatchWorkpadRead         bool
+	DispatchProgress            implementProgressArtifactSnapshot
+	StartedAt                   time.Time
+	WorkerHost                  string
+	ProcessIdentity             string
+	WorkerProcess               procgroup.Identity
+	WorkspacePath               string
+	SessionID                   string
+	DetentSessionID             int64
+	RuntimeIdentity             agentidentity.Identity
+	TurnCount                   int
+	LastEventAt                 time.Time
+	LastEvent                   string
+	LastMessage                 string
+	LastMessageTruncation       *runtimeoutput.Truncation
+	RecentEvents                []telemetry.ActivityEvent
+	DiffStats                   DiffStats
+	WorkProductPushed           bool
+	Tokens                      TokenTotals
+	CapacityScope               backendcapacity.Scope
+	CapacityProbe               bool
+	ModelPermitExempt           bool
+	CIStopRequested             bool
+	CompletionOwnershipReleased bool
+	StopDestination             string
+	StopPriorityOptions         []telemetry.StopRunPriorityOption
+	globalSlot                  scheduler.Slot
+	cancel                      context.CancelFunc
+	stop                        context.CancelCauseFunc
+	done                        <-chan struct{}
 }
 
 type Claimed struct {
@@ -235,6 +237,7 @@ type Retry struct {
 	MergePrecheck      *runpkg.MergePrecheck
 	CIUnavailable      bool
 	TrackerUnavailable bool
+	CompletionDeferred bool
 	Wait               RetryWait
 }
 
@@ -348,6 +351,7 @@ func newState(cfg Config) State {
 		DispatchRecoveries:       map[string]DispatchRecovery{},
 		StalenessWarnings:        map[string]StalenessWarning{},
 		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
+		deferredCompletions:      map[string]deferredCompletion{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -424,6 +428,7 @@ func (s State) clone() State {
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
 		TrackerUnavailable:       cloneTrackerCondition(s.TrackerUnavailable),
 		trackerEvidence:          maps.Clone(s.trackerEvidence),
+		deferredCompletions:      cloneDeferredCompletions(s.deferredCompletions),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),

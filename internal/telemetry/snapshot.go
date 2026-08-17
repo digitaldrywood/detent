@@ -978,8 +978,9 @@ type Queued struct {
 }
 
 const (
-	QueueStateRetrying    = "retrying"
-	QueueStateWaitingOnCI = "waiting_on_ci"
+	QueueStateRetrying         = "retrying"
+	QueueStateWaitingOnCI      = "waiting_on_ci"
+	QueueStateWaitingOnTracker = "waiting_on_tracker"
 )
 
 type BlockedSource string

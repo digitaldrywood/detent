@@ -259,6 +259,9 @@ func (p dispatchPlanner) retryAction(
 	if activeTrackerUnavailable(state) && (trackerDependentDispatch(issue) || retry.TrackerUnavailable) {
 		return dispatchAction{}, false, dispatchSkipTrackerUnavailable
 	}
+	if retry.CompletionDeferred {
+		return dispatchAction{}, false, dispatchSkipCompletionDeferred
+	}
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || retry.CIUnavailable) {
 		return dispatchAction{}, false, dispatchSkipCIUnavailable
 	}
@@ -577,6 +580,7 @@ const (
 	dispatchSkipMergeFairnessReserved     = "merge_fairness_head_reserved"
 	dispatchSkipGitHubRESTCapacity        = "github_rest_capacity_paused"
 	dispatchSkipTrackerUnavailable        = "tracker_unavailable"
+	dispatchSkipCompletionDeferred        = "completion_deferred"
 	dispatchSkipCIUnavailable             = "ci_unavailable"
 	dispatchSkipProjectFailureBreaker     = projectFailureBreakerDispatchPaused
 	dispatchSkipRateWindowBackpressure    = "provider_rate_window_backpressure"
@@ -676,6 +680,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if _, ok := state.Running[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipAlreadyRunning}
+	}
+	if _, ok := state.deferredCompletions[issue.ID]; ok {
+		return dispatchableDecision{reason: dispatchSkipCompletionDeferred}
 	}
 	if _, ok := state.Retry[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipRetryPending}

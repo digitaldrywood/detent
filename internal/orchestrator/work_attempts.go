@@ -70,6 +70,14 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	for _, attempt := range reclaimed {
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
+	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: projectID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("deferred completion recovery lookup failed", "project_id", projectID, "error", err)
+		}
+	} else {
+		o.recoverDeferredCompletions(ctx, state, active, now)
+	}
 	o.recoverPendingWorkAttemptCapacityReleases(ctx, state, projectID, now)
 	recent, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID: projectID,

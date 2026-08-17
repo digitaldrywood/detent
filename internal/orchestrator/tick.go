@@ -87,6 +87,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if o.trackerAvailabilityPaused(ctx, state, now) {
 		return
 	}
+	if !o.retryDeferredCompletions(ctx, state, now) {
+		return
+	}
 
 	reserve := o.githubBudgetReserveDecision(state, now)
 	if reserve.degraded {

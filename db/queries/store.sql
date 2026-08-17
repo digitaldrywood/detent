@@ -859,6 +859,7 @@ WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at <= sqlc.arg(lease_expires_at)
+  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING *;
 
 -- name: ReclaimActiveWorkAttempts :many
@@ -873,6 +874,7 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND project_id = ?
+  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING *;
 
 -- name: CreateSchedulerDecision :one

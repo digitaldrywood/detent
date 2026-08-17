@@ -3683,6 +3683,7 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND project_id = ?
+  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
@@ -3820,6 +3821,7 @@ WHERE completed_at IS NULL
   AND (?9 = '' OR project_id = ?9)
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at <= ?10
+  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
