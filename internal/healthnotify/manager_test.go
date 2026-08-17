@@ -66,6 +66,7 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 		snapshot        telemetry.Snapshot
 		cause           string
 		wantWaitReasons []string
+		wantTracker     bool
 	}{
 		{
 			name: "dispatch payload carries wait reason",
@@ -74,6 +75,14 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 			}}},
 			cause:           CauseDispatchStall,
 			wantWaitReasons: []string{"github_rest_capacity_paused"},
+		},
+		{
+			name: "tracker payload carries scoped condition",
+			snapshot: telemetry.Snapshot{TrackerUnavailable: []telemetry.TrackerCondition{{
+				ProjectID: "detent", Connector: "github", ConnectorInstance: "detent:github", Operation: "observed_status", ErrorClass: "server",
+			}}},
+			cause:       CauseTrackerUnavailable,
+			wantTracker: true,
 		},
 		{
 			name:     "CI payload omits wait reason",
@@ -115,6 +124,9 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 				}
 				if !event.EnteredAt.Equal(now) || !event.NeedsAttentionEnteredAt.Equal(now) || event.ID == "" {
 					t.Fatalf("event timestamps/id = %#v", event)
+				}
+				if got := len(event.TrackerConditions) > 0; got != tt.wantTracker {
+					t.Fatalf("TrackerConditions = %#v, want present %v", event.TrackerConditions, tt.wantTracker)
 				}
 			}
 		})

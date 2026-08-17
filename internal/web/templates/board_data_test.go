@@ -2477,6 +2477,35 @@ func TestBoardAlertsSurfaceCIUnavailableEvidence(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsNameTrackerAvailabilityCondition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 17, 20, 0, 0, time.UTC)
+	alerts := boardAlerts(telemetry.Snapshot{
+		GeneratedAt: now,
+		TrackerUnavailable: []telemetry.TrackerCondition{{
+			ProjectID:         "detent",
+			Connector:         "github",
+			ConnectorInstance: "detent:github",
+			Operation:         "observed_status",
+			ErrorClass:        "server",
+			NextProbeAt:       now.Add(30 * time.Second),
+		}},
+	})
+	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindTrackerUnavailable || alerts[0].Tone != primitives.KindErr {
+		t.Fatalf("boardAlerts() = %#v, want tracker-unavailable error", alerts)
+	}
+	combined := alerts[0].TerseSummary + " " + alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
+	for _, want := range []string{"Tracker unavailable", "github tracker", "tracker_unavailable", "observed_status", "server", "next canary in 30s"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("tracker alert = %q, want containing %q", combined, want)
+		}
+	}
+	if alerts[0].Action == nil || !strings.Contains(alerts[0].Action.Path, "project_id=detent") {
+		t.Fatalf("tracker alert action = %#v, want project-scoped clear", alerts[0].Action)
+	}
+}
+
 func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 	t.Parallel()
 

@@ -35,6 +35,17 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Waiting for the first health snapshot.",
 		},
 		{
+			name: "tracker unavailability requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				TrackerUnavailable: []telemetry.TrackerCondition{{
+					ProjectID: "detent", Connector: "github", Operation: "observed_status", ErrorClass: "server", NextProbeAt: now.Add(time.Minute),
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Tracker is unavailable.",
+		},
+		{
 			name: "CI unavailability requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,

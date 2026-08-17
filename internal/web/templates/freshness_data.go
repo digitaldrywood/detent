@@ -144,6 +144,9 @@ func refreshStaleDetailRows(snapshot telemetry.Snapshot) []refreshStaleDetailRow
 			if source.FailureStreak > 0 {
 				detail += " · " + formatCount(source.FailureStreak) + " consecutive failures"
 			}
+			if condition := refreshSourceConditionDetail(source); condition != "" {
+				detail += " · " + condition
+			}
 			if lastError := strings.TrimSpace(source.LastError); lastError != "" {
 				detail += " · " + lastError
 			}
@@ -179,6 +182,9 @@ func refreshStaleHealthDetail(snapshot telemetry.Snapshot) string {
 		}
 		if source.FailureStreak > 0 {
 			part += " · " + formatCount(source.FailureStreak) + " consecutive failures"
+		}
+		if condition := refreshSourceConditionDetail(source); condition != "" {
+			part += " · " + condition
 		}
 		if lastError := strings.TrimSpace(source.LastError); lastError != "" {
 			part += " · " + lastError
@@ -320,6 +326,9 @@ func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 			if source.FailureStreak > 0 {
 				detail += " · " + formatCount(source.FailureStreak) + " consecutive failures"
 			}
+			if condition := refreshSourceConditionDetail(source); condition != "" {
+				detail += " · " + condition
+			}
 			if refreshSourceStale(snapshot.Refresh, source, snapshot.GeneratedAt) {
 				kind = primitives.KindWarn
 				if lastError := strings.TrimSpace(source.LastError); lastError != "" {
@@ -342,6 +351,20 @@ func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 		})
 	}
 	return rows
+}
+
+func refreshSourceConditionDetail(source telemetry.RefreshSource) string {
+	condition := strings.TrimSpace(source.Condition)
+	if condition == "" {
+		return ""
+	}
+	connectorName := strings.TrimSpace(source.Connector)
+	if connectorName == "" {
+		connectorName = "tracker"
+	} else {
+		connectorName += " tracker"
+	}
+	return connectorName + " · " + condition
 }
 
 func refreshHealthStatus(kind primitives.Kind) string {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -82,6 +83,63 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 	variables := payload["variables"].(map[string]any)
 	if variables["id"] != "PVT_1" {
 		t.Fatalf("variables.id = %v, want PVT_1", variables["id"])
+	}
+}
+
+func TestClientTrackerAvailabilityClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		queryType        string
+		query            string
+		status           int
+		transportErr     error
+		wantAvailability bool
+		wantClass        string
+	}{
+		{name: "server error", query: "query DetentCandidates { viewer { login } }", status: http.StatusServiceUnavailable, wantAvailability: true, wantClass: connector.TrackerAvailabilityClassServer},
+		{name: "timeout", query: "query DetentCandidates { viewer { login } }", transportErr: context.DeadlineExceeded, wantAvailability: true, wantClass: connector.TrackerAvailabilityClassTimeout},
+		{name: "dns", query: "query DetentCandidates { viewer { login } }", transportErr: &net.DNSError{Err: "no such host", Name: "api.github.test"}, wantAvailability: true, wantClass: connector.TrackerAvailabilityClassTransport},
+		{name: "transport", query: "query DetentCandidates { viewer { login } }", transportErr: errors.New("tls handshake failed"), wantAvailability: true, wantClass: connector.TrackerAvailabilityClassTransport},
+		{name: "tracker status pull request references", queryType: graphQLQueryPullRequests, query: "query DetentPullRequestReferences { viewer { login } }", status: http.StatusServiceUnavailable, wantAvailability: true, wantClass: connector.TrackerAvailabilityClassServer},
+		{name: "rate limit", query: "query DetentCandidates { viewer { login } }", status: http.StatusTooManyRequests},
+		{name: "forbidden", query: "query DetentCandidates { viewer { login } }", status: http.StatusForbidden},
+		{name: "not found", query: "query DetentCandidates { viewer { login } }", status: http.StatusNotFound},
+		{name: "mutation server error", query: "mutation DetentMove { updateIssue(input: {}) { id } }", status: http.StatusServiceUnavailable},
+		{name: "merge queue server error", queryType: graphQLQueryMergeQueue, query: "query DetentMergeQueue { viewer { login } }", status: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client, err := NewClient(ClientConfig{
+				Endpoint:    "https://api.github.test/graphql",
+				TokenSource: StaticTokenSource("test-token"),
+				HTTPClient: staticHTTPClient{do: func(req *http.Request) (*http.Response, error) {
+					if tt.transportErr != nil {
+						return nil, tt.transportErr
+					}
+					return jsonResponse(req, tt.status, `{"message":"unavailable"}`, nil), nil
+				}},
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			queryType := tt.queryType
+			if queryType == "" {
+				queryType = graphQLQueryCandidateIssues
+			}
+			err = client.GraphQLWithType(context.Background(), queryType, tt.query, nil, nil)
+			availabilityErr, gotAvailability := connector.AsTrackerAvailability(err)
+			if gotAvailability != tt.wantAvailability {
+				t.Fatalf("tracker availability = %v, want %v; error = %v", gotAvailability, tt.wantAvailability, err)
+			}
+			if gotAvailability && availabilityErr.Class != tt.wantClass {
+				t.Fatalf("class = %q, want %q", availabilityErr.Class, tt.wantClass)
+			}
+		})
 	}
 }
 
@@ -485,6 +543,9 @@ func TestClientRESTLogsRateLimitFailuresByDefault(t *testing.T) {
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("REST() error = %v, want %v", err, ErrRateLimited)
 	}
+	if _, ok := connector.AsTrackerAvailability(err); ok {
+		t.Fatalf("REST() error = %v, do not want tracker availability for 403", err)
+	}
 
 	logText := logs.String()
 	for _, fragment := range []string{
@@ -556,6 +617,10 @@ func TestClientRESTLogsUnexpectedFailuresByDefault(t *testing.T) {
 	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, nil)
 	if !errors.Is(err, ErrTransient) {
 		t.Fatalf("REST() error = %v, want %v", err, ErrTransient)
+	}
+	availabilityErr, ok := connector.AsTrackerAvailability(err)
+	if !ok || availabilityErr.Class != connector.TrackerAvailabilityClassServer {
+		t.Fatalf("REST() availability = %#v, want server class", availabilityErr)
 	}
 
 	logText := logs.String()

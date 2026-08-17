@@ -86,6 +86,8 @@ type State struct {
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
+	TrackerUnavailable       *TrackerCondition
+	trackerEvidence          map[string]trackerAvailabilityEvidence
 	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
@@ -222,17 +224,18 @@ type MergeTiming struct {
 }
 
 type Retry struct {
-	Issue         connector.Issue
-	Attempt       int
-	DueAt         time.Time
-	Error         string
-	WorkerHost    string
-	CapacityScope backendcapacity.Scope
-	RetryMode     runpkg.RetryMode
-	ResumeState   store.AgentResumeState
-	MergePrecheck *runpkg.MergePrecheck
-	CIUnavailable bool
-	Wait          RetryWait
+	Issue              connector.Issue
+	Attempt            int
+	DueAt              time.Time
+	Error              string
+	WorkerHost         string
+	CapacityScope      backendcapacity.Scope
+	RetryMode          runpkg.RetryMode
+	ResumeState        store.AgentResumeState
+	MergePrecheck      *runpkg.MergePrecheck
+	CIUnavailable      bool
+	TrackerUnavailable bool
+	Wait               RetryWait
 }
 
 type RetryWait struct {
@@ -344,6 +347,7 @@ func newState(cfg Config) State {
 		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		DispatchRecoveries:       map[string]DispatchRecovery{},
 		StalenessWarnings:        map[string]StalenessWarning{},
+		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -418,6 +422,8 @@ func (s State) clone() State {
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
+		TrackerUnavailable:       cloneTrackerCondition(s.TrackerUnavailable),
+		trackerEvidence:          maps.Clone(s.trackerEvidence),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),

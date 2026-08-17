@@ -2,6 +2,7 @@ package templates
 
 import (
 	"encoding/json"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,27 +33,29 @@ type boardView struct {
 type boardAlertKind string
 
 const (
-	boardAlertKindLastKnown             boardAlertKind = "board-last-known"
-	boardAlertKindFailureBreaker        boardAlertKind = "project-failure-breaker"
-	boardAlertKindDispatchStall         boardAlertKind = "dispatch-stall"
-	boardAlertKindCIUnavailable         boardAlertKind = "ci-unavailable"
-	boardAlertKindStaleness             boardAlertKind = "staleness-warning"
-	boardAlertKindTrackerStale          boardAlertKind = "board-stale-data"
-	boardAlertKindAdmissionProposal     boardAlertKind = "admission-proposal"
-	boardAlertKindBackendCapacity       boardAlertKind = "backend-capacity-outage"
-	boardAlertKindDispatchRecovery      boardAlertKind = "dispatch-recovery-status"
-	boardAlertKindUpdatePending         boardAlertKind = "update-pending"
-	boardAlertDetailLimit                              = 5
-	boardAlertSeverityUpdatePending                    = 100
-	boardAlertSeverityDispatchRecovery                 = 200
-	boardAlertSeverityBackendCapacity                  = 300
-	boardAlertSeverityAdmissionProposal                = 425
-	boardAlertSeverityTrackerStale                     = 400
-	boardAlertSeverityStaleness                        = 450
-	boardAlertSeverityFailureBreaker                   = 500
-	boardAlertSeverityCIUnavailable                    = 550
-	boardAlertSeverityDispatchStall                    = 575
-	boardAlertSeverityLastKnown                        = 600
+	boardAlertKindLastKnown              boardAlertKind = "board-last-known"
+	boardAlertKindFailureBreaker         boardAlertKind = "project-failure-breaker"
+	boardAlertKindDispatchStall          boardAlertKind = "dispatch-stall"
+	boardAlertKindTrackerUnavailable     boardAlertKind = "tracker-unavailable"
+	boardAlertKindCIUnavailable          boardAlertKind = "ci-unavailable"
+	boardAlertKindStaleness              boardAlertKind = "staleness-warning"
+	boardAlertKindTrackerStale           boardAlertKind = "board-stale-data"
+	boardAlertKindAdmissionProposal      boardAlertKind = "admission-proposal"
+	boardAlertKindBackendCapacity        boardAlertKind = "backend-capacity-outage"
+	boardAlertKindDispatchRecovery       boardAlertKind = "dispatch-recovery-status"
+	boardAlertKindUpdatePending          boardAlertKind = "update-pending"
+	boardAlertDetailLimit                               = 5
+	boardAlertSeverityUpdatePending                     = 100
+	boardAlertSeverityDispatchRecovery                  = 200
+	boardAlertSeverityBackendCapacity                   = 300
+	boardAlertSeverityAdmissionProposal                 = 425
+	boardAlertSeverityTrackerStale                      = 400
+	boardAlertSeverityStaleness                         = 450
+	boardAlertSeverityFailureBreaker                    = 500
+	boardAlertSeverityCIUnavailable                     = 550
+	boardAlertSeverityTrackerUnavailable                = 560
+	boardAlertSeverityDispatchStall                     = 575
+	boardAlertSeverityLastKnown                         = 600
 )
 
 type boardAlert struct {
@@ -85,7 +88,7 @@ type boardAlertAction struct {
 }
 
 func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
-	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+7)
+	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+8)
 	if alert, ok := boardLastKnownAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
@@ -93,6 +96,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardCIUnavailableAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardTrackerUnavailableAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardDispatchStallAlert(snapshot); ok {
@@ -191,6 +197,66 @@ func boardCIUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
 	}, true
+}
+
+func boardTrackerUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if len(snapshot.TrackerUnavailable) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.TrackerUnavailable))
+	for index, condition := range snapshot.TrackerUnavailable {
+		label := strings.TrimSpace(condition.ProjectID)
+		if label == "" {
+			label = strings.TrimSpace(condition.ConnectorInstance)
+		}
+		if label == "" {
+			label = "Tracker"
+		}
+		summary := strings.TrimSpace(condition.Connector) + " tracker · tracker_unavailable"
+		if strings.TrimSpace(condition.Connector) == "" {
+			summary = "Tracker · tracker_unavailable"
+		}
+		detail := strings.TrimSpace(condition.Operation) + " · " + strings.TrimSpace(condition.ErrorClass)
+		if !condition.NextProbeAt.IsZero() {
+			delay := condition.NextProbeAt.Sub(snapshot.GeneratedAt)
+			if delay < 0 {
+				delay = 0
+			}
+			detail += " · next canary in " + formatDuration(delay.Seconds())
+		}
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-tracker-unavailable-" + boardAlertRowSlug(label, index),
+			Label:   label,
+			Summary: summary,
+			Detail:  strings.Trim(detail, " ·"),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	alert := boardAlert{
+		ID:            "board-alert-tracker-unavailable",
+		Kind:          boardAlertKindTrackerUnavailable,
+		Severity:      boardAlertSeverityTrackerUnavailable,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Tracker unavailable (" + boardCountLabel(len(snapshot.TrackerUnavailable), "connector", "connectors") + ")",
+		DetailSummary: "Tracker-dependent dispatch is paused until a canary read succeeds.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}
+	if len(snapshot.TrackerUnavailable) == 1 {
+		projectID := strings.TrimSpace(snapshot.TrackerUnavailable[0].ProjectID)
+		path := "/api/v1/tracker/availability/clear"
+		if projectID != "" {
+			path += "?project_id=" + url.QueryEscape(projectID)
+		}
+		alert.Action = &boardAlertAction{
+			Label:   "Clear condition",
+			Path:    path,
+			Target:  "#board-alert-tracker-unavailable",
+			Confirm: "Clear the tracker availability condition and resume dispatch?",
+		}
+	}
+	return alert, true
 }
 
 func ciUnavailableConditionDetail(condition telemetry.CICondition) string {

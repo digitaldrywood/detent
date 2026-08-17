@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -29,6 +30,8 @@ func recordRefreshSourceSuccess(state *State, name telemetry.RefreshSourceName, 
 	source.FailureStreak = 0
 	source.LastError = ""
 	source.LastErrorAt = nil
+	source.Condition = ""
+	source.Connector = ""
 	state.RefreshSources[name] = source
 }
 
@@ -45,6 +48,13 @@ func recordRefreshSourceFailure(state *State, name telemetry.RefreshSourceName, 
 	source.FailureStreak++
 	if err != nil {
 		source.LastError = strings.TrimSpace(err.Error())
+		if availabilityErr, ok := connector.AsTrackerAvailability(err); ok {
+			source.Condition = connector.TrackerUnavailableCondition
+			source.Connector = availabilityErr.Scope.Connector
+		} else {
+			source.Condition = ""
+			source.Connector = ""
+		}
 	}
 	source.LastErrorAt = &at
 	state.RefreshSources[name] = source

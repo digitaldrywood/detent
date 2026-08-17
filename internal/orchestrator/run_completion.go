@@ -124,22 +124,28 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if running.Generation > 0 {
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
-			o.rejectWorkerCompletion(ctx, state, event, running, laneRevocationCompletionFenceUnavailable, err)
-			o.beginLaneRevocation(ctx, state, running, running.Issue, event.CompletedAt, laneRevocationCompletionFenceUnavailable)
-			o.handleLaneRevocationCompletion(ctx, state, event, running)
-			return
-		}
-		running.Issue = refreshed
-		state.Running[event.IssueID] = running
-		if claimed, found := state.Claimed[event.IssueID]; found {
-			claimed.Issue = cloneIssue(refreshed)
-			state.Claimed[event.IssueID] = claimed
-		}
-		if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
-			o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
-			o.beginLaneRevocation(ctx, state, running, refreshed, event.CompletedAt, laneRevocationStateChanged)
-			o.handleLaneRevocationCompletion(ctx, state, event, running)
-			return
+			availabilityErr, unavailable := connector.AsTrackerAvailability(err)
+			if unavailable && availabilityErr != nil {
+				event.Err = err
+			} else {
+				o.rejectWorkerCompletion(ctx, state, event, running, laneRevocationCompletionFenceUnavailable, err)
+				o.beginLaneRevocation(ctx, state, running, running.Issue, event.CompletedAt, laneRevocationCompletionFenceUnavailable)
+				o.handleLaneRevocationCompletion(ctx, state, event, running)
+				return
+			}
+		} else {
+			running.Issue = refreshed
+			state.Running[event.IssueID] = running
+			if claimed, found := state.Claimed[event.IssueID]; found {
+				claimed.Issue = cloneIssue(refreshed)
+				state.Claimed[event.IssueID] = claimed
+			}
+			if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
+				o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
+				o.beginLaneRevocation(ctx, state, running, refreshed, event.CompletedAt, laneRevocationStateChanged)
+				o.handleLaneRevocationCompletion(ctx, state, event, running)
+				return
+			}
 		}
 	}
 	o.heartbeats.remove(event.IssueID)
@@ -214,6 +220,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	if o.handleCIUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	if o.handleTrackerUnavailableCompletion(ctx, state, event, running) {
 		return
 	}
 	if o.handleMergeRevocationCompletion(ctx, state, event, running) {

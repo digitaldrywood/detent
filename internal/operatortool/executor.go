@@ -116,6 +116,7 @@ func (e *Executor) fleetHealth(ctx context.Context, raw json.RawMessage) (Result
 		Refresh:            snapshot.Refresh,
 		Counts:             snapshot.Counts,
 		RateLimits:         boundedRateLimits(snapshot.RateLimits),
+		TrackerUnavailable: boundedClone(snapshot.TrackerUnavailable, MaxItemLimit),
 		BackendOutages:     boundedClone(snapshot.BackendOutages, MaxItemLimit),
 		FailureBreakers:    boundedClone(snapshot.FailureBreakers, MaxItemLimit),
 		DispatchRecoveries: boundedClone(snapshot.DispatchRecoveries, MaxItemLimit),
@@ -350,6 +351,7 @@ type FleetHealthResult struct {
 	Refresh            telemetry.Refresh            `json:"refresh"`
 	Counts             telemetry.Counts             `json:"counts"`
 	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
+	TrackerUnavailable []telemetry.TrackerCondition `json:"tracker_unavailable"`
 	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages"`
 	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers"`
 	DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries"`

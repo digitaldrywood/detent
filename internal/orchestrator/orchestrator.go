@@ -269,6 +269,7 @@ type Orchestrator struct {
 	refreshes               chan manualRefreshRequest
 	reconciles              chan targetedRefreshRequest
 	capacityClearRequests   chan capacityClearRequest
+	trackerClearRequests    chan trackerClearRequest
 	failureCanaryRequests   chan failureBreakerCanaryRequest
 	stopRequests            chan stopRunRequest
 	modelPermitRequests     chan modelPermitRequest
@@ -335,6 +336,15 @@ type capacityClearRequest struct {
 
 type capacityClearReply struct {
 	cleared []BackendOutage
+}
+
+type trackerClearRequest struct {
+	at    time.Time
+	reply chan trackerClearReply
+}
+
+type trackerClearReply struct {
+	cleared []TrackerCondition
 }
 
 type failureBreakerCanaryRequest struct {
@@ -537,6 +547,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
 		capacityClearRequests:   make(chan capacityClearRequest),
+		trackerClearRequests:    make(chan trackerClearRequest),
 		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
 		stopRequests:            make(chan stopRunRequest),
 		modelPermitRequests:     make(chan modelPermitRequest),
@@ -625,6 +636,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
+		case request := <-o.trackerClearRequests:
+			request.reply <- trackerClearReply{cleared: o.clearTrackerAvailability(&state, request.at)}
 		case request := <-o.failureCanaryRequests:
 			result := o.requestProjectFailureBreakerCanary(&state, request.at)
 			request.reply <- result
@@ -706,6 +719,31 @@ func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) (
 	case <-o.done:
 		return nil, ErrStopped
 	case o.capacityClearRequests <- request:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case reply := <-request.reply:
+		return reply.cleared, nil
+	}
+}
+
+func (o *Orchestrator) ClearTrackerAvailability(ctx context.Context) ([]TrackerCondition, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := trackerClearRequest{
+		at:    o.clockNow(),
+		reply: make(chan trackerClearReply, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case o.trackerClearRequests <- request:
 	}
 	select {
 	case <-ctx.Done():

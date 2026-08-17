@@ -136,6 +136,36 @@ func TestRefreshFailureThresholdFlowsFromWorkflow(t *testing.T) {
 	}
 }
 
+func TestTrackerRefreshHealthAttributesAvailabilityCondition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 17, 17, 20, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{RefreshFailureThreshold: 3})
+	state := newState(cfg)
+	err := connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{
+		Connector:          "github",
+		Endpoint:           "https://api.github.test/graphql",
+		Operation:          "observed_status",
+		CredentialIdentity: "github-rest:test",
+	}, connector.TrackerAvailabilityClassServer, errors.New("status 503"))
+	for attempt := range 3 {
+		recordRefreshSourceFailure(&state, telemetry.RefreshSourceStatuses, err, now.Add(time.Duration(attempt)*time.Second))
+	}
+
+	snapshot := state.Snapshot(now.Add(3 * time.Second))
+	source, ok := snapshot.Refresh.Source(telemetry.RefreshSourceStatuses)
+	if !ok {
+		t.Fatalf("Refresh.Source(%q) missing", telemetry.RefreshSourceStatuses)
+	}
+	if source.Condition != connector.TrackerUnavailableCondition || source.Connector != "github" {
+		t.Fatalf("refresh source attribution = condition %q connector %q", source.Condition, source.Connector)
+	}
+	failures := snapshot.RefreshFailures()
+	if len(failures) != 1 || failures[0].Condition != connector.TrackerUnavailableCondition || failures[0].Connector != "github" {
+		t.Fatalf("RefreshFailures() = %#v, want tracker attribution", failures)
+	}
+}
+
 type refreshHealthConnector struct {
 	candidateErr error
 	driftErr     error

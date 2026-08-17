@@ -256,6 +256,9 @@ func (p dispatchPlanner) retryAction(
 	retry Retry,
 	now time.Time,
 ) (dispatchAction, bool, string) {
+	if activeTrackerUnavailable(state) && (trackerDependentDispatch(issue) || retry.TrackerUnavailable) {
+		return dispatchAction{}, false, dispatchSkipTrackerUnavailable
+	}
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || retry.CIUnavailable) {
 		return dispatchAction{}, false, dispatchSkipCIUnavailable
 	}
@@ -573,6 +576,7 @@ const (
 	dispatchSkipDispatchBackoffCancelled  = "dispatch_backoff_cancelled"
 	dispatchSkipMergeFairnessReserved     = "merge_fairness_head_reserved"
 	dispatchSkipGitHubRESTCapacity        = "github_rest_capacity_paused"
+	dispatchSkipTrackerUnavailable        = "tracker_unavailable"
 	dispatchSkipCIUnavailable             = "ci_unavailable"
 	dispatchSkipProjectFailureBreaker     = projectFailureBreakerDispatchPaused
 	dispatchSkipRateWindowBackpressure    = "provider_rate_window_backpressure"
@@ -633,6 +637,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if stateIn(issue.State, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipTerminalState}
+	}
+	if activeTrackerUnavailable(state) && trackerDependentDispatch(issue) {
+		return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 	}
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipCIUnavailable}

@@ -41,6 +41,7 @@ type Snapshot struct {
 	Completed               []Completed         `json:"completed"`
 	Budget                  Budget              `json:"budget"`
 	RateLimits              *RateLimits         `json:"rate_limits"`
+	TrackerUnavailable      []TrackerCondition  `json:"tracker_unavailable,omitempty"`
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
@@ -84,6 +85,25 @@ type CICondition struct {
 	DetectedAt          time.Time `json:"detected_at"`
 	LastObservedAt      time.Time `json:"last_observed_at"`
 	ParkedAttemptCount  int       `json:"parked_attempt_count,omitempty"`
+}
+
+type TrackerCondition struct {
+	ProjectID          string            `json:"project_id,omitempty"`
+	Connector          string            `json:"connector"`
+	ConnectorInstance  string            `json:"connector_instance"`
+	Endpoint           string            `json:"endpoint,omitempty"`
+	Operation          string            `json:"operation,omitempty"`
+	ErrorClass         string            `json:"error_class"`
+	CredentialIdentity string            `json:"credential_identity,omitempty"`
+	RefreshSource      RefreshSourceName `json:"refresh_source,omitempty"`
+	DetectedAt         time.Time         `json:"detected_at"`
+	LastObservedAt     time.Time         `json:"last_observed_at"`
+	NextProbeAt        time.Time         `json:"next_probe_at,omitzero"`
+	LastProbeAt        time.Time         `json:"last_probe_at,omitzero"`
+	LastProbeResult    string            `json:"last_probe_result,omitempty"`
+	LastProbeDetail    string            `json:"last_probe_detail,omitempty"`
+	ProbeAttempts      int               `json:"probe_attempts,omitempty"`
+	LastError          string            `json:"last_error,omitempty"`
 }
 
 type AdmissionProposal struct {
@@ -415,6 +435,8 @@ type RefreshFailure struct {
 	FailureThreshold int                  `json:"failure_threshold"`
 	LastError        string               `json:"last_error"`
 	LastErrorAt      *time.Time           `json:"last_error_at,omitempty"`
+	Condition        string               `json:"condition,omitempty"`
+	Connector        string               `json:"connector,omitempty"`
 }
 
 type RefreshSource struct {
@@ -425,6 +447,8 @@ type RefreshSource struct {
 	FailureStreak int               `json:"failure_streak,omitempty"`
 	LastError     string            `json:"last_error,omitempty"`
 	LastErrorAt   *time.Time        `json:"last_error_at,omitempty"`
+	Condition     string            `json:"condition,omitempty"`
+	Connector     string            `json:"connector,omitempty"`
 }
 
 type RefreshAttempt struct {
@@ -576,6 +600,8 @@ func (r Refresh) failure(projectID string) (RefreshFailure, bool) {
 			FailureThreshold: threshold,
 			LastError:        lastError,
 			LastErrorAt:      copyTimePointer(lastErrorAt),
+			Condition:        source.Condition,
+			Connector:        source.Connector,
 		}, true
 	}
 	if source.FailureStreak < threshold {
@@ -589,6 +615,8 @@ func (r Refresh) failure(projectID string) (RefreshFailure, bool) {
 		FailureThreshold: threshold,
 		LastError:        lastError,
 		LastErrorAt:      copyTimePointer(lastErrorAt),
+		Condition:        source.Condition,
+		Connector:        source.Connector,
 	}, true
 }
 

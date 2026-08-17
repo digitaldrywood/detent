@@ -68,6 +68,12 @@ func TestCapacityConstraintReason(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:       "tracker unavailable",
+			waitReason: "tracker_unavailable",
+			want:       CapacityConstraintTrackerUnavailable,
+			wantOK:     true,
+		},
+		{
 			name:       "CI unavailable",
 			waitReason: "ci_unavailable",
 			want:       CapacityConstraintCIUnavailable,

@@ -48,24 +48,25 @@ type Dependencies struct {
 }
 
 type Event struct {
-	Schema                  int                        `json:"schema"`
-	Event                   string                     `json:"event"`
-	ID                      string                     `json:"id"`
-	Identity                string                     `json:"identity"`
-	Transition              string                     `json:"transition"`
-	Instance                string                     `json:"instance"`
-	Host                    string                     `json:"host"`
-	Scope                   string                     `json:"scope"`
-	ProjectID               string                     `json:"project_id,omitempty"`
-	State                   string                     `json:"state"`
-	Causes                  []string                   `json:"causes,omitempty"`
-	WaitReasons             []string                   `json:"wait_reasons,omitempty"`
-	FailureBreakers         []telemetry.FailureBreaker `json:"failure_breakers,omitempty"`
-	BackendOutages          []telemetry.BackendOutage  `json:"backend_outages,omitempty"`
-	RefreshFailures         []telemetry.RefreshFailure `json:"refresh_failures,omitempty"`
-	EnteredAt               time.Time                  `json:"entered_at"`
-	NeedsAttentionEnteredAt time.Time                  `json:"needs_attention_entered_at"`
-	ObservedAt              time.Time                  `json:"observed_at"`
+	Schema                  int                          `json:"schema"`
+	Event                   string                       `json:"event"`
+	ID                      string                       `json:"id"`
+	Identity                string                       `json:"identity"`
+	Transition              string                       `json:"transition"`
+	Instance                string                       `json:"instance"`
+	Host                    string                       `json:"host"`
+	Scope                   string                       `json:"scope"`
+	ProjectID               string                       `json:"project_id,omitempty"`
+	State                   string                       `json:"state"`
+	Causes                  []string                     `json:"causes,omitempty"`
+	WaitReasons             []string                     `json:"wait_reasons,omitempty"`
+	TrackerConditions       []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	FailureBreakers         []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
+	BackendOutages          []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	RefreshFailures         []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
+	EnteredAt               time.Time                    `json:"entered_at"`
+	NeedsAttentionEnteredAt time.Time                    `json:"needs_attention_entered_at"`
+	ObservedAt              time.Time                    `json:"observed_at"`
 }
 
 type Failure struct {
@@ -93,30 +94,32 @@ type Manager struct {
 }
 
 type durableState struct {
-	Schema                  int                        `json:"schema"`
-	Identity                string                     `json:"identity"`
-	Scope                   string                     `json:"scope"`
-	ProjectID               string                     `json:"project_id,omitempty"`
-	StableActive            bool                       `json:"stable_active"`
-	Pending                 *pendingState              `json:"pending,omitempty"`
-	NeedsAttentionEnteredAt time.Time                  `json:"needs_attention_entered_at,omitzero"`
-	Causes                  []string                   `json:"causes,omitempty"`
-	WaitReasons             []string                   `json:"wait_reasons,omitempty"`
-	FailureBreakers         []telemetry.FailureBreaker `json:"failure_breakers,omitempty"`
-	BackendOutages          []telemetry.BackendOutage  `json:"backend_outages,omitempty"`
-	RefreshFailures         []telemetry.RefreshFailure `json:"refresh_failures,omitempty"`
-	Deliveries              []deliveryState            `json:"deliveries,omitempty"`
+	Schema                  int                          `json:"schema"`
+	Identity                string                       `json:"identity"`
+	Scope                   string                       `json:"scope"`
+	ProjectID               string                       `json:"project_id,omitempty"`
+	StableActive            bool                         `json:"stable_active"`
+	Pending                 *pendingState                `json:"pending,omitempty"`
+	NeedsAttentionEnteredAt time.Time                    `json:"needs_attention_entered_at,omitzero"`
+	Causes                  []string                     `json:"causes,omitempty"`
+	WaitReasons             []string                     `json:"wait_reasons,omitempty"`
+	TrackerConditions       []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	FailureBreakers         []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
+	BackendOutages          []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	RefreshFailures         []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
+	Deliveries              []deliveryState              `json:"deliveries,omitempty"`
 }
 
 type pendingState struct {
-	Active          bool                       `json:"active"`
-	State           string                     `json:"state"`
-	Causes          []string                   `json:"causes,omitempty"`
-	WaitReasons     []string                   `json:"wait_reasons,omitempty"`
-	FailureBreakers []telemetry.FailureBreaker `json:"failure_breakers,omitempty"`
-	BackendOutages  []telemetry.BackendOutage  `json:"backend_outages,omitempty"`
-	RefreshFailures []telemetry.RefreshFailure `json:"refresh_failures,omitempty"`
-	Since           time.Time                  `json:"since"`
+	Active            bool                         `json:"active"`
+	State             string                       `json:"state"`
+	Causes            []string                     `json:"causes,omitempty"`
+	WaitReasons       []string                     `json:"wait_reasons,omitempty"`
+	TrackerConditions []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
+	FailureBreakers   []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
+	BackendOutages    []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	RefreshFailures   []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
+	Since             time.Time                    `json:"since"`
 }
 
 type deliveryState struct {
@@ -300,26 +303,29 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 	}
 	if state.Pending == nil || state.Pending.Active != current.Active {
 		state.Pending = &pendingState{
-			Active:          current.Active,
-			State:           current.State,
-			Causes:          compactSorted(current.Causes),
-			WaitReasons:     compactSorted(current.WaitReasons),
-			FailureBreakers: append([]telemetry.FailureBreaker(nil), current.FailureBreakers...),
-			BackendOutages:  append([]telemetry.BackendOutage(nil), current.BackendOutages...),
-			RefreshFailures: append([]telemetry.RefreshFailure(nil), current.RefreshFailures...),
-			Since:           now,
+			Active:            current.Active,
+			State:             current.State,
+			Causes:            compactSorted(current.Causes),
+			WaitReasons:       compactSorted(current.WaitReasons),
+			TrackerConditions: append([]telemetry.TrackerCondition(nil), current.TrackerConditions...),
+			FailureBreakers:   append([]telemetry.FailureBreaker(nil), current.FailureBreakers...),
+			BackendOutages:    append([]telemetry.BackendOutage(nil), current.BackendOutages...),
+			RefreshFailures:   append([]telemetry.RefreshFailure(nil), current.RefreshFailures...),
+			Since:             now,
 		}
 		return true
 	}
 	causes := compactSorted(current.Causes)
 	waitReasons := compactSorted(current.WaitReasons)
 	if state.Pending.State != current.State || !slices.Equal(state.Pending.Causes, causes) || !slices.Equal(state.Pending.WaitReasons, waitReasons) ||
+		!reflect.DeepEqual(state.Pending.TrackerConditions, current.TrackerConditions) ||
 		!reflect.DeepEqual(state.Pending.FailureBreakers, current.FailureBreakers) || !reflect.DeepEqual(state.Pending.BackendOutages, current.BackendOutages) ||
 		!reflect.DeepEqual(state.Pending.RefreshFailures, current.RefreshFailures) {
 		changed = true
 		state.Pending.State = current.State
 		state.Pending.Causes = causes
 		state.Pending.WaitReasons = waitReasons
+		state.Pending.TrackerConditions = append([]telemetry.TrackerCondition(nil), current.TrackerConditions...)
 		state.Pending.FailureBreakers = append([]telemetry.FailureBreaker(nil), current.FailureBreakers...)
 		state.Pending.BackendOutages = append([]telemetry.BackendOutage(nil), current.BackendOutages...)
 		state.Pending.RefreshFailures = append([]telemetry.RefreshFailure(nil), current.RefreshFailures...)
@@ -334,6 +340,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 		state.NeedsAttentionEnteredAt = pending.Since
 		state.Causes = append([]string(nil), pending.Causes...)
 		state.WaitReasons = append([]string(nil), pending.WaitReasons...)
+		state.TrackerConditions = append([]telemetry.TrackerCondition(nil), pending.TrackerConditions...)
 		state.FailureBreakers = append([]telemetry.FailureBreaker(nil), pending.FailureBreakers...)
 		state.BackendOutages = append([]telemetry.BackendOutage(nil), pending.BackendOutages...)
 		state.RefreshFailures = append([]telemetry.RefreshFailure(nil), pending.RefreshFailures...)
@@ -344,6 +351,7 @@ func (m *Manager) applyObservation(state *durableState, current observation, now
 	state.NeedsAttentionEnteredAt = time.Time{}
 	state.Causes = nil
 	state.WaitReasons = nil
+	state.TrackerConditions = nil
 	state.FailureBreakers = nil
 	state.BackendOutages = nil
 	state.RefreshFailures = nil
@@ -364,6 +372,7 @@ func (m *Manager) event(state *durableState, transition string, enteredState str
 		State:                   strings.TrimSpace(enteredState),
 		Causes:                  append([]string(nil), state.Causes...),
 		WaitReasons:             append([]string(nil), state.WaitReasons...),
+		TrackerConditions:       append([]telemetry.TrackerCondition(nil), state.TrackerConditions...),
 		FailureBreakers:         append([]telemetry.FailureBreaker(nil), state.FailureBreakers...),
 		BackendOutages:          append([]telemetry.BackendOutage(nil), state.BackendOutages...),
 		RefreshFailures:         append([]telemetry.RefreshFailure(nil), state.RefreshFailures...),

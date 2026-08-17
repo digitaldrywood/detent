@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -83,6 +82,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}
 	if pause := o.gitHubRESTPause(state, now); pause > 0 {
 		o.logger.Warn("github rest polling paused", "remaining", gitHubRESTRemaining(state), "pause", pause)
+		return
+	}
+	if o.trackerAvailabilityPaused(ctx, state, now) {
 		return
 	}
 
@@ -344,10 +346,12 @@ func (o *Orchestrator) fetchTickIssues(
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
 		markRefreshError(state, "fetch candidate issues failed: "+err.Error(), now)
 		return tickFetchedIssues{}, false
 	}
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceCandidates, now)
+	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
 
 	fetched := tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
@@ -373,12 +377,14 @@ func (o *Orchestrator) fetchTickIssues(
 		if probeErr != nil {
 			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
 			recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, probeErr, now)
+			o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, probeErr, now)
 			markRefreshError(state, "fetch observed status probe failed: "+probeErr.Error(), now)
 			return fetched, true
 		}
 		if !exists {
 			fetched.statusOK = true
 			recordRefreshSourceSuccess(state, telemetry.RefreshSourceStatuses, now)
+			o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 			clearRefreshError(state)
 			return fetched, true
 		}
@@ -388,15 +394,18 @@ func (o *Orchestrator) fetchTickIssues(
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, statusErr, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, statusErr, now)
 		markRefreshError(state, "fetch observed status issues failed: "+statusErr.Error(), now)
 		return fetched, true
 	}
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceStatuses, now)
+	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
-	if !o.hydratePlanIssueComments(ctx, &fetched) {
-		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, errors.New("fetch plan issue comments failed"), now)
-		markRefreshError(state, "fetch plan issue comments failed", now)
+	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
+		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
 		return tickFetchedIssues{}, false
 	}
 	clearRefreshError(state)
@@ -507,6 +516,7 @@ func (o *Orchestrator) refreshStatusDrift(
 	if err != nil {
 		o.logger.Warn("fetch tracker status drift failed", "error", err)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceDrift, err, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceDrift, err, now)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "tracker_status_drift_failed",
@@ -515,6 +525,7 @@ func (o *Orchestrator) refreshStatusDrift(
 		return
 	}
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceDrift, now)
+	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceDrift, now)
 	state.StatusDrift = cloneStatusDrift(drift)
 }
 
