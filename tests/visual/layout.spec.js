@@ -739,6 +739,29 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet).toHaveCount(0);
 });
 
+test("pull request link does not open the card detail sheet", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-full-integration",
+    route: "/projects/dogfood/kanban",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const card = page.locator("article", {
+    hasText: "Review deterministic chart colors",
+  });
+  const pullRequest = card
+    .locator('[data-board-card-content="cozy"]')
+    .getByRole("link", { name: "PR #5290", exact: true });
+  const popupPromise = page.waitForEvent("popup");
+  await pullRequest.click();
+  const popup = await popupPromise;
+  await popup.close();
+
+  await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+});
+
 test("long activity history stays contained across display modes", async ({
   page,
 }, testInfo) => {

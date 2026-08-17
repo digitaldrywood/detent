@@ -485,12 +485,12 @@ templ boardCardView2(card boardCardView) {
 					onclick="event.stopPropagation()"
 				><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
 			}
-			if card.MoveDisabledText != "" {
+			if card.MetaRight != "" {
+				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
+			} else if card.MoveDisabledText != "" {
 				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			} else if card.Done {
 				<span class="ml-auto text-ok" role="img" aria-label="done">✓</span>
-			} else if card.MetaRight != "" {
-				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
@@ -500,10 +500,17 @@ templ boardCardView2(card boardCardView) {
 				<span aria-hidden="true">·</span>
 				<span class="min-w-0 truncate">{ card.CompactSignal }</span>
 			}
-			if card.MoveDisabledText != "" {
+			if card.MetaRight != "" {
+				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
+			} else if card.MoveDisabledText != "" {
 				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			}
 		</div>
+		if card.MetaRight != "" && card.MoveDisabledText != "" {
+			<div class="flex" data-board-card-expanded>
+				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+			</div>
+		}
 		if card.RuntimeBadge {
 			@boardRuntimeBadge(card)
 		}

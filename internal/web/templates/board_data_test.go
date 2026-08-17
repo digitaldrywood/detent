@@ -1008,6 +1008,94 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 	}
 }
 
+func TestBoardCardAlwaysRendersPullRequest(t *testing.T) {
+	t.Parallel()
+
+	const (
+		prLabel = "PR #1859"
+		prURL   = "https://github.com/digitaldrywood/detent/pull/1859"
+	)
+	tests := []struct {
+		name     string
+		lane     projectKanbanLane
+		terminal bool
+		prepare  func(*DashboardData, *projectKanbanCard)
+	}{
+		{
+			name: "running",
+			lane: projectKanbanLane{Title: "In Progress"},
+			prepare: func(data *DashboardData, card *projectKanbanCard) {
+				data.Snapshot.Running = []telemetry.Running{{Issue: telemetry.Issue{
+					ID: card.IssueID, Identifier: card.Identifier, ProjectID: card.ProjectID,
+				}}}
+			},
+		},
+		{
+			name:     "terminal done",
+			lane:     projectKanbanLane{Title: "Done"},
+			terminal: true,
+			prepare: func(_ *DashboardData, card *projectKanbanCard) {
+				card.Stage = "Done"
+				card.RecentCompletion = true
+			},
+		},
+		{
+			name: "move disabled",
+			lane: projectKanbanLane{Title: "Todo"},
+			prepare: func(data *DashboardData, _ *projectKanbanCard) {
+				data.Snapshot.LastKnown = true
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := DashboardData{
+				Snapshot: telemetry.Snapshot{GeneratedAt: time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)},
+				Kanban: KanbanData{
+					Mode:               "integration",
+					CanMoveCards:       true,
+					AllowedTransitions: map[string][]string{"Todo": {"In Progress"}, "In Progress": {"Done"}},
+				},
+			}
+			card := projectKanbanCard{
+				Identifier:  "digitaldrywood/detent#1859",
+				IssueID:     "issue-1859",
+				IssueNumber: "#1859",
+				ProjectID:   "detent",
+				Title:       "Prioritize the pull request link",
+				Stage:       tt.lane.Title,
+				PRNumber:    1859,
+				PRURL:       prURL,
+				Movable:     true,
+			}
+			tt.prepare(&data, &card)
+
+			view := boardCardViewFromCard(data, tt.lane, card, tt.terminal, "fleet", "detent")
+			if view.MetaRight != prLabel {
+				t.Fatalf("MetaRight = %q, want %q", view.MetaRight, prLabel)
+			}
+			html := renderBoardComponent(t, boardCardView2(view))
+			for _, density := range []string{"cozy", "compact"} {
+				section := boardCardDensitySection(t, html, density)
+				for _, want := range []string{`href="` + prURL + `"`, `>` + prLabel + `</a>`} {
+					if !strings.Contains(section, want) {
+						t.Fatalf("%s card missing %q:\n%s", density, want, section)
+					}
+				}
+				if badge := strings.Index(section, `data-kanban-move-disabled-label`); badge >= 0 && strings.Index(section, prLabel) > badge {
+					t.Fatalf("%s card renders move-disabled metadata before %s:\n%s", density, prLabel, section)
+				}
+				if done := strings.Index(section, `aria-label="done"`); done >= 0 && strings.Index(section, prLabel) > done {
+					t.Fatalf("%s card renders done metadata before %s:\n%s", density, prLabel, section)
+				}
+			}
+		})
+	}
+}
+
 func TestBoardCardHeaderKeepsPullRequestAfterTruncatingMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -2066,6 +2154,20 @@ func renderBoardComponent(t *testing.T, component templ.Component) string {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()
+}
+
+func boardCardDensitySection(t *testing.T, html string, density string) string {
+	t.Helper()
+	marker := `data-board-card-content="` + density + `"`
+	start := strings.Index(html, marker)
+	if start < 0 {
+		t.Fatalf("card missing %s density content:\n%s", density, html)
+	}
+	section := html[start:]
+	if next := strings.Index(section[len(marker):], `data-board-card-content=`); next >= 0 {
+		section = section[:len(marker)+next]
+	}
+	return section
 }
 
 func TestBoardScopeSelectLinksProjectKanbanOnce(t *testing.T) {

@@ -46,6 +46,11 @@ test("card density changes rendered information and persists", async ({
   await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeVisible();
   await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeHidden();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeHidden();
+  await expect(
+    reviewCard
+      .locator('[data-board-card-content="compact"]')
+      .getByRole("link", { name: "PR #5290", exact: true }),
+  ).toBeVisible();
 
   await page.locator('[data-density-choice="comfy"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-density", "comfy");

@@ -22,6 +22,7 @@ func TestTrackerReferenceLink(t *testing.T) {
 				`href="https://github.com/digitaldrywood/detent/issues/1132"`,
 				`target="_blank"`,
 				`rel="noopener noreferrer"`,
+				`onclick="event.stopPropagation()"`,
 			},
 		},
 		{
