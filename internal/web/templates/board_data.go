@@ -1094,16 +1094,13 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		Running:           running,
 		Retrying:          retrying,
 		Waiting:           waiting,
-		// Done drives the green ✓; other terminal states (Cancelled, Closed)
-		// are terminal but not done, so they suppress meta without claiming
-		// success.
-		Done:     strings.EqualFold(lane.Title, "Done"),
-		Terminal: terminal,
-		Title:    card.Title,
-		State:    card.Stage,
-		Origin:   card.Origin,
-		Labels:   append([]string(nil), card.Labels...),
-		Effort:   strings.TrimSpace(card.RuntimeIdentity.ReasoningEffort.Value),
+		Done:              strings.EqualFold(lane.Title, "Done"),
+		Terminal:          terminal,
+		Title:             card.Title,
+		State:             card.Stage,
+		Origin:            card.Origin,
+		Labels:            append([]string(nil), card.Labels...),
+		Effort:            strings.TrimSpace(card.RuntimeIdentity.ReasoningEffort.Value),
 	}
 	if canDrag {
 		view.AllowedTargets = projectKanbanMoveTargetKeys(data, card)
@@ -1111,11 +1108,6 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	if card.PRNumber > 0 {
 		view.PRNumber = strconv.Itoa(card.PRNumber)
 		view.PRURL = card.PRURL
-	}
-	switch {
-	case view.Done || view.Terminal:
-		view.MetaRight = ""
-	case card.PRNumber > 0 && !view.Running:
 		view.MetaRight = "PR #" + strconv.Itoa(card.PRNumber)
 	}
 	if boardLaneShowsAge(lane.Title, view.Terminal) {

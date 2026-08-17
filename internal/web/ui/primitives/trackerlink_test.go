@@ -12,6 +12,7 @@ func TestTrackerReferenceLink(t *testing.T) {
 	tests := []struct {
 		name      string
 		url       string
+		isolated  bool
 		want      []string
 		forbidden []string
 	}{
@@ -23,6 +24,13 @@ func TestTrackerReferenceLink(t *testing.T) {
 				`target="_blank"`,
 				`rel="noopener noreferrer"`,
 			},
+			forbidden: []string{`onclick="event.stopPropagation()"`},
+		},
+		{
+			name:     "isolated linked reference",
+			url:      "https://github.com/digitaldrywood/detent/pull/1132",
+			isolated: true,
+			want:     []string{`onclick="event.stopPropagation()"`},
 		},
 		{
 			name:      "plain fallback",
@@ -41,7 +49,11 @@ func TestTrackerReferenceLink(t *testing.T) {
 			t.Parallel()
 
 			var output strings.Builder
-			if err := TrackerReferenceLink("DD-1132", tt.url, "font-mono").Render(context.Background(), &output); err != nil {
+			component := TrackerReferenceLink("DD-1132", tt.url, "font-mono")
+			if tt.isolated {
+				component = TrackerReferenceLinkIsolated("DD-1132", tt.url, "font-mono")
+			}
+			if err := component.Render(context.Background(), &output); err != nil {
 				t.Fatalf("Render() error = %v", err)
 			}
 			html := output.String()
