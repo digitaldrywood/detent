@@ -34,6 +34,8 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		}
 	}
 
+	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
+	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
 	for _, project := range cfg.Projects {
 		project.GlobalActiveHours = cfg.Global.ActiveHours
@@ -184,6 +186,8 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		}}
 	}
 
+	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
+	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		project.GlobalActiveHours = cfg.Global.ActiveHours
@@ -535,12 +539,22 @@ func checkDoctorProjectPause(
 
 	var resolver connector.IssueReferenceResolver
 	var projectConnector doctorAutoPromoteConnector
+	trackerRepository := workflow.Tracker.Repository
 	if strings.TrimSpace(project.PausedUntilIssue) != "" {
+		resolverWorkflow, resolution, err := resolveDoctorPauseReference(ctx, project, workflow, deps)
+		if err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorWarn,
+				Detail: fmt.Sprintf("project %s pause exit issue could not be checked: %v", id, err),
+				Hint:   "Fix the pause exit condition or tracker configuration, then rerun detent doctor.",
+			}, true
+		}
+		trackerRepository = resolution.Repository
 		if deps.autoPromoteConnector == nil {
 			deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
 		}
-		var err error
-		projectConnector, err = deps.autoPromoteConnector(workflow)
+		projectConnector, err = deps.autoPromoteConnector(resolverWorkflow)
 		if err != nil {
 			return doctorCheck{
 				Name:   name,
@@ -554,7 +568,7 @@ func checkDoctorProjectPause(
 		}
 	}
 
-	result, err := pause.Evaluate(ctx, project, now, workflow.Tracker.Repository, resolver)
+	result, err := pause.Evaluate(ctx, project, now, trackerRepository, resolver)
 	closeErr := closeDoctorAutoPromoteConnector(projectConnector)
 	if err != nil {
 		return doctorCheck{
@@ -586,6 +600,47 @@ func checkDoctorProjectPause(
 		detail += ": " + reason
 	}
 	return doctorCheck{Name: name, Status: doctorOK, Detail: detail}, true
+}
+
+func resolveDoctorPauseReference(
+	ctx context.Context,
+	project globalconfig.Project,
+	workflow workflowconfig.Config,
+	deps doctorDeps,
+) (workflowconfig.Config, pause.ReferenceResolution, error) {
+	projects := append([]globalconfig.Project(nil), deps.pauseProjects...)
+	if projectIndex(projects, project.ID) < 0 {
+		projects = append(projects, project)
+	}
+	trackers := make([]pause.Tracker, 0, len(projects))
+	workflows := make(map[string]workflowconfig.Config, len(projects))
+	for _, candidate := range projects {
+		candidateID := strings.TrimSpace(candidate.ID)
+		candidateWorkflow := workflow
+		if !strings.EqualFold(candidateID, strings.TrimSpace(project.ID)) {
+			loaded, err := loadDoctorProjectWorkflow(ctx, candidate, deps)
+			if err != nil {
+				continue
+			}
+			candidateWorkflow = loaded.Config
+		}
+		candidateWorkflow = doctorWorkflowConfigWithRuntimeGitHubToken(candidateWorkflow, deps.pauseGitHubToken)
+		workflows[strings.ToLower(candidateID)] = candidateWorkflow
+		trackers = append(trackers, pause.Tracker{
+			ProjectID:  candidateID,
+			Kind:       candidateWorkflow.Tracker.Kind,
+			Repository: candidateWorkflow.Tracker.Repository,
+		})
+	}
+	resolution, err := pause.ResolveReference(project.ID, project.PausedUntilIssue, trackers)
+	if err != nil {
+		return workflowconfig.Config{}, pause.ReferenceResolution{}, err
+	}
+	resolverWorkflow, ok := workflows[strings.ToLower(strings.TrimSpace(resolution.ProjectID))]
+	if !ok {
+		return workflowconfig.Config{}, pause.ReferenceResolution{}, fmt.Errorf("resolver project %s workflow is unavailable", resolution.ProjectID)
+	}
+	return resolverWorkflow, resolution, nil
 }
 
 func doctorProjectDefinitionFailureCheck(id string, project globalconfig.Project, err error) doctorCheck {

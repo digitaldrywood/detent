@@ -17,6 +17,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -2112,6 +2113,84 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	}
 	if len(got.Projects[0].GlobalKnowledge.Sources) != 1 || got.Projects[0].GlobalKnowledge.Sources[0].Name != "Global" {
 		t.Fatalf("Projects[0].GlobalKnowledge = %#v, want global source", got.Projects[0].GlobalKnowledge)
+	}
+}
+
+func TestManagerValidatesPauseExitTrackerCompatibility(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		projects []globalconfig.Project
+		trackers map[string]workflowconfig.Tracker
+		wantErr  string
+	}{
+		{
+			name: "local sqlite project rejects unmatched GitHub reference",
+			projects: []globalconfig.Project{{
+				ID:               "video",
+				Paused:           true,
+				PausedUntilIssue: "digitaldrywood/video-studio#147",
+			}},
+			trackers: map[string]workflowconfig.Tracker{
+				"video": {Kind: workflowconfig.TrackerLocalSQLite, LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
+			},
+			wantErr: "no configured project tracker can resolve GitHub pause exit issue",
+		},
+		{
+			name: "cross project reference uses GitHub owner",
+			projects: []globalconfig.Project{
+				{ID: "video", Paused: true, PausedUntilIssue: "digitaldrywood/video-studio#147"},
+				{ID: "video-studio", Paused: true},
+			},
+			trackers: map[string]workflowconfig.Tracker{
+				"video":        {Kind: workflowconfig.TrackerLocalSQLite, LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
+				"video-studio": {Kind: workflowconfig.TrackerGitHub, Repository: "digitaldrywood/video-studio"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, err := project.NewManager(project.ManagerConfig{Projects: tt.projects}, project.ManagerDependencies{
+				ProjectFactory: func(projectConfig globalconfig.Project) (*project.Project, error) {
+					workflowCfg := workflowconfig.Default()
+					tracker := tt.trackers[projectConfig.ID]
+					workflowCfg.Tracker.Kind = tracker.Kind
+					workflowCfg.Tracker.Repository = tracker.Repository
+					workflowCfg.Tracker.LocalSQLite = tracker.LocalSQLite
+					if tracker.Kind == workflowconfig.TrackerGitHub {
+						workflowCfg.Tracker.APIKey = "test-token"
+						workflowCfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+						workflowCfg.Tracker.StatusLabelPrefix = "detent:"
+					}
+					return project.New(project.Config{
+						Project:  projectConfig,
+						Workflow: workflowconfig.Workflow{Config: workflowCfg},
+					}, project.Dependencies{
+						Connector: memory.New(memory.Config{}),
+						Runner:    blockingRunner{},
+					})
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			err = manager.Start(ctx)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Start() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+		})
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/pause"
 )
 
 func TestCheckPauseExitConditionsAutoUnpausesEligibleProjects(t *testing.T) {
@@ -132,6 +133,160 @@ func TestCheckPauseExitConditionsLeavesOpenIssuePaused(t *testing.T) {
 
 	if wrote {
 		t.Fatal("pause monitor wrote config for an open exit issue")
+	}
+}
+
+func TestCheckPauseExitConditionsUsesOwningProjectConnector(t *testing.T) {
+	t.Parallel()
+
+	cfg := globalconfig.Config{Projects: []globalconfig.Project{
+		{
+			ID:               "digitaldrywood-video",
+			Paused:           true,
+			PausedUntilIssue: "digitaldrywood/video-studio#147",
+		},
+		{ID: "video-studio"},
+	}}
+	localConnector := memory.New(memory.Config{})
+	githubConnector := memory.New(memory.Config{Issues: []connector.Issue{{
+		Identifier: "digitaldrywood/video-studio#147",
+		Closed:     true,
+	}}})
+	current := clonePauseMonitorConfig(cfg)
+	var connectorProjects []string
+
+	checkPauseExitConditions(context.Background(), pauseMonitorDeps{
+		read: func() (globalconfig.Config, error) {
+			return clonePauseMonitorConfig(current), nil
+		},
+		write: func(updated globalconfig.Config) error {
+			current = clonePauseMonitorConfig(updated)
+			return nil
+		},
+		unpause: func(context.Context, string) error {
+			return nil
+		},
+		connectorFor: func(projectID string) connector.Connector {
+			connectorProjects = append(connectorProjects, projectID)
+			if projectID == "video-studio" {
+				return githubConnector
+			}
+			return localConnector
+		},
+		repositoryFor: func(projectID string) string {
+			if projectID == "video-studio" {
+				return "digitaldrywood/video-studio"
+			}
+			return ""
+		},
+		now:    func() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) },
+		logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
+
+	if current.Projects[0].Paused {
+		t.Fatal("project remained paused after the owning project's issue closed")
+	}
+	if !reflect.DeepEqual(connectorProjects, []string{"video-studio"}) {
+		t.Fatalf("connector projects = %#v, want owning project video-studio", connectorProjects)
+	}
+}
+
+func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		issues        []connector.Issue
+		ticks         int
+		wantPresent   bool
+		wantEvaluable bool
+		wantFailures  int
+		wantAttention bool
+		wantError     string
+	}{
+		{
+			name:          "consecutive not found failures escalate",
+			ticks:         pause.DefaultEvaluationFailureThreshold,
+			wantPresent:   true,
+			wantFailures:  pause.DefaultEvaluationFailureThreshold,
+			wantAttention: true,
+			wantError:     "pause exit issue digitaldrywood/detent#1499 was not found",
+		},
+		{
+			name: "open issue remains healthy",
+			issues: []connector.Issue{{
+				Identifier: "digitaldrywood/detent#1499",
+			}},
+			ticks:         pause.DefaultEvaluationFailureThreshold + 1,
+			wantPresent:   true,
+			wantEvaluable: true,
+		},
+		{
+			name: "closed issue clears evaluation health on first tick",
+			issues: []connector.Issue{{
+				Identifier: "digitaldrywood/detent#1499",
+				Closed:     true,
+			}},
+			ticks: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := globalconfig.Config{Projects: []globalconfig.Project{{
+				ID:               "detent",
+				Paused:           true,
+				PausedUntilIssue: "digitaldrywood/detent#1499",
+			}}}
+			current := clonePauseMonitorConfig(cfg)
+			projectConnector := memory.New(memory.Config{Issues: tt.issues})
+			statuses := map[string]pause.ExitStatus{}
+			deps := pauseMonitorDeps{
+				read: func() (globalconfig.Config, error) {
+					return clonePauseMonitorConfig(current), nil
+				},
+				write: func(updated globalconfig.Config) error {
+					current = clonePauseMonitorConfig(updated)
+					return nil
+				},
+				unpause: func(context.Context, string) error { return nil },
+				connectorFor: func(string) connector.Connector {
+					return projectConnector
+				},
+				trackerKindFor: func(string) string { return "memory" },
+				pauseStatus: func(projectID string) (pause.ExitStatus, bool) {
+					status, ok := statuses[projectID]
+					return status, ok
+				},
+				setPauseStatus: func(status pause.ExitStatus) {
+					statuses[status.ProjectID] = status
+				},
+				clearPauseStatus: func(projectID string) {
+					delete(statuses, projectID)
+				},
+				now:    func() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) },
+				logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+			}
+			for range tt.ticks {
+				checkPauseExitConditions(context.Background(), deps)
+			}
+
+			status, ok := statuses["detent"]
+			if ok != tt.wantPresent {
+				t.Fatalf("pause status present = %t, want %t: %#v", ok, tt.wantPresent, status)
+			}
+			if !ok {
+				return
+			}
+			if status.Evaluable != tt.wantEvaluable || status.ConsecutiveFailures != tt.wantFailures || status.NeedsAttention != tt.wantAttention {
+				t.Fatalf("pause status = %#v, want evaluable=%t failures=%d attention=%t", status, tt.wantEvaluable, tt.wantFailures, tt.wantAttention)
+			}
+			if tt.wantError != "" && !strings.Contains(status.LastError, tt.wantError) {
+				t.Fatalf("pause status error = %q, want substring %q", status.LastError, tt.wantError)
+			}
+		})
 	}
 }
 

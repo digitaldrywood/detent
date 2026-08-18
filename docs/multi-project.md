@@ -229,6 +229,14 @@ when the issue closes or the timestamp passes. The CLI records `paused_at` for
 doctor diagnostics. Hand-edited legacy `paused: true` entries remain valid
 without pause metadata or an automatic exit condition.
 
+An issue reference may name another configured project. Detent resolves a
+GitHub reference such as `digitaldrywood/website#42` through the configured
+project whose tracker owns that repository, even when the paused project uses
+a different tracker. Startup and live config reload reject references for
+which no compatible configured tracker exists. Repeated runtime evaluation
+failures appear in fleet health and on the board; an open issue that evaluates
+successfully remains a normal, quiet pause.
+
 Paused projects do not run workflow watchers or periodic workflow reconciliation.
 `detent unpause <id>` synchronously reloads the project's current `WORKFLOW.md`
 before dispatch resumes, so edits made while paused take effect on unpause. If

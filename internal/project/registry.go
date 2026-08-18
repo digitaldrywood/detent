@@ -6,6 +6,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -25,6 +26,7 @@ type Health struct {
 	LastErrorAt  time.Time
 	NextRetryAt  time.Time
 	RetryStopped bool
+	PauseExit    *pause.ExitStatus
 }
 
 type pendingProject struct {
@@ -33,15 +35,17 @@ type pendingProject struct {
 }
 
 type Registry struct {
-	mu       sync.RWMutex
-	projects map[ID]*Project
-	pending  map[ID]pendingProject
+	mu        sync.RWMutex
+	projects  map[ID]*Project
+	pending   map[ID]pendingProject
+	pauseExit map[ID]pause.ExitStatus
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		projects: map[ID]*Project{},
-		pending:  map[ID]pendingProject{},
+		projects:  map[ID]*Project{},
+		pending:   map[ID]pendingProject{},
+		pauseExit: map[ID]pause.ExitStatus{},
 	}
 }
 
@@ -115,6 +119,7 @@ func (r *Registry) Delete(id ID) bool {
 
 	delete(r.projects, id)
 	delete(r.pending, id)
+	delete(r.pauseExit, id)
 	return true
 }
 
@@ -152,6 +157,10 @@ func (r *Registry) Health() []Health {
 	for id, pendingProject := range r.pending {
 		pending[id] = pendingProject
 	}
+	pauseExits := make(map[ID]pause.ExitStatus, len(r.pauseExit))
+	for id, status := range r.pauseExit {
+		pauseExits[id] = status
+	}
 	r.mu.RUnlock()
 
 	ids := make([]ID, 0, len(projects)+len(pending))
@@ -166,12 +175,53 @@ func (r *Registry) Health() []Health {
 	health := make([]Health, 0, len(ids))
 	for _, id := range ids {
 		if trackedProject := projects[id]; trackedProject != nil {
-			health = append(health, projectHealth(trackedProject))
+			item := projectHealth(trackedProject)
+			if status, ok := pauseExits[id]; ok {
+				item.PauseExit = &status
+			}
+			health = append(health, item)
 			continue
 		}
-		health = append(health, pendingHealth(pending[id]))
+		item := pendingHealth(pending[id])
+		if status, ok := pauseExits[id]; ok {
+			item.PauseExit = &status
+		}
+		health = append(health, item)
 	}
 	return health
+}
+
+func (r *Registry) PauseExitStatus(projectID string) (pause.ExitStatus, bool) {
+	if r == nil {
+		return pause.ExitStatus{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	status, ok := r.pauseExit[normalizeProjectID(ID(projectID))]
+	return status, ok
+}
+
+func (r *Registry) SetPauseExitStatus(status pause.ExitStatus) {
+	if r == nil {
+		return
+	}
+	id := normalizeProjectID(ID(status.ProjectID))
+	if id == "" {
+		return
+	}
+	status.ProjectID = string(id)
+	r.mu.Lock()
+	r.pauseExit[id] = status
+	r.mu.Unlock()
+}
+
+func (r *Registry) ClearPauseExitStatus(projectID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.pauseExit, normalizeProjectID(ID(projectID)))
+	r.mu.Unlock()
 }
 
 func (r *Registry) TickLiveness(now time.Time) []telemetry.TickLiveness {

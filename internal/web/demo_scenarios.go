@@ -437,6 +437,13 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 	if !ok {
 		return templates.DashboardData{}, false
 	}
+	if scenario.Variant == "paused" {
+		project.PauseReason = "waiting for the release train"
+		project.PauseIssue = "digitaldrywood/release-train#314"
+		project.PauseExitEvaluated = true
+		project.PauseExitEvaluable = true
+		project.PauseExitResolver = "release-train"
+	}
 	scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{
 		ID:          project.ID,
 		DisplayName: project.Name,
@@ -447,24 +454,28 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 	scoped = applyProjectBudgetSnapshot(scoped, project)
 	instanceName := s.instanceName()
 	data := templates.DashboardData{
-		Title:              instancePageTitle(instanceName, project.Name+" - Detent"),
-		ApplicationName:    applicationName(instanceName),
-		InstanceName:       instanceName,
-		Version:            s.version,
-		Build:              s.build,
-		ConnectorName:      s.connector.Name(),
-		DashboardURL:       s.dashboardURL,
-		Snapshot:           scoped,
-		Projects:           projects,
-		Kanban:             demoKanbanData(scenario, project.ID),
-		Assets:             s.assets.templatePaths(),
-		ActiveNav:          "project",
-		ProjectID:          project.ID,
-		ProjectName:        project.Name,
-		ProjectPaused:      project.Paused,
-		ProjectPauseReason: project.PauseReason,
-		ProjectPauseIssue:  project.PauseIssue,
-		ProjectPauseUntil:  project.PauseUntil,
+		Title:                     instancePageTitle(instanceName, project.Name+" - Detent"),
+		ApplicationName:           applicationName(instanceName),
+		InstanceName:              instanceName,
+		Version:                   s.version,
+		Build:                     s.build,
+		ConnectorName:             s.connector.Name(),
+		DashboardURL:              s.dashboardURL,
+		Snapshot:                  scoped,
+		Projects:                  projects,
+		Kanban:                    demoKanbanData(scenario, project.ID),
+		Assets:                    s.assets.templatePaths(),
+		ActiveNav:                 "project",
+		ProjectID:                 project.ID,
+		ProjectName:               project.Name,
+		ProjectPaused:             project.Paused,
+		ProjectPauseReason:        project.PauseReason,
+		ProjectPauseIssue:         project.PauseIssue,
+		ProjectPauseUntil:         project.PauseUntil,
+		ProjectPauseExitEvaluated: project.PauseExitEvaluated,
+		ProjectPauseExitEvaluable: project.PauseExitEvaluable,
+		ProjectPauseExitError:     project.PauseExitError,
+		ProjectPauseExitResolver:  project.PauseExitResolver,
 	}
 	data.EfficiencyReceipts = demoEfficiencyReceipts(scoped)
 	return data, true

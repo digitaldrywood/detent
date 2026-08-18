@@ -171,6 +171,14 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			PerDayMaxUSD:   trackedProject.Workflow().Config.Budget.PerDayMaxUSD,
 			PerIssueMaxUSD: trackedProject.Workflow().Config.Budget.PerIssueMaxUSD,
 		}
+		if status, ok := s.registry.PauseExitStatus(id); ok {
+			configuredProject := configured[id]
+			configuredProject.PauseExitEvaluated = !status.EvaluatedAt.IsZero()
+			configuredProject.PauseExitEvaluable = status.Evaluable
+			configuredProject.PauseExitError = status.LastError
+			configuredProject.PauseExitResolver = status.ResolverProjectID
+			configured[id] = configuredProject
+		}
 	}
 
 	seen := map[string]struct{}{}
@@ -187,6 +195,10 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			projects[i].PauseReason = configuredProject.PauseReason
 			projects[i].PauseIssue = configuredProject.PauseIssue
 			projects[i].PauseUntil = configuredProject.PauseUntil
+			projects[i].PauseExitEvaluated = configuredProject.PauseExitEvaluated
+			projects[i].PauseExitEvaluable = configuredProject.PauseExitEvaluable
+			projects[i].PauseExitError = configuredProject.PauseExitError
+			projects[i].PauseExitResolver = configuredProject.PauseExitResolver
 			projects[i].ActiveHours = configuredProject.ActiveHours
 			projects[i].BudgetEnabled = configuredProject.BudgetEnabled
 			projects[i].PerDayMaxUSD = configuredProject.PerDayMaxUSD
