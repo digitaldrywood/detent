@@ -731,54 +731,54 @@ func checkDoctorWorkflowRuntimeLint(ctx context.Context, projectID string, workf
 	return checks
 }
 
-func doctorWaitStatusIncidents(ctx context.Context, db doctorTelemetryStore, projectID string, cfg workflowconfig.Config, now time.Time) ([]doctorWaitStatusIncident, error) {
-	rows, err := db.QueryContext(ctx, `
-WITH project_decisions AS (
+const doctorWaitStatusIncidentsQuery = `
+WITH issue_summaries AS (
   SELECT
-    id,
     COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned') AS issue_key,
-    COALESCE(lane, '') AS lane,
-    COALESCE(result, '') AS result,
-    COALESCE(reason, '') AS reason,
-    COALESCE(attempt_number, 0) AS attempt_number,
-    decision_at
+    MAX(id) AS latest_id,
+    MAX(CASE
+      WHEN COALESCE(result, '') != 'skipped'
+        OR COALESCE(reason, '') != 'artifact_gate_wait_status'
+        OR COALESCE(attempt_number, 0) != 0
+      THEN id
+      ELSE 0
+    END) AS reset_id
   FROM scheduler_decisions
   WHERE project_id = ?
     AND decision_at >= ?
-), ranked AS (
-  SELECT
-    id,
-    issue_key,
-    lane,
-    result,
-    reason,
-    attempt_number,
-    decision_at,
-    ROW_NUMBER() OVER (PARTITION BY issue_key ORDER BY id DESC) AS latest_rank,
-    MAX(CASE WHEN result != 'skipped' OR reason != 'artifact_gate_wait_status' OR attempt_number != 0 THEN id ELSE 0 END)
-      OVER (PARTITION BY issue_key) AS reset_id
-  FROM project_decisions
+  GROUP BY issue_key
 ), active_issues AS (
-  SELECT issue_key, lane, reset_id
-  FROM ranked
-  WHERE latest_rank = 1
-    AND result = 'skipped'
-    AND reason = 'artifact_gate_wait_status'
-    AND attempt_number = 0
+  SELECT
+    summaries.issue_key,
+    COALESCE(latest.lane, '') AS lane,
+    summaries.reset_id
+  FROM issue_summaries AS summaries
+  JOIN scheduler_decisions AS latest ON latest.id = summaries.latest_id
+  WHERE COALESCE(latest.result, '') = 'skipped'
+    AND COALESCE(latest.reason, '') = 'artifact_gate_wait_status'
+    AND COALESCE(latest.attempt_number, 0) = 0
 )
 SELECT
   active_issues.issue_key,
   active_issues.lane,
-  MIN(ranked.decision_at),
-  MAX(ranked.decision_at),
+  MIN(streak.decision_at),
+  MAX(streak.decision_at),
   COUNT(*)
 FROM active_issues
-JOIN ranked ON ranked.issue_key = active_issues.issue_key
-WHERE ranked.id > active_issues.reset_id
-  AND ranked.result = 'skipped'
-  AND ranked.reason = 'artifact_gate_wait_status'
-  AND ranked.attempt_number = 0
-GROUP BY active_issues.issue_key, active_issues.lane`, strings.TrimSpace(projectID), now.Add(-doctorWorkflowWaitStatusWindow).UTC().Format(time.RFC3339Nano))
+JOIN scheduler_decisions AS streak
+  ON COALESCE(NULLIF(streak.identifier, ''), NULLIF(streak.issue_id, ''), NULLIF(streak.issue_url, ''), 'unassigned') = active_issues.issue_key
+  AND streak.id > active_issues.reset_id
+WHERE streak.project_id = ?
+  AND streak.decision_at >= ?
+  AND COALESCE(streak.result, '') = 'skipped'
+  AND COALESCE(streak.reason, '') = 'artifact_gate_wait_status'
+  AND COALESCE(streak.attempt_number, 0) = 0
+GROUP BY active_issues.issue_key, active_issues.lane`
+
+func doctorWaitStatusIncidents(ctx context.Context, db doctorTelemetryStore, projectID string, cfg workflowconfig.Config, now time.Time) ([]doctorWaitStatusIncident, error) {
+	projectID = strings.TrimSpace(projectID)
+	cutoff := now.Add(-doctorWorkflowWaitStatusWindow).UTC().Format(time.RFC3339Nano)
+	rows, err := db.QueryContext(ctx, doctorWaitStatusIncidentsQuery, projectID, cutoff, projectID, cutoff)
 	if err != nil {
 		return nil, err
 	}
