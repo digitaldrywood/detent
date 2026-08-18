@@ -230,11 +230,57 @@ func TestDefaultConfig(t *testing.T) {
 	if got := cfg.Global.Startup["max_spawn_per_second"]; got != 2 {
 		t.Fatalf("Global.Startup[max_spawn_per_second] = %v, want 2", got)
 	}
+	if cfg.Global.Memory.MaxAgentRSSBytes != DefaultMaxAgentRSSBytes ||
+		cfg.Global.Memory.PressureSomeAvg60Threshold != DefaultMemoryPressureSomeAvg60Threshold ||
+		cfg.Global.Memory.PollIntervalMS != DefaultMemoryPollIntervalMS {
+		t.Fatalf("Global.Memory = %#v, want defaults", cfg.Global.Memory)
+	}
 	if cfg.Global.Identity.Configured() {
 		t.Fatalf("Global.Identity = %#v, want omitted default", cfg.Global.Identity)
 	}
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("Projects = %#v, want empty", cfg.Projects)
+	}
+}
+
+func TestReadMemorySettingsAndProjectOverride(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  memory:
+    max_agent_rss_bytes: 4294967296
+    pressure_some_avg60_threshold: 12.5
+    poll_interval_ms: 250
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 5
+    priority: 50
+    memory:
+      max_agent_rss_bytes: 2147483648
+`)
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	wantGlobal := Memory{MaxAgentRSSBytes: 4294967296, PressureSomeAvg60Threshold: 12.5, PollIntervalMS: 250}
+	if cfg.Global.Memory != wantGlobal {
+		t.Fatalf("Global.Memory = %#v, want %#v", cfg.Global.Memory, wantGlobal)
+	}
+	project := cfg.Projects[0]
+	project.GlobalMemory = cfg.Global.Memory
+	wantProject := wantGlobal
+	wantProject.MaxAgentRSSBytes = 2147483648
+	if got := project.EffectiveMemory(); got != wantProject {
+		t.Fatalf("EffectiveMemory() = %#v, want %#v", got, wantProject)
 	}
 }
 
@@ -559,6 +605,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 			},
 			FairShare: map[string]any{"half_life": "30m"},
 			Startup:   map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+			Memory:    defaultSettings().Memory,
 			Identity: Identity{
 				Name:          "release-captain",
 				GitHubLogin:   "detent-bot",
@@ -1400,6 +1447,33 @@ projects: []
 `,
 			want: []string{
 				"instance_name: must be a single line",
+			},
+		},
+		{
+			name: "invalid memory settings",
+			raw: `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  memory:
+    max_agent_rss_bytes: 0
+    pressure_some_avg60_threshold: -1
+    poll_interval_ms: fast
+projects:
+  - id: detent
+    workflow: ` + paths.workflow + `
+    workdir: ` + paths.workdir + `
+    weight: 5
+    priority: 50
+    memory:
+      max_agent_rss_bytes: -1
+`,
+			want: []string{
+				"global.memory.max_agent_rss_bytes: must be a positive integer",
+				"global.memory.pressure_some_avg60_threshold: must be a positive number",
+				"global.memory.poll_interval_ms: must be a positive integer",
+				"projects[0].memory.max_agent_rss_bytes: must be a positive integer",
 			},
 		},
 		{

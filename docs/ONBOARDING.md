@@ -2934,6 +2934,24 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    final backstop. Reject worker launch wrappers that double-fork or move the
    worker into another cgroup.
 
+   On a shared Linux host, install a `detent.service` drop-in with host-specific
+   `MemoryHigh` and `MemoryMax` values. Size them for Detent's aggregate worker
+   footprint while preserving memory for unrelated workloads, and keep
+   `MemoryMax` above `MemoryHigh`. As a starting point on a 32 GiB host partly
+   reserved for other work:
+
+   ```ini
+   [Service]
+   MemoryHigh=24G
+   MemoryMax=28G
+   ```
+
+   Use `systemctl --user edit detent.service`, reload systemd, and restart only
+   during an approved maintenance window. Confirm the effective limits with
+   `systemctl --user show detent.service -p MemoryHigh -p MemoryMax`. The cgroup
+   limits are defense in depth for the whole service; Detent's per-agent RSS
+   ceiling and memory-pressure admission control remain the primary controls.
+
    When the project defines `hooks.after_create` or other bootstrap hooks,
    dry-run that hook or the equivalent repo bootstrap script from an isolated
    throwaway worktree with the same service PATH before moving an issue to

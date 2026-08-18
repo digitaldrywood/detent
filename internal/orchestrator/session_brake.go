@@ -70,6 +70,8 @@ func (o *Orchestrator) handleSessionBrake(
 			"elapsed", brake.Elapsed,
 			"turns", brake.Turns,
 			"tokens", brake.Tokens,
+			"rss_bytes", brake.RSSBytes,
+			"rss_ceiling_bytes", brake.RSSCeilingBytes,
 			"target_state", targetState,
 			"resumable", resumable,
 		)
@@ -78,7 +80,11 @@ func (o *Orchestrator) handleSessionBrake(
 	terminalState := store.WorkAttemptTerminalTimedOut
 	phase := "timed_out"
 	statusMessage := "agent session exceeded its configured catastrophe bound"
-	if errors.Is(brake, runpkg.ErrSessionNoProgress) {
+	if errors.Is(brake, runpkg.ErrSessionMemoryCeilingExceeded) {
+		terminalState = store.WorkAttemptTerminalMemoryCeiling
+		phase = runpkg.FinalStateMemoryCeilingExceeded
+		statusMessage = "agent session stopped after exceeding its memory ceiling"
+	} else if errors.Is(brake, runpkg.ErrSessionNoProgress) {
 		terminalState = store.WorkAttemptTerminalNoProgress
 		phase = "no_progress"
 		statusMessage = "agent session stopped after no work-product progress"
@@ -227,6 +233,8 @@ func sessionBrakeMetadata(brake *runpkg.SessionBrakeError, targetState string, r
 			"elapsed_seconds":     brake.Elapsed.Seconds(),
 			"turns":               brake.Turns,
 			"tokens":              brake.Tokens,
+			"rss_bytes":           brake.RSSBytes,
+			"rss_ceiling_bytes":   brake.RSSCeilingBytes,
 			"configured_duration": brake.Limit.String(),
 			"configured_turns":    brake.MaxTurns,
 			"last_progress_at":    brake.LastProgressAt.UTC().Format(time.RFC3339Nano),
@@ -249,6 +257,12 @@ func sessionBrakeComment(brake *runpkg.SessionBrakeError, targetState string, re
 	body.WriteString(strconv.Itoa(brake.Turns))
 	body.WriteString("\n- tokens: ")
 	body.WriteString(strconv.FormatInt(brake.Tokens, 10))
+	if brake.RSSCeilingBytes > 0 {
+		body.WriteString("\n- rss_bytes: ")
+		body.WriteString(strconv.FormatUint(brake.RSSBytes, 10))
+		body.WriteString("\n- rss_ceiling_bytes: ")
+		body.WriteString(strconv.FormatUint(brake.RSSCeilingBytes, 10))
+	}
 	body.WriteString("\n- resumable: ")
 	body.WriteString(strconv.FormatBool(resumable))
 	body.WriteString("\n- parked_state: ")

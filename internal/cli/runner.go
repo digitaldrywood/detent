@@ -86,7 +86,7 @@ func withRunnerFactory(
 		run := deps.Runner
 		if run == nil {
 			var err error
-			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, sessionStore, deps.Logger)
+			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger)
 			if err != nil {
 				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 			}
@@ -111,6 +111,7 @@ func buildRunner(
 	workflow workflowconfig.Workflow,
 	projectID string,
 	projectWorkdir string,
+	memory globalconfig.Memory,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 ) (orchestrator.Runner, error) {
@@ -139,6 +140,8 @@ func buildRunner(
 		Store:               sessionStore,
 		Pricing:             pricing,
 		BudgetGuardBuilder:  budgetGuardBuilder,
+		MaxAgentRSSBytes:    uint64(memory.MaxAgentRSSBytes),
+		RSSPollInterval:     time.Duration(memory.PollIntervalMS) * time.Millisecond,
 		Logger:              logger,
 	})
 	if err != nil {
@@ -962,6 +965,9 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Tokens.RuntimeSeconds += next.Tokens.RuntimeSeconds
 
 	current.RateLimits = mergeFleetRateLimits(current.RateLimits, next.RateLimits)
+	if current.MemoryPressure.ObservedAt.IsZero() || next.MemoryPressure.ObservedAt.After(current.MemoryPressure.ObservedAt) {
+		current.MemoryPressure = next.MemoryPressure
+	}
 	return current
 }
 

@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -277,10 +278,17 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
+	managerConfig := managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get())
+	dispatchPacer := runnerpkg.NewStartupDispatchPacer(runnerpkg.StartupDispatchPacerConfig{
+		MaxStartsPerSecond: managerConfig.Startup.MaxSpawnPerSecond,
+		Jitter:             managerConfig.Startup.Jitter,
+		RampStarts:         startupDispatchRampStarts(globalDispatchGate),
+	})
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:             events,
 		Logger:             logger,
 		GlobalDispatchGate: globalDispatchGate,
+		DispatchPacer:      dispatchPacer,
 		WorkflowMetrics:    runtimeStore,
 		Efficiency:         runtimeStore,
 		WorkAttempts:       runtimeStore,
@@ -300,10 +308,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	managerDependencies.ProjectFactory = projectFactory
 	managerDependencies.Events = events
 	managerDependencies.Logger = logger
-	manager, err := project.NewManager(
-		managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get()),
-		managerDependencies,
-	)
+	manager, err := project.NewManager(managerConfig, managerDependencies)
 	if err != nil {
 		return err
 	}
@@ -1315,6 +1320,21 @@ func buildGlobalDispatchPools(
 		return nil, fmt.Errorf("create agent pools: %w", err)
 	}
 	return registry, nil
+}
+
+func startupDispatchRampStarts(registry *scheduler.PoolRegistry) int {
+	if registry == nil {
+		return 1
+	}
+	total := 0
+	for _, pool := range registry.PoolSnapshots() {
+		capacity := pool.BurstTo
+		if capacity <= 0 {
+			capacity = pool.Capacity
+		}
+		total += capacity
+	}
+	return max(total, 1)
 }
 
 func globalPoolConfigs(

@@ -24,6 +24,7 @@ const (
 	SessionBrakeReasonDuration   = "session_duration_exceeded"
 	SessionBrakeReasonTurnLimit  = "session_turn_limit_exceeded"
 	SessionBrakeReasonNoProgress = "session_no_progress"
+	SessionBrakeReasonMemory     = FinalStateMemoryCeilingExceeded
 )
 
 var (
@@ -39,6 +40,8 @@ type SessionBrakeError struct {
 	Elapsed           time.Duration
 	Turns             int
 	Tokens            int64
+	RSSBytes          uint64
+	RSSCeilingBytes   uint64
 	LastProgressAt    time.Time
 	WorkspaceProgress string
 	WorkpadProgress   string
@@ -85,6 +88,8 @@ func (e *SessionBrakeError) Is(target error) bool {
 		return e.Reason == SessionBrakeReasonTurnLimit
 	case ErrSessionNoProgress:
 		return e.Reason == SessionBrakeReasonNoProgress
+	case ErrSessionMemoryCeilingExceeded:
+		return e.Reason == SessionBrakeReasonMemory
 	default:
 		return errors.Is(e.cause, target)
 	}
@@ -383,6 +388,19 @@ func (c *sessionBrakeController) newErrorLocked(reason string, cause error, limi
 	return brake
 }
 
+func (c *sessionBrakeController) memoryCeiling(err *SessionMemoryCeilingError, at time.Time) *SessionBrakeError {
+	if c == nil || err == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	brake := c.newErrorLocked(SessionBrakeReasonMemory, err, 0, at)
+	brake.RSSBytes = err.RSSBytes
+	brake.RSSCeilingBytes = err.CeilingBytes
+	brake.CauseFingerprint = sessionBrakeFingerprint(brake)
+	return brake
+}
+
 func (c *sessionBrakeController) resultDiffStats() DiffStats {
 	if c == nil {
 		return DiffStats{}
@@ -434,6 +452,7 @@ func sessionBrakeFingerprint(brake *SessionBrakeError) string {
 		strings.TrimSpace(brake.Reason),
 		brake.Limit.String(),
 		strconv.Itoa(brake.MaxTurns),
+		strconv.FormatUint(brake.RSSCeilingBytes, 10),
 		strings.TrimSpace(brake.WorkspaceProgress),
 		strings.TrimSpace(brake.WorkpadProgress),
 		strconv.Itoa(brake.FilesChanged),

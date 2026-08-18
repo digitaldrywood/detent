@@ -1097,6 +1097,8 @@ func (s *Server) health(c echo.Context) error {
 	notificationFailures := []healthnotify.Failure{}
 	refreshFailures := []telemetry.RefreshFailure{}
 	refresh := telemetry.Refresh{}
+	memoryPressure := telemetry.MemoryPressure{}
+	agentMemory := []healthAgentMemory{}
 	snapshotGeneratedAt := time.Time{}
 	snapshotAgeSeconds := int64(0)
 	if s.hub != nil {
@@ -1106,6 +1108,16 @@ func (s *Server) health(c echo.Context) error {
 			snapshotGeneratedAt = snapshot.GeneratedAt
 			snapshotAgeSeconds = snapshot.AgeSeconds(now)
 			refresh = snapshot.Refresh
+			memoryPressure = snapshot.MemoryPressure
+			for _, running := range snapshot.Running {
+				agentMemory = append(agentMemory, healthAgentMemory{
+					ProjectID:       running.ProjectID,
+					IssueIdentifier: running.Identifier,
+					RSSBytes:        running.RSSBytes,
+					RSSCeilingBytes: running.RSSCeilingBytes,
+					ObservedAt:      running.RSSObservedAt,
+				})
+			}
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
@@ -1151,7 +1163,7 @@ func (s *Server) health(c echo.Context) error {
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1184,6 +1196,8 @@ func (s *Server) health(c echo.Context) error {
 		RefreshFailures:      refreshFailures,
 		Projects:             projectHealth,
 		Refresh:              refresh,
+		MemoryPressure:       memoryPressure,
+		AgentMemory:          agentMemory,
 		SnapshotGeneratedAt:  snapshotGeneratedAt,
 		SnapshotAgeSeconds:   snapshotAgeSeconds,
 		TickLiveness:         tickLiveness,
@@ -1545,9 +1559,19 @@ type healthResponse struct {
 	RefreshFailures      []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
 	Projects             []healthProject              `json:"projects,omitempty"`
 	Refresh              telemetry.Refresh            `json:"refresh"`
+	MemoryPressure       telemetry.MemoryPressure     `json:"memory_pressure"`
+	AgentMemory          []healthAgentMemory          `json:"agent_memory"`
 	SnapshotGeneratedAt  time.Time                    `json:"snapshot_generated_at,omitzero"`
 	SnapshotAgeSeconds   int64                        `json:"snapshot_age_seconds"`
 	TickLiveness         []telemetry.TickLiveness     `json:"tick_liveness"`
+}
+
+type healthAgentMemory struct {
+	ProjectID       string    `json:"project_id,omitempty"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	RSSBytes        uint64    `json:"rss_bytes"`
+	RSSCeilingBytes uint64    `json:"rss_ceiling_bytes"`
+	ObservedAt      time.Time `json:"observed_at,omitzero"`
 }
 
 type healthEnvironment struct {

@@ -6856,6 +6856,59 @@ func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 	}
 }
 
+func TestHealthAndStateReportMemoryPressureAndAgentRSS(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	now := time.Date(2026, 8, 18, 17, 0, 0, 0, time.UTC)
+	observedAt := now.Add(-time.Second)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		MemoryPressure: telemetry.MemoryPressure{
+			Supported:    true,
+			Some:         telemetry.PressureAverages{Avg60: 12.5},
+			SomeAvg60Max: 10,
+			DispatchHeld: true,
+			ObservedAt:   observedAt,
+		},
+		Running: []telemetry.Running{{
+			Issue:           telemetry.Issue{ProjectID: "detent", Identifier: "digitaldrywood/detent#1899"},
+			RSSBytes:        7 << 30,
+			RSSCeilingBytes: 8 << 30,
+			RSSObservedAt:   observedAt,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if health["status"] != "needs_attention" {
+		t.Fatalf("health status = %#v, want needs_attention", health["status"])
+	}
+	pressure := health["memory_pressure"].(map[string]any)
+	if pressure["dispatch_held"] != true || pressure["some"].(map[string]any)["avg60"] != 12.5 {
+		t.Fatalf("health memory_pressure = %#v", pressure)
+	}
+	agents := health["agent_memory"].([]any)
+	if len(agents) != 1 || agents[0].(map[string]any)["rss_bytes"] != float64(7<<30) || agents[0].(map[string]any)["rss_ceiling_bytes"] != float64(8<<30) {
+		t.Fatalf("health agent_memory = %#v", agents)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	if state["memory_pressure"].(map[string]any)["dispatch_held"] != true {
+		t.Fatalf("state memory_pressure = %#v", state["memory_pressure"])
+	}
+	running := state["running"].([]any)
+	if len(running) != 1 || running[0].(map[string]any)["rss_bytes"] != float64(7<<30) {
+		t.Fatalf("state running = %#v", running)
+	}
+}
+
 func TestHealthReportsCICondition(t *testing.T) {
 	t.Parallel()
 

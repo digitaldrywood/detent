@@ -115,6 +115,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		CIUnavailable:           ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s),
+		MemoryPressure:          s.MemoryPressure,
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
 		StrandedActiveIssues:    strandedActiveIssues,
@@ -697,6 +698,9 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 			DiffFiles:             entry.DiffStats.FilesChanged,
 			DiffStatus:            entry.DiffStats.Status,
 			Tokens:                tokensFromTokenTotals(entry.Tokens),
+			RSSBytes:              entry.RSSBytes,
+			RSSCeilingBytes:       entry.RSSCeilingBytes,
+			RSSObservedAt:         entry.RSSObservedAt,
 		})
 		out[len(out)-1].RuntimeIdentity = entry.RuntimeIdentity
 	}

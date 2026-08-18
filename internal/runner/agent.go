@@ -111,6 +111,9 @@ type Dependencies struct {
 	Now                 func() time.Time
 	Logger              *slog.Logger
 	AfterRunTimeout     time.Duration
+	MaxAgentRSSBytes    uint64
+	RSSPollInterval     time.Duration
+	ProcessRSS          func(context.Context, procgroup.Identity) (uint64, error)
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
@@ -134,6 +137,9 @@ type Runner struct {
 	now                 func() time.Time
 	logger              *slog.Logger
 	afterRunTimeout     time.Duration
+	maxAgentRSSBytes    uint64
+	rssPollInterval     time.Duration
+	processRSS          func(context.Context, procgroup.Identity) (uint64, error)
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
@@ -153,6 +159,12 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.AfterRunTimeout <= 0 {
 		deps.AfterRunTimeout = defaultAfterRunTimeout
+	}
+	if deps.RSSPollInterval <= 0 {
+		deps.RSSPollInterval = time.Second
+	}
+	if deps.ProcessRSS == nil {
+		deps.ProcessRSS = procgroup.RSS
 	}
 	if deps.sessionLimit == nil {
 		deps.sessionLimit = withAgentDurationLimit
@@ -208,6 +220,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		now:                 deps.Now,
 		logger:              deps.Logger,
 		afterRunTimeout:     deps.AfterRunTimeout,
+		maxAgentRSSBytes:    deps.MaxAgentRSSBytes,
+		rssPollInterval:     deps.RSSPollInterval,
+		processRSS:          deps.ProcessRSS,
 		sessionLimit:        deps.sessionLimit,
 		turnLimit:           deps.turnLimit,
 		progressTicker:      deps.progressTicker,
@@ -780,20 +795,62 @@ func runAgentBackendTurnWithToolsUsingLimit(
 		turnLimit = withAgentDurationLimit
 	}
 	run := func(ctx context.Context, request AgentTurnRequest) (AgentTurnResult, error) {
-		turnCtx, cancel := turnLimit(
+		limitCtx, cancelLimit := turnLimit(
 			ctx,
 			request.MaxDuration,
 			ErrTurnDurationExceeded,
 		)
-		defer cancel()
+		defer cancelLimit()
+		turnCtx, cancelTurn := context.WithCancelCause(limitCtx)
+		defer cancelTurn(nil)
 
 		var boundedUpdateHandler AgentUpdateHandler
 		var updateMu sync.Mutex
-		if onUpdate != nil {
+		var memoryGovernor sync.Once
+		var memoryGovernorWG sync.WaitGroup
+		if onUpdate != nil || request.MaxRSSBytes > 0 {
 			boundedUpdateHandler = func(update AgentUpdate) error {
 				updateMu.Lock()
 				defer updateMu.Unlock()
-				return onUpdate(turnCtx, update)
+				if onUpdate != nil {
+					if err := onUpdate(turnCtx, update); err != nil {
+						return err
+					}
+				}
+				if update.Type != AgentUpdateProcessStarted || request.MaxRSSBytes == 0 || update.WorkerProcess.PID <= 0 {
+					return nil
+				}
+				if err := observeAgentRSS(turnCtx, request, update.WorkerProcess, onUpdate); err != nil {
+					cancelTurn(err)
+					return err
+				}
+				memoryGovernor.Do(func() {
+					memoryGovernorWG.Add(1)
+					go func() {
+						defer memoryGovernorWG.Done()
+						interval := request.RSSPollInterval
+						if interval <= 0 {
+							interval = time.Second
+						}
+						ticker := time.NewTicker(interval)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-turnCtx.Done():
+								return
+							case <-ticker.C:
+								updateMu.Lock()
+								err := observeAgentRSS(turnCtx, request, update.WorkerProcess, onUpdate)
+								updateMu.Unlock()
+								if err != nil {
+									cancelTurn(err)
+									return
+								}
+							}
+						}
+					}()
+				})
+				return nil
 			}
 		}
 		governedCtx, stopGovernor, err := startWorkerGitHubGovernor(turnCtx, request.workerGitHub, boundedUpdateHandler)
@@ -811,7 +868,12 @@ func runAgentBackendTurnWithToolsUsingLimit(
 		} else {
 			result, runErr = backend.RunTurn(governedCtx, request, boundedUpdateHandler)
 		}
+		cancelTurn(nil)
+		memoryGovernorWG.Wait()
 		runErr = errors.Join(runErr, stopGovernor())
+		if cause := context.Cause(turnCtx); errors.Is(cause, ErrSessionMemoryCeilingExceeded) {
+			return result, errors.Join(cause, runErr)
+		}
 		if cause := context.Cause(turnCtx); errors.Is(cause, ErrTurnDurationExceeded) {
 			return result, errors.Join(cause, runErr)
 		}
@@ -846,6 +908,35 @@ func runAgentBackendTurnWithToolsUsingLimit(
 		cleanupErr = fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
 	}
 	return result, runErr, cleanupErr
+}
+
+func observeAgentRSS(
+	ctx context.Context,
+	request AgentTurnRequest,
+	identity procgroup.Identity,
+	onUpdate agentContextUpdateHandler,
+) error {
+	if request.MaxRSSBytes == 0 || request.processRSS == nil {
+		return nil
+	}
+	rssBytes, err := request.processRSS(ctx, identity)
+	if err != nil {
+		return nil
+	}
+	if onUpdate != nil {
+		if err := onUpdate(ctx, AgentUpdate{
+			Type:            AgentUpdateResourceUsage,
+			WorkerProcess:   identity,
+			RSSBytes:        rssBytes,
+			RSSCeilingBytes: request.MaxRSSBytes,
+		}); err != nil {
+			return err
+		}
+	}
+	if rssBytes <= request.MaxRSSBytes {
+		return nil
+	}
+	return &SessionMemoryCeilingError{RSSBytes: rssBytes, CeilingBytes: request.MaxRSSBytes}
 }
 
 func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit error) (context.Context, context.CancelFunc) {
@@ -948,6 +1039,12 @@ func (r *Runner) runAgentTurn(
 	}, r.turnLimit)
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
 		turnErr = cause
+	}
+	var memoryErr *SessionMemoryCeilingError
+	if errors.As(turnErr, &memoryErr) {
+		if brake := runRequest.sessionBrake.memoryCeiling(memoryErr, r.now()); brake != nil {
+			turnErr = brake
+		}
 	}
 	result.Output = progress.outputText()
 	result.SkillDraftProposed = skillDraftProposed(result.Output)
@@ -1387,9 +1484,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		DeliverableKind:       deliverableKind,
 		DeliverableRepository: deliverableRepository,
 		IssueRepository:       agentTurnIssueRepository(workflow.Config, req.Issue),
+		MaxRSSBytes:           r.maxAgentRSSBytes,
+		RSSPollInterval:       r.rssPollInterval,
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
 		projectID:             r.projectID,
 		workerGitHub:          workerGitHub,
+		processRSS:            r.processRSS,
 	}
 	if mergeFallback && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
@@ -2093,9 +2193,12 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
+		MaxRSSBytes:        r.maxAgentRSSBytes,
+		RSSPollInterval:    r.rssPollInterval,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
 		projectID:          r.projectID,
 		workerGitHub:       workerGitHub,
+		processRSS:         r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
@@ -2863,6 +2966,9 @@ func finalStateForTurnError(err error) string {
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded
 	}
+	if errors.Is(err, ErrSessionMemoryCeilingExceeded) {
+		return FinalStateMemoryCeilingExceeded
+	}
 	if errors.Is(err, ErrSessionDurationExceeded) {
 		return FinalStateSessionDurationExceeded
 	}
@@ -2998,6 +3104,9 @@ type agentRunProgress struct {
 	sessionID                 string
 	processIdentity           string
 	workerProcess             procgroup.Identity
+	rssBytes                  uint64
+	rssCeilingBytes           uint64
+	rssObservedAt             time.Time
 	turnIDs                   map[string]struct{}
 	messages                  map[string]*runtimeoutput.Buffer
 	messageOrder              []string
@@ -3047,6 +3156,12 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 	}
 	if update.WorkerProcess.PID > 0 && !update.WorkerProcess.StartedAt.IsZero() {
 		p.workerProcess = update.WorkerProcess
+	}
+	if update.Type == AgentUpdateResourceUsage {
+		p.rssBytes = update.RSSBytes
+		p.rssCeilingBytes = update.RSSCeilingBytes
+		p.rssObservedAt = eventAt.UTC()
+		return
 	}
 	if update.TurnID != "" {
 		p.turnIDs[update.TurnID] = struct{}{}
@@ -3692,6 +3807,9 @@ func (r *Runner) publishRunUpdate(
 		WorkProductPushed:     progress.pullRequestHeadPushed() || progress.pullRequestUpdated(),
 		Tokens:                result.Tokens,
 		RateLimits:            result.RateLimits,
+		RSSBytes:              progress.rssBytes,
+		RSSCeilingBytes:       progress.rssCeilingBytes,
+		RSSObservedAt:         progress.rssObservedAt,
 	}
 	if req.Admission == nil {
 		diffStats, ok := r.liveDiffStats(ctx, info, issue, progress, eventAt)
@@ -4149,6 +4267,8 @@ func workerRunOutcome(err error, finalState string) string {
 		return "timed_out"
 	case errors.Is(err, ErrSessionTokenCeilingExceeded):
 		return FinalStateTokenCeilingExceeded
+	case errors.Is(err, ErrSessionMemoryCeilingExceeded):
+		return FinalStateMemoryCeilingExceeded
 	case err != nil:
 		return "failed"
 	case strings.EqualFold(strings.TrimSpace(finalState), FinalStateCompleted), strings.TrimSpace(finalState) == "":

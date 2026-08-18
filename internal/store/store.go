@@ -325,6 +325,7 @@ const (
 	WorkAttemptTerminalSuperseded      WorkAttemptTerminalState = "superseded"
 	WorkAttemptTerminalAbandoned       WorkAttemptTerminalState = "abandoned"
 	WorkAttemptTerminalNoProgress      WorkAttemptTerminalState = "no_progress"
+	WorkAttemptTerminalMemoryCeiling   WorkAttemptTerminalState = "memory_ceiling_exceeded"
 	WorkAttemptTerminalCapacity        WorkAttemptTerminalState = "capacity"
 	WorkAttemptTerminalOperatorStopped WorkAttemptTerminalState = "operator_stopped"
 	WorkAttemptTerminalMergeRevoked    WorkAttemptTerminalState = "merge_revoked"

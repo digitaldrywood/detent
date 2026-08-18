@@ -306,6 +306,7 @@ const (
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
+	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
 	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
 )
 
@@ -402,6 +403,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
+	}
+	if state.MemoryPressure.DispatchHeld {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureMemoryPressure}
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchIssueOutcome{reason: reason}

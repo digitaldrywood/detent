@@ -25,12 +25,15 @@ const (
 	Kind                            = "GlobalConfig"
 	DefaultUpdateCheckIntervalHours = 6
 
-	SchedulingWeighted              = "weighted"
-	SchedulingStrict                = "strict"
-	SchedulingRoundRobin            = "round_robin"
-	SchedulingFairShare             = "fair_share"
-	DefaultAgentPoolName            = "default"
-	DashboardAccessModePrivateToken = "private_token"
+	SchedulingWeighted                            = "weighted"
+	SchedulingStrict                              = "strict"
+	SchedulingRoundRobin                          = "round_robin"
+	SchedulingFairShare                           = "fair_share"
+	DefaultAgentPoolName                          = "default"
+	DashboardAccessModePrivateToken               = "private_token"
+	DefaultMaxAgentRSSBytes                 int64 = 8 * 1024 * 1024 * 1024
+	DefaultMemoryPressureSomeAvg60Threshold       = 10.0
+	DefaultMemoryPollIntervalMS                   = 1000
 
 	configFileMode = 0o600
 )
@@ -128,6 +131,30 @@ type Settings struct {
 	Knowledge           Knowledge                       `yaml:"knowledge,omitempty"`
 	FairShare           map[string]any                  `yaml:"fair_share,omitempty"`
 	Startup             map[string]any                  `yaml:"startup,omitempty"`
+	Memory              Memory                          `yaml:"memory,omitempty"`
+}
+
+type Memory struct {
+	MaxAgentRSSBytes           int64   `yaml:"max_agent_rss_bytes"`
+	PressureSomeAvg60Threshold float64 `yaml:"pressure_some_avg60_threshold"`
+	PollIntervalMS             int     `yaml:"poll_interval_ms"`
+}
+
+type ProjectMemory struct {
+	MaxAgentRSSBytes *int64 `yaml:"max_agent_rss_bytes,omitempty"`
+}
+
+func (m Memory) Normalized() Memory {
+	if m.MaxAgentRSSBytes <= 0 {
+		m.MaxAgentRSSBytes = DefaultMaxAgentRSSBytes
+	}
+	if m.PressureSomeAvg60Threshold <= 0 {
+		m.PressureSomeAvg60Threshold = DefaultMemoryPressureSomeAvg60Threshold
+	}
+	if m.PollIntervalMS <= 0 {
+		m.PollIntervalMS = DefaultMemoryPollIntervalMS
+	}
+	return m
 }
 
 type AgentPool struct {
@@ -157,11 +184,21 @@ type Project struct {
 	CredentialRef            string                          `yaml:"credential_ref,omitempty"`
 	Authorization            selector.Selector               `yaml:"authorization,omitempty"`
 	Intake                   intakeconfig.Config             `yaml:"intake,omitempty"`
+	Memory                   ProjectMemory                   `yaml:"memory,omitempty"`
 	Identity                 Identity                        `yaml:"-"`
 	GlobalKnowledge          Knowledge                       `yaml:"-"`
 	GlobalActiveHours        *activehours.Config             `yaml:"-"`
 	GlobalRateWindowPacing   workflowconfig.RateWindowPacing `yaml:"-"`
+	GlobalMemory             Memory                          `yaml:"-"`
 	IntakeConfigured         bool                            `yaml:"-"`
+}
+
+func (p Project) EffectiveMemory() Memory {
+	memory := p.GlobalMemory.Normalized()
+	if p.Memory.MaxAgentRSSBytes != nil {
+		memory.MaxAgentRSSBytes = *p.Memory.MaxAgentRSSBytes
+	}
+	return memory
 }
 
 type Identity = workflowconfig.Identity
@@ -314,6 +351,7 @@ func Write(path string, cfg Config, opts ...Option) error {
 	}
 
 	cfg.Path = expandedPath
+	cfg.Global.Memory = cfg.Global.Memory.Normalized()
 	if err := cfg.Validate(opts...); err != nil {
 		return err
 	}
@@ -672,6 +710,7 @@ func (c Config) Validate(opts ...Option) error {
 	}
 	problems = append(problems, c.Global.Identity.Validate("global.identity")...)
 	problems = append(problems, startupErrors(c.Global.Startup, "global.startup")...)
+	problems = append(problems, memoryProblems(c.Global.Memory, "global.memory")...)
 
 	if c.Projects == nil {
 		problems = append(problems, "projects: is required")
@@ -711,6 +750,9 @@ func (c Config) Validate(opts ...Option) error {
 			}
 		}
 		problems = append(problems, project.Authorization.Validate(prefix+".authorization")...)
+		if project.Memory.MaxAgentRSSBytes != nil && *project.Memory.MaxAgentRSSBytes <= 0 {
+			problems = append(problems, prefix+".memory.max_agent_rss_bytes: must be a positive integer")
+		}
 	}
 	problems = append(problems, duplicateProjectIDErrorsFromProjects(c.Projects)...)
 	problems = append(problems, projectAgentPoolProblems(c.Global.AgentPools, c.Projects)...)
@@ -941,6 +983,11 @@ func defaultSettings() Settings {
 			"jitter_seconds":       10,
 			"max_spawn_per_second": 2,
 		},
+		Memory: Memory{
+			MaxAgentRSSBytes:           DefaultMaxAgentRSSBytes,
+			PressureSomeAvg60Threshold: DefaultMemoryPressureSomeAvg60Threshold,
+			PollIntervalMS:             DefaultMemoryPollIntervalMS,
+		},
 	}
 }
 
@@ -1051,6 +1098,7 @@ func globalErrors(value any) []string {
 	problems = append(problems, knowledgeErrors(global["knowledge"], "global.knowledge")...)
 	problems = append(problems, optionalMapErrors(global, "fair_share")...)
 	problems = append(problems, optionalMapErrors(global, "startup")...)
+	problems = append(problems, memoryErrors(global["memory"], "global.memory", false)...)
 
 	if startup, ok := global["startup"].(map[string]any); ok {
 		problems = append(problems, startupErrors(startup, "global.startup")...)
@@ -1224,6 +1272,44 @@ func startupErrors(startup map[string]any, prefix string) []string {
 	return problems
 }
 
+func memoryErrors(value any, prefix string, projectOverride bool) []string {
+	if value == nil {
+		return nil
+	}
+	memory, ok := value.(map[string]any)
+	if !ok {
+		return []string{prefix + ": must be a mapping"}
+	}
+	var problems []string
+	if value, ok := memory["max_agent_rss_bytes"]; ok && !positiveInteger(value) {
+		problems = append(problems, prefix+".max_agent_rss_bytes: must be a positive integer")
+	}
+	if projectOverride {
+		return problems
+	}
+	if value, ok := memory["pressure_some_avg60_threshold"]; ok && !positiveNumber(value) {
+		problems = append(problems, prefix+".pressure_some_avg60_threshold: must be a positive number")
+	}
+	if value, ok := memory["poll_interval_ms"]; ok && !positiveInteger(value) {
+		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
+	}
+	return problems
+}
+
+func memoryProblems(memory Memory, prefix string) []string {
+	var problems []string
+	if memory.MaxAgentRSSBytes <= 0 {
+		problems = append(problems, prefix+".max_agent_rss_bytes: must be a positive integer")
+	}
+	if memory.PressureSomeAvg60Threshold <= 0 {
+		problems = append(problems, prefix+".pressure_some_avg60_threshold: must be a positive number")
+	}
+	if memory.PollIntervalMS <= 0 {
+		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
+	}
+	return problems
+}
+
 func projectsErrors(value any, opts options) []string {
 	if value == nil {
 		return nil
@@ -1272,6 +1358,7 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, credentialRefErrors(project, prefix)...)
 	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
 	problems = append(problems, intakeErrors(project["intake"], prefix+".intake")...)
+	problems = append(problems, memoryErrors(project["memory"], prefix+".memory", true)...)
 
 	return problems
 }
@@ -1508,6 +1595,17 @@ func integerError(value any, field string) []string {
 func positiveInteger(value any) bool {
 	number, ok := value.(int)
 	return ok && number > 0
+}
+
+func positiveNumber(value any) bool {
+	switch number := value.(type) {
+	case int:
+		return number > 0
+	case float64:
+		return number > 0
+	default:
+		return false
+	}
 }
 
 func nonNegativeInteger(value any) bool {
@@ -1962,6 +2060,12 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 		}
 		rateWindowPacing = rateWindowPacing.Normalized()
 	}
+	memory := settings.Memory
+	if attrs["memory"] != nil {
+		if err := decodeYAMLValue(attrs["memory"], &memory); err != nil {
+			return Settings{}, fmt.Errorf("global.memory: %w", err)
+		}
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
 	settings.RateWindowPacing = rateWindowPacing
@@ -1972,6 +2076,7 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings.Knowledge = knowledge
 	settings.FairShare = fairShare
 	settings.Startup = startup
+	settings.Memory = memory
 	return settings, nil
 }
 
@@ -2122,6 +2227,12 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		var memory ProjectMemory
+		if project["memory"] != nil {
+			if err := decodeYAMLValue(project["memory"], &memory); err != nil {
+				return nil, fmt.Errorf("%s.memory: %w", prefix, err)
+			}
+		}
 
 		out = append(out, Project{
 			ID:                       strings.TrimSpace(id),
@@ -2143,6 +2254,7 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			CredentialRef:            credentialRef,
 			Authorization:            authorization,
 			Intake:                   projectIntake,
+			Memory:                   memory,
 			IntakeConfigured:         intakeConfigured,
 		})
 	}

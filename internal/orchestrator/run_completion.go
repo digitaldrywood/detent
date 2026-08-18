@@ -75,6 +75,11 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if diffStatsPresent(event.usage.DiffStats) {
 		running.DiffStats = event.usage.DiffStats
 	}
+	if !event.usage.RSSObservedAt.IsZero() {
+		running.RSSBytes = event.usage.RSSBytes
+		running.RSSCeilingBytes = event.usage.RSSCeilingBytes
+		running.RSSObservedAt = event.usage.RSSObservedAt
+	}
 	running.Tokens = event.usage.Tokens
 	state.Running[event.issueID] = running
 	o.trackRunningHeartbeat(state, running, state.Claimed[event.issueID], o.clockNow())
