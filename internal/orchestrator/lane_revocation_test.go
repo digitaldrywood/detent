@@ -2,15 +2,18 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -105,6 +108,139 @@ func TestLaneRevocationPreservesTrackerDestination(t *testing.T) {
 			}
 			if tracker.issues[0].State != tt.destination {
 				t.Fatalf("tracker state = %q, want preserved %q", tracker.issues[0].State, tt.destination)
+			}
+		})
+	}
+}
+
+func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 19, 20, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		origin         provenance.Attribution
+		detentAuthored bool
+		wantReason     string
+		wantErrorClass string
+		wantOrigin     provenance.Origin
+	}{
+		{
+			name:           "operator move keeps tracker revocation",
+			origin:         provenance.AttributionFromSource(provenance.SourceHumanSession, provenance.Actor{Login: "operator", Kind: "User"}),
+			wantReason:     laneRevocationStateChanged,
+			wantErrorClass: string(store.WorkAttemptTerminalLaneRevoked),
+			wantOrigin:     provenance.OriginHuman,
+		},
+		{
+			name:           "Detent move has distinct revocation",
+			detentAuthored: true,
+			wantReason:     "detent_tracker_lane_changed",
+			wantErrorClass: laneRevocationDetentErrorClass,
+			wantOrigin:     provenance.OriginDetent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := laneRevocationIssue("issue-origin", "digitaldrywood/detent#1903", "Rework")
+			parked := cloneIssue(issue)
+			parked.State = "Human Review"
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
+			attempts := &recordingWorkAttemptStore{}
+			cfg := normalizeConfig(Config{
+				Project:        scheduler.ProjectCandidate{ID: "detent"},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates: []string{"Human Review"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{
+				cfg:                    cfg,
+				connector:              tracker,
+				workAttempts:           attempts,
+				pendingLaneRevocations: map[string]*pendingLaneRevocation{},
+				logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+				now:                    func() time.Time { return now },
+			}
+			state := newState(cfg)
+			runCtx, stop := context.WithCancelCause(context.Background())
+			state.Running[issue.ID] = Running{
+				Issue:         issue,
+				Attempt:       3,
+				WorkAttemptID: 1903,
+				Generation:    9,
+				StartedAt:     now.Add(-397 * time.Second),
+				Tokens: runpkg.TokenTotals{
+					OutputTokens:   13_422,
+					TotalTokens:    42_000,
+					RuntimeSeconds: 397,
+				},
+				stop: stop,
+			}
+			if tt.detentAuthored {
+				if err := orch.updateIssueStateByID(t.Context(), &state, issue.ID, issue, parked.State, now.Add(-time.Minute), "completed_active_review_transition"); err != nil {
+					t.Fatalf("record Detent lane transition: %v", err)
+				}
+			} else {
+				state.laneProvenance[workflowLaneEntryKey(parked)] = tt.origin
+			}
+
+			orch.reconcileRunningIssues(t.Context(), &state, now)
+
+			if !errors.Is(context.Cause(runCtx), runpkg.ErrLaneRevoked) {
+				t.Fatalf("context cause = %v, want ErrLaneRevoked", context.Cause(runCtx))
+			}
+			pending := orch.pendingLaneRevocations[issue.ID]
+			if pending == nil || pending.reason != tt.wantReason {
+				t.Fatalf("pending revocation = %#v, want reason %q", pending, tt.wantReason)
+			}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID,
+				Request: runpkg.RunRequest{Issue: issue, WorkAttemptID: 1903, Generation: 9},
+				Result: runpkg.RunResult{
+					FinalState:  runpkg.FinalStateLaneRevoked,
+					Output:      "completed rework summary",
+					TurnStarted: true,
+				},
+				CompletedAt: now.Add(time.Second),
+				Err:         runpkg.ErrLaneRevoked,
+			})
+
+			if len(attempts.completions) != 1 {
+				t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
+			}
+			completion := attempts.completions[0]
+			if completion.ErrorClass != tt.wantErrorClass {
+				t.Fatalf("error class = %q, want %q", completion.ErrorClass, tt.wantErrorClass)
+			}
+			if completion.ErrorMessage != tt.wantReason {
+				t.Fatalf("error message = %q, want %q", completion.ErrorMessage, tt.wantReason)
+			}
+			var metadata struct {
+				LaneRevocation struct {
+					Origin        provenance.Origin `json:"origin"`
+					WorkDiscarded bool              `json:"work_discarded"`
+					OutputTokens  int64             `json:"output_tokens"`
+				} `json:"lane_revocation"`
+			}
+			if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil {
+				t.Fatalf("decode worker metadata: %v", err)
+			}
+			if metadata.LaneRevocation.Origin != tt.wantOrigin || !metadata.LaneRevocation.WorkDiscarded || metadata.LaneRevocation.OutputTokens != 13_422 {
+				t.Fatalf("lane revocation metadata = %#v, want origin %q and discarded output", metadata.LaneRevocation, tt.wantOrigin)
+			}
+			if len(tracker.comments) != 1 {
+				t.Fatalf("comments = %#v, want discarded-work notice", tracker.comments)
+			}
+			for _, fragment := range []string{tt.wantReason, "output_tokens: 13422", "runtime_seconds: 397"} {
+				if !strings.Contains(tracker.comments[0].body, fragment) {
+					t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
+				}
+			}
+			if !hasLaneRevocationEvent(state.RecentEvents, "worker_lane_output_discarded") {
+				t.Fatalf("RecentEvents = %#v, want discarded output event", state.RecentEvents)
 			}
 		})
 	}

@@ -673,6 +673,62 @@ func TestTransitionCompletedActiveIssuesKeepsHumanReviewWhenRequired(t *testing.
 	}
 }
 
+func TestTransitionCompletedActiveIssuesRespectsRunningWorker(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 19, 10, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		running        bool
+		wantTransition bool
+	}{
+		{name: "completed issue without running worker transitions", wantTransition: true},
+		{name: "completed issue with running worker stays active", running: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := completionTransitionIssue("In Progress", "OPEN")
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			cfg := normalizeConfig(Config{
+				AutoPromote:    AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindHumanReview}},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			state.Completed[issue.ID] = Completed{
+				Issue:       issue,
+				CompletedAt: now.Add(-time.Minute),
+				FinalState:  FinalStateCompleted,
+			}
+			if tt.running {
+				state.Running[issue.ID] = Running{Issue: issue, StartedAt: now.Add(-30 * time.Second)}
+			}
+
+			result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+			_, transitioned := result.transitioned[issue.ID]
+			if transitioned != tt.wantTransition {
+				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, tt.wantTransition)
+			}
+			if got := len(tracker.updates); got != boolInt(tt.wantTransition) {
+				t.Fatalf("tracker updates = %d, want %d", got, boolInt(tt.wantTransition))
+			}
+			if tt.running {
+				if _, ok := state.Running[issue.ID]; !ok {
+					t.Fatalf("Running[%q] missing after blocked transition", issue.ID)
+				}
+				if got := state.Completed[issue.ID].Issue.State; got != "In Progress" {
+					t.Fatalf("Completed issue state = %q, want In Progress", got)
+				}
+			}
+		})
+	}
+}
+
 func TestTransitionCompletedActiveIssuesAutomatedReviewTimeoutModes(t *testing.T) {
 	t.Parallel()
 

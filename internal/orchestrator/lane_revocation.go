@@ -3,11 +3,13 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -16,6 +18,8 @@ import (
 
 const (
 	laneRevocationStateChanged               = "tracker_lane_changed"
+	laneRevocationDetentStateChanged         = "detent_tracker_lane_changed"
+	laneRevocationDetentErrorClass           = "detent_lane_revoked"
 	laneRevocationCompletionFenceUnavailable = "completion_fence_unavailable"
 )
 
@@ -24,6 +28,7 @@ type pendingLaneRevocation struct {
 	fromState     string
 	toState       string
 	reason        string
+	origin        provenance.Origin
 	requestedAt   time.Time
 	generation    uint64
 	running       Running
@@ -63,11 +68,14 @@ func (o *Orchestrator) beginLaneRevocation(
 	}
 	fromState := strings.TrimSpace(running.Issue.State)
 	running.Issue = mergeIssueTrackerFields(running.Issue, refreshed)
+	attribution := laneRevocationAttribution(state, running.Issue)
+	reason = laneRevocationReason(reason, attribution)
 	pending := &pendingLaneRevocation{
 		issue:       cloneIssue(running.Issue),
 		fromState:   fromState,
 		toState:     strings.TrimSpace(running.Issue.State),
 		reason:      strings.TrimSpace(reason),
+		origin:      attribution.Origin,
 		requestedAt: now.UTC(),
 		generation:  running.Generation,
 		running:     running,
@@ -195,6 +203,9 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 	if tokens == (TokenTotals{}) {
 		tokens = running.Tokens
 	}
+	running.Tokens = tokens
+	workDiscarded := laneRevocationDiscardedWork(event, running, tokens)
+	errorClass := laneRevocationErrorClass(pending.reason)
 	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
 	state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	o.recordProjectAttemptOutcome(
@@ -203,7 +214,7 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 		completedAt,
 		store.WorkAttemptTerminalLaneRevoked,
 		runpkg.ErrLaneRevoked,
-		string(store.WorkAttemptTerminalLaneRevoked),
+		errorClass,
 		pending.reason,
 	)
 	o.completeDurableWorkAttemptWithMetadata(
@@ -212,19 +223,29 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 		running,
 		completedAt,
 		store.WorkAttemptTerminalLaneRevoked,
-		string(store.WorkAttemptTerminalLaneRevoked),
+		errorClass,
 		pending.reason,
 		"lane_revoked",
 		"worker stopped after leaving a worker-owned lane",
 		map[string]any{"lane_revocation": map[string]any{
-			"generation":   pending.generation,
-			"from_state":   pending.fromState,
-			"to_state":     pending.toState,
-			"reason":       pending.reason,
-			"requested_at": pending.requestedAt,
-			"reap_outcome": pending.reapOutcome,
+			"generation":      pending.generation,
+			"from_state":      pending.fromState,
+			"to_state":        pending.toState,
+			"reason":          pending.reason,
+			"origin":          pending.origin,
+			"requested_at":    pending.requestedAt,
+			"reap_outcome":    pending.reapOutcome,
+			"work_discarded":  workDiscarded,
+			"output_tokens":   tokens.OutputTokens,
+			"total_tokens":    tokens.TotalTokens,
+			"runtime_seconds": tokens.RuntimeSeconds,
+			"turns":           running.TurnCount,
+			"files_changed":   running.DiffStats.FilesChanged,
 		}},
 	)
+	if workDiscarded {
+		o.reportLaneRevocationDiscardedWork(ctx, state, pending, event, running, tokens)
+	}
 	delete(o.pendingLaneRevocations, event.IssueID)
 	delete(state.Running, event.IssueID)
 	delete(state.Claimed, event.IssueID)
@@ -267,6 +288,110 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 			"reap_outcome", pending.reapOutcome,
 		)
 	}
+}
+
+func laneRevocationAttribution(state *State, issue connector.Issue) provenance.Attribution {
+	if state != nil {
+		if attribution, ok := state.laneProvenance[workflowLaneEntryKey(issue)]; ok {
+			return provenance.Prepare(attribution)
+		}
+	}
+	return provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
+}
+
+func laneRevocationReason(reason string, attribution provenance.Attribution) string {
+	reason = strings.TrimSpace(reason)
+	if reason == laneRevocationStateChanged && provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginDetent {
+		return laneRevocationDetentStateChanged
+	}
+	return reason
+}
+
+func laneRevocationErrorClass(reason string) string {
+	if strings.TrimSpace(reason) == laneRevocationDetentStateChanged {
+		return laneRevocationDetentErrorClass
+	}
+	return string(store.WorkAttemptTerminalLaneRevoked)
+}
+
+func laneRevocationDiscardedWork(event runpkg.Completion, running Running, tokens TokenTotals) bool {
+	return event.Result.TurnStarted ||
+		running.TurnCount > 0 ||
+		strings.TrimSpace(event.Result.Output) != "" ||
+		strings.TrimSpace(running.LastMessage) != "" ||
+		tokens.OutputTokens > 0 ||
+		tokens.TotalTokens > 0 ||
+		diffStatsPresent(event.Result.DiffStats) ||
+		diffStatsPresent(running.DiffStats) ||
+		running.WorkProductPushed
+}
+
+func (o *Orchestrator) reportLaneRevocationDiscardedWork(
+	ctx context.Context,
+	state *State,
+	pending *pendingLaneRevocation,
+	event runpkg.Completion,
+	running Running,
+	tokens TokenTotals,
+) {
+	at := event.CompletedAt.UTC()
+	if at.IsZero() {
+		at = o.clockNow().UTC()
+	}
+	origin := string(provenance.NormalizeOrigin(pending.origin))
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      at,
+		Event:   "worker_lane_output_discarded",
+		Message: "worker output for " + issueLabel(running.Issue) + " was discarded after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState,
+	})
+	if o.connector == nil {
+		return
+	}
+	body := laneRevocationDiscardedWorkComment(pending, event, running, tokens)
+	if err := o.connector.CreateComment(context.WithoutCancel(ctx), running.Issue.ID, body); err != nil {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      at,
+			Event:   "worker_lane_output_discard_notice_failed",
+			Message: "failed to report discarded worker output for " + issueLabel(running.Issue) + ": " + err.Error(),
+		})
+		if o.logger != nil {
+			o.logger.Warn("discarded worker output comment failed", "issue_id", running.Issue.ID, "identifier", running.Issue.Identifier, "error", err)
+		}
+	}
+}
+
+func laneRevocationDiscardedWorkComment(
+	pending *pendingLaneRevocation,
+	event runpkg.Completion,
+	running Running,
+	tokens TokenTotals,
+) string {
+	var b strings.Builder
+	b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. The session produced work that was not accepted by the completion fence.")
+	b.WriteString("\n\n- reason: worker_lane_revocation_output_discarded")
+	b.WriteString("\n- revocation_reason: ")
+	b.WriteString(pending.reason)
+	b.WriteString("\n- lane_change_origin: ")
+	b.WriteString(string(provenance.NormalizeOrigin(pending.origin)))
+	b.WriteString("\n- from_state: ")
+	b.WriteString(pending.fromState)
+	b.WriteString("\n- to_state: ")
+	b.WriteString(pending.toState)
+	b.WriteString("\n- attempt: ")
+	b.WriteString(strconv.Itoa(running.Attempt))
+	b.WriteString("\n- output_tokens: ")
+	b.WriteString(strconv.FormatInt(tokens.OutputTokens, 10))
+	b.WriteString("\n- total_tokens: ")
+	b.WriteString(strconv.FormatInt(tokens.TotalTokens, 10))
+	b.WriteString("\n- runtime_seconds: ")
+	b.WriteString(strconv.FormatFloat(tokens.RuntimeSeconds, 'f', -1, 64))
+	b.WriteString("\n- files_changed: ")
+	b.WriteString(strconv.Itoa(running.DiffStats.FilesChanged))
+	if finalState := strings.TrimSpace(event.Result.FinalState); finalState != "" {
+		b.WriteString("\n- final_state: ")
+		b.WriteString(finalState)
+	}
+	return b.String()
 }
 
 func (o *Orchestrator) reapRunningWorker(

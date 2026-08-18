@@ -27,6 +27,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		if issueID == "" {
 			continue
 		}
+		if _, running := state.Running[issueID]; running {
+			continue
+		}
 		completed, ok := state.Completed[issueID]
 		if !ok {
 			continue
