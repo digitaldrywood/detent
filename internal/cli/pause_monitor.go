@@ -78,7 +78,7 @@ func checkPauseExitConditions(ctx context.Context, deps pauseMonitorDeps) {
 			resolution, resolveErr := pause.ResolveReference(configuredProject.ID, configuredProject.PausedUntilIssue, trackers)
 			if resolveErr != nil {
 				recordPauseEvaluationFailure(deps, configuredProject, "", now, resolveErr)
-				deps.logger.Warn(
+				deps.logger.Error(
 					"check project pause exit condition failed",
 					"project_id", configuredProject.ID,
 					"pause_exit_issue", configuredProject.PausedUntilIssue,
@@ -96,7 +96,7 @@ func checkPauseExitConditions(ctx context.Context, deps pauseMonitorDeps) {
 		result, err := pause.Evaluate(ctx, configuredProject, now, trackerRepository, resolver)
 		if err != nil {
 			recordPauseEvaluationFailure(deps, configuredProject, resolverProjectID, now, err)
-			deps.logger.Warn(
+			deps.logger.Error(
 				"check project pause exit condition failed",
 				"project_id", configuredProject.ID,
 				"pause_exit_issue", configuredProject.PausedUntilIssue,

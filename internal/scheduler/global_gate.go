@@ -89,6 +89,7 @@ type GlobalDispatchGate struct {
 	running        map[uint64]runningProjectSlot
 	selected       map[string]selectedProjectSlot
 	projects       map[string]ProjectCandidate
+	pausedProjects map[string]struct{}
 	projectCycles  map[string]projectCycleState
 	dispatchPauses int
 }
@@ -99,13 +100,14 @@ func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate)
 
 func newGlobalDispatchGate(poolName string, global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
 	gate := &GlobalDispatchGate{
-		poolName:      normalizePoolName(poolName),
-		global:        global,
-		ready:         map[string]readyProjectSlot{},
-		running:       map[uint64]runningProjectSlot{},
-		selected:      map[string]selectedProjectSlot{},
-		projects:      map[string]ProjectCandidate{},
-		projectCycles: map[string]projectCycleState{},
+		poolName:       normalizePoolName(poolName),
+		global:         global,
+		ready:          map[string]readyProjectSlot{},
+		running:        map[uint64]runningProjectSlot{},
+		selected:       map[string]selectedProjectSlot{},
+		projects:       map[string]ProjectCandidate{},
+		pausedProjects: map[string]struct{}{},
+		projectCycles:  map[string]projectCycleState{},
 	}
 	gate.SetProjects(projects)
 	return gate
@@ -156,12 +158,20 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 		return
 	}
 
-	normalized := normalizeProjectCandidates(projects)
+	configured := normalizeConfiguredProjectCandidates(projects)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	next := make(map[string]ProjectCandidate, len(normalized))
-	for _, project := range normalized {
+	next := make(map[string]ProjectCandidate, len(configured))
+	paused := make(map[string]struct{})
+	for _, project := range configured {
+		if project.Paused {
+			paused[project.ID] = struct{}{}
+			delete(g.ready, project.ID)
+			delete(g.selected, project.ID)
+			delete(g.projectCycles, project.ID)
+			continue
+		}
 		next[project.ID] = project
 	}
 	for projectID := range g.projects {
@@ -178,6 +188,7 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 		}
 	}
 	g.projects = next
+	g.pausedProjects = paused
 }
 
 func (g *GlobalDispatchGate) PauseDispatch() func() {
@@ -231,6 +242,12 @@ func (g *GlobalDispatchGate) BeginProjectCycle(project ProjectCandidate) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if _, paused := g.pausedProjects[project.ID]; paused {
+		delete(g.ready, project.ID)
+		delete(g.selected, project.ID)
+		g.projectCycles[project.ID] = projectCycleState{idle: true}
+		return
+	}
 
 	g.projects[project.ID] = project
 	delete(g.ready, project.ID)
@@ -268,6 +285,12 @@ func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if _, paused := g.pausedProjects[project.ID]; paused {
+		delete(g.ready, project.ID)
+		delete(g.selected, project.ID)
+		g.projectCycles[project.ID] = projectCycleState{idle: true}
+		return
+	}
 
 	g.projects[project.ID] = project
 	ready := g.ready[project.ID]
@@ -338,6 +361,12 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	case <-ctx.Done():
 		return Slot{}, false, DispatchGateDecision{}, ctx.Err()
 	default:
+	}
+	if _, paused := g.pausedProjects[project.ID]; paused {
+		delete(g.ready, project.ID)
+		delete(g.selected, project.ID)
+		g.projectCycles[project.ID] = projectCycleState{idle: true}
+		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
 	}
 
 	g.projects[project.ID] = project

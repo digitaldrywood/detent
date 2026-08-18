@@ -1650,6 +1650,92 @@ func TestPauseCommandExitConditionFlags(t *testing.T) {
 	}
 }
 
+func TestPauseCommandValidatesIssueReference(t *testing.T) {
+	t.Parallel()
+
+	localWorkflow := `---
+tracker:
+  kind: local_sqlite
+  local_sqlite:
+    path: .detent/work-items.db
+    project_id: video
+---
+Prompt
+`
+	githubWorkflow := `---
+tracker:
+  kind: github
+  repository: digitaldrywood/video-studio
+---
+Prompt
+`
+	tests := []struct {
+		name       string
+		withGitHub bool
+		wantError  string
+		wantPaused bool
+	}{
+		{
+			name:      "rejects cross repository issue without resolver",
+			wantError: "no configured project tracker can resolve GitHub pause exit issue digitaldrywood/video-studio#155",
+		},
+		{
+			name:       "accepts cross repository issue with configured resolver",
+			withGitHub: true,
+			wantPaused: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			local := createProjectFilesWithWorkflow(t, localWorkflow)
+			projects := []globalconfig.Project{{
+				ID:       "video",
+				Workflow: local.workflowPath,
+				Workdir:  local.workdirPath,
+				Weight:   1,
+			}}
+			if tt.withGitHub {
+				github := createProjectFilesWithWorkflow(t, githubWorkflow)
+				projects = append(projects, globalconfig.Project{
+					ID:       "video-studio",
+					Workflow: github.workflowPath,
+					Workdir:  github.workdirPath,
+					Weight:   1,
+				})
+			}
+			configPath := filepath.Join(local.root, "global.yaml")
+			writeGlobalConfig(t, configPath, projects)
+
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				"--config", configPath,
+				"pause", "video",
+				"--reason", "release hold",
+				"--until-issue", "digitaldrywood/video-studio#155",
+			})
+			err := cmd.Execute()
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("Execute() error = %v, want containing %q", err, tt.wantError)
+				}
+			} else if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			assertProject(t, configPath, "video", func(project globalconfig.Project) {
+				if project.Paused != tt.wantPaused {
+					t.Fatalf("Paused = %t, want %t", project.Paused, tt.wantPaused)
+				}
+			})
+		})
+	}
+}
+
 func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
 	t.Parallel()
 

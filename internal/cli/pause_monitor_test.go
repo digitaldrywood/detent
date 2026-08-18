@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/pause"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestCheckPauseExitConditionsAutoUnpausesEligibleProjects(t *testing.T) {
@@ -243,6 +244,7 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 			current := clonePauseMonitorConfig(cfg)
 			projectConnector := memory.New(memory.Config{Issues: tt.issues})
 			statuses := map[string]pause.ExitStatus{}
+			var logs bytes.Buffer
 			deps := pauseMonitorDeps{
 				read: func() (globalconfig.Config, error) {
 					return clonePauseMonitorConfig(current), nil
@@ -267,7 +269,7 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 					delete(statuses, projectID)
 				},
 				now:    func() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) },
-				logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+				logger: slog.New(slog.NewTextHandler(&logs, nil)),
 			}
 			for range tt.ticks {
 				checkPauseExitConditions(context.Background(), deps)
@@ -285,6 +287,112 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 			}
 			if tt.wantError != "" && !strings.Contains(status.LastError, tt.wantError) {
 				t.Fatalf("pause status error = %q, want substring %q", status.LastError, tt.wantError)
+			}
+			if tt.wantError != "" {
+				for _, want := range []string{
+					"level=ERROR",
+					"pause_exit_issue=digitaldrywood/detent#1499",
+					tt.wantError,
+				} {
+					if !strings.Contains(logs.String(), want) {
+						t.Fatalf("pause evaluation log missing %q:\n%s", want, logs.String())
+					}
+				}
+				if !current.Projects[0].Paused {
+					t.Fatal("project automatically unpaused after exit evaluation failure")
+				}
+			}
+		})
+	}
+}
+
+func TestPauseExitEvaluationFailureKeepsDispatchPaused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		trackerKind  string
+		wantLogError string
+	}{
+		{
+			name:         "reference cannot be routed",
+			trackerKind:  "local_sqlite",
+			wantLogError: "no configured project tracker can resolve GitHub pause exit issue",
+		},
+		{
+			name:         "routed issue cannot be evaluated",
+			trackerKind:  "memory",
+			wantLogError: "pause exit issue digitaldrywood/video-studio#155 was not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const reference = "digitaldrywood/video-studio#155"
+			cfg := globalconfig.Config{Projects: []globalconfig.Project{{
+				ID:               "video",
+				Paused:           true,
+				PausedUntilIssue: reference,
+			}}}
+			gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{
+				Name: scheduler.DefaultPoolName,
+				Scheduler: scheduler.Config{
+					Kind:     "round_robin",
+					Capacity: 1,
+				},
+			}}, []scheduler.ProjectCandidate{{
+				ID:     "video",
+				Weight: 1,
+				Paused: true,
+			}})
+			if err != nil {
+				t.Fatalf("NewPoolRegistry() error = %v", err)
+			}
+			var logs bytes.Buffer
+			wrote := false
+			unpaused := false
+
+			checkPauseExitConditions(t.Context(), pauseMonitorDeps{
+				read: func() (globalconfig.Config, error) {
+					return clonePauseMonitorConfig(cfg), nil
+				},
+				write: func(globalconfig.Config) error {
+					wrote = true
+					return nil
+				},
+				unpause: func(context.Context, string) error {
+					unpaused = true
+					return nil
+				},
+				connectorFor: func(string) connector.Connector {
+					return memory.New(memory.Config{})
+				},
+				trackerKindFor: func(string) string { return tt.trackerKind },
+				logger:         slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+
+			staleCandidate := scheduler.ProjectCandidate{ID: "video", Weight: 1}
+			_, acquired, decision, err := gate.TryAcquireWithDecision(
+				t.Context(),
+				staleCandidate,
+				scheduler.SlotRequest{State: "Todo"},
+				time.Now(),
+			)
+			if err != nil {
+				t.Fatalf("TryAcquireWithDecision() error = %v", err)
+			}
+			if acquired || decision.Reason != scheduler.DispatchGateReasonPaused {
+				t.Fatalf("TryAcquireWithDecision() acquired = %t decision = %#v, want dispatch pause", acquired, decision)
+			}
+			if wrote || unpaused {
+				t.Fatalf("pause exit failure wrote = %t unpaused = %t, want both false", wrote, unpaused)
+			}
+			for _, want := range []string{"level=ERROR", "pause_exit_issue=" + reference, tt.wantLogError} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("pause evaluation log missing %q:\n%s", want, logs.String())
+				}
 			}
 		})
 	}

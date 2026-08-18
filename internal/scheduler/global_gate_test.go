@@ -152,6 +152,74 @@ func TestGlobalDispatchGateManualPauseIsStrongerThanOpenWindow(t *testing.T) {
 	}
 }
 
+func TestGlobalDispatchGateConfiguredPauseRejectsStaleCandidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configure func(*scheduler.GlobalDispatchGate, scheduler.ProjectCandidate)
+	}{
+		{
+			name: "initial configuration",
+			configure: func(gate *scheduler.GlobalDispatchGate, project scheduler.ProjectCandidate) {
+				gate.SetProjects([]scheduler.ProjectCandidate{project})
+			},
+		},
+		{
+			name: "runtime reconfiguration",
+			configure: func(gate *scheduler.GlobalDispatchGate, project scheduler.ProjectCandidate) {
+				project.Paused = false
+				gate.SetProjects([]scheduler.ProjectCandidate{project})
+				project.Paused = true
+				gate.SetProjects([]scheduler.ProjectCandidate{project})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			project := scheduler.ProjectCandidate{ID: "paused", Weight: 1, Priority: 0, Paused: true}
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+			tt.configure(gate, project)
+
+			project.Paused = false
+			gate.BeginProjectCycle(project)
+			gate.MarkReady(project)
+			active := scheduler.ProjectCandidate{ID: "active", Weight: 1, Priority: 2}
+			slot, ok, decision, err := gate.TryAcquireWithDecision(
+				t.Context(),
+				active,
+				scheduler.SlotRequest{State: "Todo"},
+				time.Now(),
+			)
+			if err != nil {
+				t.Fatalf("active TryAcquireWithDecision() error = %v", err)
+			}
+			if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+				t.Fatalf("active TryAcquireWithDecision() ok = %t decision = %#v, want grant", ok, decision)
+			}
+			if err := gate.Release(slot); err != nil {
+				t.Fatalf("Release() error = %v", err)
+			}
+
+			_, ok, decision, err = gate.TryAcquireWithDecision(
+				t.Context(),
+				project,
+				scheduler.SlotRequest{State: "Todo"},
+				time.Now(),
+			)
+			if err != nil {
+				t.Fatalf("TryAcquireWithDecision() error = %v", err)
+			}
+			if ok || decision.Reason != scheduler.DispatchGateReasonPaused {
+				t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want configured pause", ok, decision)
+			}
+		})
+	}
+}
+
 func TestGlobalDispatchGateUsesConfiguredProjectSelection(t *testing.T) {
 	t.Parallel()
 

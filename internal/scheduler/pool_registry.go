@@ -357,7 +357,7 @@ func (r *PoolRegistry) Release(slot Slot) error {
 }
 
 func (r *PoolRegistry) setProjectsLocked(projects []ProjectCandidate) {
-	normalized := normalizeProjectCandidates(projects)
+	normalized := normalizeConfiguredProjectCandidates(projects)
 	projectPools := make(map[string]string, len(normalized))
 	grouped := make(map[string][]ProjectCandidate, len(r.active))
 	for _, project := range normalized {
