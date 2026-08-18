@@ -76,6 +76,10 @@ func (o *Orchestrator) applyTargetedReconcile(
 
 	if running, ok := state.Running[issue.ID]; ok &&
 		(!stateIn(running.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates)) {
+		if accepted, acceptedCompletion := o.acceptCurrentAttemptCompletionLane(ctx, state, running, running.Issue, now); acceptedCompletion {
+			state.Running[issue.ID] = accepted
+			return
+		}
 		if running.Generation == 0 && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 			o.completeTerminalRunning(ctx, state, issue.ID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
 			return

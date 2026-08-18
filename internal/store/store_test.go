@@ -135,6 +135,100 @@ func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
 	}
 }
 
+func TestDeliveredLaneRevocationMigrationUpDown(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 38); err != nil {
+		t.Fatalf("goose.UpToContext(38) error = %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO work_attempts (
+  id, project_id, worker_type, status, started_at, completed_at,
+  terminal_state, error_class, error_message, phase, status_message, worker_metadata_json
+) VALUES
+  (3295, 'corp', 'implementation', 'terminal', '2026-08-18T20:49:37Z', '2026-08-18T21:10:53Z',
+   'lane_revoked', 'lane_revoked', 'tracker_lane_changed', 'lane_revoked', 'worker stopped after leaving a worker-owned lane',
+   '{"work_product_pushed":true,"lane_revocation":{"work_discarded":true}}'),
+  (3238, 'corp', 'implementation', 'terminal', '2026-08-18T15:59:18Z', '2026-08-18T16:06:21Z',
+   'lane_revoked', 'lane_revoked', 'tracker_lane_changed', 'lane_revoked', 'worker stopped after leaving a worker-owned lane',
+   '{"work_product_pushed":false,"lane_revocation":{"work_discarded":true}}'),
+  (3300, 'corp', 'implementation', 'terminal', '2026-08-18T22:00:00Z', '2026-08-18T22:10:00Z',
+   'lane_revoked', 'lane_revoked', 'operator_hold', 'lane_revoked', 'operator stopped the worker',
+   '{"work_product_pushed":true}');
+`); err != nil {
+		t.Fatalf("seed lane revocations error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO codex_sessions (id, work_attempt_id, identifier, started_at, completed_at, final_state) VALUES
+  (3337, 3295, 'gopherguides/corp#72', '2026-08-18T20:49:37Z', '2026-08-18T21:10:53Z', 'lane_revoked'),
+  (3338, 3238, 'gopherguides/corp#72', '2026-08-18T15:59:18Z', '2026-08-18T16:06:21Z', 'lane_revoked');
+`); err != nil {
+		t.Fatalf("seed lane revocation sessions error = %v", err)
+	}
+
+	if err := goose.UpToContext(ctx, db, "migrations", 39); err != nil {
+		t.Fatalf("goose.UpToContext(39) error = %v", err)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 3295"); got != "delivered" {
+		t.Fatalf("delivered terminal state = %q, want delivered", got)
+	}
+	if got := queryString(t, db, "SELECT COALESCE(error_class, '') FROM work_attempts WHERE id = 3295"); got != "" {
+		t.Fatalf("delivered error class = %q, want empty", got)
+	}
+	if got := queryString(t, db, "SELECT json_extract(worker_metadata_json, '$.historical_lane_revocation.classification') FROM work_attempts WHERE id = 3295"); got != "delivered_before_revocation" {
+		t.Fatalf("historical classification = %q, want delivered_before_revocation", got)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 3238"); got != "lane_revoked" {
+		t.Fatalf("undelivered attempt terminal state = %q, want lane_revoked", got)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 3300"); got != "lane_revoked" {
+		t.Fatalf("operator revocation terminal state = %q, want lane_revoked", got)
+	}
+	if got := queryString(t, db, "SELECT final_state FROM codex_sessions WHERE id = 3337"); got != "delivered" {
+		t.Fatalf("delivered session final state = %q, want delivered", got)
+	}
+	if got := queryString(t, db, "SELECT final_state FROM codex_sessions WHERE id = 3338"); got != "lane_revoked" {
+		t.Fatalf("undelivered session final state = %q, want lane_revoked", got)
+	}
+
+	if err := goose.DownToContext(ctx, db, "migrations", 38); err != nil {
+		t.Fatalf("goose.DownToContext(38) error = %v", err)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 3295"); got != "lane_revoked" {
+		t.Fatalf("restored terminal state = %q, want lane_revoked", got)
+	}
+	if got := queryString(t, db, "SELECT error_message FROM work_attempts WHERE id = 3295"); got != "tracker_lane_changed" {
+		t.Fatalf("restored error message = %q, want tracker_lane_changed", got)
+	}
+	if got := queryString(t, db, "SELECT final_state FROM codex_sessions WHERE id = 3337"); got != "lane_revoked" {
+		t.Fatalf("restored session final state = %q, want lane_revoked", got)
+	}
+	if got := queryInt(t, db, "SELECT COUNT(*) FROM work_attempts WHERE json_extract(worker_metadata_json, '$.historical_lane_revocation.classification') IS NOT NULL"); got != 0 {
+		t.Fatalf("historical classifications after down = %d, want 0", got)
+	}
+}
+
 func TestCachedTokenTelemetryMigrationUpDown(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")

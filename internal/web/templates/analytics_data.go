@@ -102,7 +102,7 @@ func analyticsAttemptDecision(attempt telemetry.WorkAttempt) (primitives.Kind, s
 		return primitives.KindErr, "failed"
 	}
 	switch strings.ToLower(strings.TrimSpace(attempt.TerminalState)) {
-	case "done", "completed", "merged", "success":
+	case "done", "completed", "merged", "success", "delivered":
 		return primitives.KindOK, "completed"
 	case "cancelled", "canceled":
 		return primitives.KindNeutral, "cancelled"

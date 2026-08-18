@@ -66,9 +66,10 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			want: "Review",
 		},
 		{
-			name:       "rework completed with open pull request waits for dispatch",
+			name:       "rework completed with open pull request advances to human review",
 			issue:      completionTransitionIssue("Rework", "OPEN"),
 			finalState: FinalStateCompleted,
+			want:       autoPromoteSourceState,
 		},
 		{
 			name: "operational rework completion advances to review",

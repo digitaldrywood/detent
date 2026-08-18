@@ -1310,6 +1310,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	promptOptions := PromptOptions{
 		Attempt:              &attempt,
+		WorkAttemptID:        req.WorkAttemptID,
+		Generation:           req.Generation,
 		PlanOnly:             mode == RunModePlan,
 		MergeFallback:        mergeFallback,
 		MergePrecheckStatus:  mergePrecheck.Status,

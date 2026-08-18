@@ -292,6 +292,10 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 			}
 		}
 		if !stateIn(refreshedRunning.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshedRunning.Issue, o.cfg.TerminalStates) {
+			if accepted, ok := o.acceptCurrentAttemptCompletionLane(ctx, state, running, refreshedRunning.Issue, now); ok {
+				state.Running[id] = accepted
+				continue
+			}
 			if running.Generation == 0 && workspaceIssueTerminal(refreshedRunning.Issue, o.cfg.TerminalStates) {
 				o.completeTerminalRunning(ctx, state, id, refreshedRunning, terminalCompletedAt(refreshedRunning.Issue, o.cfg.TerminalStates, now), refreshedRunning.Tokens)
 				continue
