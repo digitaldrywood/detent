@@ -71,6 +71,22 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			finalState: FinalStateCompleted,
 		},
 		{
+			name: "operational rework completion advances to review",
+			issue: func() connector.Issue {
+				issue := completionTransitionIssue("Rework", "")
+				issue.Comments = []connector.IssueComment{{
+					Body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+				}}
+				return issue
+			}(),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindCommand},
+			},
+			want: autoPromoteSourceState,
+		},
+		{
 			name:       "artifact rework completed without pull request advances to configured review",
 			issue:      completionTransitionIssue("Rework", ""),
 			finalState: FinalStateCompleted,
@@ -366,6 +382,61 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	}
 	if len(state.RecentEvents) != 0 {
 		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
+	}
+}
+
+func TestTransitionCompletedActiveIssuesCompletesOperationalWorkWithoutPullRequest(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 18, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "")
+	issue.Comments = []connector.IssueComment{{
+		Body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+		URL:  "https://github.test/comment/operational-completion",
+	}}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "Done" {
+		t.Fatalf("Completed issue state = %q, want Done", got)
+	}
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Completed this issue operationally",
+		"reason: operational_completion",
+		"operational_evidence: Runner service is healthy and accepting jobs.",
+		"workpad_comment: https://github.test/comment/operational-completion",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
 	}
 }
 
@@ -723,6 +794,18 @@ func completionTransitionIssue(state string, pullRequestState string) connector.
 		issue.PullRequest = &connector.PullRequest{State: pullRequestState}
 	}
 	return issue
+}
+
+func operationalCompletionWorkpadBody(evidence string) string {
+	return "## Codex Workpad\n\n```detent-status\n" +
+		"schema: 1\n" +
+		"status: complete\n" +
+		"fields:\n" +
+		"  completion_kind: operational\n" +
+		"  completion_evidence: \"" + evidence + "\"\n" +
+		"blockers: []\n" +
+		"human_action: null\n" +
+		"```"
 }
 
 func artifactCompletionTransitionIssue(state string, status string) connector.Issue {

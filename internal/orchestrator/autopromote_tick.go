@@ -44,8 +44,10 @@ type autoPromoteTickResult struct {
 }
 
 type staleMergingPullRequestDecision struct {
-	targetState string
-	reason      string
+	targetState         string
+	reason              string
+	operationalEvidence string
+	workpadURL          string
 }
 
 type mergeBaseRefreshDecision struct {
@@ -97,12 +99,14 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if issueID == "" {
 			continue
 		}
-		if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
-			if transitioned {
-				result.transitioned[issueID] = struct{}{}
-				o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+		if _, operational := operationalCompletionFromIssue(issue); !operational {
+			if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
+				if transitioned {
+					result.transitioned[issueID] = struct{}{}
+					o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+				}
+				continue
 			}
-			continue
 		}
 
 		summary := AutoPromoteSummaryFromIssue(issue)
@@ -254,9 +258,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		return
 	}
 	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	if !autoPromoteDurableGateWaitTrackingEnabled(autoCfg) {
-		return
-	}
+	gateWaitTracking := autoPromoteDurableGateWaitTrackingEnabled(autoCfg)
 	if state.Completed == nil {
 		state.Completed = map[string]Completed{}
 	}
@@ -268,14 +270,24 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		if _, ok := state.Completed[issueID]; ok {
 			continue
 		}
-		if !autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg) {
+		completion, operational := operationalCompletionFromIssue(issue)
+		var (
+			attempt store.WorkAttempt
+			ok      bool
+			err     error
+		)
+		switch {
+		case operational:
+			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
+		case gateWaitTracking && autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg):
+			attempt, ok, err = o.latestSuccessfulGateWaitAttempt(ctx, issue)
+		default:
 			continue
 		}
-		attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, issue)
 		if err != nil {
 			if o.logger != nil {
 				o.logger.Warn(
-					"restore durable gate-wait completion failed",
+					"restore durable completion failed",
 					"issue_id", issueID,
 					"identifier", issue.Identifier,
 					"error", err,
@@ -297,18 +309,7 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 	if o == nil || o.workAttempts == nil {
 		return store.WorkAttempt{}, false, nil
 	}
-	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
-	if limit < 20 {
-		limit = 20
-	}
-	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
-		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
-		IssueID:    strings.TrimSpace(issue.ID),
-		Identifier: strings.TrimSpace(issue.Identifier),
-		IssueURL:   strings.TrimSpace(issue.URL),
-		WorkerType: "agent",
-		Limit:      limit,
-	})
+	attempts, err := o.recentAgentTerminalAttempts(ctx, issue)
 	if err != nil {
 		return store.WorkAttempt{}, false, err
 	}
@@ -322,6 +323,60 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 		return attempt, true, nil
 	}
 	return store.WorkAttempt{}, false, nil
+}
+
+func (o *Orchestrator) latestSuccessfulOperationalCompletionAttempt(
+	ctx context.Context,
+	issue connector.Issue,
+	completion operationalCompletion,
+) (store.WorkAttempt, bool, error) {
+	if completion.recordedAt == nil || completion.recordedAt.IsZero() {
+		return store.WorkAttempt{}, false, nil
+	}
+	attempts, err := o.recentAgentTerminalAttempts(ctx, issue)
+	if err != nil {
+		return store.WorkAttempt{}, false, err
+	}
+	for _, attempt := range attempts {
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.CompletedAt.Before(*completion.recordedAt) {
+			continue
+		}
+		record, ok := implementProgressRecordFromAttempt(attempt)
+		if !ok || strings.TrimSpace(record.Outcome) != string(store.WorkAttemptTerminalSuccess) {
+			continue
+		}
+		if strings.TrimSpace(record.WorkpadStatus) != workpad.StatusComplete ||
+			!slices.Contains(record.ProgressKinds, "audit_artifact") {
+			continue
+		}
+		return attempt, true, nil
+	}
+	return store.WorkAttempt{}, false, nil
+}
+
+func (o *Orchestrator) recentAgentTerminalAttempts(
+	ctx context.Context,
+	issue connector.Issue,
+) ([]store.WorkAttempt, error) {
+	if o == nil || o.workAttempts == nil {
+		return nil, nil
+	}
+	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
+	if limit < 20 {
+		limit = 20
+	}
+	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
+		WorkerType: "agent",
+		Limit:      limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return attempts, nil
 }
 
 func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connector.Issue) bool {
@@ -740,6 +795,27 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			continue
 		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
+		if decision.reason == string(AutoPromoteReasonOperationalCompletion) {
+			completion, _ := operationalCompletionFromIssue(issue)
+			_, completed, err := o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
+			if err != nil {
+				if o.logger != nil {
+					o.logger.Warn(
+						"stale operational completion reconciliation failed",
+						"issue_id", issueID,
+						"identifier", issue.Identifier,
+						"error", err,
+					)
+				}
+				consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
+				continue
+			}
+			if !completed {
+				o.logStaleMergingPullRequestDeferred(issue, decision)
+				consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
+				continue
+			}
+		}
 		if decision.reason == string(AutoPromoteReasonCINotGreen) &&
 			o.retryTransientPullRequestChecks(ctx, state, issue, now, decision.reason) {
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
@@ -771,6 +847,14 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) 
 	}
 	if closedCompletedIssueNeedsStatusReconciliation(issue, cfg.TerminalStates) {
 		return staleMergingPullRequestDecision{targetState: doneStateName(cfg.TerminalStates), reason: "issue_closed_completed"}
+	}
+	if completion, ok := operationalCompletionFromIssue(issue); ok {
+		return staleMergingPullRequestDecision{
+			targetState:         doneStateName(cfg.TerminalStates),
+			reason:              string(AutoPromoteReasonOperationalCompletion),
+			operationalEvidence: completion.evidence,
+			workpadURL:          completion.workpadURL,
+		}
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
 		return staleMergingPullRequestDecision{
@@ -848,10 +932,12 @@ func (o *Orchestrator) applyStaleMergingPullRequestDecision(
 	}
 
 	o.logStaleMergingPullRequestDecision(issue, decision)
-	if normalizeState(decision.targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) {
-		o.recordMergeCompleted(state, issue, now, decision.targetState)
-	} else {
-		o.recordMergeFailed(state, issue, now, decision.reason, nil)
+	if decision.reason != string(AutoPromoteReasonOperationalCompletion) {
+		if normalizeState(decision.targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) {
+			o.recordMergeCompleted(state, issue, now, decision.targetState)
+		} else {
+			o.recordMergeFailed(state, issue, now, decision.reason, nil)
+		}
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
@@ -868,6 +954,14 @@ func staleMergingPullRequestComment(issue connector.Issue, decision staleMerging
 	b.WriteString(".")
 	b.WriteString("\n\n- reason: ")
 	b.WriteString(decision.reason)
+	if evidence := strings.TrimSpace(decision.operationalEvidence); evidence != "" {
+		b.WriteString("\n- operational_evidence: ")
+		b.WriteString(evidence)
+	}
+	if url := strings.TrimSpace(decision.workpadURL); url != "" {
+		b.WriteString("\n- workpad_comment: ")
+		b.WriteString(url)
+	}
 	if issue.PullRequest != nil {
 		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
 			b.WriteString("\n- pull request: ")
@@ -893,6 +987,12 @@ func (o *Orchestrator) logStaleMergingPullRequestDecision(issue connector.Issue,
 		"reason", decision.reason,
 		"target_state", decision.targetState,
 	)
+	if evidence := strings.TrimSpace(decision.operationalEvidence); evidence != "" {
+		attrs = append(attrs, "operational_evidence", evidence)
+	}
+	if url := strings.TrimSpace(decision.workpadURL); url != "" {
+		attrs = append(attrs, "workpad_comment_url", url)
+	}
 	o.logger.Info("stale_merging_pr_reconciled", attrs...)
 }
 
@@ -2589,6 +2689,8 @@ func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 func autoPromoteTargetState(action AutoPromoteAction, cfg AutoPromoteConfig) string {
 	cfg = normalizeAutoPromoteConfig(cfg)
 	switch action {
+	case AutoPromoteActionComplete:
+		return doneStateName(cfg.TerminalStates)
 	case AutoPromoteActionPromote:
 		return cfg.PassState
 	case AutoPromoteActionRework:
@@ -2953,6 +3055,9 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 }
 
 func appendAutoPromoteWorkpadAttrs(attrs []any, decision AutoPromoteDecision) []any {
+	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
+		attrs = append(attrs, "operational_evidence", evidence)
+	}
 	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
 		attrs = append(attrs, "workpad_comment_url", url)
 	}
@@ -3008,6 +3113,12 @@ func autoPromoteComment(
 		return ""
 	}
 	switch {
+	case decision.Action == AutoPromoteActionComplete:
+		b.WriteString("Completed this issue operationally from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(" without a pull request.")
 	case decision.Action == AutoPromoteActionPromote:
 		b.WriteString("Auto-promoted this issue from ")
 		b.WriteString(sourceState)
@@ -3056,6 +3167,10 @@ func autoPromoteComment(
 	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
 		b.WriteString("\n- failed_checks: ")
 		b.WriteString(failedChecks)
+	}
+	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
+		b.WriteString("\n- operational_evidence: ")
+		b.WriteString(evidence)
 	}
 	appendAutoPromoteWorkpadCommentFields(&b, decision)
 

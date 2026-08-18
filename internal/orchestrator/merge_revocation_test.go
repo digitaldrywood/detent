@@ -203,6 +203,47 @@ func TestDraftMergeRevocationUsesConfiguredSourceState(t *testing.T) {
 	}
 }
 
+func TestMergeRevocationDoesNotReportMissingPullRequestForOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{SourceState: "Human Review"}})
+	tests := []struct {
+		name        string
+		body        string
+		wantRevoked bool
+		wantReason  string
+	}{
+		{
+			name: "declared operational completion",
+			body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+		},
+		{
+			name:        "ordinary no diff completion",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantRevoked: true,
+			wantReason:  mergeRevocationMissingPullRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:    "issue-operational-merge",
+				State: "Merging",
+				Comments: []connector.IssueComment{{
+					Body: tt.body,
+				}},
+			}
+			revocation, revoked := mergeRevocationForIssue(issue, cfg, true)
+			if revoked != tt.wantRevoked || revocation.reason != tt.wantReason {
+				t.Fatalf("mergeRevocationForIssue() = %#v, %t; want revoked %t reason %q", revocation, revoked, tt.wantRevoked, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestMergeRevocationCommentsDeduplicateReasonAndHeadSHA(t *testing.T) {
 	t.Parallel()
 

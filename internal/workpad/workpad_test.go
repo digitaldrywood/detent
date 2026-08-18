@@ -166,6 +166,83 @@ func TestSignalFromComment(t *testing.T) {
 	}
 }
 
+func TestOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		signal       *Signal
+		wantEvidence string
+		want         bool
+	}{
+		{
+			name: "structured complete declaration",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{
+					"completion_kind":     "operational",
+					"completion_evidence": "Runner service is healthy and accepting jobs.",
+				},
+			},
+			wantEvidence: "Runner service is healthy and accepting jobs.",
+			want:         true,
+		},
+		{
+			name: "missing evidence",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{"completion_kind": "operational"},
+			},
+		},
+		{
+			name: "ordinary completion",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+			},
+		},
+		{
+			name: "blocked declaration",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusBlocked,
+				Fields: map[string]string{
+					"completion_kind":     "operational",
+					"completion_evidence": "Runner service is healthy.",
+				},
+			},
+		},
+		{
+			name: "completion with blocker",
+			signal: &Signal{
+				Source:   SourceStructured,
+				Status:   StatusComplete,
+				Blockers: []Blocker{{Reason: "waiting for verification"}},
+				Fields: map[string]string{
+					"completion_kind":     "operational",
+					"completion_evidence": "Runner service is healthy.",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotEvidence, got := OperationalCompletion(tt.signal)
+			if got != tt.want {
+				t.Fatalf("OperationalCompletion() ok = %t, want %t", got, tt.want)
+			}
+			if gotEvidence != tt.wantEvidence {
+				t.Fatalf("OperationalCompletion() evidence = %q, want %q", gotEvidence, tt.wantEvidence)
+			}
+		})
+	}
+}
+
 func TestParseRef(t *testing.T) {
 	t.Parallel()
 
