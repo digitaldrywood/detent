@@ -311,6 +311,17 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			pushEvidenceRefreshed = warning == ""
 			o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, warning != "")
 		}
+		progress := implementCompletionProgressDecision{}
+		progressMetadata := map[string]any{}
+		if !mergeWorkerIssue(running.Issue) && strings.TrimSpace(event.Request.Mode) != runpkg.RunModePlan && strings.TrimSpace(running.Mode) != runpkg.RunModePlan {
+			if diffStatsPresent(event.Result.DiffStats) {
+				running.DiffStats = event.Result.DiffStats
+			}
+			progress = o.evaluateImplementCompletionProgress(ctx, running, event.Result.FinalState, event.Result.PullRequestUpdated)
+			progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
+			running.Issue = progress.Issue
+			progressMetadata = implementCompletionProgressMetadata(progress)
+		}
 		spendProgress := spendProgressDecision{}
 		if !mergeWorkerIssue(running.Issue) {
 			evidenceWarning := ""
@@ -335,7 +346,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			phase = "blocked"
 			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
 		}
-		if spendProgress.Block && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+			terminalState = store.WorkAttemptTerminalNoProgress
+			errorClass = dispatchLoopDetectedReason
+			errorMessage = dispatchLoopBlockMessage(progress)
+			phase = "no_progress"
+			statusMessage = "dispatch loop circuit breaker tripped"
+		} else if spendProgress.Block && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = spendProgressReason
 			errorMessage = spendProgressBlockMessage(spendProgress)
@@ -343,7 +360,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			statusMessage = "no-progress circuit breaker tripped"
 		}
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
-		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, spendProgressMetadata(spendProgress))
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+			progressMetadata,
+			spendProgressMetadata(spendProgress),
+		))
 		attempt := event.RetryAttempt
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
@@ -352,6 +372,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {
+			return
+		}
+		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && o.blockImplementProgress(ctx, state, running, progress, event.CompletedAt) {
 			return
 		}
 		if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {
@@ -457,6 +480,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.Issue = o.applyArtifactGateCompletionFields(ctx, running.Issue, running.DispatchWorkpadHash, running.DispatchWorkpadRead)
 	}
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
+	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 	running.Issue = progress.Issue
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		forceReapply := false
@@ -491,6 +515,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		terminalState = store.WorkAttemptTerminalNoProgress
 		phase = "no_progress"
 		statusMessage = "worker completed without PR progress"
+		if progress.BlockReason == dispatchLoopDetectedReason {
+			errorClass = dispatchLoopDetectedReason
+			errorMessage = dispatchLoopBlockMessage(progress)
+			statusMessage = "dispatch loop circuit breaker tripped"
+		}
 	}
 	if spendProgress.Block {
 		terminalState = store.WorkAttemptTerminalNoProgress

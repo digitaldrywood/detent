@@ -46,6 +46,7 @@ type Snapshot struct {
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
+	DispatchLoops           []DispatchLoop      `json:"dispatch_loops,omitempty"`
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
 	StalenessWarnings       []StalenessWarning  `json:"staleness_warnings,omitempty"`
 	StrandedActiveIssues    []StrandedIssue     `json:"stranded_active_issues,omitempty"`
@@ -231,6 +232,19 @@ type FailureBreakerItem struct {
 	RecoveryAction          string `json:"recovery_action,omitempty"`
 	RecoveryReason          string `json:"recovery_reason,omitempty"`
 	RecoveryIntentResumable bool   `json:"recovery_intent_resumable,omitempty"`
+}
+
+type DispatchLoop struct {
+	ProjectID             string     `json:"project_id,omitempty"`
+	IssueID               string     `json:"issue_id,omitempty"`
+	Identifier            string     `json:"identifier,omitempty"`
+	IssueURL              string     `json:"issue_url,omitempty"`
+	Title                 string     `json:"title,omitempty"`
+	Lane                  string     `json:"lane,omitempty"`
+	ConsecutiveDispatches int        `json:"consecutive_dispatches"`
+	DispatchLimit         int        `json:"dispatch_limit"`
+	Tripped               bool       `json:"tripped"`
+	LastCompletedAt       *time.Time `json:"last_completed_at,omitempty"`
 }
 
 type DispatchRecovery struct {

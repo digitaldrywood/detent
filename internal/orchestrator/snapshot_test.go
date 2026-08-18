@@ -93,6 +93,51 @@ func TestStateSnapshotCarriesLatestCompletionProgress(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotSurfacesActiveDispatchLoops(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 16, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		count     int
+		wantLoops int
+		wantTrip  bool
+	}{
+		{name: "single slow run is not an active loop", count: 1},
+		{name: "repetition is surfaced before trip", count: 2, wantLoops: 1},
+		{name: "tripped loop remains visible", count: 3, wantLoops: 1, wantTrip: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			state := newState(normalizeConfig(Config{}))
+			state.BoardIssues = []connector.Issue{{ID: "issue-1886", Identifier: "digitaldrywood/detent#1886", Title: "Stop dispatch loops", State: "Rework"}}
+			state.WorkAttempts = []telemetry.WorkAttempt{{
+				AttemptID:          int64(tt.count),
+				IssueID:            "issue-1886",
+				Identifier:         "digitaldrywood/detent#1886",
+				Status:             string(store.WorkAttemptStatusTerminal),
+				TerminalState:      string(store.WorkAttemptTerminalSuccess),
+				CompletedAt:        timePointer(now),
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "success", Reason: implementDependencyDeferralReason, TrackerState: "Rework", ConsecutiveNoProgress: tt.count, NoProgressLimit: 3}}),
+			}}
+
+			loops := state.Snapshot(now).DispatchLoops
+			if len(loops) != tt.wantLoops {
+				t.Fatalf("DispatchLoops = %#v, want %d", loops, tt.wantLoops)
+			}
+			if tt.wantLoops == 0 {
+				return
+			}
+			loop := loops[0]
+			if loop.Identifier != "digitaldrywood/detent#1886" || loop.Lane != "Rework" || loop.ConsecutiveDispatches != tt.count || loop.DispatchLimit != 3 || loop.Tripped != tt.wantTrip || loop.LastCompletedAt == nil || !loop.LastCompletedAt.Equal(now) {
+				t.Fatalf("DispatchLoops[0] = %#v", loop)
+			}
+		})
+	}
+}
+
 func TestStateSnapshotCarriesOperatorStopRecovery(t *testing.T) {
 	t.Parallel()
 

@@ -702,6 +702,10 @@ func implementProgressRecordFromAttempt(attempt store.WorkAttempt) (implementPro
 		attempt.TerminalState != store.WorkAttemptTerminalNoProgress {
 		return implementProgressRecord{}, false
 	}
+	return implementProgressRecordFromAnyAttempt(attempt)
+}
+
+func implementProgressRecordFromAnyAttempt(attempt store.WorkAttempt) (implementProgressRecord, bool) {
 	var root struct {
 		CompletionProgress implementProgressRecord `json:"completion_progress"`
 	}
@@ -955,12 +959,16 @@ func (o *Orchestrator) blockImplementProgress(
 		Source:         BlockedSourceProjectStatus,
 		Recovery:       metadata.BlockedRecovery,
 	}
+	eventName := "implement_worker_no_progress_limit"
+	if blockReason == dispatchLoopDetectedReason {
+		eventName = "implement_worker_dispatch_loop_detected"
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      blockedAt,
-		Event:   "implement_worker_no_progress_limit",
+		Event:   eventName,
 		Message: "parked " + issueLabel(issue) + " after implement progress breaker " + blockReason,
 	})
-	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "implement_worker_no_progress_limit", o.runningLifecycleCorrelation(issue, running),
+	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, eventName, o.runningLifecycleCorrelation(issue, running),
 		"block_reason", blockReason,
 		"consecutive_no_progress", decision.ConsecutiveNoProgress,
 		"no_progress_limit", decision.NoProgressLimit,
@@ -997,7 +1005,11 @@ func implementProgressRecoveryReason(decision implementCompletionProgressDecisio
 
 func implementProgressBlockComment(issue connector.Issue, decision implementCompletionProgressDecision) string {
 	var b strings.Builder
-	if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+	if strings.TrimSpace(decision.BlockReason) == dispatchLoopDetectedReason {
+		b.WriteString("Routed this issue to Blocked: loop detected after ")
+		b.WriteString(strconv.Itoa(decision.ConsecutiveNoProgress))
+		b.WriteString(" dispatches without lane, diff, commit, or pull request advancement.")
+	} else if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
 		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly with work produced but stranded unpushed in the workspace.")
 	} else {
 		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly without deliverable progress.")
