@@ -296,6 +296,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
 		return
 	}
+	if errors.Is(event.Err, runpkg.ErrWorkspacePreparation) {
+		o.handleWorkspacePreparationFailure(ctx, state, event, running)
+		return
+	}
 
 	if event.Err != nil {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
@@ -620,6 +624,39 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, "", running.WorkerHost)
+}
+
+func (o *Orchestrator) handleWorkspacePreparationFailure(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	errorMessage := event.Err.Error()
+	o.logWorkerLifecycle(running.Issue, "worker_workspace_preparation_failed",
+		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+		"attempt", running.Attempt,
+		"worker_host", strings.TrimSpace(running.WorkerHost),
+		"error", event.Err,
+	)
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, workAttemptErrorWorkspace, errorMessage)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorWorkspace, errorMessage, "workspace_repair", "workspace preparation failed")
+	delete(state.InstantFailures, event.IssueID)
+	delete(state.RepeatedFailures, event.IssueID)
+	attempt := event.RetryAttempt
+	if attempt < 1 {
+		attempt = nextAttempt(running.Attempt)
+	}
+	delay := event.RetryDelay
+	if delay <= 0 {
+		delay = o.retryDelay(attempt, false)
+	}
+	o.scheduleRetryAfter(state, running.Issue, attempt, event.CompletedAt, delay, errorMessage, running.WorkerHost)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "workspace_repair_retry_scheduled",
+		Message: "scheduled workspace repair retry for " + issueLabel(running.Issue),
+	})
 }
 
 func (o *Orchestrator) completeRedundantGateWaitRun(

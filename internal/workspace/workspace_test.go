@@ -1443,6 +1443,136 @@ func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) 
 	}
 }
 
+func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
+	skipWindows(t)
+
+	tests := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{
+			name: "quarantine releases canonical admin name",
+			run: func(t *testing.T) {
+				source := initSourceRepo(t)
+				root := filepath.Join(t.TempDir(), "workspaces")
+				backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatalf("NewLocalGit() error = %v", err)
+				}
+
+				issue := Issue{Identifier: "DD-ADMIN-NAME"}
+				first, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("first Create() error = %v", err)
+				}
+				runGit(t, first.Path, "switch", "--detach", "HEAD")
+				if err := os.WriteFile(filepath.Join(first.Path, "local-progress.txt"), []byte("keep\n"), 0o600); err != nil {
+					t.Fatalf("write local progress: %v", err)
+				}
+
+				second, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("second Create() error = %v", err)
+				}
+				entries, err := os.ReadDir(filepath.Join(root, ".detent", "quarantine"))
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("quarantine entries = %d, error = %v, want one", len(entries), err)
+				}
+				quarantinedPath := filepath.Join(root, ".detent", "quarantine", entries[0].Name())
+				if got, want := filepath.Base(linkedWorktreeGitDir(t, second.Path)), filepath.Base(second.Path); got != want {
+					t.Fatalf("replacement admin name = %q, want %q", got, want)
+				}
+				if got, want := filepath.Base(linkedWorktreeGitDir(t, quarantinedPath)), filepath.Base(quarantinedPath); got != want {
+					t.Fatalf("quarantine admin name = %q, want %q", got, want)
+				}
+			},
+		},
+		{
+			name: "dangling gitdir is recreated",
+			run: func(t *testing.T) {
+				source := initSourceRepo(t)
+				root := filepath.Join(t.TempDir(), "workspaces")
+				backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatalf("NewLocalGit() error = %v", err)
+				}
+
+				issue := Issue{Identifier: "DD-DANGLING-GITDIR"}
+				first, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("first Create() error = %v", err)
+				}
+				adminDir := linkedWorktreeGitDir(t, first.Path)
+				orphanedAdminDir := adminDir + "-orphaned"
+				if err := os.Rename(adminDir, orphanedAdminDir); err != nil {
+					t.Fatalf("orphan admin directory: %v", err)
+				}
+
+				second, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("second Create() error = %v", err)
+				}
+				if !second.Created {
+					t.Fatal("second Create() Created = false, want true")
+				}
+				if got, want := filepath.Base(linkedWorktreeGitDir(t, second.Path)), filepath.Base(second.Path); got != want {
+					t.Fatalf("replacement admin name = %q, want %q", got, want)
+				}
+				if _, err := os.Stat(orphanedAdminDir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("orphaned admin directory stat error = %v, want absent", err)
+				}
+			},
+		},
+		{
+			name: "failed clean removal leaves recreatable path",
+			run: func(t *testing.T) {
+				source := initSourceRepo(t)
+				root := filepath.Join(t.TempDir(), "workspaces")
+				backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatalf("NewLocalGit() error = %v", err)
+				}
+
+				issue := Issue{Identifier: "DD-PARTIAL-REMOVE"}
+				first, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("first Create() error = %v", err)
+				}
+				runGit(t, first.Path, "branch", "detent/other-partial-remove", "HEAD")
+				runGit(t, first.Path, "switch", "detent/other-partial-remove")
+				lockedDir := filepath.Join(first.Path, "locked")
+				if err := os.MkdirAll(lockedDir, 0o700); err != nil {
+					t.Fatalf("create locked directory: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(lockedDir, "tracked.txt"), []byte("tracked\n"), 0o600); err != nil {
+					t.Fatalf("write tracked file: %v", err)
+				}
+				runGit(t, first.Path, "add", "locked/tracked.txt")
+				runGit(t, first.Path, "commit", "-m", "add locked file")
+				if err := os.Chmod(lockedDir, 0o500); err != nil {
+					t.Fatalf("make tracked directory read-only: %v", err)
+				}
+				t.Cleanup(func() { restoreWritableTree(t, first.Path) })
+
+				second, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("second Create() error = %v", err)
+				}
+				if !second.Created {
+					t.Fatal("second Create() Created = false, want true")
+				}
+				if _, err := os.Stat(filepath.Join(second.Path, "locked")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("stale locked directory stat error = %v, want absent", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)

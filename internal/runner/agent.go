@@ -1245,7 +1245,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
-		return RunResult{}, classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
+		classifiedErr := classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
+		return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, classifiedErr)
 	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,

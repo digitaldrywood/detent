@@ -6,6 +6,8 @@ import (
 
 const FinalStateCompleted = runner.FinalStateCompleted
 
+var ErrWorkspacePreparation = runner.ErrWorkspacePreparation
+
 const RunModeImplement = runner.RunModeImplement
 
 const RunModePlan = runner.RunModePlan
