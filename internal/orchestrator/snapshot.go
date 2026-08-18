@@ -31,6 +31,7 @@ const (
 // for publishing to the web dashboard. Slices are sorted by issue id so the
 // output is deterministic.
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
+	s = s.authorizedSnapshotRuntime()
 	poolCapacity := s.PoolCapacity
 	if poolCapacity <= 0 {
 		poolCapacity = s.MaxConcurrentAgents
@@ -570,8 +571,115 @@ func authorizedSnapshotIssues(issues []connector.Issue, authorization selector.S
 	}
 	out := make([]connector.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if selector.Match(issue, authorization, ctx) {
+		if snapshotIssueAuthorized(issue, authorization, ctx) {
 			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+func snapshotIssueAuthorized(issue connector.Issue, authorization selector.Selector, ctx selector.Context) bool {
+	return !authorization.Configured() || selector.Match(issue, authorization, ctx)
+}
+
+type snapshotRuntimeAuthorizer struct {
+	authorization selector.Selector
+	ctx           selector.Context
+	byID          map[string]connector.Issue
+	byIdentifier  map[string]connector.Issue
+	byURL         map[string]connector.Issue
+}
+
+func newSnapshotRuntimeAuthorizer(state State) snapshotRuntimeAuthorizer {
+	authorizer := snapshotRuntimeAuthorizer{
+		authorization: state.Authorization,
+		ctx:           state.SelectorContext,
+		byID:          map[string]connector.Issue{},
+		byIdentifier:  map[string]connector.Issue{},
+		byURL:         map[string]connector.Issue{},
+	}
+	for _, issue := range state.BoardIssues {
+		authorizer.add(issue)
+	}
+	for _, issue := range state.Pipeline {
+		authorizer.add(issue)
+	}
+	for _, id := range sortedKeys(state.Retry) {
+		authorizer.add(state.Retry[id].Issue)
+	}
+	for _, id := range sortedKeys(state.Running) {
+		authorizer.add(state.Running[id].Issue)
+	}
+	for _, id := range sortedKeys(state.Blocked) {
+		authorizer.add(state.Blocked[id].Issue)
+	}
+	for _, id := range sortedKeys(state.Completed) {
+		authorizer.add(state.Completed[id].Issue)
+	}
+	return authorizer
+}
+
+func (a snapshotRuntimeAuthorizer) add(issue connector.Issue) {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		if _, exists := a.byID[id]; !exists {
+			a.byID[id] = issue
+		}
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		if _, exists := a.byIdentifier[identifier]; !exists {
+			a.byIdentifier[identifier] = issue
+		}
+	}
+	if issueURL := strings.TrimSpace(issue.URL); issueURL != "" {
+		if _, exists := a.byURL[issueURL]; !exists {
+			a.byURL[issueURL] = issue
+		}
+	}
+}
+
+func (a snapshotRuntimeAuthorizer) authorized(issue connector.Issue) bool {
+	if !a.authorization.Configured() {
+		return true
+	}
+	if current, ok := a.byID[strings.TrimSpace(issue.ID)]; ok {
+		issue = current
+	} else if current, ok := a.byIdentifier[strings.TrimSpace(issue.Identifier)]; ok {
+		issue = current
+	} else if current, ok := a.byURL[strings.TrimSpace(issue.URL)]; ok {
+		issue = current
+	}
+	return snapshotIssueAuthorized(issue, a.authorization, a.ctx)
+}
+
+func (s State) authorizedSnapshotRuntime() State {
+	if !s.Authorization.Configured() {
+		return s
+	}
+	authorizer := newSnapshotRuntimeAuthorizer(s)
+	s.Retry = authorizedRuntimeEntries(s.Retry, authorizer, func(entry Retry) connector.Issue { return entry.Issue })
+	s.Running = authorizedRuntimeEntries(s.Running, authorizer, func(entry Running) connector.Issue { return entry.Issue })
+	s.Blocked = authorizedRuntimeEntries(s.Blocked, authorizer, func(entry Blocked) connector.Issue { return entry.Issue })
+	s.Completed = authorizedRuntimeEntries(s.Completed, authorizer, func(entry Completed) connector.Issue { return entry.Issue })
+	s.WorkAttempts = authorizedSnapshotWorkAttempts(s.WorkAttempts, authorizer)
+	return s
+}
+
+func authorizedRuntimeEntries[T any](entries map[string]T, authorizer snapshotRuntimeAuthorizer, issue func(T) connector.Issue) map[string]T {
+	out := make(map[string]T, len(entries))
+	for id, entry := range entries {
+		if authorizer.authorized(issue(entry)) {
+			out[id] = entry
+		}
+	}
+	return out
+}
+
+func authorizedSnapshotWorkAttempts(attempts []telemetry.WorkAttempt, authorizer snapshotRuntimeAuthorizer) []telemetry.WorkAttempt {
+	out := make([]telemetry.WorkAttempt, 0, len(attempts))
+	for _, attempt := range attempts {
+		issue := connector.Issue{ID: attempt.IssueID, Identifier: attempt.Identifier, URL: attempt.IssueURL}
+		if authorizer.authorized(issue) {
+			out = append(out, attempt)
 		}
 	}
 	return out
