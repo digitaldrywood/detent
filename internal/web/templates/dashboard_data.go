@@ -3230,7 +3230,7 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 				label += " (" + trackerState + ")"
 			}
 		} else if state := strings.TrimSpace(ref.State); state != "" {
-			label += " " + state
+			label += " (" + state + ")"
 		}
 		if projectKanbanBlockedRefCleared(ref, terminalStates) {
 			cleared = append(cleared, label)

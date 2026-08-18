@@ -1833,8 +1833,8 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		{Lane: "Backlog", IssueNumber: "#10", Title: "Backlog issue", TimeInStage: "7m 0s", Metadata: "No linked PR"},
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
 		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
-		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 In Progress", Metadata: "No linked PR"},
-		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", WaitDetail: "waiting for auto-promote", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
+		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 (In Progress)", Metadata: "No linked PR"},
+		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", WaitDetail: "waiting for auto-promote", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "digitaldrywood/detent#10 (Done)", Metadata: "PR #142"},
 		{Lane: "Done", IssueNumber: "#15", Title: "Done lane PR", URL: "https://github.com/digitaldrywood/detent/issues/15", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
 	}
 	if len(got) != len(want) {
@@ -2318,7 +2318,7 @@ func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
 			blockedBy: []telemetry.BlockedRef{
 				{Identifier: "digitaldrywood/detent#429", State: "Done"},
 			},
-			wantCleared: []string{"digitaldrywood/detent#429 Done"},
+			wantCleared: []string{"digitaldrywood/detent#429 (Done)"},
 		},
 		{
 			name:  "non-terminal dependency stays active",
@@ -2326,7 +2326,7 @@ func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
 			blockedBy: []telemetry.BlockedRef{
 				{Identifier: "digitaldrywood/detent#430", State: "In Progress"},
 			},
-			wantBlockers: []string{"digitaldrywood/detent#430 In Progress"},
+			wantBlockers: []string{"digitaldrywood/detent#430 (In Progress)"},
 		},
 		{
 			name:  "unresolved dependency stays active",
@@ -2402,7 +2402,7 @@ func TestProjectKanbanCardForIssueUsesProjectTerminalStates(t *testing.T) {
 	if len(card.Blockers) != 0 {
 		t.Fatalf("Blockers = %#v, want none for project terminal state", card.Blockers)
 	}
-	if got, want := strings.Join(card.ClearedBlockers, ", "), "digitaldrywood/custom#429 Released"; got != want {
+	if got, want := strings.Join(card.ClearedBlockers, ", "), "digitaldrywood/custom#429 (Released)"; got != want {
 		t.Fatalf("ClearedBlockers = %q, want %q", got, want)
 	}
 }

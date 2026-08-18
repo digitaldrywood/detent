@@ -556,6 +556,7 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 			if _, ok := transitioned[issue.ID]; ok {
 				t.Fatalf("transitioned[%q] present for held park", issue.ID)
 			}
+			orch.trackBlockedStatusIssues(&state, []connector.Issue{issue}, observedAt.Add(time.Minute))
 			blocked := state.Blocked[issue.ID]
 			if blocked.RecoveryAction != tt.wantAction || blocked.RecoveryReason != tt.wantReason {
 				t.Fatalf("blocked recovery = %q/%q, want %q/%q", blocked.RecoveryAction, blocked.RecoveryReason, tt.wantAction, tt.wantReason)
@@ -566,6 +567,91 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestBlockedCauseRecoveryUsesCurrentCauseAfterDependencyResolution(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 18, 21, 47, 10, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-current-blocked-cause", blockedStatusState)
+	issue.BlockedBy = []connector.BlockedRef{{
+		Identifier:   "gopherguides/corp#72",
+		State:        "Done",
+		TrackerState: connector.BlockedRefTrackerStateClosed,
+		Source:       connector.BlockedRefSourceNative,
+	}}
+	blocker := dependencyAutoUnblockIssue("issue-resolved-blocker", "Done")
+	blocker.Identifier = "gopherguides/corp#72"
+	blocker.Closed = true
+	cause := "no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead"
+	remedy := "return the issue to Todo when implementation work is ready to resume"
+	metadata := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
+		Owner:          blockedRecoveryOwnerHuman,
+		Cause:          cause,
+		Predicate:      blockedRecoveryPredicateManaged,
+		TargetState:    autoPromoteReworkState,
+		RunMode:        RunModeImplement,
+		HoldReason:     noCommitsToDeliverReason,
+		OperatorRemedy: remedy,
+	}}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+	tracker := &dependencyAutoUnblockConnector{blockers: []connector.Issue{blocker}}
+	orch := blockedCauseTestOrchestrator(tracker)
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         blockedReasonProjectStatus,
+		RecoveryReason: string(BlockedRecoveryReasonDependencyBlocker),
+		BlockedAt:      parkedAt,
+		Source:         BlockedSourceProjectStatus,
+	}
+
+	orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+	orch.trackBlockedStatusIssues(&state, []connector.Issue{issue}, parkedAt.Add(2*time.Minute))
+
+	blocked := state.Blocked[issue.ID]
+	if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != noCommitsToDeliverReason {
+		t.Fatalf("blocked recovery = %q/%q, want hold/%s", blocked.RecoveryAction, blocked.RecoveryReason, noCommitsToDeliverReason)
+	}
+	if blocked.Reason != cause {
+		t.Fatalf("blocked reason = %q, want current cause %q", blocked.Reason, cause)
+	}
+	if blocked.RecoveryRemedy != remedy || !blocked.NeedsHumanAttention {
+		t.Fatalf("blocked recovery remedy = %q, needs human = %t", blocked.RecoveryRemedy, blocked.NeedsHumanAttention)
+	}
+}
+
+func TestBlockedCauseRecoveryNamesUnresolvedDependency(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 22, 0, 0, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-unresolved-blocker", blockedStatusState)
+	issue.BlockedBy = []connector.BlockedRef{{Identifier: "gopherguides/corp#526", State: "In Progress", Source: connector.BlockedRefSourceNative}}
+	blocker := dependencyAutoUnblockIssue("issue-live-blocker", "In Progress")
+	blocker.Identifier = "gopherguides/corp#526"
+	tracker := &dependencyAutoUnblockConnector{blockers: []connector.Issue{blocker}}
+	orch := blockedCauseTestOrchestrator(tracker)
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         blockedReasonProjectStatus,
+		RecoveryReason: string(BlockedRecoveryReasonDependencyBlocker),
+		BlockedAt:      now,
+		Source:         BlockedSourceProjectStatus,
+	}
+
+	orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+	orch.trackBlockedStatusIssues(&state, []connector.Issue{issue}, now.Add(time.Minute))
+
+	blocked := state.Blocked[issue.ID]
+	if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != "dependency_recovery" {
+		t.Fatalf("blocked recovery = %q/%q, want defer/dependency_recovery", blocked.RecoveryAction, blocked.RecoveryReason)
+	}
+	if want := "waiting on gopherguides/corp#526 (In Progress)"; blocked.Reason != want {
+		t.Fatalf("blocked reason = %q, want %q", blocked.Reason, want)
 	}
 }
 

@@ -307,7 +307,16 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			return false
 		}
 		if len(blockers) > 0 && !dependencyBlockersReady(blockers, dependencyCfg, o.cfg.TerminalStates) {
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "")
+			o.recordBlockedRecoveryDecision(
+				ctx,
+				state,
+				withDependencies,
+				"defer",
+				"dependency_recovery",
+				nil,
+				"",
+				dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)...,
+			)
 			setBlockedEvidence(state, issue.ID, recorded.Evidence)
 			return false
 		}
@@ -333,8 +342,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		)
 		return false
 	}
-	if len(withDependencies.BlockedBy) > 0 {
-		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "")
+	unresolvedBlockers := dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)
+	if len(unresolvedBlockers) > 0 {
+		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "", unresolvedBlockers...)
 		return false
 	}
 	if holdReason == "invalid_workpad_signal" {
@@ -366,7 +376,11 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return transitioned
 	}
 	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_recovery", &park, park.CauseFingerprint)
+		reason := strings.TrimSpace(park.HoldReason)
+		if reason == "" {
+			reason = "human_recovery"
+		}
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", reason, &park, park.CauseFingerprint)
 		return false
 	}
 	if handled, transitioned := o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now); handled {
@@ -818,6 +832,7 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 		return
 	}
 	entry.Issue = cloneIssue(issue)
+	providedPark := park != nil
 	if park == nil {
 		if current, found := o.currentBlockedRecoveryPark(ctx, state, issue); found {
 			park = &current
@@ -832,6 +847,14 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 	entry.RecoveryRoot = nil
 	if park != nil {
 		current := *park
+		if providedPark {
+			if cause := strings.TrimSpace(current.Cause); cause != "" {
+				entry.Reason = cause
+			}
+			if remedy := strings.TrimSpace(current.OperatorRemedy); remedy != "" {
+				entry.RecoveryRemedy = remedy
+			}
+		}
 		current.IntentResumable = current.intentResumable()
 		current.Resumable = false
 		current.Reachability = entry.RecoveryReachability
@@ -844,7 +867,22 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 		entry.Recovery = nil
 		entry.RecoveryIntentResumable = strings.EqualFold(strings.TrimSpace(action), "defer")
 	}
+	if strings.EqualFold(strings.TrimSpace(reason), "dependency_recovery") && len(unresolvedWorkpadBlockers) > 0 {
+		entry.Reason = blockedDependencyWaitingReason(unresolvedWorkpadBlockers)
+	}
 	state.Blocked[issue.ID] = entry
+}
+
+func blockedDependencyWaitingReason(blockers []dependencyBlocker) string {
+	parts := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		part := dependencyBlockerLabel(blocker)
+		if state := dependencyBlockerState(blocker); state != "" {
+			part += " (" + state + ")"
+		}
+		parts = append(parts, part)
+	}
+	return "waiting on " + strings.Join(parts, ", ")
 }
 
 func blockedRecoveryReachability(action string) string {
