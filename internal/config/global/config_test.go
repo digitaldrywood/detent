@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -550,6 +551,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		Port:                  &port,
 		Global: Settings{
 			MaxConcurrentAgents: 3,
+			RateWindowPacing:    workflowconfig.DefaultRateWindowPacing(),
 			Scheduling:          SchedulingStrict,
 			AgentPools: []AgentPool{
 				{Name: "code", MaxConcurrentAgents: 5},

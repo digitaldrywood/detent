@@ -420,7 +420,7 @@ func (p *Project) DispatchCandidate() scheduler.ProjectCandidate {
 	return p.orchConfig.Project
 }
 
-func (p *Project) updateActiveHours(ctx context.Context, cfg globalconfig.Project) error {
+func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -430,6 +430,7 @@ func (p *Project) updateActiveHours(ctx context.Context, cfg globalconfig.Projec
 	p.mu.Lock()
 	workflow := p.workflow
 	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
+	workflow.Config.Agent.RateWindowPacing = effectiveRateWindowPacing(cfg, workflow.Config)
 	runtimeConfig := projectOrchestratorConfig(cfg, workflow.Config)
 	projectOrchestrator := p.orchestrator
 	running := p.done != nil
@@ -438,7 +439,7 @@ func (p *Project) updateActiveHours(ctx context.Context, cfg globalconfig.Projec
 
 	if projectOrchestrator != nil && running {
 		if err := projectOrchestrator.UpdateConfig(ctx, runtimeConfig); err != nil {
-			return fmt.Errorf("update project active hours: %w", err)
+			return fmt.Errorf("update project live config: %w", err)
 		}
 	}
 	if projectAdmission != nil {
@@ -1497,6 +1498,7 @@ func workflowConfigWithProjectIdentity(
 	project globalconfig.Project,
 	workflow workflowconfig.Config,
 ) workflowconfig.Config {
+	workflow.Agent.RateWindowPacing = effectiveRateWindowPacing(project, workflow)
 	if project.IntakeConfigured {
 		workflow.Intake = project.Intake
 		workflow.Intake.Normalize()
@@ -1519,6 +1521,13 @@ func workflowConfigWithProjectIdentity(
 	identity.Normalize()
 	workflow.Identity = identity
 	return workflow
+}
+
+func effectiveRateWindowPacing(project globalconfig.Project, workflow workflowconfig.Config) workflowconfig.RateWindowPacing {
+	if workflow.RateWindowPacingConfigured() {
+		return workflow.Agent.RateWindowPacing.Normalized()
+	}
+	return project.GlobalRateWindowPacing.Normalized()
 }
 
 func intakeRoot(project globalconfig.Project, workflow workflowconfig.Config) string {

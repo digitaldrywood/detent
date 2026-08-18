@@ -544,6 +544,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.output_truncation.max_bytes` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.overload_retry_delay_ms` | `integer` | `45000` | No | must be greater than 0 |
 | `agent.prioritize_unblockers` | `boolean` | `true` | No | None |
+| `agent.rate_window_pacing` | `object` | `see child fields` | No | None |
+| `agent.rate_window_pacing.floor_percent` | `number` | `20` | No | must be greater than 0 and less than or equal to 100 |
+| `agent.rate_window_pacing.mode` | `string` | `"proportional"` | No | must be one of proportional, off, floor |
+| `agent.rate_window_pacing.stale_after_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `agent.resume_orphaned_sessions` | `boolean` | `true` | No | None |
 | `agent.shutdown` | `object` | `see child fields` | No | None |
 | `agent.shutdown.drain_timeout_ms` | `integer` | `75000` | No | must be greater than or equal to 0 |

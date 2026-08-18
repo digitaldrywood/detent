@@ -27,6 +27,10 @@ update:
   auto_apply_enabled: false
 global:
   max_concurrent_agents: 8
+  rate_window_pacing:
+    mode: proportional
+    floor_percent: 20
+    stale_after_seconds: 900
   scheduling: weighted
   active_hours:
     timezone: America/Chicago
@@ -104,11 +108,37 @@ largest observed constraint across pool capacity, the project's
 `agent.max_concurrent_agents`, lane-specific
 `agent.max_concurrent_agents_by_state`, worker-host capacity, and subscription
 provider rate-window backpressure. Each finding names the matching lever.
-Rate-window backpressure recommends no configuration change because raising a
-configured cap cannot increase the effective provider-paced limit.
+Rate-window backpressure points to `global.rate_window_pacing` and the
+per-project `agent.rate_window_pacing` override. Raising a concurrency cap does
+not increase the effective provider-paced limit.
 Because pool refusals are sampled, all constraint reasons are normalized to
 one observation per five-minute interval before doctor selects the binding
 constraint. Telemetry from a project's previous pool assignment is ignored.
+
+`global.rate_window_pacing` controls subscription-provider pacing for every
+project unless that project's `agent.rate_window_pacing` explicitly overrides
+it. `mode: proportional` is the default and scales concurrency by the lowest
+fresh primary or secondary remaining percentage. `mode: off` never scales, so
+`agent.max_concurrent_agents` remains the project cap and
+`provider_rate_window_backpressure` cannot be a dispatch wait reason. `mode:
+floor` preserves full width while the remaining percentage is at or above
+`floor_percent`, then uses proportional scaling below that threshold.
+
+Provider buckets older than `stale_after_seconds` (default `900`), buckets
+without an observation timestamp, and snapshots with no primary or secondary
+bucket fail open to configured concurrency. The board state and `/health`
+report the effective mode, bucket status, observation time and remaining
+percentage, permit ceiling, and whether scaling is active under
+`dispatch.rate_window_pacing`. Turning pacing off or failing open shifts the
+risk to exhausting the provider window completely.
+
+A project override belongs in its `detent.yaml`:
+
+```yaml
+agent:
+  rate_window_pacing:
+    mode: off
+```
 
 A pool-bound project in a single-class pool is told to raise that pool's
 capacity, never to split it. For an elastic pool this names `burst_to`, the
@@ -248,6 +278,7 @@ can include `--workflow-ref origin/main` during registration or add
 | `ops.tmux_window_status` | Restart required |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
 | `global.active_hours` | Live reload at the next dispatch decision; running agents drain when a window closes |
+| `global.rate_window_pacing` and `agent.rate_window_pacing` | Live reload at the next dispatch decision without interrupting running agents; the project value wins when explicitly set |
 | `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
 | `log_level` | Live reload |
 | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |

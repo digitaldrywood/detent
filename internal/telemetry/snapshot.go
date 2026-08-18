@@ -347,20 +347,39 @@ type ProjectSnapshot struct {
 }
 
 type DispatchStatus struct {
-	ProjectID                string     `json:"project_id,omitempty"`
-	CandidateCount           int        `json:"candidate_count"`
-	EligibleCandidateCount   int        `json:"eligible_candidate_count"`
-	SelectedCount            int        `json:"selected_count"`
-	SkippedCount             int        `json:"skipped_count"`
-	WaitReason               string     `json:"wait_reason,omitempty"`
-	AllSkippedSince          *time.Time `json:"all_skipped_since,omitempty"`
-	LastSelectedAt           *time.Time `json:"last_selected_at,omitempty"`
-	SecondsSinceLastSelected *int64     `json:"seconds_since_last_selected,omitempty"`
-	StallDurationSeconds     int64      `json:"stall_duration_seconds,omitempty"`
-	StallThresholdSeconds    int64      `json:"stall_threshold_seconds,omitempty"`
-	ObservedAt               time.Time  `json:"observed_at,omitzero"`
-	Stalled                  bool       `json:"stalled"`
-	NeedsHumanAttention      bool       `json:"needs_human_attention"`
+	ProjectID                string           `json:"project_id,omitempty"`
+	CandidateCount           int              `json:"candidate_count"`
+	EligibleCandidateCount   int              `json:"eligible_candidate_count"`
+	SelectedCount            int              `json:"selected_count"`
+	SkippedCount             int              `json:"skipped_count"`
+	WaitReason               string           `json:"wait_reason,omitempty"`
+	AllSkippedSince          *time.Time       `json:"all_skipped_since,omitempty"`
+	LastSelectedAt           *time.Time       `json:"last_selected_at,omitempty"`
+	SecondsSinceLastSelected *int64           `json:"seconds_since_last_selected,omitempty"`
+	StallDurationSeconds     int64            `json:"stall_duration_seconds,omitempty"`
+	StallThresholdSeconds    int64            `json:"stall_threshold_seconds,omitempty"`
+	ObservedAt               time.Time        `json:"observed_at,omitzero"`
+	Stalled                  bool             `json:"stalled"`
+	NeedsHumanAttention      bool             `json:"needs_human_attention"`
+	RateWindowPacing         RateWindowPacing `json:"rate_window_pacing"`
+}
+
+const (
+	RateWindowBucketFresh   = "fresh"
+	RateWindowBucketMissing = "missing"
+	RateWindowBucketStale   = "stale"
+)
+
+type RateWindowPacing struct {
+	Mode                     string     `json:"mode"`
+	FloorPercent             float64    `json:"floor_percent"`
+	StaleAfterSeconds        int64      `json:"stale_after_seconds"`
+	Applicable               bool       `json:"applicable"`
+	BucketStatus             string     `json:"bucket_status"`
+	ObservedRemainingPercent *float64   `json:"observed_remaining_percent,omitempty"`
+	ObservedAt               *time.Time `json:"observed_at,omitempty"`
+	PermitCeiling            int        `json:"permit_ceiling"`
+	ScalingApplied           bool       `json:"scaling_applied"`
 }
 
 type Release struct {

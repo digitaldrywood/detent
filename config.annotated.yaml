@@ -46,6 +46,12 @@ worker:
 # Bound fleet concurrency globally and serialize only the merge lane.
 agent:
   max_concurrent_agents: 4
+  # The project may override global subscription-provider pacing. Missing or
+  # stale provider buckets fail open to max_concurrent_agents.
+  rate_window_pacing:
+    mode: proportional
+    floor_percent: 20
+    stale_after_seconds: 900
   max_concurrent_agents_by_state:
     Merging: 1
   auto_promote:

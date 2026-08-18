@@ -17,6 +17,7 @@ import (
 
 type dispatchPlanner struct {
 	cfg Config
+	now time.Time
 }
 
 type dispatchPlanHooks struct {
@@ -63,6 +64,7 @@ func (p dispatchPlanner) plan(
 	now time.Time,
 	hooks dispatchPlanHooks,
 ) DispatchPlan {
+	p.now = now
 	state.ensureInitialized(p.cfg)
 	p.trackOwnershipAttentionCandidates(state, candidates, now)
 
@@ -661,6 +663,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	preferredWorkerHost string,
 	modelPermitRequired bool,
 ) dispatchableDecision {
+	p.now = now
 	if !validCandidate(issue) {
 		return dispatchableDecision{reason: dispatchSkipInvalidCandidate}
 	}
@@ -905,19 +908,29 @@ func (p dispatchPlanner) providerModelPermitSlots(state *State) int {
 	if state == nil {
 		return 0
 	}
-	limit := state.MaxConcurrentAgents
-	if p.cfg.subscriptionBilling() {
-		if remaining, ok := providerRateWindowRemainingPercent(state); ok {
-			limit = int(math.Ceil(float64(limit) * remaining / 100))
-			limit = max(1, limit)
-		}
-	}
-	available := limit - modelPermitsUsed(state)
+	evaluation := evaluateProviderRateWindowPacing(
+		p.cfg.BillingMode,
+		p.cfg.RateWindowPacing,
+		state.MaxConcurrentAgents,
+		state.RateLimits,
+		p.now,
+	)
+	available := evaluation.permitCeiling - modelPermitsUsed(state)
 	return max(0, available)
 }
 
 func (p dispatchPlanner) rateWindowBackpressureActive(state *State) bool {
-	return p.cfg.subscriptionBilling() && p.hardAvailableSlots(state) > 0 && p.providerModelPermitSlots(state) == 0
+	if state == nil {
+		return false
+	}
+	evaluation := evaluateProviderRateWindowPacing(
+		p.cfg.BillingMode,
+		p.cfg.RateWindowPacing,
+		state.MaxConcurrentAgents,
+		state.RateLimits,
+		p.now,
+	)
+	return evaluation.scalingApplied && p.hardAvailableSlots(state) > 0 && p.providerModelPermitSlots(state) == 0
 }
 
 func (p dispatchPlanner) modelPermitRequiredAtDispatch(issue connector.Issue) bool {
@@ -941,21 +954,87 @@ func modelPermitsUsed(state *State) int {
 	return used
 }
 
-func providerRateWindowRemainingPercent(state *State) (float64, bool) {
-	if state == nil || state.RateLimits == nil {
-		return 0, false
+type providerRateWindowPacingEvaluation struct {
+	mode                     string
+	floorPercent             float64
+	staleAfter               time.Duration
+	applicable               bool
+	bucketStatus             string
+	observedRemainingPercent *float64
+	observedAt               *time.Time
+	permitCeiling            int
+	scalingApplied           bool
+}
+
+func evaluateProviderRateWindowPacing(
+	billingMode string,
+	pacing workflowconfig.RateWindowPacing,
+	maxConcurrent int,
+	limits *telemetry.RateLimits,
+	now time.Time,
+) providerRateWindowPacingEvaluation {
+	pacing = pacing.Normalized()
+	evaluation := providerRateWindowPacingEvaluation{
+		mode:          pacing.Mode,
+		floorPercent:  pacing.FloorPercent,
+		staleAfter:    time.Duration(pacing.StaleAfterSeconds) * time.Second,
+		permitCeiling: max(0, maxConcurrent),
 	}
-	remaining := 100.0
+	remaining, observedAt, status := providerRateWindowObservation(limits, now, evaluation.staleAfter)
+	evaluation.bucketStatus = status
+	evaluation.observedRemainingPercent = remaining
+	evaluation.observedAt = observedAt
+	evaluation.applicable = !strings.EqualFold(strings.TrimSpace(billingMode), workflowconfig.BillingModeMetered) && pacing.Mode != workflowconfig.RateWindowPacingOff
+	if !evaluation.applicable || status != telemetry.RateWindowBucketFresh || remaining == nil || maxConcurrent <= 0 {
+		return evaluation
+	}
+	if pacing.Mode == workflowconfig.RateWindowPacingFloor && *remaining >= pacing.FloorPercent {
+		return evaluation
+	}
+	evaluation.permitCeiling = max(1, int(math.Ceil(float64(maxConcurrent)*(*remaining)/100)))
+	evaluation.scalingApplied = evaluation.permitCeiling < maxConcurrent
+	return evaluation
+}
+
+func providerRateWindowObservation(
+	limits *telemetry.RateLimits,
+	now time.Time,
+	staleAfter time.Duration,
+) (*float64, *time.Time, string) {
+	if limits == nil {
+		return nil, nil, telemetry.RateWindowBucketMissing
+	}
+	var freshRemaining *float64
+	var freshObservedAt *time.Time
+	var staleRemaining *float64
+	var staleObservedAt *time.Time
 	seen := false
-	for _, bucket := range []*telemetry.RateLimitBucket{state.RateLimits.Primary, state.RateLimits.Secondary} {
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
 		if bucket == nil || bucket.Limit <= 0 {
 			continue
 		}
-		percent := float64(bucket.Remaining) / float64(bucket.Limit) * 100
-		remaining = min(remaining, max(0, min(100, percent)))
 		seen = true
+		percent := float64(bucket.Remaining) / float64(bucket.Limit) * 100
+		percent = max(0, min(100, percent))
+		if bucket.ObservedAt == nil || bucket.ObservedAt.IsZero() || !now.IsZero() && now.Sub(*bucket.ObservedAt) > staleAfter {
+			if staleRemaining == nil || percent < *staleRemaining {
+				staleRemaining = &percent
+				staleObservedAt = cloneTimePointer(bucket.ObservedAt)
+			}
+			continue
+		}
+		if freshRemaining == nil || percent < *freshRemaining {
+			freshRemaining = &percent
+			freshObservedAt = cloneTimePointer(bucket.ObservedAt)
+		}
 	}
-	return remaining, seen
+	if freshRemaining != nil {
+		return freshRemaining, freshObservedAt, telemetry.RateWindowBucketFresh
+	}
+	if seen {
+		return staleRemaining, staleObservedAt, telemetry.RateWindowBucketStale
+	}
+	return nil, nil, telemetry.RateWindowBucketMissing
 }
 
 func (p dispatchPlanner) stateSlotsAvailable(issue connector.Issue, state *State) bool {

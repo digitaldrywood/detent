@@ -124,6 +124,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
 	}
+	snapshot.Dispatch.RateWindowPacing = rateWindowPacingSnapshot(s, now)
 	if snapshot.Dispatch.Stalled {
 		snapshot.DispatchStalls = []telemetry.DispatchStatus{snapshot.Dispatch}
 	}
@@ -135,6 +136,27 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	}
 	applySnapshotLaneProvenance(&snapshot, s.laneProvenance)
 	return snapshot
+}
+
+func rateWindowPacingSnapshot(state State, now time.Time) telemetry.RateWindowPacing {
+	evaluation := evaluateProviderRateWindowPacing(
+		state.BillingMode,
+		state.RateWindowPacing,
+		state.MaxConcurrentAgents,
+		state.RateLimits,
+		now,
+	)
+	return telemetry.RateWindowPacing{
+		Mode:                     evaluation.mode,
+		FloorPercent:             evaluation.floorPercent,
+		StaleAfterSeconds:        int64(evaluation.staleAfter / time.Second),
+		Applicable:               evaluation.applicable,
+		BucketStatus:             evaluation.bucketStatus,
+		ObservedRemainingPercent: evaluation.observedRemainingPercent,
+		ObservedAt:               evaluation.observedAt,
+		PermitCeiling:            evaluation.permitCeiling,
+		ScalingApplied:           evaluation.scalingApplied,
+	}
 }
 
 func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.Duration, now time.Time) telemetry.DispatchStatus {

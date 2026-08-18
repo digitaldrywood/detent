@@ -44,6 +44,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		NoProgressTokenLimit:       cfg.Agent.NoProgressTokenLimit,
 		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
 		BillingMode:                cfg.Budget.EffectiveBillingMode(),
+		RateWindowPacing:           cfg.Agent.RateWindowPacing.Normalized(),
 		FailureBreaker: FailureBreakerConfig{
 			SameClassLimit: cfg.Agent.FailureBreaker.SameClassLimit,
 			Window:         durationFromSeconds(cfg.Agent.FailureBreaker.WindowSeconds),
@@ -159,6 +160,7 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability, term
 func normalizeConfig(cfg Config) Config {
 	cfg.ForgeHost = forgeavailability.NormalizeHost(cfg.ForgeHost)
 	cfg.BillingMode = strings.ToLower(strings.TrimSpace(cfg.BillingMode))
+	cfg.RateWindowPacing = cfg.RateWindowPacing.Normalized()
 	if cfg.BillingMode == "" {
 		cfg.BillingMode = workflowconfig.BillingModeSubscription
 	}

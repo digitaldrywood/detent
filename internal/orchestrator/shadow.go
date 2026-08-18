@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
@@ -53,6 +54,16 @@ func (s *State) ensureInitialized(cfg Config) {
 	}
 	if s.MaxConcurrentAgents <= 0 {
 		s.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	}
+	if s.BillingMode == "" {
+		s.BillingMode = cfg.BillingMode
+	}
+	if s.RateWindowPacing.Mode == "" {
+		s.RateWindowPacing = cfg.RateWindowPacing
+	}
+	s.RateWindowPacing = s.RateWindowPacing.Normalized()
+	if s.BillingMode == "" {
+		s.BillingMode = workflowconfig.BillingModeSubscription
 	}
 	if s.Running == nil {
 		s.Running = map[string]Running{}

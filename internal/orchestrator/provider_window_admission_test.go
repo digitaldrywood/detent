@@ -209,6 +209,19 @@ func TestProviderWindowScaledCap(t *testing.T) {
 	}
 }
 
+func TestProviderWindowPacingOffNeverBackpressures(t *testing.T) {
+	t.Parallel()
+
+	cfg := providerWindowTestConfig()
+	cfg.RateWindowPacing = workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}.Normalized()
+	state := providerWindowState(cfg, 1)
+	issue := dispatchTestIssue("candidate", "Todo")
+	decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, time.Now(), "")
+	if !decision.dispatchable || decision.reason == dispatchSkipRateWindowBackpressure {
+		t.Fatalf("dispatchable decision = %#v, want dispatchable without provider backpressure", decision)
+	}
+}
+
 func TestModelPermitDeferralReleasesHardCapacityAndPreservesPrecheck(t *testing.T) {
 	t.Parallel()
 

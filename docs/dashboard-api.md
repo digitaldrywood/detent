@@ -86,6 +86,16 @@ primary or secondary provider rate-window percentage. An omitted mode defaults
 to `subscription`, so USD controls are inert unless metered billing is declared
 explicitly.
 
+Subscription pacing is configured globally with `global.rate_window_pacing`
+and overridden per project with `agent.rate_window_pacing`. The default
+`proportional` mode preserves the existing percentage scaling. `off` disables
+scaling, and `floor` keeps full concurrency until remaining capacity falls
+below `floor_percent`. Missing buckets, buckets without an observation
+timestamp, and buckets older than `stale_after_seconds` fail open to
+`agent.max_concurrent_agents`. Both `/health` and board-state responses expose
+the resolved mode, bucket freshness, observed remaining percentage, and
+effective permit ceiling at `dispatch.rate_window_pacing`.
+
 `agent.no_progress_token_limit` defaults to `25000000` tokens and is enforced
 in both billing modes. Detent sums persisted `total_tokens` for the issue across
 attempts after its latest accepted lane or PR advancement. Reaching the limit

@@ -120,6 +120,7 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 	projects := append([]globalconfig.Project(nil), cfg.Projects...)
 	for index := range projects {
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
+		projects[index].GlobalRateWindowPacing = cfg.Global.RateWindowPacing
 		if cfg.Global.ActiveHours != nil {
 			activeHours := cfg.Global.ActiveHours.Normalize()
 			projects[index].GlobalActiveHours = &activeHours
@@ -334,7 +335,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	result := ReconcileResult{}
 	seen := make(map[ID]struct{}, len(m.cfg.Projects))
 	pending := map[ID]struct{}{}
-	activeHoursChanges := map[ID]*Project{}
+	liveConfigChanges := map[ID]*Project{}
 	for _, current := range m.registry.List() {
 		id := current.ID()
 		seen[id] = struct{}{}
@@ -347,9 +348,9 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			result.Unchanged = append(result.Unchanged, id)
 			continue
 		}
-		if !runtimeCredentialChanged && sameProjectConfigExceptActiveHours(current.Config(), next) {
+		if !runtimeCredentialChanged && sameProjectConfigExceptLiveFields(current.Config(), next) {
 			result.Changed = append(result.Changed, id)
-			activeHoursChanges[id] = current
+			liveConfigChanges[id] = current
 			continue
 		}
 		result.Changed = append(result.Changed, id)
@@ -383,7 +384,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	prepared := make(map[ID]*Project, len(result.Added)+len(result.Changed))
 	handled := map[ID]struct{}{}
 	for _, id := range result.Changed {
-		if _, ok := activeHoursChanges[id]; ok {
+		if _, ok := liveConfigChanges[id]; ok {
 			continue
 		}
 		_, preparedProject, err := m.createProjectLocked(desired[id])
@@ -414,13 +415,13 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	stopped := make([]rollbackProject, 0, len(result.Removed)+len(result.Changed))
 	started := make([]startedProject, 0, len(prepared))
 	added := map[ID]struct{}{}
-	updatedActiveHours := make([]rollbackActiveHours, 0, len(activeHoursChanges))
+	updatedLiveConfigs := make([]rollbackActiveHours, 0, len(liveConfigChanges))
 	rollback := func() error {
 		cleanupErr := m.stopUncommittedStartedProjects(ctx, started)
 		cleanupErr = errors.Join(cleanupErr, closePreparedProjects(ctx, prepared))
-		for i := len(updatedActiveHours) - 1; i >= 0; i-- {
-			item := updatedActiveHours[i]
-			cleanupErr = errors.Join(cleanupErr, item.project.updateActiveHours(ctx, item.config))
+		for i := len(updatedLiveConfigs) - 1; i >= 0; i-- {
+			item := updatedLiveConfigs[i]
+			cleanupErr = errors.Join(cleanupErr, item.project.updateLiveConfig(ctx, item.config))
 		}
 		for id := range added {
 			m.registry.Delete(id)
@@ -473,12 +474,12 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		if _, ok := handled[id]; ok {
 			continue
 		}
-		if current, ok := activeHoursChanges[id]; ok {
+		if current, ok := liveConfigChanges[id]; ok {
 			previousConfig := current.Config()
-			if err := current.updateActiveHours(ctx, desired[id]); err != nil {
+			if err := current.updateLiveConfig(ctx, desired[id]); err != nil {
 				return result, errors.Join(err, rollback())
 			}
-			updatedActiveHours = append(updatedActiveHours, rollbackActiveHours{
+			updatedLiveConfigs = append(updatedLiveConfigs, rollbackActiveHours{
 				project: current,
 				config:  previousConfig,
 			})
@@ -1314,12 +1315,13 @@ func sameProjectConfig(left globalconfig.Project, right globalconfig.Project) bo
 	return reflect.DeepEqual(normalizeManagerProjectConfig(left), normalizeManagerProjectConfig(right))
 }
 
-func sameProjectConfigExceptActiveHours(left globalconfig.Project, right globalconfig.Project) bool {
+func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalconfig.Project) bool {
 	left = normalizeManagerProjectConfig(left)
 	right = normalizeManagerProjectConfig(right)
 	left.ActiveHours = right.ActiveHours
 	left.GlobalActiveHours = right.GlobalActiveHours
 	left.ActiveHoursOverrideUntil = right.ActiveHoursOverrideUntil
+	left.GlobalRateWindowPacing = right.GlobalRateWindowPacing
 	return reflect.DeepEqual(left, right)
 }
 

@@ -111,14 +111,14 @@ func TestDoctorCapacityConstraintBindingRecommendations(t *testing.T) {
 			want:       []string{`raise project "video" worker.max_concurrent_agents_per_host`},
 		},
 		{
-			name:     "rate window recommends no config change",
+			name:     "rate window recommends pacing configuration",
 			cfg:      doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video"}}),
 			projects: []doctorWorkloadProject{doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)},
 			waits: []store.CapacityConstraintWait{
 				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintRateWindow, WaitCount: 6},
 			},
 			wantStatus: doctorWarn,
-			want:       []string{"provider rate-window backpressure is binding", "no config change is recommended"},
+			want:       []string{"provider rate-window backpressure is binding", `set project "video" agent.rate_window_pacing.mode to off or floor`, "global.rate_window_pacing"},
 			notWant:    []string{"raise ", "split "},
 		},
 		{
