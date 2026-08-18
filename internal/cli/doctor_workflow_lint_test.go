@@ -641,6 +641,143 @@ func TestCheckDoctorWorkflowRuntimeLintFindsWaitDeadlockAndCeilingDeaths(t *test
 	}
 }
 
+func TestDoctorWaitStatusIncidentsPreservesContinuousWaitSemantics(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
+	type decision struct {
+		project string
+		lane    string
+		result  string
+		reason  string
+		attempt int
+		at      time.Time
+	}
+	tests := []struct {
+		name      string
+		decisions []decision
+		wantLane  string
+		wantFirst time.Time
+		wantCount int64
+	}{
+		{
+			name: "continuous wait follows latest lane",
+			decisions: []decision{
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
+				{project: "alpha", lane: "In Progress", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-time.Minute)},
+			},
+			wantLane:  "In Progress",
+			wantFirst: now.Add(-20 * time.Minute),
+			wantCount: 2,
+		},
+		{
+			name: "latest non-wait decision clears incident",
+			decisions: []decision{
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
+				{project: "alpha", lane: "In Progress", result: "selected", attempt: 1, at: now.Add(-time.Minute)},
+			},
+		},
+		{
+			name: "reset excludes earlier skips",
+			decisions: []decision{
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-23 * time.Minute)},
+				{project: "alpha", lane: "In Progress", result: "selected", attempt: 1, at: now.Add(-22 * time.Minute)},
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-time.Minute)},
+			},
+			wantLane:  "Todo",
+			wantFirst: now.Add(-20 * time.Minute),
+			wantCount: 2,
+		},
+		{
+			name: "other project decisions are isolated",
+			decisions: []decision{
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
+				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-time.Minute)},
+				{project: "beta", lane: "In Progress", result: "selected", attempt: 1, at: now},
+			},
+			wantLane:  "Todo",
+			wantFirst: now.Add(-20 * time.Minute),
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := openDoctorWorkflowLintDB(t)
+			for _, decision := range tt.decisions {
+				if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					decision.project, "digitaldrywood/detent#1878", decision.lane, decision.result, decision.reason, decision.attempt, decision.at.Format(time.RFC3339Nano)); err != nil {
+					t.Fatalf("insert scheduler decision: %v", err)
+				}
+			}
+
+			cfg := workflowconfig.Default()
+			cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+			cfg.Polling.IntervalMS = 60_000
+			incidents, err := doctorWaitStatusIncidents(context.Background(), db, "alpha", cfg, now)
+			if err != nil {
+				t.Fatalf("doctorWaitStatusIncidents() error = %v", err)
+			}
+			if tt.wantCount == 0 {
+				if len(incidents) != 0 {
+					t.Fatalf("incidents = %#v, want none", incidents)
+				}
+				return
+			}
+			if len(incidents) != 1 {
+				t.Fatalf("incidents = %#v, want one", incidents)
+			}
+			incident := incidents[0]
+			if incident.Lane != tt.wantLane || !incident.FirstSkipAt.Equal(tt.wantFirst) || incident.SkipCount != tt.wantCount {
+				t.Fatalf("incident = %#v, want lane %q first %s count %d", incident, tt.wantLane, tt.wantFirst, tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestDoctorWaitStatusIncidentsQueryUsesBoundedPlan(t *testing.T) {
+	t.Parallel()
+
+	db := openDoctorWorkflowLintDB(t)
+	if _, err := db.Exec(`CREATE INDEX scheduler_decisions_project_at_idx ON scheduler_decisions(project_id, decision_at DESC, id DESC)`); err != nil {
+		t.Fatalf("create scheduler decision index: %v", err)
+	}
+	cutoff := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+doctorWaitStatusIncidentsQuery, "alpha", cutoff, "alpha", cutoff)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
+	}
+	defer rows.Close()
+
+	details := make([]string, 0)
+	for rows.Next() {
+		var id int
+		var parent int
+		var unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatalf("scan query plan: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read query plan: %v", err)
+	}
+	plan := strings.Join(details, "\n")
+	if strings.Count(plan, "USING INDEX scheduler_decisions_project_at_idx") < 2 {
+		t.Fatalf("query plan = %q, want two indexed project/time scans", plan)
+	}
+	if !strings.Contains(plan, "USING INTEGER PRIMARY KEY") {
+		t.Fatalf("query plan = %q, want latest-decision primary-key lookup", plan)
+	}
+	if strings.Contains(plan, "MATERIALIZE ranked") || strings.Contains(plan, "TEMP B-TREE FOR ORDER BY") {
+		t.Fatalf("query plan = %q, want no full-history window materialization", plan)
+	}
+}
+
 func TestCheckDoctorWorkflowRuntimeLintCleanHistoryIsQuiet(t *testing.T) {
 	t.Parallel()
 
