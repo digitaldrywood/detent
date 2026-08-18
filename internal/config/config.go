@@ -299,6 +299,7 @@ type Worker struct {
 
 type Agent struct {
 	MaxConcurrentAgents          int                          `yaml:"max_concurrent_agents"`
+	RateWindowPacing             RateWindowPacing             `yaml:"rate_window_pacing"`
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
@@ -1369,6 +1370,7 @@ func Default() Config {
 		},
 		Agent: Agent{
 			MaxConcurrentAgents:         10,
+			RateWindowPacing:            DefaultRateWindowPacing(),
 			MaxTurns:                    20,
 			MaxSessionDurationMS:        DefaultMaxSessionDurationMS,
 			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
@@ -1701,6 +1703,7 @@ func (c *Config) normalize() {
 	}
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
+	c.Agent.RateWindowPacing = c.Agent.RateWindowPacing.Normalized()
 	if c.Agent.MergeWorkerStartupTimeoutMS == 0 {
 		c.Agent.MergeWorkerStartupTimeoutMS = DefaultMergeWorkerStartupTimeoutMS
 	}
@@ -2143,6 +2146,7 @@ func normalizeDeliverableKind(kind string) string {
 
 func (a *Agent) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".max_concurrent_agents", a.MaxConcurrentAgents, problems)
+	*problems = append(*problems, a.RateWindowPacing.Validate(prefix+".rate_window_pacing")...)
 	validatePositive(prefix+".max_turns", a.MaxTurns, problems)
 	if a.MaxTurnDurationMS < 0 {
 		*problems = append(*problems, prefix+".max_turn_duration_ms must be greater than or equal to 0")

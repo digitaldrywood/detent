@@ -405,14 +405,19 @@ func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
 	tests := []struct {
 		name        string
 		billingMode string
+		pacing      workflowconfig.RateWindowPacing
 		limits      *telemetry.RateLimits
 		want        int
 	}{
 		{name: "metered ignores provider window", billingMode: workflowconfig.BillingModeMetered, limits: providerRateLimits(20, 100), want: 10},
 		{name: "subscription scales to primary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(50, 100), want: 5},
-		{name: "subscription uses lower secondary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{Remaining: 80, Limit: 100}, Secondary: &telemetry.RateLimitBucket{Remaining: 30, Limit: 100}}, want: 3},
+		{name: "subscription uses lower secondary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerPrimarySecondaryRateLimits(80, 30), want: 3},
 		{name: "subscription preserves one soft slot at exhaustion", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(0, 100), want: 1},
 		{name: "subscription without snapshot uses configured capacity", billingMode: workflowconfig.BillingModeSubscription, want: 10},
+		{name: "off ignores provider window", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}, limits: providerRateLimits(10, 100), want: 10},
+		{name: "floor preserves capacity above threshold", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 25}, limits: providerRateLimits(30, 100), want: 10},
+		{name: "floor scales below threshold", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 25}, limits: providerRateLimits(20, 100), want: 2},
+		{name: "stale snapshot uses configured capacity", billingMode: workflowconfig.BillingModeSubscription, limits: staleProviderRateLimits(10, 100), want: 10},
 	}
 
 	for _, tt := range tests {
@@ -421,6 +426,7 @@ func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
 
 			cfg := normalizeConfig(Config{
 				BillingMode:         tt.billingMode,
+				RateWindowPacing:    tt.pacing,
 				MaxConcurrentAgents: 10,
 				ActiveStates:        []string{"Todo"},
 				TerminalStates:      []string{"Done"},
@@ -441,7 +447,21 @@ func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
 }
 
 func providerRateLimits(remaining, limit int64) *telemetry.RateLimits {
-	return &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{Remaining: remaining, Limit: limit}}
+	observedAt := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{Remaining: remaining, Limit: limit, ObservedAt: &observedAt}}
+}
+
+func staleProviderRateLimits(remaining, limit int64) *telemetry.RateLimits {
+	observedAt := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{Remaining: remaining, Limit: limit, ObservedAt: &observedAt}}
+}
+
+func providerPrimarySecondaryRateLimits(primary, secondary int64) *telemetry.RateLimits {
+	observedAt := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &telemetry.RateLimits{
+		Primary:   &telemetry.RateLimitBucket{Remaining: primary, Limit: 100, ObservedAt: &observedAt},
+		Secondary: &telemetry.RateLimitBucket{Remaining: secondary, Limit: 100, ObservedAt: &observedAt},
+	}
 }
 
 func TestSubscriptionPrunesLegacyUSDBudgetRefusals(t *testing.T) {
@@ -1974,9 +1994,7 @@ func TestDispatchableIssueDecisionCapacityReason(t *testing.T) {
 				BillingMode:         workflowconfig.BillingModeSubscription,
 			},
 			state: func(state *State) {
-				state.RateLimits = &telemetry.RateLimits{
-					Primary: &telemetry.RateLimitBucket{Remaining: 50, Limit: 100},
-				}
+				state.RateLimits = providerRateLimits(50, 100)
 				for index := range 5 {
 					running := dispatchTestIssue(fmt.Sprintf("running-%d", index), "Todo")
 					state.Running[running.ID] = Running{Issue: running}

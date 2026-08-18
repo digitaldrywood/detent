@@ -397,7 +397,10 @@ func doctorCapacityRecommendation(
 			projectID,
 		), ""
 	case store.CapacityConstraintRateWindow:
-		return "provider rate-window backpressure is binding; no config change is recommended because raising a cap will not help.", ""
+		return fmt.Sprintf(
+			"provider rate-window backpressure is binding.\nset project %q agent.rate_window_pacing.mode to off or floor, or adjust global.rate_window_pacing.",
+			projectID,
+		), ""
 	default:
 		return "", ""
 	}

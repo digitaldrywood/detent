@@ -119,14 +119,15 @@ func (u Update) NormalizedCheckIntervalHours() int {
 }
 
 type Settings struct {
-	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
-	Scheduling          string              `yaml:"scheduling"`
-	AgentPools          []AgentPool         `yaml:"agent_pools,omitempty"`
-	ActiveHours         *activehours.Config `yaml:"active_hours,omitempty"`
-	Identity            Identity            `yaml:"identity,omitempty"`
-	Knowledge           Knowledge           `yaml:"knowledge,omitempty"`
-	FairShare           map[string]any      `yaml:"fair_share,omitempty"`
-	Startup             map[string]any      `yaml:"startup,omitempty"`
+	MaxConcurrentAgents int                             `yaml:"max_concurrent_agents"`
+	RateWindowPacing    workflowconfig.RateWindowPacing `yaml:"rate_window_pacing"`
+	Scheduling          string                          `yaml:"scheduling"`
+	AgentPools          []AgentPool                     `yaml:"agent_pools,omitempty"`
+	ActiveHours         *activehours.Config             `yaml:"active_hours,omitempty"`
+	Identity            Identity                        `yaml:"identity,omitempty"`
+	Knowledge           Knowledge                       `yaml:"knowledge,omitempty"`
+	FairShare           map[string]any                  `yaml:"fair_share,omitempty"`
+	Startup             map[string]any                  `yaml:"startup,omitempty"`
 }
 
 type AgentPool struct {
@@ -137,29 +138,30 @@ type AgentPool struct {
 }
 
 type Project struct {
-	ID                       string              `yaml:"id"`
-	Pool                     string              `yaml:"pool,omitempty"`
-	Workflow                 string              `yaml:"workflow"`
-	WorkflowRef              string              `yaml:"workflow_ref,omitempty"`
-	Workdir                  string              `yaml:"workdir"`
-	Color                    string              `yaml:"color,omitempty"`
-	Knowledge                Knowledge           `yaml:"knowledge,omitempty"`
-	Weight                   int                 `yaml:"weight"`
-	Priority                 int                 `yaml:"priority"`
-	Paused                   bool                `yaml:"paused,omitempty"`
-	PausedReason             string              `yaml:"paused_reason,omitempty"`
-	PausedAt                 string              `yaml:"paused_at,omitempty"`
-	PausedUntilIssue         string              `yaml:"paused_until_issue,omitempty"`
-	PausedUntil              string              `yaml:"paused_until,omitempty"`
-	ActiveHours              *activehours.Config `yaml:"active_hours,omitempty"`
-	ActiveHoursOverrideUntil string              `yaml:"active_hours_override_until,omitempty"`
-	CredentialRef            string              `yaml:"credential_ref,omitempty"`
-	Authorization            selector.Selector   `yaml:"authorization,omitempty"`
-	Intake                   intakeconfig.Config `yaml:"intake,omitempty"`
-	Identity                 Identity            `yaml:"-"`
-	GlobalKnowledge          Knowledge           `yaml:"-"`
-	GlobalActiveHours        *activehours.Config `yaml:"-"`
-	IntakeConfigured         bool                `yaml:"-"`
+	ID                       string                          `yaml:"id"`
+	Pool                     string                          `yaml:"pool,omitempty"`
+	Workflow                 string                          `yaml:"workflow"`
+	WorkflowRef              string                          `yaml:"workflow_ref,omitempty"`
+	Workdir                  string                          `yaml:"workdir"`
+	Color                    string                          `yaml:"color,omitempty"`
+	Knowledge                Knowledge                       `yaml:"knowledge,omitempty"`
+	Weight                   int                             `yaml:"weight"`
+	Priority                 int                             `yaml:"priority"`
+	Paused                   bool                            `yaml:"paused,omitempty"`
+	PausedReason             string                          `yaml:"paused_reason,omitempty"`
+	PausedAt                 string                          `yaml:"paused_at,omitempty"`
+	PausedUntilIssue         string                          `yaml:"paused_until_issue,omitempty"`
+	PausedUntil              string                          `yaml:"paused_until,omitempty"`
+	ActiveHours              *activehours.Config             `yaml:"active_hours,omitempty"`
+	ActiveHoursOverrideUntil string                          `yaml:"active_hours_override_until,omitempty"`
+	CredentialRef            string                          `yaml:"credential_ref,omitempty"`
+	Authorization            selector.Selector               `yaml:"authorization,omitempty"`
+	Intake                   intakeconfig.Config             `yaml:"intake,omitempty"`
+	Identity                 Identity                        `yaml:"-"`
+	GlobalKnowledge          Knowledge                       `yaml:"-"`
+	GlobalActiveHours        *activehours.Config             `yaml:"-"`
+	GlobalRateWindowPacing   workflowconfig.RateWindowPacing `yaml:"-"`
+	IntakeConfigured         bool                            `yaml:"-"`
 }
 
 type Identity = workflowconfig.Identity
@@ -660,6 +662,7 @@ func (c Config) Validate(opts ...Option) error {
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
 	}
+	problems = append(problems, c.Global.RateWindowPacing.Validate("global.rate_window_pacing")...)
 	if !validSchedulingMode(c.Global.Scheduling) {
 		problems = append(problems, "global.scheduling: must be one of "+strings.Join(schedulingModes, ", "))
 	}
@@ -929,6 +932,7 @@ func defaultConfig(path string) Config {
 func defaultSettings() Settings {
 	return Settings{
 		MaxConcurrentAgents: 8,
+		RateWindowPacing:    workflowconfig.DefaultRateWindowPacing(),
 		Scheduling:          SchedulingWeighted,
 		FairShare: map[string]any{
 			"half_life": "1h",
@@ -1038,6 +1042,7 @@ func globalErrors(value any) []string {
 	var problems []string
 	problems = append(problems, prefixErrors(requiredErrors(global, []string{"max_concurrent_agents", "scheduling"}), "global")...)
 	problems = append(problems, positiveIntegerError(global["max_concurrent_agents"], "global.max_concurrent_agents")...)
+	problems = append(problems, rateWindowPacingErrors(global["rate_window_pacing"], "global.rate_window_pacing")...)
 	problems = append(problems, schedulingErrors(global["scheduling"], "global.scheduling")...)
 	problems = append(problems, agentPoolsErrors(global["agent_pools"])...)
 	problems = append(problems, activeHoursErrors(global["active_hours"], "global.active_hours")...)
@@ -1063,6 +1068,20 @@ func schedulingErrors(value any, field string) []string {
 		return nil
 	}
 	return []string{field + ": must be one of " + strings.Join(schedulingModes, ", ")}
+}
+
+func rateWindowPacingErrors(value any, field string) []string {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return []string{field + ": must be a mapping"}
+	}
+	var pacing workflowconfig.RateWindowPacing
+	if err := decodeYAMLValue(value, &pacing); err != nil {
+		return []string{field + ": " + err.Error()}
+	}
+	return pacing.Validate(field)
 }
 
 func validSchedulingMode(mode string) bool {
@@ -1936,8 +1955,16 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 		}
 		activeHours = &parsed
 	}
+	rateWindowPacing := settings.RateWindowPacing
+	if attrs["rate_window_pacing"] != nil {
+		if err := decodeYAMLValue(attrs["rate_window_pacing"], &rateWindowPacing); err != nil {
+			return Settings{}, fmt.Errorf("global.rate_window_pacing: %w", err)
+		}
+		rateWindowPacing = rateWindowPacing.Normalized()
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
+	settings.RateWindowPacing = rateWindowPacing
 	settings.Scheduling = scheduling
 	settings.AgentPools = agentPools
 	settings.ActiveHours = activeHours

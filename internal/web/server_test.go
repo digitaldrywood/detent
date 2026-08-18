@@ -6923,6 +6923,7 @@ func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
 	lastSelectedAt := now.Add(-4 * time.Hour)
 	stall := telemetry.DispatchStatus{
 		ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, WaitReason: "github_rest_capacity", LastSelectedAt: &lastSelectedAt, StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true,
+		RateWindowPacing: telemetry.RateWindowPacing{Mode: "floor", FloorPercent: 25, StaleAfterSeconds: 900, Applicable: true, BucketStatus: telemetry.RateWindowBucketFresh, PermitCeiling: 2, ScalingApplied: true},
 	}
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, Dispatch: stall, DispatchStalls: []telemetry.DispatchStatus{stall}}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -6944,10 +6945,16 @@ func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
 	if len(stalls) != 1 || nestedString(t, stalls[0].(map[string]any), "candidate_count") != "8" {
 		t.Fatalf("health dispatch_stalls = %#v", stalls)
 	}
+	if got := nestedString(t, health, "dispatch", "rate_window_pacing", "mode"); got != "floor" {
+		t.Fatalf("health dispatch pacing mode = %q, want floor", got)
+	}
 
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	if nestedString(t, state, "dispatch", "last_selected_at") != lastSelectedAt.Format(time.RFC3339) {
 		t.Fatalf("state dispatch = %#v, want last_selected_at %s", state["dispatch"], lastSelectedAt)
+	}
+	if got := nestedString(t, state, "dispatch", "rate_window_pacing", "permit_ceiling"); got != "2" {
+		t.Fatalf("state dispatch pacing ceiling = %q, want 2", got)
 	}
 }
 

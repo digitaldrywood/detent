@@ -31,6 +31,9 @@ func TestTurnStateEmitsStructuredRateLimit(t *testing.T) {
 	if limits.ReachedType != "five_hour" || limits.Primary == nil || limits.Primary.Status != telemetry.RateLimitStatusExhausted || limits.Primary.ResetAt == nil || !limits.Primary.ResetAt.Equal(wantReset) {
 		t.Fatalf("RateLimits = %#v, want exhausted five-hour limit reset at %s", limits, wantReset)
 	}
+	if limits.Primary.ObservedAt == nil {
+		t.Fatalf("Primary.ObservedAt = nil, want observation timestamp")
+	}
 }
 
 func TestTurnStateEmitsToolContent(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
@@ -50,7 +51,12 @@ func (o *Orchestrator) handleModelPermitRequest(state *State, issueID string) er
 	if !running.ModelPermitExempt {
 		return nil
 	}
-	if o.dispatchPlanner().providerModelPermitSlots(state) == 0 {
+	planner := o.dispatchPlanner()
+	planner.now = time.Now()
+	if o.now != nil {
+		planner.now = o.now()
+	}
+	if planner.providerModelPermitSlots(state) == 0 {
 		return runpkg.ErrModelPermitUnavailable
 	}
 	running.ModelPermitExempt = false

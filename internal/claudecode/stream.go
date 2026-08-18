@@ -169,7 +169,8 @@ func (s *turnState) applyRateLimit(event claudeEvent, onUpdate runner.AgentUpdat
 		return nil
 	}
 	info := event.RateLimit
-	bucket := &telemetry.RateLimitBucket{Status: strings.TrimSpace(info.Status)}
+	observedAt := time.Now().UTC()
+	bucket := &telemetry.RateLimitBucket{Status: strings.TrimSpace(info.Status), ObservedAt: &observedAt}
 	if strings.EqualFold(bucket.Status, "rejected") {
 		bucket.Status = telemetry.RateLimitStatusExhausted
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -28,6 +29,8 @@ type State struct {
 	PollInterval             time.Duration
 	RefreshFailureThreshold  int
 	MaxConcurrentAgents      int
+	BillingMode              string
+	RateWindowPacing         workflowconfig.RateWindowPacing
 	MaxAgentsByState         map[string]int
 	PoolName                 string
 	PoolCapacity             int
@@ -321,6 +324,8 @@ func newState(cfg Config) State {
 		PollInterval:             cfg.PollInterval,
 		RefreshFailureThreshold:  cfg.RefreshFailureThreshold,
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
+		BillingMode:              cfg.BillingMode,
+		RateWindowPacing:         cfg.RateWindowPacing,
 		MaxAgentsByState:         cloneStateLimits(cfg.MaxConcurrentAgentsByState),
 		StrandedActiveThreshold:  cfg.StrandedActiveThreshold,
 		DispatchStallThreshold:   cfg.DispatchStallThreshold,
@@ -374,6 +379,8 @@ func (s State) clone() State {
 		PollInterval:             s.PollInterval,
 		RefreshFailureThreshold:  s.RefreshFailureThreshold,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
+		BillingMode:              s.BillingMode,
+		RateWindowPacing:         s.RateWindowPacing,
 		MaxAgentsByState:         cloneStateLimits(s.MaxAgentsByState),
 		PoolName:                 s.PoolName,
 		PoolCapacity:             s.PoolCapacity,

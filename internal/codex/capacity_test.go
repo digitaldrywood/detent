@@ -257,4 +257,7 @@ func TestRateLimitsFromCodexPreservesReachedType(t *testing.T) {
 	if limits.Primary == nil || limits.Primary.Status != telemetry.RateLimitStatusExhausted {
 		t.Fatalf("Primary = %#v, want exhausted", limits.Primary)
 	}
+	if limits.Primary.ObservedAt == nil {
+		t.Fatalf("Primary.ObservedAt = nil, want observation timestamp")
+	}
 }

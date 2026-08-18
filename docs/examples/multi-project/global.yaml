@@ -20,6 +20,11 @@ global:
   # Bound total subprocess pressure on this host. Per-project caps below split
   # these five slots between the two repositories.
   max_concurrent_agents: 5
+  # Preserve full width until a fresh provider bucket falls below 20%.
+  rate_window_pacing:
+    mode: floor
+    floor_percent: 20
+    stale_after_seconds: 900
   scheduling: weighted
   fair_share:
     half_life: 1h

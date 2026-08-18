@@ -1466,6 +1466,7 @@ func mergeFleetDispatchStatus(current telemetry.DispatchStatus, next telemetry.D
 		SkippedCount:        current.SkippedCount + next.SkippedCount,
 		Stalled:             current.Stalled || next.Stalled,
 		NeedsHumanAttention: current.NeedsHumanAttention || next.NeedsHumanAttention,
+		RateWindowPacing:    mergeFleetRateWindowPacing(current.RateWindowPacing, next.RateWindowPacing),
 	}
 	merged.LastSelectedAt = latestTime(current.LastSelectedAt, next.LastSelectedAt)
 	merged.ObservedAt = current.ObservedAt
@@ -1483,6 +1484,44 @@ func mergeFleetDispatchStatus(current telemetry.DispatchStatus, next telemetry.D
 		merged.WaitReason = next.WaitReason
 	} else if current.Stalled {
 		merged.WaitReason = current.WaitReason
+	}
+	return merged
+}
+
+func mergeFleetRateWindowPacing(current telemetry.RateWindowPacing, next telemetry.RateWindowPacing) telemetry.RateWindowPacing {
+	if strings.TrimSpace(current.Mode) == "" {
+		return next
+	}
+	if strings.TrimSpace(next.Mode) == "" {
+		return current
+	}
+	merged := telemetry.RateWindowPacing{
+		Mode:              current.Mode,
+		FloorPercent:      current.FloorPercent,
+		StaleAfterSeconds: current.StaleAfterSeconds,
+		Applicable:        current.Applicable || next.Applicable,
+		BucketStatus:      current.BucketStatus,
+		PermitCeiling:     current.PermitCeiling + next.PermitCeiling,
+		ScalingApplied:    current.ScalingApplied || next.ScalingApplied,
+	}
+	if current.Mode != next.Mode {
+		merged.Mode = "mixed"
+	}
+	if current.FloorPercent != next.FloorPercent {
+		merged.FloorPercent = 0
+	}
+	if current.StaleAfterSeconds != next.StaleAfterSeconds {
+		merged.StaleAfterSeconds = 0
+	}
+	if current.BucketStatus != next.BucketStatus {
+		merged.BucketStatus = "mixed"
+	}
+	merged.ObservedRemainingPercent = current.ObservedRemainingPercent
+	merged.ObservedAt = current.ObservedAt
+	if next.ObservedRemainingPercent != nil && (merged.ObservedRemainingPercent == nil || *next.ObservedRemainingPercent < *merged.ObservedRemainingPercent) {
+		remaining := *next.ObservedRemainingPercent
+		merged.ObservedRemainingPercent = &remaining
+		merged.ObservedAt = next.ObservedAt
 	}
 	return merged
 }

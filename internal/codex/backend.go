@@ -263,6 +263,12 @@ func rateLimitsFromCodex(snapshot *RateLimitSnapshot) *telemetry.RateLimits {
 		Secondary:   rateLimitBucketFromCodex(snapshot.Secondary),
 		Credits:     creditsBucketFromCodex(snapshot.Credits),
 	}
+	observedAt := time.Now().UTC()
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
+		if bucket != nil {
+			bucket.ObservedAt = &observedAt
+		}
+	}
 	if strings.TrimSpace(snapshot.RateLimitReachedType) != "" {
 		bucket := limits.Primary
 		if strings.Contains(strings.ToLower(snapshot.RateLimitReachedType), "secondary") {

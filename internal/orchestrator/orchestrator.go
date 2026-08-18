@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -90,6 +91,7 @@ type Config struct {
 	NoProgressTokenLimit          int64
 	NoProgressSpendLimitUSD       float64
 	BillingMode                   string
+	RateWindowPacing              workflowconfig.RateWindowPacing
 	FailureBreaker                FailureBreakerConfig
 	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig
@@ -1024,6 +1026,8 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.PollInterval = cfg.PollInterval
 	state.RefreshFailureThreshold = cfg.RefreshFailureThreshold
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	state.BillingMode = cfg.BillingMode
+	state.RateWindowPacing = cfg.RateWindowPacing
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
