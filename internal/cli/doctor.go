@@ -264,6 +264,8 @@ type doctorDeps struct {
 	shipSkillProbe       func(string) (doctorShipSkill, error)
 	now                  func() time.Time
 	workflowCache        *doctorWorkflowCache
+	pauseProjects        []globalconfig.Project
+	pauseGitHubToken     string
 }
 
 func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {

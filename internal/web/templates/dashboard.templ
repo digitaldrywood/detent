@@ -2078,6 +2078,16 @@ templ ProjectOverviewSnapshot(data DashboardData) {
 	@failureBreakerBanner(data.Snapshot)
 	@dispatchRecoveryBanner(data.Snapshot)
 	@trackerDriftWarning(data.Snapshot)
+	@projectPauseBanner(data)
+	if !snapshotReady(data.Snapshot) {
+		@snapshotReadiness(data.Snapshot)
+	} else {
+		@statStrip(data.Snapshot)
+		@projectOverviewSummarySection(data)
+	}
+}
+
+templ projectPauseBanner(data DashboardData) {
 	if data.ProjectPaused {
 		<section class="rounded-md border border-warn bg-warn/15 p-4 text-warn shadow-sm" aria-label="Paused project">
 			<div class="flex items-start gap-3">
@@ -2088,15 +2098,12 @@ templ ProjectOverviewSnapshot(data DashboardData) {
 					if detail := projectPauseDetail(data.ProjectPauseReason, data.ProjectPauseIssue, data.ProjectPauseUntil); detail != "" {
 						<p class="mt-2 text-sm text-warn">{ detail }</p>
 					}
+					if detail := projectPauseExitEvaluationDetail(data.ProjectPauseIssue, data.ProjectPauseExitEvaluated, data.ProjectPauseExitEvaluable, data.ProjectPauseExitResolver, data.ProjectPauseExitError); detail != "" {
+						<p class="mt-2 text-sm text-warn">{ detail }</p>
+					}
 				</div>
 			</div>
 		</section>
-	}
-	if !snapshotReady(data.Snapshot) {
-		@snapshotReadiness(data.Snapshot)
-	} else {
-		@statStrip(data.Snapshot)
-		@projectOverviewSummarySection(data)
 	}
 }
 

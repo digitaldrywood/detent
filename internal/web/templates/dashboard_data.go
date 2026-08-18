@@ -61,30 +61,34 @@ const (
 )
 
 type DashboardData struct {
-	Title              string
-	ApplicationName    string
-	InstanceName       string
-	Version            string
-	Build              buildinfo.Info
-	DashboardURL       string
-	ConnectorName      string
-	Snapshot           telemetry.Snapshot
-	EfficiencyReceipts []efficiency.Receipt
-	Projects           []ProjectSmallMultiple
-	Kanban             KanbanData
-	Assets             AssetPaths
-	ActiveNav          string
-	ProjectID          string
-	ProjectName        string
-	ProjectPaused      bool
-	ProjectPauseReason string
-	ProjectPauseIssue  string
-	ProjectPauseUntil  string
-	SidebarCollapsed   bool
-	Theme              string
-	Density            string
-	AnalyticsKind      string
-	PendingEnrichment  bool
+	Title                     string
+	ApplicationName           string
+	InstanceName              string
+	Version                   string
+	Build                     buildinfo.Info
+	DashboardURL              string
+	ConnectorName             string
+	Snapshot                  telemetry.Snapshot
+	EfficiencyReceipts        []efficiency.Receipt
+	Projects                  []ProjectSmallMultiple
+	Kanban                    KanbanData
+	Assets                    AssetPaths
+	ActiveNav                 string
+	ProjectID                 string
+	ProjectName               string
+	ProjectPaused             bool
+	ProjectPauseReason        string
+	ProjectPauseIssue         string
+	ProjectPauseUntil         string
+	ProjectPauseExitEvaluated bool
+	ProjectPauseExitEvaluable bool
+	ProjectPauseExitError     string
+	ProjectPauseExitResolver  string
+	SidebarCollapsed          bool
+	Theme                     string
+	Density                   string
+	AnalyticsKind             string
+	PendingEnrichment         bool
 }
 
 type DashboardShellData struct {
@@ -387,6 +391,10 @@ type ProjectSmallMultiple struct {
 	PauseReason               string
 	PauseIssue                string
 	PauseUntil                string
+	PauseExitEvaluated        bool
+	PauseExitEvaluable        bool
+	PauseExitError            string
+	PauseExitResolver         string
 	ActiveHours               telemetry.ActiveHours
 	Dispatch                  telemetry.DispatchStatus
 	Running                   int
@@ -1193,7 +1201,15 @@ func projectSmallMultiplePauseDetail(project ProjectSmallMultiple) string {
 	if !project.Paused {
 		return ""
 	}
-	return projectPauseDetail(project.PauseReason, project.PauseIssue, project.PauseUntil)
+	detail := projectPauseDetail(project.PauseReason, project.PauseIssue, project.PauseUntil)
+	evaluation := projectPauseExitEvaluationDetail(project.PauseIssue, project.PauseExitEvaluated, project.PauseExitEvaluable, project.PauseExitResolver, project.PauseExitError)
+	if detail == "" {
+		return evaluation
+	}
+	if evaluation == "" {
+		return detail
+	}
+	return detail + " · " + evaluation
 }
 
 func projectPauseDetail(reason string, issue string, until string) string {
@@ -1208,6 +1224,27 @@ func projectPauseDetail(reason string, issue string, until string) string {
 		parts = append(parts, "Until: "+until)
 	}
 	return strings.Join(parts, " · ")
+}
+
+func projectPauseExitEvaluationDetail(issue string, evaluated bool, evaluable bool, resolver string, evaluationError string) string {
+	if strings.TrimSpace(issue) == "" {
+		return ""
+	}
+	if !evaluated {
+		return "Evaluation: pending"
+	}
+	resolver = strings.TrimSpace(resolver)
+	if evaluable {
+		if resolver == "" {
+			return "Evaluation: evaluable"
+		}
+		return "Evaluation: evaluable via " + resolver
+	}
+	detail := "Evaluation: unevaluable"
+	if evaluationError = strings.TrimSpace(evaluationError); evaluationError != "" {
+		detail += ": " + evaluationError
+	}
+	return detail
 }
 
 func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {

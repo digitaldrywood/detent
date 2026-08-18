@@ -13,9 +13,22 @@ import (
 
 var ErrIssueResolverUnavailable = errors.New("pause issue resolver is unavailable")
 
+const DefaultEvaluationFailureThreshold = 3
+
 type Result struct {
 	Met    bool
 	Detail string
+}
+
+type ExitStatus struct {
+	ProjectID           string    `json:"project_id"`
+	Reference           string    `json:"reference"`
+	ResolverProjectID   string    `json:"resolver_project_id,omitempty"`
+	Evaluable           bool      `json:"evaluable"`
+	LastError           string    `json:"last_error,omitempty"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	NeedsAttention      bool      `json:"needs_attention"`
+	EvaluatedAt         time.Time `json:"evaluated_at"`
 }
 
 func Evaluate(

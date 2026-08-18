@@ -15,15 +15,19 @@ import (
 const defaultPauseExitPollInterval = 30 * time.Second
 
 type pauseMonitorDeps struct {
-	read          func() (globalconfig.Config, error)
-	write         func(globalconfig.Config) error
-	unpause       func(context.Context, string) error
-	pause         func(context.Context, string) error
-	connectorFor  func(string) connector.Connector
-	repositoryFor func(string) string
-	now           func() time.Time
-	interval      time.Duration
-	logger        *slog.Logger
+	read             func() (globalconfig.Config, error)
+	write            func(globalconfig.Config) error
+	unpause          func(context.Context, string) error
+	pause            func(context.Context, string) error
+	connectorFor     func(string) connector.Connector
+	repositoryFor    func(string) string
+	trackerKindFor   func(string) string
+	pauseStatus      func(string) (pause.ExitStatus, bool)
+	setPauseStatus   func(pause.ExitStatus)
+	clearPauseStatus func(string)
+	now              func() time.Time
+	interval         time.Duration
+	logger           *slog.Logger
 }
 
 func runPauseMonitor(ctx context.Context, deps pauseMonitorDeps) {
@@ -57,26 +61,58 @@ func checkPauseExitConditions(ctx context.Context, deps pauseMonitorDeps) {
 	}
 	transitions := make([]transition, 0)
 	now := deps.now().UTC()
+	trackers := pauseMonitorTrackers(cfg, deps)
 	for index := range cfg.Projects {
 		configuredProject := cfg.Projects[index]
 		if !configuredProject.Paused {
+			deps.clearPauseStatus(configuredProject.ID)
 			continue
 		}
+		if strings.TrimSpace(configuredProject.PausedUntilIssue) == "" {
+			deps.clearPauseStatus(configuredProject.ID)
+		}
 		var resolver connector.IssueReferenceResolver
+		resolverProjectID := configuredProject.ID
+		trackerRepository := deps.repositoryFor(configuredProject.ID)
 		if strings.TrimSpace(configuredProject.PausedUntilIssue) != "" {
-			candidate := deps.connectorFor(configuredProject.ID)
+			resolution, resolveErr := pause.ResolveReference(configuredProject.ID, configuredProject.PausedUntilIssue, trackers)
+			if resolveErr != nil {
+				recordPauseEvaluationFailure(deps, configuredProject, "", now, resolveErr)
+				deps.logger.Warn(
+					"check project pause exit condition failed",
+					"project_id", configuredProject.ID,
+					"pause_exit_issue", configuredProject.PausedUntilIssue,
+					"error", resolveErr,
+				)
+				continue
+			}
+			resolverProjectID = resolution.ProjectID
+			trackerRepository = resolution.Repository
+			candidate := deps.connectorFor(resolverProjectID)
 			if resolved, ok := candidate.(connector.IssueReferenceResolver); ok {
 				resolver = resolved
 			}
 		}
-		result, err := pause.Evaluate(ctx, configuredProject, now, deps.repositoryFor(configuredProject.ID), resolver)
+		result, err := pause.Evaluate(ctx, configuredProject, now, trackerRepository, resolver)
 		if err != nil {
+			recordPauseEvaluationFailure(deps, configuredProject, resolverProjectID, now, err)
 			deps.logger.Warn(
 				"check project pause exit condition failed",
 				"project_id", configuredProject.ID,
+				"pause_exit_issue", configuredProject.PausedUntilIssue,
+				"resolver_project_id", resolverProjectID,
 				"error", err,
 			)
 			continue
+		}
+		if strings.TrimSpace(configuredProject.PausedUntilIssue) != "" {
+			deps.setPauseStatus(pause.ExitStatus{
+				ProjectID:         configuredProject.ID,
+				Reference:         strings.TrimSpace(configuredProject.PausedUntilIssue),
+				ResolverProjectID: resolverProjectID,
+				Evaluable:         true,
+				EvaluatedAt:       now,
+			})
 		}
 		if !result.Met {
 			continue
@@ -91,12 +127,48 @@ func checkPauseExitConditions(ctx context.Context, deps pauseMonitorDeps) {
 		if !commitAutomaticUnpause(ctx, deps, item.projectID, item.pause) {
 			continue
 		}
+		deps.clearPauseStatus(item.projectID)
 		deps.logger.Info(
 			"project automatically unpaused",
 			"project_id", item.projectID,
 			"exit_condition", item.detail,
 		)
 	}
+}
+
+func pauseMonitorTrackers(cfg globalconfig.Config, deps pauseMonitorDeps) []pause.Tracker {
+	trackers := make([]pause.Tracker, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		trackers = append(trackers, pause.Tracker{
+			ProjectID:  project.ID,
+			Kind:       deps.trackerKindFor(project.ID),
+			Repository: deps.repositoryFor(project.ID),
+		})
+	}
+	return trackers
+}
+
+func recordPauseEvaluationFailure(
+	deps pauseMonitorDeps,
+	project globalconfig.Project,
+	resolverProjectID string,
+	now time.Time,
+	err error,
+) {
+	failures := 1
+	if previous, ok := deps.pauseStatus(project.ID); ok &&
+		strings.EqualFold(strings.TrimSpace(previous.Reference), strings.TrimSpace(project.PausedUntilIssue)) {
+		failures = previous.ConsecutiveFailures + 1
+	}
+	deps.setPauseStatus(pause.ExitStatus{
+		ProjectID:           project.ID,
+		Reference:           strings.TrimSpace(project.PausedUntilIssue),
+		ResolverProjectID:   strings.TrimSpace(resolverProjectID),
+		LastError:           err.Error(),
+		ConsecutiveFailures: failures,
+		NeedsAttention:      failures >= pause.DefaultEvaluationFailureThreshold,
+		EvaluatedAt:         now,
+	})
 }
 
 func commitAutomaticUnpause(
@@ -194,6 +266,22 @@ func normalizePauseMonitorDeps(deps pauseMonitorDeps) pauseMonitorDeps {
 		deps.repositoryFor = func(string) string {
 			return ""
 		}
+	}
+	if deps.trackerKindFor == nil {
+		deps.trackerKindFor = func(string) string {
+			return ""
+		}
+	}
+	if deps.pauseStatus == nil {
+		deps.pauseStatus = func(string) (pause.ExitStatus, bool) {
+			return pause.ExitStatus{}, false
+		}
+	}
+	if deps.setPauseStatus == nil {
+		deps.setPauseStatus = func(pause.ExitStatus) {}
+	}
+	if deps.clearPauseStatus == nil {
+		deps.clearPauseStatus = func(string) {}
 	}
 	if deps.now == nil {
 		deps.now = time.Now

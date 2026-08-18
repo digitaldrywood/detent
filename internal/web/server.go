@@ -32,6 +32,7 @@ import (
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -898,24 +899,28 @@ func (s *Server) projectDashboardDataFromProjects(
 	}
 	instanceName := s.instanceName()
 	data := templates.DashboardData{
-		Title:              instancePageTitle(instanceName, name+" - Detent"),
-		ApplicationName:    applicationName(instanceName),
-		InstanceName:       instanceName,
-		Version:            s.version,
-		Build:              s.build,
-		ConnectorName:      s.connector.Name(),
-		DashboardURL:       s.dashboardURL,
-		Snapshot:           scopedSnapshot,
-		Projects:           projects,
-		Kanban:             s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
-		Assets:             s.assets.templatePaths(),
-		ActiveNav:          "project",
-		ProjectID:          strings.TrimSpace(project.ID),
-		ProjectName:        name,
-		ProjectPaused:      project.Paused,
-		ProjectPauseReason: project.PauseReason,
-		ProjectPauseIssue:  project.PauseIssue,
-		ProjectPauseUntil:  project.PauseUntil,
+		Title:                     instancePageTitle(instanceName, name+" - Detent"),
+		ApplicationName:           applicationName(instanceName),
+		InstanceName:              instanceName,
+		Version:                   s.version,
+		Build:                     s.build,
+		ConnectorName:             s.connector.Name(),
+		DashboardURL:              s.dashboardURL,
+		Snapshot:                  scopedSnapshot,
+		Projects:                  projects,
+		Kanban:                    s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
+		Assets:                    s.assets.templatePaths(),
+		ActiveNav:                 "project",
+		ProjectID:                 strings.TrimSpace(project.ID),
+		ProjectName:               name,
+		ProjectPaused:             project.Paused,
+		ProjectPauseReason:        project.PauseReason,
+		ProjectPauseIssue:         project.PauseIssue,
+		ProjectPauseUntil:         project.PauseUntil,
+		ProjectPauseExitEvaluated: project.PauseExitEvaluated,
+		ProjectPauseExitEvaluable: project.PauseExitEvaluable,
+		ProjectPauseExitError:     project.PauseExitError,
+		ProjectPauseExitResolver:  project.PauseExitResolver,
 	}
 	if loadDetails {
 		receipts, err := s.store.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: project.ID, Limit: 100})
@@ -1149,6 +1154,9 @@ func (s *Server) health(c echo.Context) error {
 		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 {
 			status = "needs_attention"
 		}
+		if pauseExitNeedsAttention(projectHealth) {
+			status = "needs_attention"
+		}
 	}
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:               status,
@@ -1250,6 +1258,17 @@ func tickLivenessNeedsAttention(values []telemetry.TickLiveness) bool {
 	return false
 }
 
+func pauseExitNeedsAttention(projects []healthProject) bool {
+	needsAttention := false
+	for index := range projects {
+		if projects[index].PauseExit != nil && projects[index].PauseExit.NeedsAttention {
+			projects[index].Status = "needs_human_attention"
+			needsAttention = true
+		}
+	}
+	return needsAttention
+}
+
 func (s *Server) projectHealth() (string, []healthProject) {
 	if s.registry == nil {
 		return "unknown", nil
@@ -1285,6 +1304,7 @@ func (s *Server) projectHealth() (string, []healthProject) {
 			NextRetryAt:  health.NextRetryAt,
 			RetryStopped: health.RetryStopped,
 			ActiveHours:  activeHoursByProject[health.Project.ID],
+			PauseExit:    health.PauseExit,
 		})
 	}
 	return status, projects
@@ -1542,6 +1562,7 @@ type healthProject struct {
 	NextRetryAt  time.Time             `json:"next_retry_at,omitzero"`
 	RetryStopped bool                  `json:"retry_stopped"`
 	ActiveHours  telemetry.ActiveHours `json:"active_hours,omitzero"`
+	PauseExit    *pause.ExitStatus     `json:"pause_exit,omitempty"`
 }
 
 type healthWorkflowSource struct {

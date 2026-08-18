@@ -17,6 +17,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/pause"
 )
 
 var (
@@ -265,6 +266,14 @@ func (m *Manager) Start(ctx context.Context) error {
 		registered = append(registered, id)
 		projects = append(projects, project)
 	}
+	if err := validatePauseExitReferences(projects); err != nil {
+		for _, registeredID := range registered {
+			m.registry.Delete(registeredID)
+		}
+		m.running = false
+		m.mu.Unlock()
+		return errors.Join(err, closeProjectSlice(ctx, projects))
+	}
 	startup := m.cfg.Startup
 	m.mu.Unlock()
 
@@ -407,6 +416,19 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 		}
 		prepared[id] = preparedProject
+	}
+	validationProjects := make([]*Project, 0, len(desired))
+	for id := range desired {
+		if preparedProject := prepared[id]; preparedProject != nil {
+			validationProjects = append(validationProjects, preparedProject)
+			continue
+		}
+		if current, ok := m.registry.Get(id); ok && current != nil {
+			validationProjects = append(validationProjects, current)
+		}
+	}
+	if err := validatePauseExitReferences(validationProjects); err != nil {
+		return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 	}
 
 	previous := m.cfg
@@ -573,6 +595,53 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		item.project.publishStarted()
 	}
 	return result, closeStoppedProjects(ctx, stopped)
+}
+
+func validatePauseExitReferences(projects []*Project) error {
+	trackers := make([]pause.Tracker, 0, len(projects))
+	for _, trackedProject := range projects {
+		if trackedProject == nil {
+			continue
+		}
+		workflow := trackedProject.Workflow().Config
+		trackers = append(trackers, pause.Tracker{
+			ProjectID:  string(trackedProject.ID()),
+			Kind:       workflow.Tracker.Kind,
+			Repository: workflow.Tracker.Repository,
+		})
+	}
+	for _, trackedProject := range projects {
+		if trackedProject == nil {
+			continue
+		}
+		projectConfig := trackedProject.Config()
+		reference := strings.TrimSpace(projectConfig.PausedUntilIssue)
+		if !projectConfig.Paused || reference == "" {
+			continue
+		}
+		resolution, err := pause.ResolveReference(projectConfig.ID, reference, trackers)
+		if err != nil {
+			return fmt.Errorf("validate project %s paused_until_issue %s: %w", projectConfig.ID, reference, err)
+		}
+		owner, ok := projectByID(projects, ID(resolution.ProjectID))
+		if !ok {
+			return fmt.Errorf("validate project %s paused_until_issue %s: resolver project %s is unavailable", projectConfig.ID, reference, resolution.ProjectID)
+		}
+		if _, ok := owner.Connector().(connector.IssueReferenceResolver); !ok {
+			return fmt.Errorf("validate project %s paused_until_issue %s: project %s tracker kind %s cannot resolve issue references", projectConfig.ID, reference, resolution.ProjectID, owner.Workflow().Config.Tracker.Kind)
+		}
+	}
+	return nil
+}
+
+func projectByID(projects []*Project, id ID) (*Project, bool) {
+	id = normalizeProjectID(id)
+	for _, trackedProject := range projects {
+		if trackedProject != nil && normalizeProjectID(trackedProject.ID()) == id {
+			return trackedProject, true
+		}
+	}
+	return nil, false
 }
 
 func (m *Manager) removeLocked(ctx context.Context, id ID) error {

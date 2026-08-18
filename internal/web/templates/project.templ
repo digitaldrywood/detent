@@ -70,6 +70,7 @@ templ ProjectOverviewSnapshotV2(data DashboardData) {
 
 templ projectOverviewSnapshotBody(data DashboardData) {
 	{{ view := fleetViewFromDashboard(data) }}
+	@projectPauseBanner(data)
 	if len(view.Exceptions) > 0 {
 		<div id="project-exceptions" class="flex-none">
 			@primitives.ExceptionStrip(view.Exceptions)

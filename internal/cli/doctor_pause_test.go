@@ -115,3 +115,52 @@ func TestCheckDoctorProjectPauseSkipsUnpausedProject(t *testing.T) {
 		t.Fatalf("checkDoctorProjectPause() = %#v, %t, want false", check, ok)
 	}
 }
+
+func TestCheckDoctorProjectPauseUsesOwningProjectConnector(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	project := globalconfig.Project{
+		ID:               "digitaldrywood-video",
+		Workflow:         "video-workflow",
+		Paused:           true,
+		PausedUntilIssue: "digitaldrywood/video-studio#147",
+	}
+	currentWorkflow := workflowconfig.Default()
+	currentWorkflow.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	currentWorkflow.Tracker.LocalSQLite.Path = "video.db"
+	ownerWorkflow := workflowconfig.Default()
+	ownerWorkflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	ownerWorkflow.Tracker.Repository = "digitaldrywood/video-studio"
+	var connectorRepository string
+
+	check, ok := checkDoctorProjectPause(context.Background(), project.ID, project, currentWorkflow, doctorDeps{
+		now: func() time.Time { return now },
+		pauseProjects: []globalconfig.Project{
+			project,
+			{ID: "video-studio", Workflow: "studio-workflow"},
+		},
+		loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
+			if path == "studio-workflow" {
+				return workflowconfig.Workflow{Config: ownerWorkflow}, nil
+			}
+			return workflowconfig.Workflow{Config: currentWorkflow}, nil
+		},
+		autoPromoteConnector: func(workflow workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			connectorRepository = workflow.Tracker.Repository
+			return &fakeDoctorAutoPromoteConnector{resolvedIssues: []connector.Issue{{
+				Identifier: "digitaldrywood/video-studio#147",
+				Closed:     true,
+			}}}, nil
+		},
+	})
+	if !ok {
+		t.Fatal("checkDoctorProjectPause() ok = false, want true")
+	}
+	if check.Status != doctorWarn || !strings.Contains(check.Detail, "video-studio#147 is closed") {
+		t.Fatalf("check = %#v, want closed exit issue warning", check)
+	}
+	if connectorRepository != "digitaldrywood/video-studio" {
+		t.Fatalf("connector repository = %q, want digitaldrywood/video-studio", connectorRepository)
+	}
+}

@@ -40,6 +40,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -1938,6 +1939,15 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	for _, want := range []string{"Implement page-addressable screenshot scenarios", "detent-core", "GitHub quota", `id="agent-activity"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("fleet scenario page missing %q:\n%s", want, page)
+		}
+	}
+
+	pausedProject := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/projects/mobile-client", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "project-paused-overview",
+	})
+	for _, want := range []string{"mobile-client is paused.", "Until issue closes: digitaldrywood/release-train#314", "Evaluation: evaluable via release-train"} {
+		if !strings.Contains(pausedProject, want) {
+			t.Fatalf("paused project scenario missing %q:\n%s", want, pausedProject)
 		}
 	}
 
@@ -6888,6 +6898,47 @@ func TestHealthReportsCICondition(t *testing.T) {
 	conditions = state["ci_unavailable"].([]any)
 	if len(conditions) != 1 || nestedString(t, conditions[0].(map[string]any), "pull_request_count") != "2" {
 		t.Fatalf("state ci_unavailable = %#v", conditions)
+	}
+}
+
+func TestHealthReportsUnevaluablePauseExitCondition(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "digitaldrywood-video", true)
+	deps.Registry.SetPauseExitStatus(pause.ExitStatus{
+		ProjectID:           "digitaldrywood-video",
+		Reference:           "digitaldrywood/video-studio#147",
+		ResolverProjectID:   "video-studio",
+		LastError:           "pause exit issue digitaldrywood/video-studio#147 was not found",
+		ConsecutiveFailures: pause.DefaultEvaluationFailureThreshold,
+		NeedsAttention:      true,
+		EvaluatedAt:         time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
+	})
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if health["status"] != "needs_attention" {
+		t.Fatalf("health status = %#v, want needs_attention", health["status"])
+	}
+	projects := health["projects"].([]any)
+	projectHealth := projects[0].(map[string]any)
+	if projectHealth["status"] != "needs_human_attention" {
+		t.Fatalf("project health = %#v, want needs_human_attention", projectHealth)
+	}
+	pauseExit := projectHealth["pause_exit"].(map[string]any)
+	for key, want := range map[string]any{
+		"project_id":      "digitaldrywood-video",
+		"reference":       "digitaldrywood/video-studio#147",
+		"last_error":      "pause exit issue digitaldrywood/video-studio#147 was not found",
+		"needs_attention": true,
+	} {
+		if pauseExit[key] != want {
+			t.Fatalf("pause_exit[%q] = %#v, want %#v", key, pauseExit[key], want)
+		}
 	}
 }
 
