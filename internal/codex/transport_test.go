@@ -18,7 +18,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
-const oversizedJSONRPCPayloadSize = 4 * 1024 * 1024
+const (
+	oversizedJSONRPCPayloadSize         = 4 * 1024 * 1024
+	helperDrainPayloadSize              = 4 * 1024 * 1024
+	transportTestDeadlockTimeout        = 30 * time.Second
+	transportTestRecoveryTimeout        = 5 * time.Second
+	helperFailureBeforeCloseReadySignal = "invalid frame written; waiting for stdin close"
+	helperCloseBeforeFailureReadySignal = "waiting for stdin close before invalid frame"
+	helperDrainWriteStartedSignal       = "drain write started"
+	helperDrainWriteCompletedSignal     = "drain write completed"
+)
 
 func TestLocalTransportRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -113,9 +122,19 @@ func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
 		name               string
 		mode               string
 		receiveBeforeClose bool
+		readySignal        string
 	}{
-		{name: "failure reported before close", mode: "invalid-frame-backpressure", receiveBeforeClose: true},
-		{name: "failure arrives after close starts", mode: "close-before-invalid-frame-backpressure"},
+		{
+			name:               "failure reported before close",
+			mode:               "invalid-frame-backpressure",
+			receiveBeforeClose: true,
+			readySignal:        helperFailureBeforeCloseReadySignal,
+		},
+		{
+			name:        "failure arrives after close starts",
+			mode:        "close-before-invalid-frame-backpressure",
+			readySignal: helperCloseBeforeFailureReadySignal,
+		},
 	}
 
 	for _, tt := range tests {
@@ -137,13 +156,20 @@ func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
 				t.Fatalf("transport = %T, want *localTransport", transport)
 			}
 			t.Cleanup(func() {
-				closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = transport.Close(closeCtx)
+				select {
+				case <-local.done:
+					return
+				default:
+				}
+				if err := recoverLocalTransportTest(local); err != nil {
+					t.Errorf("recover local transport: %v", err)
+				}
 			})
 
+			waitForLocalTransportStderr(t, local, tt.readySignal)
+
 			if tt.receiveBeforeClose {
-				receiveCtx, cancelReceive := context.WithTimeout(context.Background(), 5*time.Second)
+				receiveCtx, cancelReceive := context.WithTimeout(context.Background(), transportTestDeadlockTimeout)
 				defer cancelReceive()
 				_, err = transport.Receive(receiveCtx)
 				if !errors.Is(err, ErrInvalidFrame) {
@@ -151,12 +177,18 @@ func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
 				}
 			}
 
-			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+			closeCtx, cancelClose := context.WithTimeout(context.Background(), transportTestDeadlockTimeout)
 			defer cancelClose()
 			if err := transport.Close(closeCtx); err != nil {
-				t.Fatalf("Close() error = %v", err)
+				recoveryErr := recoverLocalTransportTest(local)
+				t.Fatalf("Close() error = %v; recovery error = %v", err, recoveryErr)
 			}
 			assertLocalTransportClosed(t, local, tt.name)
+			for _, signal := range []string{helperDrainWriteStartedSignal, helperDrainWriteCompletedSignal} {
+				if !strings.Contains(local.stderrText(), signal) {
+					t.Fatalf("helper stderr = %q, want signal %q", local.stderrText(), signal)
+				}
+			}
 		})
 	}
 }
@@ -663,12 +695,9 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 	case "oversized-frame":
 		helperOversizedFrame()
 	case "invalid-frame-backpressure":
-		helperInvalidFrameBackpressure()
+		helperInvalidFrameBackpressure(false)
 	case "close-before-invalid-frame-backpressure":
-		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
-			helperBackpressureExit("wait for stdin close", err)
-		}
-		helperInvalidFrameBackpressure()
+		helperInvalidFrameBackpressure(true)
 	case "silent":
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "block-send":
@@ -761,25 +790,37 @@ func helperOversizedFrame() {
 	}
 }
 
-func helperInvalidFrameBackpressure() {
+func helperInvalidFrameBackpressure(closeBeforeFailure bool) {
+	if closeBeforeFailure {
+		helperBackpressureSignal(helperCloseBeforeFailureReadySignal)
+		helperWaitForStdinClose()
+	}
+
 	if _, err := fmt.Fprintln(os.Stdout, "{not-json}"); err != nil {
 		helperBackpressureExit("write invalid frame", err)
 	}
 
-	params, err := json.Marshal(map[string]string{
-		"text": strings.Repeat("x", 256*1024),
-	})
-	if err != nil {
-		helperBackpressureExit("marshal backpressure frame", err)
+	if !closeBeforeFailure {
+		helperBackpressureSignal(helperFailureBeforeCloseReadySignal)
+		helperWaitForStdinClose()
 	}
-	codec := NewCodec(os.Stdin, os.Stdout)
-	for range 64 {
-		if err := codec.WriteMessage(Message{
-			Method: "item/agentMessage/delta",
-			Params: params,
-		}); err != nil {
-			helperBackpressureExit("write backpressure frame", err)
-		}
+
+	helperBackpressureSignal(helperDrainWriteStartedSignal)
+	if _, err := io.Copy(os.Stdout, strings.NewReader(strings.Repeat("x", helperDrainPayloadSize))); err != nil {
+		helperBackpressureExit("write drain payload", err)
+	}
+	helperBackpressureSignal(helperDrainWriteCompletedSignal)
+}
+
+func helperWaitForStdinClose() {
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		helperBackpressureExit("wait for stdin close", err)
+	}
+}
+
+func helperBackpressureSignal(signal string) {
+	if _, err := fmt.Fprintln(os.Stderr, signal); err != nil {
+		os.Exit(7)
 	}
 }
 
@@ -955,6 +996,53 @@ func assertLocalTransportClosed(t *testing.T, transport *localTransport, scenari
 	if transport.cmd.ProcessState == nil {
 		t.Fatalf("%s: ProcessState is nil, want reaped process", scenario)
 	}
+}
+
+func waitForLocalTransportStderr(t *testing.T, transport *localTransport, signal string) {
+	t.Helper()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(transportTestDeadlockTimeout)
+	defer timer.Stop()
+
+	for !strings.Contains(transport.stderrText(), signal) {
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("helper stderr = %q, want signal %q", transport.stderrText(), signal)
+		}
+	}
+}
+
+func recoverLocalTransportTest(transport *localTransport) error {
+	transport.stopReading()
+	closeErr := transport.closeStdin()
+	terminateErr := procgroup.TerminateTree(transport.cmd, transport.processGroupID)
+	if errors.Is(terminateErr, os.ErrProcessDone) {
+		terminateErr = nil
+	}
+	joinErr := waitForLocalTransportTestGoroutines(transport, transportTestRecoveryTimeout)
+	return errors.Join(closeErr, terminateErr, joinErr)
+}
+
+func waitForLocalTransportTestGoroutines(transport *localTransport, timeout time.Duration) error {
+	readDone := transport.readDone
+	done := transport.done
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for readDone != nil || done != nil {
+		select {
+		case <-readDone:
+			readDone = nil
+		case <-done:
+			done = nil
+		case <-timer.C:
+			return errors.New("timed out joining local transport goroutines")
+		}
+	}
+	return nil
 }
 
 func waitForLocalTransportReceiveBackpressure(t *testing.T, factory *capturingLocalTransportFactory) UpdateHandler {
