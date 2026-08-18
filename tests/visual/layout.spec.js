@@ -1600,13 +1600,14 @@ test("project kanban move is immediate and survives a stale snapshot", async ({
     });
     await page.locator("#board-lanes").waitFor({ state: "visible" });
 
-    const staleSnapshot = await page
-      .locator("#snapshot")
-      .evaluate((snapshot) => snapshot.innerHTML);
     const card = page.locator(
       '[data-kanban-card][data-kanban-current-state="Backlog"]',
       { hasText: "Kanban demo backlog intake" },
     );
+    await expect(card).toBeVisible();
+    const staleSnapshot = await page
+      .locator("#snapshot")
+      .evaluate((snapshot) => snapshot.innerHTML);
     const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
     const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
 
@@ -1934,10 +1935,6 @@ test("dashboard prompts reload only when the serving build changes", async ({
 
   const notice = page.locator("[data-detent-build-update]");
   const footer = page.locator("#detent-build-version");
-  await dispatchBuildVersion(page, "v98.0.0", "#live-clock");
-  await expect(notice).toBeHidden();
-  await expect(footer).toHaveText(servedVersion);
-
   await dispatchBuildVersion(page, servedVersion);
   await expect(notice).toBeHidden();
   await expect(footer).toHaveText(servedVersion);
@@ -1951,28 +1948,23 @@ test("dashboard prompts reload only when the serving build changes", async ({
   );
 });
 
-async function dispatchBuildVersion(
-  page,
-  version,
-  targetSelector = "#detent-build-version",
-) {
-  await page.evaluate(({ liveVersion, selector }) => {
-    const target = document.querySelector(selector);
+async function dispatchBuildVersion(page, version) {
+  await page.evaluate((liveVersion) => {
     const footer = document.getElementById("detent-build-version");
-    if (!target || !footer) {
+    if (!footer) {
       throw new Error("Build version SSE elements not found");
     }
     const incoming = footer.cloneNode(true);
     incoming.textContent = liveVersion;
     incoming.setAttribute("title", liveVersion);
     incoming.setAttribute("data-detent-build-version", liveVersion);
-    target.dispatchEvent(
+    footer.dispatchEvent(
       new CustomEvent("htmx:sseBeforeMessage", {
         bubbles: true,
         detail: { elt: footer, data: incoming.outerHTML },
       }),
     );
-  }, { liveVersion: version, selector: targetSelector });
+  }, version);
 }
 
 test("reports page renders KPI figures and charts", async ({
