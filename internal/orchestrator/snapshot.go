@@ -45,6 +45,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	refresh := telemetry.Refresh{
 		PollIntervalSeconds: int64(s.PollInterval / time.Second),
 		StaleAfterSeconds:   int64(staleAfter / time.Second),
+		LastDurationSeconds: durationSecondsCeil(s.LastRefreshDuration),
 		FailureThreshold:    failureThreshold,
 		DataSeq:             s.DataSeq,
 		LastRefreshAt:       timePointer(s.LastRefreshAt),
@@ -161,6 +162,13 @@ func rateWindowPacingSnapshot(state State, now time.Time) telemetry.RateWindowPa
 		PermitCeiling:            evaluation.permitCeiling,
 		ScalingApplied:           evaluation.scalingApplied,
 	}
+}
+
+func durationSecondsCeil(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	return int64((duration + time.Second - 1) / time.Second)
 }
 
 func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.Duration, now time.Time) telemetry.DispatchStatus {

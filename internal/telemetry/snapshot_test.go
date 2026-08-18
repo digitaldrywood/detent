@@ -2,6 +2,7 @@ package telemetry_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -698,6 +699,14 @@ func TestRefreshReadinessStatus(t *testing.T) {
 			want: telemetry.RefreshStatusDegraded,
 		},
 		{
+			name: "loop behind remains operational",
+			value: telemetry.Refresh{
+				Status: telemetry.RefreshStatusBehind,
+			},
+			want:  telemetry.RefreshStatusBehind,
+			ready: true,
+		},
+		{
 			name: "legacy loaded snapshot infers ready",
 			value: telemetry.Refresh{
 				LastRefreshAt: &now,
@@ -730,6 +739,10 @@ func TestRefreshReadinessStatusAt(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 17, 1, 39, 0, 0, time.UTC)
+	legacyReady := (telemetry.Refresh{Status: telemetry.RefreshStatusReady}).WithFreshness(now)
+	if got := legacyReady.ReadinessStatus(); got != telemetry.RefreshStatusReady {
+		t.Fatalf("legacy ReadinessStatus() = %q, want %q", got, telemetry.RefreshStatusReady)
+	}
 	lastRefreshAt := now.Add(-18 * time.Minute)
 	tests := []struct {
 		name          string
@@ -743,9 +756,9 @@ func TestRefreshReadinessStatusAt(t *testing.T) {
 			wantStatus:    telemetry.RefreshStatusReady,
 		},
 		{
-			name:          "past due refresh becomes degraded",
+			name:          "past due refresh reports loop behind",
 			nextRefreshAt: now.Add(-9 * time.Minute),
-			wantStatus:    telemetry.RefreshStatusDegraded,
+			wantStatus:    telemetry.RefreshStatusBehind,
 			wantOverdue:   true,
 		},
 	}
@@ -795,11 +808,230 @@ func TestSnapshotWithFreshness(t *testing.T) {
 	if got := snapshot.AgeSeconds(now); got != int64((18*time.Minute)/time.Second) {
 		t.Fatalf("AgeSeconds() = %d, want 1080", got)
 	}
-	if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusDegraded || !snapshot.Refresh.NextRefreshOverdue {
-		t.Fatalf("Refresh = %#v, want overdue degraded refresh", snapshot.Refresh)
+	if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusBehind || !snapshot.Refresh.NextRefreshOverdue {
+		t.Fatalf("Refresh = %#v, want overdue behind refresh", snapshot.Refresh)
 	}
-	if snapshot.Projects[0].Refresh.ReadinessStatus() != telemetry.RefreshStatusDegraded || !snapshot.Projects[0].Refresh.NextRefreshOverdue {
-		t.Fatalf("Projects[0].Refresh = %#v, want overdue degraded refresh", snapshot.Projects[0].Refresh)
+	if snapshot.Projects[0].Refresh.ReadinessStatus() != telemetry.RefreshStatusBehind || !snapshot.Projects[0].Refresh.NextRefreshOverdue {
+		t.Fatalf("Projects[0].Refresh = %#v, want overdue behind refresh", snapshot.Projects[0].Refresh)
+	}
+}
+
+func TestSnapshotRefreshSweepHealth(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 13, 0, 0, 0, time.UTC)
+	healthyLastRefreshAt := now.Add(-90 * time.Second)
+	healthyNextRefreshAt := now.Add(-30 * time.Second)
+	neverNextRefreshAt := now.Add(-7 * time.Minute)
+	failureAt := now.Add(-time.Second)
+	tests := []struct {
+		name              string
+		projectCount      int
+		lastDuration      int64
+		mutate            func(int, *telemetry.Refresh)
+		wantStatus        telemetry.RefreshStatus
+		wantStaleAfter    int64
+		wantFailureReason telemetry.RefreshFailureReason
+	}{
+		{
+			name:           "healthy one-project host reports pacing only",
+			projectCount:   1,
+			lastDuration:   16,
+			wantStatus:     telemetry.RefreshStatusBehind,
+			wantStaleAfter: 120,
+		},
+		{
+			name:           "healthy ten-project host expands sweep window",
+			projectCount:   10,
+			lastDuration:   16,
+			wantStatus:     telemetry.RefreshStatusBehind,
+			wantStaleAfter: 320,
+		},
+		{
+			name:           "five-project threshold follows observed sweep",
+			projectCount:   5,
+			lastDuration:   20,
+			wantStatus:     telemetry.RefreshStatusBehind,
+			wantStaleAfter: 200,
+		},
+		{
+			name:              "failing source remains degraded",
+			projectCount:      10,
+			lastDuration:      16,
+			wantStatus:        telemetry.RefreshStatusDegraded,
+			wantStaleAfter:    320,
+			wantFailureReason: telemetry.RefreshFailureReasonConsecutiveFailures,
+			mutate: func(index int, refresh *telemetry.Refresh) {
+				if index != 0 {
+					return
+				}
+				refresh.Status = telemetry.RefreshStatusDegraded
+				refresh.LastError = "candidate endpoint unavailable"
+				refresh.LastErrorAt = &failureAt
+				refresh.FailureThreshold = 3
+				refresh.Sources = []telemetry.RefreshSource{{
+					Name:          telemetry.RefreshSourceCandidates,
+					LastSuccessAt: &healthyLastRefreshAt,
+					FailureStreak: 3,
+					LastError:     "candidate endpoint unavailable",
+					LastErrorAt:   &failureAt,
+				}}
+			},
+		},
+		{
+			name:              "never-refreshed project exceeds ten-project sweep window",
+			projectCount:      10,
+			lastDuration:      16,
+			wantStatus:        telemetry.RefreshStatusDegraded,
+			wantStaleAfter:    320,
+			wantFailureReason: telemetry.RefreshFailureReasonNeverRefreshed,
+			mutate: func(index int, refresh *telemetry.Refresh) {
+				if index != 0 {
+					return
+				}
+				refresh.Status = telemetry.RefreshStatusInitializing
+				refresh.LastRefreshAt = nil
+				refresh.NextRefreshAt = &neverNextRefreshAt
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			projects := make([]telemetry.ProjectSnapshot, tt.projectCount)
+			for index := range projects {
+				refresh := telemetry.Refresh{
+					PollIntervalSeconds: 60,
+					StaleAfterSeconds:   120,
+					LastDurationSeconds: tt.lastDuration,
+					FailureThreshold:    3,
+					Status:              telemetry.RefreshStatusReady,
+					LastRefreshAt:       &healthyLastRefreshAt,
+					NextRefreshAt:       &healthyNextRefreshAt,
+				}
+				if tt.mutate != nil {
+					tt.mutate(index, &refresh)
+				}
+				projects[index] = telemetry.ProjectSnapshot{
+					Project: telemetry.Project{ID: fmt.Sprintf("project-%d", index)},
+					Refresh: refresh,
+				}
+			}
+			snapshot := (telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh:     projects[0].Refresh,
+				Projects:    projects,
+			}).WithFreshness(now)
+
+			if got := snapshot.Refresh.ReadinessStatus(); got != tt.wantStatus {
+				t.Fatalf("Refresh status = %q, want %q; refresh = %#v", got, tt.wantStatus, snapshot.Refresh)
+			}
+			if snapshot.Refresh.StaleAfterSeconds != tt.wantStaleAfter {
+				t.Fatalf("StaleAfterSeconds = %d, want %d", snapshot.Refresh.StaleAfterSeconds, tt.wantStaleAfter)
+			}
+			failures := snapshot.RefreshFailures()
+			if tt.wantFailureReason == "" {
+				if len(failures) != 0 {
+					t.Fatalf("RefreshFailures() = %#v, want none", failures)
+				}
+				return
+			}
+			if len(failures) != 1 || failures[0].Reason != tt.wantFailureReason {
+				t.Fatalf("RefreshFailures() = %#v, want one %q failure", failures, tt.wantFailureReason)
+			}
+		})
+	}
+}
+
+func TestSnapshotWithFreshnessDistinguishesRefreshPacingFromFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-90 * time.Second)
+	nextRefreshAt := now.Add(-30 * time.Second)
+	tests := []struct {
+		name         string
+		projectCount int
+	}{
+		{name: "one project", projectCount: 1},
+		{name: "ten projects", projectCount: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			projects := make([]telemetry.ProjectSnapshot, tt.projectCount)
+			for index := range projects {
+				projects[index] = telemetry.ProjectSnapshot{
+					Project: telemetry.Project{ID: fmt.Sprintf("project-%d", index)},
+					Refresh: telemetry.Refresh{
+						PollIntervalSeconds: 60,
+						StaleAfterSeconds:   120,
+						Status:              telemetry.RefreshStatusReady,
+						LastRefreshAt:       &lastRefreshAt,
+						NextRefreshAt:       &nextRefreshAt,
+					},
+				}
+			}
+			snapshot := (telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh:     projects[0].Refresh,
+				Projects:    projects,
+			}).WithFreshness(now)
+
+			if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatus("behind") {
+				t.Fatalf("Refresh status = %q, want behind", got)
+			}
+			if !snapshot.Refresh.NextRefreshOverdue {
+				t.Fatal("NextRefreshOverdue = false, want true")
+			}
+			if snapshot.Refresh.LastError != "" || snapshot.Refresh.LastErrorAt != nil {
+				t.Fatalf("refresh error = %q at %v, want none", snapshot.Refresh.LastError, snapshot.Refresh.LastErrorAt)
+			}
+		})
+	}
+}
+
+func TestSnapshotFreshnessRecoversWhenObservedSweepExpandsWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-150 * time.Second)
+	nextRefreshAt := now.Add(-90 * time.Second)
+	refresh := telemetry.Refresh{
+		PollIntervalSeconds: 60,
+		StaleAfterSeconds:   120,
+		LastDurationSeconds: 16,
+		Status:              telemetry.RefreshStatusReady,
+		LastRefreshAt:       &lastRefreshAt,
+		NextRefreshAt:       &nextRefreshAt,
+	}
+	snapshot := (telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh:     refresh,
+		Projects: []telemetry.ProjectSnapshot{{
+			Project: telemetry.Project{ID: "project-0"},
+			Refresh: refresh,
+		}},
+	}).WithFreshness(now)
+	if !snapshot.Refresh.StalenessWindowExceeded {
+		t.Fatal("StalenessWindowExceeded = false, want true before sweep history is available")
+	}
+	for index := 1; index < 10; index++ {
+		snapshot.Projects = append(snapshot.Projects, telemetry.ProjectSnapshot{
+			Project: telemetry.Project{ID: fmt.Sprintf("project-%d", index)},
+			Refresh: refresh,
+		})
+	}
+	snapshot = snapshot.WithFreshness(now)
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusBehind {
+		t.Fatalf("Refresh status = %q, want %q", got, telemetry.RefreshStatusBehind)
+	}
+	if snapshot.Refresh.StalenessWindowExceeded || snapshot.Refresh.LastError != "" || snapshot.Refresh.LastErrorAt != nil {
+		t.Fatalf("Refresh = %#v, want recovered pacing state without error", snapshot.Refresh)
 	}
 }
 

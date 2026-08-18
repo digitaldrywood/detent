@@ -1675,7 +1675,8 @@ func snapshotReady(snapshot telemetry.Snapshot) bool {
 	if snapshot.LastKnown {
 		return false
 	}
-	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusReady
+	status := snapshotReadinessStatus(snapshot)
+	return status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind
 }
 
 func snapshotInitializing(snapshot telemetry.Snapshot) bool {
@@ -1730,7 +1731,7 @@ func snapshotHasPriorTrackerSnapshot(snapshot telemetry.Snapshot) bool {
 
 func projectSnapshotHasPriorTrackerData(project telemetry.ProjectSnapshot) bool {
 	return project.Refresh.LastRefreshAt != nil ||
-		project.Refresh.Status == telemetry.RefreshStatusReady ||
+		project.Refresh.Ready() ||
 		project.Counts != (telemetry.Counts{})
 }
 

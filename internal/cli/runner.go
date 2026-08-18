@@ -1594,6 +1594,11 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 	if next.DataSeq > current.DataSeq {
 		current.DataSeq = next.DataSeq
 	}
+	current.ObservedSweepSeconds += next.LastDurationSeconds
+	if next.BehindBySeconds > current.BehindBySeconds {
+		current.BehindBySeconds = next.BehindBySeconds
+	}
+	current.StalenessWindowExceeded = current.StalenessWindowExceeded || next.StalenessWindowExceeded
 	current.LastRefreshAt = latestTime(current.LastRefreshAt, next.LastRefreshAt)
 	current.NextRefreshAt = earliestTime(current.NextRefreshAt, next.NextRefreshAt)
 	if strings.TrimSpace(next.LastError) != "" {
@@ -1616,6 +1621,8 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 		current.Status = telemetry.RefreshStatusDegraded
 	case current.ReadinessStatus() == telemetry.RefreshStatusInitializing || next.ReadinessStatus() == telemetry.RefreshStatusInitializing:
 		current.Status = telemetry.RefreshStatusInitializing
+	case current.ReadinessStatus() == telemetry.RefreshStatusBehind || next.ReadinessStatus() == telemetry.RefreshStatusBehind:
+		current.Status = telemetry.RefreshStatusBehind
 	case currentHadSignal || nextHadSignal:
 		current.Status = telemetry.RefreshStatusReady
 	default:

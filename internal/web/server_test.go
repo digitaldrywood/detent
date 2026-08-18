@@ -7184,7 +7184,7 @@ func TestHealthReportsTickLivenessAndSnapshotAge(t *testing.T) {
 				WatchdogIntervalCount: 2,
 			},
 			wantHealthStatus: "needs_attention",
-			wantRefresh:      telemetry.RefreshStatusDegraded,
+			wantRefresh:      telemetry.RefreshStatusBehind,
 			wantAgeSeconds:   "1080",
 		},
 	}
@@ -7291,6 +7291,22 @@ func TestHealthReportsProjectRefreshFailures(t *testing.T) {
 			},
 			wantHealthStatus: "needs_attention",
 			wantFailures:     1,
+		},
+		{
+			name: "loop behind remains healthy",
+			refresh: telemetry.Refresh{
+				Status:               telemetry.RefreshStatusBehind,
+				FailureThreshold:     3,
+				LastRefreshAt:        &lastRefreshAt,
+				NextRefreshAt:        &lastErrorAt,
+				NextRefreshOverdue:   true,
+				BehindBySeconds:      30,
+				ObservedSweepSeconds: 160,
+				Sources: []telemetry.RefreshSource{{
+					Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &lastRefreshAt,
+				}},
+			},
+			wantHealthStatus: "ok",
 		},
 		{
 			name: "successful refresh clears attention",
@@ -8962,8 +8978,10 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 
 	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
 	backoffUntil := now.Add(5 * time.Minute)
+	lastRefreshAt := now.Add(-90 * time.Second)
+	nextRefreshAt := now.Add(-30 * time.Second)
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour, Now: func() time.Time { return now }}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8975,6 +8993,13 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			PollIntervalSeconds: 60,
+			StaleAfterSeconds:   120,
+			Status:              telemetry.RefreshStatusReady,
+			LastRefreshAt:       &lastRefreshAt,
+			NextRefreshAt:       &nextRefreshAt,
+		},
 		RateLimits: &telemetry.RateLimits{
 			GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000},
 			GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000},
@@ -9001,6 +9026,7 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 		`id="health-github-graphql"`,
 		"122 / 5,000",
 		"120 / 5,000",
+		"Loop behind",
 	} {
 		if !strings.Contains(snapshotEvent.data, want) {
 			t.Fatalf("health snapshot event missing %q:\n%s", want, snapshotEvent.data)

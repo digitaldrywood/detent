@@ -107,15 +107,78 @@ func (s Snapshot) AgeSeconds(now time.Time) int64 {
 }
 
 func (s Snapshot) WithFreshness(now time.Time) Snapshot {
-	s.Refresh = s.Refresh.WithFreshness(now)
 	if len(s.Projects) == 0 {
+		s.Refresh = s.Refresh.WithFreshness(now)
 		return s
 	}
 	s.Projects = append([]ProjectSnapshot(nil), s.Projects...)
+	staleAfterSeconds, observedSweepSeconds := refreshFleetStaleAfter(s.Refresh, s.Projects)
+	if staleAfterSeconds > s.Refresh.StaleAfterSeconds {
+		s.Refresh.StaleAfterSeconds = staleAfterSeconds
+	}
+	s.Refresh.ObservedSweepSeconds = observedSweepSeconds
+	s.Refresh = s.Refresh.WithFreshness(now)
 	for index := range s.Projects {
+		if !refreshHasReadinessSignal(s.Projects[index].Refresh) {
+			continue
+		}
+		if staleAfterSeconds > s.Projects[index].Refresh.StaleAfterSeconds {
+			s.Projects[index].Refresh.StaleAfterSeconds = staleAfterSeconds
+		}
 		s.Projects[index].Refresh = s.Projects[index].Refresh.WithFreshness(now)
+		projectRefresh := s.Projects[index].Refresh
+		switch projectRefresh.ReadinessStatus() {
+		case RefreshStatusDegraded:
+			s.Refresh.Status = RefreshStatusDegraded
+			s.Refresh.StalenessWindowExceeded = s.Refresh.StalenessWindowExceeded || projectRefresh.StalenessWindowExceeded
+			if strings.TrimSpace(s.Refresh.LastError) == "" || projectRefresh.StalenessWindowExceeded {
+				s.Refresh.LastError = projectRefresh.LastError
+				s.Refresh.LastErrorAt = copyTimePointer(projectRefresh.LastErrorAt)
+			}
+		case RefreshStatusInitializing:
+			if s.Refresh.ReadinessStatus() != RefreshStatusDegraded {
+				s.Refresh.Status = RefreshStatusInitializing
+			}
+		case RefreshStatusBehind:
+			if s.Refresh.ReadinessStatus() == RefreshStatusReady {
+				s.Refresh.Status = RefreshStatusBehind
+			}
+		}
 	}
 	return s
+}
+
+func refreshFleetStaleAfter(fleet Refresh, projects []ProjectSnapshot) (int64, int64) {
+	staleAfterSeconds := fleet.StaleAfterSeconds
+	var observedDurationSeconds int64
+	var activeProjectCount int64
+	var knownDurationCount int64
+	for _, project := range projects {
+		refresh := project.Refresh
+		if !refreshHasReadinessSignal(refresh) {
+			continue
+		}
+		activeProjectCount++
+		if refresh.StaleAfterSeconds > staleAfterSeconds {
+			staleAfterSeconds = refresh.StaleAfterSeconds
+		}
+		if refresh.LastDurationSeconds > 0 {
+			observedDurationSeconds += refresh.LastDurationSeconds
+			knownDurationCount++
+		}
+	}
+	if activeProjectCount < 2 || knownDurationCount == 0 {
+		return staleAfterSeconds, observedDurationSeconds
+	}
+	unknownDurationCount := activeProjectCount - knownDurationCount
+	if unknownDurationCount > 0 {
+		observedDurationSeconds += ((observedDurationSeconds + knownDurationCount - 1) / knownDurationCount) * unknownDurationCount
+	}
+	adaptiveStaleAfterSeconds := refreshSweepHeadroomMultiplier * observedDurationSeconds
+	if adaptiveStaleAfterSeconds > staleAfterSeconds {
+		staleAfterSeconds = adaptiveStaleAfterSeconds
+	}
+	return staleAfterSeconds, observedDurationSeconds
 }
 
 type CICondition struct {
@@ -475,9 +538,12 @@ func (h AuthHealth) IsZero() bool {
 
 type RefreshStatus string
 
+const refreshSweepHeadroomMultiplier = 2
+
 const (
 	RefreshStatusInitializing RefreshStatus = "initializing"
 	RefreshStatusReady        RefreshStatus = "ready"
+	RefreshStatusBehind       RefreshStatus = "behind"
 	RefreshStatusDegraded     RefreshStatus = "degraded"
 )
 
@@ -520,18 +586,22 @@ const (
 )
 
 type Refresh struct {
-	PollIntervalSeconds int64           `json:"poll_interval_seconds,omitempty"`
-	StaleAfterSeconds   int64           `json:"stale_after_seconds,omitempty"`
-	FailureThreshold    int             `json:"failure_threshold,omitempty"`
-	DataSeq             uint64          `json:"data_seq,omitempty"`
-	Status              RefreshStatus   `json:"status,omitempty"`
-	LastRefreshAt       *time.Time      `json:"last_refresh_at,omitempty"`
-	NextRefreshAt       *time.Time      `json:"next_refresh_at,omitempty"`
-	NextRefreshOverdue  bool            `json:"next_refresh_overdue"`
-	LastError           string          `json:"last_error,omitempty"`
-	LastErrorAt         *time.Time      `json:"last_error_at,omitempty"`
-	Sources             []RefreshSource `json:"sources,omitempty"`
-	Manual              *RefreshAttempt `json:"manual,omitempty"`
+	PollIntervalSeconds     int64           `json:"poll_interval_seconds,omitempty"`
+	StaleAfterSeconds       int64           `json:"stale_after_seconds,omitempty"`
+	LastDurationSeconds     int64           `json:"last_duration_seconds,omitempty"`
+	ObservedSweepSeconds    int64           `json:"observed_sweep_seconds,omitempty"`
+	BehindBySeconds         int64           `json:"behind_by_seconds,omitempty"`
+	FailureThreshold        int             `json:"failure_threshold,omitempty"`
+	DataSeq                 uint64          `json:"data_seq,omitempty"`
+	Status                  RefreshStatus   `json:"status,omitempty"`
+	LastRefreshAt           *time.Time      `json:"last_refresh_at,omitempty"`
+	NextRefreshAt           *time.Time      `json:"next_refresh_at,omitempty"`
+	NextRefreshOverdue      bool            `json:"next_refresh_overdue"`
+	StalenessWindowExceeded bool            `json:"staleness_window_exceeded,omitempty"`
+	LastError               string          `json:"last_error,omitempty"`
+	LastErrorAt             *time.Time      `json:"last_error_at,omitempty"`
+	Sources                 []RefreshSource `json:"sources,omitempty"`
+	Manual                  *RefreshAttempt `json:"manual,omitempty"`
 }
 
 type RefreshFailureReason string
@@ -539,6 +609,7 @@ type RefreshFailureReason string
 const (
 	RefreshFailureReasonConsecutiveFailures RefreshFailureReason = "consecutive_failures"
 	RefreshFailureReasonNeverRefreshed      RefreshFailureReason = "never_refreshed"
+	RefreshFailureReasonStale               RefreshFailureReason = "stale"
 )
 
 type RefreshFailure struct {
@@ -592,21 +663,26 @@ func (a RefreshAttempt) IsZero() bool {
 }
 
 func (r Refresh) ReadinessStatus() RefreshStatus {
+	if strings.TrimSpace(r.LastError) != "" || r.LastErrorAt != nil {
+		return RefreshStatusDegraded
+	}
 	switch RefreshStatus(strings.TrimSpace(string(r.Status))) {
 	case RefreshStatusInitializing:
 		return RefreshStatusInitializing
 	case RefreshStatusReady:
 		if r.NextRefreshOverdue {
-			return RefreshStatusDegraded
+			return RefreshStatusBehind
 		}
 		return RefreshStatusReady
+	case RefreshStatusBehind:
+		return RefreshStatusBehind
 	case RefreshStatusDegraded:
 		return RefreshStatusDegraded
 	}
-	if strings.TrimSpace(r.LastError) != "" || r.LastErrorAt != nil {
-		return RefreshStatusDegraded
-	}
 	if r.LastRefreshAt != nil {
+		if r.NextRefreshOverdue {
+			return RefreshStatusBehind
+		}
 		return RefreshStatusReady
 	}
 	return RefreshStatusInitializing
@@ -614,11 +690,71 @@ func (r Refresh) ReadinessStatus() RefreshStatus {
 
 func (r Refresh) WithFreshness(now time.Time) Refresh {
 	r.NextRefreshOverdue = r.NextRefreshAt != nil && !now.IsZero() && now.After(*r.NextRefreshAt)
+	r.BehindBySeconds = 0
+	if r.NextRefreshOverdue {
+		r.BehindBySeconds = int64(now.Sub(*r.NextRefreshAt) / time.Second)
+	}
 	if !refreshHasReadinessSignal(r) {
 		return r
 	}
-	r.Status = r.ReadinessStatus()
+	readinessStatus := r.ReadinessStatus()
+	wasStalenessWindowExceeded := r.StalenessWindowExceeded
+	if readinessStatus == RefreshStatusDegraded && !wasStalenessWindowExceeded {
+		r.Status = RefreshStatusDegraded
+		return r
+	}
+	r.StalenessWindowExceeded = false
+	if deadline, ok := r.stalenessDeadline(); ok && now.After(deadline) {
+		r.Status = RefreshStatusDegraded
+		r.StalenessWindowExceeded = true
+		r.LastErrorAt = copyTimePointer(&deadline)
+		if r.LastRefreshAt == nil {
+			r.LastError = "refresh has never completed within the expected sweep window"
+		} else {
+			r.LastError = "refresh has not succeeded within the expected sweep window"
+		}
+		return r
+	}
+	if wasStalenessWindowExceeded {
+		r.LastError = ""
+		r.LastErrorAt = nil
+		if r.LastRefreshAt == nil {
+			readinessStatus = RefreshStatusInitializing
+		} else {
+			readinessStatus = RefreshStatusReady
+		}
+	}
+	if r.NextRefreshOverdue {
+		r.Status = RefreshStatusBehind
+		return r
+	}
+	if r.LastRefreshAt == nil {
+		r.Status = readinessStatus
+		return r
+	}
+	r.Status = RefreshStatusReady
 	return r
+}
+
+func (r Refresh) stalenessDeadline() (time.Time, bool) {
+	staleAfter := time.Duration(r.StaleAfterSeconds) * time.Second
+	if staleAfter <= 0 {
+		return time.Time{}, false
+	}
+	oldest := r.LastRefreshAt
+	for index := range r.Sources {
+		successAt := r.Sources[index].LastSuccessAt
+		if successAt != nil && (oldest == nil || successAt.Before(*oldest)) {
+			oldest = successAt
+		}
+	}
+	if oldest != nil {
+		return oldest.Add(staleAfter), true
+	}
+	if r.NextRefreshAt != nil {
+		return r.NextRefreshAt.Add(staleAfter), true
+	}
+	return time.Time{}, false
 }
 
 func refreshHasReadinessSignal(r Refresh) bool {
@@ -631,7 +767,8 @@ func refreshHasReadinessSignal(r Refresh) bool {
 }
 
 func (r Refresh) Ready() bool {
-	return r.ReadinessStatus() == RefreshStatusReady
+	status := r.ReadinessStatus()
+	return status == RefreshStatusReady || status == RefreshStatusBehind
 }
 
 func (r Refresh) Initializing() bool {
@@ -640,6 +777,10 @@ func (r Refresh) Initializing() bool {
 
 func (r Refresh) Degraded() bool {
 	return r.ReadinessStatus() == RefreshStatusDegraded
+}
+
+func (r Refresh) Behind() bool {
+	return r.ReadinessStatus() == RefreshStatusBehind
 }
 
 func (r Refresh) Source(name RefreshSourceName) (RefreshSource, bool) {
@@ -709,6 +850,19 @@ func (r Refresh) failure(projectID string) (RefreshFailure, bool) {
 		return RefreshFailure{
 			ProjectID:        projectID,
 			Reason:           RefreshFailureReasonNeverRefreshed,
+			Source:           source.Name,
+			FailureStreak:    source.FailureStreak,
+			FailureThreshold: threshold,
+			LastError:        lastError,
+			LastErrorAt:      copyTimePointer(lastErrorAt),
+			Condition:        source.Condition,
+			Connector:        source.Connector,
+		}, true
+	}
+	if r.StalenessWindowExceeded {
+		return RefreshFailure{
+			ProjectID:        projectID,
+			Reason:           RefreshFailureReasonStale,
 			Source:           source.Name,
 			FailureStreak:    source.FailureStreak,
 			FailureThreshold: threshold,

@@ -96,8 +96,15 @@ func TestTickDataSeqChangesOnlyAfterSuccessfulRefresh(t *testing.T) {
 			if snapshot := state.Snapshot(now); snapshot.Refresh.DataSeq != state.DataSeq {
 				t.Fatalf("Snapshot().Refresh.DataSeq = %d, want %d", snapshot.Refresh.DataSeq, state.DataSeq)
 			}
-			if cloned := state.clone(); cloned.DataSeq != state.DataSeq {
+			cloned := state.clone()
+			if snapshot := cloned.Snapshot(now); snapshot.Refresh.LastDurationSeconds != durationSecondsCeil(state.LastRefreshDuration) {
+				t.Fatalf("clone().Snapshot().Refresh.LastDurationSeconds = %d, want measured duration %d", snapshot.Refresh.LastDurationSeconds, durationSecondsCeil(state.LastRefreshDuration))
+			}
+			if cloned.DataSeq != state.DataSeq {
 				t.Fatalf("clone().DataSeq = %d, want %d", cloned.DataSeq, state.DataSeq)
+			}
+			if cloned.LastRefreshDuration != state.LastRefreshDuration {
+				t.Fatalf("clone().LastRefreshDuration = %s, want %s", cloned.LastRefreshDuration, state.LastRefreshDuration)
 			}
 		})
 	}

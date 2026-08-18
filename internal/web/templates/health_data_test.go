@@ -35,6 +35,20 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Waiting for the first health snapshot.",
 		},
 		{
+			name: "refresh pacing is distinct from failure",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh: telemetry.Refresh{
+					Status:               telemetry.RefreshStatusBehind,
+					NextRefreshOverdue:   true,
+					BehindBySeconds:      30,
+					ObservedSweepSeconds: 160,
+				},
+			},
+			wantKind:    primitives.KindNeutral,
+			wantVerdict: "Refresh loop is behind.",
+		},
+		{
 			name: "tracker unavailability requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,

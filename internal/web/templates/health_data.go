@@ -128,6 +128,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = "Review the affected issues before the proposals expire."
 		return view
 	}
+	if snapshot.Refresh.Behind() {
+		view.Kind = primitives.KindNeutral
+		view.Verdict = "Refresh loop is behind."
+		view.Detail = "The latest tracker refresh succeeded; the loop is pacing behind its target cadence."
+		return view
+	}
 	switch api.State {
 	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
 		view.Kind = primitives.KindOK
