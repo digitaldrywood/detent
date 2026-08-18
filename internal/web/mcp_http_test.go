@@ -108,7 +108,7 @@ func TestRemoteMCPBypassesDashboardAuthenticationGates(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			server, _ := newRemoteMCPTestServerWithConfig(t, nil, test.config)
+			server, _ := newRemoteMCPTestServerWithConfig(t, nil, test.config, nil)
 			token, _ := createRemoteMCPKey(t, server, "Global read", []string{"read"}, nil)
 			authorized := performJSON(t, server.Handler(), http.MethodPost, "/mcp", mcpInitializeRequest, map[string]string{
 				"Authorization": "Bearer " + token,
@@ -148,7 +148,8 @@ func TestRemoteMCPBearerTokenIsNotLoggedOrEchoed(t *testing.T) {
 func TestRemoteMCPUsesExistingRateLimits(t *testing.T) {
 	t.Parallel()
 
-	server, _ := newRemoteMCPTestServer(t, nil)
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	server, _ := newRemoteMCPTestServerWithConfig(t, nil, globalconfig.Config{}, func() time.Time { return now })
 	token, _ := createRemoteMCPKey(t, server, "Rate limited read", []string{"read"}, nil)
 	var limited bool
 	for range 40 {
@@ -195,10 +196,10 @@ func TestRemoteMCPUsesWebServerShutdown(t *testing.T) {
 
 func newRemoteMCPTestServer(t *testing.T, logger *slog.Logger) (*web.Server, store.Store) {
 	t.Helper()
-	return newRemoteMCPTestServerWithConfig(t, logger, globalconfig.Config{})
+	return newRemoteMCPTestServerWithConfig(t, logger, globalconfig.Config{}, nil)
 }
 
-func newRemoteMCPTestServerWithConfig(t *testing.T, logger *slog.Logger, config globalconfig.Config) (*web.Server, store.Store) {
+func newRemoteMCPTestServerWithConfig(t *testing.T, logger *slog.Logger, config globalconfig.Config, now func() time.Time) (*web.Server, store.Store) {
 	t.Helper()
 	backend := openWebTestStore(t)
 	deps := testDeps(t)
@@ -209,6 +210,7 @@ func newRemoteMCPTestServerWithConfig(t *testing.T, logger *slog.Logger, config 
 		Logger:        logger,
 		ServerAddress: "127.0.0.1:0",
 		GlobalConfig:  config,
+		Now:           now,
 	}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)

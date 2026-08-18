@@ -605,7 +605,7 @@ func (s *Server) applyAPIKeyRateLimit(c echo.Context, credential apikey.Credenti
 	if key == "" {
 		key = apikey.StaticKeyID
 	}
-	allowed, remaining := s.keyLimiter.Allow(key, time.Now())
+	allowed, remaining := s.keyLimiter.Allow(key, s.now())
 	s.setRateLimitHeaders(c, s.keyLimiter.Limit(), remaining)
 	if allowed {
 		return nil

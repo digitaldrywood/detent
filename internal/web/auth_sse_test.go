@@ -76,6 +76,7 @@ func TestLoopbackPeerReadTrustPreservesRateLimits(t *testing.T) {
 				globalConfigSource: func() globalconfig.Config { return cfg },
 				lookupEnv:          func(string) string { return "" },
 				serverAddr:         "0.0.0.0:0",
+				now:                time.Now,
 			}
 			tt.configure(server)
 			t.Cleanup(func() {
