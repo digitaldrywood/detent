@@ -21,6 +21,7 @@ func TestHelpTermsCoverDashboardSectionsAndMetrics(t *testing.T) {
 		{name: "backoff queue", term: helpBackoffQueue},
 		{name: "blocked", term: helpBlocked},
 		{name: "completed", term: helpCompleted},
+		{name: "concurrency", term: helpConcurrency},
 		{name: "budget", term: helpBudget, unit: "USD"},
 		{name: "rate limits", term: helpRateLimits},
 		{name: "tokens", term: helpTokens, unit: "tokens"},

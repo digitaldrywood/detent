@@ -104,6 +104,21 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.TokenTrend = nil
 	}
 	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
+	out.Concurrency = scopedConcurrencyHistory(snapshot.Concurrency, selectedProjectID)
+	return out
+}
+
+func scopedConcurrencyHistory(history telemetry.ConcurrencyHistory, selectedProjectID string) telemetry.ConcurrencyHistory {
+	if !history.Available {
+		return history
+	}
+	out := history
+	out.Series = make([]telemetry.ConcurrencySeries, 0, 1)
+	for _, series := range history.Series {
+		if strings.TrimSpace(series.ProjectID) == selectedProjectID {
+			out.Series = append(out.Series, series)
+		}
+	}
 	return out
 }
 

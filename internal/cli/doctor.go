@@ -77,6 +77,8 @@ type doctorCheck struct {
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
+	ConcurrencyHistory         []doctorConcurrencyDiagnostic              `json:"concurrency_history,omitempty"`
+	RedispatchLoops            []doctorRedispatchDiagnostic               `json:"redispatch_loops,omitempty"`
 }
 
 type doctorProjectDefinitionDiagnostic struct {
