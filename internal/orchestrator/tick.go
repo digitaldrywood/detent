@@ -56,7 +56,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	completed := false
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, manual != nil)
 	defer func() {
-		timing.log(ctx, completed, state)
+		state.LastRefreshDuration = timing.log(ctx, completed, state)
 	}()
 	state.tickTransitions = &issueStateSnapshotTransitions{}
 	defer func() {

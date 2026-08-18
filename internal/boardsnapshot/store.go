@@ -150,7 +150,7 @@ func Eligible(snapshot telemetry.Snapshot) bool {
 		return true
 	}
 	status := snapshot.Refresh.ReadinessStatus()
-	if status == telemetry.RefreshStatusReady {
+	if status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind {
 		return true
 	}
 	return status == telemetry.RefreshStatusDegraded && carriesTrackerData(snapshot)
@@ -178,7 +178,7 @@ func carriesTrackerData(snapshot telemetry.Snapshot) bool {
 	}
 	for _, project := range snapshot.Projects {
 		if project.Refresh.LastRefreshAt != nil ||
-			project.Refresh.ReadinessStatus() == telemetry.RefreshStatusReady ||
+			project.Refresh.Ready() ||
 			project.Counts != (telemetry.Counts{}) {
 			return true
 		}

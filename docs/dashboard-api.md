@@ -211,7 +211,13 @@ Useful endpoints:
 State responses calculate `snapshot_age_seconds` when the request is served,
 so counts remain attributable to their producer timestamp even if snapshot
 publication stops. Refresh objects include `next_refresh_overdue`; an explicit
-`ready` status becomes `degraded` once `next_refresh_at` is in the past.
+`ready` status becomes `behind` once `next_refresh_at` is in the past. `behind`
+is a pacing state and keeps successful tracker data operational. The refresh
+object reports `behind_by_seconds`, each project reports
+`last_duration_seconds`, and the fleet reports `observed_sweep_seconds`.
+`stale_after_seconds` expands with the observed multi-project sweep and includes
+headroom. A refresh becomes `degraded` only after that window is exceeded or a
+refresh source reaches its failure threshold.
 `/health` also reports `snapshot_generated_at`, `snapshot_age_seconds`, the
 current refresh object, per-project `tick_liveness`, and
 `orphaned_agent_processes` with process and session counts, total RSS, age, and

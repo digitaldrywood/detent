@@ -13,6 +13,9 @@ func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
 	if snapshot.Refresh.Stale(snapshot.GeneratedAt) {
 		return primitives.KindWarn
 	}
+	if snapshot.Refresh.Behind() {
+		return primitives.KindNeutral
+	}
 	if len(snapshot.Refresh.Sources) > 0 {
 		if refreshOldestSuccess(snapshot.Refresh.Sources).IsZero() {
 			return primitives.KindNeutral
@@ -29,6 +32,9 @@ func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
 }
 
 func refreshFreshnessLabel(snapshot telemetry.Snapshot) string {
+	if snapshot.Refresh.Behind() {
+		return "Loop behind"
+	}
 	switch refreshFreshnessKind(snapshot) {
 	case primitives.KindWarn:
 		return "Data stale"
@@ -294,11 +300,15 @@ func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 	}
 	if len(groups) == 0 && snapshotHasRefreshSignal(snapshot.Refresh) {
 		kind := refreshFreshnessKind(snapshot)
+		status := refreshHealthStatus(kind)
+		if snapshot.Refresh.Behind() {
+			status = "Behind"
+		}
 		return []healthRow{{
 			ID:        "health-tracker",
 			Component: "Tracker freshness",
 			Kind:      kind,
-			Status:    refreshHealthStatus(kind),
+			Status:    status,
 			Detail:    refreshFreshnessSummary(snapshot),
 			Resets:    "—",
 		}}
@@ -315,6 +325,11 @@ func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 			return refreshSourceOrder(sources[i].Name) < refreshSourceOrder(sources[j].Name)
 		})
 		kind := primitives.KindOK
+		status := "Current"
+		if snapshot.Refresh.Behind() {
+			kind = primitives.KindNeutral
+			status = "Behind"
+		}
 		details := make([]string, 0, len(sources))
 		for _, source := range sources {
 			detail := refreshSourceDisplayName(source.Name)
@@ -337,6 +352,9 @@ func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 			}
 			details = append(details, detail)
 		}
+		if kind == primitives.KindWarn {
+			status = refreshHealthStatus(kind)
+		}
 		component := "Tracker freshness"
 		if projectID != "" {
 			component += " · " + projectID
@@ -345,7 +363,7 @@ func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 			ID:        "health-tracker-" + boardCardSlug(projectID),
 			Component: component,
 			Kind:      kind,
-			Status:    refreshHealthStatus(kind),
+			Status:    status,
 			Detail:    strings.Join(details, " · "),
 			Resets:    "—",
 		})

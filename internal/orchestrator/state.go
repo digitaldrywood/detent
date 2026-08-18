@@ -52,6 +52,7 @@ type State struct {
 	DrainStartedAt           time.Time
 	DataSeq                  uint64
 	LastRefreshAt            time.Time
+	LastRefreshDuration      time.Duration
 	NextRefreshAt            time.Time
 	LastRefreshError         string
 	LastRefreshErrorAt       time.Time
@@ -409,6 +410,7 @@ func (s State) clone() State {
 		DrainStartedAt:           s.DrainStartedAt,
 		DataSeq:                  s.DataSeq,
 		LastRefreshAt:            s.LastRefreshAt,
+		LastRefreshDuration:      s.LastRefreshDuration,
 		NextRefreshAt:            s.NextRefreshAt,
 		LastRefreshError:         s.LastRefreshError,
 		LastRefreshErrorAt:       s.LastRefreshErrorAt,

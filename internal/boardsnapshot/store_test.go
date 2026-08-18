@@ -105,6 +105,7 @@ func TestEligible(t *testing.T) {
 		want     bool
 	}{
 		{name: "ready", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}}, want: true},
+		{name: "loop behind", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusBehind}}, want: true},
 		{name: "live snapshot without refresh signal", snapshot: telemetry.Snapshot{GeneratedAt: now, Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "paused"}}}}, want: true},
 		{name: "degraded with prior data", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}, BoardIssues: []telemetry.Issue{{ID: "issue"}}}, want: true},
 		{name: "initializing", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusInitializing}}},

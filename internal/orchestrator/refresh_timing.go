@@ -39,17 +39,21 @@ func (t *refreshTiming) next(phase string) {
 	t.phaseStarted = now
 }
 
-func (t *refreshTiming) log(ctx context.Context, completed bool, state *State) {
-	if t == nil || t.logger == nil {
-		return
+func (t *refreshTiming) log(ctx context.Context, completed bool, state *State) time.Duration {
+	if t == nil {
+		return 0
 	}
 	now := time.Now()
 	t.finishPhase(now)
+	duration := now.Sub(t.startedAt)
+	if t.logger == nil {
+		return duration
+	}
 	attrs := []any{
 		"project_id", t.projectID,
 		"manual", t.manual,
 		"completed", completed,
-		"total_duration", now.Sub(t.startedAt),
+		"total_duration", duration,
 	}
 	if state != nil {
 		attrs = append(attrs,
@@ -59,6 +63,7 @@ func (t *refreshTiming) log(ctx context.Context, completed bool, state *State) {
 	}
 	attrs = append(attrs, t.phases...)
 	t.logger.InfoContext(ctx, "project refresh timing", attrs...)
+	return duration
 }
 
 func refreshTimingStatus(state *State) string {
