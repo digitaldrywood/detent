@@ -12,6 +12,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -37,8 +38,9 @@ type BackendOutage struct {
 }
 
 type BackendRecovery struct {
-	Outage      BackendOutage
-	RecoveredAt time.Time
+	Outage           BackendOutage
+	RecoveredAt      time.Time
+	SuppressedIssues map[string]string
 }
 
 type validatorCapacityEvent struct {
@@ -600,13 +602,6 @@ func backendOutagesCapacitySnapshot(outages map[string]BackendOutage) []map[stri
 	return rows
 }
 
-func backendCapacityRecoveryTarget(issue connector.Issue) string {
-	if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
-		return autoPromoteReworkState
-	}
-	return "Todo"
-}
-
 func IsLegacyFailureBreakerComment(body string) bool {
 	body = strings.TrimSpace(body)
 	if !strings.HasPrefix(body, "Detent stopped retrying this worker after ") {
@@ -628,13 +623,16 @@ func (o *Orchestrator) recoverBackendCapacityBlockedIssues(
 	transitioned := map[string]struct{}{}
 	consumedRecoveries := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, []string{blockedStatusState}) {
-		capacityErr, hydratedIssue, ok := o.classifyBlockedCapacityIssue(ctx, state, issue, now)
+		capacityErr, capacityComment, hydratedIssue, ok := o.classifyBlockedCapacityIssue(ctx, state, issue, now)
 		if !ok {
 			continue
 		}
 		key, outage, active := matchingBackendOutage(state.BackendOutages, capacityErr.Scope)
 		recoveryKey, recovery, recovered := matchingBackendRecovery(state.BackendRecoveries, capacityErr.Scope)
 		if !active && !recovered {
+			if _, suppression := o.backendCapacityBlockedRecoveryTarget(ctx, hydratedIssue, capacityComment, time.Time{}); suppression != "" {
+				continue
+			}
 			outage = o.registerBackendOutage(state, capacityErr, now, false)
 			key, _, _ = matchingBackendOutage(state.BackendOutages, capacityErr.Scope)
 			active = true
@@ -642,7 +640,13 @@ func (o *Orchestrator) recoverBackendCapacityBlockedIssues(
 		if active {
 			continue
 		}
-		if !o.applyBackendCapacityBlockedRecovery(ctx, state, hydratedIssue, outage, recovery, now) {
+		targetState, suppression := o.backendCapacityBlockedRecoveryTarget(ctx, hydratedIssue, capacityComment, recovery.RecoveredAt)
+		if suppression != "" {
+			recovery = o.recordBackendCapacityBlockedRecoverySuppressed(state, hydratedIssue, recovery, suppression, now)
+			state.BackendRecoveries[recoveryKey] = recovery
+			continue
+		}
+		if !o.applyBackendCapacityBlockedRecovery(ctx, state, hydratedIssue, targetState, outage, recovery, now) {
 			continue
 		}
 		transitioned[hydratedIssue.ID] = struct{}{}
@@ -667,19 +671,19 @@ func (o *Orchestrator) classifyBlockedCapacityIssue(
 	state *State,
 	issue connector.Issue,
 	now time.Time,
-) (*backendcapacity.Error, connector.Issue, bool) {
+) (*backendcapacity.Error, connector.IssueComment, connector.Issue, bool) {
 	issue = cloneIssue(issue)
 	if len(issue.Comments) == 0 {
 		reader, ok := o.connector.(connector.IssueCommentReader)
 		if !ok {
-			return nil, issue, false
+			return nil, connector.IssueComment{}, issue, false
 		}
 		comments, err := reader.FetchIssueComments(ctx, issue)
 		if err != nil {
 			if o.logger != nil {
 				o.logger.Warn("capacity blocked comment hydration failed", "issue_id", issue.ID, "error", err)
 			}
-			return nil, issue, false
+			return nil, connector.IssueComment{}, issue, false
 		}
 		issue.Comments = comments
 	}
@@ -695,10 +699,103 @@ func (o *Orchestrator) classifyBlockedCapacityIssue(
 		}
 		capacityErr, ok := o.capacityController.ClassifyCapacityError(request, errors.New(body), state.RateLimits, now)
 		if ok && capacityErr != nil && capacityErr.Details.Type != backendcapacity.ErrorTypeTransientOverload {
-			return capacityErr, issue, true
+			return capacityErr, issue.Comments[index], issue, true
 		}
 	}
-	return nil, issue, false
+	return nil, connector.IssueComment{}, issue, false
+}
+
+func (o *Orchestrator) backendCapacityBlockedRecoveryTarget(
+	ctx context.Context,
+	issue connector.Issue,
+	capacityComment connector.IssueComment,
+	recoveredAt time.Time,
+) (string, string) {
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok {
+		return "", "current Blocked-entry provenance is unavailable"
+	}
+	if normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
+		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) {
+		return "", "latest durable lane entry is not the current Blocked entry"
+	}
+	switch strings.TrimSpace(entry.Event.Reason) {
+	case "instant_fail_circuit_breaker", "repeated_failure_circuit_breaker":
+	default:
+		return "", "current Blocked entry has independent cause " + strings.TrimSpace(entry.Event.Reason)
+	}
+	commentAt := backendCapacityCommentRecordedAt(capacityComment)
+	if commentAt.IsZero() {
+		return "", "capacity failure evidence has no timestamp to match the current Blocked entry"
+	}
+	if commentAt.Before(entry.Event.StartedAt.Add(-reworkBreakerStageUpdateSkew)) {
+		return "", "capacity failure evidence predates the current Blocked entry"
+	}
+	if !recoveredAt.IsZero() && (recoveredAt.Before(entry.Event.StartedAt) || recoveredAt.Before(commentAt)) {
+		return "", "backend capacity recovery predates the current Blocked entry evidence"
+	}
+	if len(issue.BlockedBy) > 0 {
+		return "", "current issue has independent dependency blockers"
+	}
+	if signal, found := autoPromoteIssueWorkpadSignal(issue); found && signal != nil && signal.Source == workpad.SourceStructured {
+		if signal.Invalid != nil {
+			return "", "current structured Workpad blocker status is invalid"
+		}
+		if strings.TrimSpace(signal.HumanAction) != "" {
+			return "", "current structured Workpad declares a human action"
+		}
+		if len(signal.Blockers) > 0 {
+			return "", "current structured Workpad declares independent typed blockers"
+		}
+		if strings.TrimSpace(signal.Status) == workpad.StatusBlocked {
+			return "", "current structured Workpad declares an independent blocked reason"
+		}
+	}
+	targetState := strings.TrimSpace(entry.Event.PreviousPhaseName)
+	if targetState == "" || normalizeState(targetState) == normalizeState(blockedStatusState) || stateIn(targetState, o.cfg.TerminalStates) {
+		return "", "current Blocked entry has no recoverable captured source lane"
+	}
+	return targetState, ""
+}
+
+func backendCapacityCommentRecordedAt(comment connector.IssueComment) time.Time {
+	if comment.CreatedAt != nil && !comment.CreatedAt.IsZero() {
+		return comment.CreatedAt.UTC()
+	}
+	if comment.UpdatedAt != nil && !comment.UpdatedAt.IsZero() {
+		return comment.UpdatedAt.UTC()
+	}
+	return time.Time{}
+}
+
+func (o *Orchestrator) recordBackendCapacityBlockedRecoverySuppressed(
+	state *State,
+	issue connector.Issue,
+	recovery BackendRecovery,
+	reason string,
+	now time.Time,
+) BackendRecovery {
+	if recovery.SuppressedIssues == nil {
+		recovery.SuppressedIssues = map[string]string{}
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	reason = strings.TrimSpace(reason)
+	if recovery.SuppressedIssues[issueID] == reason {
+		return recovery
+	}
+	recovery.SuppressedIssues[issueID] = reason
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "backend_capacity_blocked_recovery_suppressed",
+		Message: "suppressed backend capacity recovery for " + issueLabel(issue) + ": " + reason,
+	})
+	telemetry.LogLifecycleMessage(o.logger, slog.LevelInfo, telemetry.LifecycleSafetyControl, "backend_capacity_blocked_recovery_suppressed", "backend capacity blocked recovery suppressed", o.issueLifecycleCorrelation(issue),
+		"backend_id", recovery.Outage.Scope.BackendID,
+		"backend_kind", recovery.Outage.Scope.BackendKind,
+		"provider", recovery.Outage.Scope.Provider,
+		"suppression_reason", reason,
+	)
+	return recovery
 }
 
 func matchingBackendRecovery(
@@ -713,15 +810,29 @@ func matchingBackendRecovery(
 	return "", BackendRecovery{}, false
 }
 
+func cloneBackendRecoveries(recoveries map[string]BackendRecovery) map[string]BackendRecovery {
+	cloned := make(map[string]BackendRecovery, len(recoveries))
+	for key, recovery := range recoveries {
+		if recovery.SuppressedIssues != nil {
+			recovery.SuppressedIssues = make(map[string]string, len(recovery.SuppressedIssues))
+			for issueID, reason := range recoveries[key].SuppressedIssues {
+				recovery.SuppressedIssues[issueID] = reason
+			}
+		}
+		cloned[key] = recovery
+	}
+	return cloned
+}
+
 func (o *Orchestrator) applyBackendCapacityBlockedRecovery(
 	ctx context.Context,
 	state *State,
 	issue connector.Issue,
+	targetState string,
 	outage BackendOutage,
 	recovery BackendRecovery,
 	now time.Time,
 ) bool {
-	targetState := backendCapacityRecoveryTarget(issue)
 	if err := o.updateIssueState(ctx, state, issue, targetState, now, "backend_capacity_recovered"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(

@@ -17,6 +17,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
@@ -563,6 +564,25 @@ func stateEventExists(state State, event string) bool {
 	return false
 }
 
+func countStateEvents(events []telemetry.ActivityEvent, event string) int {
+	count := 0
+	for _, candidate := range events {
+		if candidate.Event == event {
+			count++
+		}
+	}
+	return count
+}
+
+func stateEventMessageContains(events []telemetry.ActivityEvent, event string, text string) bool {
+	for _, candidate := range events {
+		if candidate.Event == event && strings.Contains(candidate.Message, text) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestHandleRunResultKeepsOutageWhenCapacityProbeFails(t *testing.T) {
 	t.Parallel()
 
@@ -776,7 +796,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 		t.Fatalf("matchingBackendRecovery() = %q, %t", key, found)
 	}
 	readerless := &Orchestrator{connector: &backendCapacityTestConnector{}}
-	if _, _, ok := readerless.classifyBlockedCapacityIssue(t.Context(), &state, connector.Issue{ID: "blocked"}, now); ok {
+	if _, _, _, ok := readerless.classifyBlockedCapacityIssue(t.Context(), &state, connector.Issue{ID: "blocked"}, now); ok {
 		t.Fatal("readerless capacity issue classified")
 	}
 
@@ -784,7 +804,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 	recoveryIssue := connector.Issue{ID: "recover", State: "Blocked"}
 	recoveryState.Blocked[recoveryIssue.ID] = Blocked{Issue: recoveryIssue}
 	recoveryOrch := &Orchestrator{connector: &backendCapacityTestConnector{}}
-	if !recoveryOrch.applyBackendCapacityBlockedRecovery(t.Context(), &recoveryState, recoveryIssue, BackendOutage{}, recovery, now) {
+	if !recoveryOrch.applyBackendCapacityBlockedRecovery(t.Context(), &recoveryState, recoveryIssue, "Todo", BackendOutage{}, recovery, now) {
 		t.Fatal("applyBackendCapacityBlockedRecovery() = false")
 	}
 }
@@ -998,17 +1018,308 @@ func TestValidatorCapacityProbeFailureKeepsOutage(t *testing.T) {
 func TestRecoverBackendCapacityBlockedIssues(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 7, 10, 9, 0, 0, 0, time.UTC)
+	parkedAt := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
 	tests := []struct {
-		name        string
-		pullRequest *connector.PullRequest
-		wantState   string
+		name                  string
+		sourceState           string
+		currentEntryReason    string
+		currentEntryAt        time.Time
+		workpadSignal         *workpad.Signal
+		recoveryNotifications int
+		wantTransitions       int
+		wantState             string
+		wantSuppression       bool
+		wantDiagnostic        string
+		reinsertRecovery      bool
 	}{
-		{name: "implementation issue returns to todo", wantState: "Todo"},
 		{
-			name:        "open pull request returns to rework",
-			pullRequest: &connector.PullRequest{Number: 1142, State: "open"},
-			wantState:   "Rework",
+			name:                  "capacity-only park recovers to captured lane",
+			sourceState:           "In Progress",
+			currentEntryReason:    "instant_fail_circuit_breaker",
+			currentEntryAt:        parkedAt,
+			recoveryNotifications: 1,
+			wantTransitions:       1,
+			wantState:             "In Progress",
+		},
+		{
+			name:               "independent human Workpad blocker stays blocked",
+			sourceState:        "Rework",
+			currentEntryReason: "instant_fail_circuit_breaker",
+			currentEntryAt:     parkedAt,
+			workpadSignal: &workpad.Signal{
+				Source: workpad.SourceStructured,
+				Status: workpad.StatusBlocked,
+				Blockers: []workpad.Blocker{{
+					Ref:    "missing:browser-tooling:clerk-browser-state",
+					Reason: "browser automation and authenticated Clerk state are unavailable",
+					Owner:  workpad.BlockerOwnerHuman,
+					Predicate: &workpad.Predicate{
+						Type:        workpad.PredicateConfigFingerprint,
+						Fingerprint: "missing:browser-tooling:clerk-browser-state",
+					},
+				}},
+				HumanAction: "provide browser automation and authenticated Clerk state",
+				RecordedAt:  timePointer(parkedAt.Add(time.Minute)),
+			},
+			recoveryNotifications: 2,
+			wantTransitions:       0,
+			wantSuppression:       true,
+			wantDiagnostic:        "human action",
+		},
+		{
+			name:                  "stale recovery after newer capacity Blocked entry is ignored",
+			sourceState:           "Rework",
+			currentEntryReason:    "instant_fail_circuit_breaker",
+			currentEntryAt:        parkedAt.Add(6 * time.Minute),
+			recoveryNotifications: 1,
+			wantTransitions:       0,
+			wantSuppression:       true,
+			wantDiagnostic:        "recovery predates the current Blocked entry evidence",
+		},
+		{
+			name:                  "repeated recovery notifications transition once",
+			sourceState:           "Rework",
+			currentEntryReason:    "instant_fail_circuit_breaker",
+			currentEntryAt:        parkedAt,
+			recoveryNotifications: 2,
+			wantTransitions:       1,
+			wantState:             "Rework",
+			reinsertRecovery:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			legacyCommentAt := tt.currentEntryAt.Add(time.Second)
+			stageUpdatedAt := tt.currentEntryAt
+			issue := connector.Issue{
+				ID:             "issue-capacity-blocked",
+				Identifier:     "digitaldrywood/detent#1142",
+				State:          "Blocked",
+				StageUpdatedAt: &stageUpdatedAt,
+				PullRequest:    &connector.PullRequest{Number: 1142, State: "open"},
+				WorkpadSignal:  tt.workpadSignal,
+				Comments: []connector.IssueComment{{
+					Body: "Detent stopped retrying this worker after 5 consecutive instant failures with the same backend error. backend_error_body: " +
+						`{"error":{"type":"usageLimitExceeded","resetAt":1783666800}}`,
+					CreatedAt: &legacyCommentAt,
+				}},
+			}
+			tracker := &backendCapacityTestConnector{}
+			controller := backendCapacityTestController{scope: scope}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch := &Orchestrator{
+				cfg:                normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}}),
+				connector:          tracker,
+				capacityController: controller,
+				workflowMetrics:    metrics,
+			}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: tt.currentEntryAt, Source: BlockedSourceProjectStatus}
+			if tt.currentEntryAt.After(parkedAt) {
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID:         defaultWorkflowMetricsProjectID,
+					IssueID:           issue.ID,
+					Identifier:        issue.Identifier,
+					PhaseType:         store.WorkflowPhaseTypeLane,
+					PhaseName:         blockedStatusState,
+					PreviousPhaseName: tt.sourceState,
+					Reason:            "instant_fail_circuit_breaker",
+					Status:            "entered",
+					StartedAt:         parkedAt,
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent(original park) error = %v", err)
+				}
+			}
+			if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+				ProjectID:         defaultWorkflowMetricsProjectID,
+				IssueID:           issue.ID,
+				Identifier:        issue.Identifier,
+				PhaseType:         store.WorkflowPhaseTypeLane,
+				PhaseName:         blockedStatusState,
+				PreviousPhaseName: tt.sourceState,
+				Reason:            tt.currentEntryReason,
+				Status:            "entered",
+				StartedAt:         tt.currentEntryAt,
+			}); err != nil {
+				t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+			}
+
+			recovery := BackendRecovery{
+				Outage:      BackendOutage{Scope: scope, DetectedAt: parkedAt.Add(-time.Minute)},
+				RecoveredAt: parkedAt.Add(5 * time.Minute),
+			}
+			state.BackendRecoveries[scope.Key()] = recovery
+			for notification := range tt.recoveryNotifications {
+				if notification > 0 && tt.reinsertRecovery {
+					state.BackendRecoveries[scope.Key()] = recovery
+				}
+				orch.recoverBackendCapacityBlockedIssues(t.Context(), &state, []connector.Issue{issue}, recovery.RecoveredAt.Add(time.Duration(notification)*time.Minute))
+			}
+
+			if len(tracker.updates) != tt.wantTransitions {
+				t.Fatalf("updates = %#v, want %d transition(s)", tracker.updates, tt.wantTransitions)
+			}
+			if tt.wantTransitions > 0 {
+				if tracker.updates[0].state != tt.wantState {
+					t.Fatalf("updates = %#v, want target %s", tracker.updates, tt.wantState)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "reason: backend_capacity_recovered") {
+					t.Fatalf("comments = %#v, want one machine-classifiable recovery comment", tracker.comments)
+				}
+				if _, ok := state.Blocked[issue.ID]; ok {
+					t.Fatalf("Blocked[%q] still present after recovery", issue.ID)
+				}
+			} else {
+				if _, ok := state.Blocked[issue.ID]; !ok {
+					t.Fatalf("Blocked[%q] missing after suppressed recovery", issue.ID)
+				}
+				if len(tracker.comments) != 0 {
+					t.Fatalf("comments = %#v, want no recovery comment", tracker.comments)
+				}
+			}
+			if got := countStateEvents(state.RecentEvents, "backend_capacity_blocked_recovery_suppressed"); tt.wantSuppression && got != 1 {
+				t.Fatalf("suppression events = %d, want one bounded diagnostic", got)
+			}
+			if tt.wantDiagnostic != "" && !stateEventMessageContains(state.RecentEvents, "backend_capacity_blocked_recovery_suppressed", tt.wantDiagnostic) {
+				t.Fatalf("suppression events = %#v, want diagnostic containing %q", state.RecentEvents, tt.wantDiagnostic)
+			}
+			if tt.wantSuppression {
+				cloned := state.clone()
+				clonedRecovery := cloned.BackendRecoveries[scope.Key()]
+				clonedRecovery.SuppressedIssues[issue.ID] = "mutated clone"
+				if state.BackendRecoveries[scope.Key()].SuppressedIssues[issue.ID] == "mutated clone" {
+					t.Fatal("State.clone() shared backend recovery suppression memory")
+				}
+			}
+		})
+	}
+}
+
+func TestBackendCapacityBlockedRecoveryTargetBoundaries(t *testing.T) {
+	t.Parallel()
+
+	entryAt := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	commentAt := entryAt.Add(time.Second)
+	staleCommentAt := entryAt.Add(-time.Minute)
+	updatedCommentAt := entryAt.Add(2 * time.Second)
+	tests := []struct {
+		name           string
+		entryPhase     string
+		entryReason    string
+		sourceState    string
+		commentTime    string
+		blockedBy      []connector.BlockedRef
+		workpadSignal  *workpad.Signal
+		terminalStates []string
+		recoveredAt    time.Time
+		wantTarget     string
+		wantReason     string
+	}{
+		{
+			name:        "missing durable entry",
+			commentTime: "created",
+			wantReason:  "provenance is unavailable",
+		},
+		{
+			name:        "latest entry is not Blocked",
+			entryPhase:  "Rework",
+			entryReason: "backend_capacity_recovered",
+			sourceState: "Blocked",
+			commentTime: "created",
+			wantReason:  "not the current Blocked entry",
+		},
+		{
+			name:        "capacity evidence timestamp is missing",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "missing",
+			wantReason:  "has no timestamp",
+		},
+		{
+			name:        "capacity evidence predates entry",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "stale",
+			wantReason:  "predates the current Blocked entry",
+		},
+		{
+			name:        "recovery predates current capacity entry",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "created",
+			recoveredAt: entryAt.Add(-time.Second),
+			wantReason:  "recovery predates the current Blocked entry evidence",
+		},
+		{
+			name:        "dependency blocker",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "created",
+			blockedBy:   []connector.BlockedRef{{Identifier: "digitaldrywood/detent#1880"}},
+			wantReason:  "dependency blockers",
+		},
+		{
+			name:        "invalid structured Workpad",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "created",
+			workpadSignal: &workpad.Signal{
+				Source:  workpad.SourceStructured,
+				Invalid: &workpad.Invalid{Message: "invalid status block"},
+			},
+			wantReason: "status is invalid",
+		},
+		{
+			name:        "independent typed Workpad blocker",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "created",
+			workpadSignal: &workpad.Signal{
+				Source:   workpad.SourceStructured,
+				Status:   workpad.StatusInProgress,
+				Blockers: []workpad.Blocker{{Reason: "browser state unavailable"}},
+			},
+			wantReason: "independent typed blockers",
+		},
+		{
+			name:        "independent structured blocked reason",
+			entryPhase:  "Blocked",
+			entryReason: "instant_fail_circuit_breaker",
+			sourceState: "Rework",
+			commentTime: "created",
+			workpadSignal: &workpad.Signal{
+				Source:     workpad.SourceStructured,
+				Status:     workpad.StatusBlocked,
+				ReasonCode: blockedRecoveryReasonMergeConflict,
+			},
+			wantReason: "independent blocked reason",
+		},
+		{
+			name:           "captured terminal lane",
+			entryPhase:     "Blocked",
+			entryReason:    "instant_fail_circuit_breaker",
+			sourceState:    "Done",
+			commentTime:    "created",
+			terminalStates: []string{"Done"},
+			wantReason:     "no recoverable captured source lane",
+		},
+		{
+			name:        "updated timestamp fallback",
+			entryPhase:  "Blocked",
+			entryReason: "repeated_failure_circuit_breaker",
+			sourceState: "Todo",
+			commentTime: "updated",
+			wantTarget:  "Todo",
 		},
 	}
 
@@ -1017,44 +1328,45 @@ func TestRecoverBackendCapacityBlockedIssues(t *testing.T) {
 			t.Parallel()
 
 			issue := connector.Issue{
-				ID:          "issue-capacity-blocked",
-				Identifier:  "digitaldrywood/detent#1142",
-				State:       "Blocked",
-				PullRequest: tt.pullRequest,
-				Comments: []connector.IssueComment{{
-					Body: "Detent stopped retrying this worker after 5 consecutive instant failures with the same backend error. backend_error_body: " +
-						`{"error":{"type":"usageLimitExceeded","resetAt":1783666800}}`,
-				}},
+				ID:             "issue-boundary",
+				Identifier:     "digitaldrywood/detent#1879",
+				State:          "Blocked",
+				StageUpdatedAt: timePointer(entryAt),
+				BlockedBy:      tt.blockedBy,
+				WorkpadSignal:  tt.workpadSignal,
 			}
-			tracker := &backendCapacityTestConnector{}
-			controller := backendCapacityTestController{scope: backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}}
+			comment := connector.IssueComment{}
+			switch tt.commentTime {
+			case "created":
+				comment.CreatedAt = &commentAt
+			case "stale":
+				comment.CreatedAt = &staleCommentAt
+			case "updated":
+				comment.UpdatedAt = &updatedCommentAt
+			}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			if tt.entryPhase != "" {
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID:         defaultWorkflowMetricsProjectID,
+					IssueID:           issue.ID,
+					Identifier:        issue.Identifier,
+					PhaseType:         store.WorkflowPhaseTypeLane,
+					PhaseName:         tt.entryPhase,
+					PreviousPhaseName: tt.sourceState,
+					Reason:            tt.entryReason,
+					Status:            "entered",
+					StartedAt:         entryAt,
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+				}
+			}
 			orch := &Orchestrator{
-				cfg:                normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}}),
-				connector:          tracker,
-				capacityController: controller,
+				cfg:             normalizeConfig(Config{TerminalStates: tt.terminalStates}),
+				workflowMetrics: metrics,
 			}
-			state := newState(orch.cfg)
-			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus}
-
-			if transitioned := orch.recoverBackendCapacityBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now); len(transitioned) != 0 {
-				t.Fatalf("initial transitioned = %#v, want canary recovery wait", transitioned)
-			}
-			orch.recoverBackendCapacity(&state, Running{
-				CapacityScope: controller.scope,
-				CapacityProbe: true,
-			}, now.Add(backendCapacityResetJitter))
-			transitioned := orch.recoverBackendCapacityBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(backendCapacityResetJitter))
-			if _, ok := transitioned[issue.ID]; !ok {
-				t.Fatalf("transitioned = %#v, want %s recovered", transitioned, issue.ID)
-			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
-				t.Fatalf("updates = %#v, want target %s", tracker.updates, tt.wantState)
-			}
-			if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "reason: backend_capacity_recovered") {
-				t.Fatalf("comments = %#v, want machine-classifiable recovery comment", tracker.comments)
-			}
-			if _, ok := state.Blocked[issue.ID]; ok {
-				t.Fatalf("Blocked[%q] still present after recovery", issue.ID)
+			target, reason := orch.backendCapacityBlockedRecoveryTarget(t.Context(), issue, comment, tt.recoveredAt)
+			if target != tt.wantTarget || !strings.Contains(reason, tt.wantReason) {
+				t.Fatalf("backendCapacityBlockedRecoveryTarget() = %q, %q, want %q and reason containing %q", target, reason, tt.wantTarget, tt.wantReason)
 			}
 		})
 	}

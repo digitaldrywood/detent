@@ -438,7 +438,7 @@ func (s State) clone() State {
 		ForgeUnavailable:         maps.Clone(s.ForgeUnavailable),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
-		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
+		BackendRecoveries:        cloneBackendRecoveries(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,
