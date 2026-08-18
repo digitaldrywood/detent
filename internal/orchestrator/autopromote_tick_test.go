@@ -19,6 +19,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
@@ -3730,6 +3731,255 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 	}
 	if running := state.Running[conflicting.ID]; running.cancel != nil {
 		running.cancel()
+	}
+}
+
+func TestStaleMergingOperationalCompletionReconcilesDone(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tests := []struct {
+		name       string
+		body       string
+		wantState  string
+		wantReason string
+	}{
+		{
+			name:       "declared operational completion",
+			body:       operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			wantState:  "Done",
+			wantReason: string(AutoPromoteReasonOperationalCompletion),
+		},
+		{
+			name:       "ordinary no diff completion",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantState:  "Human Review",
+			wantReason: string(AutoPromoteReasonMissingPullRequest),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTickIssue("issue-operational-merging", []string{"bug"}, nil)
+			issue.State = "Merging"
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/operational-merging",
+			}}
+			decision := staleMergingPullRequestDecisionForIssue(issue, cfg)
+			if decision.targetState != tt.wantState || decision.reason != tt.wantReason {
+				t.Fatalf("decision = %#v, want state %q reason %q", decision, tt.wantState, tt.wantReason)
+			}
+			if tt.wantReason != string(AutoPromoteReasonOperationalCompletion) {
+				return
+			}
+			comment := staleMergingPullRequestComment(issue, decision)
+			if strings.Contains(comment, string(AutoPromoteReasonMissingPullRequest)) {
+				t.Fatalf("comment %q contains missing_pull_request", comment)
+			}
+			for _, fragment := range []string{
+				"operational_evidence: Runner service is healthy and accepting jobs.",
+				"workpad_comment: https://github.test/comment/operational-merging",
+			} {
+				if !strings.Contains(comment, fragment) {
+					t.Fatalf("comment %q missing fragment %q", comment, fragment)
+				}
+			}
+		})
+	}
+}
+
+func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 18, 30, 0, 0, time.UTC)
+	workpadRecordedAt := now.Add(-2 * time.Minute)
+	successfulAttempt := store.WorkAttempt{
+		ID:            1,
+		StartedAt:     now.Add(-time.Minute),
+		CompletedAt:   now.Add(-30 * time.Second),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"run_mode": runpkg.RunModeImplement,
+			implementProgressMetadataKey: implementProgressRecord{
+				Outcome:            string(store.WorkAttemptTerminalSuccess),
+				Reason:             implementProgressReasonNonDiff,
+				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
+				WorkpadStatus:      workpad.StatusComplete,
+				ProgressKinds:      []string{"audit_artifact"},
+			},
+		}),
+	}
+	tests := []struct {
+		name        string
+		attempts    []store.WorkAttempt
+		wantRestore bool
+	}{
+		{name: "successful attempt after declaration", attempts: []store.WorkAttempt{successfulAttempt}, wantRestore: true},
+		{name: "no terminal attempt"},
+		{
+			name: "attempt before declaration",
+			attempts: []store.WorkAttempt{func() store.WorkAttempt {
+				attempt := successfulAttempt
+				attempt.CompletedAt = workpadRecordedAt.Add(-time.Second)
+				return attempt
+			}()},
+		},
+		{
+			name: "attempt without audit artifact",
+			attempts: []store.WorkAttempt{func() store.WorkAttempt {
+				attempt := successfulAttempt
+				attempt.WorkerMetadataJSON = marshalWorkAttemptJSON(map[string]any{
+					"run_mode": runpkg.RunModeImplement,
+					implementProgressMetadataKey: implementProgressRecord{
+						Outcome:       string(store.WorkAttemptTerminalSuccess),
+						Reason:        implementProgressReasonNonDiff,
+						WorkpadStatus: workpad.StatusComplete,
+					},
+				})
+				return attempt
+			}()},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTickIssue("issue-operational-restart", []string{"bug"}, nil)
+			issue.State = "In Progress"
+			issue.Comments = []connector.IssueComment{{
+				Body:      operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+				URL:       "https://github.test/comment/operational-restart",
+				CreatedAt: &workpadRecordedAt,
+			}}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			attempts := &recordingWorkAttemptStore{history: tt.attempts}
+			cfg := normalizeConfig(Config{
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true,
+					Gate:    gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+
+			orch.restoreDurableGateWaitCompletions(t.Context(), &state, []connector.Issue{issue})
+			_, restored := state.Completed[issue.ID]
+			if restored != tt.wantRestore {
+				t.Fatalf("state.Completed[%q] present = %v, want %v", issue.ID, restored, tt.wantRestore)
+			}
+
+			result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			_, transitioned := result.transitioned[issue.ID]
+			if transitioned != tt.wantRestore {
+				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, tt.wantRestore)
+			}
+			wantUpdates := []autoPromoteTickUpdate(nil)
+			if tt.wantRestore {
+				wantUpdates = []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}
+			}
+			if got, want := tracker.updates, wantUpdates; !reflect.DeepEqual(got, want) {
+				t.Fatalf("updates = %#v, want %#v", got, want)
+			}
+			if len(result.dispatchCandidates) != 0 {
+				t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
+			}
+			if tt.wantRestore {
+				if len(tracker.comments) != 1 || strings.Contains(tracker.comments[0].body, string(AutoPromoteReasonMissingPullRequest)) {
+					t.Fatalf("comments = %#v, want one operational audit comment", tracker.comments)
+				}
+				if !strings.Contains(tracker.comments[0].body, "reason: operational_completion") {
+					t.Fatalf("comment = %q, want operational completion reason", tracker.comments[0].body)
+				}
+			} else if len(tracker.comments) != 0 {
+				t.Fatalf("comments = %#v, want none", tracker.comments)
+			}
+			if len(attempts.historyQueries) != 1 {
+				t.Fatalf("history queries = %d, want 1", len(attempts.historyQueries))
+			}
+		})
+	}
+}
+
+func TestReconcileStaleMergingOperationalCompletionWaitsForDurableAttempt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 19, 0, 0, 0, time.UTC)
+	workpadRecordedAt := now.Add(-2 * time.Minute)
+	completedAttempt := store.WorkAttempt{
+		CompletedAt:   now.Add(-time.Minute),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"run_mode": runpkg.RunModeImplement,
+			implementProgressMetadataKey: implementProgressRecord{
+				Outcome:       string(store.WorkAttemptTerminalSuccess),
+				Reason:        implementProgressReasonNonDiff,
+				WorkpadStatus: workpad.StatusComplete,
+				ProgressKinds: []string{"audit_artifact"},
+			},
+		}),
+	}
+	tests := []struct {
+		name     string
+		attempts []store.WorkAttempt
+		wantDone bool
+	}{
+		{name: "waits without terminal attempt"},
+		{name: "completes after terminal attempt", attempts: []store.WorkAttempt{completedAttempt}, wantDone: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTickIssue("issue-operational-stale-merging", []string{"bug"}, nil)
+			issue.State = "Merging"
+			issue.Comments = []connector.IssueComment{{
+				Body:      operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+				URL:       "https://github.test/comment/operational-stale-merging",
+				CreatedAt: &workpadRecordedAt,
+			}}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			cfg := normalizeConfig(Config{
+				AutoPromote:    AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand}},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: &recordingWorkAttemptStore{history: tt.attempts},
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+
+			transitioned := orch.reconcileStaleMergingPullRequestIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+			_, done := transitioned[issue.ID]
+			if done != tt.wantDone {
+				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, done, tt.wantDone)
+			}
+			wantUpdates := []autoPromoteTickUpdate(nil)
+			if tt.wantDone {
+				wantUpdates = []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}
+			}
+			if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+				t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+			}
+			for _, comment := range tracker.comments {
+				if strings.Contains(comment.body, string(AutoPromoteReasonMissingPullRequest)) {
+					t.Fatalf("comment = %q, must not report missing_pull_request", comment.body)
+				}
+			}
+		})
 	}
 }
 

@@ -276,7 +276,8 @@ func completedActiveReviewTargetState(
 	case normalizeState(reviewState), normalizeState(autoPromoteMergingState):
 		return ""
 	case normalizeState(autoPromoteReworkState):
-		if gate.Effective(cfg.Gate).Kind != gate.KindArtifact {
+		_, operational := operationalCompletionFromIssue(issue)
+		if !operational && gate.Effective(cfg.Gate).Kind != gate.KindArtifact {
 			return ""
 		}
 	}
@@ -293,6 +294,9 @@ func completedActiveReviewTargetState(
 }
 
 func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig) bool {
+	if _, ok := operationalCompletionFromIssue(issue); ok {
+		return true
+	}
 	if autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
 		return true
 	}
@@ -335,6 +339,9 @@ func completedActiveFinalStateReviewEligible(finalState string, reviewState stri
 }
 
 func completedActiveIssueReadyForReview(issue connector.Issue, requirePullRequest bool) bool {
+	if _, ok := operationalCompletionFromIssue(issue); ok {
+		return true
+	}
 	if !requirePullRequest {
 		return true
 	}

@@ -101,6 +101,9 @@ func mergeRevocationForIssue(issue connector.Issue, cfg Config, checkPullRequest
 			reason: mergeRevocationStateChanged,
 		}, true
 	}
+	if _, ok := operationalCompletionFromIssue(issue); ok {
+		return mergeRevocation{}, false
+	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
 		return mergeRevocation{
 			issue:       cloneIssue(issue),

@@ -694,6 +694,80 @@ func TestEvaluateAutoPromote(t *testing.T) {
 	}
 }
 
+func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	cfg := AutoPromoteConfig{
+		Enabled:        true,
+		TerminalStates: []string{"Done", "Cancelled"},
+		Gate:           gate.Config{Kind: gate.KindCommand},
+	}
+	tests := []struct {
+		name         string
+		body         string
+		pullRequest  *connector.PullRequest
+		wantAction   AutoPromoteAction
+		wantReason   AutoPromoteReason
+		wantEvidence string
+	}{
+		{
+			name:         "declared operational completion",
+			body:         operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			wantAction:   AutoPromoteActionComplete,
+			wantReason:   AutoPromoteReasonOperationalCompletion,
+			wantEvidence: "Runner service is healthy and accepting jobs.",
+		},
+		{
+			name:       "ordinary no diff completion",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
+		},
+		{
+			name:       "operational declaration without evidence",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_kind: operational\nblockers: []\nhuman_action: null\n```",
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
+		},
+		{
+			name:        "operational declaration with pull request placeholder",
+			body:        operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			pullRequest: &connector.PullRequest{HydrationUnavailableReason: "rate_limited"},
+			wantAction:  AutoPromoteActionSkip,
+			wantReason:  AutoPromoteReasonPullRequestHydrationUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-operational-completion", nil)
+			issue.PullRequest = tt.pullRequest
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/operational-completion",
+			}}
+			got := EvaluateAutoPromote(issue, AutoPromoteSummary{
+				PullRequestHydrationUnavailableReason: pullRequestHydrationUnavailableReason(tt.pullRequest),
+			}, cfg, time.Now())
+
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.wantAction)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if got.OperationalEvidence != tt.wantEvidence {
+				t.Fatalf("OperationalEvidence = %q, want %q", got.OperationalEvidence, tt.wantEvidence)
+			}
+			if tt.wantAction == AutoPromoteActionComplete && got.WorkpadCommentURL != "https://github.test/comment/operational-completion" {
+				t.Fatalf("WorkpadCommentURL = %q", got.WorkpadCommentURL)
+			}
+		})
+	}
+}
+
 func TestArtifactStatusFromIssue(t *testing.T) {
 	t.Parallel()
 

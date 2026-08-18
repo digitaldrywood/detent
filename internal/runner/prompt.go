@@ -725,6 +725,18 @@ func appendBlockedHandoffBlock(prompt string) string {
 		"blockers: []\n" +
 		"human_action: null\n" +
 		"```\n\n" +
+		"Operational work completed outside the repository with no diff and no pull request may instead declare:\n\n" +
+		"```detent-status\n" +
+		"schema: 1\n" +
+		"status: complete\n" +
+		"fields:\n" +
+		"  completion_kind: operational\n" +
+		"  completion_evidence: \"what changed on the host and how it was verified\"\n" +
+		"blockers: []\n" +
+		"human_action: null\n" +
+		"```\n\n" +
+		"Use the operational declaration only when the completed work intentionally has no repository change or pull request. " +
+		"An ordinary no-diff completion continues through the configured pull-request gate.\n\n" +
 		"Narrative Workpad sentences are never read as blockers. Legacy fallback during the deprecation window: keep a machine-readable issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123` only when native dependencies are unavailable and the project has not migrated."
 }
 

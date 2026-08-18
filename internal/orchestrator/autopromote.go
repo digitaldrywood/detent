@@ -55,6 +55,7 @@ type AutoPromoteAction string
 
 const (
 	AutoPromoteActionPromote     AutoPromoteAction = "promote"
+	AutoPromoteActionComplete    AutoPromoteAction = "complete"
 	AutoPromoteActionRework      AutoPromoteAction = "rework"
 	AutoPromoteActionAwaitReview AutoPromoteAction = "await_review"
 	AutoPromoteActionSkip        AutoPromoteAction = "skip"
@@ -68,6 +69,7 @@ const (
 	AutoPromoteReasonOptoutLabel                     AutoPromoteReason = "optout_label"
 	AutoPromoteReasonLabelNotAllowed                 AutoPromoteReason = "label_not_allowed"
 	AutoPromoteReasonMissingPullRequest              AutoPromoteReason = "missing_pull_request"
+	AutoPromoteReasonOperationalCompletion           AutoPromoteReason = "operational_completion"
 	AutoPromoteReasonPullRequestMerged               AutoPromoteReason = "pull_request_merged"
 	AutoPromoteReasonDraftPullRequest                AutoPromoteReason = "draft_pull_request"
 	AutoPromoteReasonMergeRevocationLimit            AutoPromoteReason = "merge_revocation_limit"
@@ -107,6 +109,7 @@ type AutoPromoteDecision struct {
 	WorkpadStatusInvalidContent  string
 	WorkpadBlockerVerifications  []AutoPromoteWorkpadBlockerVerification
 	WorkpadProseFallbackDisabled bool
+	OperationalEvidence          string
 }
 
 type AutoPromoteWorkpadBlockerVerification struct {
@@ -145,6 +148,12 @@ func EvaluateAutoPromote(
 		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 		return decision
 	}
+	if completion, ok := operationalCompletionFromIssue(issue); ok {
+		decision := autoPromoteDecision(AutoPromoteActionComplete, AutoPromoteReasonOperationalCompletion)
+		decision.OperationalEvidence = completion.evidence
+		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
+		return decision
+	}
 	if gateRequiresPullRequest(cfg.Gate) {
 		if issue.PullRequest != nil &&
 			normalizePullRequestState(issue.PullRequest.State) == "open" &&
@@ -176,6 +185,31 @@ func EvaluateAutoPromote(
 	decision.Findings = autoPromoteFindingsFromGate(gateDecision.Findings)
 	autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 	return decision
+}
+
+type operationalCompletion struct {
+	evidence   string
+	workpadURL string
+	recordedAt *time.Time
+}
+
+func operationalCompletionFromIssue(issue connector.Issue) (operationalCompletion, bool) {
+	if issue.PullRequest != nil || workAttemptPRNumber(issue) != nil {
+		return operationalCompletion{}, false
+	}
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok {
+		return operationalCompletion{}, false
+	}
+	evidence, ok := workpad.OperationalCompletion(signal)
+	if !ok {
+		return operationalCompletion{}, false
+	}
+	return operationalCompletion{
+		evidence:   evidence,
+		workpadURL: strings.TrimSpace(signal.CommentURL),
+		recordedAt: signal.RecordedAt,
+	}, true
 }
 
 func autoPromoteHumanReviewRequired(issue connector.Issue, cfg AutoPromoteConfig, gateCfg gate.Config) bool {

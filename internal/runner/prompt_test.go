@@ -287,6 +287,9 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 			"blockers: []\n" +
 			"human_action: null\n" +
 			"```",
+		"Operational work completed outside the repository with no diff and no pull request may instead declare:",
+		"completion_kind: operational",
+		"completion_evidence: \"what changed on the host and how it was verified\"",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

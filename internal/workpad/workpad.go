@@ -24,6 +24,10 @@ const (
 	StatusBlocked    = "blocked"
 	StatusComplete   = "complete"
 
+	FieldCompletionKind     = "completion_kind"
+	FieldCompletionEvidence = "completion_evidence"
+	CompletionOperational   = "operational"
+
 	BlockerOwnerOrchestrator = "orchestrator"
 	BlockerOwnerHuman        = "human"
 
@@ -511,6 +515,19 @@ func Reason(signal *Signal) string {
 		parts = append(parts, ref)
 	}
 	return strings.Join(parts, "; ")
+}
+
+func OperationalCompletion(signal *Signal) (string, bool) {
+	if signal == nil || signal.Invalid != nil || signal.Source != SourceStructured ||
+		strings.TrimSpace(signal.Status) != StatusComplete ||
+		strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 {
+		return "", false
+	}
+	if normalizeToken(signal.Fields[FieldCompletionKind]) != CompletionOperational {
+		return "", false
+	}
+	evidence := strings.TrimSpace(signal.Fields[FieldCompletionEvidence])
+	return evidence, evidence != ""
 }
 
 func normalizeReasonCode(reasonCode string) string {
