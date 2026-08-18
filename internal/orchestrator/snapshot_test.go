@@ -828,6 +828,90 @@ func TestStateSnapshotFiltersIssueListsByAuthorization(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotFiltersRuntimeRowsUsingCurrentAuthorization(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 16, 0, 0, 0, time.UTC)
+	issue := func(id, state string, authorized bool) connector.Issue {
+		labels := []string{"bug"}
+		if authorized {
+			labels = append(labels, "detent:cory")
+		}
+		return connector.Issue{ID: id, Identifier: "getparable/parable#" + id, State: state, Labels: labels}
+	}
+	state := newState(normalizeConfig(Config{
+		Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:cory"}}},
+	}))
+	state.BoardIssues = []connector.Issue{
+		issue("authorized-queue", "Todo", true),
+		issue("unauthorized-running", "In Progress", false),
+	}
+	state.Retry["authorized-queue"] = Retry{Issue: issue("authorized-queue", "Todo", false), Attempt: 2}
+	state.Retry["unauthorized-queue"] = Retry{Issue: issue("unauthorized-queue", "Todo", false), Attempt: 2}
+	state.Running["authorized-running"] = Running{Issue: issue("authorized-running", "In Progress", true), Attempt: 1, StartedAt: now.Add(-time.Hour)}
+	state.Running["unauthorized-running"] = Running{Issue: issue("unauthorized-running", "In Progress", true), Attempt: 1, StartedAt: now.Add(-time.Hour)}
+	state.Blocked["authorized-blocked"] = Blocked{Issue: issue("authorized-blocked", "Blocked", true), Attempt: 1, BlockedAt: now.Add(-time.Hour)}
+	state.Blocked["unauthorized-blocked"] = Blocked{Issue: issue("unauthorized-blocked", "Blocked", false), Attempt: 1, BlockedAt: now.Add(-time.Hour)}
+	state.Blocked["authorized-dependency-wait"] = Blocked{
+		Issue:     issue("authorized-dependency-wait", "Todo", true),
+		Reason:    "waiting for getparable/parable#2230 Open",
+		Source:    BlockedSourceDependency,
+		BlockedAt: now.Add(-time.Hour),
+	}
+	state.Blocked["unauthorized-dependency-wait"] = Blocked{
+		Issue:     issue("unauthorized-dependency-wait", "Todo", false),
+		Reason:    "waiting for getparable/parable#2230 Open",
+		Source:    BlockedSourceDependency,
+		BlockedAt: now.Add(-time.Hour),
+	}
+	state.Completed["authorized-completed"] = Completed{Issue: issue("authorized-completed", "Done", true), CompletedAt: now.Add(-time.Hour)}
+	state.Completed["unauthorized-completed"] = Completed{Issue: issue("unauthorized-completed", "Done", false), CompletedAt: now.Add(-time.Hour)}
+	state.WorkAttempts = []telemetry.WorkAttempt{
+		{AttemptID: 1, IssueID: "authorized-completed", Identifier: "getparable/parable#authorized-completed", Status: string(store.WorkAttemptStatusTerminal), CompletedAt: timePointer(now.Add(-time.Hour))},
+		{AttemptID: 2, IssueID: "unauthorized-completed", Identifier: "getparable/parable#unauthorized-completed", Status: string(store.WorkAttemptStatusTerminal), CompletedAt: timePointer(now.Add(-time.Hour))},
+	}
+
+	snapshot := state.Snapshot(now)
+	tests := []struct {
+		name string
+		got  []telemetry.Issue
+		want []string
+	}{
+		{name: "queue", got: queuedTelemetryIssues(snapshot.Queue), want: []string{"authorized-queue"}},
+		{name: "running", got: runningTelemetryIssues(snapshot.Running), want: []string{"authorized-running"}},
+		{name: "blocked", got: blockedTelemetryIssues(snapshot.Blocked), want: []string{"authorized-blocked", "authorized-dependency-wait"}},
+		{name: "completed", got: completedTelemetryIssues(snapshot.Completed), want: []string{"authorized-completed"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := telemetryIssueIDs(tt.got); !slices.Equal(got, tt.want) {
+				t.Fatalf("runtime issue ids = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+
+	wantCounts := telemetry.Counts{Running: 1, Queue: 1, Blocked: 2, Completed: 1}
+	if snapshot.Counts != wantCounts {
+		t.Fatalf("Counts = %#v, want %#v", snapshot.Counts, wantCounts)
+	}
+	if len(snapshot.WorkAttempts) != 1 || snapshot.WorkAttempts[0].IssueID != "authorized-completed" {
+		t.Fatalf("WorkAttempts = %#v, want only authorized-completed", snapshot.WorkAttempts)
+	}
+	wantLaneCounts := []telemetry.BoardStateCount{
+		{State: "Todo", Count: 2},
+		{State: "In Progress", Count: 1},
+		{State: "Blocked", Count: 1},
+	}
+	if got := telemetry.BoardStateCounts(snapshot); !reflect.DeepEqual(got, wantLaneCounts) {
+		t.Fatalf("BoardStateCounts() = %#v, want %#v", got, wantLaneCounts)
+	}
+	wantWorkload := telemetry.BoardWorkloadCounts{Load: 3, Todo: 1, Active: 1, Waiting: 1, Blocked: 1}
+	if got := telemetry.BoardWorkload(snapshot); got != wantWorkload {
+		t.Fatalf("BoardWorkload() = %#v, want %#v", got, wantWorkload)
+	}
+}
+
 func TestStateSnapshotCarriesIssueComments(t *testing.T) {
 	t.Parallel()
 
@@ -1533,4 +1617,36 @@ func telemetryIssueIDs(issues []telemetry.Issue) []string {
 		out = append(out, issue.ID)
 	}
 	return out
+}
+
+func queuedTelemetryIssues(rows []telemetry.Queued) []telemetry.Issue {
+	issues := make([]telemetry.Issue, 0, len(rows))
+	for _, row := range rows {
+		issues = append(issues, row.Issue)
+	}
+	return issues
+}
+
+func runningTelemetryIssues(rows []telemetry.Running) []telemetry.Issue {
+	issues := make([]telemetry.Issue, 0, len(rows))
+	for _, row := range rows {
+		issues = append(issues, row.Issue)
+	}
+	return issues
+}
+
+func blockedTelemetryIssues(rows []telemetry.Blocked) []telemetry.Issue {
+	issues := make([]telemetry.Issue, 0, len(rows))
+	for _, row := range rows {
+		issues = append(issues, row.Issue)
+	}
+	return issues
+}
+
+func completedTelemetryIssues(rows []telemetry.Completed) []telemetry.Issue {
+	issues := make([]telemetry.Issue, 0, len(rows))
+	for _, row := range rows {
+		issues = append(issues, row.Issue)
+	}
+	return issues
 }
