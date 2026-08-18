@@ -716,6 +716,7 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 		Number:                 144,
 		URL:                    "https://github.test/digitaldrywood/detent/pull/144",
 		State:                  "OPEN",
+		HeadSHA:                "restart-head",
 		CIStatus:               "pending",
 		CodexReviewState:       "COMMENTED",
 		CodexReviewSubmittedAt: &oldReview,
@@ -804,6 +805,7 @@ func TestTickAutoPromoteRecoversOptionalReviewDeadlineAfterRestart(t *testing.T)
 		Number:         1297,
 		URL:            "https://github.test/digitaldrywood/detent/pull/1297",
 		State:          "OPEN",
+		HeadSHA:        "optional-head",
 		MergeableState: "clean",
 		CIStatus:       "success",
 	})
@@ -867,10 +869,12 @@ func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t 
 	currentPR := int64(144)
 	otherPR := int64(143)
 	currentSignature := autoPromoteReworkSignature{PRNumber: currentPR, HeadSHA: "current-head"}
+	staleSignature := autoPromoteReworkSignature{PRNumber: currentPR, HeadSHA: "stale-head"}
 	otherSignature := autoPromoteReworkSignature{PRNumber: otherPR, HeadSHA: "other-head"}
 	issue := autoPromoteTickIssue("issue-gate-wait-evidence", []string{"bug"}, &connector.PullRequest{
-		Number: 144,
-		State:  "OPEN",
+		Number:  144,
+		State:   "OPEN",
+		HeadSHA: "current-head",
 	})
 	issue.State = "In Progress"
 
@@ -905,39 +909,57 @@ func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t 
 			}},
 		},
 		{
-			name: "accepts current PR from attempt",
+			name: "ignores current PR without head evidence",
 			attempts: []store.WorkAttempt{{
 				ID:                 4,
 				PRNumber:           &currentPR,
 				TerminalState:      store.WorkAttemptTerminalSuccess,
 				WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{}, store.WorkAttemptTerminalSuccess),
 			}},
-			wantID: 4,
+		},
+		{
+			name: "ignores success for an older current PR head",
+			attempts: []store.WorkAttempt{{
+				ID:                 5,
+				PRNumber:           &currentPR,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(staleSignature, store.WorkAttemptTerminalSuccess),
+			}},
+		},
+		{
+			name: "accepts current PR and head from combined evidence",
+			attempts: []store.WorkAttempt{{
+				ID:                 6,
+				PRNumber:           &currentPR,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{HeadSHA: "current-head"}, store.WorkAttemptTerminalSuccess),
+			}},
+			wantID: 6,
 		},
 		{
 			name: "accepts current PR from completion record",
 			attempts: []store.WorkAttempt{{
-				ID:                 5,
+				ID:                 7,
 				TerminalState:      store.WorkAttemptTerminalSuccess,
 				WorkerMetadataJSON: implementProgressMetadataJSON(currentSignature, store.WorkAttemptTerminalSuccess),
 			}},
-			wantID: 5,
+			wantID: 7,
 		},
 		{
 			name: "skips newer unrelated success for older current completion",
 			attempts: []store.WorkAttempt{
 				{
-					ID:                 6,
+					ID:                 9,
 					TerminalState:      store.WorkAttemptTerminalSuccess,
 					WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"run_mode": runpkg.RunModePlan}),
 				},
 				{
-					ID:                 5,
+					ID:                 8,
 					TerminalState:      store.WorkAttemptTerminalSuccess,
 					WorkerMetadataJSON: implementProgressMetadataJSON(currentSignature, store.WorkAttemptTerminalSuccess),
 				},
 			},
-			wantID: 5,
+			wantID: 8,
 		},
 	}
 

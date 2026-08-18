@@ -384,6 +384,14 @@ func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connecto
 	if !ok || strings.TrimSpace(record.Outcome) != string(store.WorkAttemptTerminalSuccess) {
 		return false
 	}
+	if issue.PullRequest == nil {
+		return false
+	}
+	currentHeadSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	attemptHeadSHA := strings.TrimSpace(record.CurrentSignature.HeadSHA)
+	if currentHeadSHA == "" || attemptHeadSHA == "" || attemptHeadSHA != currentHeadSHA {
+		return false
+	}
 	prNumber := int64(pullRequestNumber(issue))
 	if prNumber <= 0 {
 		return false

@@ -169,6 +169,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		o.clearMergeRequiredCheckStreaks(ctx, terminalIssue)
 	}
 	updateIssueStateSnapshots(state, issueID, issue, targetState, at)
+	recordIssueStateMutationProvenance(state, issueID, issue, targetState, at, reason, metadata)
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
@@ -297,9 +298,7 @@ func (o *Orchestrator) recordLaneTransition(
 	if reason == "" {
 		reason = "state_transition"
 	}
-	if metadata.Provenance.Origin == "" {
-		metadata.Provenance.Origin = workflowOriginForReason(reason)
-	}
+	metadata.Provenance = workflowLaneMutationAttribution(reason, metadata)
 	if err := workflowmetrics.RecordLaneTransition(ctx, o.workflowMetrics, workflowmetrics.LaneTransition{
 		ProjectID:    o.workflowMetricsProjectID(),
 		Issue:        issue,
@@ -310,6 +309,47 @@ func (o *Orchestrator) recordLaneTransition(
 	}); err != nil && o.logger != nil {
 		o.logger.Warn("record lane transition metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", sourceState, "target_state", targetState, "error", err)
 	}
+}
+
+func recordIssueStateMutationProvenance(
+	state *State,
+	issueID string,
+	issue connector.Issue,
+	targetState string,
+	at time.Time,
+	reason string,
+	metadata workflowLaneMetadata,
+) {
+	if state == nil || normalizeState(issue.State) == normalizeState(targetState) {
+		return
+	}
+	transitioned := cloneIssue(issue)
+	if strings.TrimSpace(transitioned.ID) == "" {
+		transitioned.ID = strings.TrimSpace(issueID)
+	}
+	transitioned.State = strings.TrimSpace(targetState)
+	laneKey := workflowLaneEntryKey(transitioned)
+	if laneKey == "" {
+		return
+	}
+	if state.laneProvenance == nil {
+		state.laneProvenance = map[string]provenance.Attribution{}
+	}
+	state.laneProvenance[laneKey] = workflowLaneMutationAttribution(reason, metadata)
+	if !at.IsZero() {
+		if state.laneEntries == nil {
+			state.laneEntries = map[string]time.Time{}
+		}
+		state.laneEntries[laneKey] = at.UTC()
+	}
+}
+
+func workflowLaneMutationAttribution(reason string, metadata workflowLaneMetadata) provenance.Attribution {
+	attribution := metadata.Provenance
+	if attribution.Origin == "" {
+		attribution.Origin = workflowOriginForReason(reason)
+	}
+	return provenance.Prepare(attribution)
 }
 
 func (o *Orchestrator) recordWorkflowReviewAction(
