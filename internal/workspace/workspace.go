@@ -567,6 +567,9 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 }
 
 func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string) (bool, error) {
+	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
+		return false, fmt.Errorf("prune stale worktree registrations during preparation: %w", withCommandOutput(err))
+	}
 	exists, isDir, err := pathExists(path)
 	if err != nil {
 		return false, err
@@ -584,6 +587,10 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 				if err := l.recoverStaleSourceWorktree(ctx, path, current, branch); err != nil {
 					return false, err
 				}
+				exists = false
+			} else if removed, err := l.removeDanglingSourceWorktree(ctx, path); err != nil {
+				return false, err
+			} else if removed {
 				exists = false
 			} else if l.isGitWorkspace(ctx, path) {
 				return false, fmt.Errorf("workspace path is a git worktree not managed by source: %s", path)
@@ -790,13 +797,32 @@ func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, cu
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
 	_, err := l.runGit(ctx, "worktree", "remove", path)
-	if err != nil {
-		return fmt.Errorf("remove stale clean worktree: %w", err)
+	if err == nil {
+		return nil
 	}
+	removeErr := fmt.Errorf("remove stale clean worktree: %w", err)
+	if cleanupErr := removeWorkspacePath(l.root, path); cleanupErr != nil {
+		return errors.Join(removeErr, fmt.Errorf("remove partially recovered workspace: %w", cleanupErr))
+	}
+	if _, pruneErr := l.runGit(ctx, "worktree", "prune"); pruneErr != nil {
+		return errors.Join(removeErr, fmt.Errorf("prune partially recovered workspace registration: %w", withCommandOutput(pruneErr)))
+	}
+	l.logger.Warn("removed partially recovered clean workspace", slog.String("path", path), slog.Any("git_remove_error", err))
 	return nil
 }
 
 func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string, error) {
+	metadata, err := inspectGitMetadata(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("inspect stale worktree before quarantine: %w", err)
+	}
+	sourceCommon, err := gitCommonDir(ctx, l.sourceRoot)
+	if err != nil {
+		return "", fmt.Errorf("inspect source before quarantine: %w", err)
+	}
+	if metadata.commonDir != sourceCommon {
+		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
+	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {
 		return "", err
@@ -807,7 +833,158 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	if _, err := l.runGit(ctx, "worktree", "move", path, quarantinePath); err != nil {
 		return "", fmt.Errorf("move stale worktree to quarantine: %w", err)
 	}
+	if err := relocateWorktreeAdmin(metadata, quarantinePath); err != nil {
+		if _, rollbackErr := l.runGit(ctx, "worktree", "move", quarantinePath, path); rollbackErr != nil {
+			return "", errors.Join(fmt.Errorf("release quarantined worktree admin name: %w", err), fmt.Errorf("restore stale worktree path: %w", rollbackErr))
+		}
+		return "", fmt.Errorf("release quarantined worktree admin name: %w", err)
+	}
 	return quarantinePath, nil
+}
+
+func (l *LocalGit) removeDanglingSourceWorktree(ctx context.Context, path string) (bool, error) {
+	gitDir, ok, err := readLinkedWorktreeGitDir(path)
+	if err != nil || !ok {
+		return false, err
+	}
+	sourceCommon, err := gitCommonDir(ctx, l.sourceRoot)
+	if err != nil {
+		return false, fmt.Errorf("inspect source for dangling workspace: %w", err)
+	}
+	adminRoot := filepath.Join(sourceCommon, "worktrees")
+	if filepath.Dir(gitDir) != adminRoot {
+		return false, nil
+	}
+	exists, _, err := pathExists(gitDir)
+	if err != nil {
+		return false, fmt.Errorf("inspect linked worktree admin directory: %w", err)
+	}
+	if exists {
+		return false, nil
+	}
+	if err := removeWorkspacePath(l.root, path); err != nil {
+		return false, fmt.Errorf("remove workspace with dangling gitdir: %w", err)
+	}
+	l.logger.Warn("removed workspace with dangling gitdir", slog.String("path", path), slog.String("git_dir", gitDir))
+	return true, nil
+}
+
+func relocateWorktreeAdmin(metadata gitMetadata, workspacePath string) error {
+	adminRoot := filepath.Join(metadata.commonDir, "worktrees")
+	if filepath.Dir(metadata.gitDir) != adminRoot {
+		return fmt.Errorf("worktree admin directory %s is not directly under %s", metadata.gitDir, adminRoot)
+	}
+	info, err := os.Lstat(metadata.gitDir)
+	if err != nil {
+		return fmt.Errorf("inspect worktree admin directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("worktree admin path is not a directory: %s", metadata.gitDir)
+	}
+
+	newGitDir, err := nextWorktreeAdminPath(adminRoot, filepath.Base(workspacePath))
+	if err != nil {
+		return err
+	}
+	gitFilePath := filepath.Join(workspacePath, ".git")
+	linkedGitDir, ok, err := readLinkedWorktreeGitDir(workspacePath)
+	if err != nil {
+		return err
+	}
+	if !ok || linkedGitDir != metadata.gitDir {
+		return fmt.Errorf("worktree gitdir pointer changed during quarantine: got %s, want %s", linkedGitDir, metadata.gitDir)
+	}
+	if err := os.Rename(metadata.gitDir, newGitDir); err != nil {
+		return fmt.Errorf("rename worktree admin directory: %w", err)
+	}
+	if err := writeLinkedWorktreeGitDir(gitFilePath, newGitDir); err != nil {
+		if rollbackErr := os.Rename(newGitDir, metadata.gitDir); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("restore worktree admin directory: %w", rollbackErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func nextWorktreeAdminPath(adminRoot string, workspaceBase string) (string, error) {
+	base := SafeKey(workspaceBase)
+	for i := range 100 {
+		name := base
+		if i > 0 {
+			name += strconv.Itoa(i)
+		}
+		candidate := filepath.Join(adminRoot, name)
+		exists, _, err := pathExists(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("exhausted worktree admin path attempts")
+}
+
+func readLinkedWorktreeGitDir(workspacePath string) (string, bool, error) {
+	path := filepath.Join(workspacePath, ".git")
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("inspect linked worktree gitdir: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, fmt.Errorf("read linked worktree gitdir: %w", err)
+	}
+	value, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir: ")
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", false, nil
+	}
+	gitDir := strings.TrimSpace(value)
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(workspacePath, gitDir)
+	}
+	return filepath.Clean(gitDir), true, nil
+}
+
+func writeLinkedWorktreeGitDir(path string, gitDir string) (err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("inspect linked worktree gitdir file: %w", err)
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".git.detent-*")
+	if err != nil {
+		return fmt.Errorf("create linked worktree gitdir file: %w", err)
+	}
+	tempPath := temp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			err = errors.Join(err, temp.Close())
+		}
+		if cleanupErr := os.Remove(tempPath); cleanupErr != nil && !errors.Is(cleanupErr, fs.ErrNotExist) {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
+	if err := temp.Chmod(info.Mode().Perm()); err != nil {
+		return fmt.Errorf("set linked worktree gitdir file mode: %w", err)
+	}
+	if _, err := fmt.Fprintf(temp, "gitdir: %s\n", gitDir); err != nil {
+		return fmt.Errorf("write linked worktree gitdir file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close linked worktree gitdir file: %w", err)
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace linked worktree gitdir file: %w", err)
+	}
+	return nil
 }
 
 func (l *LocalGit) nextQuarantinePath(path string) (string, error) {

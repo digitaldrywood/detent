@@ -22,6 +22,7 @@ const (
 	maxRecentWorkAttemptSnapshots   = 50
 	maxRecentSchedulerDecisions     = 500
 	workAttemptErrorRunner          = "runner_error"
+	workAttemptErrorWorkspace       = "workspace_preparation"
 	workAttemptErrorStartTransition = "start_state_transition_failed"
 	workAttemptErrorMergeIncomplete = "merge_worker_terminal_state_missing"
 	workAttemptErrorMergeDuration   = "merge_worker_duration_exceeded"

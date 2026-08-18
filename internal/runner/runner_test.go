@@ -2720,6 +2720,9 @@ func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
 	if !errors.Is(err, createErr) {
 		t.Fatalf("Run() error = %v, want %v", err, createErr)
 	}
+	if !errors.Is(err, ErrWorkspacePreparation) {
+		t.Fatalf("Run() error = %v, want ErrWorkspacePreparation", err)
+	}
 	if update.LastEvent != "workspace_create_started" || !update.LastEventAt.Equal(now) {
 		t.Fatalf("workspace progress update = %#v, want start event at %v", update, now)
 	}
