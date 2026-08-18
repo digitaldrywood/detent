@@ -1102,6 +1102,7 @@ func (s *Server) health(c echo.Context) error {
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
 	failureBreakers := []telemetry.FailureBreaker{}
+	dispatchLoops := []telemetry.DispatchLoop{}
 	trackerUnavailable := []telemetry.TrackerCondition{}
 	forgeUnavailable := []telemetry.ForgeCondition{}
 	ciUnavailable := []telemetry.CICondition{}
@@ -1138,6 +1139,7 @@ func (s *Server) health(c echo.Context) error {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
+			dispatchLoops = append(dispatchLoops, snapshot.DispatchLoops...)
 			trackerUnavailable = append(trackerUnavailable, snapshot.TrackerUnavailable...)
 			forgeUnavailable = append(forgeUnavailable, snapshot.ForgeUnavailable...)
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
@@ -1181,13 +1183,13 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, failureBreakers, backendOutages, tickLiveness, refreshFailures)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, failureBreakers, dispatchLoops, backendOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(dispatchLoops) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1212,6 +1214,7 @@ func (s *Server) health(c echo.Context) error {
 		CIUnavailable:          ciUnavailable,
 		BackendOutages:         backendOutages,
 		FailureBreakers:        failureBreakers,
+		DispatchLoops:          dispatchLoops,
 		StalenessWarnings:      stalenessWarnings,
 		StrandedIssues:         strandedActiveIssues,
 		Dispatch:               dispatch,
@@ -1293,8 +1296,8 @@ func (s *Server) orphanedAgentProcesses(ctx context.Context, snapshot telemetry.
 	return summary, nil
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, loops []telemetry.DispatchLoop, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(loops)+len(outages)+len(tickLiveness))
 	refreshByProject := make(map[string]telemetry.RefreshFailure, len(refreshFailures))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
@@ -1318,6 +1321,11 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 	}
 	for _, breaker := range breakers {
 		if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
+			needsAttention[projectID] = struct{}{}
+		}
+	}
+	for _, loop := range loops {
+		if projectID := strings.TrimSpace(loop.ProjectID); projectID != "" {
 			needsAttention[projectID] = struct{}{}
 		}
 	}
@@ -1640,6 +1648,7 @@ type healthResponse struct {
 	CIUnavailable          []telemetry.CICondition          `json:"ci_unavailable,omitempty"`
 	BackendOutages         []telemetry.BackendOutage        `json:"backend_outages,omitempty"`
 	FailureBreakers        []telemetry.FailureBreaker       `json:"failure_breakers,omitempty"`
+	DispatchLoops          []telemetry.DispatchLoop         `json:"dispatch_loops,omitempty"`
 	StalenessWarnings      []telemetry.StalenessWarning     `json:"staleness_warnings,omitempty"`
 	StrandedIssues         []telemetry.StrandedIssue        `json:"stranded_active_issues,omitempty"`
 	Dispatch               telemetry.DispatchStatus         `json:"dispatch"`

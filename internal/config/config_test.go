@@ -657,6 +657,9 @@ func TestNoProgressSpendLimitConfiguration(t *testing.T) {
 			if workflow.Config.Agent.NoProgressSpendLimitUSD != tt.want {
 				t.Fatalf("NoProgressSpendLimitUSD = %g, want %g", workflow.Config.Agent.NoProgressSpendLimitUSD, tt.want)
 			}
+			if workflow.Config.Agent.AutoPromote.NoProgressLimit != DefaultNoProgressLimit {
+				t.Fatalf("AutoPromote.NoProgressLimit = %d, want %d", workflow.Config.Agent.AutoPromote.NoProgressLimit, DefaultNoProgressLimit)
+			}
 		})
 	}
 }

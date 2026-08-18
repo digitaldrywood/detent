@@ -1049,6 +1049,7 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 		wantMerging  bool
 	}{
 		{name: "recoverable stranded work with ready pull request", cause: strandedUnpushedWorkReason, owner: blockedRecoveryOwnerOrchestrator, snapshot: baseSnapshot, wantMerging: true},
+		{name: "recoverable dispatch loop with ready pull request", cause: dispatchLoopDetectedReason, owner: blockedRecoveryOwnerOrchestrator, snapshot: baseSnapshot, wantMerging: true},
 		{
 			name:  "invalid workpad repeated failure with ready linked pull request",
 			cause: repeatedFailureCircuitBreakerCause,

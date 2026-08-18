@@ -603,7 +603,7 @@ func blockedReadyPullRequestRecoverableCause(park workflowLaneBlockedRecoveryMet
 	if owner != blockedRecoveryOwnerOrchestrator || strings.TrimSpace(park.RunMode) != RunModeImplement {
 		return false
 	}
-	return cause == strandedUnpushedWorkReason || cause == noProgressLimitReason || cause == repeatedFailureCircuitBreakerCause
+	return cause == strandedUnpushedWorkReason || cause == noProgressLimitReason || cause == dispatchLoopDetectedReason || cause == repeatedFailureCircuitBreakerCause
 }
 
 func (o *Orchestrator) blockedReadyPullRequestDeferredReason(

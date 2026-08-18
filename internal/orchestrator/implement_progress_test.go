@@ -39,6 +39,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		diffStats          DiffStats
 		noProgressLimit    int
 		wantTerminal       store.WorkAttemptTerminalState
+		wantErrorClass     string
 		wantReason         string
 		wantPreviousHead   string
 		wantCurrentHead    string
@@ -47,6 +48,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		wantComment        string
 		wantRetry          bool
 		wantLogContains    string
+		wantEvent          string
 		wantFailedAdded    []string
 		wantFailedRemoved  []string
 		wantConsecutive    int
@@ -73,6 +75,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReason:      "first_completed_attempt",
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
+			wantConsecutive: 1,
 			wantRetry:       true,
 		},
 		{
@@ -99,6 +102,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReason:      "first_completed_attempt",
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
+			wantConsecutive: 1,
 			wantRetry:       true,
 		},
 		{
@@ -125,7 +129,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			noProgressLimit:  3,
 			wantTerminal:     store.WorkAttemptTerminalNoProgress,
 			wantReason:       "unchanged_signature_clean_diff",
-			wantConsecutive:  1,
+			wantConsecutive:  2,
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
@@ -189,14 +193,14 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			diffStats:        DiffStats{Status: "clean"},
 			noProgressLimit:  3,
 			wantTerminal:     store.WorkAttemptTerminalNoProgress,
-			wantReason:       "unchanged_signature_clean_diff",
+			wantReason:       dispatchLoopDetectedReason,
 			wantConsecutive:  3,
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
 			wantBlocked:      true,
-			wantBlockReason:  noProgressLimitReason,
-			wantComment:      "no_progress_limit",
+			wantBlockReason:  dispatchLoopDetectedReason,
+			wantComment:      "loop detected after 3 dispatches",
 		},
 		{
 			name:               "new pull request creation avoids false no progress",
@@ -219,7 +223,19 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:       true,
 		},
 		{
-			name:         "third clean dependency wait defers without tripping limit",
+			name:              "first dependency deferral releases claim without tripping loop",
+			runningIssue:      implementProgressIssueWithoutPR(),
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalSuccess,
+			wantReason:        implementDependencyDeferralReason,
+			workpadBlockerRef: "digitaldrywood/detent#134",
+			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Todo"}},
+			wantConsecutive:   1,
+			wantProgressKinds: nil,
+		},
+		{
+			name:         "third same lane dependency deferral trips dispatch loop",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressDependencyDeferralHistoryAttempt(2, "digitaldrywood/detent#134", "Todo"),
@@ -227,14 +243,16 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			},
 			diffStats:         DiffStats{Status: "clean"},
 			noProgressLimit:   3,
-			wantTerminal:      store.WorkAttemptTerminalSuccess,
-			wantReason:        "dependency_deferral",
+			wantTerminal:      store.WorkAttemptTerminalNoProgress,
+			wantErrorClass:    dispatchLoopDetectedReason,
+			wantReason:        "dispatch_loop_detected",
 			workpadBlockerRef: "digitaldrywood/detent#134",
 			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Todo"}},
-			wantLogContains:   "",
-			wantConsecutive:   0,
-			wantBlocked:       false,
-			wantRetry:         false,
+			wantConsecutive:   3,
+			wantBlocked:       true,
+			wantBlockReason:   "dispatch_loop_detected",
+			wantComment:       "loop detected after 3 dispatches without lane, diff, commit, or pull request advancement",
+			wantEvent:         "implement_worker_dispatch_loop_detected",
 		},
 		{
 			name:              "dependency deferral persistence failure retains claim",
@@ -248,6 +266,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			completionErr:     errors.New("attempt store unavailable"),
 			wantClaimed:       true,
 			wantLogContains:   "complete work attempt failed",
+			wantConsecutive:   1,
 		},
 		{
 			name:              "malformed blocker ref counts as no progress",
@@ -297,10 +316,10 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			diffStats:       DiffStats{Status: "clean"},
 			noProgressLimit: 3,
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
-			wantReason:      "completed_clean_diff_without_pull_request",
+			wantReason:      dispatchLoopDetectedReason,
 			wantConsecutive: 3,
 			wantBlocked:     true,
-			wantBlockReason: noProgressLimitReason,
+			wantBlockReason: dispatchLoopDetectedReason,
 			wantComment:     "consecutive_no_progress_attempts: 3",
 		},
 		{
@@ -313,14 +332,14 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			diffStats:       DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"},
 			noProgressLimit: 3,
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
-			wantReason:      "unchanged_workspace_diff_without_pull_request",
+			wantReason:      dispatchLoopDetectedReason,
 			wantConsecutive: 3,
 			wantBlocked:     true,
-			wantBlockReason: noProgressLimitReason,
+			wantBlockReason: dispatchLoopDetectedReason,
 			wantComment:     "consecutive_no_progress_attempts: 3",
 		},
 		{
-			name:         "audit field resets streak despite identical non-empty diff",
+			name:         "audit field does not reset identical non-empty diff loop",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"}, "", ""),
@@ -328,10 +347,13 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			},
 			diffStats:          DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         implementProgressReasonNonDiff,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         dispatchLoopDetectedReason,
 			wantProgressKinds:  []string{"audit_artifact"},
-			wantRetry:          true,
+			wantConsecutive:    3,
+			wantBlocked:        true,
+			wantBlockReason:    dispatchLoopDetectedReason,
+			wantComment:        "loop detected after 3 dispatches",
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
 		},
@@ -363,7 +385,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:         true,
 		},
 		{
-			name:               "verifiable non-diff audit field resets no-progress streak",
+			name:               "verifiable non-diff audit field remains in no-progress streak",
 			runningIssue:       implementProgressIssueWithoutPR(),
 			history:            []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
 			diffStats:          DiffStats{Status: "clean"},
@@ -371,6 +393,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:       store.WorkAttemptTerminalSuccess,
 			wantReason:         "verifiable_non_diff_progress",
 			wantProgressKinds:  []string{"audit_artifact"},
+			wantConsecutive:    2,
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
@@ -417,7 +440,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			workpadBlockerRef:  "digitaldrywood/detent#134",
 		},
 		{
-			name:         "changing blocked human action does not trip",
+			name:         "changing blocked human action does not hide dispatch loop",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "same-diff", Status: "changed"}, "Choose the old review path.", "In Progress"),
@@ -425,9 +448,12 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			},
 			diffStats:          DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "same-diff", Status: "changed"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         "workspace_diff_present_without_pull_request",
-			wantRetry:          true,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         dispatchLoopDetectedReason,
+			wantConsecutive:    3,
+			wantBlocked:        true,
+			wantBlockReason:    dispatchLoopDetectedReason,
+			wantComment:        "loop detected after 3 dispatches",
 			workpadHumanAction: "Choose the new review path.",
 		},
 		{
@@ -562,6 +588,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if completion.TerminalState != tt.wantTerminal {
 				t.Fatalf("TerminalState = %q, want %q", completion.TerminalState, tt.wantTerminal)
 			}
+			if tt.wantErrorClass != "" && completion.ErrorClass != tt.wantErrorClass {
+				t.Fatalf("ErrorClass = %q, want %q", completion.ErrorClass, tt.wantErrorClass)
+			}
 			record := implementProgressRecordFromCompletion(t, completion)
 			if record.Reason != tt.wantReason {
 				t.Fatalf("metadata reason = %q, want %q", record.Reason, tt.wantReason)
@@ -614,6 +643,15 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if tt.wantLogContains != "" && !strings.Contains(logs.String(), tt.wantLogContains) {
 				t.Fatalf("logs did not contain %q:\n%s", tt.wantLogContains, logs.String())
+			}
+			if tt.wantEvent != "" {
+				found := false
+				for _, event := range state.RecentEvents {
+					found = found || event.Event == tt.wantEvent
+				}
+				if !found {
+					t.Fatalf("RecentEvents = %#v, want %q", state.RecentEvents, tt.wantEvent)
+				}
 			}
 		})
 	}
@@ -1146,6 +1184,7 @@ func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 
 	for _, reason := range []string{
 		noProgressLimitReason,
+		dispatchLoopDetectedReason,
 		workpadBlockedUnactionedReason,
 		"token_ceiling_circuit_breaker",
 		tokenCeilingBlockedReasonPrefix + "observed 16100000 tokens above the 16000000 max_session_tokens ceiling",

@@ -82,6 +82,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now, s.laneEntries)
 	applyIssueRuntimeIdentities(boardIssueSnapshots, s.Running, s.WorkAttempts)
 	applyIssueCompletionProgress(boardIssueSnapshots, s.WorkAttempts)
+	dispatchLoops := dispatchLoopSnapshots(boardIssueSnapshots, s.WorkAttempts)
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
 	s.applyArtifactGateWaitDispatchSnapshots(boardIssueSnapshots, boardIssues)
@@ -116,6 +117,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s),
 		MemoryPressure:          s.MemoryPressure,
+		DispatchLoops:           dispatchLoops,
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
 		StrandedActiveIssues:    strandedActiveIssues,
@@ -839,7 +841,7 @@ func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry
 		if latest == nil {
 			continue
 		}
-		record, ok := implementProgressRecordFromAttempt(store.WorkAttempt{
+		record, ok := implementProgressRecordFromAnyAttempt(store.WorkAttempt{
 			TerminalState:      store.WorkAttemptTerminalState(strings.TrimSpace(latest.TerminalState)),
 			WorkerMetadataJSON: latest.WorkerMetadataJSON,
 		})
@@ -854,6 +856,44 @@ func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry
 			NoProgressLimit:       record.NoProgressLimit,
 		}
 	}
+}
+
+func dispatchLoopSnapshots(issues []telemetry.Issue, attempts []telemetry.WorkAttempt) []telemetry.DispatchLoop {
+	var loops []telemetry.DispatchLoop
+	for _, issue := range issues {
+		progress := issue.CompletionProgress
+		if progress.NoProgressLimit <= 0 || progress.ConsecutiveNoProgress < 2 {
+			continue
+		}
+		var latest *telemetry.WorkAttempt
+		for attemptIndex := range attempts {
+			attempt := &attempts[attemptIndex]
+			if !strings.EqualFold(strings.TrimSpace(attempt.Status), string(store.WorkAttemptStatusTerminal)) ||
+				!snapshotIssueMatches(issue, attempt.IssueID, attempt.Identifier, attempt.IssueURL) {
+				continue
+			}
+			if latest == nil || workAttemptCompletedAfter(*attempt, *latest) {
+				latest = attempt
+			}
+		}
+		var lastCompletedAt *time.Time
+		if latest != nil {
+			lastCompletedAt = cloneTimePointer(latest.CompletedAt)
+		}
+		loops = append(loops, telemetry.DispatchLoop{
+			ProjectID:             issue.ProjectID,
+			IssueID:               issue.ID,
+			Identifier:            issue.Identifier,
+			IssueURL:              issue.URL,
+			Title:                 issue.Title,
+			Lane:                  issue.State,
+			ConsecutiveDispatches: progress.ConsecutiveNoProgress,
+			DispatchLimit:         progress.NoProgressLimit,
+			Tripped:               progress.ConsecutiveNoProgress >= progress.NoProgressLimit,
+			LastCompletedAt:       lastCompletedAt,
+		})
+	}
+	return loops
 }
 
 func snapshotIssueMatches(issue telemetry.Issue, issueID string, identifier string, issueURL string) bool {

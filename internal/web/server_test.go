@@ -7503,6 +7503,42 @@ func TestHealthReportsStrandedActiveIssues(t *testing.T) {
 	}
 }
 
+func TestHealthReportsActiveDispatchLoops(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	completedAt := time.Date(2026, 8, 18, 16, 0, 0, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		DispatchLoops: []telemetry.DispatchLoop{{
+			ProjectID: "detent", Identifier: "digitaldrywood/pyroapex#1850", Lane: "Rework", ConsecutiveDispatches: 2, DispatchLimit: 3, LastCompletedAt: &completedAt,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if payload["status"] != "needs_attention" {
+		t.Fatalf("status = %#v, want needs_attention", payload["status"])
+	}
+	loops, ok := payload["dispatch_loops"].([]any)
+	if !ok || len(loops) != 1 {
+		t.Fatalf("dispatch_loops = %#v, want one loop", payload["dispatch_loops"])
+	}
+	loop := loops[0].(map[string]any)
+	if loop["identifier"] != "digitaldrywood/pyroapex#1850" || loop["lane"] != "Rework" || loop["consecutive_dispatches"] != float64(2) || loop["dispatch_limit"] != float64(3) || loop["tripped"] != false {
+		t.Fatalf("dispatch_loops[0] = %#v", loop)
+	}
+	projects := payload["projects"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["status"] != "needs_human_attention" {
+		t.Fatalf("projects = %#v, want detent needs_human_attention", projects)
+	}
+}
+
 func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *testing.T) {
 	t.Parallel()
 
