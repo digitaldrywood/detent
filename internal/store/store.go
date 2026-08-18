@@ -330,6 +330,7 @@ const (
 	WorkAttemptTerminalOperatorStopped WorkAttemptTerminalState = "operator_stopped"
 	WorkAttemptTerminalMergeRevoked    WorkAttemptTerminalState = "merge_revoked"
 	WorkAttemptTerminalLaneRevoked     WorkAttemptTerminalState = "lane_revoked"
+	WorkAttemptTerminalDelivered       WorkAttemptTerminalState = "delivered"
 )
 
 type SchedulerDecisionResult string

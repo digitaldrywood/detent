@@ -6,6 +6,27 @@ import (
 	"time"
 )
 
+func TestSuccessfulTerminalState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		state string
+		want  bool
+	}{
+		{state: "success", want: true},
+		{state: "delivered", want: true},
+		{state: "lane_revoked"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			t.Parallel()
+			if got := successful(tt.state); got != tt.want {
+				t.Fatalf("successful(%q) = %t, want %t", tt.state, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectReplaysEfficiencyIncidents(t *testing.T) {
 	t.Parallel()
 

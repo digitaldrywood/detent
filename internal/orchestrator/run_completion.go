@@ -147,10 +147,14 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 				state.Claimed[event.IssueID] = claimed
 			}
 			if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
-				o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
-				o.beginLaneRevocation(ctx, state, running, refreshed, event.CompletedAt, laneRevocationStateChanged)
-				o.handleLaneRevocationCompletion(ctx, state, event, running)
-				return
+				if accepted, ok := o.acceptCurrentAttemptCompletionLane(ctx, state, running, refreshed, event.CompletedAt); ok {
+					running = accepted
+				} else {
+					o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
+					o.beginLaneRevocation(ctx, state, running, refreshed, event.CompletedAt, laneRevocationStateChanged)
+					o.handleLaneRevocationCompletion(ctx, state, event, running)
+					return
+				}
 			}
 		}
 	}
@@ -595,6 +599,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			})
 		}
 		return
+	}
+	if running.CompletionLane != "" {
+		o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
+		return
+	}
+	if terminalState == store.WorkAttemptTerminalSuccess {
+		transition := o.transitionCompletedActiveIssuesToReview(ctx, state, []connector.Issue{running.Issue}, event.CompletedAt)
+		if _, transitioned := transition.transitioned[event.IssueID]; transitioned {
+			return
+		}
 	}
 	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
 		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {

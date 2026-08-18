@@ -113,6 +113,141 @@ func TestLaneRevocationPreservesTrackerDestination(t *testing.T) {
 	}
 }
 
+func TestCompletionLaneHandshakeClassifiesCurrentAttempt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 21, 10, 53, 0, time.UTC)
+	tests := []struct {
+		name                string
+		handshakeAttempt    int64
+		handshakeGeneration uint64
+		reconcileFirst      bool
+		wantTerminal        store.WorkAttemptTerminalState
+		wantRevoked         bool
+	}{
+		{
+			name:                "agent lane write before delivery completion",
+			handshakeAttempt:    3295,
+			handshakeGeneration: 7,
+			reconcileFirst:      true,
+			wantTerminal:        store.WorkAttemptTerminalSuccess,
+		},
+		{
+			name:                "delivery completion observes agent lane write",
+			handshakeAttempt:    3295,
+			handshakeGeneration: 7,
+			wantTerminal:        store.WorkAttemptTerminalSuccess,
+		},
+		{
+			name:           "operator move to completion lane",
+			reconcileFirst: true,
+			wantTerminal:   store.WorkAttemptTerminalLaneRevoked,
+			wantRevoked:    true,
+		},
+		{
+			name:                "agent that no longer holds attempt",
+			handshakeAttempt:    3238,
+			handshakeGeneration: 6,
+			reconcileFirst:      true,
+			wantTerminal:        store.WorkAttemptTerminalLaneRevoked,
+			wantRevoked:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := laneRevocationIssue("issue-completion-handshake", "gopherguides/corp#72", "Rework")
+			issue.PullRequest = &connector.PullRequest{Number: 189, State: "OPEN", HeadSHA: "d130765c"}
+			parked := cloneIssue(issue)
+			parked.State = "Human Review"
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
+			if tt.handshakeAttempt > 0 {
+				recordedAt := now.Add(-time.Minute)
+				tracker.issueComments = map[string][]connector.IssueComment{
+					issue.ID: {{
+						Body:      completionHandshakeWorkpadBody(tt.handshakeAttempt, tt.handshakeGeneration),
+						URL:       "https://github.test/workpad",
+						UpdatedAt: &recordedAt,
+					}},
+				}
+			}
+			attempts := &recordingWorkAttemptStore{}
+			cfg := normalizeConfig(Config{
+				Project:        scheduler.ProjectCandidate{ID: "corp"},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates: []string{"Human Review"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{
+				cfg:                    cfg,
+				connector:              tracker,
+				workAttempts:           attempts,
+				pendingLaneRevocations: map[string]*pendingLaneRevocation{},
+				logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+				now:                    func() time.Time { return now },
+			}
+			state := newState(cfg)
+			runCtx, stop := context.WithCancelCause(context.Background())
+			state.Running[issue.ID] = Running{
+				Issue:         issue,
+				Attempt:       3,
+				WorkAttemptID: 3295,
+				Generation:    7,
+				StartedAt:     now.Add(-20 * time.Minute),
+				stop:          stop,
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-20 * time.Minute)}
+
+			if tt.reconcileFirst {
+				orch.reconcileRunningIssues(t.Context(), &state, now)
+			}
+			if got := errors.Is(context.Cause(runCtx), runpkg.ErrLaneRevoked); got != tt.wantRevoked {
+				t.Fatalf("worker revoked = %v, want %v; cause = %v", got, tt.wantRevoked, context.Cause(runCtx))
+			}
+
+			completion := runpkg.Completion{
+				IssueID:     issue.ID,
+				Request:     runpkg.RunRequest{Issue: issue, WorkAttemptID: 3295, Generation: 7},
+				CompletedAt: now.Add(time.Second),
+				Result: runpkg.RunResult{
+					FinalState:            runpkg.FinalStateCompleted,
+					PullRequestUpdated:    !tt.wantRevoked,
+					PullRequestHeadPushed: !tt.wantRevoked,
+					TurnStarted:           true,
+				},
+			}
+			if tt.wantRevoked {
+				completion.Err = runpkg.ErrLaneRevoked
+				completion.Result.FinalState = runpkg.FinalStateLaneRevoked
+			}
+			orch.handleRunResult(t.Context(), &state, completion)
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminal {
+				t.Fatalf("work attempt completions = %#v, want %q", attempts.completions, tt.wantTerminal)
+			}
+			if tt.wantTerminal == store.WorkAttemptTerminalSuccess {
+				if attempts.completions[0].ErrorClass != "" || attempts.completions[0].ErrorMessage != "" {
+					t.Fatalf("successful completion error = %q/%q", attempts.completions[0].ErrorClass, attempts.completions[0].ErrorMessage)
+				}
+				if _, ok := state.Claimed[issue.ID]; ok {
+					t.Fatalf("Claimed[%q] present after accepted completion", issue.ID)
+				}
+				if got := state.Completed[issue.ID].Issue.State; got != "Human Review" {
+					t.Fatalf("completed issue state = %q, want Human Review", got)
+				}
+				attribution := state.laneProvenance[workflowLaneEntryKey(parked)]
+				if provenance.NormalizeOrigin(attribution.Origin) != provenance.OriginAgent {
+					t.Fatalf("lane provenance = %#v, want agent", attribution)
+				}
+			} else if _, ok := orch.pendingLaneRevocations[issue.ID]; ok {
+				t.Fatalf("pending lane revocation retained after completion")
+			}
+		})
+	}
+}
+
 func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 	t.Parallel()
 
@@ -557,6 +692,13 @@ func laneRevocationIssue(id string, identifier string, state string) connector.I
 	issue.Title = "Lane revocation test"
 	issue.State = state
 	return issue
+}
+
+func completionHandshakeWorkpadBody(workAttemptID int64, generation uint64) string {
+	return "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n" +
+		"  completion_work_attempt_id: \"" + strconv.FormatInt(workAttemptID, 10) + "\"\n" +
+		"  completion_generation: \"" + strconv.FormatUint(generation, 10) + "\"\n" +
+		"blockers: []\nhuman_action: null\n```"
 }
 
 func receiveLaneRevocationCompletion(t *testing.T, completions <-chan runpkg.Completion) runpkg.Completion {

@@ -572,7 +572,7 @@ func phaseTime(event PhaseEvent) time.Time {
 
 func successful(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "success", "completed", "complete", "done", "merged":
+	case "success", "completed", "complete", "done", "merged", "delivered":
 		return true
 	default:
 		return false

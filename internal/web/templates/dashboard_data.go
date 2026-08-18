@@ -8802,7 +8802,7 @@ func workAttemptStatusClass(row telemetry.WorkAttempt) string {
 		return base + "bg-err/15 text-err"
 	}
 	switch strings.TrimSpace(row.TerminalState) {
-	case "success":
+	case "success", "delivered":
 		return base + "bg-ok/15 text-ok"
 	case "failure", "timed_out", "abandoned", "cancelled":
 		return base + "bg-err/15 text-err"

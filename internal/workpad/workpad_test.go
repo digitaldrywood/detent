@@ -166,6 +166,78 @@ func TestSignalFromComment(t *testing.T) {
 	}
 }
 
+func TestCurrentAttemptCompletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		signal     *Signal
+		attemptID  int64
+		generation uint64
+		want       bool
+	}{
+		{
+			name: "current structured completion",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{
+					FieldCompletionAttempt:    "3295",
+					FieldCompletionGeneration: "7",
+				},
+			},
+			attemptID:  3295,
+			generation: 7,
+			want:       true,
+		},
+		{
+			name: "stale attempt",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{
+					FieldCompletionAttempt:    "3238",
+					FieldCompletionGeneration: "6",
+				},
+			},
+			attemptID:  3295,
+			generation: 7,
+		},
+		{
+			name: "operator move without handshake",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+			},
+			attemptID:  3295,
+			generation: 7,
+		},
+		{
+			name: "blocked completion is not accepted",
+			signal: &Signal{
+				Source:   SourceStructured,
+				Status:   StatusComplete,
+				Blockers: []Blocker{{Reason: "waiting"}},
+				Fields: map[string]string{
+					FieldCompletionAttempt:    "3295",
+					FieldCompletionGeneration: "7",
+				},
+			},
+			attemptID:  3295,
+			generation: 7,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CurrentAttemptCompletion(tt.signal, tt.attemptID, tt.generation); got != tt.want {
+				t.Fatalf("CurrentAttemptCompletion() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOperationalCompletion(t *testing.T) {
 	t.Parallel()
 

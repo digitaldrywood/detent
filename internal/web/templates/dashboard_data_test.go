@@ -12,6 +12,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
+func TestWorkAttemptStatusClassTreatsDeliveredAsSuccessful(t *testing.T) {
+	t.Parallel()
+
+	got := workAttemptStatusClass(telemetry.WorkAttempt{TerminalState: "delivered"})
+	if !strings.Contains(got, "bg-ok/15") {
+		t.Fatalf("workAttemptStatusClass(delivered) = %q, want success class", got)
+	}
+}
+
 func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	t.Parallel()
 

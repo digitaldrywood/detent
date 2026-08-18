@@ -45,6 +45,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		wantCurrentHead    string
 		wantHydrations     int
 		wantBlocked        bool
+		wantReview         bool
 		wantComment        string
 		wantRetry          bool
 		wantLogContains    string
@@ -76,7 +77,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
 			wantConsecutive: 1,
-			wantRetry:       true,
+			wantReview:      true,
 		},
 		{
 			name:             "new head SHA succeeds",
@@ -90,7 +91,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "new-head",
 			wantHydrations:   1,
-			wantRetry:        true,
+			wantReview:       true,
 		},
 		{
 			name:            "stale remote ref with pushed pull request head is not stranded",
@@ -103,7 +104,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
 			wantConsecutive: 1,
-			wantRetry:       true,
+			wantReview:      true,
 		},
 		{
 			name:             "new pull request head with newer unpushed commit remains stranded",
@@ -180,7 +181,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReason:      "workspace_head_unavailable_for_unpushed_check",
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
-			wantRetry:       true,
+			wantReview:      true,
 		},
 		{
 			name:          "limit trip blocks with comment",
@@ -482,7 +483,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:    store.WorkAttemptTerminalSuccess,
 			wantReason:      "pull_request_hydration_failed",
 			wantHydrations:  1,
-			wantRetry:       true,
+			wantReview:      true,
 			wantLogContains: "implement worker progress check failed open",
 		},
 		{
@@ -495,7 +496,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:    store.WorkAttemptTerminalSuccess,
 			wantReason:      "pull_request_hydration_unavailable",
 			wantHydrations:  1,
-			wantRetry:       true,
+			wantReview:      true,
 			wantLogContains: "implement worker progress check failed open",
 		},
 		{
@@ -510,7 +511,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantPreviousHead:  "same-head",
 			wantCurrentHead:   "new-head",
 			wantHydrations:    1,
-			wantRetry:         true,
+			wantReview:        true,
 			wantFailedAdded:   []string{"Lint"},
 			wantFailedRemoved: []string{},
 		},
@@ -634,6 +635,13 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				}
 				if _, ok := state.Retry[tt.runningIssue.ID]; ok {
 					t.Fatalf("Retry[%q] present after block", tt.runningIssue.ID)
+				}
+			} else if tt.wantReview {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteSourceState {
+					t.Fatalf("updates = %#v, want one Human Review update", tracker.updates)
+				}
+				if _, ok := state.Retry[tt.runningIssue.ID]; ok {
+					t.Fatalf("Retry[%q] present after review transition", tt.runningIssue.ID)
 				}
 			} else if _, ok := state.Retry[tt.runningIssue.ID]; ok != tt.wantRetry {
 				t.Fatalf("retry present = %v, want %v", ok, tt.wantRetry)

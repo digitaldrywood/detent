@@ -48,6 +48,8 @@ const (
 
 type PromptOptions struct {
 	Attempt              *int
+	WorkAttemptID        int64
+	Generation           uint64
 	PlanOnly             bool
 	MergeFallback        bool
 	MergePrecheckStatus  string
@@ -113,7 +115,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendWorkflowInstructionsBlock(rendered, workflow.Config.Agent, issue, opts)
 	rendered = appendMergeMethodBlock(rendered, workflow.Config.Deliverable)
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
-	rendered = appendBlockedHandoffBlock(rendered)
+	rendered = appendBlockedHandoffBlock(rendered, opts)
 	rendered = appendGateBlock(rendered, workflow.Config)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
@@ -265,7 +267,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	}
 	prompt = appendWorkflowInstructionsBlock(prompt, workflow.Config.Agent, issue, opts)
 	prompt = appendMergeMethodBlock(prompt, workflow.Config.Deliverable)
-	prompt = appendBlockedHandoffBlock(prompt)
+	prompt = appendBlockedHandoffBlock(prompt, opts)
 	prompt = appendGateBlock(prompt, workflow.Config)
 	prompt = appendAvailableSkills(prompt, AvailableSkillsBlock(opts.AvailableSkills))
 	if promptDeliverableKind(workflow.Config.Deliverable) == config.DeliverablePullRequest {
@@ -686,7 +688,15 @@ func githubTrackerHostname(tracker config.Tracker) string {
 	return parsed.Host
 }
 
-func appendBlockedHandoffBlock(prompt string) string {
+func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
+	completionFields := ""
+	completionOwnership := "Detent owns the completion-lane transition after it accepts the attempt. Do not move the issue to a review or terminal lane yourself; leave the issue in its worker-owned lane and update the Workpad instead."
+	if opts.WorkAttemptID > 0 && opts.Generation > 0 {
+		completionFields = "fields:\n" +
+			"  completion_work_attempt_id: \"" + strconv.FormatInt(opts.WorkAttemptID, 10) + "\"\n" +
+			"  completion_generation: \"" + strconv.FormatUint(opts.Generation, 10) + "\"\n"
+		completionOwnership += " If project workflow instructions still require a completion-lane move, write the exact attempt fields shown below before making that move; Detent accepts only a handshake matching the current lease."
+	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Blocked handoff\n\n" +
 		"When writing a Workpad `detent-status` block, `status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid. " +
 		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.\n\n" +
@@ -718,10 +728,12 @@ func appendBlockedHandoffBlock(prompt string) string {
 		"When `tracker.blocked_recovery` is enabled and the workflow intentionally parks agent-recoverable PR maintenance in a configured source lane, " +
 		"set `reason_code` to `merge_conflict`, `stale_base`, or `missing_current_head_ci` in the blocked status block. " +
 		"Do not set a recovery reason code for manual or human-only parking.\n\n" +
+		completionOwnership + "\n\n" +
 		"On successful completion, declare completion with the same structured block:\n\n" +
 		"```detent-status\n" +
 		"schema: 1\n" +
 		"status: complete\n" +
+		completionFields +
 		"blockers: []\n" +
 		"human_action: null\n" +
 		"```\n\n" +

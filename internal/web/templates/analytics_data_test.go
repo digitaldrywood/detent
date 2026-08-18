@@ -69,6 +69,7 @@ func TestAnalyticsAttemptDecisions(t *testing.T) {
 		{name: "stale wins", attempt: telemetry.WorkAttempt{Status: "running", Stale: true}, wantKind: primitives.KindWarn, wantText: "stale"},
 		{name: "error is failed", attempt: telemetry.WorkAttempt{ErrorMessage: "boom"}, wantKind: primitives.KindErr, wantText: "failed"},
 		{name: "terminal done completed", attempt: telemetry.WorkAttempt{TerminalState: "Done"}, wantKind: primitives.KindOK, wantText: "completed"},
+		{name: "historical delivery completed", attempt: telemetry.WorkAttempt{TerminalState: "delivered"}, wantKind: primitives.KindOK, wantText: "completed"},
 		{name: "running dispatched", attempt: telemetry.WorkAttempt{Status: "running"}, wantKind: primitives.KindOK, wantText: "dispatched"},
 		{name: "skipped stays neutral", attempt: telemetry.WorkAttempt{Status: "skipped"}, wantKind: primitives.KindNeutral, wantText: "skipped"},
 	}

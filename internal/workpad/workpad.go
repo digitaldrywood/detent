@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,9 +25,11 @@ const (
 	StatusBlocked    = "blocked"
 	StatusComplete   = "complete"
 
-	FieldCompletionKind     = "completion_kind"
-	FieldCompletionEvidence = "completion_evidence"
-	CompletionOperational   = "operational"
+	FieldCompletionKind       = "completion_kind"
+	FieldCompletionEvidence   = "completion_evidence"
+	FieldCompletionAttempt    = "completion_work_attempt_id"
+	FieldCompletionGeneration = "completion_generation"
+	CompletionOperational     = "operational"
 
 	BlockerOwnerOrchestrator = "orchestrator"
 	BlockerOwnerHuman        = "human"
@@ -528,6 +531,17 @@ func OperationalCompletion(signal *Signal) (string, bool) {
 	}
 	evidence := strings.TrimSpace(signal.Fields[FieldCompletionEvidence])
 	return evidence, evidence != ""
+}
+
+func CurrentAttemptCompletion(signal *Signal, workAttemptID int64, generation uint64) bool {
+	if signal == nil || signal.Invalid != nil || signal.Source != SourceStructured ||
+		strings.TrimSpace(signal.Status) != StatusComplete ||
+		strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 ||
+		workAttemptID <= 0 || generation == 0 {
+		return false
+	}
+	return strings.TrimSpace(signal.Fields[FieldCompletionAttempt]) == strconv.FormatInt(workAttemptID, 10) &&
+		strings.TrimSpace(signal.Fields[FieldCompletionGeneration]) == strconv.FormatUint(generation, 10)
 }
 
 func normalizeReasonCode(reasonCode string) string {

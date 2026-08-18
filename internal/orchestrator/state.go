@@ -157,6 +157,9 @@ type Running struct {
 	ModelPermitExempt           bool
 	CIStopRequested             bool
 	CompletionOwnershipReleased bool
+	CompletionLane              string
+	CompletionWorkpadURL        string
+	CompletionAcceptedAt        time.Time
 	StopDestination             string
 	StopPriorityOptions         []telemetry.StopRunPriorityOption
 	globalSlot                  scheduler.Slot

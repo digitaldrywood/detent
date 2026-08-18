@@ -301,6 +301,28 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	}
 }
 
+func TestBuildPromptBindsCompletionToCurrentAttempt(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{
+		Identifier: "digitaldrywood/detent#1906",
+		Title:      "Fence completion",
+	}, PromptOptions{WorkAttemptID: 3295, Generation: 7})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"Detent owns the completion-lane transition after it accepts the attempt.",
+		"completion_work_attempt_id: \"3295\"",
+		"completion_generation: \"7\"",
+		"accepts only a handshake matching the current lease",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 	t.Parallel()
 

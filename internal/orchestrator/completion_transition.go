@@ -278,11 +278,6 @@ func completedActiveReviewTargetState(
 	switch normalizeState(issue.State) {
 	case normalizeState(reviewState), normalizeState(autoPromoteMergingState):
 		return ""
-	case normalizeState(autoPromoteReworkState):
-		_, operational := operationalCompletionFromIssue(issue)
-		if !operational && gate.Effective(cfg.Gate).Kind != gate.KindArtifact {
-			return ""
-		}
 	}
 	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate)) {
 		return ""
