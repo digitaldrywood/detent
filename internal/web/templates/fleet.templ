@@ -108,6 +108,7 @@ templ fleetSnapshotBody(data DashboardData) {
 		</div>
 	</div>
 	@fleetMetricCards(view.Metrics)
+	@concurrencyCard(data.Snapshot.Concurrency)
 }
 
 // AgentActivityPanel is the hero: one row per live agent, shared between

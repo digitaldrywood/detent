@@ -117,6 +117,7 @@ func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot
 		snapshot.CycleTime = cycleTime
 	}
 	snapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(ctx, snapshot)
+	snapshot.Concurrency = s.snapshotConcurrency(ctx, snapshot)
 
 	budget, ok := s.snapshotBudget(ctx, snapshot.GeneratedAt)
 	if !ok {

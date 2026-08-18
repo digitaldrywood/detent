@@ -53,6 +53,7 @@ type Snapshot struct {
 	OverloadRetriesLastHour int                 `json:"overload_retries_last_hour,omitempty"`
 	Tokens                  Tokens              `json:"tokens"`
 	Throughput              TokenThroughput     `json:"throughput"`
+	Concurrency             ConcurrencyHistory  `json:"concurrency"`
 	LifetimeTotals          LifetimeTotals      `json:"lifetime_totals"`
 	CycleTime               CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics         WorkflowMetrics     `json:"workflow_metrics"`
@@ -1403,6 +1404,30 @@ type TokenThroughput struct {
 	TokensPerSecond float64 `json:"tokens_per_second"`
 	WindowSeconds   int64   `json:"window_seconds"`
 	Tokens          int64   `json:"tokens"`
+}
+
+type ConcurrencyHistory struct {
+	Available      bool                `json:"available"`
+	DegradedReason string              `json:"degraded_reason,omitempty"`
+	From           time.Time           `json:"from,omitzero"`
+	To             time.Time           `json:"to,omitzero"`
+	BucketSeconds  int64               `json:"bucket_seconds"`
+	AttemptCount   int                 `json:"attempt_count"`
+	Series         []ConcurrencySeries `json:"series,omitempty"`
+}
+
+type ConcurrencySeries struct {
+	ProjectID string              `json:"project_id,omitempty"`
+	Buckets   []ConcurrencyBucket `json:"buckets,omitempty"`
+}
+
+type ConcurrencyBucket struct {
+	Start         time.Time `json:"start"`
+	End           time.Time `json:"end"`
+	Median        int       `json:"median"`
+	P90           int       `json:"p90"`
+	Max           int       `json:"max"`
+	ActiveSeconds int64     `json:"active_seconds"`
 }
 
 type LifetimeTotals struct {

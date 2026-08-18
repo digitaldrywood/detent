@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -512,6 +514,37 @@ func TestFleetMetricsWithoutData(t *testing.T) {
 	metrics := fleetMetricsFromSnapshot(DashboardData{})
 	if metrics.HasSpend || metrics.HasQuota || metrics.HasTokens || metrics.HasContext {
 		t.Fatalf("empty snapshot should produce no meters: %+v", metrics)
+	}
+}
+
+func TestFleetSnapshotRendersHourlyConcurrency(t *testing.T) {
+	t.Parallel()
+
+	data := fleetTestData()
+	now := data.Snapshot.GeneratedAt
+	data.Snapshot.Concurrency = telemetry.ConcurrencyHistory{
+		Available:     true,
+		From:          now.Add(-24 * time.Hour),
+		To:            now,
+		BucketSeconds: 3600,
+		AttemptCount:  4,
+		Series: []telemetry.ConcurrencySeries{{
+			Buckets: []telemetry.ConcurrencyBucket{
+				{Start: now.Add(-2 * time.Hour), Median: 1, P90: 2, Max: 3},
+				{Start: now.Add(-time.Hour), Median: 1, P90: 1, Max: 2},
+			},
+		}},
+	}
+
+	var body bytes.Buffer
+	if err := fleetSnapshotBody(data).Render(context.Background(), &body); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := body.String()
+	for _, want := range []string{"Hourly concurrency", "median / p90 / max", "Fleet-wide", "Rolling 24h from recorded work attempts"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("fleet snapshot missing %q:\n%s", want, html)
+		}
 	}
 }
 

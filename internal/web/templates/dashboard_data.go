@@ -454,6 +454,17 @@ type projectSmallMultipleCard struct {
 	QueueChart                 SeriesChartData
 }
 
+type concurrencySeriesCard struct {
+	Name    string
+	Metrics []concurrencyMetricCard
+}
+
+type concurrencyMetricCard struct {
+	Label string
+	Value string
+	Chart SeriesChartData
+}
+
 type sidebarProjectItem struct {
 	ID           string
 	Name         string
@@ -8500,6 +8511,65 @@ func throughputWindowLabel(snapshot telemetry.Snapshot) string {
 		window = defaultThroughputWindow
 	}
 	return "Last " + formatDurationWindow(window) + " token throughput"
+}
+
+func concurrencyWindowLabel(history telemetry.ConcurrencyHistory) string {
+	if history.From.IsZero() || history.To.IsZero() || !history.From.Before(history.To) {
+		return "Rolling history"
+	}
+	return "Rolling " + formatDurationWindow(history.To.Sub(history.From)) + " from recorded work attempts"
+}
+
+func concurrencySeriesCards(history telemetry.ConcurrencyHistory) []concurrencySeriesCard {
+	if !history.Available || history.AttemptCount == 0 {
+		return nil
+	}
+	cards := make([]concurrencySeriesCard, 0, len(history.Series))
+	for _, series := range history.Series {
+		name := strings.TrimSpace(series.ProjectID)
+		if name == "" {
+			name = "Fleet-wide"
+		}
+		cards = append(cards, concurrencySeriesCard{
+			Name: name,
+			Metrics: []concurrencyMetricCard{
+				concurrencyMetric("Median", "text-sec", series.Buckets, func(bucket telemetry.ConcurrencyBucket) int { return bucket.Median }),
+				concurrencyMetric("p90", "text-warn", series.Buckets, func(bucket telemetry.ConcurrencyBucket) int { return bucket.P90 }),
+				concurrencyMetric("Max", "text-accent", series.Buckets, func(bucket telemetry.ConcurrencyBucket) int { return bucket.Max }),
+			},
+		})
+	}
+	return cards
+}
+
+func concurrencyMetric(
+	label string,
+	colorClass string,
+	buckets []telemetry.ConcurrencyBucket,
+	value func(telemetry.ConcurrencyBucket) int,
+) concurrencyMetricCard {
+	points := make([]webchart.Point, 0, len(buckets))
+	latest := 0
+	for _, bucket := range buckets {
+		latest = value(bucket)
+		points = append(points, webchart.Point{
+			Label: localTimeToken(bucket.Start, LocalDateTime),
+			Value: float64(latest),
+		})
+	}
+	return concurrencyMetricCard{
+		Label: label,
+		Value: formatCount(latest),
+		Chart: SeriesChartData{
+			Title:       label + " hourly concurrency",
+			AriaLabel:   label + " hourly concurrency over the rolling window",
+			Points:      points,
+			ValueSuffix: "agents",
+			Class:       "h-10",
+			ColorClass:  colorClass,
+			Height:      40,
+		},
+	}
 }
 
 func runtimeLabel(snapshot telemetry.Snapshot) string {

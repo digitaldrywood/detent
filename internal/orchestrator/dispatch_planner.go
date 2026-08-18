@@ -908,6 +908,7 @@ func (p dispatchPlanner) providerModelPermitSlots(state *State) int {
 	if state == nil {
 		return 0
 	}
+	// A depleted rate window is intentionally floored to one permit, serializing project dispatch instead of stopping it.
 	evaluation := evaluateProviderRateWindowPacing(
 		p.cfg.BillingMode,
 		p.cfg.RateWindowPacing,

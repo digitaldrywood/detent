@@ -156,6 +156,10 @@ type WorkAttemptStore interface {
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
 }
 
+type ConcurrencyStore interface {
+	ConcurrencyReport(context.Context, ConcurrencyQuery) (ConcurrencyReport, error)
+}
+
 type IssueSchedulerDecisionStore interface {
 	ListIssueSchedulerDecisions(context.Context, IssueSchedulerDecisionQuery) ([]SchedulerDecision, error)
 }
@@ -700,6 +704,35 @@ type WorkAttemptHistoryQuery struct {
 	IssueURL   string
 	WorkerType string
 	Limit      int
+}
+
+type ConcurrencyQuery struct {
+	ProjectID string
+	From      time.Time
+	To        time.Time
+	Bucket    time.Duration
+}
+
+type ConcurrencyReport struct {
+	From         time.Time
+	To           time.Time
+	Bucket       time.Duration
+	Series       []ConcurrencySeries
+	AttemptCount int
+}
+
+type ConcurrencySeries struct {
+	ProjectID string
+	Buckets   []ConcurrencyBucket
+}
+
+type ConcurrencyBucket struct {
+	Start         time.Time
+	End           time.Time
+	Median        int
+	P90           int
+	Max           int
+	ActiveSeconds int64
 }
 
 type WorkAttemptTimeout struct {

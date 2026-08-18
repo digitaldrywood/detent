@@ -34,6 +34,15 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 				Tokens:  telemetry.Tokens{Input: 100, Output: 200, Total: 300},
 			},
 		},
+		Concurrency: telemetry.ConcurrencyHistory{
+			Available:    true,
+			AttemptCount: 4,
+			Series: []telemetry.ConcurrencySeries{
+				{Buckets: []telemetry.ConcurrencyBucket{{Max: 3}}},
+				{ProjectID: "detent", Buckets: []telemetry.ConcurrencyBucket{{Max: 2}}},
+				{ProjectID: "site", Buckets: []telemetry.ConcurrencyBucket{{Max: 1}}},
+			},
+		},
 		Pipeline: []telemetry.Issue{
 			{ID: "detent-pipeline", Identifier: "digitaldrywood/detent#1", ProjectID: "detent"},
 			{ID: "pyro-pipeline", Identifier: "digitaldrywood/pyroapex#1", ProjectID: "pyroapex"},
@@ -111,6 +120,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if got.Tokens.Total != 30 || got.Throughput.TokensPerSecond != 2.5 {
 		t.Fatalf("tokens/throughput = %#v/%#v, want detent totals", got.Tokens, got.Throughput)
+	}
+	if len(got.Concurrency.Series) != 1 || got.Concurrency.Series[0].ProjectID != "detent" || got.Concurrency.Series[0].Buckets[0].Max != 2 {
+		t.Fatalf("Concurrency = %#v, want detent project history", got.Concurrency)
 	}
 	if len(got.Pipeline) != 1 || got.Pipeline[0].ID != "detent-pipeline" {
 		t.Fatalf("Pipeline = %#v, want only detent row", got.Pipeline)

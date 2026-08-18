@@ -181,6 +181,20 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 					Count:   1,
 				},
 			},
+			Concurrency: telemetry.ConcurrencyHistory{
+				Available:     true,
+				From:          now.Add(-24 * time.Hour),
+				To:            now,
+				BucketSeconds: 3600,
+				AttemptCount:  2,
+				Series: []telemetry.ConcurrencySeries{{
+					ProjectID: "detent",
+					Buckets: []telemetry.ConcurrencyBucket{
+						{Start: now.Add(-2 * time.Hour), Median: 1, P90: 1, Max: 2},
+						{Start: now.Add(-time.Hour), Median: 1, P90: 2, Max: 3},
+					},
+				}},
+			},
 		},
 	})
 
@@ -209,6 +223,10 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 		`event.key === "End"`,
 		`data-preserve-scroll="diagnostics-workflow-timing"`,
 		"SQLite-backed history",
+		"Hourly concurrency",
+		"median / p90 / max",
+		"detent",
+		"Rolling 24h from recorded work attempts",
 		"tmp/detent.db",
 		"workflow_phase_events",
 		"applied through 6",

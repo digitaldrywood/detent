@@ -57,6 +57,11 @@ Leave `model` unset so the issue inherits the fleet-standard model.
 - Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases and pass `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and demand-driven priority reservations.
 - Run `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s` before submitting such changes.
 
+## Diagnosis
+
+- Follow [docs/diagnosis.md](docs/diagnosis.md) before making causal claims about runtime behavior.
+- Throughput, concurrency, regressions, and slowdowns require recorded history; `/api/v1/state` is only a point-in-time snapshot.
+
 ## Tooling
 
 - `make dev` runs Air and rotates `tmp/air-combined.log`.

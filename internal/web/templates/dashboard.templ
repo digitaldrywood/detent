@@ -2203,6 +2203,7 @@ templ diagnosticsOverviewTab(data DashboardData) {
 		</div>
 		<aside class="grid min-w-0 content-start gap-4">
 			@diagnosticsBottleneckCard(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
+			@concurrencyCard(data.Snapshot.Concurrency)
 			@throughputCard(data)
 		</aside>
 	</div>
@@ -2420,6 +2421,7 @@ templ FleetSnapshot(data DashboardData) {
 			</div>
 			<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
 				@throughputCard(data)
+				@concurrencyCard(data.Snapshot.Concurrency)
 				@rateLimitsCard(data.Snapshot.RateLimits)
 				@graphQLBudgetCard(data)
 				@restBudgetCard(data)
@@ -2654,6 +2656,43 @@ templ throughputCard(data DashboardData) {
 				@LineAreaChart(throughputTrendChart(data))
 			}
 		</div>
+	</section>
+}
+
+templ concurrencyCard(history telemetry.ConcurrencyHistory) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" data-hourly-concurrency>
+		@panelHeader(icon.Gauge(icon.Props{Class: "size-4 shrink-0"}), "Hourly concurrency", helpConcurrency, "concurrency-card") {
+			<span class="shrink-0 rounded-full bg-elev px-2 py-1 font-mono text-xs font-medium text-sec">median / p90 / max</span>
+		}
+		<p class="mt-2 text-xs text-sec">{ concurrencyWindowLabel(history) }</p>
+		if !history.Available {
+			<div class="mt-4">
+				@dashboardEmptyState("Concurrency history unavailable.", history.DegradedReason, "bg-dim")
+			</div>
+		} else if len(concurrencySeriesCards(history)) == 0 {
+			<div class="mt-4">
+				@dashboardEmptyState("No concurrency history yet.", "Hourly series appear after work attempts are recorded.", "bg-accent")
+			</div>
+		} else {
+			<div class="mt-4 grid gap-4">
+				for _, series := range concurrencySeriesCards(history) {
+					<div class="grid min-w-0 gap-2 rounded-md border border-line bg-elev/40 p-3">
+						<div class="truncate text-sm font-semibold text-text">{ series.Name }</div>
+						<div class="grid min-w-0 grid-cols-3 gap-2">
+							for _, metric := range series.Metrics {
+								<div class="grid min-w-0 gap-1">
+									<div class="flex items-center justify-between gap-1 text-2xs">
+										<span class="text-sec">{ metric.Label }</span>
+										<span class="font-mono font-medium text-text">{ metric.Value }</span>
+									</div>
+									@SparklineChart(metric.Chart)
+								</div>
+							}
+						</div>
+					</div>
+				}
+			</div>
+		}
 	</section>
 }
 

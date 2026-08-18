@@ -16,6 +16,7 @@ const (
 	helpBudget              helpTerm = "budget"
 	helpBudgetHistory       helpTerm = "budget-history"
 	helpCompleted           helpTerm = "completed"
+	helpConcurrency         helpTerm = "concurrency"
 	helpCreditsRateBucket   helpTerm = "credits-rate-bucket"
 	helpCumulativeFlow      helpTerm = "cumulative-flow"
 	helpCycleTime           helpTerm = "cycle-time"
@@ -70,6 +71,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpBudget:              {Label: "Budget", Description: "Optional notional USD guardrails derived from token pricing for the active project. If a cap is hit, Detent refuses to start new work until the limit is raised or resets."},
 	helpBudgetHistory:       {Label: "Budget history", Description: "Recent daily notional USD for the project, computed from token pricing rather than provider invoices. Use it to see whether usage is trending normally before raising caps or starting more work."},
 	helpCompleted:           {Label: "Completed", Description: "Sessions that finished and reported a final state. Compare it with Running and Queue to see whether agents are actually shipping work."},
+	helpConcurrency:         {Label: "Hourly concurrency", Description: "Recorded work-attempt concurrency over the last 24 hours. Median and p90 expose sustained serialization that a brief maximum or the current running count can hide."},
 	helpCreditsRateBucket:   {Label: "Credits rate bucket", Description: "How many Codex credits remain when the provider reports a credit balance. Watch it during heavy work because low credits can slow or stop agents."},
 	helpCumulativeFlow:      {Label: "Session completions", Description: "How local completed-session count changes over recent snapshots. Compare it with current issue states to avoid mistaking session history for board status."},
 	helpCycleTime:           {Label: "Cycle time", Description: "Completed issue duration from first recorded session start to latest successful completion in local run history."},

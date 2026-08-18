@@ -52,6 +52,76 @@ func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	}
 }
 
+func TestConcurrencySeriesCardsKeepMedianP90AndMaxSeparate(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 8, 18, 15, 0, 0, 0, time.UTC)
+	history := telemetry.ConcurrencyHistory{
+		Available:    true,
+		From:         start,
+		To:           start.Add(2 * time.Hour),
+		AttemptCount: 3,
+		Series: []telemetry.ConcurrencySeries{
+			{
+				Buckets: []telemetry.ConcurrencyBucket{
+					{Start: start, Median: 1, P90: 2, Max: 7},
+					{Start: start.Add(time.Hour), Median: 1, P90: 1, Max: 2},
+				},
+			},
+			{
+				ProjectID: "alpha",
+				Buckets:   []telemetry.ConcurrencyBucket{{Start: start, Median: 0, P90: 1, Max: 1}},
+			},
+		},
+	}
+
+	cards := concurrencySeriesCards(history)
+	if len(cards) != 2 || cards[0].Name != "Fleet-wide" || cards[1].Name != "alpha" {
+		t.Fatalf("cards = %#v, want fleet and alpha", cards)
+	}
+	if len(cards[0].Metrics) != 3 {
+		t.Fatalf("fleet metrics = %#v, want median, p90, and max", cards[0].Metrics)
+	}
+	wants := []struct {
+		label  string
+		latest string
+		first  float64
+	}{
+		{label: "Median", latest: "1", first: 1},
+		{label: "p90", latest: "1", first: 2},
+		{label: "Max", latest: "2", first: 7},
+	}
+	for index, want := range wants {
+		metric := cards[0].Metrics[index]
+		if metric.Label != want.label || metric.Value != want.latest || metric.Chart.Points[0].Value != want.first {
+			t.Fatalf("metric %d = %#v, want label=%q latest=%q first=%v", index, metric, want.label, want.latest, want.first)
+		}
+	}
+	if got := concurrencyWindowLabel(history); !strings.Contains(got, "2h") || !strings.Contains(got, "recorded work attempts") {
+		t.Fatalf("concurrencyWindowLabel() = %q", got)
+	}
+}
+
+func TestConcurrencySeriesCardsRequireRecordedAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		history telemetry.ConcurrencyHistory
+	}{
+		{name: "unavailable"},
+		{name: "empty history", history: telemetry.ConcurrencyHistory{Available: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := concurrencySeriesCards(test.history); len(got) != 0 {
+				t.Fatalf("concurrencySeriesCards() = %#v, want empty", got)
+			}
+		})
+	}
+}
+
 func TestQueuedStateLabelDistinguishesCIWaitFromRetry(t *testing.T) {
 	t.Parallel()
 
