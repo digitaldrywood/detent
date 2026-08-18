@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func Configure(cmd *exec.Cmd) {
+func Configure(_ context.Context, cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
 		return TerminateTree(cmd, 0)
 	}
@@ -40,6 +40,22 @@ func inspectProcess(pid int) (Identity, error) {
 		return Identity{}, ErrProcessNotRunning
 	}
 	return Identity{PID: pid, StartedAt: time.Now().UTC()}, nil
+}
+
+func observeProcesses(identities []Identity) ([]Observation, error) {
+	observations := make([]Observation, 0, len(identities))
+	for _, identity := range identities {
+		alive, err := Alive(identity)
+		if err != nil {
+			return nil, err
+		}
+		count := 0
+		if alive {
+			count = 1
+		}
+		observations = append(observations, Observation{Identity: identity, Alive: alive, ProcessCount: count})
+	}
+	return observations, nil
 }
 
 func Terminate(_ context.Context, identity Identity, _ time.Duration) (TerminationOutcome, error) {

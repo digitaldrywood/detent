@@ -74,6 +74,7 @@ func reapWorkerProcesses(
 		if err := processStore.MarkSessionWorkerProcessReaped(ctx, process.SessionID, store.WorkerProcessReap{
 			ReapedAt: now().UTC(),
 			Outcome:  string(outcome),
+			Reason:   strings.TrimSpace(reason),
 		}); err != nil {
 			result = errors.Join(result, err)
 		}

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func Configure(cmd *exec.Cmd) {
+func Configure(_ context.Context, cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
 		return TerminateTree(cmd, 0)
 	}
@@ -59,6 +59,22 @@ func inspectProcess(pid int) (Identity, error) {
 		return Identity{}, fmt.Errorf("inspect process %d start time: %w", pid, err)
 	}
 	return Identity{PID: pid, StartedAt: startedAt}, nil
+}
+
+func observeProcesses(identities []Identity) ([]Observation, error) {
+	observations := make([]Observation, 0, len(identities))
+	for _, identity := range identities {
+		alive, err := Alive(identity)
+		if err != nil {
+			return nil, err
+		}
+		count := 0
+		if alive {
+			count = 1
+		}
+		observations = append(observations, Observation{Identity: identity, Alive: alive, ProcessCount: count})
+	}
+	return observations, nil
 }
 
 func Terminate(_ context.Context, identity Identity, grace time.Duration) (TerminationOutcome, error) {

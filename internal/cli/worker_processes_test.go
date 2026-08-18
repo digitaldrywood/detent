@@ -67,6 +67,9 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 		if !reaped.reap.ReapedAt.Equal(reapedAt) {
 			t.Fatalf("reaped at = %s, want %s", reaped.reap.ReapedAt, reapedAt)
 		}
+		if reaped.reap.Reason != "startup" {
+			t.Fatalf("reap reason = %q, want startup", reaped.reap.Reason)
+		}
 	}
 	for _, want := range []string{
 		"reason=startup",

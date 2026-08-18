@@ -41,6 +41,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/pause"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -7059,6 +7060,85 @@ func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
 	}
 	if got := nestedString(t, state, "dispatch", "rate_window_pacing", "permit_ceiling"); got != "2" {
 		t.Fatalf("state dispatch pacing ceiling = %q, want 2", got)
+	}
+}
+
+func TestHealthReportsOnlyWorkerProcessesWithoutLiveSessions(t *testing.T) {
+	now := time.Date(2026, 8, 18, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name                 string
+		terminal             bool
+		live                 bool
+		snapshotBeforeWorker bool
+		wantCount            string
+		wantStatus           string
+	}{
+		{name: "terminal session is orphaned", terminal: true, wantCount: "2", wantStatus: "needs_attention"},
+		{name: "live tracked session is excluded", live: true, wantCount: "0", wantStatus: "ok"},
+		{name: "new session awaits fresh snapshot", snapshotBeforeWorker: true, wantCount: "0", wantStatus: "ok"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := testDeps(t)
+			deps.Store = openWebTestStore(t)
+			deps.WorkerProcesses = deps.Store
+			startedAt := now.Add(-2 * time.Hour)
+			sessionID, err := deps.Store.StartSession(t.Context(), store.SessionStart{
+				IssueID:    "issue-1885",
+				Identifier: "digitaldrywood/detent#1885",
+				StartedAt:  startedAt,
+			})
+			if err != nil {
+				t.Fatalf("StartSession() error = %v", err)
+			}
+			if err := deps.Store.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessIdentity{PID: 1885, GroupID: 1885, StartedAt: startedAt}); err != nil {
+				t.Fatalf("UpdateSessionWorkerProcess() error = %v", err)
+			}
+			if tt.terminal {
+				if err := deps.Store.FinishSession(t.Context(), sessionID, store.SessionFinish{CompletedAt: now.Add(-time.Hour), FinalState: "completed"}); err != nil {
+					t.Fatalf("FinishSession() error = %v", err)
+				}
+			}
+			observedIdentities := 0
+			deps.ObserveProcesses = func(identities []procgroup.Identity) ([]procgroup.Observation, error) {
+				observedIdentities = len(identities)
+				observations := make([]procgroup.Observation, 0, len(identities))
+				for _, identity := range identities {
+					observations = append(observations, procgroup.Observation{Identity: identity, Alive: true, ProcessCount: 2, RSSBytes: 256 * 1024 * 1024})
+				}
+				return observations, nil
+			}
+			snapshot := telemetry.Snapshot{GeneratedAt: now}
+			if tt.snapshotBeforeWorker {
+				snapshot.GeneratedAt = startedAt.Add(-time.Second)
+			}
+			if tt.live {
+				snapshot.Running = []telemetry.Running{{DetentSessionID: sessionID}}
+			}
+			if err := deps.Hub.Publish(snapshot); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			if got := nestedString(t, health, "orphaned_agent_processes", "count"); got != tt.wantCount {
+				t.Fatalf("orphaned process count = %s, want %s", got, tt.wantCount)
+			}
+			if health["status"] != tt.wantStatus {
+				t.Fatalf("health status = %#v, want %q", health["status"], tt.wantStatus)
+			}
+			wantObserved := 1
+			if tt.live || tt.snapshotBeforeWorker {
+				wantObserved = 0
+			}
+			if observedIdentities != wantObserved {
+				t.Fatalf("observed identities = %d, want %d", observedIdentities, wantObserved)
+			}
+		})
 	}
 }
 

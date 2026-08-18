@@ -37,7 +37,7 @@ func TestConfigure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			Configure(tt.cmd)
+			Configure(t.Context(), tt.cmd)
 
 			if tt.cmd.SysProcAttr == nil {
 				t.Fatal("SysProcAttr is nil, want configured attributes")
@@ -127,7 +127,7 @@ func TestDeprioritize(t *testing.T) {
 
 func TestDeprioritizeExitedProcess(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "true")
-	Configure(cmd)
+	Configure(t.Context(), cmd)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -161,6 +161,42 @@ func TestAliveRejectsStaleProcessIdentity(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("Alive() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestObserveMeasuresMatchingProcessGroupAndRejectsStaleIdentity(t *testing.T) {
+	proc := startSleepGroup(t)
+	identity, err := Inspect(proc.cmd)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	tests := []struct {
+		name      string
+		identity  Identity
+		wantAlive bool
+		wantStale bool
+	}{
+		{name: "matching process group", identity: identity, wantAlive: true},
+		{name: "stale process identity", identity: Identity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt.Add(time.Second)}, wantStale: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observations, err := Observe([]Identity{tt.identity})
+			if err != nil {
+				t.Fatalf("Observe() error = %v", err)
+			}
+			if len(observations) != 1 {
+				t.Fatalf("Observe() len = %d, want 1", len(observations))
+			}
+			got := observations[0]
+			if got.Alive != tt.wantAlive || got.Stale != tt.wantStale {
+				t.Fatalf("Observe() = %#v, want alive=%t stale=%t", got, tt.wantAlive, tt.wantStale)
+			}
+			if tt.wantAlive && (got.ProcessCount < 2 || got.RSSBytes <= 0) {
+				t.Fatalf("Observe() = %#v, want group count and RSS", got)
 			}
 		})
 	}
@@ -271,7 +307,7 @@ func TestCleanupWaitsForOrphanedGroupMembers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := exec.CommandContext(context.Background(), "sh", "-c", tt.command)
-			Configure(cmd)
+			Configure(t.Context(), cmd)
 			if err := cmd.Start(); err != nil {
 				t.Fatalf("Start() error = %v", err)
 			}
@@ -298,7 +334,7 @@ func TestCleanupWaitsForOrphanedGroupMembers(t *testing.T) {
 
 func TestCleanupTreatsZombieOnlyGroupAsExited(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "sleep", "30")
-	Configure(cmd)
+	Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -454,7 +490,7 @@ func startSleep(t *testing.T) *startedProcess {
 	t.Helper()
 
 	cmd := exec.CommandContext(context.Background(), "sleep", "30")
-	Configure(cmd)
+	Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v, want nil", err)
 	}
@@ -518,7 +554,7 @@ func startIgnoringTerminationGroup(t *testing.T) *startedProcess {
 	memberReady := readyDir + "/member.ready"
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", "trap '' TERM; : > \"$READY_PATH\"; exec sleep 30")
 	cmd.Env = append(os.Environ(), "READY_PATH="+leaderReady)
-	Configure(cmd)
+	Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -573,7 +609,7 @@ func startExitedCommand(t *testing.T) (*exec.Cmd, int) {
 	t.Helper()
 
 	cmd := exec.CommandContext(context.Background(), "true")
-	Configure(cmd)
+	Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v, want nil", err)
 	}

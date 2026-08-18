@@ -322,7 +322,7 @@ func startHeartbeatWorkerProcess(t *testing.T) procgroup.Identity {
 	t.Helper()
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHeartbeatWorkerProcessHelper$")
 	cmd.Env = append(os.Environ(), "DETENT_HEARTBEAT_PROCESS_HELPER=1")
-	procgroup.Configure(cmd)
+	procgroup.Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}

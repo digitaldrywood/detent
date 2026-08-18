@@ -116,7 +116,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
 
-	procgroup.Configure(cmd)
+	procgroup.Configure(ctx, cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("start command: %w", err),

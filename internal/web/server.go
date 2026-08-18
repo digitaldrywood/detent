@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pause"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -64,6 +65,12 @@ type Dependencies struct {
 	IssueExplainer      IssueExplainer
 	HealthNotifications healthnotify.FailureReader
 	TickLiveness        TickLivenessSource
+	WorkerProcesses     WorkerProcessStore
+	ObserveProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
+}
+
+type WorkerProcessStore interface {
+	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
 }
 
 type TickLivenessSource interface {
@@ -176,6 +183,8 @@ type Server struct {
 	issueExplainer      IssueExplainer
 	healthNotifications healthnotify.FailureReader
 	tickLiveness        TickLivenessSource
+	workerProcesses     WorkerProcessStore
+	observeProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 	now                 func() time.Time
 	operatorTools       *operatortool.Executor
 	mcpHTTP             *mcp.HTTPHandler
@@ -234,6 +243,10 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	if tickLiveness == nil && deps.Registry != nil {
 		tickLiveness = deps.Registry
 	}
+	observeProcesses := deps.ObserveProcesses
+	if observeProcesses == nil {
+		observeProcesses = procgroup.Observe
+	}
 
 	server := &Server{
 		echo:                e,
@@ -291,6 +304,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		issueExplainer:      deps.IssueExplainer,
 		healthNotifications: deps.HealthNotifications,
 		tickLiveness:        tickLiveness,
+		workerProcesses:     deps.WorkerProcesses,
+		observeProcesses:    observeProcesses,
 		now:                 cfg.now(),
 	}
 	if !magicLinksEnabled && !oidcEnabled {
@@ -1099,11 +1114,13 @@ func (s *Server) health(c echo.Context) error {
 	refresh := telemetry.Refresh{}
 	memoryPressure := telemetry.MemoryPressure{}
 	agentMemory := []healthAgentMemory{}
+	latestSnapshot := telemetry.Snapshot{}
 	snapshotGeneratedAt := time.Time{}
 	snapshotAgeSeconds := int64(0)
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			snapshot = snapshot.WithFreshness(now)
+			latestSnapshot = snapshot
 			refreshFailures = snapshot.RefreshFailures()
 			snapshotGeneratedAt = snapshot.GeneratedAt
 			snapshotAgeSeconds = snapshot.AgeSeconds(now)
@@ -1152,6 +1169,13 @@ func (s *Server) health(c echo.Context) error {
 		"registry":  configuredStatus(s.registry),
 		"connector": configuredStatus(s.connector),
 	}
+	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(c.Request().Context(), latestSnapshot, now)
+	if orphanErr != nil {
+		checks["worker_processes"] = "unavailable: " + orphanErr.Error()
+		s.logger.Warn("inspect orphaned agent processes failed", "error", orphanErr)
+	} else {
+		checks["worker_processes"] = configuredStatus(s.workerProcesses)
+	}
 	if s.demo != nil {
 		checks["demo"] = DemoModeScreenshots
 		checks["demo_clock"] = s.demo.clock
@@ -1163,7 +1187,7 @@ func (s *Server) health(c echo.Context) error {
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1171,37 +1195,102 @@ func (s *Server) health(c echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusOK, healthResponse{
-		Status:               status,
-		Version:              s.build.Version,
-		Commit:               s.build.Commit,
-		ProjectStatus:        projectStatus,
-		Mode:                 string(s.mode),
-		Connector:            s.connectorName(),
-		SessionsRemaining:    sessionsRemaining,
-		Update:               updateStatus,
-		Checks:               checks,
-		Environment:          healthEnvironment{Path: os.Getenv("PATH")},
-		Budgets:              budgets,
-		Workflows:            workflows,
-		TrackerUnavailable:   trackerUnavailable,
-		ForgeUnavailable:     forgeUnavailable,
-		CIUnavailable:        ciUnavailable,
-		BackendOutages:       backendOutages,
-		FailureBreakers:      failureBreakers,
-		StalenessWarnings:    stalenessWarnings,
-		StrandedIssues:       strandedActiveIssues,
-		Dispatch:             dispatch,
-		DispatchStalls:       dispatchStalls,
-		NotificationFailures: notificationFailures,
-		RefreshFailures:      refreshFailures,
-		Projects:             projectHealth,
-		Refresh:              refresh,
-		MemoryPressure:       memoryPressure,
-		AgentMemory:          agentMemory,
-		SnapshotGeneratedAt:  snapshotGeneratedAt,
-		SnapshotAgeSeconds:   snapshotAgeSeconds,
-		TickLiveness:         tickLiveness,
+		Status:                 status,
+		Version:                s.build.Version,
+		Commit:                 s.build.Commit,
+		ProjectStatus:          projectStatus,
+		Mode:                   string(s.mode),
+		Connector:              s.connectorName(),
+		SessionsRemaining:      sessionsRemaining,
+		Update:                 updateStatus,
+		Checks:                 checks,
+		Environment:            healthEnvironment{Path: os.Getenv("PATH")},
+		Budgets:                budgets,
+		Workflows:              workflows,
+		TrackerUnavailable:     trackerUnavailable,
+		ForgeUnavailable:       forgeUnavailable,
+		CIUnavailable:          ciUnavailable,
+		BackendOutages:         backendOutages,
+		FailureBreakers:        failureBreakers,
+		StalenessWarnings:      stalenessWarnings,
+		StrandedIssues:         strandedActiveIssues,
+		Dispatch:               dispatch,
+		DispatchStalls:         dispatchStalls,
+		NotificationFailures:   notificationFailures,
+		RefreshFailures:        refreshFailures,
+		Projects:               projectHealth,
+		Refresh:                refresh,
+		MemoryPressure:         memoryPressure,
+		AgentMemory:            agentMemory,
+		SnapshotGeneratedAt:    snapshotGeneratedAt,
+		SnapshotAgeSeconds:     snapshotAgeSeconds,
+		TickLiveness:           tickLiveness,
+		OrphanedAgentProcesses: orphanedProcesses,
 	})
+}
+
+func (s *Server) orphanedAgentProcesses(ctx context.Context, snapshot telemetry.Snapshot, now time.Time) (telemetry.OrphanedAgentProcesses, error) {
+	summary := telemetry.OrphanedAgentProcesses{Processes: []telemetry.OrphanedAgentProcess{}}
+	if s.workerProcesses == nil || s.observeProcesses == nil {
+		return summary, nil
+	}
+	processes, err := s.workerProcesses.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		return summary, fmt.Errorf("list worker process registry: %w", err)
+	}
+	liveSessions := make(map[int64]struct{}, len(snapshot.Running))
+	for _, running := range snapshot.Running {
+		if running.DetentSessionID > 0 {
+			liveSessions[running.DetentSessionID] = struct{}{}
+		}
+	}
+	candidates := make([]store.WorkerProcess, 0, len(processes))
+	identities := make([]procgroup.Identity, 0, len(processes))
+	for _, process := range processes {
+		if process.CompletedAt.IsZero() {
+			if _, live := liveSessions[process.SessionID]; live {
+				continue
+			}
+			if snapshot.GeneratedAt.IsZero() || snapshot.GeneratedAt.Before(process.StartedAt) {
+				continue
+			}
+		}
+		candidates = append(candidates, process)
+		identities = append(identities, procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt})
+	}
+	observations, err := s.observeProcesses(identities)
+	if err != nil {
+		return summary, fmt.Errorf("observe worker process registry: %w", err)
+	}
+	if len(observations) != len(candidates) {
+		return summary, fmt.Errorf("observe worker process registry: got %d observations for %d processes", len(observations), len(candidates))
+	}
+	for index, observation := range observations {
+		if !observation.Alive || observation.Stale {
+			continue
+		}
+		process := candidates[index]
+		ageSeconds := int64(0)
+		if now.After(process.StartedAt) {
+			ageSeconds = int64(now.Sub(process.StartedAt) / time.Second)
+		}
+		summary.Count += observation.ProcessCount
+		summary.SessionCount++
+		summary.TotalRSSBytes += observation.RSSBytes
+		summary.Processes = append(summary.Processes, telemetry.OrphanedAgentProcess{
+			SessionID:    process.SessionID,
+			IssueID:      process.IssueID,
+			Identifier:   process.Identifier,
+			PID:          process.PID,
+			GroupID:      process.GroupID,
+			StartedAt:    process.StartedAt,
+			AgeSeconds:   ageSeconds,
+			RSSBytes:     observation.RSSBytes,
+			ProcessCount: observation.ProcessCount,
+			FinalState:   process.FinalState,
+		})
+	}
+	return summary, nil
 }
 
 func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
@@ -1534,36 +1623,37 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
-	Status               string                       `json:"status"`
-	Version              string                       `json:"version"`
-	Commit               string                       `json:"commit"`
-	ProjectStatus        string                       `json:"project_status"`
-	Mode                 string                       `json:"mode"`
-	Connector            string                       `json:"connector"`
-	SessionsRemaining    int                          `json:"sessions_remaining,omitempty"`
-	Update               telemetry.Update             `json:"update,omitzero"`
-	Checks               map[string]string            `json:"checks"`
-	Environment          healthEnvironment            `json:"environment"`
-	Budgets              []healthBudget               `json:"budgets,omitempty"`
-	Workflows            []healthWorkflowSource       `json:"workflows,omitempty"`
-	TrackerUnavailable   []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
-	ForgeUnavailable     []telemetry.ForgeCondition   `json:"forge_unavailable,omitempty"`
-	CIUnavailable        []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
-	BackendOutages       []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
-	FailureBreakers      []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
-	StalenessWarnings    []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
-	StrandedIssues       []telemetry.StrandedIssue    `json:"stranded_active_issues,omitempty"`
-	Dispatch             telemetry.DispatchStatus     `json:"dispatch"`
-	DispatchStalls       []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
-	NotificationFailures []healthnotify.Failure       `json:"health_notification_failures,omitempty"`
-	RefreshFailures      []telemetry.RefreshFailure   `json:"refresh_failures,omitempty"`
-	Projects             []healthProject              `json:"projects,omitempty"`
-	Refresh              telemetry.Refresh            `json:"refresh"`
-	MemoryPressure       telemetry.MemoryPressure     `json:"memory_pressure"`
-	AgentMemory          []healthAgentMemory          `json:"agent_memory"`
-	SnapshotGeneratedAt  time.Time                    `json:"snapshot_generated_at,omitzero"`
-	SnapshotAgeSeconds   int64                        `json:"snapshot_age_seconds"`
-	TickLiveness         []telemetry.TickLiveness     `json:"tick_liveness"`
+	Status                 string                           `json:"status"`
+	Version                string                           `json:"version"`
+	Commit                 string                           `json:"commit"`
+	ProjectStatus          string                           `json:"project_status"`
+	Mode                   string                           `json:"mode"`
+	Connector              string                           `json:"connector"`
+	SessionsRemaining      int                              `json:"sessions_remaining,omitempty"`
+	Update                 telemetry.Update                 `json:"update,omitzero"`
+	Checks                 map[string]string                `json:"checks"`
+	Environment            healthEnvironment                `json:"environment"`
+	Budgets                []healthBudget                   `json:"budgets,omitempty"`
+	Workflows              []healthWorkflowSource           `json:"workflows,omitempty"`
+	TrackerUnavailable     []telemetry.TrackerCondition     `json:"tracker_unavailable,omitempty"`
+	ForgeUnavailable       []telemetry.ForgeCondition       `json:"forge_unavailable,omitempty"`
+	CIUnavailable          []telemetry.CICondition          `json:"ci_unavailable,omitempty"`
+	BackendOutages         []telemetry.BackendOutage        `json:"backend_outages,omitempty"`
+	FailureBreakers        []telemetry.FailureBreaker       `json:"failure_breakers,omitempty"`
+	StalenessWarnings      []telemetry.StalenessWarning     `json:"staleness_warnings,omitempty"`
+	StrandedIssues         []telemetry.StrandedIssue        `json:"stranded_active_issues,omitempty"`
+	Dispatch               telemetry.DispatchStatus         `json:"dispatch"`
+	DispatchStalls         []telemetry.DispatchStatus       `json:"dispatch_stalls,omitempty"`
+	NotificationFailures   []healthnotify.Failure           `json:"health_notification_failures,omitempty"`
+	RefreshFailures        []telemetry.RefreshFailure       `json:"refresh_failures,omitempty"`
+	Projects               []healthProject                  `json:"projects,omitempty"`
+	Refresh                telemetry.Refresh                `json:"refresh"`
+	MemoryPressure         telemetry.MemoryPressure         `json:"memory_pressure"`
+	AgentMemory            []healthAgentMemory              `json:"agent_memory"`
+	SnapshotGeneratedAt    time.Time                        `json:"snapshot_generated_at,omitzero"`
+	SnapshotAgeSeconds     int64                            `json:"snapshot_age_seconds"`
+	TickLiveness           []telemetry.TickLiveness         `json:"tick_liveness"`
+	OrphanedAgentProcesses telemetry.OrphanedAgentProcesses `json:"orphaned_agent_processes"`
 }
 
 type healthAgentMemory struct {

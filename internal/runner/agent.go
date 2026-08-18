@@ -66,6 +66,13 @@ type sessionWorkerProcessStore interface {
 	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessIdentity) error
 }
 
+type sessionWorkerProcessReaper interface {
+	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
+	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
+}
+
+type workerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
+
 type sessionResumeStore interface {
 	UpdateSessionResumeState(context.Context, int64, store.SessionResumeState) error
 }
@@ -114,6 +121,8 @@ type Dependencies struct {
 	MaxAgentRSSBytes    uint64
 	RSSPollInterval     time.Duration
 	ProcessRSS          func(context.Context, procgroup.Identity) (uint64, error)
+	WorkerReapGrace     time.Duration
+	ReapWorkerProcess   workerProcessReapFunc
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
@@ -140,6 +149,8 @@ type Runner struct {
 	maxAgentRSSBytes    uint64
 	rssPollInterval     time.Duration
 	processRSS          func(context.Context, procgroup.Identity) (uint64, error)
+	workerReapGrace     time.Duration
+	reapWorkerProcess   workerProcessReapFunc
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
 	progressTicker      sessionProgressTickerFactory
@@ -165,6 +176,12 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.ProcessRSS == nil {
 		deps.ProcessRSS = procgroup.RSS
+	}
+	if deps.WorkerReapGrace <= 0 {
+		deps.WorkerReapGrace = procgroup.DefaultTerminationGrace
+	}
+	if deps.ReapWorkerProcess == nil {
+		deps.ReapWorkerProcess = procgroup.Terminate
 	}
 	if deps.sessionLimit == nil {
 		deps.sessionLimit = withAgentDurationLimit
@@ -223,6 +240,8 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		maxAgentRSSBytes:    deps.MaxAgentRSSBytes,
 		rssPollInterval:     deps.RSSPollInterval,
 		processRSS:          deps.ProcessRSS,
+		workerReapGrace:     deps.WorkerReapGrace,
+		reapWorkerProcess:   deps.ReapWorkerProcess,
 		sessionLimit:        deps.sessionLimit,
 		turnLimit:           deps.turnLimit,
 		progressTicker:      deps.progressTicker,
@@ -1037,8 +1056,21 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}, r.turnLimit)
+	processReapErr := r.reapSessionWorkerProcess(
+		ctx,
+		detentSessionID,
+		runRequest.Issue,
+		workerProcessReapReason(ctx, turnErr),
+	)
+	if processReapErr != nil {
+		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+	}
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
-		turnErr = cause
+		if processReapErr != nil {
+			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+		} else {
+			turnErr = cause
+		}
 	}
 	var memoryErr *SessionMemoryCeilingError
 	if errors.As(turnErr, &memoryErr) {
@@ -1506,7 +1538,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if execution.err != nil {
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
-	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
+	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,
@@ -2242,8 +2274,21 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	}, r.turnLimit)
+	processReapErr := r.reapSessionWorkerProcess(
+		sessionCtx,
+		sessionID,
+		req.Issue,
+		workerProcessReapReason(sessionCtx, turnErr),
+	)
+	if processReapErr != nil {
+		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+	}
 	if cause := context.Cause(sessionCtx); cooperativeStopError(cause) || durationLimitError(cause) {
-		turnErr = cause
+		if processReapErr != nil {
+			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+		} else {
+			turnErr = cause
+		}
 	}
 	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
 	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
@@ -2602,6 +2647,65 @@ func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int6
 		return fmt.Errorf("update agent session worker process: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, issue connector.Issue, reason string) error {
+	if sessionID <= 0 {
+		return nil
+	}
+	processStore, ok := r.store.(sessionWorkerProcessReaper)
+	if !ok {
+		return nil
+	}
+	processes, err := processStore.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
+	if err != nil {
+		return fmt.Errorf("list agent session worker processes: %w", err)
+	}
+	for _, process := range processes {
+		if process.SessionID != sessionID {
+			continue
+		}
+		identity := procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt}
+		outcome, reapErr := r.reapWorkerProcess(context.WithoutCancel(ctx), identity, r.workerReapGrace)
+		attrs := []any{
+			telemetry.DetentSessionIDKey, sessionID,
+			"pid", process.PID,
+			"pgid", process.GroupID,
+			"reason", strings.TrimSpace(reason),
+			"decision", string(outcome),
+		}
+		if reapErr != nil {
+			attrs = append(attrs, "error", reapErr)
+			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+			return fmt.Errorf("reap agent session worker process: %w", reapErr)
+		}
+		r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{
+			ReapedAt: r.now().UTC(),
+			Outcome:  string(outcome),
+			Reason:   strings.TrimSpace(reason),
+		}); err != nil {
+			return fmt.Errorf("record agent session worker process reap: %w", err)
+		}
+	}
+	return nil
+}
+
+func workerProcessReapReason(ctx context.Context, turnErr error) string {
+	cause := context.Cause(ctx)
+	combined := errors.Join(cause, turnErr)
+	switch {
+	case errors.Is(combined, ErrSessionDurationExceeded), errors.Is(combined, ErrMergeFallbackBudgetExceeded):
+		return "maximum_session_lifetime_exceeded"
+	case errors.Is(combined, ErrTurnDurationExceeded):
+		return "maximum_turn_lifetime_exceeded"
+	case errors.Is(combined, context.Canceled):
+		return "session_cancelled"
+	case turnErr != nil:
+		return "turn_failed"
+	default:
+		return "turn_completed"
+	}
 }
 
 func (r *Runner) updateSessionResumeState(ctx context.Context, sessionID int64, resumedFromSessionID int64, orphanRecoveryOutcome string, fallbackReason string) error {

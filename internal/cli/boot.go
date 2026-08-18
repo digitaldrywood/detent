@@ -462,6 +462,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Chat:                chatProvider,
 		IssueExplainer:      newIssueExplainer(snapshotHub, runtimeStore),
 		HealthNotifications: healthNotifications,
+		WorkerProcesses:     runtimeStore,
 	})
 	if err != nil {
 		return err

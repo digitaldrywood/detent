@@ -449,7 +449,7 @@ INSERT INTO codex_sessions (
   orphan_recovery_outcome,
   orphan_recovery_fallback_reason
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason
 `
 
 type CreateCodexSessionParams struct {
@@ -578,6 +578,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.WorkerReapedAt,
 		&i.WorkerReapOutcome,
 		&i.ProjectID,
+		&i.WorkerReapReason,
 	)
 	return i, err
 }
@@ -1568,7 +1569,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1621,6 +1622,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.WorkerReapedAt,
 		&i.WorkerReapOutcome,
 		&i.ProjectID,
+		&i.WorkerReapReason,
 	)
 	return i, err
 }
@@ -2464,11 +2466,12 @@ SELECT
   CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
   CAST(worker_pid AS INTEGER) AS worker_pid,
   CAST(COALESCE(worker_pgid, 0) AS INTEGER) AS worker_pgid,
-  CAST(worker_started_at AS TEXT) AS worker_started_at
+  CAST(worker_started_at AS TEXT) AS worker_started_at,
+  CAST(COALESCE(final_state, '') AS TEXT) AS final_state,
+  CAST(COALESCE(completed_at, '') AS TEXT) AS completed_at
 FROM codex_sessions
-WHERE completed_at IS NULL
-  AND worker_reaped_at IS NULL
-  AND COALESCE(worker_pid, 0) > 0
+WHERE worker_reaped_at IS NULL
+  AND worker_pid > 0
 ORDER BY started_at, id
 `
 
@@ -2480,6 +2483,8 @@ type ListActiveWorkerProcessesRow struct {
 	WorkerPid       int64  `json:"worker_pid"`
 	WorkerPgid      int64  `json:"worker_pgid"`
 	WorkerStartedAt string `json:"worker_started_at"`
+	FinalState      string `json:"final_state"`
+	CompletedAt     string `json:"completed_at"`
 }
 
 func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWorkerProcessesRow, error) {
@@ -2499,6 +2504,8 @@ func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWo
 			&i.WorkerPid,
 			&i.WorkerPgid,
 			&i.WorkerStartedAt,
+			&i.FinalState,
+			&i.CompletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3157,7 +3164,7 @@ func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, pr
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -3217,6 +3224,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.WorkerReapedAt,
 			&i.WorkerReapOutcome,
 			&i.ProjectID,
+			&i.WorkerReapReason,
 		); err != nil {
 			return nil, err
 		}
@@ -3462,18 +3470,25 @@ func (q *Queries) MarkCodexSessionOrphaned(ctx context.Context, arg MarkCodexSes
 const markCodexSessionWorkerProcessReaped = `-- name: MarkCodexSessionWorkerProcessReaped :execrows
 UPDATE codex_sessions
 SET worker_reaped_at = ?1,
-    worker_reap_outcome = ?2
-WHERE id = ?3
+    worker_reap_outcome = ?2,
+    worker_reap_reason = ?3
+WHERE id = ?4
 `
 
 type MarkCodexSessionWorkerProcessReapedParams struct {
 	WorkerReapedAt    sql.NullString `json:"worker_reaped_at"`
 	WorkerReapOutcome sql.NullString `json:"worker_reap_outcome"`
+	WorkerReapReason  sql.NullString `json:"worker_reap_reason"`
 	ID                int64          `json:"id"`
 }
 
 func (q *Queries) MarkCodexSessionWorkerProcessReaped(ctx context.Context, arg MarkCodexSessionWorkerProcessReapedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markCodexSessionWorkerProcessReaped, arg.WorkerReapedAt, arg.WorkerReapOutcome, arg.ID)
+	result, err := q.db.ExecContext(ctx, markCodexSessionWorkerProcessReaped,
+		arg.WorkerReapedAt,
+		arg.WorkerReapOutcome,
+		arg.WorkerReapReason,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -4053,7 +4068,8 @@ SET worker_pid = ?1,
     worker_pgid = ?2,
     worker_started_at = ?3,
     worker_reaped_at = NULL,
-    worker_reap_outcome = NULL
+    worker_reap_outcome = NULL,
+    worker_reap_reason = NULL
 WHERE id = ?4
 `
 

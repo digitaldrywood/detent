@@ -115,7 +115,7 @@ func (o *Orchestrator) reapPendingLaneRevocation(ctx context.Context, state *Sta
 	if pending == nil || pending.reapDone {
 		return
 	}
-	outcome, identity, err := o.reapRunningWorker(ctx, pending.running, pending.workerProcess)
+	outcome, identity, err := o.reapRunningWorker(ctx, pending.running, pending.workerProcess, "lane_revoked")
 	if identity.PID > 0 {
 		pending.workerProcess = identity
 	}
@@ -398,6 +398,7 @@ func (o *Orchestrator) reapRunningWorker(
 	ctx context.Context,
 	running Running,
 	identity procgroup.Identity,
+	reason string,
 ) (procgroup.TerminationOutcome, procgroup.Identity, error) {
 	found := identity.PID > 0
 	if !found {
@@ -425,6 +426,7 @@ func (o *Orchestrator) reapRunningWorker(
 		if err := o.workerProcesses.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), running.DetentSessionID, store.WorkerProcessReap{
 			ReapedAt: o.clockNow().UTC(),
 			Outcome:  string(outcome),
+			Reason:   strings.TrimSpace(reason),
 		}); err != nil {
 			return outcome, identity, fmt.Errorf("persist reap outcome: %w", err)
 		}

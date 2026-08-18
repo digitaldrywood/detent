@@ -294,11 +294,20 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 		if err != nil {
 			return nil, err
 		}
+		var completedAt time.Time
+		if strings.TrimSpace(row.CompletedAt) != "" {
+			completedAt, err = parseTimestamp("completed_at", row.CompletedAt)
+			if err != nil {
+				return nil, err
+			}
+		}
 		processes = append(processes, WorkerProcess{
-			SessionID:  row.SessionID,
-			IssueID:    strings.TrimSpace(row.IssueID),
-			Identifier: strings.TrimSpace(row.Identifier),
-			IssueURL:   strings.TrimSpace(row.IssueURL),
+			SessionID:   row.SessionID,
+			IssueID:     strings.TrimSpace(row.IssueID),
+			Identifier:  strings.TrimSpace(row.Identifier),
+			IssueURL:    strings.TrimSpace(row.IssueURL),
+			FinalState:  strings.TrimSpace(row.FinalState),
+			CompletedAt: completedAt,
 			WorkerProcessIdentity: WorkerProcessIdentity{
 				PID:       int(row.WorkerPid),
 				GroupID:   int(row.WorkerPgid),
@@ -320,6 +329,7 @@ func (s *sqliteStore) MarkSessionWorkerProcessReaped(ctx context.Context, sessio
 	rows, err := s.queries.MarkCodexSessionWorkerProcessReaped(ctx, sqlc.MarkCodexSessionWorkerProcessReapedParams{
 		WorkerReapedAt:    sql.NullString{String: reapedAt, Valid: true},
 		WorkerReapOutcome: nullString(reap.Outcome),
+		WorkerReapReason:  nullString(reap.Reason),
 		ID:                sessionID,
 	})
 	if err != nil {
