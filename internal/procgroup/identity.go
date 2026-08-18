@@ -22,6 +22,14 @@ type Identity struct {
 
 type TerminationOutcome string
 
+type Observation struct {
+	Identity
+	Alive        bool
+	Stale        bool
+	ProcessCount int
+	RSSBytes     int64
+}
+
 const (
 	TerminationOutcomeTerminated    TerminationOutcome = "terminated"
 	TerminationOutcomeKilled        TerminationOutcome = "killed_after_timeout"
@@ -52,6 +60,13 @@ func Alive(identity Identity) (bool, error) {
 
 func RSS(ctx context.Context, identity Identity) (uint64, error) {
 	return processGroupRSS(ctx, identity)
+}
+
+func Observe(identities []Identity) ([]Observation, error) {
+	if len(identities) == 0 {
+		return []Observation{}, nil
+	}
+	return observeProcesses(identities)
 }
 
 func sameIdentity(current Identity, recorded Identity) bool {

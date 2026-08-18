@@ -18,13 +18,22 @@ import (
 
 const workerNiceDelta = 5
 
-func Configure(cmd *exec.Cmd) {
+func Configure(ctx context.Context, cmd *exec.Cmd) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setpgid = true
+	terminationCtx := context.WithoutCancel(ctx)
 	cmd.Cancel = func() error {
-		return TerminateTree(cmd, GroupID(cmd))
+		identity, err := Inspect(cmd)
+		if err != nil {
+			return TerminateTree(cmd, GroupID(cmd))
+		}
+		_, err = Terminate(terminationCtx, identity, DefaultTerminationGrace)
+		return err
 	}
 }
 
@@ -267,6 +276,80 @@ func inspectProcess(pid int) (Identity, error) {
 		return Identity{}, fmt.Errorf("inspect process %d start time: %w", pid, err)
 	}
 	return Identity{PID: pid, GroupID: groupID, StartedAt: startedAt.UTC()}, nil
+}
+
+type observedProcess struct {
+	identity Identity
+	rssBytes int64
+	zombie   bool
+}
+
+func observeProcesses(identities []Identity) ([]Observation, error) {
+	path, err := exec.LookPath("ps")
+	if err != nil {
+		return nil, fmt.Errorf("locate ps: %w", err)
+	}
+	cmd := &exec.Cmd{
+		Path: path,
+		Args: []string{"ps", "-axo", "pid=,pgid=,rss=,stat=,lstart="},
+		Env:  append(os.Environ(), "LC_ALL=C"),
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspect worker processes: %w", err)
+	}
+
+	byPID := make(map[int]observedProcess)
+	byGroup := make(map[int][]observedProcess)
+	for line := range strings.Lines(string(output)) {
+		fields := strings.Fields(line)
+		if len(fields) != 9 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		groupID, groupErr := strconv.Atoi(fields[1])
+		rssKB, rssErr := strconv.ParseInt(fields[2], 10, 64)
+		startedAt, startedErr := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(fields[4:], " "), time.Local)
+		if pidErr != nil || groupErr != nil || rssErr != nil || startedErr != nil {
+			continue
+		}
+		process := observedProcess{
+			identity: Identity{PID: pid, GroupID: groupID, StartedAt: startedAt.UTC()},
+			rssBytes: max(rssKB, 0) * 1024,
+			zombie:   strings.HasPrefix(fields[3], "Z"),
+		}
+		byPID[pid] = process
+		byGroup[groupID] = append(byGroup[groupID], process)
+	}
+
+	observations := make([]Observation, 0, len(identities))
+	for _, identity := range identities {
+		observation := Observation{Identity: identity}
+		if identity.PID <= 0 || identity.StartedAt.IsZero() {
+			observations = append(observations, observation)
+			continue
+		}
+		leader, leaderFound := byPID[identity.PID]
+		if leaderFound && !sameIdentity(leader.identity, identity) {
+			observation.Stale = true
+			observations = append(observations, observation)
+			continue
+		}
+		groupID := identity.GroupID
+		if groupID <= 0 {
+			groupID = identity.PID
+		}
+		for _, process := range byGroup[groupID] {
+			if process.zombie {
+				continue
+			}
+			observation.ProcessCount++
+			observation.RSSBytes += process.rssBytes
+		}
+		observation.Alive = observation.ProcessCount > 0
+		observations = append(observations, observation)
+	}
+	return observations, nil
 }
 
 func signalProcessTarget(pid int, groupID int, signal syscall.Signal) error {

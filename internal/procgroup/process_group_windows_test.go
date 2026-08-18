@@ -13,7 +13,7 @@ import (
 func TestWindowsInspectAndTerminate(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestWindowsProcessHelper$")
 	cmd.Env = append(os.Environ(), "DETENT_WINDOWS_PROCESS_HELPER=1")
-	Configure(cmd)
+	Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}

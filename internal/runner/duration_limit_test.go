@@ -110,6 +110,107 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 	}
 }
 
+func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
+	identity := procgroup.Identity{PID: 1885, GroupID: 1885, StartedAt: startedAt}
+	durationLimit := &controlledDurationLimit{}
+	processStore := &durationReapSessionStore{
+		fakeSessionStore: &fakeSessionStore{sessionID: 1885},
+		process: store.WorkerProcess{
+			SessionID: 1885,
+			WorkerProcessIdentity: store.WorkerProcessIdentity{
+				PID:       identity.PID,
+				GroupID:   identity.GroupID,
+				StartedAt: identity.StartedAt,
+			},
+		},
+	}
+	backend := &durationWorkerAgentBackend{identity: identity, expireSession: durationLimit.Expire}
+	var reaped procgroup.Identity
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}}, Prompt: "Work"},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-session-lifetime"}},
+		AgentBackend: backend,
+		Store:        processStore,
+		sessionLimit: durationLimit.Context,
+		ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+			reaped = got
+			return procgroup.TerminationOutcomeKilled, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{Issue: connector.Issue{ID: "issue-session-lifetime", Identifier: "digitaldrywood/detent#1885"}})
+	if !errors.Is(err, ErrSessionDurationExceeded) {
+		t.Fatalf("Run() error = %v, want ErrSessionDurationExceeded", err)
+	}
+	if reaped != identity {
+		t.Fatalf("reaped identity = %#v, want %#v", reaped, identity)
+	}
+	if len(processStore.reaps) != 1 {
+		t.Fatalf("reap records = %#v, want one", processStore.reaps)
+	}
+	if got := processStore.reaps[0]; got.Outcome != store.WorkerProcessOutcomeKilled || got.Reason != "maximum_session_lifetime_exceeded" {
+		t.Fatalf("reap record = %#v, want killed maximum session lifetime", got)
+	}
+	if processStore.finished.FinalState != FinalStateSessionDurationExceeded {
+		t.Fatalf("final state = %q, want %q", processStore.finished.FinalState, FinalStateSessionDurationExceeded)
+	}
+}
+
+func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		turnErr    error
+		wantReason string
+	}{
+		{name: "completed", wantReason: "turn_completed"},
+		{name: "failed", turnErr: errors.New("provider failed"), wantReason: "turn_failed"},
+		{name: "cancelled", turnErr: context.Canceled, wantReason: "session_cancelled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			startedAt := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
+			identity := procgroup.Identity{PID: 1885, GroupID: 1885, StartedAt: startedAt}
+			processStore := &durationReapSessionStore{
+				fakeSessionStore: &fakeSessionStore{sessionID: 1885},
+				process: store.WorkerProcess{SessionID: 1885, WorkerProcessIdentity: store.WorkerProcessIdentity{
+					PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt,
+				}},
+			}
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Prompt: "Work"},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-terminal-worker"}},
+				AgentBackend: terminalWorkerAgentBackend{identity: identity, err: tt.turnErr},
+				Store:        processStore,
+				ReapWorkerProcess: func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return procgroup.TerminationOutcomeAlreadyExited, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+			_, runErr := runner.Run(context.Background(), RunRequest{Issue: connector.Issue{ID: "issue-terminal-worker", Identifier: "digitaldrywood/detent#1885"}})
+			if tt.turnErr == nil && runErr != nil {
+				t.Fatalf("Run() error = %v", runErr)
+			}
+			if tt.turnErr != nil && !errors.Is(runErr, tt.turnErr) {
+				t.Fatalf("Run() error = %v, want %v", runErr, tt.turnErr)
+			}
+			if len(processStore.reaps) != 1 || processStore.reaps[0].Reason != tt.wantReason || processStore.reaps[0].Outcome != store.WorkerProcessOutcomeAlreadyExited {
+				t.Fatalf("reap records = %#v, want reason %q", processStore.reaps, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 	t.Parallel()
 
@@ -461,6 +562,32 @@ type durationBlockingAgentBackend struct {
 	expireDuration func()
 }
 
+type durationWorkerAgentBackend struct {
+	identity      procgroup.Identity
+	expireSession func()
+}
+
+type terminalWorkerAgentBackend struct {
+	identity procgroup.Identity
+	err      error
+}
+
+func (b terminalWorkerAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if err := onUpdate(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: b.identity}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{ThreadID: "thread-1885", TurnID: "turn-1885", SessionID: "session-1885"}, b.err
+}
+
+func (b *durationWorkerAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if err := onUpdate(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: b.identity}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	b.expireSession()
+	<-ctx.Done()
+	return AgentTurnResult{}, ctx.Err()
+}
+
 func (b *durationBlockingAgentBackend) RunTurn(ctx context.Context, request AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.request = request
 	b.recordDeadline(ctx)
@@ -565,6 +692,23 @@ type durationBlockingSessionStore struct {
 	*fakeSessionStore
 	hasDeadline   bool
 	expireSession func()
+}
+
+type durationReapSessionStore struct {
+	*fakeSessionStore
+	process store.WorkerProcess
+	reaps   []store.WorkerProcessReap
+}
+
+func (s *durationReapSessionStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
+	return []store.WorkerProcess{s.process}, nil
+}
+
+func (s *durationReapSessionStore) MarkSessionWorkerProcessReaped(_ context.Context, sessionID int64, reap store.WorkerProcessReap) error {
+	if sessionID == s.process.SessionID {
+		s.reaps = append(s.reaps, reap)
+	}
+	return nil
 }
 
 func (s *durationBlockingSessionStore) UpdateSessionWorkerProcess(ctx context.Context, _ int64, _ store.WorkerProcessIdentity) error {

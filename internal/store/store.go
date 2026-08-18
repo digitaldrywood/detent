@@ -407,16 +407,19 @@ type WorkerProcessIdentity struct {
 }
 
 type WorkerProcess struct {
-	SessionID  int64
-	IssueID    string
-	Identifier string
-	IssueURL   string
+	SessionID   int64
+	IssueID     string
+	Identifier  string
+	IssueURL    string
+	FinalState  string
+	CompletedAt time.Time
 	WorkerProcessIdentity
 }
 
 type WorkerProcessReap struct {
 	ReapedAt time.Time
 	Outcome  string
+	Reason   string
 }
 
 type SessionResumeState struct {

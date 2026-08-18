@@ -213,7 +213,11 @@ so counts remain attributable to their producer timestamp even if snapshot
 publication stops. Refresh objects include `next_refresh_overdue`; an explicit
 `ready` status becomes `degraded` once `next_refresh_at` is in the past.
 `/health` also reports `snapshot_generated_at`, `snapshot_age_seconds`, the
-current refresh object, and per-project `tick_liveness`. A tick loop that misses
+current refresh object, per-project `tick_liveness`, and
+`orphaned_agent_processes` with process and session counts, total RSS, age, and
+recorded session identity. Orphaned agent processes make health report
+`needs_attention`; `detent doctor` lists them and recommends
+`detent fix worker-processes --yes` for a confirmed reap. A tick loop that misses
 two effective polling intervals reports `needs_attention`, its last tick,
 overdue next refresh, missed interval count, and `frozen_at` timestamp. A loop
 that continues ticking while tracker refreshes fail reports separate

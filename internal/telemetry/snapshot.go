@@ -78,6 +78,26 @@ type PressureAverages struct {
 	Total  uint64  `json:"total"`
 }
 
+type OrphanedAgentProcesses struct {
+	Count         int                    `json:"count"`
+	SessionCount  int                    `json:"session_count"`
+	TotalRSSBytes int64                  `json:"total_rss_bytes"`
+	Processes     []OrphanedAgentProcess `json:"processes,omitempty"`
+}
+
+type OrphanedAgentProcess struct {
+	SessionID    int64     `json:"session_id"`
+	IssueID      string    `json:"issue_id,omitempty"`
+	Identifier   string    `json:"identifier,omitempty"`
+	PID          int       `json:"pid"`
+	GroupID      int       `json:"pgid,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	AgeSeconds   int64     `json:"age_seconds"`
+	RSSBytes     int64     `json:"rss_bytes"`
+	ProcessCount int       `json:"process_count"`
+	FinalState   string    `json:"final_state,omitempty"`
+}
+
 func (s Snapshot) AgeSeconds(now time.Time) int64 {
 	if s.GeneratedAt.IsZero() || now.IsZero() || now.Before(s.GeneratedAt) {
 		return 0

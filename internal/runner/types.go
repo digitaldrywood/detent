@@ -59,6 +59,7 @@ var (
 	ErrMergeFallbackBudgetExceeded  = errors.New("merge fallback budget exceeded")
 	ErrModelPermitUnavailable       = errors.New("provider model permit unavailable")
 	ErrAgentTurnCleanup             = errors.New("agent turn cleanup failed")
+	ErrWorkerProcessReap            = errors.New("worker process reap failed")
 	ErrAgentResumeUnsupported       = errors.New("agent backend does not support resume verification")
 	ErrDeliverableRecoveryExhausted = errors.New("deliverable recovery exhausted")
 )

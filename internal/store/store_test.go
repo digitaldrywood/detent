@@ -1574,11 +1574,25 @@ func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
 	if got := active[0]; got.SessionID != sessionID || got.Identifier != "digitaldrywood/detent#1214" || got.PID != 4242 || got.GroupID != 4242 || !got.StartedAt.Equal(processStartedAt) {
 		t.Fatalf("active worker process = %#v", got)
 	}
+	if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+		CompletedAt: startedAt.Add(90 * time.Second),
+		FinalState:  "completed",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+	active, err = backend.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveWorkerProcesses() after terminal session error = %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("ListActiveWorkerProcesses() after terminal session len = %d, want unreaped process retained", len(active))
+	}
 
 	reapedAt := startedAt.Add(2 * time.Second)
 	if err := backend.MarkSessionWorkerProcessReaped(ctx, sessionID, WorkerProcessReap{
 		ReapedAt: reapedAt,
 		Outcome:  WorkerProcessOutcomeTerminated,
+		Reason:   "terminal_completed",
 	}); err != nil {
 		t.Fatalf("MarkSessionWorkerProcessReaped() error = %v", err)
 	}
@@ -1588,6 +1602,13 @@ func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
 	}
 	if len(active) != 0 {
 		t.Fatalf("ListActiveWorkerProcesses() after reap len = %d, want 0", len(active))
+	}
+	session, err := backend.Queries().GetCodexSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetCodexSession() error = %v", err)
+	}
+	if session.WorkerReapOutcome.String != WorkerProcessOutcomeTerminated || session.WorkerReapReason.String != "terminal_completed" {
+		t.Fatalf("persisted reap = outcome %q reason %q", session.WorkerReapOutcome.String, session.WorkerReapReason.String)
 	}
 }
 

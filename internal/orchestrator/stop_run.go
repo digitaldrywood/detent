@@ -321,7 +321,7 @@ func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state
 }
 
 func (o *Orchestrator) reapOperatorStopWorker(ctx context.Context, running Running, identity procgroup.Identity) (procgroup.TerminationOutcome, procgroup.Identity, error) {
-	outcome, identity, err := o.reapRunningWorker(ctx, running, identity)
+	outcome, identity, err := o.reapRunningWorker(ctx, running, identity, "operator_stopped")
 	if err != nil {
 		return "", identity, fmt.Errorf("%w: %w", ErrStopRunWorkerProcess, err)
 	}

@@ -102,7 +102,7 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 
 func TestStopRunRefusesStalePersistedProcessIdentity(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "sleep", "30")
-	procgroup.Configure(cmd)
+	procgroup.Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -285,7 +285,7 @@ type operatorStopDescendantRunner struct {
 func (r *operatorStopDescendantRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	script := "sleep 30 >/dev/null 2>&1 & printf '%s\\n' \"$!\" > " + operatorStopShellQuote(r.pidPath) + "; wait"
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", script)
-	procgroup.Configure(cmd)
+	procgroup.Configure(ctx, cmd)
 	if err := cmd.Start(); err != nil {
 		return orchestrator.RunResult{}, err
 	}
