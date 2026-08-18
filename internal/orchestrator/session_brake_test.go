@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
@@ -26,11 +27,13 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 		reworkState  string
 		wantState    string
 		finalState   string
+		wantTerminal store.WorkAttemptTerminalState
 	}{
 		{
-			name:       "no work product returns to todo",
-			wantState:  "Todo",
-			finalState: runpkg.FinalStateSessionDurationExceeded,
+			name:         "no work product returns to todo",
+			wantState:    "Todo",
+			finalState:   runpkg.FinalStateSessionDurationExceeded,
+			wantTerminal: store.WorkAttemptTerminalTimedOut,
 		},
 		{
 			name:      "workspace progress moves to rework",
@@ -42,8 +45,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				Fingerprint:     "workspace-progress",
 				Status:          "changed",
 			},
-			wantState:  "Rework",
-			finalState: runpkg.FinalStateNoProgress,
+			wantState:    "Rework",
+			finalState:   runpkg.FinalStateNoProgress,
+			wantTerminal: store.WorkAttemptTerminalNoProgress,
 		},
 		{
 			name:         "workspace progress uses configured rework state",
@@ -52,6 +56,7 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			reworkState:  "Production Rework",
 			wantState:    "production rework",
 			finalState:   runpkg.FinalStateNoProgress,
+			wantTerminal: store.WorkAttemptTerminalNoProgress,
 		},
 		{
 			name:         "workspace progress falls back to todo when rework is inactive",
@@ -59,6 +64,13 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			activeStates: []string{"Todo", "In Progress"},
 			wantState:    "Todo",
 			finalState:   runpkg.FinalStateNoProgress,
+			wantTerminal: store.WorkAttemptTerminalNoProgress,
+		},
+		{
+			name:         "memory ceiling returns to todo without breaker strike",
+			wantState:    "Todo",
+			finalState:   runpkg.FinalStateMemoryCeilingExceeded,
+			wantTerminal: store.WorkAttemptTerminalMemoryCeiling,
 		},
 	}
 
@@ -93,8 +105,14 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				LastProgressAt:   startedAt.Add(45 * time.Minute),
 				Resumable:        tt.resumable,
 			}
-			if tt.finalState == runpkg.FinalStateNoProgress {
+			switch tt.finalState {
+			case runpkg.FinalStateNoProgress:
 				brake.Reason = runpkg.SessionBrakeReasonNoProgress
+			case runpkg.FinalStateMemoryCeilingExceeded:
+				brake.Reason = runpkg.SessionBrakeReasonMemory
+				brake.RSSBytes = 9 << 30
+				brake.RSSCeilingBytes = 8 << 30
+				brake.CauseFingerprint = "memory-ceiling-1572"
 			}
 			runner := sessionBrakeCompletionRunner{
 				result: RunResult{
@@ -143,6 +161,10 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				logger:             slog.New(slog.NewTextHandler(&logs, nil)),
 			}
 			state := newState(cfg)
+			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
+				state.InstantFailures[issue.ID] = InstantFailure{Count: instantFailureThreshold - 1}
+				state.RepeatedFailures[issue.ID] = RepeatedFailure{Count: repeatedFailureThreshold - 1}
+			}
 
 			if !orch.dispatchIssue(t.Context(), &state, issue, 1, startedAt, "") {
 				t.Fatal("dispatchIssue() = false, want true")
@@ -186,6 +208,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			if len(attempts.completions) != 1 {
 				t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
 			}
+			if attempts.completions[0].TerminalState != tt.wantTerminal {
+				t.Fatalf("terminal state = %q, want %q", attempts.completions[0].TerminalState, tt.wantTerminal)
+			}
 			var metadata map[string]any
 			if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 				t.Fatalf("unmarshal work attempt metadata: %v", err)
@@ -193,6 +218,20 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			sessionBrake, ok := metadata[sessionBrakeMetadataKey].(map[string]any)
 			if !ok || sessionBrake["cause_fingerprint"] != brake.CauseFingerprint {
 				t.Fatalf("session brake metadata = %#v, want cause fingerprint", metadata)
+			}
+			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
+				if sessionBrake["rss_bytes"] != float64(brake.RSSBytes) || sessionBrake["rss_ceiling_bytes"] != float64(brake.RSSCeilingBytes) {
+					t.Fatalf("session brake metadata = %#v, want RSS evidence", sessionBrake)
+				}
+				if _, ok := state.InstantFailures[issue.ID]; ok {
+					t.Fatalf("InstantFailures[%q] present after memory ceiling", issue.ID)
+				}
+				if _, ok := state.RepeatedFailures[issue.ID]; ok {
+					t.Fatalf("RepeatedFailures[%q] present after memory ceiling", issue.ID)
+				}
+				if state.FailureBreaker.Count != 0 || len(state.FailureBreaker.Failures) != 0 {
+					t.Fatalf("FailureBreaker = %#v, want no memory ceiling strike", state.FailureBreaker)
+				}
 			}
 
 			var stateUpdated bool

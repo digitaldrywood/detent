@@ -22,6 +22,7 @@ const (
 	FinalStateCompleted             = "completed"
 	FinalStateFailed                = "failed"
 	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
+	FinalStateMemoryCeilingExceeded = "memory_ceiling_exceeded"
 	FinalStateOperatorStopped       = "operator_stopped"
 	FinalStateMergeRevoked          = "merge_revoked"
 	FinalStateLaneRevoked           = "lane_revoked"
@@ -46,6 +47,7 @@ const (
 
 var (
 	ErrSessionTokenCeilingExceeded  = errors.New("session token ceiling exceeded")
+	ErrSessionMemoryCeilingExceeded = errors.New("session memory ceiling exceeded")
 	ErrTurnDurationExceeded         = errors.New("agent turn duration exceeded")
 	ErrSessionDurationExceeded      = errors.New("agent session duration exceeded")
 	ErrOperatorStopped              = errors.New("operator stopped run")
@@ -265,9 +267,12 @@ type AgentTurnRequest struct {
 	DeliverableRepository string
 	IssueRepository       string
 	Environment           procgroup.Environment
+	MaxRSSBytes           uint64
+	RSSPollInterval       time.Duration
 	cacheStrategy         string
 	projectID             string
 	workerGitHub          workerGitHubPolicy
+	processRSS            func(context.Context, procgroup.Identity) (uint64, error)
 }
 
 type AgentResume struct {
@@ -328,6 +333,7 @@ const (
 	AgentUpdateToolOutput       AgentUpdateType = "tool_output"
 	AgentUpdateToolCompleted    AgentUpdateType = "tool_completed"
 	AgentUpdateMCPElicitation   AgentUpdateType = "mcp_elicitation"
+	AgentUpdateResourceUsage    AgentUpdateType = "resource_usage"
 )
 
 type AgentUpdate struct {
@@ -348,6 +354,8 @@ type AgentUpdate struct {
 	BackendErrorMessage string
 	Tokens              AgentTokenUsage
 	RateLimits          *telemetry.RateLimits
+	RSSBytes            uint64
+	RSSCeilingBytes     uint64
 }
 
 type AgentTokenUsage struct {
@@ -375,6 +383,22 @@ type SessionTokenCeilingError struct {
 	Source             string
 	ModelContextWindow int64
 	ContextMultiplier  float64
+}
+
+type SessionMemoryCeilingError struct {
+	RSSBytes     uint64
+	CeilingBytes uint64
+}
+
+func (e *SessionMemoryCeilingError) Error() string {
+	if e == nil {
+		return ErrSessionMemoryCeilingExceeded.Error()
+	}
+	return fmt.Sprintf("%s: rss_bytes=%d ceiling_bytes=%d", ErrSessionMemoryCeilingExceeded, e.RSSBytes, e.CeilingBytes)
+}
+
+func (e *SessionMemoryCeilingError) Unwrap() error {
+	return ErrSessionMemoryCeilingExceeded
 }
 
 func (e *SessionTokenCeilingError) Error() string {
@@ -575,6 +599,9 @@ type UsageUpdate struct {
 	Tokens                TokenTotals
 	DiffStats             DiffStats
 	RateLimits            *telemetry.RateLimits
+	RSSBytes              uint64
+	RSSCeilingBytes       uint64
+	RSSObservedAt         time.Time
 }
 
 type BudgetRefusal struct {

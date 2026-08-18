@@ -1,6 +1,7 @@
 package procgroup
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"time"
@@ -8,7 +9,10 @@ import (
 
 const DefaultTerminationGrace = 250 * time.Millisecond
 
-var ErrProcessNotRunning = errors.New("process is not running")
+var (
+	ErrProcessNotRunning = errors.New("process is not running")
+	ErrRSSUnsupported    = errors.New("process RSS inspection is unsupported on this platform")
+)
 
 type Identity struct {
 	PID       int
@@ -44,6 +48,10 @@ func Alive(identity Identity) (bool, error) {
 		return false, err
 	}
 	return sameIdentity(current, identity), nil
+}
+
+func RSS(ctx context.Context, identity Identity) (uint64, error) {
+	return processGroupRSS(ctx, identity)
 }
 
 func sameIdentity(current Identity, recorded Identity) bool {

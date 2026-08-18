@@ -160,7 +160,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", nil, nil)
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -228,7 +228,7 @@ Prompt {{ issue.identifier }}
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	run, err := buildRunner(workflow, "detent", source, sessionStore, nil)
+	run, err := buildRunner(workflow, "detent", source, globalconfig.Memory{}, sessionStore, nil)
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -320,7 +320,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", nil, nil)
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil)
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}

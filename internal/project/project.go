@@ -28,6 +28,7 @@ import (
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -115,6 +116,7 @@ type Dependencies struct {
 	Runner                    orchestrator.Runner
 	Scheduler                 scheduler.Scheduler
 	GlobalDispatchGate        scheduler.ProjectDispatchGate
+	DispatchPacer             runpkg.DispatchPacer
 	WorkflowMetrics           orchestrator.WorkflowMetricsRecorder
 	Efficiency                efficiency.Recorder
 	LifecycleExporter         efficiency.LifecycleExporter
@@ -318,6 +320,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Connector:          projectConnector,
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
+		DispatchPacer:      deps.DispatchPacer,
 		WorkflowMetrics:    deps.WorkflowMetrics,
 		Efficiency:         deps.Efficiency,
 		LifecycleExporter:  lifecycleExporter,
@@ -1471,6 +1474,9 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	memory := project.EffectiveMemory()
+	cfg.MemoryPressureSomeAvg60Max = memory.PressureSomeAvg60Threshold
+	cfg.MemoryPressurePollInterval = time.Duration(memory.PollIntervalMS) * time.Millisecond
 	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	cfg.Project = scheduler.ProjectCandidate{
 		ID:                       project.ID,

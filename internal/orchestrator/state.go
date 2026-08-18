@@ -38,6 +38,7 @@ type State struct {
 	PoolDraining             bool
 	StrandedActiveThreshold  time.Duration
 	DispatchStallThreshold   time.Duration
+	MemoryPressure           telemetry.MemoryPressure
 	AutoPromoteQuietDuration time.Duration
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
@@ -146,6 +147,9 @@ type Running struct {
 	DiffStats                   DiffStats
 	WorkProductPushed           bool
 	Tokens                      TokenTotals
+	RSSBytes                    uint64
+	RSSCeilingBytes             uint64
+	RSSObservedAt               time.Time
 	CapacityScope               backendcapacity.Scope
 	CapacityProbe               bool
 	ForgeProbeHost              string
@@ -321,14 +325,17 @@ type DependencyAutoUnblockRecord struct {
 
 func newState(cfg Config) State {
 	return State{
-		PollInterval:             cfg.PollInterval,
-		RefreshFailureThreshold:  cfg.RefreshFailureThreshold,
-		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
-		BillingMode:              cfg.BillingMode,
-		RateWindowPacing:         cfg.RateWindowPacing,
-		MaxAgentsByState:         cloneStateLimits(cfg.MaxConcurrentAgentsByState),
-		StrandedActiveThreshold:  cfg.StrandedActiveThreshold,
-		DispatchStallThreshold:   cfg.DispatchStallThreshold,
+		PollInterval:            cfg.PollInterval,
+		RefreshFailureThreshold: cfg.RefreshFailureThreshold,
+		MaxConcurrentAgents:     cfg.MaxConcurrentAgents,
+		BillingMode:             cfg.BillingMode,
+		RateWindowPacing:        cfg.RateWindowPacing,
+		MaxAgentsByState:        cloneStateLimits(cfg.MaxConcurrentAgentsByState),
+		StrandedActiveThreshold: cfg.StrandedActiveThreshold,
+		DispatchStallThreshold:  cfg.DispatchStallThreshold,
+		MemoryPressure: telemetry.MemoryPressure{
+			SomeAvg60Max: cfg.MemoryPressureSomeAvg60Max,
+		},
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
@@ -388,6 +395,7 @@ func (s State) clone() State {
 		PoolDraining:             s.PoolDraining,
 		StrandedActiveThreshold:  s.StrandedActiveThreshold,
 		DispatchStallThreshold:   s.DispatchStallThreshold,
+		MemoryPressure:           s.MemoryPressure,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),

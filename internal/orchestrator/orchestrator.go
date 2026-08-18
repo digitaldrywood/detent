@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hostmemory"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -126,6 +127,8 @@ type Config struct {
 	StalenessDelivery             staleness.DeliveryConfig
 	StrandedActiveThreshold       time.Duration
 	DispatchStallThreshold        time.Duration
+	MemoryPressureSomeAvg60Max    float64
+	MemoryPressurePollInterval    time.Duration
 }
 
 type LessonCaptureConfig struct {
@@ -169,6 +172,8 @@ type Dependencies struct {
 	Activity             *activity.Broker
 	Release              releasepkg.Coordinator
 	GlobalDispatchGate   scheduler.ProjectDispatchGate
+	DispatchPacer        runpkg.DispatchPacer
+	ReadMemoryPressure   func(context.Context) (hostmemory.Sample, error)
 	Now                  func() time.Time
 	Logger               *slog.Logger
 	Retrospector         Retrospector
@@ -225,6 +230,7 @@ type Orchestrator struct {
 	reaper                  WorkspaceReaper
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
+	readMemoryPressure      func(context.Context) (hostmemory.Sample, error)
 	validatorMu             sync.Mutex
 	validatorWG             sync.WaitGroup
 	validatorRuns           map[string]struct{}
@@ -500,6 +506,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if newStalenessNotifier == nil {
 		newStalenessNotifier = staleness.NewNotifier
 	}
+	readMemoryPressure := deps.ReadMemoryPressure
+	if readMemoryPressure == nil {
+		readMemoryPressure = hostmemory.Read
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
@@ -507,6 +517,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		OverloadRetryDelay:    cfg.OverloadRetryDelay,
 		Now:                   now,
 		Logger:                logger,
+		DispatchPacer:         deps.DispatchPacer,
 	})
 	if err != nil {
 		return nil, err
@@ -529,6 +540,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		reaper:                  reaper,
 		logger:                  logger,
 		globalDispatchGate:      deps.GlobalDispatchGate,
+		readMemoryPressure:      readMemoryPressure,
 		validatorRuns:           map[string]struct{}{},
 		validatorResults:        map[string]validatorStageResult{},
 		validatorFailures:       map[string]validatorStageFailure{},
@@ -1030,6 +1042,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.RateWindowPacing = cfg.RateWindowPacing
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
+	state.MemoryPressure.SomeAvg60Max = cfg.MemoryPressureSomeAvg60Max
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

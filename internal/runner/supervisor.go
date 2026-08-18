@@ -27,6 +27,7 @@ type SupervisorConfig struct {
 	OverloadRetryDelay    time.Duration
 	Now                   func() time.Time
 	Logger                *slog.Logger
+	DispatchPacer         DispatchPacer
 }
 
 type Supervisor struct {
@@ -37,6 +38,7 @@ type Supervisor struct {
 	overloadRetryDelay    time.Duration
 	now                   func() time.Time
 	logger                *slog.Logger
+	dispatchPacer         DispatchPacer
 }
 
 type Completion struct {
@@ -77,6 +79,7 @@ func NewSupervisor(backend Backend, cfg SupervisorConfig) (*Supervisor, error) {
 		overloadRetryDelay:    cfg.OverloadRetryDelay,
 		now:                   cfg.Now,
 		logger:                cfg.Logger,
+		dispatchPacer:         cfg.DispatchPacer,
 	}, nil
 }
 
@@ -189,6 +192,16 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			WorkAttemptID:   request.WorkAttemptID,
 		}, attrs...)
 	}()
+	if s.dispatchPacer != nil {
+		if err := s.dispatchPacer.Wait(ctx); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				err = cause
+			}
+			completion.CompletedAt = s.now()
+			completion.Err = err
+			return completion
+		}
+	}
 
 	result, err := s.backend.Run(ctx, request)
 	if cause := context.Cause(ctx); errors.Is(cause, ErrMergeWorkerStartupTimeout) ||
@@ -219,6 +232,7 @@ func cooperativeStopError(err error) bool {
 		errors.Is(err, ErrMergeWorkerDurationExceeded) ||
 		errors.Is(err, ErrMergeFallbackBudgetExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
+		errors.Is(err, ErrSessionMemoryCeilingExceeded) ||
 		errors.Is(err, ErrSessionTurnLimitExceeded) ||
 		errors.Is(err, ErrSessionNoProgress)
 }

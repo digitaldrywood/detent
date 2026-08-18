@@ -68,6 +68,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	restRateLimitsCaptured := false
 	previous := captureTickPreviousState(state)
 	o.markRefresh(state, now)
+	o.observeMemoryPressure(ctx, state, now)
 	defer func() {
 		o.finishRefresh(state, now, !restRateLimitsCaptured)
 		if manual != nil {

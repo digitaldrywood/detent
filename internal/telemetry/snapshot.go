@@ -55,9 +55,27 @@ type Snapshot struct {
 	Throughput              TokenThroughput     `json:"throughput"`
 	Concurrency             ConcurrencyHistory  `json:"concurrency"`
 	LifetimeTotals          LifetimeTotals      `json:"lifetime_totals"`
+	MemoryPressure          MemoryPressure      `json:"memory_pressure"`
 	CycleTime               CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics         WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
+}
+
+type MemoryPressure struct {
+	Supported    bool             `json:"supported"`
+	Some         PressureAverages `json:"some"`
+	Full         PressureAverages `json:"full"`
+	SomeAvg60Max float64          `json:"some_avg60_max"`
+	DispatchHeld bool             `json:"dispatch_held"`
+	ObservedAt   time.Time        `json:"observed_at,omitzero"`
+	LastError    string           `json:"last_error,omitempty"`
+}
+
+type PressureAverages struct {
+	Avg10  float64 `json:"avg10"`
+	Avg60  float64 `json:"avg60"`
+	Avg300 float64 `json:"avg300"`
+	Total  uint64  `json:"total"`
 }
 
 func (s Snapshot) AgeSeconds(now time.Time) int64 {
@@ -956,6 +974,9 @@ type Running struct {
 	DiffFiles             int                       `json:"diff_files"`
 	DiffStatus            string                    `json:"diff_status,omitempty"`
 	Tokens                Tokens                    `json:"tokens"`
+	RSSBytes              uint64                    `json:"rss_bytes"`
+	RSSCeilingBytes       uint64                    `json:"rss_ceiling_bytes"`
+	RSSObservedAt         time.Time                 `json:"rss_observed_at,omitzero"`
 }
 
 type StopRunPriorityOption struct {

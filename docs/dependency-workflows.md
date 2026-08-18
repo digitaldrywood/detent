@@ -89,3 +89,22 @@ service cgroup, so its persisted worker registry can terminate stale process
 groups on shutdown or startup while systemd remains the final cleanup backstop.
 Do not wrap worker commands in launchers that double-fork or explicitly move
 children into another cgroup.
+
+On shared Linux hosts, add `MemoryHigh` and `MemoryMax` to `detent.service` as
+defense in depth. Size both for the aggregate orchestrator and worker footprint,
+leave capacity for unrelated workloads, and keep `MemoryMax` above
+`MemoryHigh`. For example, a 32 GiB host reserved partly for other work could
+use this user-service drop-in as a starting point:
+
+```ini
+[Service]
+MemoryHigh=24G
+MemoryMax=28G
+```
+
+Create the drop-in with `systemctl --user edit detent.service`, then run
+`systemctl --user daemon-reload` and restart the service during an approved
+maintenance window. Verify the effective values with
+`systemctl --user show detent.service -p MemoryHigh -p MemoryMax`. These cgroup
+limits protect the host if Detent's per-agent RSS ceiling fails; they do not
+replace the per-agent ceiling or memory-pressure admission control.

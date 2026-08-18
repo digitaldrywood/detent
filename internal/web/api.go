@@ -480,6 +480,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		TokenTotals:        totalsResponse(snapshot.Tokens),
 		Throughput:         throughputResponse(snapshot.Throughput),
 		LifetimeTotals:     lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
+		MemoryPressure:     snapshot.MemoryPressure,
 		WorkflowMetrics:    snapshot.WorkflowMetrics,
 		RecentSessions:     recentSessionEntries(snapshot.Completed),
 		RateLimits:         snapshot.RateLimits,
@@ -658,6 +659,9 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 			DiffFiles:             entry.DiffFiles,
 			DiffStatus:            diffStatus(entry.DiffStatus),
 			Tokens:                tokenCountsResponse(entry.Tokens),
+			RSSBytes:              entry.RSSBytes,
+			RSSCeilingBytes:       entry.RSSCeilingBytes,
+			RSSObservedAt:         timestampString(entry.RSSObservedAt),
 		})
 	}
 	return payload
@@ -1434,6 +1438,7 @@ type stateAPIResponse struct {
 	TokenTotals        tokenTotalsAPIResponse       `json:"codex_totals"`
 	Throughput         throughputAPIResponse        `json:"throughput"`
 	LifetimeTotals     lifetimeTotalsResponse       `json:"lifetime_totals"`
+	MemoryPressure     telemetry.MemoryPressure     `json:"memory_pressure"`
 	WorkflowMetrics    telemetry.WorkflowMetrics    `json:"workflow_metrics"`
 	RecentSessions     []recentSessionAPIResponse   `json:"recent_sessions"`
 	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
@@ -1515,6 +1520,9 @@ type runningAPIResponse struct {
 	DiffFiles             int                       `json:"diff_files"`
 	DiffStatus            string                    `json:"diff_status"`
 	Tokens                tokenCountsAPIResponse    `json:"tokens"`
+	RSSBytes              uint64                    `json:"rss_bytes"`
+	RSSCeilingBytes       uint64                    `json:"rss_ceiling_bytes"`
+	RSSObservedAt         *string                   `json:"rss_observed_at"`
 }
 
 type retryAPIResponse struct {
