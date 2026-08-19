@@ -1326,7 +1326,9 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.ProgressSummary, view.ProgressDetail, view.ProgressKind = boardCardCompletionProgress(card.CompletionProgress)
 	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
 	view.AuthorDetail = boardCardAuthorDetail(card.AuthorID, card.OriginActor)
-	view.Activity = boardCardActivity(data.Snapshot, card)
+	if card.BlockedReason == "" && card.BlockedRecoveryAction == "" && card.BlockedRecoveryReason == "" {
+		view.Activity = boardCardActivity(data.Snapshot, card)
+	}
 	view.PRStatus, view.PRStatusClass = boardCardPRStatus(card)
 	if view.Running {
 		view.RuntimeBadge = true
@@ -1709,7 +1711,10 @@ func boardBlockedLegacyWaitingReason(reason string) bool {
 
 func boardBlockedDetail(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, recoveryRemedy string, reason string) string {
 	if strings.EqualFold(strings.TrimSpace(recoveryAction), "hold") {
-		detail := strings.ReplaceAll(strings.TrimSpace(recoveryReason), "_", " ")
+		detail := strings.TrimSpace(reason)
+		if detail == "" {
+			detail = strings.ReplaceAll(strings.TrimSpace(recoveryReason), "_", " ")
+		}
 		if detail == "" {
 			detail = "blocked recovery held"
 		}

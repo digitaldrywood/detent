@@ -158,9 +158,22 @@ func BlockedRowDependencyWaiting(row Blocked) bool {
 	if strings.EqualFold(strings.TrimSpace(row.State), "Blocked") {
 		return false
 	}
-	if row.Source == BlockedSourceDependency || strings.EqualFold(strings.TrimSpace(row.RecoveryReason), "dependency_blocker") {
+	hasUnresolvedRef := false
+	for _, ref := range row.BlockedBy {
+		trackerState := strings.ToLower(strings.TrimSpace(ref.TrackerState))
+		if trackerState == "closed" {
+			continue
+		}
+		state := normalizeBoardState(strings.ReplaceAll(ref.State, "_", " "))
+		if trackerState != "open" && (state == "Done" || state == "Cancelled" || state == "Canceled" || state == "Closed") {
+			continue
+		}
+		hasUnresolvedRef = true
+		break
+	}
+	if row.Source == BlockedSourceDependency && (hasUnresolvedRef || len(row.BlockedBy) == 0) {
 		return true
 	}
 	reason := strings.ToLower(strings.TrimSpace(row.Error))
-	return reason == "blocked by non-terminal dependency" || strings.HasPrefix(reason, "depends on ") || len(row.BlockedBy) > 0
+	return reason == "blocked by non-terminal dependency" || strings.HasPrefix(reason, "depends on ") || hasUnresolvedRef
 }

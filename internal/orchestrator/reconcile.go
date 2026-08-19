@@ -544,7 +544,11 @@ func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue
 		state.Blocked[issue.ID] = existing
 		return
 	}
-	recovery := EvaluateBlockedRecovery(issue)
+	recovery := evaluateBlockedRecovery(issue, normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
+		Enabled:      true,
+		SourceStates: []string{blockedStatusState},
+		TargetState:  autoPromoteReworkState,
+	}), o.cfg.TerminalStates)
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          cloneIssue(issue),
 		Reason:         blockedStatusReason(issue),
@@ -561,9 +565,5 @@ func blockedFromDependency(blocked Blocked) bool {
 }
 
 func blockedStatusReason(issue connector.Issue) string {
-	reason := strings.TrimSpace(issue.BlockerReason)
-	if reason != "" {
-		return reason
-	}
-	return blockedReasonProjectStatus
+	return strings.TrimSpace(issue.BlockerReason)
 }

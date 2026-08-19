@@ -284,7 +284,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 				switch {
 				case issue.WorkpadSignal.Invalid != nil:
 					reason = BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel)
-					if reason == "invalid_workpad_signal" && len(withDependencies.BlockedBy) == 0 {
+					if reason == "invalid_workpad_signal" && len(dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)) == 0 {
 						if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
 							return transitioned
 						}
@@ -827,16 +827,36 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 	if state == nil || strings.TrimSpace(issue.ID) == "" {
 		return
 	}
-	entry, ok := state.Blocked[issue.ID]
-	if !ok {
-		return
-	}
-	entry.Issue = cloneIssue(issue)
 	providedPark := park != nil
 	if park == nil {
 		if current, found := o.currentBlockedRecoveryPark(ctx, state, issue); found {
 			park = &current
 		}
+	}
+	entry, ok := state.Blocked[issue.ID]
+	if !ok {
+		if !blockedRecoveryDecisionShouldMaterialize(reason) {
+			return
+		}
+		blockedAt := time.Time{}
+		if issue.StageUpdatedAt != nil {
+			blockedAt = issue.StageUpdatedAt.UTC()
+		}
+		o.setBlockedStatusIssue(state, issue, blockedAt)
+		entry, ok = state.Blocked[issue.ID]
+		if !ok {
+			return
+		}
+	}
+	previousRecoveryReason := strings.TrimSpace(entry.RecoveryReason)
+	entry.Issue = cloneIssue(issue)
+	if trackerReason := strings.TrimSpace(issue.BlockerReason); trackerReason != "" {
+		entry.Reason = trackerReason
+	} else if strings.EqualFold(previousRecoveryReason, string(BlockedRecoveryReasonDependencyBlocker)) ||
+		strings.EqualFold(previousRecoveryReason, "dependency_recovery") ||
+		strings.EqualFold(strings.TrimSpace(entry.Reason), "blocked by project status") ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(entry.Reason)), "waiting on ") {
+		entry.Reason = ""
 	}
 	entry.RecoveryAction = strings.TrimSpace(action)
 	entry.RecoveryReason = strings.TrimSpace(reason)
@@ -871,6 +891,19 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 		entry.Reason = blockedDependencyWaitingReason(unresolvedWorkpadBlockers)
 	}
 	state.Blocked[issue.ID] = entry
+}
+
+func blockedRecoveryDecisionShouldMaterialize(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if strings.Contains(reason, "already_consumed") {
+		return false
+	}
+	switch reason {
+	case "no_recovery_predicate", "pr_maintenance_recovery", "rework_breaker_recovery":
+		return false
+	default:
+		return true
+	}
 }
 
 func blockedDependencyWaitingReason(blockers []dependencyBlocker) string {

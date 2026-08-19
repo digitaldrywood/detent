@@ -56,7 +56,6 @@ const (
 	maxRecentEvents                            = 50
 	blockedStatusState                         = "Blocked"
 	blockedReasonDependency                    = "blocked by non-terminal dependency"
-	blockedReasonProjectStatus                 = "blocked by project status"
 	mergeWorkerTerminalStateMissing            = "merge worker completed without reaching a terminal issue or pull request state"
 	mergeWorkerRetryExhaustedReason            = "merge_worker_retry_exhausted"
 	mergeWorkerCurrentHeadCIWaitExceededReason = "merge_worker_current_head_ci_wait_exceeded"

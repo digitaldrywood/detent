@@ -69,7 +69,7 @@ func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
 		Enabled:      true,
 		SourceStates: []string{blockedStatusState},
 		TargetState:  autoPromoteReworkState,
-	}))
+	}), []string{"Done", "Cancelled", "Canceled", "Closed"})
 }
 
 func EvaluateBlockedRecoveryWithConfig(issue connector.Issue, cfg BlockedRecoveryConfig) BlockedRecoveryDecision {
@@ -80,7 +80,7 @@ func EvaluateBlockedRecoveryWithConfig(issue connector.Issue, cfg BlockedRecover
 	return decision
 }
 
-func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig) BlockedRecoveryDecision {
+func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig, terminalStates []string) BlockedRecoveryDecision {
 	issue = issueWithTextDependencyRefs(issue)
 	cfg = normalizeBlockedRecoveryConfig(cfg)
 	if !stateIn(issue.State, cfg.SourceStates) {
@@ -89,7 +89,7 @@ func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig) B
 	if blockedRecoveryHumanOnly(issue) {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonHumanBlocker, "blocked reason requires a human")
 	}
-	if len(issue.BlockedBy) > 0 {
+	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonDependencyBlocker, "dependency blockers must clear first")
 	}
 	if issue.PullRequest == nil {
@@ -195,7 +195,7 @@ func (o *Orchestrator) recoverBlockedIssues(
 		}
 		if park, ok := o.latestReworkBreakerPark(ctx, issue); normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled && ok {
 			if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
-				!reworkBreakerAutoUnparkReady(issue, park) ||
+				!reworkBreakerAutoUnparkReady(issue, park, o.cfg.TerminalStates) ||
 				!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
 				continue
 			}
@@ -215,7 +215,7 @@ func (o *Orchestrator) recoverBlockedIssues(
 		if !ok || !blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
 			continue
 		}
-		decision := evaluateBlockedRecovery(issue, recoveryCfg)
+		decision := evaluateBlockedRecovery(issue, recoveryCfg, o.cfg.TerminalStates)
 		if decision.Action != BlockedRecoveryActionRework {
 			continue
 		}
@@ -351,7 +351,7 @@ func evaluateStructuredBlockedRecovery(
 	if !blockedRecoveryReasonAllowed(cfg, reasonCode) {
 		return BlockedRecoveryDecision{}, "", false
 	}
-	decision := evaluateBlockedRecovery(issue, cfg)
+	decision := evaluateBlockedRecovery(issue, cfg, []string{"Done", "Cancelled", "Canceled", "Closed"})
 	if decision.Action != BlockedRecoveryActionRework ||
 		!blockedRecoveryConditionMatches(reasonCode, decision.Reason) {
 		return BlockedRecoveryDecision{}, "", false
@@ -476,8 +476,8 @@ func reworkBreakerPullRequestMetadataEqual(left, right *workflowLanePullRequestM
 		strings.TrimSpace(left.HeadSHA) != "" && strings.TrimSpace(left.HeadSHA) == strings.TrimSpace(right.HeadSHA)
 }
 
-func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark) bool {
-	if normalizeState(issue.State) != normalizeState(blockedStatusState) || issue.Closed || reworkBreakerIssueHeld(issue) {
+func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark, terminalStates []string) bool {
+	if normalizeState(issue.State) != normalizeState(blockedStatusState) || issue.Closed || reworkBreakerIssueHeld(issue, terminalStates) {
 		return false
 	}
 	if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(park.Event.StartedAt.Add(reworkBreakerStageUpdateSkew)) {
@@ -498,13 +498,28 @@ func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark)
 		len(autoPromoteFindingsFromPullRequest(pr)) == 0
 }
 
-func reworkBreakerIssueHeld(issue connector.Issue) bool {
+func reworkBreakerIssueHeld(issue connector.Issue, terminalStates []string) bool {
 	issue = issueWithTextDependencyRefs(issue)
-	if len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.BlockerReason) != "" || blockedRecoveryHumanOnly(issue) {
+	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) || strings.TrimSpace(issue.BlockerReason) != "" || blockedRecoveryHumanOnly(issue) {
 		return true
 	}
 	signal := issue.WorkpadSignal
 	return signal != nil && (signal.Invalid != nil || strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 || strings.EqualFold(strings.TrimSpace(signal.Status), "blocked"))
+}
+
+func blockedRefsUnresolved(refs []connector.BlockedRef, terminalStates []string) bool {
+	for _, ref := range refs {
+		switch strings.ToLower(strings.TrimSpace(ref.TrackerState)) {
+		case connector.BlockedRefTrackerStateClosed:
+			continue
+		case connector.BlockedRefTrackerStateOpen:
+			return true
+		}
+		if !stateIn(ref.State, terminalStates) {
+			return true
+		}
+	}
+	return false
 }
 
 func reworkBreakerCIGreen(pr *connector.PullRequest) bool {
@@ -830,6 +845,7 @@ func blockedRecoveryHumanOnly(issue connector.Issue) bool {
 		"human approval",
 		"explicit human approval",
 		"requires human",
+		"needs human",
 		"requires-human-review",
 		"human review",
 		"product direction",
