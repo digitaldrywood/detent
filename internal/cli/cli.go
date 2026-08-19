@@ -15,8 +15,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/project"
 )
 
@@ -847,6 +849,8 @@ func validateProjectFlags(cfg globalconfig.Project) error {
 
 type projectEdit func(*globalconfig.Project) error
 
+type projectValidation func(context.Context, globalconfig.Config, int) error
+
 func newPauseProjectCommand(configPath *string, opts options) *cobra.Command {
 	var reason string
 	var untilIssue string
@@ -874,6 +878,8 @@ func newPauseProjectCommand(configPath *string, opts options) *cobra.Command {
 				project.PausedUntilIssue = untilIssue
 				project.PausedUntil = until
 				return nil
+			}, func(ctx context.Context, cfg globalconfig.Config, index int) error {
+				return validatePauseIssueReference(ctx, cfg, index)
 			})
 			if err != nil {
 				return err
@@ -1069,7 +1075,15 @@ func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 	return cmd
 }
 
-func updateProject(ctx context.Context, configPath string, opts options, operation Operation, id string, edit projectEdit) (globalconfig.Project, error) {
+func updateProject(
+	ctx context.Context,
+	configPath string,
+	opts options,
+	operation Operation,
+	id string,
+	edit projectEdit,
+	validations ...projectValidation,
+) (globalconfig.Project, error) {
 	path, err := resolveConfigPath(configPath, opts)
 	if err != nil {
 		return globalconfig.Project{}, err
@@ -1087,6 +1101,14 @@ func updateProject(ctx context.Context, configPath string, opts options, operati
 	if err := edit(&cfg.Projects[index]); err != nil {
 		return globalconfig.Project{}, err
 	}
+	for _, validate := range validations {
+		if validate == nil {
+			continue
+		}
+		if err := validate(ctx, cfg, index); err != nil {
+			return globalconfig.Project{}, err
+		}
+	}
 	if err := opts.write(path, cfg); err != nil {
 		return globalconfig.Project{}, err
 	}
@@ -1099,6 +1121,66 @@ func updateProject(ctx context.Context, configPath string, opts options, operati
 		return globalconfig.Project{}, err
 	}
 	return cfg.Projects[index], nil
+}
+
+func validatePauseIssueReference(ctx context.Context, cfg globalconfig.Config, projectIndex int) error {
+	project := cfg.Projects[projectIndex]
+	reference := strings.TrimSpace(project.PausedUntilIssue)
+	if reference == "" {
+		return nil
+	}
+
+	deps := runtimeDeps{}.withDefaults()
+	trackers := make([]pause.Tracker, 0, len(cfg.Projects))
+	trackerKinds := make(map[string]string, len(cfg.Projects))
+	for _, candidate := range cfg.Projects {
+		workflow, err := loadRuntimeProjectWorkflow(ctx, candidate, deps)
+		if err != nil {
+			if strings.EqualFold(strings.TrimSpace(candidate.ID), strings.TrimSpace(project.ID)) {
+				return pauseIssueValidationError(project.ID, reference, fmt.Errorf("load project workflow: %w", err))
+			}
+			continue
+		}
+		projectID := strings.TrimSpace(candidate.ID)
+		trackers = append(trackers, pause.Tracker{
+			ProjectID:  projectID,
+			Kind:       workflow.Config.Tracker.Kind,
+			Repository: workflow.Config.Tracker.Repository,
+		})
+		trackerKinds[strings.ToLower(projectID)] = workflow.Config.Tracker.Kind
+	}
+
+	resolution, err := pause.ResolveReference(project.ID, reference, trackers)
+	if err != nil {
+		return pauseIssueValidationError(project.ID, reference, err)
+	}
+	kind := trackerKinds[strings.ToLower(strings.TrimSpace(resolution.ProjectID))]
+	if !pauseTrackerSupportsIssueReferences(kind) {
+		return pauseIssueValidationError(
+			project.ID,
+			reference,
+			fmt.Errorf("resolver project %s tracker kind %s cannot resolve issue references", resolution.ProjectID, kind),
+		)
+	}
+	return nil
+}
+
+func pauseTrackerSupportsIssueReferences(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case workflowconfig.TrackerGitHub, workflowconfig.TrackerGitHubLocal, workflowconfig.TrackerLocalSQLite, workflowconfig.TrackerMemory:
+		return true
+	default:
+		return false
+	}
+}
+
+func pauseIssueValidationError(projectID string, reference string, err error) error {
+	return WrapValidation(fmt.Errorf(
+		"cannot pause project %q with --until-issue %q: %w",
+		strings.TrimSpace(projectID),
+		strings.TrimSpace(reference),
+		err,
+	))
 }
 
 func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {

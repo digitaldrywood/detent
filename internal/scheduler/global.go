@@ -403,12 +403,20 @@ func priorityRank(priority int) int {
 }
 
 func normalizeProjectCandidates(projects []ProjectCandidate) []ProjectCandidate {
+	configured := normalizeConfiguredProjectCandidates(projects)
+	candidates := make([]ProjectCandidate, 0, len(configured))
+	for _, project := range configured {
+		if !project.Paused {
+			candidates = append(candidates, project)
+		}
+	}
+	return candidates
+}
+
+func normalizeConfiguredProjectCandidates(projects []ProjectCandidate) []ProjectCandidate {
 	candidates := make([]ProjectCandidate, 0, len(projects))
 	seen := make(map[string]struct{}, len(projects))
 	for _, project := range projects {
-		if project.Paused {
-			continue
-		}
 		project.ID = normalizeProjectID(project.ID)
 		if project.ID == "" {
 			continue
