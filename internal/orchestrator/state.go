@@ -644,6 +644,7 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 	return connector.StatusDrift{
 		UntrackedOpen: cloneIssues(drift.UntrackedOpen),
 		OpenTerminal:  cloneIssues(drift.OpenTerminal),
+		ClosedActive:  cloneIssues(drift.ClosedActive),
 	}
 }
 

@@ -240,13 +240,23 @@ func TestFactoryGitHubConnectorUsesConfiguredLogger(t *testing.T) {
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/digitaldrywood/detent/issues" {
-			t.Fatalf("path = %s, want repository issues path", r.URL.Path)
-		}
-		if got := r.URL.Query().Get("state"); got != "open" {
-			t.Fatalf("state query = %q, want open", got)
+		switch r.URL.Path {
+		case "/repos/digitaldrywood/detent/issues":
+			if got := r.URL.Query().Get("state"); got != "open" {
+				t.Fatalf("state query = %q, want open", got)
+			}
+		case "/search/issues":
+			if !strings.Contains(r.URL.Query().Get("q"), "is:closed") {
+				t.Fatalf("search query = %q, want closed issue search", r.URL.Query().Get("q"))
+			}
+		default:
+			t.Fatalf("path = %s, want repository issues or search path", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/search/issues" {
+			_, _ = w.Write([]byte(`{"total_count":0,"items":[]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`[]`))
 	}))
 	t.Cleanup(server.Close)

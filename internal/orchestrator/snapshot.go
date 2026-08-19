@@ -254,6 +254,9 @@ func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance ma
 	for index := range snapshot.TrackerDrift.OpenTerminal {
 		apply(&snapshot.TrackerDrift.OpenTerminal[index])
 	}
+	for index := range snapshot.TrackerDrift.ClosedActive {
+		apply(&snapshot.TrackerDrift.ClosedActive[index])
+	}
 	for index := range snapshot.Running {
 		apply(&snapshot.Running[index].Issue)
 	}
@@ -700,6 +703,7 @@ func authorizedStatusDrift(drift connector.StatusDrift, authorization selector.S
 	return connector.StatusDrift{
 		UntrackedOpen: authorizedSnapshotIssues(drift.UntrackedOpen, authorization, ctx),
 		OpenTerminal:  authorizedSnapshotIssues(drift.OpenTerminal, authorization, ctx),
+		ClosedActive:  authorizedSnapshotIssues(drift.ClosedActive, authorization, ctx),
 	}
 }
 
@@ -713,6 +717,7 @@ func statusDriftSnapshot(
 	return telemetry.TrackerDrift{
 		UntrackedOpen: issueSnapshots(drift.UntrackedOpen, quietDuration, pollInterval, now, laneEntries),
 		OpenTerminal:  issueSnapshots(drift.OpenTerminal, quietDuration, pollInterval, now, laneEntries),
+		ClosedActive:  issueSnapshots(drift.ClosedActive, quietDuration, pollInterval, now, laneEntries),
 	}
 }
 

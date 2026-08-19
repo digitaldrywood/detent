@@ -2917,6 +2917,7 @@ func (c *statusDriftConnector) FetchStatusDrift(context.Context) (connector.Stat
 	return connector.StatusDrift{
 		UntrackedOpen: cloneIssues(c.drift.UntrackedOpen),
 		OpenTerminal:  cloneIssues(c.drift.OpenTerminal),
+		ClosedActive:  cloneIssues(c.drift.ClosedActive),
 	}, c.err
 }
 

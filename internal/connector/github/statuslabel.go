@@ -127,6 +127,10 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 }
 
 func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue) error {
+	return c.attachLabelIssuePullRequestReferencesWithState(ctx, issues, false)
+}
+
+func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.Context, issues []connector.Issue, includeState bool) error {
 	indexesByID := make(map[string][]int, len(issues))
 	ids := make([]string, 0, len(issues))
 	for index, issue := range issues {
@@ -195,6 +199,11 @@ func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, i
 				return nil
 			}
 			ref, ok := firstPullRequestReference(pullRequests)
+			if includeState {
+				if merged, mergedOK := mergedPullRequestReference(pullRequests); mergedOK {
+					ref, ok = merged, true
+				}
+			}
 			if !ok {
 				continue
 			}
@@ -202,6 +211,9 @@ func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, i
 				number := ref.Number
 				issues[index].PRNumber = &number
 				issues[index].PRRepository = ref.Repository
+				if includeState {
+					issues[index].PullRequest = &connector.PullRequest{Number: ref.Number, State: ref.State}
+				}
 				if issues[index].PRRepository == "" {
 					issues[index].PRRepository = pullRequestRepoName(c.repository)
 				}
@@ -254,7 +266,67 @@ func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift
 	drift, _, _, err := c.readLabelStatusDrift(ctx, labelStatusDriftReadOptions{
 		PageSize: repositoryIssuesPageSize,
 	})
-	return drift, err
+	if err != nil {
+		return connector.StatusDrift{}, err
+	}
+	drift.ClosedActive, err = c.readClosedActiveLabelIssues(ctx)
+	if err != nil {
+		return connector.StatusDrift{}, err
+	}
+	if err := c.attachLabelIssuePullRequestReferencesWithState(ctx, drift.OpenTerminal, true); err != nil {
+		return connector.StatusDrift{}, fmt.Errorf("hydrate open terminal issue pull requests: %w", err)
+	}
+	return drift, nil
+}
+
+func (c *Connector) readClosedActiveLabelIssues(ctx context.Context) ([]connector.Issue, error) {
+	if !c.usesLabelStatus() || len(c.activeStates) == 0 {
+		return nil, nil
+	}
+	labels := make([]string, 0, len(c.activeStates))
+	active := make(map[string]struct{}, len(c.activeStates))
+	for _, state := range c.activeStates {
+		label := c.statusLabelForState(state)
+		if label == "" {
+			continue
+		}
+		labels = append(labels, label)
+		active[normalizeStateName(state)] = struct{}{}
+	}
+	if len(labels) == 0 {
+		return nil, nil
+	}
+
+	issues := []connector.Issue{}
+	itemsRead := 0
+	for page := 1; ; page++ {
+		var response restIssueSearchResponse
+		path := restClosedActiveIssuesSearchPagePath(c.repository, labels, page, repositoryIssuesPageSize)
+		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
+			return nil, fmt.Errorf("fetch github closed active issue drift: %w", err)
+		}
+		itemsRead += len(response.Items)
+		for _, item := range response.Items {
+			if item.PullRequest != nil || !githubIssueClosed(item.State) {
+				continue
+			}
+			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+			node := githubIssueNodeFromREST(ref, item)
+			resolution := c.labelStatusResolutionFromLabels(node.Labels)
+			if resolution.conflicted() || resolution.Status == "" {
+				continue
+			}
+			state := c.githubToDetentState(resolution.Status)
+			if _, ok := active[normalizeStateName(state)]; !ok {
+				continue
+			}
+			c.cacheIssueRef(node)
+			issues = append(issues, c.buildLabelIssue(node, resolution.Status))
+		}
+		if len(response.Items) < repositoryIssuesPageSize || itemsRead >= response.TotalCount {
+			return issues, nil
+		}
+	}
 }
 
 func (c *Connector) readLabelStatusDrift(
@@ -787,6 +859,29 @@ func restRepositoryOpenIssuesPagePath(repo pullRequestRepo, page int, pageSize i
 	values.Set("per_page", strconv.Itoa(pageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
+}
+
+func restClosedActiveIssuesSearchPagePath(repo pullRequestRepo, labels []string, page int, pageSize int) string {
+	terms := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label != "" {
+			terms = append(terms, `label:"`+strings.ReplaceAll(label, `"`, `\"`)+`"`)
+		}
+	}
+	query := "repo:" + pullRequestRepoName(repo) + " is:issue is:closed"
+	if len(terms) == 1 {
+		query += " " + terms[0]
+	} else if len(terms) > 1 {
+		query += " (" + strings.Join(terms, " OR ") + ")"
+	}
+	values := url.Values{}
+	values.Set("q", query)
+	values.Set("sort", "created")
+	values.Set("order", "asc")
+	values.Set("per_page", strconv.Itoa(pageSize))
+	values.Set("page", strconv.Itoa(page))
+	return "/search/issues?" + values.Encode()
 }
 
 func restIssueLabelsPath(ref issueRef) string {

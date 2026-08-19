@@ -304,4 +304,5 @@ type IssueChildrenResolver interface {
 type StatusDrift struct {
 	UntrackedOpen []Issue `json:"untracked_open,omitempty" yaml:"untracked_open,omitempty"`
 	OpenTerminal  []Issue `json:"open_terminal,omitempty" yaml:"open_terminal,omitempty"`
+	ClosedActive  []Issue `json:"closed_active,omitempty" yaml:"closed_active,omitempty"`
 }

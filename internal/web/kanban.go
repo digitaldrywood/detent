@@ -197,6 +197,9 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, kanbanstate.MappedState(target.workflow, req.targetState)); err != nil {
 				return err
 			}
+			if err := closeLandedKanbanTerminalIssue(c.Request().Context(), target, snapshotIssue, req.issueID, req.targetState); err != nil {
+				return err
+			}
 			s.recordKanbanLaneTransition(
 				c.Request().Context(),
 				req.projectID,
@@ -212,6 +215,9 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			return nil
 		}
 		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
+			return err
+		}
+		if err := closeLandedKanbanTerminalIssue(c.Request().Context(), target, snapshotIssue, req.issueID, req.targetState); err != nil {
 			return err
 		}
 		s.recordKanbanLaneTransition(
@@ -292,6 +298,30 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		"runtime_block_cleared", runtimeMove.BlockedCleared,
 	)
 	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
+}
+
+func closeLandedKanbanTerminalIssue(
+	ctx context.Context,
+	target kanbanActionTarget,
+	issue telemetry.Issue,
+	issueID string,
+	targetState string,
+) error {
+	terminal := false
+	for _, state := range target.workflow.Tracker.TerminalStates {
+		if kanbanstate.NormalizeState(state) == kanbanstate.NormalizeState(targetState) {
+			terminal = true
+			break
+		}
+	}
+	if !terminal || issue.PullRequest == nil || !strings.EqualFold(strings.TrimSpace(issue.PullRequest.State), "merged") {
+		return nil
+	}
+	closer, ok := target.connector.(connector.IssueCloser)
+	if !ok {
+		return nil
+	}
+	return closer.CloseIssue(ctx, issueID)
 }
 
 func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, message string) error {

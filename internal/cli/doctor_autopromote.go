@@ -494,11 +494,12 @@ func checkDoctorLabelStatusDriftLive(
 
 	untracked := doctorStatusDriftDiagnostics(drift.UntrackedOpen)
 	openTerminal := doctorStatusDriftDiagnostics(drift.OpenTerminal)
-	if len(untracked) == 0 && len(openTerminal) == 0 {
+	closedActive := doctorStatusDriftDiagnostics(drift.ClosedActive)
+	if len(untracked) == 0 && len(openTerminal) == 0 && len(closedActive) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
-			Detail: "sampled open repository issues; 0 untracked open issues and 0 open terminal issues",
+			Detail: "sampled repository issues; 0 untracked open issues, 0 open terminal issues, and 0 closed active issues",
 		}
 	}
 
@@ -513,13 +514,18 @@ func checkDoctorLabelStatusDriftLive(
 	if len(openTerminal) > 0 {
 		detail += ": " + doctorStatusDriftIssueSummaries(openTerminal)
 	}
+	detail += fmt.Sprintf("; %d closed issue(s) with active status label", len(closedActive))
+	if len(closedActive) > 0 {
+		detail += ": " + doctorStatusDriftIssueSummaries(closedActive)
+	}
 	return doctorCheck{
 		Name:               name,
 		Status:             doctorWarn,
 		Detail:             detail,
-		Hint:               "Apply exactly one configured status label such as detent:backlog or detent:todo to untracked open issues; close or relabel open terminal-labeled issues.",
+		Hint:               "Apply exactly one configured status label to untracked open issues; close landed terminal-labeled issues, report terminal issues without landed work, and move closed active-labeled issues to a terminal lane.",
 		UntrackedIssues:    untracked,
 		OpenTerminalIssues: openTerminal,
+		ClosedActiveIssues: closedActive,
 	}
 }
 

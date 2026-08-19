@@ -583,9 +583,41 @@ func (o *Orchestrator) refreshStatusDrift(
 		})
 		return
 	}
+	drift.OpenTerminal = o.reconcileOpenTerminalIssueDrift(ctx, state, drift.OpenTerminal, now)
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceDrift, now)
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceDrift, now)
 	state.StatusDrift = cloneStatusDrift(drift)
+}
+
+func (o *Orchestrator) reconcileOpenTerminalIssueDrift(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) []connector.Issue {
+	remaining := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Closed {
+			continue
+		}
+		closed, err := o.closeLandedTerminalIssue(ctx, issue)
+		if err != nil {
+			o.logger.Warn("reconcile open terminal issue failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+			remaining = append(remaining, issue)
+			continue
+		}
+		if !closed {
+			remaining = append(remaining, issue)
+			continue
+		}
+		o.logger.Info("reconciled open terminal issue", "issue_id", issue.ID, "identifier", issue.Identifier)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "open_terminal_issue_reconciled",
+			Message: "closed " + issueLabel(issue) + " after confirming its linked pull request is merged",
+		})
+	}
+	return remaining
 }
 
 func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
