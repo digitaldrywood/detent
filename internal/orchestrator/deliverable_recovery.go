@@ -205,6 +205,9 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 		running.DiffStats,
 	)
 	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
+	reasonCode := deliverableRecoveryReasonCode(lookup)
+	metadata.BlockedRecovery.HoldReason = reasonCode
+	metadata.BlockedRecovery.OperatorRemedy = humanAction
 	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, reason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
@@ -248,15 +251,18 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 		state.Blocked = map[string]Blocked{}
 	}
 	state.Blocked[issue.ID] = Blocked{
-		Issue:          issue,
-		Reason:         reason,
-		RecoveryReason: humanAction,
-		RecoveryTarget: autoPromoteReworkState,
-		BlockedAt:      event.CompletedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
+		Issue:                issue,
+		Reason:               reason,
+		RecoveryAction:       "hold",
+		RecoveryReason:       reasonCode,
+		RecoveryRemedy:       humanAction,
+		RecoveryTarget:       autoPromoteReworkState,
+		RecoveryReachability: blockedRecoveryReachability("hold"),
+		NeedsHumanAttention:  true,
+		BlockedAt:            event.CompletedAt,
+		Source:               BlockedSourceProjectStatus,
+		Recovery:             metadata.BlockedRecovery,
 	}
-	reasonCode := deliverableRecoveryReasonCode(lookup)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   reasonCode,

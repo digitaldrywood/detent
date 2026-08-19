@@ -1816,12 +1816,84 @@ func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
 	if card.ExtraKind != primitives.KindWarn || !card.ExtraChip {
 		t.Fatalf("card extra = %q chip %t, want warn chip; card = %+v", card.ExtraKind, card.ExtraChip, card)
 	}
-	if !strings.Contains(card.ExtraText, "waiting - digitaldrywood/detent#170 In Progress") {
+	if !strings.Contains(card.ExtraText, "waiting on digitaldrywood/detent#170 (In Progress)") {
 		t.Fatalf("card extra text = %q", card.ExtraText)
 	}
 	cardClass := boardCardClass(card)
 	if !strings.Contains(cardClass, "border-warn/45") || strings.Contains(cardClass, "border-err/45") {
 		t.Fatalf("card class = %q, want warning border without error border", cardClass)
+	}
+}
+
+func TestBoardBlockedCauseBadge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		card     projectKanbanCard
+		wantKind primitives.Kind
+		wantText string
+	}{
+		{
+			name: "unresolved dependency names ref and state",
+			card: projectKanbanCard{
+				BlockedSource:         telemetry.BlockedSourceProjectStatus,
+				BlockedReason:         "waiting on gopherguides/corp#526 (In Progress)",
+				BlockedRecoveryAction: "defer",
+				BlockedRecoveryReason: "dependency_recovery",
+				Blockers:              []string{"gopherguides/corp#526 (In Progress)"},
+			},
+			wantKind: primitives.KindWarn,
+			wantText: "waiting on gopherguides/corp#526 (In Progress)",
+		},
+		{
+			name: "satisfied refs cannot claim dependency wait",
+			card: projectKanbanCard{
+				BlockedSource:         telemetry.BlockedSourceProjectStatus,
+				BlockedReason:         "blocked by project status",
+				BlockedRecoveryReason: "dependency_blocker",
+				ClearedBlockers:       []string{"gopherguides/corp#526 (Done)"},
+			},
+			wantKind: primitives.KindWarn,
+			wantText: "waiting - project status",
+		},
+		{
+			name: "transient resource wait stays passive",
+			card: projectKanbanCard{
+				BlockedSource:         telemetry.BlockedSourceProjectStatus,
+				BlockedReason:         "transient GitHub REST budget waiting for capacity: remaining=940/5000 reserve=1250",
+				BlockedRecoveryAction: "defer",
+				BlockedRecoveryReason: "github_rest_budget_wait",
+			},
+			wantKind: primitives.KindWarn,
+			wantText: "waiting - transient GitHub REST budget waiting for capacity: remaining=940/5000 reserve=1250",
+		},
+		{
+			name: "human delivery failure needs review",
+			card: projectKanbanCard{
+				BlockedSource:         telemetry.BlockedSourceProjectStatus,
+				BlockedReason:         "no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead",
+				BlockedRecoveryAction: "hold",
+				BlockedRecoveryReason: "no_commits_to_deliver",
+				BlockedRecoveryRemedy: "return the issue to Todo when implementation work is ready to resume",
+			},
+			wantKind: primitives.KindErr,
+			wantText: "needs review - no commits to deliver — return the issue to Todo when implementation work is ready to resume",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			kind, text, chip := boardCardExtra(tt.card, boardCardView{})
+			if kind != tt.wantKind || text != tt.wantText || !chip {
+				t.Fatalf("boardCardExtra() = %q, %q, %t, want %q, %q, true", kind, text, chip, tt.wantKind, tt.wantText)
+			}
+			if strings.Contains(text, "dependency not ready") {
+				t.Fatalf("boardCardExtra() exposed unnamed dependency: %q", text)
+			}
+		})
 	}
 }
 

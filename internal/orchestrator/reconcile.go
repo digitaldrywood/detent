@@ -525,17 +525,8 @@ func clearBlockedStatusIssue(state *State, issueID string) {
 }
 
 func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue, now time.Time) {
-	if existing, ok := state.Blocked[issue.ID]; ok &&
-		existing.Source == BlockedSourceProjectStatus &&
-		(strings.HasPrefix(existing.Reason, instantFailureBlockedReasonPrefix) ||
-			strings.HasPrefix(existing.Reason, repeatedFailureBlockedReasonPrefix) ||
-			strings.HasPrefix(existing.Reason, tokenCeilingBlockedReasonPrefix) ||
-			strings.HasPrefix(existing.Reason, artifactGateConvergenceBlockedReasonPrefix) ||
-			strings.HasPrefix(existing.Reason, mergeWorkerRetryExhaustedReason) ||
-			strings.HasPrefix(existing.Reason, mergeWorkerPersistentMissingRequiredCheckReason) ||
-			strings.HasPrefix(existing.Reason, mergeWorkerDurationExceededReason)) &&
-		strings.TrimSpace(issue.BlockerReason) == "" {
-		existing.Issue = cloneIssue(issue)
+	if existing, ok := state.Blocked[issue.ID]; ok && existing.Source == BlockedSourceProjectStatus {
+		existing.Issue = mergeIssueTrackerFields(existing.Issue, issue)
 		state.Blocked[issue.ID] = existing
 		return
 	}

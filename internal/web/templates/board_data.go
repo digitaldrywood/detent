@@ -1593,7 +1593,10 @@ func boardCardMatchesIssue(issue telemetry.Issue, card projectKanbanCard) bool {
 
 func boardCardBlockedWaitingText(card projectKanbanCard) string {
 	if len(card.Blockers) > 0 {
-		return "waiting - " + card.Blockers[0]
+		return "waiting on " + card.Blockers[0]
+	}
+	if len(card.ClearedBlockers) > 0 && boardBlockedDependencyWaiting(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason, nil) {
+		return "waiting - project status"
 	}
 	if detail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason); detail != "" {
 		return "waiting - " + detail
