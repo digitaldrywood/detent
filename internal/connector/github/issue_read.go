@@ -474,6 +474,90 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 	return issues, nil
 }
 
+func (c *Connector) FetchRefreshIssues(
+	ctx context.Context,
+	candidateStates []string,
+	observedStates []string,
+	hint connector.IssueFilterHint,
+) connector.RefreshIssueResult {
+	if c.statusSource != GitHubStatusSourceProjectV2 {
+		candidates, err := c.FetchCandidateIssuesByStatesWithFilter(ctx, candidateStates, hint)
+		result := connector.RefreshIssueResult{Candidates: candidates, CandidateError: err}
+		if err != nil || len(normalizeStateList(observedStates, nil)) == 0 {
+			return result
+		}
+		result.Statuses, result.StatusError = c.FetchFreshIssuesByStates(ctx, observedStates)
+		return result
+	}
+
+	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates)
+}
+
+func (c *Connector) CombinedRefreshEnabled() bool {
+	return c != nil && c.statusSource == GitHubStatusSourceProjectV2
+}
+
+func (c *Connector) fetchProjectRefreshIssues(
+	ctx context.Context,
+	candidateStates []string,
+	observedStates []string,
+) connector.RefreshIssueResult {
+	candidateStates = normalizeStateList(candidateStates, nil)
+	observedStates = normalizeStateList(observedStates, nil)
+	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
+	wantedStates := normalizedStateSet(allStates)
+	if len(wantedStates) == 0 {
+		return connector.RefreshIssueResult{Candidates: []connector.Issue{}, Statuses: []connector.Issue{}}
+	}
+
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
+	issues, err := c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
+		_, ok := wantedStates[normalizeStateName(issue.State)]
+		return ok
+	}, 0, repairBlankStatuses)
+	if err != nil {
+		return connector.RefreshIssueResult{CandidateError: err}
+	}
+
+	result := connector.RefreshIssueResult{
+		Candidates: issuesInStates(issues, candidateStates),
+		Statuses:   issuesInStates(issues, observedStates),
+	}
+	if err := c.attachPullRequests(ctx, result.Candidates); err != nil {
+		result.Candidates = nil
+		result.CandidateError = err
+		return result
+	}
+	if len(result.Statuses) == 0 {
+		return result
+	}
+	wantedObservedStates := normalizedStateSet(observedStates)
+	if _, ok := wantedObservedStates[normalizeStateName("Blocked")]; ok {
+		if err := c.populateBlockerReasons(ctx, result.Statuses); err != nil {
+			result.StatusError = err
+			return result
+		}
+		c.hydrateBlockedByRefs(ctx, result.Statuses)
+		if err := c.resolveBlockedByProjectState(ctx, result.Statuses); err != nil {
+			result.StatusError = err
+			return result
+		}
+	}
+	result.StatusError = c.attachStatePullRequests(ctx, result.Statuses, false)
+	return result
+}
+
+func issuesInStates(issues []connector.Issue, states []string) []connector.Issue {
+	wanted := normalizedStateSet(states)
+	selected := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if _, ok := wanted[normalizeStateName(issue.State)]; ok {
+			selected = append(selected, issue)
+		}
+	}
+	return selected
+}
+
 func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
 	return c.fetchIssuesByStates(ctx, stateNames, true)
 }

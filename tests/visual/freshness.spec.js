@@ -124,9 +124,9 @@ test("heavy alerts stay one line and never reflow lanes", async ({ page }) => {
     const toggle = page.locator("#board-alerts-toggle");
     const lanes = page.locator("#board-lanes");
     const overlay = page.locator("body > #board-alerts-overlay");
-    await expect(bar).toHaveAttribute("data-board-alert-count", "6");
+    await expect(bar).toHaveAttribute("data-board-alert-count", "5");
     await expect(bar).toContainText("Board showing last-known state");
-    await expect(bar).toContainText("+5");
+    await expect(bar).toContainText("+4");
     const heavyHeight = await bar.evaluate((element) => element.getBoundingClientRect().height);
     expect(heavyHeight).toBe(22);
     expect(await bar.evaluate((element) => element.scrollHeight)).toBe(20);
@@ -176,11 +176,11 @@ test("collapsed alert height is independent of alert count", async ({ page }) =>
     "X-Detent-Demo-Scenario": "board-alerts-heavy",
   });
   await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
-  const sixAlertHeight = await page
+  const fiveAlertHeight = await page
     .locator("#board-alerts")
     .evaluate((element) => element.getBoundingClientRect().height);
   expect(oneAlertHeight).toBe(22);
-  expect(sixAlertHeight).toBe(oneAlertHeight);
+  expect(fiveAlertHeight).toBe(oneAlertHeight);
 });
 
 test("zero, one, and twenty warnings keep one indicator slot and fixed lanes", async ({

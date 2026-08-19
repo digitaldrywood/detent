@@ -2412,7 +2412,7 @@ func TestBoardSnapshotRendersLastKnownState(t *testing.T) {
 		`id="board-alert-last-known"`,
 		`data-board-snapshot-stale="true"`,
 		"Board showing last-known state",
-		"The live board snapshot is unavailable.",
+		"Tracker refresh is behind; no refresh failure is reported.",
 		"grayscale",
 	} {
 		if !strings.Contains(html, want) {
@@ -2429,7 +2429,6 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 	wantKinds := []boardAlertKind{
 		boardAlertKindLastKnown,
 		boardAlertKindFailureBreaker,
-		boardAlertKindTrackerStale,
 		boardAlertKindBackendCapacity,
 		boardAlertKindDispatchRecovery,
 		boardAlertKindUpdatePending,
@@ -2446,8 +2445,10 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 		t.Fatalf("highest-severity tone = %q, want err", alerts[0].Tone)
 	}
 
+	currentSnapshot := snapshot
+	currentSnapshot.LastKnown = false
 	var tracker boardAlert
-	for _, alert := range alerts {
+	for _, alert := range boardAlerts(currentSnapshot) {
 		if alert.Kind == boardAlertKindTrackerStale {
 			tracker = alert
 			break
@@ -2691,7 +2692,7 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	for _, want := range []string{
 		`id="board-alerts"`,
 		`class="min-w-0 max-w-full self-center overflow-hidden`,
-		`data-board-alert-count="6"`,
+		`data-board-alert-count="5"`,
 		`role="alert"`,
 		`aria-live="polite"`,
 		`type="button"`,
@@ -2699,7 +2700,6 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 		`aria-controls="board-alerts-overlay"`,
 		`class="hidden min-w-0 flex-1 truncate text-text md:inline"`,
 		`href="/health/ui"`,
-		`+2 more · Health`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("unified board alerts missing %q:\n%s", want, html)

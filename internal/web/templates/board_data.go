@@ -434,21 +434,60 @@ func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 	if !snapshot.LastKnown {
 		return boardAlert{}, false
 	}
+	tone := primitives.KindWarn
+	detailSummary := "Tracker refresh is behind; no refresh failure is reported."
+	detail := "The board is showing cached state while tracker refresh continues."
+	if refreshSnapshotFailed(snapshot) {
+		tone = primitives.KindErr
+		detailSummary = "The live board snapshot is unavailable because tracker refresh failed."
+		detail = "The board is showing cached state until tracker refresh recovers."
+	}
 	return boardAlert{
 		ID:            "board-alert-last-known",
 		Kind:          boardAlertKindLastKnown,
 		Severity:      boardAlertSeverityLastKnown,
-		Tone:          primitives.KindErr,
+		Tone:          tone,
 		TerseSummary:  "Board showing last-known state",
-		DetailSummary: "The live board snapshot is unavailable.",
+		DetailSummary: detailSummary,
 		DetailRows: []boardAlertDetailRow{{
 			ID:      "board-alert-last-known-snapshot",
 			Label:   "Snapshot",
 			Summary: "Cached board state",
-			Detail:  "The board is showing cached state while tracker refresh continues.",
+			Detail:  detail,
 		}},
 		DeepLink: "/health/ui",
 	}, true
+}
+
+func refreshSnapshotFailed(snapshot telemetry.Snapshot) bool {
+	if refreshFailed(snapshot.Refresh) {
+		return true
+	}
+	for _, project := range snapshot.Projects {
+		if refreshFailed(project.Refresh) {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshFailed(refresh telemetry.Refresh) bool {
+	if !refresh.Degraded() || refresh.StalenessWindowExceeded {
+		return false
+	}
+	if strings.TrimSpace(refresh.LastError) != "" {
+		return true
+	}
+	threshold := refresh.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	for _, source := range refresh.Sources {
+		if source.Degraded || source.FailureStreak >= threshold {
+			return true
+		}
+	}
+	return false
 }
 
 func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
@@ -506,6 +545,9 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 }
 
 func boardTrackerStaleAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if snapshot.LastKnown {
+		return boardAlert{}, false
+	}
 	if refreshFreshnessKind(snapshot) != primitives.KindWarn {
 		return boardAlert{}, false
 	}

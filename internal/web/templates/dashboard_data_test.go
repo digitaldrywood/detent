@@ -954,6 +954,60 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 	}
 }
 
+func TestProjectSmallMultipleStatusUsesProjectFreshness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		project    ProjectSmallMultiple
+		wantStatus string
+		wantBadge  string
+	}{
+		{
+			name:       "current project remains active",
+			project:    ProjectSmallMultiple{Running: 2, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}},
+			wantStatus: "active",
+			wantBadge:  "2 running",
+		},
+		{
+			name: "slow project is stale",
+			project: ProjectSmallMultiple{Refresh: telemetry.Refresh{
+				Status:                  telemetry.RefreshStatusDegraded,
+				StalenessWindowExceeded: true,
+			}},
+			wantStatus: "stale",
+			wantBadge:  "stale",
+		},
+		{
+			name: "failed project names failure",
+			project: ProjectSmallMultiple{Refresh: telemetry.Refresh{
+				Status:    telemetry.RefreshStatusDegraded,
+				LastError: "status query failed",
+			}},
+			wantStatus: "refresh failed",
+			wantBadge:  "refresh failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			status := projectSmallMultipleStatus(tt.project)
+			if status.Label != tt.wantStatus {
+				t.Fatalf("status label = %q, want %q", status.Label, tt.wantStatus)
+			}
+			item := sidebarProjectItem{
+				StatusLabel:  status.Label,
+				RunningLabel: formatCount(tt.project.Running) + " running",
+			}
+			if got := sidebarProjectBadgeLabel(item); got != tt.wantBadge {
+				t.Fatalf("sidebar badge = %q, want %q", got, tt.wantBadge)
+			}
+		})
+	}
+}
+
 func TestProjectColorMarkersUseConfiguredAndAutomaticColors(t *testing.T) {
 	t.Parallel()
 

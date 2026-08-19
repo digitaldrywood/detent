@@ -294,7 +294,15 @@ type Orchestrator struct {
 	completedStops          map[string]StopRunResult
 	refreshSeq              atomic.Uint64
 	workerGeneration        atomic.Uint64
+	latestState             atomic.Pointer[State]
+	latestRuntimeState      atomic.Pointer[runtimeState]
+	refreshInProgress       atomic.Bool
 	tickWatchdog            *tickWatchdog
+}
+
+type runtimeState struct {
+	Running map[string]Running
+	Claimed map[string]Claimed
 }
 
 type validatorStageResult struct {
@@ -636,10 +644,14 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer o.validatorWG.Wait()
 	defer o.releaseRunningSlots(&state)
 	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
+	if len(state.Running) > 0 {
+		o.publishState(&state)
+	}
 	initialTickAt := time.Now()
 	o.startTick(&state, initialTickAt)
 	o.tick(ctx, &state, initialTickAt)
 	o.finishTick(&state)
+	o.publishState(&state)
 	resetTicker(ticker, state.PollInterval)
 
 	for {
@@ -705,6 +717,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case request := <-o.stateRequests:
 			request.reply <- state.clone()
 		}
+		o.publishState(&state)
 	}
 }
 
@@ -716,7 +729,11 @@ func (o *Orchestrator) TickLiveness(now time.Time) telemetry.TickLiveness {
 }
 
 func (o *Orchestrator) startTick(state *State, at time.Time) {
-	if o == nil || o.tickWatchdog == nil || state == nil {
+	if o == nil {
+		return
+	}
+	o.refreshInProgress.Store(true)
+	if o.tickWatchdog == nil || state == nil {
 		return
 	}
 	nextRefreshAt := time.Time{}
@@ -727,7 +744,11 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 }
 
 func (o *Orchestrator) finishTick(state *State) {
-	if o == nil || o.tickWatchdog == nil || state == nil {
+	if o == nil {
+		return
+	}
+	o.refreshInProgress.Store(false)
+	if o.tickWatchdog == nil || state == nil {
 		return
 	}
 	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
@@ -851,6 +872,26 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	select {
+	case <-ctx.Done():
+		return State{}, ctx.Err()
+	case <-o.done:
+		return State{}, ErrStopped
+	default:
+	}
+	if latest := o.latestState.Load(); latest != nil && o.refreshInProgress.Load() {
+		state := latest.clone()
+		if runtime := o.latestRuntimeState.Load(); runtime != nil {
+			state.Running = cloneRunning(runtime.Running)
+			state.Claimed = cloneClaimed(runtime.Claimed)
+		}
+		pool := o.dispatchPoolSnapshot()
+		state.PoolName = pool.Name
+		state.PoolCapacity = pool.Capacity
+		state.PoolAvailable = pool.Available
+		state.PoolDraining = pool.Draining
+		return state, nil
+	}
 
 	request := stateRequest{reply: make(chan State, 1)}
 	select {
@@ -874,6 +915,28 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		state.PoolDraining = pool.Draining
 		return state, nil
 	}
+}
+
+func (o *Orchestrator) publishState(state *State) {
+	if o == nil || state == nil {
+		return
+	}
+	cloned := state.clone()
+	o.latestState.Store(&cloned)
+	o.latestRuntimeState.Store(&runtimeState{
+		Running: cloned.Running,
+		Claimed: cloned.Claimed,
+	})
+}
+
+func (o *Orchestrator) publishRuntimeState(state *State) {
+	if o == nil || state == nil {
+		return
+	}
+	o.latestRuntimeState.Store(&runtimeState{
+		Running: cloneRunning(state.Running),
+		Claimed: cloneClaimed(state.Claimed),
+	})
 }
 
 func (o *Orchestrator) Drain(ctx context.Context) error {
