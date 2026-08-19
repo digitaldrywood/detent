@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -165,6 +166,15 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		terminalIssue := cloneIssue(issue)
 		if strings.TrimSpace(terminalIssue.ID) == "" {
 			terminalIssue.ID = issueID
+		}
+		terminalIssue.State = targetState
+		closed, err := o.closeLandedTerminalIssue(ctx, terminalIssue)
+		if err != nil {
+			return fmt.Errorf("close terminal issue %s: %w", issueID, err)
+		}
+		if closed {
+			issue.Closed = true
+			issue.ClosedReason = "completed"
 		}
 		o.clearMergeRequiredCheckStreaks(ctx, terminalIssue)
 	}
@@ -531,6 +541,7 @@ func stateLaneEntryIssues(state *State) []connector.Issue {
 	}
 	issues = append(issues, state.StatusDrift.UntrackedOpen...)
 	issues = append(issues, state.StatusDrift.OpenTerminal...)
+	issues = append(issues, state.StatusDrift.ClosedActive...)
 	return issues
 }
 

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2514,6 +2515,71 @@ func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 			}
 			if got := actionConnector.issueFieldUpdates(); !equalIssueFieldUpdates(got, tt.wantField) {
 				t.Fatalf("issue field updates = %#v, want %#v", got, tt.wantField)
+			}
+		})
+	}
+}
+
+func TestKanbanMoveClosesOnlyLandedTerminalIssues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		issueStateFieldID int
+		pullRequestState  string
+		wantCloses        []string
+	}{
+		{name: "project status landed work", pullRequestState: "MERGED", wantCloses: []string{"I_kw1"}},
+		{name: "issue field landed work", issueStateFieldID: 123, pullRequestState: "MERGED", wantCloses: []string{"I_kw1"}},
+		{name: "terminal without landed work", pullRequestState: "OPEN"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			actionConnector := &kanbanActionConnector{name: "github"}
+			mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+				Mode:              workflowconfig.KanbanModeIntegration,
+				IssueStateFieldID: tt.issueStateFieldID,
+				AllowedTransitions: map[string][]string{
+					"Merging": {"Done"},
+				},
+			}, actionConnector)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent"},
+				Pipeline: []telemetry.Issue{{
+					ID:         "I_kw1",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Terminal card",
+					State:      "Merging",
+					PullRequest: &telemetry.PullRequest{
+						Number: 1,
+						State:  tt.pullRequestState,
+					},
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_kw1"},
+				"current_state": {"Merging"},
+				"target_state":  {"Done"},
+			})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if got := actionConnector.issueCloses(); !slices.Equal(got, tt.wantCloses) {
+				t.Fatalf("CloseIssue() calls = %#v, want %#v", got, tt.wantCloses)
 			}
 		})
 	}
@@ -12817,6 +12883,7 @@ type kanbanActionConnector struct {
 	fields         []kanbanIssueFieldUpdate
 	fieldClears    []kanbanIssueFieldUpdate
 	removes        []kanbanRemoval
+	closes         []string
 	commentLog     []kanbanComment
 	commentEdits   []kanbanCommentEdit
 	commentDeletes []kanbanCommentDelete
@@ -12939,6 +13006,14 @@ func (c *kanbanActionConnector) UpdateIssueState(_ context.Context, issueID stri
 	return err
 }
 
+func (c *kanbanActionConnector) CloseIssue(_ context.Context, issueID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.closes = append(c.closes, issueID)
+	return nil
+}
+
 func (c *kanbanActionConnector) SetAssignee(context.Context, string, string) error {
 	return connector.ErrNotImplemented
 }
@@ -13005,6 +13080,13 @@ func (c *kanbanActionConnector) removals() []kanbanRemoval {
 	defer c.mu.Unlock()
 
 	return append([]kanbanRemoval(nil), c.removes...)
+}
+
+func (c *kanbanActionConnector) issueCloses() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]string(nil), c.closes...)
 }
 
 func (c *kanbanActionConnector) comments() []kanbanComment {

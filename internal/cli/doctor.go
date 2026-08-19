@@ -71,6 +71,7 @@ type doctorCheck struct {
 	HealthNotificationFailures []healthnotify.Failure                     `json:"health_notification_failures,omitempty"`
 	UntrackedIssues            []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues         []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
+	ClosedActiveIssues         []doctorStatusDriftIssueDiagnostic         `json:"closed_active_issues,omitempty"`
 	AuthorizationAttention     []doctorAuthorizationAttentionDiagnostic   `json:"authorization_attention,omitempty"`
 	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
 	OrphanedAgentProcesses     *telemetry.OrphanedAgentProcesses          `json:"orphaned_agent_processes,omitempty"`

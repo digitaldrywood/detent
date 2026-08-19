@@ -93,6 +93,87 @@ func TestReconcileClosedCompletedIssueStatusesLeavesOtherIssuesUnchanged(t *test
 	}
 }
 
+func TestTerminalIssueClosure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		issue       connector.Issue
+		transitions []string
+		wantCloses  int
+	}{
+		{
+			name:        "first terminal entry closes landed work",
+			issue:       statusReconcileLandedIssue("issue-first-entry", "Merging", false),
+			transitions: []string{"Done"},
+			wantCloses:  1,
+		},
+		{
+			name:        "done rework done closes reopened issue",
+			issue:       statusReconcileLandedIssue("issue-round-trip", "Done", true),
+			transitions: []string{"Rework", "Done"},
+			wantCloses:  1,
+		},
+		{
+			name:        "already closed terminal issue is not closed again",
+			issue:       statusReconcileLandedIssue("issue-closed", "Done", true),
+			transitions: []string{"Done"},
+		},
+		{
+			name:        "terminal issue without landed work remains open",
+			issue:       statusReconcileIssue("issue-no-work", "Merging", false, ""),
+			transitions: []string{"Done"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &statusReconcileConnector{}
+			orch := newStatusReconcileOrchestrator(tracker)
+			state := newState(orch.cfg)
+			issue := cloneIssue(tt.issue)
+			for _, target := range tt.transitions {
+				if normalizeState(issue.State) == normalizeState("Done") && normalizeState(target) == normalizeState("Rework") {
+					issue.Closed = false
+					issue.ClosedReason = ""
+				}
+				if err := orch.updateIssueState(context.Background(), &state, issue, target, time.Now(), "test"); err != nil {
+					t.Fatalf("updateIssueState(%q) error = %v", target, err)
+				}
+				issue.State = target
+			}
+
+			if got := len(tracker.closes); got != tt.wantCloses {
+				t.Fatalf("CloseIssue() calls = %d, want %d: %#v", got, tt.wantCloses, tracker.closes)
+			}
+		})
+	}
+}
+
+func TestRefreshStatusDriftReconcilesOnlyLandedOpenTerminalIssues(t *testing.T) {
+	t.Parallel()
+
+	landed := statusReconcileLandedIssue("issue-stranded", "Done", false)
+	unlanded := statusReconcileIssue("issue-no-landed-work", "Done", false, "")
+	alreadyClosed := statusReconcileLandedIssue("issue-already-closed", "Done", true)
+	tracker := &statusReconcileConnector{
+		drift: connector.StatusDrift{OpenTerminal: []connector.Issue{landed, unlanded, alreadyClosed}},
+	}
+	orch := newStatusReconcileOrchestrator(tracker)
+	state := newState(orch.cfg)
+
+	orch.refreshStatusDrift(context.Background(), &state, time.Now(), githubBudgetReserveDecision{})
+
+	if len(tracker.closes) != 1 || tracker.closes[0] != landed.ID {
+		t.Fatalf("closes = %#v, want only %q", tracker.closes, landed.ID)
+	}
+	if len(state.StatusDrift.OpenTerminal) != 1 || state.StatusDrift.OpenTerminal[0].ID != unlanded.ID {
+		t.Fatalf("StatusDrift.OpenTerminal = %#v, want unlanded issue reported", state.StatusDrift.OpenTerminal)
+	}
+}
+
 func TestTickReconcilesClosedCompletedIssueStatusesFromExistingPolls(t *testing.T) {
 	t.Parallel()
 
@@ -219,6 +300,12 @@ func statusReconcileIssue(id string, state string, closed bool, closedReason str
 	return issue
 }
 
+func statusReconcileLandedIssue(id string, state string, closed bool) connector.Issue {
+	issue := statusReconcileIssue(id, state, closed, "completed")
+	issue.PullRequest = &connector.PullRequest{Number: 1, State: "MERGED"}
+	return issue
+}
+
 type statusUpdate struct {
 	issueID string
 	state   string
@@ -229,6 +316,8 @@ type statusReconcileConnector struct {
 	stateIssues    []connector.Issue
 	updates        []statusUpdate
 	comments       []string
+	closes         []string
+	drift          connector.StatusDrift
 	fetchByStates  [][]string
 	fetchByIDCount int
 }
@@ -254,6 +343,15 @@ func (c *statusReconcileConnector) FetchIssueStatesByIDs(context.Context, []stri
 func (c *statusReconcileConnector) CreateComment(_ context.Context, _ string, body string) error {
 	c.comments = append(c.comments, body)
 	return nil
+}
+
+func (c *statusReconcileConnector) CloseIssue(_ context.Context, issueID string) error {
+	c.closes = append(c.closes, issueID)
+	return nil
+}
+
+func (c *statusReconcileConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
+	return cloneStatusDrift(c.drift), nil
 }
 
 func (c *statusReconcileConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {

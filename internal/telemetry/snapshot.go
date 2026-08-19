@@ -953,10 +953,11 @@ func countOrLength(count int, length int) int {
 type TrackerDrift struct {
 	UntrackedOpen []Issue `json:"untracked_open,omitempty"`
 	OpenTerminal  []Issue `json:"open_terminal,omitempty"`
+	ClosedActive  []Issue `json:"closed_active,omitempty"`
 }
 
 func (d TrackerDrift) IsZero() bool {
-	return len(d.UntrackedOpen) == 0 && len(d.OpenTerminal) == 0
+	return len(d.UntrackedOpen) == 0 && len(d.OpenTerminal) == 0 && len(d.ClosedActive) == 0
 }
 
 type Issue struct {

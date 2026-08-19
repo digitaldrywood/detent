@@ -208,6 +208,20 @@ func closedReasonCompleted(reason string) bool {
 	return reason == "completed"
 }
 
+func (o *Orchestrator) closeLandedTerminalIssue(ctx context.Context, issue connector.Issue) (bool, error) {
+	if issue.Closed || !pullRequestMerged(issue.PullRequest) {
+		return false, nil
+	}
+	closer, ok := o.connector.(connector.IssueCloser)
+	if !ok {
+		return false, nil
+	}
+	if err := closer.CloseIssue(ctx, issue.ID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func filterReconciledIssues(issues []connector.Issue, reconciled map[string]struct{}) []connector.Issue {
 	if len(reconciled) == 0 || len(issues) == 0 {
 		return issues

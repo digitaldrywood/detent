@@ -958,6 +958,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Pipeline = append(current.Pipeline, next.Pipeline...)
 	current.TrackerDrift.UntrackedOpen = append(current.TrackerDrift.UntrackedOpen, next.TrackerDrift.UntrackedOpen...)
 	current.TrackerDrift.OpenTerminal = append(current.TrackerDrift.OpenTerminal, next.TrackerDrift.OpenTerminal...)
+	current.TrackerDrift.ClosedActive = append(current.TrackerDrift.ClosedActive, next.TrackerDrift.ClosedActive...)
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
 	current.TrackerUnavailable = append(current.TrackerUnavailable, next.TrackerUnavailable...)
 	current.ForgeUnavailable = append(current.ForgeUnavailable, next.ForgeUnavailable...)
@@ -1358,6 +1359,9 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	}
 	for i := range snapshot.TrackerDrift.OpenTerminal {
 		snapshot.TrackerDrift.OpenTerminal[i] = stampIssueProjectID(snapshot.TrackerDrift.OpenTerminal[i], projectID)
+	}
+	for i := range snapshot.TrackerDrift.ClosedActive {
+		snapshot.TrackerDrift.ClosedActive[i] = stampIssueProjectID(snapshot.TrackerDrift.ClosedActive[i], projectID)
 	}
 	for i := range snapshot.Running {
 		snapshot.Running[i].Issue = stampIssueProjectID(snapshot.Running[i].Issue, projectID)

@@ -169,7 +169,7 @@ func TestConnectorFetchCandidateIssuesWithFilterIgnoresStatusLabels(t *testing.T
 	}
 }
 
-func TestConnectorFetchStatusDriftReportsUntrackedAndOpenTerminalIssues(t *testing.T) {
+func TestConnectorFetchStatusDriftReportsTrackerStateMismatches(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -177,6 +177,14 @@ func TestConnectorFetchStatusDriftReportsUntrackedAndOpenTerminalIssues(t *testi
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
 			body:   `[{"node_id":"I_771","number":771,"title":"Untracked issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/771","assignees":[],"labels":[{"name":"bug"}]},{"node_id":"I_770","number":770,"title":"Normal backlog","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/770","assignees":[],"labels":[{"name":"detent:backlog"}]},{"node_id":"I_583","number":583,"title":"Done but open","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/583","assignees":[],"labels":[{"name":"detent:done"},{"name":"bug"}]},{"node_id":"PR_12","number":12,"title":"Pull request","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/pull/12","assignees":[],"labels":[],"pull_request":{}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/search/issues?order=asc&page=1&per_page=100&q=repo%3Adigitaldrywood%2Fdetent+is%3Aissue+is%3Aclosed+label%3A%22detent%3Atodo%22&sort=created",
+			body:   `{"total_count":1,"items":[{"node_id":"I_584","number":584,"title":"Closed but active","body":"","state":"closed","state_reason":"completed","html_url":"https://github.com/digitaldrywood/detent/issues/584","assignees":[],"labels":[{"name":"detent:todo"}]}]}`,
+		},
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_583","closedByPullRequestsReferences":{"nodes":[{"number":582,"url":"https://github.com/digitaldrywood/detent/pull/582","state":"MERGED","updatedAt":"2026-08-18T12:00:00Z","repository":{"nameWithOwner":"digitaldrywood/detent"}},{"number":585,"url":"https://github.com/digitaldrywood/detent/pull/585","state":"OPEN","updatedAt":"2026-08-19T12:00:00Z","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}]}}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -203,8 +211,14 @@ func TestConnectorFetchStatusDriftReportsUntrackedAndOpenTerminalIssues(t *testi
 	if got.OpenTerminal[0].Identifier != "digitaldrywood/detent#583" || got.OpenTerminal[0].State != "Done" {
 		t.Fatalf("OpenTerminal[0] = %#v, want open terminal #583 Done", got.OpenTerminal[0])
 	}
-	if len(server.requests()) != 1 {
-		t.Fatalf("request count = %d, want one open issue scan", len(server.requests()))
+	if got.OpenTerminal[0].PullRequest == nil || got.OpenTerminal[0].PullRequest.Number != 582 || got.OpenTerminal[0].PullRequest.State != "MERGED" {
+		t.Fatalf("OpenTerminal[0].PullRequest = %#v, want merged linked pull request", got.OpenTerminal[0].PullRequest)
+	}
+	if len(got.ClosedActive) != 1 || got.ClosedActive[0].Identifier != "digitaldrywood/detent#584" || got.ClosedActive[0].State != "Todo" {
+		t.Fatalf("ClosedActive = %#v, want closed active #584 Todo", got.ClosedActive)
+	}
+	if len(server.requests()) != 3 {
+		t.Fatalf("request count = %d, want open scan, closed active scan, and merged PR hydration", len(server.requests()))
 	}
 }
 
@@ -230,11 +244,18 @@ func TestConnectorRESTBackoffsAreIsolatedAcrossTestClients(t *testing.T) {
 	rateLimited.client.restEndpoint = sharedEndpoint
 	rateLimited.client.httpClient = routeGitHubTestRequests(t, rateLimitedServer)
 
-	ordinaryServer := newGraphQLTestServer(t, []graphqlTestResponse{{
-		method: http.MethodGet,
-		path:   "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
-		body:   `[]`,
-	}})
+	ordinaryServer := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/search/issues?order=asc&page=1&per_page=100&q=repo%3Adigitaldrywood%2Fdetent+is%3Aissue+is%3Aclosed+%28label%3A%22detent%3Atodo%22+OR+label%3A%22detent%3Ain-progress%22%29&sort=created",
+			body:   `{"total_count":0,"items":[]}`,
+		},
+	})
 	ordinary := newGitHubTestConnector(t, ordinaryServer, config)
 	ordinary.client.restEndpoint = sharedEndpoint
 	ordinary.client.httpClient = routeGitHubTestRequests(t, ordinaryServer)
@@ -277,8 +298,8 @@ func TestConnectorRESTBackoffsAreIsolatedAcrossTestClients(t *testing.T) {
 	if errs["ordinary"] != nil {
 		t.Fatalf("ordinary FetchStatusDrift() error = %v, want nil", errs["ordinary"])
 	}
-	if len(ordinaryServer.requests()) != 1 {
-		t.Fatalf("ordinary server request count = %d, want 1", len(ordinaryServer.requests()))
+	if len(ordinaryServer.requests()) != 2 {
+		t.Fatalf("ordinary server request count = %d, want 2", len(ordinaryServer.requests()))
 	}
 }
 

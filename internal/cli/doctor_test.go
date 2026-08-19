@@ -3201,6 +3201,15 @@ func TestCheckDoctorLabelStatusDriftReportsUntrackedAndTerminalIssues(t *testing
 				URL:        "https://github.com/digitaldrywood/detent/issues/583",
 				Labels:     []string{"detent:done"},
 			}},
+			ClosedActive: []connector.Issue{{
+				ID:         "I_584",
+				Identifier: "digitaldrywood/detent#584",
+				Title:      "Closed but active",
+				State:      "In Progress",
+				Closed:     true,
+				URL:        "https://github.com/digitaldrywood/detent/issues/584",
+				Labels:     []string{"detent:in-progress"},
+			}},
 		},
 	}
 
@@ -3220,6 +3229,9 @@ func TestCheckDoctorLabelStatusDriftReportsUntrackedAndTerminalIssues(t *testing
 		"1 open issue(s) with terminal status label",
 		"digitaldrywood/detent#583",
 		"https://github.com/digitaldrywood/detent/issues/583",
+		"1 closed issue(s) with active status label",
+		"digitaldrywood/detent#584",
+		"https://github.com/digitaldrywood/detent/issues/584",
 	} {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
@@ -3230,6 +3242,9 @@ func TestCheckDoctorLabelStatusDriftReportsUntrackedAndTerminalIssues(t *testing
 	}
 	if len(got.OpenTerminalIssues) != 1 || got.OpenTerminalIssues[0].State != "Done" {
 		t.Fatalf("OpenTerminalIssues = %#v, want Done diagnostic", got.OpenTerminalIssues)
+	}
+	if len(got.ClosedActiveIssues) != 1 || got.ClosedActiveIssues[0].State != "In Progress" {
+		t.Fatalf("ClosedActiveIssues = %#v, want In Progress diagnostic", got.ClosedActiveIssues)
 	}
 }
 

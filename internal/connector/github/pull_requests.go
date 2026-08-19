@@ -1119,6 +1119,7 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 type pullRequestReference struct {
 	Number     int
 	Repository string
+	State      string
 	UpdatedAt  *time.Time
 }
 
@@ -1160,10 +1161,27 @@ func firstPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRe
 	return fallback, fallbackOK
 }
 
+func mergedPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRequestReference, bool) {
+	var merged pullRequestReference
+	mergedOK := false
+	for _, pullRequest := range pullRequests.Nodes {
+		if pullRequest.Number <= 0 || normalizeStateName(pullRequest.State) != "merged" {
+			continue
+		}
+		ref := pullRequestReferenceFromNode(pullRequest)
+		if !mergedOK || pullRequestReferenceAfter(ref, merged) {
+			merged = ref
+			mergedOK = true
+		}
+	}
+	return merged, mergedOK
+}
+
 func pullRequestReferenceFromNode(pullRequest pullRequest) pullRequestReference {
 	return pullRequestReference{
 		Number:     pullRequest.Number,
 		Repository: strings.TrimSpace(pullRequest.Repository.NameWithOwner),
+		State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
 		UpdatedAt:  parseGitHubTime(pullRequest.UpdatedAt),
 	}
 }
