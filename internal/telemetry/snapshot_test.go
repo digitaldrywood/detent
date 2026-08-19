@@ -816,6 +816,54 @@ func TestSnapshotWithFreshness(t *testing.T) {
 	}
 }
 
+func TestSnapshotWithFreshnessKeepsProjectWindowsIndependent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 19, 2, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		lastAge    time.Duration
+		wantStatus telemetry.RefreshStatus
+	}{
+		{name: "slow project is stale", lastAge: 3 * time.Minute, wantStatus: telemetry.RefreshStatusDegraded},
+		{name: "fast project remains current", lastAge: 30 * time.Second, wantStatus: telemetry.RefreshStatusReady},
+	}
+
+	projects := make([]telemetry.ProjectSnapshot, 0, len(tests))
+	for _, tt := range tests {
+		lastRefreshAt := now.Add(-tt.lastAge)
+		projects = append(projects, telemetry.ProjectSnapshot{
+			Project: telemetry.Project{ID: tt.name},
+			Refresh: telemetry.Refresh{
+				Status:              telemetry.RefreshStatusReady,
+				PollIntervalSeconds: 60,
+				StaleAfterSeconds:   120,
+				LastRefreshAt:       &lastRefreshAt,
+			},
+		})
+	}
+
+	lastFleetRefreshAt := now.Add(-30 * time.Second)
+	snapshot := (telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			Status:              telemetry.RefreshStatusReady,
+			PollIntervalSeconds: 60,
+			StaleAfterSeconds:   120,
+			LastRefreshAt:       &lastFleetRefreshAt,
+		},
+		Projects: projects,
+	}).WithFreshness(now)
+
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := snapshot.Projects[index].Refresh.ReadinessStatus(); got != tt.wantStatus {
+				t.Fatalf("project refresh status = %q, want %q", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestSnapshotRefreshSweepHealth(t *testing.T) {
 	t.Parallel()
 

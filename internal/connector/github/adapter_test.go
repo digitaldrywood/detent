@@ -160,8 +160,8 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	if variables["projectId"] != "PVT_1" {
 		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
 	}
-	if variables["first"] != float64(50) {
-		t.Fatalf("first = %v, want 50", variables["first"])
+	if variables["first"] != float64(100) {
+		t.Fatalf("first = %v, want 100", variables["first"])
 	}
 	if _, ok := variables["query"]; ok {
 		t.Fatalf("query = %v, want unfiltered ProjectV2 items", variables["query"])
@@ -183,6 +183,87 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	}
 	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/repos/digitaldrywood/detent/pulls?") {
 		t.Fatalf("pull request request = %#v, want REST pulls list", requests[1])
+	}
+}
+
+func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		total            int
+		firstPageCount   int
+		secondPageCount  int
+		wantGraphQLCalls int
+	}{
+		{name: "single page", total: 99, firstPageCount: 99, wantGraphQLCalls: 1},
+		{name: "pyroapex scale", total: 186, firstPageCount: 100, secondPageCount: 86, wantGraphQLCalls: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			responses := []graphqlTestResponse{{
+				body: projectItemsPageResponseWithTotal(
+					tt.total,
+					tt.secondPageCount > 0,
+					"cursor-1",
+					projectIssueNodes(tt.firstPageCount, "Todo"),
+				),
+			}}
+			if tt.secondPageCount > 0 {
+				responses = append(responses, graphqlTestResponse{
+					body: projectItemsPageResponseWithTotal(
+						tt.total,
+						false,
+						"",
+						projectIssueNodes(tt.secondPageCount, "Done"),
+					),
+				})
+			}
+			responses = append(responses, graphqlTestResponse{
+				method: http.MethodGet,
+				path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+				body:   `[]`,
+			})
+
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug:  "PVT_1",
+				ActiveStates: []string{"Todo"},
+			})
+
+			result := c.FetchRefreshIssues(
+				context.Background(),
+				[]string{"Todo"},
+				[]string{"Done"},
+				connector.IssueFilterHint{},
+			)
+			if result.CandidateError != nil || result.StatusError != nil {
+				t.Fatalf("FetchRefreshIssues() errors = %v, %v", result.CandidateError, result.StatusError)
+			}
+			if len(result.Candidates) != tt.firstPageCount || len(result.Statuses) != tt.secondPageCount {
+				t.Fatalf(
+					"FetchRefreshIssues() counts = %d candidates, %d statuses; want %d, %d",
+					len(result.Candidates),
+					len(result.Statuses),
+					tt.firstPageCount,
+					tt.secondPageCount,
+				)
+			}
+
+			requests := waitForGraphQLRequests(t, server, tt.wantGraphQLCalls+1)
+			graphqlCalls := 0
+			for _, request := range requests {
+				if request["method"] == http.MethodPost {
+					graphqlCalls++
+				}
+			}
+			if graphqlCalls != tt.wantGraphQLCalls {
+				t.Fatalf("GraphQL calls = %d, want %d", graphqlCalls, tt.wantGraphQLCalls)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -15,6 +17,46 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestStatePreservesPublishedRunningAttemptsDuringRefresh(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		running     int
+		wantRunning int
+	}{
+		{name: "no active attempts", running: 0, wantRunning: 0},
+		{name: "one active attempt", running: 1, wantRunning: 1},
+		{name: "six active attempts", running: 6, wantRunning: 6},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: tt.running})
+			state := newState(cfg)
+			for index := range tt.running {
+				id := fmt.Sprintf("issue-%d", index)
+				state.Running[id] = Running{Issue: connector.Issue{ID: id}}
+			}
+			orch := &Orchestrator{cfg: cfg, done: make(chan struct{})}
+			orch.publishState(&state)
+			orch.refreshInProgress.Store(true)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			published, err := orch.State(ctx)
+			if err != nil {
+				t.Fatalf("State() error = %v", err)
+			}
+			if got := published.Snapshot(time.Now()).EffectiveCounts().Running; got != tt.wantRunning {
+				t.Fatalf("running count = %d, want %d", got, tt.wantRunning)
+			}
+		})
+	}
+}
 
 func TestStateSnapshotEmpty(t *testing.T) {
 	t.Parallel()

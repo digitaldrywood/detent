@@ -700,6 +700,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		"worker_host", strings.TrimSpace(workerHost),
 		"mode", strings.TrimSpace(runMode),
 	)
+	o.publishRuntimeState(state)
 	running := state.Running[issue.ID]
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running

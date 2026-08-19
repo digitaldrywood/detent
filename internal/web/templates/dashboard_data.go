@@ -397,6 +397,7 @@ type ProjectSmallMultiple struct {
 	PauseExitResolver         string
 	ActiveHours               telemetry.ActiveHours
 	Dispatch                  telemetry.DispatchStatus
+	Refresh                   telemetry.Refresh
 	Running                   int
 	QueueCount                int
 	Blocked                   int
@@ -1319,8 +1320,18 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 	switch {
 	case project.Dispatch.NeedsHumanAttention:
 		return projectStatusView{Rank: 0, Label: "needs attention", DotClass: "bg-err", BadgeClass: "bg-err/15 text-err"}
+	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Degraded():
+		label := "stale"
+		if !project.Refresh.StalenessWindowExceeded && strings.TrimSpace(project.Refresh.LastError) != "" {
+			label = "refresh failed"
+		}
+		return projectStatusView{Rank: 0, Label: label, DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.Paused:
 		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
+	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Initializing():
+		return projectStatusView{Rank: 3, Label: "loading", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
+	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Behind():
+		return projectStatusView{Rank: 2, Label: "behind", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.ActiveHours.Configured && !project.ActiveHours.Open:
 		return projectStatusView{Rank: 3, Label: "off hours", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case project.BoardBlocked > 0:
@@ -1339,7 +1350,7 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 }
 
 func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
-	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" || item.StatusLabel == "needs attention" {
+	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" || item.StatusLabel == "needs attention" || item.StatusLabel == "stale" || item.StatusLabel == "refresh failed" || item.StatusLabel == "loading" || item.StatusLabel == "behind" {
 		return item.StatusLabel
 	}
 	return item.RunningLabel

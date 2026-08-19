@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	projectItemsPageSize                      = 50
+	projectItemsPageSize                      = 100
 	projectCandidatePageLimit                 = 100
 	projectItemsPerIssue                      = 100
 	projectItemFieldValuesPageSize            = 100

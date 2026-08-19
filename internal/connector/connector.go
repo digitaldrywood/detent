@@ -242,6 +242,18 @@ type CandidateIssuesByStatesFetcher interface {
 	FetchCandidateIssuesByStates(context.Context, []string) ([]Issue, error)
 }
 
+type RefreshIssueResult struct {
+	Candidates     []Issue
+	Statuses       []Issue
+	CandidateError error
+	StatusError    error
+}
+
+type RefreshIssueFetcher interface {
+	CombinedRefreshEnabled() bool
+	FetchRefreshIssues(context.Context, []string, []string, IssueFilterHint) RefreshIssueResult
+}
+
 type IssueStateProber interface {
 	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
 }

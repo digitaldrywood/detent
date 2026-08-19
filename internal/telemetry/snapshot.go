@@ -122,28 +122,7 @@ func (s Snapshot) WithFreshness(now time.Time) Snapshot {
 		if !refreshHasReadinessSignal(s.Projects[index].Refresh) {
 			continue
 		}
-		if staleAfterSeconds > s.Projects[index].Refresh.StaleAfterSeconds {
-			s.Projects[index].Refresh.StaleAfterSeconds = staleAfterSeconds
-		}
 		s.Projects[index].Refresh = s.Projects[index].Refresh.WithFreshness(now)
-		projectRefresh := s.Projects[index].Refresh
-		switch projectRefresh.ReadinessStatus() {
-		case RefreshStatusDegraded:
-			s.Refresh.Status = RefreshStatusDegraded
-			s.Refresh.StalenessWindowExceeded = s.Refresh.StalenessWindowExceeded || projectRefresh.StalenessWindowExceeded
-			if strings.TrimSpace(s.Refresh.LastError) == "" || projectRefresh.StalenessWindowExceeded {
-				s.Refresh.LastError = projectRefresh.LastError
-				s.Refresh.LastErrorAt = copyTimePointer(projectRefresh.LastErrorAt)
-			}
-		case RefreshStatusInitializing:
-			if s.Refresh.ReadinessStatus() != RefreshStatusDegraded {
-				s.Refresh.Status = RefreshStatusInitializing
-			}
-		case RefreshStatusBehind:
-			if s.Refresh.ReadinessStatus() == RefreshStatusReady {
-				s.Refresh.Status = RefreshStatusBehind
-			}
-		}
 	}
 	return s
 }

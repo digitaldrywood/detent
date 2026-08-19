@@ -528,6 +528,16 @@ func (s State) clone() State {
 	return cloned
 }
 
+func cloneRunning(source map[string]Running) map[string]Running {
+	state := State{Running: source}
+	return state.clone().Running
+}
+
+func cloneClaimed(source map[string]Claimed) map[string]Claimed {
+	state := State{Claimed: source}
+	return state.clone().Claimed
+}
+
 func cloneBlockerEvidence(evidence []telemetry.BlockerEvidence) []telemetry.BlockerEvidence {
 	cloned := append([]telemetry.BlockerEvidence(nil), evidence...)
 	for index := range cloned {

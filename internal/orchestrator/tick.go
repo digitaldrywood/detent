@@ -345,6 +345,9 @@ func (o *Orchestrator) fetchTickIssues(
 	reserve githubBudgetReserveDecision,
 ) (tickFetchedIssues, bool) {
 	observedStates := o.observedStatusFetchStatesForTick(state)
+	if fetcher, ok := o.connector.(connector.RefreshIssueFetcher); ok && fetcher.CombinedRefreshEnabled() && !reserve.degraded {
+		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher)
+	}
 
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
 	if err != nil {
@@ -405,6 +408,58 @@ func (o *Orchestrator) fetchTickIssues(
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceStatuses, now)
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(statusIssues)
+	fetched.statusOK = true
+	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
+		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
+		return tickFetchedIssues{}, false
+	}
+	clearRefreshError(state)
+	return fetched, true
+}
+
+func (o *Orchestrator) fetchCombinedTickIssues(
+	ctx context.Context,
+	state *State,
+	now time.Time,
+	observedStates []string,
+	fetcher connector.RefreshIssueFetcher,
+) (tickFetchedIssues, bool) {
+	result := fetcher.FetchRefreshIssues(
+		ctx,
+		o.candidateFetchStatesForTick(state),
+		observedStates,
+		o.authorizationFilterHint(),
+	)
+	if result.CandidateError != nil {
+		err := result.CandidateError
+		o.logger.Warn("fetch candidate issues failed", "error", err)
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		markRefreshError(state, "fetch candidate issues failed: "+err.Error(), now)
+		return tickFetchedIssues{}, false
+	}
+	recordRefreshSourceSuccess(state, telemetry.RefreshSourceCandidates, now)
+	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
+
+	fetched := tickFetchedIssues{candidates: cloneIssues(result.Candidates)}
+	if len(observedStates) == 0 {
+		fetched.statusOK = true
+		clearRefreshError(state)
+		return fetched, true
+	}
+	if result.StatusError != nil {
+		err := result.StatusError
+		o.logger.Warn("fetch observed status issues failed", "error", err)
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
+		markRefreshError(state, "fetch observed status issues failed: "+err.Error(), now)
+		return fetched, true
+	}
+	recordRefreshSourceSuccess(state, telemetry.RefreshSourceStatuses, now)
+	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
+	fetched.status = cloneIssues(result.Statuses)
 	fetched.statusOK = true
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
