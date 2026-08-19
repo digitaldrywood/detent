@@ -76,12 +76,56 @@ func (s *fileStore) Load(ctx context.Context) (telemetry.Snapshot, bool, error) 
 	if cached.SavedAt.IsZero() || cached.Snapshot.GeneratedAt.IsZero() {
 		return telemetry.Snapshot{}, false, errors.New("decode board snapshot: timestamps are required")
 	}
-	if s.now().Sub(cached.SavedAt) > s.maxAge {
+	now := s.now()
+	if now.Sub(cached.SavedAt) > s.maxAge {
 		return telemetry.Snapshot{}, false, nil
 	}
 	cached.Snapshot.LastKnown = true
 	cached.Snapshot.LastKnownUntil = cached.SavedAt.Add(s.maxAge)
+	prepareStartupSnapshot(&cached.Snapshot, now.UTC())
 	return cached.Snapshot, true, nil
+}
+
+func prepareStartupSnapshot(snapshot *telemetry.Snapshot, now time.Time) {
+	if snapshot == nil {
+		return
+	}
+	observedAt := snapshot.GeneratedAt
+	snapshot.Tracker = telemetry.SnapshotSection{
+		Source:     telemetry.SnapshotSourceCached,
+		ObservedAt: observedAt,
+		Complete:   true,
+	}
+	snapshot.Runtime = telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
+	snapshot.Refresh = startupRefresh(snapshot.Refresh, now)
+	snapshot.Counts.Running = 0
+	snapshot.Running = nil
+	snapshot.WorkAttempts = nil
+	snapshot.StalenessWarnings = nil
+	for index := range snapshot.Projects {
+		project := &snapshot.Projects[index]
+		project.Tracker = telemetry.SnapshotSection{
+			Source:     telemetry.SnapshotSourceCached,
+			ObservedAt: observedAt,
+			Complete:   true,
+		}
+		project.Runtime = telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
+		project.Refresh = startupRefresh(project.Refresh, now)
+		project.Counts.Running = 0
+	}
+}
+
+func startupRefresh(refresh telemetry.Refresh, now time.Time) telemetry.Refresh {
+	refresh.Status = telemetry.RefreshStatusInitializing
+	refresh.LastRefreshAt = nil
+	refresh.NextRefreshAt = &now
+	refresh.NextRefreshOverdue = false
+	refresh.StalenessWindowExceeded = false
+	refresh.LastError = ""
+	refresh.LastErrorAt = nil
+	refresh.Sources = nil
+	refresh.Manual = nil
+	return refresh
 }
 
 func (s *fileStore) Save(ctx context.Context, snapshot telemetry.Snapshot) (saveErr error) {
@@ -146,6 +190,9 @@ func Eligible(snapshot telemetry.Snapshot) bool {
 	if snapshot.LastKnown || snapshot.GeneratedAt.IsZero() {
 		return false
 	}
+	if carriesCachedTracker(snapshot) {
+		return false
+	}
 	if !hasRefreshSignal(snapshot.Refresh) {
 		return true
 	}
@@ -154,6 +201,18 @@ func Eligible(snapshot telemetry.Snapshot) bool {
 		return true
 	}
 	return status == telemetry.RefreshStatusDegraded && carriesTrackerData(snapshot)
+}
+
+func carriesCachedTracker(snapshot telemetry.Snapshot) bool {
+	if snapshot.Tracker.Source == telemetry.SnapshotSourceCached {
+		return true
+	}
+	for _, project := range snapshot.Projects {
+		if project.Tracker.Source == telemetry.SnapshotSourceCached {
+			return true
+		}
+	}
+	return false
 }
 
 func hasRefreshSignal(refresh telemetry.Refresh) bool {

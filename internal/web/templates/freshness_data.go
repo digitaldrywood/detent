@@ -10,6 +10,9 @@ import (
 )
 
 func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
+	if snapshot.Refresh.Status == telemetry.RefreshStatusInitializing {
+		return primitives.KindNeutral
+	}
 	if snapshot.Refresh.Stale(snapshot.GeneratedAt) {
 		return primitives.KindWarn
 	}
@@ -24,9 +27,6 @@ func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
 	}
 	if snapshotDegraded(snapshot) {
 		return primitives.KindWarn
-	}
-	if snapshotInitializing(snapshot) {
-		return primitives.KindNeutral
 	}
 	return primitives.KindOK
 }

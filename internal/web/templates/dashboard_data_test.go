@@ -987,6 +987,12 @@ func TestProjectSmallMultipleStatusUsesProjectFreshness(t *testing.T) {
 			wantStatus: "refresh failed",
 			wantBadge:  "refresh failed",
 		},
+		{
+			name:       "initializing project is non-alarming",
+			project:    ProjectSmallMultiple{Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusInitializing}},
+			wantStatus: "initializing",
+			wantBadge:  "initializing",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2622,11 +2628,13 @@ func TestProjectKanbanCardMoveDisabledTextScopesRefreshByProject(t *testing.T) {
 			Projects: []telemetry.ProjectSnapshot{
 				{Project: telemetry.Project{ID: "alpha"}, Refresh: projectRefresh(staleAt)},
 				{Project: telemetry.Project{ID: "bravo"}, Refresh: projectRefresh(freshAt)},
+				{Project: telemetry.Project{ID: "charlie"}, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusInitializing}},
 			},
 		},
 		Kanban: KanbanData{Projects: map[string]KanbanProjectData{
-			"alpha": {Mode: "integration", ProjectID: "alpha", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
-			"bravo": {Mode: "integration", ProjectID: "bravo", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
+			"alpha":   {Mode: "integration", ProjectID: "alpha", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
+			"bravo":   {Mode: "integration", ProjectID: "bravo", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
+			"charlie": {Mode: "integration", ProjectID: "charlie", ActiveStates: []string{"Todo"}, CanMoveCards: true, AllowedTransitions: map[string][]string{"Todo": {"Done"}}},
 		}},
 	}
 	tests := []struct {
@@ -2636,6 +2644,7 @@ func TestProjectKanbanCardMoveDisabledTextScopesRefreshByProject(t *testing.T) {
 	}{
 		{name: "stale project card gated", projectID: "alpha", want: "Tracker candidate data for this card is stale; moves are disabled until it refreshes."},
 		{name: "fresh project card allowed", projectID: "bravo"},
+		{name: "initializing project is distinct", projectID: "charlie", want: "Project is initializing; moves are disabled until tracker data is current."},
 	}
 
 	for _, tt := range tests {
@@ -2645,6 +2654,38 @@ func TestProjectKanbanCardMoveDisabledTextScopesRefreshByProject(t *testing.T) {
 			card := projectKanbanCard{IssueID: "I_kw1842", ProjectID: tt.projectID, Stage: "Todo", Movable: true}
 			if got := projectKanbanCardMoveDisabledText(data, card); got != tt.want {
 				t.Fatalf("projectKanbanCardMoveDisabledText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunningCountLabelUsesRuntimeProvenance(t *testing.T) {
+	t.Parallel()
+
+	liveLease := time.Date(2026, 8, 18, 22, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     string
+	}{
+		{name: "legacy exact zero", snapshot: telemetry.Snapshot{}, want: "0"},
+		{name: "complete live zero", snapshot: telemetry.Snapshot{Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true}}, want: "0"},
+		{
+			name: "initializing runtime with live leased attempt is unknown",
+			snapshot: telemetry.Snapshot{
+				Runtime:      telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown},
+				WorkAttempts: []telemetry.WorkAttempt{{Status: "active", LeaseExpiresAt: &liveLease}},
+			},
+			want: "unknown",
+		},
+		{name: "partial runtime never reports false zero", snapshot: telemetry.Snapshot{Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed}}, want: "unknown"},
+		{name: "partial runtime reports lower bound", snapshot: telemetry.Snapshot{Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed}, Counts: telemetry.Counts{Running: 2}}, want: "2+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runningCountLabel(tt.snapshot); got != tt.want {
+				t.Fatalf("runningCountLabel() = %q, want %q", got, tt.want)
 			}
 		})
 	}

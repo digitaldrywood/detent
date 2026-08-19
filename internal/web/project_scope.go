@@ -82,6 +82,8 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.StrandedActiveIssues = scopedStrandedActiveIssues(snapshot.StrandedActiveIssues, selectedProjectID, fallbackProjectID)
 	out.AdmissionProposals = scopedAdmissionProposals(snapshot.AdmissionProposals, selectedProjectID)
 	if hasSourceProject {
+		out.Tracker = sourceProject.Tracker
+		out.Runtime = sourceProject.Runtime
 		out.Counts = sourceProject.Counts
 		out.Tokens = sourceProject.Tokens
 		out.Throughput = sourceProject.Throughput

@@ -13,6 +13,8 @@ import (
 type Snapshot struct {
 	LastKnown               bool                `json:"-"`
 	LastKnownUntil          time.Time           `json:"-"`
+	Tracker                 SnapshotSection     `json:"tracker,omitzero"`
+	Runtime                 SnapshotSection     `json:"runtime,omitzero"`
 	Seq                     uint64              `json:"seq,omitempty"`
 	GeneratedAt             time.Time           `json:"generated_at"`
 	Project                 Project             `json:"project"`
@@ -433,12 +435,37 @@ type Instance struct {
 
 type ProjectSnapshot struct {
 	Project    Project         `json:"project"`
+	Tracker    SnapshotSection `json:"tracker,omitzero"`
+	Runtime    SnapshotSection `json:"runtime,omitzero"`
 	Counts     Counts          `json:"counts"`
 	Tokens     Tokens          `json:"tokens"`
 	Throughput TokenThroughput `json:"throughput"`
 	Auth       AuthHealth      `json:"auth,omitzero"`
 	Refresh    Refresh         `json:"refresh,omitzero"`
 	Dispatch   DispatchStatus  `json:"dispatch"`
+}
+
+type SnapshotSource string
+
+const (
+	SnapshotSourceUnknown SnapshotSource = "unknown"
+	SnapshotSourceLive    SnapshotSource = "live"
+	SnapshotSourceCached  SnapshotSource = "cached"
+	SnapshotSourceMixed   SnapshotSource = "mixed"
+)
+
+type SnapshotSection struct {
+	Source     SnapshotSource `json:"source"`
+	ObservedAt time.Time      `json:"observed_at,omitzero"`
+	Complete   bool           `json:"complete"`
+}
+
+func (s SnapshotSection) IsZero() bool {
+	return s.Source == "" && s.ObservedAt.IsZero() && !s.Complete
+}
+
+func (s SnapshotSection) Available() bool {
+	return s.Source == SnapshotSourceLive || s.Source == SnapshotSourceCached || s.Source == SnapshotSourceMixed
 }
 
 type DispatchStatus struct {

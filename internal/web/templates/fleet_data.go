@@ -131,6 +131,8 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 			// line must flag that the tracker data is stale rather than
 			// claim nothing needs attention.
 			view.AllClear = "Showing last-known data — tracker refresh is degraded."
+		} else if !runtimeCountComplete(snapshot) {
+			view.AllClear = "Tracker data is available — runtime state is still initializing."
 		} else {
 			view.AllClear = "All clear — nothing needs you. " + fleetAgentsWorkingLabel(runningCount(snapshot))
 		}
@@ -211,7 +213,7 @@ func fleetAgentPoolUsage(used int, guaranteed int, burstTo int, borrowed int) st
 }
 
 func fleetAgentCount(data DashboardData, pools []fleetAgentPool) string {
-	running := formatCount(runningCount(data.Snapshot)) + " running"
+	running := runningCountLabel(data.Snapshot) + " running"
 	if len(pools) != 1 {
 		return running
 	}

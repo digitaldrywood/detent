@@ -502,8 +502,11 @@ func startupSnapshot(
 ) telemetry.Snapshot {
 	nextRefreshAt := now
 	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
+	unknown := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:    now,
+		Tracker:        unknown,
+		Runtime:        unknown,
 		Instance:       startupSnapshotInstance(cfg),
 		Projects:       startupProjectSnapshots(cfg, refresh, now),
 		DashboardURL:   cleanDashboardURL(dashboardURL),
@@ -533,6 +536,7 @@ func startupSnapshotInstance(cfg globalconfig.Config) telemetry.Instance {
 
 func startupProjectSnapshots(cfg globalconfig.Config, refresh telemetry.Refresh, now time.Time) []telemetry.ProjectSnapshot {
 	out := make([]telemetry.ProjectSnapshot, 0, len(cfg.Projects))
+	unknown := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
 	for _, projectConfig := range cfg.Projects {
 		id := strings.TrimSpace(projectConfig.ID)
 		if id == "" {
@@ -541,6 +545,8 @@ func startupProjectSnapshots(cfg globalconfig.Config, refresh telemetry.Refresh,
 		projectConfig.GlobalActiveHours = cfg.Global.ActiveHours
 		out = append(out, telemetry.ProjectSnapshot{
 			Project: projectSnapshotMetadataFromConfig(projectConfig, now),
+			Tracker: unknown,
+			Runtime: unknown,
 			Refresh: refresh,
 		})
 	}
@@ -575,6 +581,7 @@ func publishSnapshotOnce(
 			if trackedProject.Paused() {
 				merged = mergeSnapshot(merged, telemetry.Snapshot{
 					Project:      projectMetadata,
+					Runtime:      liveSnapshotSection(now),
 					DashboardURL: cleanDashboardURL(dashboardURL),
 					Shutdown:     telemetry.Shutdown{Status: "running"},
 				})
@@ -583,6 +590,8 @@ func publishSnapshotOnce(
 			if runtimeErr := trackedProject.RuntimeError(); runtimeErr.Message != "" {
 				merged = mergeSnapshot(merged, telemetry.Snapshot{
 					Project:      projectMetadata,
+					Tracker:      unknownSnapshotSection(),
+					Runtime:      unknownSnapshotSection(),
 					DashboardURL: cleanDashboardURL(dashboardURL),
 					Shutdown:     telemetry.Shutdown{Status: "running"},
 					Refresh:      runtimeErrorRefresh(runtimeErr),
@@ -593,6 +602,8 @@ func publishSnapshotOnce(
 			refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
 			merged = mergeSnapshot(merged, telemetry.Snapshot{
 				Project:      projectMetadata,
+				Tracker:      unknownSnapshotSection(),
+				Runtime:      unknownSnapshotSection(),
 				DashboardURL: cleanDashboardURL(dashboardURL),
 				Shutdown:     telemetry.Shutdown{Status: "running"},
 				Refresh:      refresh,
@@ -625,6 +636,8 @@ func publishSnapshotOnce(
 		}
 		snapshot := state.Snapshot(now)
 		snapshot.Project = projectMetadata
+		snapshot.Tracker = liveSnapshotSection(now)
+		snapshot.Runtime = liveSnapshotSection(now)
 		snapshot.DashboardURL = cleanDashboardURL(dashboardURL)
 		merged = mergeSnapshot(merged, snapshot)
 	}
@@ -635,6 +648,8 @@ func publishSnapshotOnce(
 		}
 		merged = mergeSnapshot(merged, telemetry.Snapshot{
 			Project:      projectSnapshotMetadataFromConfig(health.Project, now),
+			Tracker:      unknownSnapshotSection(),
+			Runtime:      unknownSnapshotSection(),
 			DashboardURL: cleanDashboardURL(dashboardURL),
 			Shutdown:     telemetry.Shutdown{Status: "running"},
 			Refresh: runtimeErrorRefresh(project.RuntimeError{
@@ -659,8 +674,9 @@ func publishSnapshotOnce(
 		merged.Shutdown = status
 	}
 	merged.Seq = seq.Add(1)
-	if current, ok := snapshotHub.Latest(); ok && current.LastKnown && now.Before(current.LastKnownUntil) && !boardsnapshot.Eligible(merged) {
-		return nil
+	summarizeSnapshotSections(&merged)
+	if current, ok := snapshotHub.Latest(); ok {
+		merged = composeLastKnownTrackerState(current, merged, now)
 	}
 	if err := snapshotHub.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
@@ -1462,6 +1478,8 @@ func mergeShutdown(current, next telemetry.Shutdown) telemetry.Shutdown {
 func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 	return telemetry.ProjectSnapshot{
 		Project:    snapshot.Project,
+		Tracker:    snapshot.Tracker,
+		Runtime:    snapshot.Runtime,
 		Counts:     snapshot.Counts,
 		Tokens:     snapshot.Tokens,
 		Throughput: snapshot.Throughput,
@@ -1469,6 +1487,170 @@ func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 		Refresh:    snapshot.Refresh,
 		Dispatch:   snapshot.Dispatch,
 	}
+}
+
+func liveSnapshotSection(observedAt time.Time) telemetry.SnapshotSection {
+	return telemetry.SnapshotSection{
+		Source:     telemetry.SnapshotSourceLive,
+		ObservedAt: observedAt,
+		Complete:   true,
+	}
+}
+
+func unknownSnapshotSection() telemetry.SnapshotSection {
+	return telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
+}
+
+func summarizeSnapshotSections(snapshot *telemetry.Snapshot) {
+	if snapshot == nil {
+		return
+	}
+	snapshot.Tracker = summarizeProjectSections(snapshot.Projects, func(project telemetry.ProjectSnapshot) telemetry.SnapshotSection {
+		return project.Tracker
+	})
+	snapshot.Runtime = summarizeProjectSections(snapshot.Projects, func(project telemetry.ProjectSnapshot) telemetry.SnapshotSection {
+		return project.Runtime
+	})
+}
+
+func summarizeProjectSections(
+	projects []telemetry.ProjectSnapshot,
+	section func(telemetry.ProjectSnapshot) telemetry.SnapshotSection,
+) telemetry.SnapshotSection {
+	if len(projects) == 0 {
+		return unknownSnapshotSection()
+	}
+	result := telemetry.SnapshotSection{Complete: true}
+	var source telemetry.SnapshotSource
+	considered := 0
+	for _, project := range projects {
+		item := section(project)
+		if item.IsZero() {
+			continue
+		}
+		considered++
+		if !item.Available() || !item.Complete {
+			result.Complete = false
+		}
+		if item.Available() && (result.ObservedAt.IsZero() || item.ObservedAt.Before(result.ObservedAt)) {
+			result.ObservedAt = item.ObservedAt
+		}
+		if source == "" {
+			source = item.Source
+		} else if source != item.Source {
+			source = telemetry.SnapshotSourceMixed
+		}
+	}
+	if considered == 0 {
+		return telemetry.SnapshotSection{}
+	}
+	result.Source = source
+	if !result.Available() {
+		result.ObservedAt = time.Time{}
+	}
+	return result
+}
+
+func composeLastKnownTrackerState(current, live telemetry.Snapshot, now time.Time) telemetry.Snapshot {
+	if current.LastKnownUntil.IsZero() || !now.Before(current.LastKnownUntil) {
+		return live
+	}
+	cachedProjects := make(map[string]telemetry.ProjectSnapshot, len(current.Projects))
+	for _, project := range current.Projects {
+		projectID := strings.TrimSpace(project.Project.ID)
+		if projectID != "" {
+			cachedProjects[projectID] = project
+		}
+	}
+	cachedFallbackProjectID := strings.TrimSpace(current.Project.ID)
+	if cachedFallbackProjectID == "" && len(current.Projects) == 1 {
+		cachedFallbackProjectID = strings.TrimSpace(current.Projects[0].Project.ID)
+	}
+	if cachedFallbackProjectID == "" && len(live.Projects) == 1 {
+		cachedFallbackProjectID = strings.TrimSpace(live.Projects[0].Project.ID)
+	}
+
+	useCached := make(map[string]struct{})
+	for index := range live.Projects {
+		project := &live.Projects[index]
+		projectID := strings.TrimSpace(project.Project.ID)
+		if projectID == "" || project.Tracker.Available() || !snapshotRefreshHasSignal(project.Refresh) {
+			continue
+		}
+		cachedProject, hasCachedProject := cachedProjects[projectID]
+		if !hasCachedProject && !snapshotHasCachedTrackerData(current, projectID, cachedFallbackProjectID) {
+			continue
+		}
+		observedAt := cachedProject.Tracker.ObservedAt
+		if observedAt.IsZero() {
+			observedAt = current.GeneratedAt
+		}
+		project.Tracker = telemetry.SnapshotSection{
+			Source:     telemetry.SnapshotSourceCached,
+			ObservedAt: observedAt,
+			Complete:   true,
+		}
+		useCached[projectID] = struct{}{}
+	}
+	if len(useCached) == 0 {
+		return live
+	}
+
+	live.BoardIssues = appendCachedTrackerIssues(live.BoardIssues, current.BoardIssues, useCached, cachedFallbackProjectID)
+	live.Pipeline = appendCachedTrackerIssues(live.Pipeline, current.Pipeline, useCached, cachedFallbackProjectID)
+	live.TrackerDrift.UntrackedOpen = appendCachedTrackerIssues(live.TrackerDrift.UntrackedOpen, current.TrackerDrift.UntrackedOpen, useCached, cachedFallbackProjectID)
+	live.TrackerDrift.OpenTerminal = appendCachedTrackerIssues(live.TrackerDrift.OpenTerminal, current.TrackerDrift.OpenTerminal, useCached, cachedFallbackProjectID)
+	live.LastKnown = false
+	live.LastKnownUntil = current.LastKnownUntil
+	summarizeSnapshotSections(&live)
+	return live
+}
+
+func snapshotRefreshHasSignal(refresh telemetry.Refresh) bool {
+	return refresh.PollIntervalSeconds != 0 ||
+		refresh.StaleAfterSeconds != 0 ||
+		refresh.FailureThreshold != 0 ||
+		refresh.Status != "" ||
+		refresh.LastRefreshAt != nil ||
+		refresh.NextRefreshAt != nil ||
+		strings.TrimSpace(refresh.LastError) != "" ||
+		refresh.LastErrorAt != nil ||
+		len(refresh.Sources) > 0
+}
+
+func snapshotHasCachedTrackerData(snapshot telemetry.Snapshot, projectID, fallbackProjectID string) bool {
+	for _, issue := range snapshot.BoardIssues {
+		if snapshotIssueProjectID(issue, fallbackProjectID) == projectID {
+			return true
+		}
+	}
+	for _, issue := range snapshot.Pipeline {
+		if snapshotIssueProjectID(issue, fallbackProjectID) == projectID {
+			return true
+		}
+	}
+	return false
+}
+
+func appendCachedTrackerIssues(
+	live []telemetry.Issue,
+	cached []telemetry.Issue,
+	projectIDs map[string]struct{},
+	fallbackProjectID string,
+) []telemetry.Issue {
+	for _, issue := range cached {
+		if _, ok := projectIDs[snapshotIssueProjectID(issue, fallbackProjectID)]; ok {
+			live = append(live, issue)
+		}
+	}
+	return live
+}
+
+func snapshotIssueProjectID(issue telemetry.Issue, fallbackProjectID string) string {
+	if projectID := strings.TrimSpace(issue.ProjectID); projectID != "" {
+		return projectID
+	}
+	return strings.TrimSpace(fallbackProjectID)
 }
 
 func mergeFleetDispatchStatus(current telemetry.DispatchStatus, next telemetry.DispatchStatus, now time.Time) telemetry.DispatchStatus {
