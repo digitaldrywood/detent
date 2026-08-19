@@ -597,7 +597,10 @@ func runRole(mode string, issue connector.Issue) string {
 	}
 }
 
-func extraWritableRootsForWorkspace(ctx context.Context, workspacePath string, logger *slog.Logger) []string {
+func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, logger *slog.Logger) []string {
+	if workspaceKind == config.WorkspaceFilesystem {
+		return nil
+	}
 	roots, err := workspace.GitMetadataWritableRoots(ctx, workspacePath)
 	if err != nil {
 		if logger != nil {
@@ -1501,7 +1504,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {
-		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger)
+		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger)
 	}
 	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest := AgentTurnRequest{
@@ -2227,7 +2230,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		MaxTurns:           workflow.Config.Agent.MaxTurns,
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
+		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
 		MaxRSSBytes:        r.maxAgentRSSBytes,
 		RSSPollInterval:    r.rssPollInterval,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
