@@ -3071,6 +3071,68 @@ func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		kind        string
+		wantWarning bool
+	}{
+		{
+			name: "filesystem skips git metadata probe",
+			kind: config.WorkspaceFilesystem,
+		},
+		{
+			name:        "local git reports metadata failure",
+			kind:        config.WorkspaceLocalGit,
+			wantWarning: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspacePath := t.TempDir()
+			var logs bytes.Buffer
+			agentBackend := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{Config: config.Config{
+					Workspace: config.Workspace{Kind: tt.kind},
+				}},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: workspacePath, Key: "issue-1867"},
+				},
+				AgentBackend: agentBackend,
+				Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, err = runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-1867",
+					Identifier: "digitaldrywood/detent#1867",
+					Title:      "Workspace metadata diagnostics",
+				},
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			if len(agentBackend.request.ExtraWritableRoots) != 0 {
+				t.Fatalf("ExtraWritableRoots = %#v, want none", agentBackend.request.ExtraWritableRoots)
+			}
+			gotWarning := strings.Contains(logs.String(), "workspace git metadata writable roots unavailable")
+			if gotWarning != tt.wantWarning {
+				t.Fatalf("git metadata warning = %t, want %t; logs:\n%s", gotWarning, tt.wantWarning, logs.String())
+			}
+		})
+	}
+}
+
 func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 	t.Parallel()
 
