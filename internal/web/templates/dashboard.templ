@@ -2249,9 +2249,13 @@ templ diagnosticsActiveWorkTab(data DashboardData) {
 }
 
 templ diagnosticsRunningWorkersSection(snapshot telemetry.Snapshot) {
-	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-active-workers", Title: "Active workers", Count: formatCount(runningCount(snapshot)), Live: runningCount(snapshot) > 0}) {
+	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-active-workers", Title: "Active workers", Count: runningCountLabel(snapshot), Live: runningCount(snapshot) > 0}) {
 		if len(snapshot.Running) == 0 {
-			@primitives.EmptyLine("No active workers")
+			if runtimeCountComplete(snapshot) {
+				@primitives.EmptyLine("No active workers")
+			} else {
+				@primitives.EmptyLine("Runtime state is initializing")
+			}
 		} else {
 			<div class="grid divide-y divide-line">
 				for _, row := range snapshot.Running {
@@ -2469,11 +2473,13 @@ templ projectOverviewCardView(card projectOverviewCard) {
 templ runningIssuesSection(data DashboardData) {
 	<section id="running-issues" class="dashboard-panel scroll-mt-3 min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" tabindex="-1">
 		@panelHeader(icon.Activity(icon.Props{Class: "size-4 shrink-0"}), "Running issues", helpRunning, "running-issues") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(data.Snapshot)) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ runningCountLabel(data.Snapshot) }</span>
 		}
 		if len(data.Snapshot.Running) == 0 {
 			<div class="mt-4">
-				if runningCount(data.Snapshot) > 0 {
+				if !runtimeCountComplete(data.Snapshot) {
+					@dashboardEmptyState("Runtime state is initializing.", "Active issue sessions will appear when live runtime state is available.", "bg-dim")
+				} else if runningCount(data.Snapshot) > 0 {
 					@dashboardEmptyState("Running session details are unavailable.", "The summary count is live, but detailed agent rows have not arrived in this snapshot.", "bg-accent")
 				} else {
 					@dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Detent dispatches work.", "bg-accent")
@@ -2886,7 +2892,7 @@ templ metricCard(label string, value string, detail string, borderClass string, 
 
 templ statStrip(snapshot telemetry.Snapshot) {
 	<section class="dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-line bg-surface p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6" aria-label="Dashboard statistics">
-		@statStripItem("Running", formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent")
+		@statStripItem("Running", runningCountLabel(snapshot), "Active issue sessions", "bg-accent")
 		@statStripItem("Queue", formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warn")
 		@statStripItem("Blocked", formatCount(blockedCount(snapshot)), "Needs operator action", "bg-err")
 		@statStripItem("Completed", formatCount(completedCount(snapshot)), "Finished sessions", "bg-ok")

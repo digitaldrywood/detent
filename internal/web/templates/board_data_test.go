@@ -434,6 +434,24 @@ func TestBoardViewInProgressLaneCountsOnlyLiveAttempts(t *testing.T) {
 	if lane.Count != "3 (1 live)" || !lane.Live {
 		t.Fatalf("In Progress lane count/live = %q/%v, want 3 (1 live)/true", lane.Count, lane.Live)
 	}
+	for _, tt := range []struct {
+		name    string
+		running []telemetry.Running
+		want    string
+	}{
+		{name: "incomplete runtime without rows", want: "3 (live unknown)"},
+		{name: "incomplete runtime with known lower bound", running: data.Snapshot.Running, want: "3 (1+ live)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := data.Snapshot
+			snapshot.Runtime = telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed}
+			snapshot.Running = tt.running
+			partial := boardViewFromDashboard(DashboardData{Snapshot: snapshot, Kanban: data.Kanban})
+			if got := partial.Lanes[0].Count; got != tt.want {
+				t.Fatalf("incomplete runtime lane count = %q, want %q", got, tt.want)
+			}
+		})
+	}
 	cards := make(map[string]boardCardView, len(lane.Cards))
 	for _, card := range lane.Cards {
 		cards[card.IssueID] = card
@@ -2187,6 +2205,7 @@ func TestBoardMoveDisabledLabel(t *testing.T) {
 	}{
 		{reason: "This project's tracker does not support moving cards.", want: "Read-only"},
 		{reason: "This project board is read-only.", want: "Read-only"},
+		{reason: "Project is initializing; moves are disabled until tracker data is current.", want: "Initializing"},
 		{reason: "Tracker snapshot is not ready; moves are disabled until data is current.", want: "Stale"},
 		{reason: "No linked issue is available for this card.", want: "No issue"},
 		{reason: "No allowed transition is configured from Done.", want: "No move"},
@@ -2418,6 +2437,43 @@ func TestBoardSnapshotRendersLastKnownState(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("last-known board snapshot missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestBoardAlertsExcludeRoutineStartup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     int
+	}{
+		{
+			name: "cached tracker startup",
+			snapshot: telemetry.Snapshot{
+				LastKnown: true,
+				Tracker:   telemetry.SnapshotSection{Source: telemetry.SnapshotSourceCached, Complete: true},
+				Runtime:   telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown},
+				Refresh:   telemetry.Refresh{Status: telemetry.RefreshStatusInitializing},
+			},
+		},
+		{
+			name: "composite startup",
+			snapshot: telemetry.Snapshot{
+				Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed, Complete: true},
+				Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed},
+				Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusInitializing},
+			},
+		},
+		{name: "legacy last-known remains a warning", snapshot: telemetry.Snapshot{LastKnown: true}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := len(boardAlerts(tt.snapshot)); got != tt.want {
+				t.Fatalf("len(boardAlerts()) = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

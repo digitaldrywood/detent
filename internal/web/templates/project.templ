@@ -81,7 +81,7 @@ templ projectOverviewSnapshotBody(data DashboardData) {
 		</div>
 	}
 	@ProjectBudgetPanel(data)
-	@AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools)
+	@AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools, runtimeCountComplete(data.Snapshot))
 	<div id="project-figures" class="flex-none">
 		@primitives.FigureRow(view.Figures) {
 			@primitives.MonoFigure("fig-tps", view.TPS)

@@ -897,8 +897,14 @@ func healthSchedulerRow(snapshot telemetry.Snapshot) healthRow {
 		Component: "Scheduler",
 		Kind:      primitives.KindOK,
 		Status:    "Running",
-		Detail:    formatCount(running) + " active sessions · " + formatCount(queued) + " queued",
+		Detail:    runningCountLabel(snapshot) + " active sessions · " + formatCount(queued) + " queued",
 		Resets:    "—",
+	}
+	if !runtimeCountComplete(snapshot) {
+		row.Kind = primitives.KindNeutral
+		row.Status = "Starting"
+		row.Detail = "Active session count is not yet complete"
+		return row
 	}
 	if running == 0 && queued == 0 {
 		row.Status = "Idle"

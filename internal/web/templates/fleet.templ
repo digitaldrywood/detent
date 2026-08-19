@@ -57,7 +57,7 @@ templ fleetSnapshotBody(data DashboardData) {
 			@primitives.AllClear(view.AllClear)
 		</div>
 	}
-	@AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools)
+	@AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools, runtimeCountComplete(data.Snapshot))
 	<div id="fleet-figures" class="flex-none">
 		@primitives.FigureRow(view.Figures) {
 			@primitives.MonoFigure("fig-tps", view.TPS)
@@ -113,7 +113,7 @@ templ fleetSnapshotBody(data DashboardData) {
 
 // AgentActivityPanel is the hero: one row per live agent, shared between
 // Fleet and the project Overview tab so the composition never drifts.
-templ AgentActivityPanel(agents []fleetAgentRow, count string, pools []fleetAgentPool) {
+templ AgentActivityPanel(agents []fleetAgentRow, count string, pools []fleetAgentPool, runtimeComplete bool) {
 	@primitives.Panel(primitives.PanelProps{ID: "agent-activity", Title: "Agent activity", Count: count, Live: len(agents) > 0, Class: "flex-none"}) {
 		if len(pools) > 0 && !(len(pools) == 1 && pools[0].Name == "default" && !pools[0].Saturated && !pools[0].Draining) {
 			<div id="agent-pool-capacity" class="flex flex-none flex-wrap items-center gap-2 border-b border-line px-4 py-2" data-agent-pool-capacity>
@@ -141,7 +141,11 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string, pools []fleetAgen
 			</div>
 		}
 		if len(agents) == 0 {
-			@primitives.EmptyLine("All agents idle")
+			if runtimeComplete {
+				@primitives.EmptyLine("All agents idle")
+			} else {
+				@primitives.EmptyLine("Runtime state is initializing")
+			}
 		}
 		for i, agent := range agents {
 			<div

@@ -226,7 +226,7 @@ func TestFleetAgentPools(t *testing.T) {
 					t.Fatalf("pool %q usage = %q, want %q", tt.wantPool, found.Usage, tt.wantUsage)
 				}
 			}
-			html := renderBoardComponent(t, AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools))
+			html := renderBoardComponent(t, AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools, true))
 			if got := strings.Contains(html, `id="agent-pool-capacity"`); got != tt.wantStrip {
 				t.Fatalf("capacity strip present = %t, want %t:\n%s", got, tt.wantStrip, html)
 			}

@@ -55,8 +55,14 @@ func TestFileStoreLoad(t *testing.T) {
 			if found != tt.wantFound {
 				t.Fatalf("Load() found = %v, want %v", found, tt.wantFound)
 			}
-			if found && (!got.LastKnown || got.Counts.Running != 2 || !got.LastKnownUntil.Equal(tt.savedAt.Add(15*time.Minute))) {
-				t.Fatalf("Load() snapshot = %#v, want last-known running snapshot", got)
+			if found && (!got.LastKnown || got.Counts.Running != 0 || !got.LastKnownUntil.Equal(tt.savedAt.Add(15*time.Minute))) {
+				t.Fatalf("Load() snapshot = %#v, want startup-safe cached tracker snapshot", got)
+			}
+			if found && (got.Tracker.Source != telemetry.SnapshotSourceCached || got.Runtime.Source != telemetry.SnapshotSourceUnknown) {
+				t.Fatalf("Load() provenance = tracker %#v, runtime %#v", got.Tracker, got.Runtime)
+			}
+			if found && got.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing {
+				t.Fatalf("Load() refresh = %#v, want initializing", got.Refresh)
 			}
 		})
 	}
@@ -108,6 +114,7 @@ func TestEligible(t *testing.T) {
 		{name: "loop behind", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusBehind}}, want: true},
 		{name: "live snapshot without refresh signal", snapshot: telemetry.Snapshot{GeneratedAt: now, Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "paused"}}}}, want: true},
 		{name: "degraded with prior data", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}, BoardIssues: []telemetry.Issue{{ID: "issue"}}}, want: true},
+		{name: "composite with cached tracker", snapshot: telemetry.Snapshot{GeneratedAt: now, Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed}, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}, Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "alpha"}, Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceCached}}, {Project: telemetry.Project{ID: "bravo"}, Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive}}}, BoardIssues: []telemetry.Issue{{ID: "issue"}}}},
 		{name: "initializing", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusInitializing}}},
 		{name: "degraded without data", snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}}},
 		{name: "last known", snapshot: telemetry.Snapshot{LastKnown: true, GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}}},

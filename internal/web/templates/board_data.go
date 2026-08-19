@@ -431,7 +431,7 @@ func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 }
 
 func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	if !snapshot.LastKnown {
+	if !snapshot.LastKnown || snapshotUsesStartupCache(snapshot) {
 		return boardAlert{}, false
 	}
 	tone := primitives.KindWarn
@@ -906,7 +906,14 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		inProgress := strings.EqualFold(lane.Title, "In Progress")
 		count := formatCount(len(lane.Cards))
 		if inProgress {
-			count += " (" + formatCount(liveCount) + " live)"
+			switch {
+			case runtimeCountComplete(data.Snapshot):
+				count += " (" + formatCount(liveCount) + " live)"
+			case liveCount > 0:
+				count += " (" + formatCount(liveCount) + "+ live)"
+			default:
+				count += " (live unknown)"
+			}
 		}
 		laneView := boardLaneView{
 			DomID:     "lane-" + lane.ID,
@@ -1052,7 +1059,7 @@ func boardVisibilityKey(data DashboardData) string {
 func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 	workload := telemetry.BoardWorkload(snapshot)
 	return []primitives.Figure{
-		{ID: "fig-running", Value: formatCount(runningCount(snapshot)), Label: "running"},
+		{ID: "fig-running", Value: runningCountLabel(snapshot), Label: "running"},
 		{ID: "fig-ready", Value: formatCount(workload.Todo), Label: "ready"},
 		{ID: "fig-waiting", Value: formatCount(workload.Waiting), Label: "waiting"},
 		{ID: "fig-blocked", Value: formatCount(workload.Blocked), Label: "blocked", Err: workload.Blocked > 0},
@@ -1870,7 +1877,7 @@ func boardCardClass(card boardCardView) string {
 
 func boardLanesClass(data DashboardData) string {
 	base := "dt-lane-scroll flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory gap-5 overflow-x-auto overflow-y-hidden scroll-px-5 px-5 pb-5 md:snap-none md:gap-3"
-	if data.Snapshot.LastKnown {
+	if data.Snapshot.LastKnown && !snapshotUsesStartupCache(data.Snapshot) {
 		return base + " opacity-60 grayscale"
 	}
 	return base
@@ -1900,6 +1907,8 @@ func boardMoveDisabledLabel(reason string) string {
 	switch {
 	case reason == "":
 		return ""
+	case strings.Contains(reason, "initializing"):
+		return "Initializing"
 	case strings.Contains(reason, "all-project"), strings.Contains(reason, "read-only"), strings.Contains(reason, "tracker does not support"):
 		return "Read-only"
 	case strings.Contains(reason, "snapshot"), strings.Contains(reason, "refresh"):

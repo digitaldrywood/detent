@@ -676,7 +676,7 @@ func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
 	}
 }
 
-func TestPublishSnapshotOncePreservesLastKnownSnapshotUntilHydration(t *testing.T) {
+func TestPublishSnapshotOnceUsesLastKnownTrackerStateUntilHydration(t *testing.T) {
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
@@ -708,8 +708,124 @@ func TestPublishSnapshotOncePreservesLastKnownSnapshotUntilHydration(t *testing.
 	}
 
 	got, ok := snapshotHub.Latest()
-	if !ok || !got.LastKnown || len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "cached-issue" {
-		t.Fatalf("Latest() = %#v, %v; want cached last-known snapshot", got, ok)
+	if !ok || got.LastKnown || len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "cached-issue" {
+		t.Fatalf("Latest() = %#v, %v; want live snapshot with cached tracker state", got, ok)
+	}
+	if got.Tracker.Source != telemetry.SnapshotSourceCached || got.Runtime.Source != telemetry.SnapshotSourceUnknown {
+		t.Fatalf("Latest() provenance = tracker %#v, runtime %#v", got.Tracker, got.Runtime)
+	}
+}
+
+func TestPublishSnapshotOnceReplacesLastKnownStatePerProject(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		startAlpha        bool
+		wantIssues        []string
+		wantTrackerSource telemetry.SnapshotSource
+		wantRuntimeSource telemetry.SnapshotSource
+	}{
+		{
+			name:              "all projects initializing",
+			wantIssues:        []string{"cached-alpha", "cached-bravo"},
+			wantTrackerSource: telemetry.SnapshotSourceCached,
+			wantRuntimeSource: telemetry.SnapshotSourceUnknown,
+		},
+		{
+			name:              "ready project replaces its cached state",
+			startAlpha:        true,
+			wantIssues:        []string{"live-alpha", "cached-bravo"},
+			wantTrackerSource: telemetry.SnapshotSourceMixed,
+			wantRuntimeSource: telemetry.SnapshotSourceMixed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := projectpkg.NewRegistry()
+			alpha := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{Issues: []connector.Issue{{
+				ID:         "live-alpha",
+				Identifier: "example/alpha#1",
+				State:      "Todo",
+			}}}))
+			if tt.startAlpha {
+				if err := alpha.Start(context.Background()); err != nil {
+					t.Fatalf("alpha.Start() error = %v", err)
+				}
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					if err := alpha.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+						t.Fatalf("alpha.Stop() error = %v", err)
+					}
+				})
+				waitForProjectDataSeq(t, alpha, 1)
+			}
+			mustSetProject(t, registry, alpha)
+			mustSetProject(t, registry, newRefreshProjectWithConnector(t, "bravo", memory.New(memory.Config{})))
+
+			cached := telemetry.Snapshot{
+				LastKnown:      true,
+				LastKnownUntil: now.Add(5 * time.Minute),
+				GeneratedAt:    now.Add(-time.Minute),
+				Refresh:        telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+				Projects: []telemetry.ProjectSnapshot{
+					{Project: telemetry.Project{ID: "alpha"}, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}},
+					{Project: telemetry.Project{ID: "bravo"}, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady}},
+				},
+				BoardIssues: []telemetry.Issue{
+					{ID: "cached-alpha", ProjectID: "alpha", State: "Todo"},
+					{ID: "cached-bravo", ProjectID: "bravo", State: "Todo"},
+				},
+				StalenessWarnings: []telemetry.StalenessWarning{
+					{ID: "cached-alpha-warning", ProjectID: "alpha"},
+					{ID: "cached-bravo-warning", ProjectID: "bravo"},
+				},
+			}
+			snapshotHub := hub.New[telemetry.Snapshot]()
+			if err := snapshotHub.Publish(cached); err != nil {
+				t.Fatalf("Publish(cached) error = %v", err)
+			}
+
+			var seq atomic.Uint64
+			if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "", nil); err != nil {
+				t.Fatalf("publishSnapshotOnce() error = %v", err)
+			}
+			got, ok := snapshotHub.Latest()
+			if !ok {
+				t.Fatal("Latest() ok = false, want composite snapshot")
+			}
+			if got.LastKnown {
+				t.Fatal("Latest().LastKnown = true, want per-project startup state")
+			}
+			if len(got.StalenessWarnings) != 0 {
+				t.Fatalf("Latest().StalenessWarnings = %#v, want routine startup warnings excluded", got.StalenessWarnings)
+			}
+			issues := make([]string, 0, len(got.BoardIssues))
+			for _, issue := range got.BoardIssues {
+				issues = append(issues, issue.ID)
+			}
+			if !reflect.DeepEqual(issues, tt.wantIssues) {
+				t.Fatalf("Latest().BoardIssues = %v, want %v", issues, tt.wantIssues)
+			}
+			if got.Tracker.Source != tt.wantTrackerSource || got.Runtime.Source != tt.wantRuntimeSource {
+				t.Fatalf("Latest() provenance = tracker %#v, runtime %#v", got.Tracker, got.Runtime)
+			}
+			if got.Runtime.Complete {
+				t.Fatal("Latest().Runtime.Complete = true while a project is initializing")
+			}
+			projectSources := map[string]telemetry.SnapshotSource{}
+			for _, project := range got.Projects {
+				projectSources[project.Project.ID] = project.Tracker.Source
+			}
+			if tt.startAlpha && projectSources["alpha"] != telemetry.SnapshotSourceLive {
+				t.Fatalf("alpha tracker source = %q, want live", projectSources["alpha"])
+			}
+			if projectSources["bravo"] != telemetry.SnapshotSourceCached {
+				t.Fatalf("bravo tracker source = %q, want cached", projectSources["bravo"])
+			}
+		})
 	}
 }
 

@@ -247,6 +247,9 @@ func projectAllClearLabel(data DashboardData) string {
 	if snapshotDegraded(data.Snapshot) {
 		return "Showing last-known data — tracker refresh is degraded."
 	}
+	if !runtimeCountComplete(data.Snapshot) {
+		return "Tracker data is available — runtime state is still initializing."
+	}
 	running := runningCount(data.Snapshot)
 	switch running {
 	case 0:

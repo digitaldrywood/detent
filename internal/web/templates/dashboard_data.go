@@ -1075,7 +1075,7 @@ func sidebarProjectOrderAvailable(data DashboardShellData) bool {
 
 func sidebarFleetTooltip(data DashboardShellData) string {
 	return "Fleet - " + strings.Join([]string{
-		formatCount(runningCount(data.Snapshot)) + " running",
+		runningCountLabel(data.Snapshot) + " running",
 		formatCount(queueCount(data.Snapshot)) + " queued",
 		formatCount(blockedCount(data.Snapshot)) + " blocked",
 	}, ", ")
@@ -1115,6 +1115,24 @@ func runningCount(snapshot telemetry.Snapshot) int {
 		return snapshot.Counts.Running
 	}
 	return len(snapshot.Running)
+}
+
+func runningCountLabel(snapshot telemetry.Snapshot) string {
+	count := runningCount(snapshot)
+	if snapshot.Runtime.IsZero() {
+		return formatCount(count)
+	}
+	if !snapshot.Runtime.Available() || !snapshot.Runtime.Complete && count == 0 {
+		return "unknown"
+	}
+	if !snapshot.Runtime.Complete {
+		return formatCount(count) + "+"
+	}
+	return formatCount(count)
+}
+
+func runtimeCountComplete(snapshot telemetry.Snapshot) bool {
+	return snapshot.Runtime.IsZero() || snapshot.Runtime.Available() && snapshot.Runtime.Complete
 }
 
 func queueCount(snapshot telemetry.Snapshot) int {
@@ -1329,7 +1347,7 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 	case project.Paused:
 		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Initializing():
-		return projectStatusView{Rank: 3, Label: "loading", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
+		return projectStatusView{Rank: 3, Label: "initializing", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Behind():
 		return projectStatusView{Rank: 2, Label: "behind", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.ActiveHours.Configured && !project.ActiveHours.Open:
@@ -1350,7 +1368,7 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 }
 
 func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
-	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" || item.StatusLabel == "needs attention" || item.StatusLabel == "stale" || item.StatusLabel == "refresh failed" || item.StatusLabel == "loading" || item.StatusLabel == "behind" {
+	if item.StatusLabel == "paused" || item.StatusLabel == "off hours" || item.StatusLabel == "needs attention" || item.StatusLabel == "stale" || item.StatusLabel == "refresh failed" || item.StatusLabel == "initializing" || item.StatusLabel == "behind" {
 		return item.StatusLabel
 	}
 	return item.RunningLabel
@@ -1690,6 +1708,13 @@ func snapshotReady(snapshot telemetry.Snapshot) bool {
 	return status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind
 }
 
+func snapshotUsesStartupCache(snapshot telemetry.Snapshot) bool {
+	return snapshot.LastKnown &&
+		snapshot.Tracker.Source == telemetry.SnapshotSourceCached &&
+		snapshot.Runtime.Source == telemetry.SnapshotSourceUnknown &&
+		snapshotInitializing(snapshot)
+}
+
 func snapshotInitializing(snapshot telemetry.Snapshot) bool {
 	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusInitializing
 }
@@ -1844,7 +1869,7 @@ func snapshotReadinessDotClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
 		return "bg-err"
 	}
-	return "bg-warn"
+	return "bg-dim"
 }
 
 func snapshotReadinessClass(snapshot telemetry.Snapshot) string {
@@ -1855,7 +1880,7 @@ func snapshotReadinessClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
 		return base + " border-err/15 bg-err/15 text-err"
 	}
-	return base + " border-warn/15 bg-warn/15 text-warn"
+	return base + " border-line bg-elev/40 text-text"
 }
 
 func snapshotReadinessDetailClass(snapshot telemetry.Snapshot) string {
@@ -1865,7 +1890,7 @@ func snapshotReadinessDetailClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
 		return "text-err"
 	}
-	return "text-warn"
+	return "text-sec"
 }
 
 func manualRefreshVisible(snapshot telemetry.Snapshot) bool {
@@ -2304,7 +2329,7 @@ func projectOverviewCards(data DashboardData) []projectOverviewCard {
 			ID:       "runs",
 			Title:    "Runs",
 			Href:     projectRunsPath(data.ProjectID),
-			Value:    formatCount(runningCount(data.Snapshot)) + " running",
+			Value:    runningCountLabel(data.Snapshot) + " running",
 			Detail:   projectOverviewRunsDetail(data.Snapshot),
 			DotClass: projectOverviewRunsDotClass(data.Snapshot),
 		},
@@ -2739,6 +2764,7 @@ func projectKanbanDragDropEnabled(data DashboardData) bool {
 // keeps the last-known content visible instead of flashing skeletons.
 func snapshotCarriesData(data DashboardData) bool {
 	return data.Snapshot.LastKnown ||
+		data.Snapshot.Tracker.Available() ||
 		snapshotReady(data.Snapshot) ||
 		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
 }
@@ -3304,7 +3330,7 @@ func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
 // mode and transition policy (projectKanbanCardKanbanData), and cards from
 // read-only or unresolvable projects stay inert with a reason chip.
 func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCard) string {
-	if data.Snapshot.LastKnown {
+	if data.Snapshot.LastKnown && !snapshotUsesStartupCache(data.Snapshot) {
 		return "Tracker snapshot is not ready; moves are disabled until data is current."
 	}
 	if reason := projectKanbanCardRefreshDisabledText(data, card); reason != "" {
@@ -3342,7 +3368,7 @@ func projectKanbanCardRefreshDisabledText(data DashboardData, card projectKanban
 		refresh = data.Snapshot.Refresh
 	}
 	if refresh.ReadinessStatus() == telemetry.RefreshStatusInitializing {
-		return "Tracker snapshot is not ready; moves are disabled until data is current."
+		return "Project is initializing; moves are disabled until tracker data is current."
 	}
 
 	kanban := projectKanbanCardKanbanData(data, card)
@@ -5184,6 +5210,9 @@ func diagnosticsHealthLabel(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) || strings.TrimSpace(snapshot.WorkflowMetrics.DegradedReason) != "" || strings.TrimSpace(snapshot.Budget.DegradedReason) != "" {
 		return "Degraded"
 	}
+	if !runtimeCountComplete(snapshot) {
+		return "Starting"
+	}
 	if runningCount(snapshot) == 0 && queueCount(snapshot)+blockedCount(snapshot) > 0 {
 		return "Stalled"
 	}
@@ -5202,6 +5231,9 @@ func diagnosticsHealthDetail(snapshot telemetry.Snapshot) string {
 	}
 	if reason := strings.TrimSpace(snapshot.Budget.DegradedReason); reason != "" {
 		return reason
+	}
+	if !runtimeCountComplete(snapshot) {
+		return "Runtime state is still initializing; active worker count is not yet complete."
 	}
 	if runningCount(snapshot) == 0 && queueCount(snapshot)+blockedCount(snapshot) > 0 {
 		return "No active workers while work is queued or blocked."
@@ -5224,7 +5256,7 @@ func diagnosticsHealthKind(snapshot telemetry.Snapshot) primitives.Kind {
 
 func diagnosticsForwardProgressValue(snapshot telemetry.Snapshot) string {
 	parts := []string{
-		formatCount(runningCount(snapshot)) + " active",
+		runningCountLabel(snapshot) + " active",
 		formatCount(queueCount(snapshot)) + " queued",
 	}
 	return strings.Join(parts, " / ")
@@ -6878,7 +6910,7 @@ func runtimeStatusClass(snapshot telemetry.Snapshot) string {
 		return "border-err/15 bg-err/15 text-err"
 	}
 	if snapshotInitializing(snapshot) {
-		return "border-warn/15 bg-warn/15 text-warn"
+		return "border-line bg-elev text-sec"
 	}
 	if snapshot.Shutdown.Draining {
 		return "border-warn/15 bg-warn/15 text-warn"
@@ -6901,7 +6933,7 @@ func statsStatusClass(snapshot telemetry.Snapshot) string {
 		return "border-err/15 bg-err/15 text-err"
 	}
 	if snapshotInitializing(snapshot) {
-		return "border-warn/15 bg-warn/15 text-warn"
+		return "border-line bg-elev text-sec"
 	}
 	if snapshot.LifetimeTotals.Available {
 		return "border-ok/15 bg-ok/15 text-ok"
