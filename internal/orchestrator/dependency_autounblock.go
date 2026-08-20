@@ -1081,7 +1081,18 @@ func stickyBlockReason(reason string) bool {
 		return true
 	}
 	switch reason {
-	case "rework_limit", string(AutoPromoteReasonMergeRevocationLimit), noProgressLimitReason, dispatchLoopDetectedReason, spendProgressReason, repeatedFailureCircuitBreakerCause, "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
+	case "rework_limit",
+		string(AutoPromoteReasonMergeRevocationLimit),
+		noProgressLimitReason,
+		dispatchLoopDetectedReason,
+		spendProgressReason,
+		repeatedFailureCircuitBreakerCause,
+		"workpad_blocked_unactioned",
+		"circuit_breaker",
+		"token_ceiling_circuit_breaker",
+		artifactGateConvergenceReason,
+		terminalAttemptRetryLimitCause,
+		workspacePreparationRetryLimitCause:
 		return true
 	default:
 		return false

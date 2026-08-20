@@ -462,6 +462,16 @@ func TestCauseBlockedRecoveryCooldownSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestBreakerParkCauseIncludesRetryCycleLimits(t *testing.T) {
+	t.Parallel()
+
+	for _, cause := range []string{terminalAttemptRetryLimitCause, workspacePreparationRetryLimitCause} {
+		if !breakerParkCause(cause) {
+			t.Fatalf("breakerParkCause(%q) = false, want true", cause)
+		}
+	}
+}
+
 func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T) {
 	t.Parallel()
 

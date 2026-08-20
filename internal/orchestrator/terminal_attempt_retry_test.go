@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -124,6 +125,68 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 				t.Fatalf("persisted work_product_pushed = %v, want %v", got, tt.result.PullRequestHeadPushed)
 			}
 		})
+	}
+}
+
+func TestHandleRunResultParksTerminalRetryAtDurableLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 20, 13, 0, 0, 0, time.UTC)
+	issue := terminalRetryTestIssue("runtime-limit")
+	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+	attempts := &terminalRetryWorkAttemptStore{}
+	cfg := normalizeConfig(Config{
+		ActiveStates:          []string{"Todo", "In Progress"},
+		ObservedStates:        []string{"Blocked"},
+		TerminalStates:        []string{"Done"},
+		MaxRetryBackoff:       time.Minute,
+		FailureRetryBaseDelay: time.Second,
+	})
+	o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+	state := newState(cfg)
+
+	for attempt := 1; attempt <= consecutiveRetryCycleLimit; attempt++ {
+		completedAt := now.Add(time.Duration(attempt) * time.Minute)
+		issue.State = planImplementationState
+		tracker.issues[issue.ID] = cloneIssue(issue)
+		state.Running[issue.ID] = Running{
+			Issue:         cloneIssue(issue),
+			Attempt:       attempt,
+			WorkAttemptID: int64(attempt),
+			Mode:          runpkg.RunModePlan,
+			StartedAt:     completedAt.Add(-time.Minute),
+		}
+		state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: completedAt.Add(-time.Minute)}
+		o.upsertWorkAttemptSnapshot(&state, telemetry.WorkAttempt{
+			AttemptID: int64(attempt), IssueID: issue.ID, Identifier: issue.Identifier,
+			Status: string(store.WorkAttemptStatusActive), StartedAt: completedAt.Add(-time.Minute),
+		})
+
+		o.handleRunResult(t.Context(), &state, runpkg.Completion{
+			IssueID:      issue.ID,
+			Request:      runpkg.RunRequest{Mode: runpkg.RunModePlan},
+			Err:          errors.New("runner failed before producing work"),
+			CompletedAt:  completedAt,
+			RetryAttempt: attempt + 1,
+			RetryDelay:   time.Second,
+		})
+
+		if attempt < consecutiveRetryCycleLimit {
+			if retry, ok := state.Retry[issue.ID]; !ok || retry.Issue.State != "Todo" {
+				t.Fatalf("attempt %d Retry[%q] = %#v, want Todo retry", attempt, issue.ID, retry)
+			}
+		}
+	}
+
+	blocked, ok := state.Blocked[issue.ID]
+	if !ok || blocked.Reason != terminalAttemptRetryLimitCause || blocked.Recovery == nil {
+		t.Fatalf("Blocked[%q] = %#v, want terminal retry limit park", issue.ID, blocked)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after durable terminal retry limit", issue.ID)
+	}
+	if len(attempts.completions) != consecutiveRetryCycleLimit {
+		t.Fatalf("work attempt completions = %d, want %d", len(attempts.completions), consecutiveRetryCycleLimit)
 	}
 }
 
@@ -394,6 +457,242 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 	}
 }
 
+func TestReconcileTerminalAttemptRetryStatesBoundsDurableFailures(t *testing.T) {
+	t.Parallel()
+
+	const retryLimit = 3
+	now := time.Date(2026, 8, 20, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		attempts     []telemetry.WorkAttempt
+		wantState    string
+		wantBlocked  bool
+		wantRecovery string
+	}{
+		{
+			name:      "below limit returns to todo",
+			attempts:  terminalRetryFailureAttempts("issue-below-limit", now, retryLimit-1),
+			wantState: "Todo",
+		},
+		{
+			name:         "limit parks in blocked",
+			attempts:     terminalRetryFailureAttempts("issue-at-limit", now, retryLimit),
+			wantState:    "Blocked",
+			wantBlocked:  true,
+			wantRecovery: "fingerprint_changed",
+		},
+		{
+			name: "successful completion resets the sequence",
+			attempts: []telemetry.WorkAttempt{
+				{
+					AttemptID: 3, IssueID: "issue-success-reset", Status: string(store.WorkAttemptStatusTerminal),
+					TerminalState: string(store.WorkAttemptTerminalFailure), CompletedAt: timePointer(now),
+				},
+				{
+					AttemptID: 2, IssueID: "issue-success-reset", Status: string(store.WorkAttemptStatusTerminal),
+					TerminalState: string(store.WorkAttemptTerminalSuccess), CompletedAt: timePointer(now.Add(-time.Minute)),
+				},
+				{
+					AttemptID: 1, IssueID: "issue-success-reset", Status: string(store.WorkAttemptStatusTerminal),
+					TerminalState: string(store.WorkAttemptTerminalFailure), CompletedAt: timePointer(now.Add(-2 * time.Minute)),
+				},
+			},
+			wantState: "Todo",
+		},
+		{
+			name: "pushed work resets the sequence",
+			attempts: []telemetry.WorkAttempt{
+				{
+					AttemptID: 3, IssueID: "issue-push-reset", Status: string(store.WorkAttemptStatusTerminal),
+					TerminalState: string(store.WorkAttemptTerminalFailure), CompletedAt: timePointer(now),
+				},
+				{
+					AttemptID: 2, IssueID: "issue-push-reset", Status: string(store.WorkAttemptStatusTerminal),
+					TerminalState: string(store.WorkAttemptTerminalFailure), CompletedAt: timePointer(now.Add(-time.Minute)),
+					WorkerMetadataJSON: `{"work_product_pushed":true}`,
+				},
+				{
+					AttemptID: 1, IssueID: "issue-push-reset", Status: string(store.WorkAttemptStatusTerminal),
+					TerminalState: string(store.WorkAttemptTerminalFailure), CompletedAt: timePointer(now.Add(-2 * time.Minute)),
+				},
+			},
+			wantState: "Todo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issueID := tt.attempts[0].IssueID
+			issue := terminalRetryTestIssue(strings.TrimPrefix(issueID, "issue-"))
+			issue.ID = issueID
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+			cfg := normalizeConfig(Config{
+				ActiveStates:   []string{"Todo", "In Progress"},
+				ObservedStates: []string{"Blocked"},
+				TerminalStates: []string{"Done"},
+			})
+			o := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			state.WorkAttempts = append([]telemetry.WorkAttempt(nil), tt.attempts...)
+
+			transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{issue}, now)
+
+			if len(transitions) != 1 || transitions[0].State != tt.wantState {
+				t.Fatalf("transitions = %#v, want one transition to %s", transitions, tt.wantState)
+			}
+			if got := tracker.transitionStates(); !slices.Equal(got, []string{tt.wantState}) {
+				t.Fatalf("state transitions = %v, want [%s]", got, tt.wantState)
+			}
+			blocked, ok := state.Blocked[issue.ID]
+			if ok != tt.wantBlocked {
+				t.Fatalf("Blocked[%q] present = %v, want %v: %#v", issue.ID, ok, tt.wantBlocked, blocked)
+			}
+			if tt.wantBlocked && (blocked.RecoveryReason != tt.wantRecovery || blocked.Recovery == nil) {
+				t.Fatalf("Blocked[%q] = %#v, want durable fingerprint recovery", issue.ID, blocked)
+			}
+		})
+	}
+}
+
+func TestReconcileTerminalAttemptRetryStatesUsesDurableIssueHistory(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		errorClass  string
+		historyErr  error
+		wantState   string
+		wantBlocked bool
+		wantReason  string
+		wantEvent   string
+	}{
+		{name: "persisted terminal history reaches limit", errorClass: workAttemptErrorRunner, wantState: "Blocked", wantBlocked: true, wantReason: terminalAttemptRetryLimitCause},
+		{name: "persisted workspace history reaches limit", errorClass: workAttemptErrorWorkspace, wantState: "Blocked", wantBlocked: true, wantReason: workspacePreparationRetryLimitCause},
+		{name: "history lookup failure fails open", errorClass: workAttemptErrorRunner, historyErr: errors.New("history unavailable"), wantState: "Todo", wantEvent: terminalAttemptRetryHistoryUnavailableEvent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := terminalRetryTestIssue("durable-history")
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+			attempts := &terminalRetryWorkAttemptStore{historyErr: tt.historyErr}
+			for attempt := 3; attempt >= 1; attempt-- {
+				attempts.history = append(attempts.history, store.WorkAttempt{
+					ID:            int64(attempt),
+					IssueID:       issue.ID,
+					Identifier:    issue.Identifier,
+					Status:        store.WorkAttemptStatusTerminal,
+					TerminalState: store.WorkAttemptTerminalFailure,
+					ErrorClass:    tt.errorClass,
+					CompletedAt:   now.Add(-time.Duration(3-attempt) * time.Minute),
+				})
+			}
+			cfg := normalizeConfig(Config{
+				Project:        scheduler.ProjectCandidate{ID: "detent"},
+				ActiveStates:   []string{"Todo", "In Progress"},
+				ObservedStates: []string{"Blocked"},
+				TerminalStates: []string{"Done"},
+			})
+			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+			state.WorkAttempts = terminalRetryFailureAttempts(issue.ID, now, 1)
+			state.WorkAttempts[0].ErrorClass = tt.errorClass
+
+			transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{issue}, now)
+
+			if len(transitions) != 1 || transitions[0].State != tt.wantState {
+				t.Fatalf("transitions = %#v, want one transition to %s", transitions, tt.wantState)
+			}
+			blocked, ok := state.Blocked[issue.ID]
+			if ok != tt.wantBlocked {
+				t.Fatalf("Blocked[%q] present = %v, want %v", issue.ID, ok, tt.wantBlocked)
+			}
+			if tt.wantBlocked && blocked.Reason != tt.wantReason {
+				t.Fatalf("Blocked[%q].Reason = %q, want %q", issue.ID, blocked.Reason, tt.wantReason)
+			}
+			if len(attempts.historyQueries) != 1 {
+				t.Fatalf("history queries = %#v, want one", attempts.historyQueries)
+			}
+			query := attempts.historyQueries[0]
+			if query.ProjectID != "detent" || query.IssueID != issue.ID || query.Identifier != issue.Identifier || query.Limit != consecutiveRetryCycleLimit {
+				t.Fatalf("history query = %#v, want durable issue identity and limit", query)
+			}
+			if tt.wantEvent != "" {
+				if event, ok := recentStateEvent(state, tt.wantEvent); !ok || event.Message == "" {
+					t.Fatalf("RecentEvents = %#v, want %s", state.RecentEvents, tt.wantEvent)
+				}
+			}
+		})
+	}
+}
+
+func TestRetryCycleAttemptMatches(t *testing.T) {
+	t.Parallel()
+
+	base := telemetry.WorkAttempt{
+		Status:        string(store.WorkAttemptStatusTerminal),
+		TerminalState: string(store.WorkAttemptTerminalFailure),
+		ErrorClass:    workAttemptErrorRunner,
+	}
+	tests := []struct {
+		name         string
+		mutate       func(*telemetry.WorkAttempt)
+		cause        string
+		wantMatching bool
+	}{
+		{name: "failure", cause: terminalAttemptRetryLimitCause, wantMatching: true},
+		{name: "timed out", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalTimedOut)
+		}},
+		{name: "abandoned", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalAbandoned)
+		}},
+		{name: "capacity", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalCapacity)
+		}},
+		{name: "success resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.TerminalState = string(store.WorkAttemptTerminalSuccess) }},
+		{name: "pushed work resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.WorkerMetadataJSON = `{"work_product_pushed":true}` }},
+		{name: "forge outage resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = forgeUnavailableErrorClass }},
+		{name: "workspace is separate from terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = workAttemptErrorWorkspace }},
+		{name: "workspace failure", cause: workspacePreparationRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = workAttemptErrorWorkspace }},
+		{name: "runner failure resets workspace", cause: workspacePreparationRetryLimitCause},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			attempt := base
+			if tt.mutate != nil {
+				tt.mutate(&attempt)
+			}
+			if got := retryCycleAttemptMatches(attempt, tt.cause); got != tt.wantMatching {
+				t.Fatalf("retryCycleAttemptMatches() = %v, want %v for %#v", got, tt.wantMatching, attempt)
+			}
+		})
+	}
+}
+
+func terminalRetryFailureAttempts(issueID string, now time.Time, count int) []telemetry.WorkAttempt {
+	attempts := make([]telemetry.WorkAttempt, 0, count)
+	for index := range count {
+		attemptID := int64(count - index)
+		attempts = append(attempts, telemetry.WorkAttempt{
+			AttemptID:     attemptID,
+			IssueID:       issueID,
+			Status:        string(store.WorkAttemptStatusTerminal),
+			TerminalState: string(store.WorkAttemptTerminalFailure),
+			ErrorClass:    "runner_error",
+			CompletedAt:   timePointer(now.Add(-time.Duration(index) * time.Minute)),
+		})
+	}
+	return attempts
+}
+
 func TestReconcileTerminalAttemptRetryStatesRespectsLiveForeignClaim(t *testing.T) {
 	t.Parallel()
 
@@ -576,7 +875,10 @@ func (c *terminalRetryConnector) transitionStates() []string {
 }
 
 type terminalRetryWorkAttemptStore struct {
-	completions []store.WorkAttemptCompletion
+	completions    []store.WorkAttemptCompletion
+	history        []store.WorkAttempt
+	historyErr     error
+	historyQueries []store.WorkAttemptHistoryQuery
 }
 
 func (s *terminalRetryWorkAttemptStore) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
@@ -608,8 +910,9 @@ func (s *terminalRetryWorkAttemptStore) ListActiveWorkAttempts(context.Context, 
 	return nil, nil
 }
 
-func (s *terminalRetryWorkAttemptStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
-	return nil, nil
+func (s *terminalRetryWorkAttemptStore) ListRecentTerminalWorkAttempts(_ context.Context, query store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	s.historyQueries = append(s.historyQueries, query)
+	return append([]store.WorkAttempt(nil), s.history...), s.historyErr
 }
 
 func (s *terminalRetryWorkAttemptStore) RecordSchedulerDecision(context.Context, store.SchedulerDecision) (int64, error) {

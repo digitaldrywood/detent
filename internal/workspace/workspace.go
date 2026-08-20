@@ -32,6 +32,8 @@ const defaultHookTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
 const hookOutputTailBytes = 16 * 1024
 const workerScratchRelativePath = ".detent/tmp"
+const quarantineTimestampFormat = "20060102T150405.000000000Z"
+const quarantineAccumulationWarningThreshold = 5
 
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
@@ -751,15 +753,34 @@ func (l *LocalGit) recoverStaleSourceWorktree(ctx context.Context, path string, 
 			}
 			return fmt.Errorf("workspace path is on branch %q, want %q and %s; preserve it by moving or cleaning %s: %w", currentBranch, expectedBranch, reason, path, err)
 		}
+		quarantineCount, countErr := l.quarantineWorkspaceCount(path)
+		if countErr != nil {
+			l.logger.Warn(
+				"workspace quarantine count failed",
+				slog.String("path", path),
+				slog.String("quarantine_path", quarantinePath),
+				slog.Any("error", countErr),
+			)
+		}
 		l.logger.Warn(
 			"quarantined stale workspace",
 			slog.String("path", path),
 			slog.String("quarantine_path", quarantinePath),
+			slog.Int("quarantine_count", quarantineCount),
 			slog.String("current_branch", currentBranch),
 			slog.String("expected_branch", expectedBranch),
 			slog.Bool("dirty", dirty),
 			slog.Bool("unreferenced_detached_head", unreferencedDetachedHead),
 		)
+		if quarantineCount > quarantineAccumulationWarningThreshold {
+			l.logger.Error(
+				"workspace quarantine accumulation exceeded threshold",
+				slog.String("path", path),
+				slog.String("quarantine_path", quarantinePath),
+				slog.Int("quarantine_count", quarantineCount),
+				slog.Int("threshold", quarantineAccumulationWarningThreshold),
+			)
+		}
 		return nil
 	}
 
@@ -990,7 +1011,7 @@ func writeLinkedWorktreeGitDir(path string, gitDir string) (err error) {
 func (l *LocalGit) nextQuarantinePath(path string) (string, error) {
 	parent := filepath.Join(l.root, ".detent", "quarantine")
 	base := SafeKey(filepath.Base(path))
-	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	stamp := time.Now().UTC().Format(quarantineTimestampFormat)
 	for i := range 100 {
 		name := base + "-" + stamp
 		if i > 0 {
@@ -1009,6 +1030,46 @@ func (l *LocalGit) nextQuarantinePath(path string) (string, error) {
 		}
 	}
 	return "", errors.New("exhausted quarantine workspace path attempts")
+}
+
+func (l *LocalGit) quarantineWorkspaceCount(path string) (int, error) {
+	parent := filepath.Join(l.root, ".detent", "quarantine")
+	entries, err := os.ReadDir(parent)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read quarantine directory: %w", err)
+	}
+	base := SafeKey(filepath.Base(path))
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() && quarantineEntryMatchesWorkspace(base, entry.Name()) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func quarantineEntryMatchesWorkspace(base string, name string) bool {
+	suffix, ok := strings.CutPrefix(name, base+"-")
+	if !ok {
+		return false
+	}
+	stampEnd := strings.IndexByte(suffix, 'Z')
+	if stampEnd < 0 {
+		return false
+	}
+	stampEnd++
+	if _, err := time.Parse(quarantineTimestampFormat, suffix[:stampEnd]); err != nil {
+		return false
+	}
+	collision := suffix[stampEnd:]
+	if collision == "" {
+		return true
+	}
+	value, err := strconv.Atoi(strings.TrimPrefix(collision, "-"))
+	return err == nil && strings.HasPrefix(collision, "-") && value > 0
 }
 
 func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error) {

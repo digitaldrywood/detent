@@ -1193,6 +1193,8 @@ func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 	for _, reason := range []string{
 		noProgressLimitReason,
 		dispatchLoopDetectedReason,
+		terminalAttemptRetryLimitCause,
+		workspacePreparationRetryLimitCause,
 		workpadBlockedUnactionedReason,
 		"token_ceiling_circuit_breaker",
 		tokenCeilingBlockedReasonPrefix + "observed 16100000 tokens above the 16000000 max_session_tokens ceiling",

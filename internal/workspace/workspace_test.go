@@ -1573,6 +1573,42 @@ func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
 	}
 }
 
+func TestLocalGitQuarantineWorkspaceCount(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	parent := filepath.Join(root, ".detent", "quarantine")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("create quarantine directory: %v", err)
+	}
+	base := "detent-acme_widgets_42"
+	stamp := "20260820T140000.000000000Z"
+	for _, name := range []string{
+		base + "-" + stamp,
+		base + "-" + stamp + "-1",
+		base + "-" + stamp + "-2",
+		base + "-malformed",
+		base + "-other-" + stamp,
+		base + "0-" + stamp,
+	} {
+		if err := os.MkdirAll(filepath.Join(parent, name), 0o700); err != nil {
+			t.Fatalf("create quarantine entry %q: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(parent, base+"-20260820T150000.000000000Z"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create quarantine file: %v", err)
+	}
+	backend := &LocalGit{root: root}
+
+	got, err := backend.quarantineWorkspaceCount(filepath.Join(root, base))
+	if err != nil {
+		t.Fatalf("quarantineWorkspaceCount() error = %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("quarantineWorkspaceCount() = %d, want 3", got)
+	}
+}
+
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
