@@ -13,6 +13,132 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+func TestEvaluateBlockedRecoveryUsesOnlyUnresolvedDependencies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		ref            connector.BlockedRef
+		terminalStates []string
+		want           BlockedRecoveryReason
+	}{
+		{
+			name: "closed tracker ref is resolved",
+			ref: connector.BlockedRef{
+				Identifier:   "digitaldrywood/detent#1900",
+				State:        "In Progress",
+				TrackerState: connector.BlockedRefTrackerStateClosed,
+			},
+			want: BlockedRecoveryReasonNoRecoverableSignal,
+		},
+		{
+			name: "terminal workflow state is resolved",
+			ref: connector.BlockedRef{
+				Identifier: "digitaldrywood/detent#1901",
+				State:      "Released",
+			},
+			terminalStates: []string{"Released"},
+			want:           BlockedRecoveryReasonNoRecoverableSignal,
+		},
+		{
+			name: "open tracker ref remains unresolved",
+			ref: connector.BlockedRef{
+				Identifier:   "digitaldrywood/detent#1902",
+				State:        "Done",
+				TrackerState: connector.BlockedRefTrackerStateOpen,
+			},
+			want: BlockedRecoveryReasonDependencyBlocker,
+		},
+		{
+			name: "active workflow state remains unresolved",
+			ref: connector.BlockedRef{
+				Identifier: "digitaldrywood/detent#1903",
+				State:      "In Progress",
+			},
+			want: BlockedRecoveryReasonDependencyBlocker,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				State:     blockedStatusState,
+				BlockedBy: []connector.BlockedRef{tt.ref},
+				PullRequest: &connector.PullRequest{
+					State:          "open",
+					MergeableState: "clean",
+					CIStatus:       "success",
+				},
+			}
+			terminalStates := tt.terminalStates
+			if len(terminalStates) == 0 {
+				terminalStates = []string{"Done", "Cancelled", "Canceled", "Closed"}
+			}
+			terminalStates = normalizedStates(terminalStates)
+			got := evaluateBlockedRecovery(issue, normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
+				Enabled:      true,
+				SourceStates: []string{blockedStatusState},
+			}), terminalStates)
+
+			if got.Reason != tt.want {
+				t.Fatalf("recovery reason = %q, want %q", got.Reason, tt.want)
+			}
+		})
+	}
+}
+
+func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cause      string
+		wantReason BlockedRecoveryReason
+	}{
+		{
+			name:       "resolved dependency has no generic error",
+			wantReason: BlockedRecoveryReasonMissingPullRequest,
+		},
+		{
+			name:       "human attention cause stays actionable",
+			cause:      "pull request delivery needs human attention",
+			wantReason: BlockedRecoveryReasonHumanBlocker,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			issue := connector.Issue{
+				ID:            "issue-" + strings.ReplaceAll(tt.name, " ", "-"),
+				State:         blockedStatusState,
+				BlockerReason: tt.cause,
+				BlockedBy: []connector.BlockedRef{{
+					Identifier:   "digitaldrywood/detent#1900",
+					State:        "Done",
+					TrackerState: connector.BlockedRefTrackerStateClosed,
+				}},
+			}
+
+			orch.setBlockedStatusIssue(&state, issue, time.Date(2026, 8, 18, 22, 30, 0, 0, time.UTC))
+
+			blocked := state.Blocked[issue.ID]
+			if blocked.Reason != tt.cause || blocked.RecoveryReason != string(tt.wantReason) {
+				t.Fatalf("stored cause = %q/%q, want %q/%q", blocked.Reason, blocked.RecoveryReason, tt.cause, tt.wantReason)
+			}
+			if blocked.Reason == "blocked by project status" {
+				t.Fatalf("stored generic project-status error: %#v", blocked)
+			}
+		})
+	}
+}
+
 func TestRecoverBlockedIssuesSkipsPersistedStickyBlockedIssue(t *testing.T) {
 	t.Parallel()
 

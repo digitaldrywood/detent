@@ -1896,7 +1896,7 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 				BlockedRecoveryRemedy: "return the issue to Todo when implementation work is ready to resume",
 			},
 			wantKind: primitives.KindErr,
-			wantText: "needs review - no commits to deliver — return the issue to Todo when implementation work is ready to resume",
+			wantText: "needs review - no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead — return the issue to Todo when implementation work is ready to resume",
 		},
 	}
 
@@ -1910,6 +1910,70 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 			}
 			if strings.Contains(text, "dependency not ready") {
 				t.Fatalf("boardCardExtra() exposed unnamed dependency: %q", text)
+			}
+		})
+	}
+}
+
+func TestBoardBlockedCardCauseUsesStoredRecoveryState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		action    string
+		reason    string
+		cause     string
+		wantKind  primitives.Kind
+		wantClass string
+	}{
+		{
+			name:      "transient wait",
+			action:    "defer",
+			reason:    "github_rest_budget_wait",
+			cause:     "transient GitHub REST budget waiting for capacity",
+			wantKind:  primitives.KindWarn,
+			wantClass: "border-warn/45",
+		},
+		{
+			name:      "human attention",
+			action:    "hold",
+			reason:    "no_commits_to_deliver",
+			cause:     "no_commits_to_deliver: current branch has no commits ahead",
+			wantKind:  primitives.KindErr,
+			wantClass: "border-err/45",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := projectKanbanCard{
+				IssueID:               "issue-1915",
+				Identifier:            "digitaldrywood/detent#1915",
+				IssueNumber:           "#1915",
+				ProjectID:             "detent",
+				Title:                 tt.name,
+				Stage:                 "Blocked",
+				BlockedSource:         telemetry.BlockedSourceProjectStatus,
+				BlockedReason:         tt.cause,
+				BlockedRecoveryAction: tt.action,
+				BlockedRecoveryReason: tt.reason,
+				Comments: []telemetry.IssueComment{{
+					Body: "activity feed supplied a different blocked cause",
+				}},
+			}
+			view := boardCardViewFromCard(DashboardData{}, projectKanbanLane{Title: "Blocked"}, card, false, "fleet", "detent")
+
+			if view.ExtraKind != tt.wantKind || !strings.Contains(view.ExtraText, tt.cause) {
+				t.Fatalf("blocked cause = %q/%q, want %q containing %q", view.ExtraKind, view.ExtraText, tt.wantKind, tt.cause)
+			}
+			if view.Activity != "" {
+				t.Fatalf("Activity = %q, want stored blocked cause to be authoritative", view.Activity)
+			}
+			html := renderBoardComponent(t, boardCardView2(view))
+			if !strings.Contains(html, tt.wantClass) || strings.Contains(html, "activity feed supplied") {
+				t.Fatalf("blocked card did not use stored cause treatment:\n%s", html)
 			}
 		})
 	}
@@ -2016,7 +2080,7 @@ func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
 			}}
 
 			html := renderBoardComponent(t, BoardSnapshot(data))
-			for _, want := range append(tt.wantRefs, "needs review - human action — approve the remaining deployment") {
+			for _, want := range append(tt.wantRefs, "needs review - the workflow emits Test (Go 1.26.5) — approve the remaining deployment") {
 				if !strings.Contains(html, want) {
 					t.Fatalf("board card missing %q:\n%s", want, html)
 				}

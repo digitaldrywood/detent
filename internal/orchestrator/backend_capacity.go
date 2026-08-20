@@ -734,7 +734,7 @@ func (o *Orchestrator) backendCapacityBlockedRecoveryTarget(
 	if !recoveredAt.IsZero() && (recoveredAt.Before(entry.Event.StartedAt) || recoveredAt.Before(commentAt)) {
 		return "", "backend capacity recovery predates the current Blocked entry evidence"
 	}
-	if len(issue.BlockedBy) > 0 {
+	if blockedRefsUnresolved(issue.BlockedBy, o.cfg.TerminalStates) {
 		return "", "current issue has independent dependency blockers"
 	}
 	if signal, found := autoPromoteIssueWorkpadSignal(issue); found && signal != nil && signal.Source == workpad.SourceStructured {

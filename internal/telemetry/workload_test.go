@@ -46,6 +46,26 @@ func TestBoardWorkload(t *testing.T) {
 			want: BoardWorkloadCounts{Blocked: 1},
 		},
 		{
+			name: "resolved refs clear stale dependency classification",
+			snapshot: Snapshot{
+				BoardIssues: []Issue{{ID: "resolved", State: "Todo"}},
+				Blocked: []Blocked{{
+					Issue: Issue{
+						ID:    "resolved",
+						State: "Todo",
+						BlockedBy: []BlockedRef{{
+							Identifier:   "digitaldrywood/detent#1900",
+							State:        "Done",
+							TrackerState: "closed",
+						}},
+					},
+					Source:         BlockedSourceProjectStatus,
+					RecoveryReason: "dependency_blocker",
+				}},
+			},
+			want: BoardWorkloadCounts{Blocked: 1},
+		},
+		{
 			name: "runtime block wins over stale ready tracker state",
 			snapshot: Snapshot{
 				BoardIssues: []Issue{{ID: "blocked", State: "Todo"}},

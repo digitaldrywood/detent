@@ -126,7 +126,7 @@ func (o *Orchestrator) stalenessItem(issue connector.Issue, state *State) stalen
 	if enteredAt.IsZero() {
 		enteredAt = workflowLaneFallbackAt(issue)
 	}
-	hasRecovery := len(issue.BlockedBy) > 0
+	hasRecovery := blockedRefsUnresolved(issue.BlockedBy, o.cfg.TerminalStates)
 	if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok {
 		hasRecovery = hasRecovery || blocked.Recovery != nil || strings.TrimSpace(blocked.RecoveryReason) != ""
 	}
