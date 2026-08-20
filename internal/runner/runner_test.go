@@ -632,6 +632,10 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				time.Now(),
 				0,
 				agentidentity.Identity{},
+				nil,
+				0,
+				"",
+				"",
 			)
 
 			if tt.wantErr == "" {
@@ -656,6 +660,39 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				t.Fatalf("CITriggerLabelReapplied = %v, want %v", execution.result.CITriggerLabelReapplied, tt.wantCITriggerLabelReapplied)
 			}
 		})
+	}
+}
+
+func TestAgentRunProgressUsesStreamedCommandErrorInsteadOfCommandPayload(t *testing.T) {
+	t.Parallel()
+
+	progress := newAgentRunProgress(runtimeoutput.Policy{}, "", "", 0, "", 0)
+	command := "git push origin HEAD\n" + strings.Repeat("workspace instructions must not be logged ", 300)
+	progress.apply(AgentUpdate{
+		Type:   AgentUpdateToolStarted,
+		ItemID: "push",
+		Tool:   "commandExecution",
+		Delta:  command,
+	}, time.Now())
+	progress.apply(AgentUpdate{
+		Type:   AgentUpdateToolOutput,
+		ItemID: "push",
+		Delta:  "To get started with GitHub CLI, run: gh auth login; alternatively populate GH_TOKEN",
+	}, time.Now())
+	progress.apply(AgentUpdate{
+		Type:   AgentUpdateToolCompleted,
+		ItemID: "push",
+		Tool:   "commandExecution",
+		Status: "failed",
+		Delta:  command,
+	}, time.Now())
+
+	err := progress.deliverableError()
+	if err == nil || !strings.Contains(err.Error(), "gh auth login") || !strings.Contains(err.Error(), "GH_TOKEN") {
+		t.Fatalf("deliverable error = %v, want streamed GitHub authentication stderr", err)
+	}
+	if strings.Contains(err.Error(), "workspace instructions must not be logged") {
+		t.Fatalf("deliverable error leaked command payload: %v", err)
 	}
 }
 
@@ -973,6 +1010,10 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				time.Now(),
 				0,
 				agentidentity.Identity{},
+				nil,
+				0,
+				"",
+				"",
 			)
 
 			if !errors.Is(execution.err, tt.wantErr) {
@@ -2418,6 +2459,69 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 		if !strings.Contains(string(lesson), want) {
 			t.Fatalf("lesson missing %q:\n%s", want, lesson)
 		}
+	}
+}
+
+func TestRunnerRunStopsSessionWhenBudgetProjectionIsExceeded(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	agentBackend := &fakeCodexClient{updates: []AgentUpdate{
+		{
+			Type:   AgentUpdateTokenUsage,
+			Tokens: AgentTokenUsage{InputTokens: 5, TotalTokens: 5},
+		},
+		{
+			Type:   AgentUpdateTokenUsage,
+			Tokens: AgentTokenUsage{InputTokens: 11, TotalTokens: 11},
+		},
+	}}
+	sessionStore := &fakeSessionStore{sessionID: 1943}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}},
+			Prompt: "Work on {{ issue.identifier }}",
+		},
+		Workspace: &fakeWorkspaceBackend{
+			info: workspace.Info{Path: t.TempDir(), Key: "issue-1943", Branch: "detent/issue-1943"},
+		},
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Pricing: budget.PricingTable{
+			"gpt-budget": {USDPerInputToken: 0.01},
+		},
+		BudgetChecker: &fakeBudgetChecker{projection: &budget.Projection{
+			Estimate: budget.TokenEstimate{InputTokens: 10, TotalTokens: 10},
+			CostUSD:  0.10,
+		}},
+		Now: newFakeClock(
+			startedAt,
+			startedAt.Add(time.Second),
+			startedAt.Add(2*time.Second),
+			startedAt.Add(3*time.Second),
+			startedAt.Add(4*time.Second),
+		).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
+		ID:            "issue-1943",
+		Identifier:    "digitaldrywood/detent#1943",
+		ModelOverride: "gpt-budget",
+	}})
+	if !errors.Is(err, ErrSessionBudgetProjectionExceeded) {
+		t.Fatalf("Run() error = %v, want ErrSessionBudgetProjectionExceeded", err)
+	}
+	if result.FinalState != FinalStateBudgetProjectionExceeded {
+		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateBudgetProjectionExceeded)
+	}
+	if agentBackend.calls != 1 {
+		t.Fatalf("backend calls = %d, want one stopped turn", agentBackend.calls)
+	}
+	if sessionStore.usage.CostUSD <= 0.10 || sessionStore.usage.ProjectedCostUSD == nil || *sessionStore.usage.ProjectedCostUSD != 0.10 {
+		t.Fatalf("UsageEvent = %#v, want recorded projection and crossing cost", sessionStore.usage)
 	}
 }
 
@@ -5656,16 +5760,17 @@ func (e *fakeDispatchEstimator) EstimateDispatch(_ context.Context, model string
 }
 
 type fakeBudgetChecker struct {
-	refusal budget.Refusal
-	model   string
-	calls   int
+	refusal    budget.Refusal
+	projection *budget.Projection
+	model      string
+	calls      int
 }
 
 func (c *fakeBudgetChecker) CheckDispatch(_ context.Context, req budget.DispatchRequest) (budget.Decision, error) {
 	c.calls++
 	c.model = req.Model
 	if c.refusal.Code == "" {
-		return budget.Decision{Allowed: true}, nil
+		return budget.Decision{Allowed: true, Projection: c.projection}, nil
 	}
 	refusal := c.refusal
 	return budget.Decision{Refusal: &refusal}, nil

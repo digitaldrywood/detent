@@ -348,18 +348,29 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		phase := "failed"
 		statusMessage := "worker failed"
 		deliverableRecoveryErr = nil
+		credentialFailure := runpkg.IsDeliverableConfigurationError(event.Err)
+		var projectionErr *runpkg.SessionBudgetProjectionError
+		projectionFailure := errors.As(event.Err, &projectionErr) && projectionErr != nil
 		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
 			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
 			phase = "blocked"
 			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
+		} else if credentialFailure {
+			errorClass = deliverableConfigurationFailureCause
+			phase = "blocked"
+			statusMessage = "deliverable credentials require human configuration"
+		} else if projectionFailure {
+			errorClass = budgetProjectionCeilingFailureCause
+			phase = "blocked"
+			statusMessage = "session stopped at its projected budget ceiling"
 		}
-		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && deliverableRecoveryErr == nil && !credentialFailure && !projectionFailure && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = dispatchLoopDetectedReason
 			errorMessage = dispatchLoopBlockMessage(progress)
 			phase = "no_progress"
 			statusMessage = "dispatch loop circuit breaker tripped"
-		} else if spendProgress.Block && deliverableRecoveryErr == nil && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+		} else if spendProgress.Block && deliverableRecoveryErr == nil && !credentialFailure && !projectionFailure && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = spendProgressReason
 			errorMessage = spendProgressBlockMessage(spendProgress)
@@ -376,6 +387,30 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			attempt = nextAttempt(running.Attempt)
 		}
 		if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
+			return
+		}
+		if credentialFailure && o.blockHumanOwnedWorkerFailure(
+			ctx,
+			state,
+			event,
+			running,
+			deliverableConfigurationFailureCause,
+			"GitHub credentials are unavailable for the deliverable command",
+			"configure GitHub CLI authentication or GH_TOKEN, then move the issue to Rework",
+			"worker_deliverable_configuration_blocked",
+		) {
+			return
+		}
+		if projectionFailure && o.blockHumanOwnedWorkerFailure(
+			ctx,
+			state,
+			event,
+			running,
+			budgetProjectionCeilingFailureCause,
+			fmt.Sprintf("session cost %.6f USD exceeded the admitted projection %.6f USD", projectionErr.ObservedCostUSD, projectionErr.ProjectedCostUSD),
+			"inspect the preserved worktree and either narrow the task or adjust the budget policy before moving the issue to Rework",
+			"worker_budget_projection_ceiling_tripped",
+		) {
 			return
 		}
 		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {

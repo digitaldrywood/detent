@@ -631,6 +631,12 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
 					t.Fatalf("updates = %#v, want one Blocked update", tracker.updates)
 				}
+				blocked := state.Blocked[tt.runningIssue.ID]
+				if tt.wantBlockReason == noProgressLimitReason || tt.wantBlockReason == dispatchLoopDetectedReason {
+					if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged {
+						t.Fatalf("Blocked[%q].Recovery = %#v, want durable human acknowledgement", tt.runningIssue.ID, blocked.Recovery)
+					}
+				}
 				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, tt.wantComment) {
 					t.Fatalf("comments = %#v, want comment containing %q", tracker.comments, tt.wantComment)
 				}
@@ -1328,6 +1334,39 @@ func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 		if !stickyBlockReason(reason) {
 			t.Fatalf("stickyBlockReason(%q) = false, want true", reason)
 		}
+	}
+}
+
+func TestBlockImplementProgressRequiresHumanAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{noProgressLimitReason, dispatchLoopDetectedReason} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &implementProgressConnector{}
+			orch := &Orchestrator{connector: tracker}
+			state := newState(normalizeConfig(Config{}))
+			issue := connector.Issue{ID: "issue-" + reason, Identifier: "digitaldrywood/detent#1943", State: "Rework"}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			blockedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+
+			if !orch.blockImplementProgress(t.Context(), &state, Running{Issue: issue, Mode: runpkg.RunModeImplement}, implementCompletionProgressDecision{
+				Issue:                 issue,
+				BlockReason:           reason,
+				NoProgressLimit:       3,
+				ConsecutiveNoProgress: 3,
+			}, blockedAt) {
+				t.Fatal("blockImplementProgress() = false, want true")
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged {
+				t.Fatalf("Blocked[%q].Recovery = %#v, want human-owned managed park", issue.ID, blocked.Recovery)
+			}
+			if blocked.RecoveryReason == "" || !strings.Contains(blocked.RecoveryReason, "human") {
+				t.Fatalf("Blocked[%q].RecoveryReason = %q, want human acknowledgement", issue.ID, blocked.RecoveryReason)
+			}
+		})
 	}
 }
 

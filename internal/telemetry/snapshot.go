@@ -1433,6 +1433,7 @@ type BackendOutage struct {
 	Provider        string     `json:"provider,omitempty"`
 	Kind            string     `json:"kind,omitempty"`
 	Reason          string     `json:"reason"`
+	Trigger         string     `json:"trigger,omitempty"`
 	DetectedAt      time.Time  `json:"detected_at"`
 	LastObservedAt  time.Time  `json:"last_observed_at"`
 	ResetAt         *time.Time `json:"reset_at,omitempty"`

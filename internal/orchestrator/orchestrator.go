@@ -51,6 +51,8 @@ const (
 	repeatedFailureThreshold                   = 5
 	repeatedFailureBlockedReasonPrefix         = "repeated failure circuit breaker: "
 	tokenCeilingBlockedReasonPrefix            = "token ceiling circuit breaker: "
+	deliverableConfigurationFailureCause       = "deliverable_configuration_failure"
+	budgetProjectionCeilingFailureCause        = "budget_projection_ceiling"
 	continuationDispatchBackoff                = 100 * time.Millisecond
 	runUpdateBufferSize                        = 128
 	maxRecentEvents                            = 50

@@ -19,19 +19,20 @@ import (
 )
 
 const (
-	FinalStateCompleted             = "completed"
-	FinalStateFailed                = "failed"
-	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
-	FinalStateMemoryCeilingExceeded = "memory_ceiling_exceeded"
-	FinalStateOperatorStopped       = "operator_stopped"
-	FinalStateMergeRevoked          = "merge_revoked"
-	FinalStateLaneRevoked           = "lane_revoked"
-	FinalStateCIUnavailable         = "ci_unavailable"
-	FinalStateMergeDurationExceeded = "merge_duration_exceeded"
-	FinalStateMergeFallbackExceeded = "merge_fallback_budget_exceeded"
-	FinalStateNeedsHumanAttention   = "needs_human_attention"
-	TokenCeilingSourceAbsolute      = "max_session_tokens"
-	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
+	FinalStateCompleted                = "completed"
+	FinalStateFailed                   = "failed"
+	FinalStateTokenCeilingExceeded     = "token_ceiling_exceeded"
+	FinalStateBudgetProjectionExceeded = "budget_projection_exceeded"
+	FinalStateMemoryCeilingExceeded    = "memory_ceiling_exceeded"
+	FinalStateOperatorStopped          = "operator_stopped"
+	FinalStateMergeRevoked             = "merge_revoked"
+	FinalStateLaneRevoked              = "lane_revoked"
+	FinalStateCIUnavailable            = "ci_unavailable"
+	FinalStateMergeDurationExceeded    = "merge_duration_exceeded"
+	FinalStateMergeFallbackExceeded    = "merge_fallback_budget_exceeded"
+	FinalStateNeedsHumanAttention      = "needs_human_attention"
+	TokenCeilingSourceAbsolute         = "max_session_tokens"
+	TokenCeilingSourceContextWindow    = "max_session_context_multiplier"
 
 	RunModeImplement = "implement"
 	RunModePlan      = "plan"
@@ -46,23 +47,24 @@ const (
 )
 
 var (
-	ErrSessionTokenCeilingExceeded  = errors.New("session token ceiling exceeded")
-	ErrSessionMemoryCeilingExceeded = errors.New("session memory ceiling exceeded")
-	ErrTurnDurationExceeded         = errors.New("agent turn duration exceeded")
-	ErrSessionDurationExceeded      = errors.New("agent session duration exceeded")
-	ErrOperatorStopped              = errors.New("operator stopped run")
-	ErrMergeRevoked                 = errors.New("merge eligibility revoked")
-	ErrLaneRevoked                  = errors.New("worker-owned lane revoked")
-	ErrCIUnavailable                = errors.New("CI unavailable")
-	ErrMergeWorkerStartupTimeout    = errors.New("merge worker startup timed out")
-	ErrMergeWorkerDurationExceeded  = errors.New("merge worker duration exceeded")
-	ErrMergeFallbackBudgetExceeded  = errors.New("merge fallback budget exceeded")
-	ErrModelPermitUnavailable       = errors.New("provider model permit unavailable")
-	ErrAgentTurnCleanup             = errors.New("agent turn cleanup failed")
-	ErrWorkerProcessReap            = errors.New("worker process reap failed")
-	ErrWorkspacePreparation         = errors.New("workspace preparation failed")
-	ErrAgentResumeUnsupported       = errors.New("agent backend does not support resume verification")
-	ErrDeliverableRecoveryExhausted = errors.New("deliverable recovery exhausted")
+	ErrSessionTokenCeilingExceeded     = errors.New("session token ceiling exceeded")
+	ErrSessionBudgetProjectionExceeded = errors.New("session budget projection exceeded")
+	ErrSessionMemoryCeilingExceeded    = errors.New("session memory ceiling exceeded")
+	ErrTurnDurationExceeded            = errors.New("agent turn duration exceeded")
+	ErrSessionDurationExceeded         = errors.New("agent session duration exceeded")
+	ErrOperatorStopped                 = errors.New("operator stopped run")
+	ErrMergeRevoked                    = errors.New("merge eligibility revoked")
+	ErrLaneRevoked                     = errors.New("worker-owned lane revoked")
+	ErrCIUnavailable                   = errors.New("CI unavailable")
+	ErrMergeWorkerStartupTimeout       = errors.New("merge worker startup timed out")
+	ErrMergeWorkerDurationExceeded     = errors.New("merge worker duration exceeded")
+	ErrMergeFallbackBudgetExceeded     = errors.New("merge fallback budget exceeded")
+	ErrModelPermitUnavailable          = errors.New("provider model permit unavailable")
+	ErrAgentTurnCleanup                = errors.New("agent turn cleanup failed")
+	ErrWorkerProcessReap               = errors.New("worker process reap failed")
+	ErrWorkspacePreparation            = errors.New("workspace preparation failed")
+	ErrAgentResumeUnsupported          = errors.New("agent backend does not support resume verification")
+	ErrDeliverableRecoveryExhausted    = errors.New("deliverable recovery exhausted")
 )
 
 type DeliverableCommandError struct {
@@ -387,6 +389,12 @@ type SessionTokenCeilingError struct {
 	ContextMultiplier  float64
 }
 
+type SessionBudgetProjectionError struct {
+	ObservedCostUSD  float64
+	ProjectedCostUSD float64
+	Model            string
+}
+
 type SessionMemoryCeilingError struct {
 	RSSBytes     uint64
 	CeilingBytes uint64
@@ -420,6 +428,23 @@ func (e *SessionTokenCeilingError) Error() string {
 
 func (e *SessionTokenCeilingError) Unwrap() error {
 	return ErrSessionTokenCeilingExceeded
+}
+
+func (e *SessionBudgetProjectionError) Error() string {
+	if e == nil {
+		return ErrSessionBudgetProjectionExceeded.Error()
+	}
+	return fmt.Sprintf(
+		"%s: observed_cost_usd=%.6f projected_cost_usd=%.6f model=%s",
+		ErrSessionBudgetProjectionExceeded,
+		e.ObservedCostUSD,
+		e.ProjectedCostUSD,
+		strings.TrimSpace(e.Model),
+	)
+}
+
+func (e *SessionBudgetProjectionError) Unwrap() error {
+	return ErrSessionBudgetProjectionExceeded
 }
 
 type agentDurationLimitError struct {
