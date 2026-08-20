@@ -222,10 +222,11 @@ type DependencyAutoUnblock struct {
 }
 
 type BlockedRecovery struct {
-	Enabled      bool     `yaml:"enabled"`
-	SourceStates []string `yaml:"source_states"`
-	TargetState  string   `yaml:"target_state"`
-	ReasonCodes  []string `yaml:"reason_codes"`
+	Enabled                bool     `yaml:"enabled"`
+	SourceStates           []string `yaml:"source_states"`
+	TargetState            string   `yaml:"target_state"`
+	ReasonCodes            []string `yaml:"reason_codes"`
+	BreakerCooldownSeconds int      `yaml:"breaker_cooldown_seconds"`
 }
 
 type Dependencies struct {
@@ -1039,16 +1040,23 @@ func (b *BlockedRecovery) Normalize() {
 	}
 	b.SourceStates = normalizeStateList(b.SourceStates)
 	b.TargetState = strings.TrimSpace(b.TargetState)
+	if b.BreakerCooldownSeconds == 0 {
+		b.BreakerCooldownSeconds = 24 * 60 * 60
+	}
 	for index := range b.ReasonCodes {
 		b.ReasonCodes[index] = normalizeBlockedRecoveryReasonCode(b.ReasonCodes[index])
 	}
 }
 
 func (b BlockedRecovery) Validate(prefix string) []string {
+	breakerCooldownSeconds := b.BreakerCooldownSeconds
 	b.ReasonCodes = slices.Clone(b.ReasonCodes)
 	b.Normalize()
 
 	var problems []string
+	if breakerCooldownSeconds < 0 {
+		problems = append(problems, prefix+".breaker_cooldown_seconds must be greater than or equal to 0")
+	}
 	validateStateList(prefix+".source_states", b.SourceStates, &problems)
 	if b.Enabled {
 		if len(b.SourceStates) == 0 {
@@ -1333,9 +1341,10 @@ func Default() Config {
 				Readiness:    DependencyReadinessTerminalOrMerged,
 			},
 			BlockedRecovery: BlockedRecovery{
-				SourceStates: []string{"Blocked"},
-				TargetState:  "Rework",
-				ReasonCodes:  []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
+				SourceStates:           []string{"Blocked"},
+				TargetState:            "Rework",
+				ReasonCodes:            []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
+				BreakerCooldownSeconds: 24 * 60 * 60,
 			},
 			BlockerAutoPromote: BlockerAutoPromote{
 				BlockerStates: []string{"Backlog", "Blocked", "Human Review"},

@@ -262,10 +262,11 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Claims.TTLSeconds = 300
 	cfg.Tracker.Claims.HeartbeatSeconds = 45
 	cfg.Tracker.BlockedRecovery = workflowconfig.BlockedRecovery{
-		Enabled:      true,
-		SourceStates: []string{"Blocked", "Parked"},
-		TargetState:  "Repair",
-		ReasonCodes:  []string{"merge_conflict", "stale_base"},
+		Enabled:                true,
+		SourceStates:           []string{"Blocked", "Parked"},
+		TargetState:            "Repair",
+		ReasonCodes:            []string{"merge_conflict", "stale_base"},
+		BreakerCooldownSeconds: 12 * 60 * 60,
 	}
 	cfg.Tracker.PriorityMap = workflowconfig.StringOrMap{IsMap: true, Map: map[string]any{"Critical": 1, "Normal": 3, "No priority": nil}}
 	staggerSeconds := 20
@@ -311,7 +312,8 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	if !got.BlockedRecovery.Enabled ||
 		!slices.Equal(got.BlockedRecovery.SourceStates, []string{"blocked", "parked"}) ||
 		got.BlockedRecovery.TargetState != "Repair" ||
-		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) {
+		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) ||
+		got.BlockedRecovery.BreakerCooldown != 12*time.Hour {
 		t.Fatalf("BlockedRecovery = %#v, want configured recovery policy", got.BlockedRecovery)
 	}
 	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {

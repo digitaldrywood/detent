@@ -962,6 +962,7 @@ tracker:
     readiness: terminal_or_merged
   blocked_recovery:
     enabled: true
+    breaker_cooldown_seconds: 43200
     source_states:
       - Blocked
     target_state: Rework
@@ -1232,6 +1233,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
 		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want canonical reason codes", got)
+	}
+	if cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds != 43200 {
+		t.Fatalf("Tracker.BlockedRecovery.BreakerCooldownSeconds = %d, want 43200", cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds)
 	}
 	if !cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = false, want true")
@@ -1588,6 +1592,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
 		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want default allowlist", got)
+	}
+	if cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds != 86400 {
+		t.Fatalf("Tracker.BlockedRecovery.BreakerCooldownSeconds = %d, want 86400", cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds)
 	}
 	if cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = true, want disabled by default")
@@ -3722,6 +3729,7 @@ tracker:
     - Rework
   blocked_recovery:
     enabled: true
+    breaker_cooldown_seconds: -1
     source_states: [""]
     target_state: ""
     reason_codes:
@@ -3732,6 +3740,7 @@ tracker:
 Prompt
 `,
 			want: []string{
+				"tracker.blocked_recovery.breaker_cooldown_seconds must be greater than or equal to 0",
 				"tracker.blocked_recovery.source_states state names must not be blank",
 				"tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true",
 				"tracker.blocked_recovery.reason_codes must contain only merge_conflict, stale_base, missing_current_head_ci",

@@ -48,7 +48,6 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			stickyReason:        noProgressLimitReason,
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
-			wantTransition:      true,
 			wantWorkpadLookup:   true,
 		},
 		{
@@ -58,7 +57,22 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			nativeDuplicate:     true,
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
-			wantTransition:      true,
+			wantWorkpadLookup:   true,
+		},
+		{
+			name:                "resolved refs after spend breaker",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        spendProgressReason,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
+			wantWorkpadLookup:   true,
+		},
+		{
+			name:                "resolved refs after repeated failure breaker",
+			blockers:            []connector.Issue{resolved},
+			stickyReason:        repeatedFailureCircuitBreakerCause,
+			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
+			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
 		},
 		{

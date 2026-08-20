@@ -89,10 +89,11 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			Readiness:    cfg.Tracker.DependencyAutoUnblock.Readiness,
 		}),
 		BlockedRecovery: normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
-			Enabled:      cfg.Tracker.BlockedRecovery.Enabled,
-			SourceStates: append([]string(nil), cfg.Tracker.BlockedRecovery.SourceStates...),
-			TargetState:  cfg.Tracker.BlockedRecovery.TargetState,
-			ReasonCodes:  append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
+			Enabled:         cfg.Tracker.BlockedRecovery.Enabled,
+			SourceStates:    append([]string(nil), cfg.Tracker.BlockedRecovery.SourceStates...),
+			TargetState:     cfg.Tracker.BlockedRecovery.TargetState,
+			ReasonCodes:     append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
+			BreakerCooldown: durationFromSeconds(cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds),
 		}),
 		BlockerAutoPromote: BlockerAutoPromoteConfig{
 			Enabled:       cfg.Tracker.BlockerAutoPromote.Enabled,

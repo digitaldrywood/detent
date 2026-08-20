@@ -805,6 +805,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.authorization.priority_in` | `list<integer>` | `[]` | No | values must be integers 1 through 4 |
 | `tracker.auto_provision` | `boolean` | `true` | No | None |
 | `tracker.blocked_recovery` | `object` | `see child fields` | No | None |
+| `tracker.blocked_recovery.breaker_cooldown_seconds` | `integer` | `86400` | No | must be greater than or equal to 0 |
 | `tracker.blocked_recovery.enabled` | `boolean` | `false` | Conditional | tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.reason_codes must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.source_states must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true |
 | `tracker.blocked_recovery.reason_codes` | `list<string>` | `["merge_conflict","stale_base","missing_current_head_ci"]` | No | must contain only merge_conflict, stale_base, missing_current_head_ci<br>must not be empty when tracker.blocked_recovery.enabled is true |
 | `tracker.blocked_recovery.source_states` | `list<string>` | `["blocked"]` | No | must not be empty when tracker.blocked_recovery.enabled is true<br>state names must be unique<br>state names must not be blank |

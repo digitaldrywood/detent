@@ -121,6 +121,14 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", "operator_stop", nil, "")
 			continue
 		}
+		if park, ok := o.currentBlockedRecoveryPark(ctx, state, hydrated); ok && strings.TrimSpace(park.Cause) != "" {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", "blocked_cause_recovery", nil, "")
+			continue
+		}
+		if stickyReason := o.issueStickyBlockReason(ctx, state, hydrated); stickyReason != "" {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", stickyReason, nil, "")
+			continue
+		}
 		if len(hydrated.BlockedBy) == 0 {
 			continue
 		}
@@ -129,10 +137,6 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
 		if reason := o.blockedCauseHoldReason(hydrated, state, workpadBlockers, cfg, workpadCurrent); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, blockers, "")
-			continue
-		}
-		if stickyReason := o.issueStickyBlockReason(ctx, state, hydrated); stickyReason != "" &&
-			(!dependencyBlockersReady(workpadBlockers, cfg, o.cfg.TerminalStates) || !workpadBlockerStickyOverrideAllowed(stickyReason)) {
 			continue
 		}
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
@@ -1071,20 +1075,17 @@ func blockedEntryMatchesCurrent(issue connector.Issue, enteredAt time.Time) bool
 func stickyBlockReason(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) ||
+		strings.HasPrefix(reason, repeatedFailureBlockedReasonPrefix) ||
 		strings.HasPrefix(reason, artifactGateConvergenceBlockedReasonPrefix) ||
 		strings.HasPrefix(reason, mergeWorkerRetryExhaustedReason) {
 		return true
 	}
 	switch reason {
-	case "rework_limit", string(AutoPromoteReasonMergeRevocationLimit), noProgressLimitReason, dispatchLoopDetectedReason, "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
+	case "rework_limit", string(AutoPromoteReasonMergeRevocationLimit), noProgressLimitReason, dispatchLoopDetectedReason, spendProgressReason, repeatedFailureCircuitBreakerCause, "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
 		return true
 	default:
 		return false
 	}
-}
-
-func workpadBlockerStickyOverrideAllowed(reason string) bool {
-	return strings.EqualFold(strings.TrimSpace(reason), noProgressLimitReason)
 }
 
 func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
