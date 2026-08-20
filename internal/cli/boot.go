@@ -354,9 +354,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return err
 	}
-	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger, func(ctx context.Context) (func(), bool) {
-		return runtimeUpdateIdleReservation(ctx, manager.Registry(), globalDispatchGate)
-	})
+	updateScheduler, err := newRuntimeUpdateScheduler(
+		cfg,
+		logger,
+		func(ctx context.Context) (func(), bool) {
+			return runtimeUpdateIdleReservation(ctx, manager.Registry(), globalDispatchGate)
+		},
+		func(ctx context.Context) (func(), error) {
+			return runtimeUpdateDrainReservation(ctx, manager.Registry(), globalDispatchGate)
+		},
+	)
 	if err != nil {
 		return err
 	}

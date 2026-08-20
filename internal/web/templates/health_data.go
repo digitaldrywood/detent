@@ -280,7 +280,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	}
 	rows = append(rows, healthRefreshRows(snapshot)...)
 	rows = append(rows, healthAdmissionProposalRows(snapshot.AdmissionProposals, snapshot.GeneratedAt)...)
-	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRow(snapshot.Update), healthBackoffRow(snapshot))
+	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRowAt(snapshot.Update, snapshot.GeneratedAt), healthBackoffRow(snapshot))
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))
 	}
@@ -736,6 +736,10 @@ func doctorStyleStalenessTarget(warning telemetry.StalenessWarning) string {
 }
 
 func healthUpdateRow(update telemetry.Update) healthRow {
+	return healthUpdateRowAt(update, time.Now())
+}
+
+func healthUpdateRowAt(update telemetry.Update, now time.Time) healthRow {
 	row := healthRow{
 		ID:        "health-update",
 		Component: "Detent update",
@@ -751,7 +755,7 @@ func healthUpdateRow(update telemetry.Update) healthRow {
 		return row
 	}
 	row.Kind = primitives.KindOK
-	row.Status = strings.ReplaceAll(strings.TrimSpace(update.State), "_", " ")
+	row.Status = strings.ReplaceAll(strings.TrimSpace(update.DisplayState(now)), "_", " ")
 	if row.Status == "" || row.Status == "scheduled" {
 		row.Status = "Scheduled"
 	}

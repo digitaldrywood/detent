@@ -717,6 +717,9 @@ func telemetryUpdateStatus(sources []autoUpdateStatusSource) telemetry.Update {
 		LastAppliedVersion: status.LastAppliedVersion,
 		NextCheckAt:        status.NextCheckAt,
 		AvailableVersion:   status.AvailableVersion,
+		PendingSince:       status.PendingSince,
+		MaxDeferralHours:   int(status.MaxDeferral / time.Hour),
+		Critical:           status.Critical,
 		LastError:          status.LastError,
 	}
 }
