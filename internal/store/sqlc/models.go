@@ -207,6 +207,8 @@ type EfficiencyReceipt struct {
 	TokensAnomaly         int64          `json:"tokens_anomaly"`
 	SessionsAnomaly       int64          `json:"sessions_anomaly"`
 	DwellAnomaly          int64          `json:"dwell_anomaly"`
+	InProgress            int64          `json:"in_progress"`
+	RefreshedAt           string         `json:"refreshed_at"`
 }
 
 type FairShareUsage struct {

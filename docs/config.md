@@ -537,6 +537,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.lessons.path` | `string` | `".detent/lessons.md"` | No | must be a relative path inside the workspace |
 | `agent.lessons.postmortem_max_tokens` | `integer` | `1024` | No | must be greater than 0 |
 | `agent.lessons.recall_n` | `integer` | `10` | No | must be greater than or equal to 0 |
+| `agent.lifetime_limit_cooldown_seconds` | `integer` | `3600` | No | must be greater than 0 when a lifetime limit is enabled |
+| `agent.lifetime_limit_override_label` | `string` | `"allow-lifetime-limit"` | No | None |
+| `agent.lifetime_session_limit` | `integer` | `15` | No | must be greater than or equal to 0 |
+| `agent.lifetime_token_limit` | `integer` | `40000000` | No | must be greater than or equal to 0 |
 | `agent.max_concurrent_agents` | `integer` | `10` | No | must be greater than 0 |
 | `agent.max_concurrent_agents_by_state` | `mapping<string, integer>` | `{}` | No | limits must be positive integers |
 | `agent.max_retry_backoff_ms` | `integer` | `300000` | No | must be greater than 0 |

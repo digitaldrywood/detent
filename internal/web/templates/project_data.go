@@ -151,6 +151,9 @@ func projectRunRowsWithReceipts(snapshot telemetry.Snapshot, receipts []efficien
 			Context:      contextPressureLabel(running.Tokens),
 			ContextKind:  contextPressureKind(running.Tokens),
 			ContextTitle: contextPressureTitle(running.Tokens),
+			Receipt:      projectRunReceiptLabel(receipts, running.Issue),
+			ReceiptTitle: projectRunReceiptTitle(receipts, running.Issue),
+			Anomaly:      projectRunReceiptAnomaly(receipts, running.Issue),
 		})
 	}
 
@@ -191,7 +194,7 @@ func projectRunReceiptLabel(receipts []efficiency.Receipt, issue telemetry.Issue
 	if !ok {
 		return "—"
 	}
-	return formatCount(int(receipt.Sessions)) + " sessions · " + reportCacheReadFraction(receipt.CacheShare()) + " cached · " + formatUSD(receipt.EstimatedCostUSD) + " notional USD"
+	return formatCount(int(receipt.Sessions)) + " sessions · " + formatInt(receipt.Redispatches) + " redispatches · " + formatInt(receipt.TotalTokens) + " tokens"
 }
 
 func projectRunReceiptTitle(receipts []efficiency.Receipt, issue telemetry.Issue) string {
@@ -199,7 +202,7 @@ func projectRunReceiptTitle(receipts []efficiency.Receipt, issue telemetry.Issue
 	if !ok {
 		return ""
 	}
-	return formatInt(receipt.TotalTokens) + " tokens · " + formatCount(int(receipt.Attempts)) + " attempts · " + formatDuration(float64(receipt.WallSeconds))
+	return reportCacheReadFraction(receipt.CacheShare()) + " cached · " + formatUSD(receipt.EstimatedCostUSD) + " notional USD · " + formatCount(int(receipt.Attempts)) + " attempts · " + formatDuration(float64(receipt.WallSeconds))
 }
 
 func projectRunReceiptAnomaly(receipts []efficiency.Receipt, issue telemetry.Issue) bool {

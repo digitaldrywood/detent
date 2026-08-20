@@ -43,6 +43,10 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
 		NoProgressTokenLimit:       cfg.Agent.NoProgressTokenLimit,
 		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
+		LifetimeSessionLimit:       cfg.Agent.LifetimeSessionLimit,
+		LifetimeTokenLimit:         cfg.Agent.LifetimeTokenLimit,
+		LifetimeLimitCooldown:      durationFromSeconds(cfg.Agent.LifetimeLimitCooldownSeconds),
+		LifetimeLimitOverrideLabel: normalizeLabel(cfg.Agent.LifetimeLimitOverrideLabel),
 		BillingMode:                cfg.Budget.EffectiveBillingMode(),
 		RateWindowPacing:           cfg.Agent.RateWindowPacing.Normalized(),
 		FailureBreaker: FailureBreakerConfig{
@@ -182,6 +186,10 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.OverloadRetryDelay <= 0 {
 		cfg.OverloadRetryDelay = defaultOverloadRetryDelay
 	}
+	if (cfg.LifetimeSessionLimit > 0 || cfg.LifetimeTokenLimit > 0) && cfg.LifetimeLimitCooldown <= 0 {
+		cfg.LifetimeLimitCooldown = time.Duration(workflowconfig.DefaultLifetimeLimitCooldownSeconds) * time.Second
+	}
+	cfg.LifetimeLimitOverrideLabel = normalizeLabel(cfg.LifetimeLimitOverrideLabel)
 	if cfg.StrandedActiveThreshold <= 0 {
 		cfg.StrandedActiveThreshold = durationFromSeconds(workflowconfig.DefaultStrandedActiveThresholdSeconds)
 	}

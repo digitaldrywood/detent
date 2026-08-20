@@ -586,6 +586,14 @@
 #   no_progress_token_limit: 25000000
 #   # agent.no_progress_spend_limit_usd | type: number | default: 3 | required: No | validation: must be greater than or equal to 0
 #   no_progress_spend_limit_usd: 3
+#   # agent.lifetime_session_limit | type: integer | default: 15 | required: No | validation: must be greater than or equal to 0
+#   lifetime_session_limit: 15
+#   # agent.lifetime_token_limit | type: integer | default: 40000000 | required: No | validation: must be greater than or equal to 0
+#   lifetime_token_limit: 40000000
+#   # agent.lifetime_limit_cooldown_seconds | type: integer | default: 3600 | required: No | validation: must be greater than 0 when a lifetime limit is enabled
+#   lifetime_limit_cooldown_seconds: 3600
+#   # agent.lifetime_limit_override_label | type: string | default: "allow-lifetime-limit" | required: No | validation: None
+#   lifetime_limit_override_label: "allow-lifetime-limit"
 #   # agent.failure_breaker | type: object | default: see child fields | required: No | validation: None
 #   failure_breaker:
 #     # agent.failure_breaker.same_class_limit | type: integer | default: 5 | required: No | validation: must be greater than 0

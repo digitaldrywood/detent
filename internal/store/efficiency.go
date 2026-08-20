@@ -35,33 +35,100 @@ func (s *sqliteStore) CompleteEfficiencyReceipt(ctx context.Context, completion 
 		IssueURL:    completion.IssueURL,
 		PRNumber:    completion.PRNumber,
 		CompletedAt: completion.CompletedAt.UTC(),
+		RefreshedAt: completion.CompletedAt.UTC(),
 	}
-	if err := s.readEfficiencyRawTotals(ctx, &receipt); err != nil {
+	if err := s.populateEfficiencyReceipt(ctx, &receipt, receipt.CompletedAt, completion.Thresholds); err != nil {
 		return efficiency.Receipt{}, err
 	}
-	if receipt.FirstDispatchedAt.IsZero() {
-		receipt.FirstDispatchedAt = receipt.CompletedAt
+	return receipt, nil
+}
+
+func (s *sqliteStore) RefreshEfficiencyReceipt(ctx context.Context, observation efficiency.Observation) (efficiency.Receipt, bool, error) {
+	observation.ProjectID = strings.TrimSpace(observation.ProjectID)
+	observation.IssueID = strings.TrimSpace(observation.IssueID)
+	observation.Identifier = strings.TrimSpace(observation.Identifier)
+	observation.IssueURL = strings.TrimSpace(observation.IssueURL)
+	if observation.ProjectID == "" {
+		return efficiency.Receipt{}, false, errors.New("project_id is required")
 	}
-	receipt.WallSeconds = nonNegativeDurationSeconds(receipt.FirstDispatchedAt, receipt.CompletedAt)
-	normalizeEfficiencyDwell(&receipt)
+	if observation.IssueID == "" {
+		return efficiency.Receipt{}, false, errors.New("issue_id is required")
+	}
+	if observation.ObservedAt.IsZero() {
+		return efficiency.Receipt{}, false, errors.New("observed_at is required")
+	}
+	if observation.RefreshIntervalSessions <= 0 {
+		return efficiency.Receipt{}, false, errors.New("refresh_interval_sessions must be greater than 0")
+	}
+
+	receipt := efficiency.Receipt{
+		ProjectID:   observation.ProjectID,
+		IssueID:     observation.IssueID,
+		Identifier:  observation.Identifier,
+		IssueURL:    observation.IssueURL,
+		PRNumber:    observation.PRNumber,
+		InProgress:  true,
+		RefreshedAt: observation.ObservedAt.UTC(),
+	}
+	if err := s.readEfficiencyRawTotals(ctx, &receipt); err != nil {
+		return efficiency.Receipt{}, false, err
+	}
+	existing, err := s.EfficiencyReceipt(ctx, receipt.ProjectID, receipt.IssueID, receipt.Identifier)
+	switch {
+	case err == nil && receipt.Sessions-existing.Sessions < observation.RefreshIntervalSessions:
+		return existing, false, nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return efficiency.Receipt{}, false, err
+	case errors.Is(err, sql.ErrNoRows) && receipt.Sessions < observation.RefreshIntervalSessions:
+		return efficiency.Receipt{}, false, nil
+	}
+	if err := s.finalizeEfficiencyReceipt(ctx, &receipt, observation.ObservedAt.UTC(), observation.Thresholds); err != nil {
+		return efficiency.Receipt{}, false, err
+	}
+	return receipt, true, nil
+}
+
+func (s *sqliteStore) populateEfficiencyReceipt(
+	ctx context.Context,
+	receipt *efficiency.Receipt,
+	observedAt time.Time,
+	thresholds efficiency.Thresholds,
+) error {
+	if err := s.readEfficiencyRawTotals(ctx, receipt); err != nil {
+		return err
+	}
+	return s.finalizeEfficiencyReceipt(ctx, receipt, observedAt, thresholds)
+}
+
+func (s *sqliteStore) finalizeEfficiencyReceipt(
+	ctx context.Context,
+	receipt *efficiency.Receipt,
+	observedAt time.Time,
+	thresholds efficiency.Thresholds,
+) error {
+	if receipt.FirstDispatchedAt.IsZero() {
+		receipt.FirstDispatchedAt = observedAt
+	}
+	receipt.WallSeconds = nonNegativeDurationSeconds(receipt.FirstDispatchedAt, observedAt)
+	normalizeEfficiencyDwell(receipt)
 	receipt.Redispatches = max(receipt.Attempts-1, 0)
 
 	baseline, err := s.efficiencyBaseline(ctx, receipt.ProjectID, receipt.IssueID)
 	if err != nil {
-		return efficiency.Receipt{}, err
+		return err
 	}
 	receipt.TokensBaseline = baseline.tokens
 	receipt.SessionsBaseline = baseline.sessions
 	receipt.DwellBaselineSeconds = baseline.dwell
-	thresholds := normalizeEfficiencyThresholds(completion.Thresholds)
+	thresholds = normalizeEfficiencyThresholds(thresholds)
 	receipt.TokensAnomaly = exceedsBaseline(float64(receipt.TotalTokens), baseline.tokens, thresholds.TokensMultiple)
 	receipt.SessionsAnomaly = exceedsBaseline(float64(receipt.Sessions), baseline.sessions, thresholds.SessionsMultiple)
 	receipt.DwellAnomaly = exceedsBaseline(float64(receipt.WallSeconds), baseline.dwell, thresholds.DwellMultiple)
 
-	if err := s.upsertEfficiencyReceipt(ctx, receipt); err != nil {
-		return efficiency.Receipt{}, err
+	if err := s.upsertEfficiencyReceipt(ctx, *receipt); err != nil {
+		return err
 	}
-	return receipt, nil
+	return nil
 }
 
 func (s *sqliteStore) readEfficiencyRawTotals(ctx context.Context, receipt *efficiency.Receipt) error {
@@ -178,7 +245,7 @@ SELECT
   COALESCE(AVG(sessions), 0),
   COALESCE(AVG(wall_seconds), 0)
 FROM efficiency_receipts
-WHERE project_id = ? AND issue_id != ?`, projectID, issueID)
+WHERE project_id = ? AND issue_id != ? AND in_progress = 0`, projectID, issueID)
 	var baseline efficiencyBaseline
 	if err := row.Scan(&baseline.tokens, &baseline.sessions, &baseline.dwell); err != nil {
 		return efficiencyBaseline{}, fmt.Errorf("reading efficiency baseline: %w", err)
@@ -194,8 +261,9 @@ INSERT INTO efficiency_receipts (
   estimated_cost_usd, first_dispatched_at, completed_at, wall_seconds,
   working_seconds, gate_wait_seconds, merge_train_seconds, parked_seconds,
   redispatches, breaker_trips, ci_reruns, tokens_baseline, sessions_baseline,
-  dwell_baseline_seconds, tokens_anomaly, sessions_anomaly, dwell_anomaly
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  dwell_baseline_seconds, tokens_anomaly, sessions_anomaly, dwell_anomaly,
+  in_progress, refreshed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id, issue_id) DO UPDATE SET
   identifier = excluded.identifier,
   issue_url = excluded.issue_url,
@@ -223,14 +291,17 @@ ON CONFLICT(project_id, issue_id) DO UPDATE SET
   dwell_baseline_seconds = excluded.dwell_baseline_seconds,
   tokens_anomaly = excluded.tokens_anomaly,
   sessions_anomaly = excluded.sessions_anomaly,
-  dwell_anomaly = excluded.dwell_anomaly`,
+  dwell_anomaly = excluded.dwell_anomaly,
+  in_progress = excluded.in_progress,
+  refreshed_at = excluded.refreshed_at`,
 		receipt.ProjectID, receipt.IssueID, nullText(receipt.Identifier), nullText(receipt.IssueURL), receipt.PRNumber,
 		receipt.Sessions, receipt.Attempts, receipt.InputTokens, receipt.CachedInputTokens, receipt.OutputTokens,
 		receipt.ReasoningOutputTokens, receipt.TotalTokens, receipt.EstimatedCostUSD,
-		receipt.FirstDispatchedAt.UTC().Format(time.RFC3339Nano), receipt.CompletedAt.UTC().Format(time.RFC3339Nano), receipt.WallSeconds,
+		receipt.FirstDispatchedAt.UTC().Format(time.RFC3339Nano), efficiencyCompletedAt(receipt), receipt.WallSeconds,
 		receipt.WorkingSeconds, receipt.GateWaitSeconds, receipt.MergeTrainSeconds, receipt.ParkedSeconds,
 		receipt.Redispatches, receipt.BreakerTrips, receipt.CIReruns, receipt.TokensBaseline, receipt.SessionsBaseline,
 		receipt.DwellBaselineSeconds, receipt.TokensAnomaly, receipt.SessionsAnomaly, receipt.DwellAnomaly,
+		receipt.InProgress, receipt.RefreshedAt.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return fmt.Errorf("persisting efficiency receipt: %w", err)
@@ -252,13 +323,14 @@ LIMIT 1`, strings.TrimSpace(projectID), strings.TrimSpace(issueID), strings.Trim
 }
 
 func (s *sqliteStore) ListEfficiencyReceipts(ctx context.Context, query efficiency.Query) ([]efficiency.Receipt, error) {
-	args := []any{strings.TrimSpace(query.ProjectID), timestampFilter(query.From), timestampFilter(query.To)}
+	args := []any{strings.TrimSpace(query.ProjectID), query.IncludeInProgress, timestampFilter(query.From), timestampFilter(query.To)}
 	statement := efficiencyReceiptSelect + `
 WHERE (? = '' OR project_id = ?)
-  AND (? = '' OR completed_at >= ?)
-  AND (? = '' OR completed_at < ?)
-ORDER BY completed_at DESC, id DESC`
-	args = []any{args[0], args[0], args[1], args[1], args[2], args[2]}
+  AND (? OR in_progress = 0)
+  AND (? = '' OR CASE WHEN in_progress = 1 THEN refreshed_at ELSE completed_at END >= ?)
+  AND (? = '' OR CASE WHEN in_progress = 1 THEN refreshed_at ELSE completed_at END < ?)
+ORDER BY CASE WHEN in_progress = 1 THEN refreshed_at ELSE completed_at END DESC, id DESC`
+	args = []any{args[0], args[0], args[1], args[2], args[2], args[3], args[3]}
 	if query.Limit > 0 {
 		statement += " LIMIT ?"
 		args = append(args, query.Limit)
@@ -318,7 +390,8 @@ SELECT project_id, issue_id, COALESCE(identifier, ''), COALESCE(issue_url, ''), 
   reasoning_output_tokens, total_tokens, estimated_cost_usd, first_dispatched_at,
   completed_at, wall_seconds, working_seconds, gate_wait_seconds, merge_train_seconds,
   parked_seconds, redispatches, breaker_trips, ci_reruns, tokens_baseline,
-  sessions_baseline, dwell_baseline_seconds, tokens_anomaly, sessions_anomaly, dwell_anomaly
+  sessions_baseline, dwell_baseline_seconds, tokens_anomaly, sessions_anomaly, dwell_anomaly,
+  in_progress, refreshed_at
 FROM efficiency_receipts`
 
 type receiptScanner interface {
@@ -330,6 +403,7 @@ func scanEfficiencyReceipt(scanner receiptScanner) (efficiency.Receipt, error) {
 	var prNumber sql.NullInt64
 	var firstDispatchedAt string
 	var completedAt string
+	var refreshedAt string
 	if err := scanner.Scan(
 		&receipt.ProjectID, &receipt.IssueID, &receipt.Identifier, &receipt.IssueURL, &prNumber,
 		&receipt.Sessions, &receipt.Attempts, &receipt.InputTokens, &receipt.CachedInputTokens, &receipt.OutputTokens,
@@ -337,6 +411,7 @@ func scanEfficiencyReceipt(scanner receiptScanner) (efficiency.Receipt, error) {
 		&completedAt, &receipt.WallSeconds, &receipt.WorkingSeconds, &receipt.GateWaitSeconds, &receipt.MergeTrainSeconds,
 		&receipt.ParkedSeconds, &receipt.Redispatches, &receipt.BreakerTrips, &receipt.CIReruns, &receipt.TokensBaseline,
 		&receipt.SessionsBaseline, &receipt.DwellBaselineSeconds, &receipt.TokensAnomaly, &receipt.SessionsAnomaly, &receipt.DwellAnomaly,
+		&receipt.InProgress, &refreshedAt,
 	); err != nil {
 		return efficiency.Receipt{}, err
 	}
@@ -348,11 +423,28 @@ func scanEfficiencyReceipt(scanner receiptScanner) (efficiency.Receipt, error) {
 	if err != nil {
 		return efficiency.Receipt{}, fmt.Errorf("parse receipt first_dispatched_at: %w", err)
 	}
-	receipt.CompletedAt, err = parseStoredTime(completedAt)
-	if err != nil {
-		return efficiency.Receipt{}, fmt.Errorf("parse receipt completed_at: %w", err)
+	if strings.TrimSpace(completedAt) != "" {
+		receipt.CompletedAt, err = parseStoredTime(completedAt)
+		if err != nil {
+			return efficiency.Receipt{}, fmt.Errorf("parse receipt completed_at: %w", err)
+		}
+	}
+	if strings.TrimSpace(refreshedAt) != "" {
+		receipt.RefreshedAt, err = parseStoredTime(refreshedAt)
+		if err != nil {
+			return efficiency.Receipt{}, fmt.Errorf("parse receipt refreshed_at: %w", err)
+		}
+	} else {
+		receipt.RefreshedAt = receipt.CompletedAt
 	}
 	return receipt, nil
+}
+
+func efficiencyCompletedAt(receipt efficiency.Receipt) string {
+	if receipt.InProgress || receipt.CompletedAt.IsZero() {
+		return ""
+	}
+	return receipt.CompletedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func efficiencyRollupWindow(receipts []efficiency.Receipt) efficiency.RollupWindow {

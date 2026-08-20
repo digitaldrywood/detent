@@ -412,6 +412,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if handled, transitioned := o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now); handled {
 		return transitioned
 	}
+	if handled, transitioned := o.reconcileLifetimeLimitPark(ctx, state, issue, park, now); handled {
+		return transitioned
+	}
 	if park.Predicate == blockedRecoveryPredicateManaged {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false

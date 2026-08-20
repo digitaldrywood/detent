@@ -51,16 +51,66 @@ func TestRecordEfficiencyReceiptPersistsAndExports(t *testing.T) {
 	}
 }
 
+func TestRefreshEfficiencyReceiptRecordsIncompleteIssue(t *testing.T) {
+	t.Parallel()
+
+	recorder := &efficiencyRecorderSpy{}
+	orch := &Orchestrator{
+		cfg: normalizeConfig(Config{
+			Project:              scheduler.ProjectCandidate{ID: "detent"},
+			TerminalStates:       []string{"Done"},
+			EfficiencyThresholds: efficiency.Thresholds{TokensMultiple: 2, SessionsMultiple: 3, DwellMultiple: 4},
+		}),
+		efficiency: recorder,
+	}
+	observedAt := time.Date(2026, 8, 19, 20, 0, 0, 0, time.UTC)
+	issue := connector.Issue{
+		ID:         "issue-1926",
+		Identifier: "digitaldrywood/detent#1926",
+		URL:        "https://github.com/digitaldrywood/detent/issues/1926",
+		State:      "In Progress",
+	}
+
+	orch.refreshEfficiencyReceipt(t.Context(), issue, observedAt)
+
+	if recorder.refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", recorder.refreshCalls)
+	}
+	if recorder.observation.ProjectID != "detent" || recorder.observation.IssueID != issue.ID || !recorder.observation.ObservedAt.Equal(observedAt) {
+		t.Fatalf("observation = %#v, want issue identity and observed time", recorder.observation)
+	}
+	if recorder.observation.RefreshIntervalSessions != 5 {
+		t.Fatalf("refresh interval = %d, want 5", recorder.observation.RefreshIntervalSessions)
+	}
+	if recorder.observation.Thresholds != orch.cfg.EfficiencyThresholds {
+		t.Fatalf("thresholds = %#v, want %#v", recorder.observation.Thresholds, orch.cfg.EfficiencyThresholds)
+	}
+
+	issue.State = "Done"
+	orch.refreshEfficiencyReceipt(t.Context(), issue, observedAt)
+	if recorder.refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want terminal issue skipped", recorder.refreshCalls)
+	}
+}
+
 type efficiencyRecorderSpy struct {
-	completion efficiency.Completion
-	receipt    efficiency.Receipt
-	calls      int
+	completion   efficiency.Completion
+	observation  efficiency.Observation
+	receipt      efficiency.Receipt
+	calls        int
+	refreshCalls int
 }
 
 func (s *efficiencyRecorderSpy) CompleteEfficiencyReceipt(_ context.Context, completion efficiency.Completion) (efficiency.Receipt, error) {
 	s.completion = completion
 	s.calls++
 	return s.receipt, nil
+}
+
+func (s *efficiencyRecorderSpy) RefreshEfficiencyReceipt(_ context.Context, observation efficiency.Observation) (efficiency.Receipt, bool, error) {
+	s.observation = observation
+	s.refreshCalls++
+	return s.receipt, true, nil
 }
 
 type lifecycleExporterSpy struct {
