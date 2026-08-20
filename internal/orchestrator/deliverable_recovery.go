@@ -279,6 +279,87 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 	return true
 }
 
+func (o *Orchestrator) blockHumanOwnedWorkerFailure(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	cause string,
+	detail string,
+	humanAction string,
+	eventName string,
+) bool {
+	if state == nil || event.Err == nil || strings.TrimSpace(cause) == "" {
+		return false
+	}
+	issue := cloneIssue(running.Issue)
+	metadata := o.newBlockedRecoveryMetadata(
+		ctx,
+		issue,
+		running.Mode,
+		cause,
+		blockedRecoveryPredicateManaged,
+		autoPromoteReworkState,
+		running.DiffStats,
+	)
+	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
+	metadata.BlockedRecovery.HoldReason = cause
+	metadata.BlockedRecovery.OperatorRemedy = humanAction
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, cause, metadata); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(eventName+" state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return false
+	}
+	issue.State = blockedStatusState
+	issue.BlockerReason = cause
+	blockedAt := event.CompletedAt.UTC()
+	issue.StageUpdatedAt = &blockedAt
+	if o.connector != nil {
+		comment := "Detent parked this issue after a non-retryable worker safety failure.\n\n" +
+			"- cause: `" + cause + "`\n" +
+			"- detail: " + detail + "\n" +
+			"- human_action: " + humanAction
+		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
+			o.logger.Warn(eventName+" comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Warn(eventName+" claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	delete(state.Claimed, issue.ID)
+	delete(state.Retry, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.PriorAttempts, issue.ID)
+	delete(state.InstantFailures, issue.ID)
+	delete(state.RepeatedFailures, issue.ID)
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:               issue,
+		Reason:              cause,
+		RecoveryReason:      "human acknowledgement required",
+		RecoveryTarget:      autoPromoteReworkState,
+		RecoveryRemedy:      humanAction,
+		NeedsHumanAttention: true,
+		BlockedAt:           event.CompletedAt,
+		Source:              BlockedSourceProjectStatus,
+		Recovery:            metadata.BlockedRecovery,
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   eventName,
+		Message: "parked " + issueLabel(issue) + ": " + detail,
+	})
+	telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, eventName, detail, o.runningLifecycleCorrelation(issue, running),
+		"cause", cause,
+		"human_action", humanAction,
+		"error", event.Err,
+	)
+	return true
+}
+
 func deliverableRecoveryParkReason(lookup deliverableRecoveryLookupResult) (string, string) {
 	branch := strings.TrimSpace(lookup.Branch)
 	lookupResult := strings.TrimSpace(lookup.LookupResult)

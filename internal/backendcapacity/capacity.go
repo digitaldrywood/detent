@@ -30,6 +30,7 @@ const (
 var retryAtPattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+(?:at\s+)?([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))(?:\s*\(([A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)\))?`)
 var retryDatePattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+(?:at\s+)?([A-Za-z]{3,9})\s+([0-9]{1,2})(?:st|nd|rd|th)?,?\s+([0-9]{4})\s+([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))(?:\s*\(([A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)\))?`)
 var http5xxPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(5[0-9]{2})\b`)
+var http429Pattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(429)\b`)
 
 type Scope struct {
 	BackendID   string
@@ -68,6 +69,7 @@ type Details struct {
 	Type    ErrorType
 	Kind    string
 	Reason  string
+	Trigger string
 	ResetAt *time.Time
 }
 
@@ -112,6 +114,7 @@ func As(err error) (*Error, bool) {
 type Rules struct {
 	Kinds        []string
 	Phrases      []string
+	HTTP429      bool
 	HTTP5xx      bool
 	RequireReset bool
 }
@@ -122,6 +125,13 @@ func Classify(text string, fallbackResetAt *time.Time, now time.Time, rules Rule
 		return Details{}, false
 	}
 	kind, ok := matchingKind(text, rules)
+	if !ok && rules.HTTP429 {
+		match := http429Pattern.FindStringSubmatch(text)
+		if len(match) == 2 {
+			kind = "http_" + match[1]
+			ok = true
+		}
+	}
 	if !ok {
 		return Details{}, false
 	}

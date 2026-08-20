@@ -463,6 +463,7 @@ func backendOutageSnapshot(outage BackendOutage) telemetry.BackendOutage {
 		Provider:        outage.Scope.Provider,
 		Kind:            outage.Kind,
 		Reason:          outage.Reason,
+		Trigger:         outage.Trigger,
 		DetectedAt:      outage.DetectedAt,
 		LastObservedAt:  outage.LastObservedAt,
 		ResumeAt:        outage.ResumeAt,

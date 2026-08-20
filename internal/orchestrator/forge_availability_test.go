@@ -367,6 +367,57 @@ func TestForgeWriteRejectionClearsProbeButStillReturnsFailure(t *testing.T) {
 	}
 }
 
+func TestMissingDeliverableCredentialsParkIssueWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC)
+	tracker := &dependencyAutoUnblockConnector{}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+		ObservedStates: []string{"Blocked"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	issue := connector.Issue{
+		ID:         "issue-missing-credential",
+		Identifier: "digitaldrywood/client-portals#132",
+		State:      "In Progress",
+	}
+	state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, StartedAt: now.Add(-time.Minute)}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID: issue.ID,
+		Request: runpkg.RunRequest{Issue: issue, Attempt: 1, Mode: runpkg.RunModeImplement},
+		Result:  runpkg.RunResult{FinalState: runpkg.FinalStateFailed, TurnStarted: true},
+		Err: &runpkg.DeliverableCommandError{
+			OperationClass: "push",
+			Operation:      "git push",
+			Status:         "failed",
+			Message:        "To get started with GitHub CLI, run: gh auth login; alternatively populate GH_TOKEN",
+		},
+		CompletedAt:  now,
+		Retryable:    true,
+		RetryAttempt: 2,
+		RetryDelay:   time.Minute,
+	})
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after missing credentials", issue.ID)
+	}
+	blocked, ok := state.Blocked[issue.ID]
+	if !ok || blocked.Issue.State != blockedStatusState {
+		t.Fatalf("Blocked[%q] = %#v, want Blocked lane", issue.ID, blocked)
+	}
+	if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman {
+		t.Fatalf("Blocked[%q].Recovery = %#v, want human-owned recovery", issue.ID, blocked.Recovery)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
+		t.Fatalf("state updates = %#v, want one Blocked transition", tracker.updates)
+	}
+}
+
 type forgeWaitRecoveryConnector struct {
 	backendCapacityTestConnector
 	issues []connector.Issue

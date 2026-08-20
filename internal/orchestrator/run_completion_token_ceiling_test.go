@@ -123,3 +123,57 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	tracker := &dependencyAutoUnblockConnector{}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+		ObservedStates: []string{"Blocked"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	issue := connector.Issue{
+		ID:         "issue-budget-projection",
+		Identifier: "digitaldrywood/parable#2255",
+		State:      "In Progress",
+	}
+	completedAt := time.Date(2026, 8, 19, 3, 0, 0, 0, time.UTC)
+	state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, StartedAt: completedAt.Add(-time.Hour)}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: completedAt.Add(-time.Hour)}
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID: issue.ID,
+		Request: runpkg.RunRequest{Issue: issue, Attempt: 1, Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState:  runpkg.FinalStateBudgetProjectionExceeded,
+			TurnStarted: true,
+			Tokens:      TokenTotals{TotalTokens: 51_900_000},
+		},
+		Err: &runpkg.SessionBudgetProjectionError{
+			ObservedCostUSD:  40.25,
+			ProjectedCostUSD: 10.00,
+			Model:            "gpt-5.6-sol",
+		},
+		CompletedAt:  completedAt,
+		Retryable:    false,
+		RetryAttempt: 2,
+		RetryDelay:   time.Minute,
+	})
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after projection ceiling failure", issue.ID)
+	}
+	blocked, ok := state.Blocked[issue.ID]
+	if !ok || blocked.Reason != budgetProjectionCeilingFailureCause || blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman {
+		t.Fatalf("Blocked[%q] = %#v, want durable human-owned projection park", issue.ID, blocked)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
+		t.Fatalf("state updates = %#v, want one Blocked transition", tracker.updates)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "40.250000") || !strings.Contains(tracker.comments[0].body, "10.000000") {
+		t.Fatalf("comments = %#v, want observed and projected cost", tracker.comments)
+	}
+}

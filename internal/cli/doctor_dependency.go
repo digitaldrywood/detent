@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -456,7 +455,10 @@ func doctorClassifyCapacityComment(
 	body string,
 	now time.Time,
 ) (workflowconfig.AgentBackend, backendcapacity.Details, bool) {
-	err := errors.New(strings.TrimSpace(body))
+	err, ok := orchestrator.LegacyFailureBreakerBackendError(body)
+	if !ok {
+		return workflowconfig.AgentBackend{}, backendcapacity.Details{}, false
+	}
 	for _, backend := range cfg.AgentBackendConfigs() {
 		scope := backendcapacity.Scope{
 			BackendID:   backend.ID,
@@ -467,14 +469,14 @@ func doctorClassifyCapacityComment(
 			continue
 		}
 		var details backendcapacity.Details
-		var ok bool
+		var classified bool
 		switch backend.Kind {
 		case workflowconfig.AgentBackendCodex:
-			details, ok = codex.ClassifyCapacityError(err, nil, now)
+			details, classified = codex.ClassifyCapacityError(err, nil, now)
 		case workflowconfig.AgentBackendClaudeCode:
-			details, ok = claudecode.ClassifyCapacityError(err, nil, now)
+			details, classified = claudecode.ClassifyCapacityError(err, nil, now)
 		}
-		if ok {
+		if classified {
 			return backend, details, true
 		}
 	}

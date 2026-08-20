@@ -1092,6 +1092,8 @@ func stickyBlockReason(reason string) bool {
 		"workpad_blocked_unactioned",
 		"circuit_breaker",
 		"token_ceiling_circuit_breaker",
+		deliverableConfigurationFailureCause,
+		budgetProjectionCeilingFailureCause,
 		artifactGateConvergenceReason,
 		terminalAttemptRetryLimitCause,
 		workspacePreparationRetryLimitCause:
