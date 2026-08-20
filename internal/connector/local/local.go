@@ -1,6 +1,7 @@
 package local
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1067,11 +1069,15 @@ where project_id = ?`
 	defer rows.Close()
 
 	issues := []connector.Issue{}
+	warningSummaries := map[fieldHydrationWarningKey]*fieldHydrationWarningSummary{}
 	for rows.Next() {
-		issue, err := c.scanIssue(rows)
+		issue, warnings, err := c.scanIssue(rows)
 		if err != nil {
 			closeErr := rows.Close()
 			return nil, errors.Join(err, closeErr)
+		}
+		for _, warning := range warnings {
+			addFieldHydrationWarning(warningSummaries, c.projectID, issue.ID, warning)
 		}
 		issues = append(issues, issue)
 	}
@@ -1082,6 +1088,7 @@ where project_id = ?`
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	c.logFieldHydrationWarnings(warningSummaries)
 	for i := range issues {
 		comments, err := c.FetchIssueComments(ctx, issues[i])
 		if err != nil {
@@ -1216,7 +1223,7 @@ type issueScanner interface {
 	Scan(dest ...any) error
 }
 
-func (c *Connector) scanIssue(scanner issueScanner) (connector.Issue, error) {
+func (c *Connector) scanIssue(scanner issueScanner) (connector.Issue, []fieldHydrationWarning, error) {
 	var issue connector.Issue
 	var projectID string
 	var priority sql.NullInt64
@@ -1237,7 +1244,7 @@ func (c *Connector) scanIssue(scanner issueScanner) (connector.Issue, error) {
 		&githubNodeID, &githubRepositoryID, &githubIssueNumber, &githubUpstreamState, &githubOrphaned,
 	)
 	if err != nil {
-		return connector.Issue{}, err
+		return connector.Issue{}, nil, err
 	}
 	if priority.Valid {
 		value := int(priority.Int64)
@@ -1255,15 +1262,6 @@ func (c *Connector) scanIssue(scanner issueScanner) (connector.Issue, error) {
 		)
 	} else {
 		issue.Fields = fields
-		for _, warning := range warnings {
-			c.logger.Warn("local sqlite work item field has non-string JSON value",
-				"project_id", projectID,
-				"issue_id", issue.ID,
-				"field", warning.field,
-				"json_type", warning.jsonType,
-				"action", warning.action,
-			)
-		}
 	}
 	issue.Metadata = unmarshalStringMap(metadataJSON)
 	applyGitHubIdentityMetadata(&issue, githubIdentity{
@@ -1281,7 +1279,7 @@ func (c *Connector) scanIssue(scanner issueScanner) (connector.Issue, error) {
 	if deliverableHasContent(deliverable) {
 		issue.Deliverable = &deliverable
 	}
-	return issue, nil
+	return issue, warnings, nil
 }
 
 func deliverableHasContent(deliverable connector.Deliverable) bool {
@@ -1539,6 +1537,68 @@ type fieldHydrationWarning struct {
 	action   string
 }
 
+type fieldHydrationWarningKey struct {
+	projectID string
+	field     string
+}
+
+type fieldHydrationWarningSummary struct {
+	key         fieldHydrationWarningKey
+	issueID     string
+	jsonType    string
+	action      string
+	repeatCount int
+}
+
+func addFieldHydrationWarning(
+	summaries map[fieldHydrationWarningKey]*fieldHydrationWarningSummary,
+	projectID string,
+	issueID string,
+	warning fieldHydrationWarning,
+) {
+	key := fieldHydrationWarningKey{projectID: projectID, field: warning.field}
+	summary := summaries[key]
+	if summary == nil {
+		summaries[key] = &fieldHydrationWarningSummary{
+			key:      key,
+			issueID:  issueID,
+			jsonType: warning.jsonType,
+			action:   warning.action,
+		}
+		return
+	}
+	summary.repeatCount++
+	if summary.jsonType != warning.jsonType {
+		summary.jsonType = "mixed"
+	}
+	if summary.action != warning.action {
+		summary.action = "mixed"
+	}
+}
+
+func (c *Connector) logFieldHydrationWarnings(summaries map[fieldHydrationWarningKey]*fieldHydrationWarningSummary) {
+	ordered := make([]*fieldHydrationWarningSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		ordered = append(ordered, summary)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].key.projectID != ordered[j].key.projectID {
+			return ordered[i].key.projectID < ordered[j].key.projectID
+		}
+		return ordered[i].key.field < ordered[j].key.field
+	})
+	for _, summary := range ordered {
+		c.logger.Warn("local sqlite work item field has non-string JSON value",
+			"project_id", summary.key.projectID,
+			"issue_id", summary.issueID,
+			"field", summary.key.field,
+			"json_type", summary.jsonType,
+			"action", summary.action,
+			"repeat_count", summary.repeatCount,
+		)
+	}
+}
+
 func unmarshalIssueFields(raw string) (map[string]string, []fieldHydrationWarning, error) {
 	var encoded map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &encoded); err != nil {
@@ -1549,15 +1609,11 @@ func unmarshalIssueFields(raw string) (map[string]string, []fieldHydrationWarnin
 	warnings := make([]fieldHydrationWarning, 0)
 	for field, encodedValue := range encoded {
 		value, jsonType, ok := issueFieldString(encodedValue)
-		if jsonType != "string" {
-			action := "skipped"
-			if ok {
-				action = "stringified"
-			}
+		if !ok {
 			warnings = append(warnings, fieldHydrationWarning{
 				field:    field,
 				jsonType: jsonType,
-				action:   action,
+				action:   "skipped",
 			})
 		}
 		if ok {
@@ -1589,7 +1645,11 @@ func issueFieldString(raw json.RawMessage) (string, string, bool) {
 	case 'n':
 		return "null", "null", true
 	case '[':
-		return "", "array", false
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			return "", "invalid", false
+		}
+		return compact.String(), "array", true
 	case '{':
 		return "", "object", false
 	default:

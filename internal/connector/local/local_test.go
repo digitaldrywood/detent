@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strconv"
@@ -121,16 +122,19 @@ func TestConnectorFetchesMixedTypeWorkItemFields(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	issue := connector.NewIssue()
-	issue.ID = "mock-1"
-	issue.Identifier = "video/mock-1"
-	issue.State = "Review"
+	issues := make([]connector.Issue, 2)
+	for index := range issues {
+		issues[index] = connector.NewIssue()
+		issues[index].ID = fmt.Sprintf("mock-%d", index+1)
+		issues[index].Identifier = "video/" + issues[index].ID
+		issues[index].State = "Review"
+	}
 	var logs bytes.Buffer
 
 	store, err := New(Config{
 		Path:      filepath.Join(t.TempDir(), "mixed-fields.db"),
 		ProjectID: "video",
-		Issues:    []connector.Issue{issue},
+		Issues:    issues,
 		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
 			Level: slog.LevelWarn,
 		})),
@@ -144,54 +148,93 @@ func TestConnectorFetchesMixedTypeWorkItemFields(t *testing.T) {
 		}
 	})
 
-	const fieldsJSON = `{"gate":"mock","slug":"demo","render_status":"recut","review_round":6,"approved":true,"quality":null,"nested":{"stage":1},"cuts":[1,2]}`
+	const fieldsJSON = `{"gate":"mock","slug":"demo","render_status":"recut","review_round":6,"review_addressed_feedback":["@ 1:23 — fix it"],"approved":true,"quality":null,"nested":{"stage":1}}`
 	if _, err := store.db.ExecContext(ctx, `
-update detent_work_items set fields_json = ? where project_id = ? and id = ?`,
-		fieldsJSON, "video", issue.ID); err != nil {
+update detent_work_items set fields_json = ? where project_id = ?`, fieldsJSON, "video"); err != nil {
 		t.Fatalf("update fields_json error = %v", err)
 	}
 
-	issues, err := store.FetchIssuesByStates(ctx, []string{"Review"})
+	gotIssues, err := store.FetchIssuesByStates(ctx, []string{"Review"})
 	if err != nil {
 		t.Fatalf("FetchIssuesByStates() error = %v", err)
 	}
-	if len(issues) != 1 {
-		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(issues))
+	if len(gotIssues) != len(issues) {
+		t.Fatalf("FetchIssuesByStates() len = %d, want %d", len(gotIssues), len(issues))
 	}
 	want := map[string]string{
-		"gate":          "mock",
-		"slug":          "demo",
-		"render_status": "recut",
-		"review_round":  "6",
-		"approved":      "true",
-		"quality":       "null",
+		"gate":                      "mock",
+		"slug":                      "demo",
+		"render_status":             "recut",
+		"review_round":              "6",
+		"review_addressed_feedback": `["@ 1:23 — fix it"]`,
+		"approved":                  "true",
+		"quality":                   "null",
 	}
-	if len(issues[0].Fields) != len(want) {
-		t.Fatalf("Fields = %#v, want %#v", issues[0].Fields, want)
-	}
-	for field, value := range want {
-		if issues[0].Fields[field] != value {
-			t.Errorf("Fields[%q] = %q, want %q", field, issues[0].Fields[field], value)
+	for _, issue := range gotIssues {
+		if len(issue.Fields) != len(want) {
+			t.Fatalf("Fields = %#v, want %#v", issue.Fields, want)
+		}
+		for field, value := range want {
+			if issue.Fields[field] != value {
+				t.Errorf("Fields[%q] = %q, want %q", field, issue.Fields[field], value)
+			}
+		}
+		if value, ok := issue.Fields["nested"]; ok {
+			t.Errorf("Fields[%q] = %q, want field omitted", "nested", value)
 		}
 	}
-	for _, field := range []string{"nested", "cuts"} {
-		if value, ok := issues[0].Fields[field]; ok {
-			t.Errorf("Fields[%q] = %q, want field omitted", field, value)
-		}
+	if count := strings.Count(logs.String(), "local sqlite work item field has non-string JSON value"); count != 1 {
+		t.Fatalf("field warning count = %d, want 1:\n%s", count, logs.String())
 	}
-	if count := strings.Count(logs.String(), "local sqlite work item field has non-string JSON value"); count != 5 {
-		t.Fatalf("field warning count = %d, want 5:\n%s", count, logs.String())
-	}
-	for _, warning := range []string{
-		"field=review_round json_type=number action=stringified",
-		"field=approved json_type=boolean action=stringified",
-		"field=quality json_type=null action=stringified",
-		"field=nested json_type=object action=skipped",
-		"field=cuts json_type=array action=skipped",
+	for _, wantLog := range []string{
+		"project_id=video",
+		"field=nested",
+		"json_type=object",
+		"action=skipped",
+		"repeat_count=1",
 	} {
-		if !strings.Contains(logs.String(), warning) {
-			t.Errorf("logs missing %q:\n%s", warning, logs.String())
+		if !strings.Contains(logs.String(), wantLog) {
+			t.Errorf("logs missing %q:\n%s", wantLog, logs.String())
 		}
+	}
+	for _, field := range []string{"review_round", "review_addressed_feedback"} {
+		if strings.Contains(logs.String(), "field="+field) {
+			t.Errorf("logs contain accepted field %q:\n%s", field, logs.String())
+		}
+	}
+}
+
+func TestUnmarshalIssueFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		raw          string
+		wantValue    string
+		wantWarnings int
+	}{
+		{name: "string", raw: `{"field":"value"}`, wantValue: "value"},
+		{name: "number", raw: `{"field":6}`, wantValue: "6"},
+		{name: "boolean", raw: `{"field":true}`, wantValue: "true"},
+		{name: "null", raw: `{"field":null}`, wantValue: "null"},
+		{name: "array", raw: `{"field":["one","two"]}`, wantValue: `["one","two"]`},
+		{name: "object", raw: `{"field":{"nested":true}}`, wantWarnings: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fields, warnings, err := unmarshalIssueFields(tt.raw)
+			if err != nil {
+				t.Fatalf("unmarshalIssueFields() error = %v", err)
+			}
+			if fields["field"] != tt.wantValue {
+				t.Errorf("unmarshalIssueFields() field = %q, want %q", fields["field"], tt.wantValue)
+			}
+			if len(warnings) != tt.wantWarnings {
+				t.Errorf("unmarshalIssueFields() warnings = %#v, want %d", warnings, tt.wantWarnings)
+			}
+		})
 	}
 }
 
