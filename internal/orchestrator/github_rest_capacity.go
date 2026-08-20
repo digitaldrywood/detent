@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -47,6 +48,17 @@ type githubRESTBudgetEvidence struct {
 	TargetState        string
 }
 
+type githubRESTWaitMetadata struct {
+	Consumer           string    `json:"consumer"`
+	CredentialIdentity string    `json:"credential_identity"`
+	Remaining          int64     `json:"remaining"`
+	Limit              int64     `json:"limit,omitempty"`
+	Reserve            int64     `json:"reserve"`
+	ResetAt            time.Time `json:"reset_at"`
+	ObservedAt         time.Time `json:"observed_at,omitzero"`
+	RetryAt            time.Time `json:"retry_at"`
+}
+
 func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time) {
 	if state == nil {
 		return
@@ -55,11 +67,11 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 		now = o.clockNow()
 	}
 	key, existing, exists := githubRESTCapacityOutage(state.BackendOutages)
-	bucket := gitHubRESTBucketFromState(state)
-	if bucket == nil {
+	evidence, exceeded, observed := gitHubRESTCapacityObservation(state, o.cfg.GitHubRESTMinReserve, now)
+	if !observed {
 		return
 	}
-	if !gitHubRESTCapacityExceeded(bucket, o.cfg.GitHubRESTMinReserve, now) {
+	if !exceeded {
 		if exists {
 			delete(state.BackendOutages, key)
 			o.activateDispatchRecovery(
@@ -77,6 +89,70 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 		}
 		return
 	}
+	o.setGitHubRESTCapacityOutage(state, evidence, now)
+}
+
+func gitHubRESTCapacityObservation(state *State, floor int64, now time.Time) (githubRESTBudgetEvidence, bool, bool) {
+	if state == nil || state.RateLimits == nil {
+		return githubRESTBudgetEvidence{}, false, false
+	}
+	selected := githubRESTBudgetEvidence{}
+	exceeded := false
+	observed := false
+	if bucket := state.RateLimits.GitHubREST; bucket != nil && bucket.Limit > 0 {
+		observed = true
+		if gitHubRESTCapacityExceeded(bucket, floor, now) {
+			candidate := githubRESTBudgetEvidence{
+				Consumer:  telemetry.RESTConsumerOrchestrator,
+				Remaining: bucket.Remaining,
+				Limit:     bucket.Limit,
+				Reserve:   floor,
+				ResetAt:   bucket.ResetAt.UTC(),
+			}
+			if bucket.ObservedAt != nil {
+				candidate.ObservedAt = bucket.ObservedAt.UTC()
+			}
+			selected = candidate
+			exceeded = true
+		}
+	}
+	for _, budget := range state.RateLimits.GitHubRESTBudgets {
+		consumer := strings.TrimSpace(budget.Consumer)
+		if consumer != telemetry.RESTConsumerWorker && consumer != telemetry.RESTConsumerSharedPool ||
+			budget.MinRemainingReserve <= 0 || budget.ResetAt == nil {
+			continue
+		}
+		observed = true
+		if !budget.ResetAt.After(now) || budget.Remaining > budget.MinRemainingReserve {
+			continue
+		}
+		candidate := githubRESTBudgetEvidence{
+			Consumer:           consumer,
+			CredentialIdentity: strings.TrimSpace(budget.CredentialIdentity),
+			Remaining:          budget.Remaining,
+			Limit:              budget.Limit,
+			Reserve:            budget.MinRemainingReserve,
+			ResetAt:            budget.ResetAt.UTC(),
+		}
+		if budget.ObservedAt != nil {
+			candidate.ObservedAt = budget.ObservedAt.UTC()
+		}
+		if !exceeded || candidate.ResetAt.After(selected.ResetAt) {
+			selected = candidate
+		}
+		exceeded = true
+	}
+	return selected, exceeded, observed
+}
+
+func (o *Orchestrator) setGitHubRESTCapacityOutage(state *State, evidence githubRESTBudgetEvidence, now time.Time) BackendOutage {
+	if state == nil {
+		return BackendOutage{}
+	}
+	if now.IsZero() {
+		now = o.clockNow()
+	}
+	_, existing, exists := githubRESTCapacityOutage(state.BackendOutages)
 
 	if state.BackendOutages == nil {
 		state.BackendOutages = map[string]BackendOutage{}
@@ -85,15 +161,23 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 	if exists && !existing.DetectedAt.IsZero() {
 		detectedAt = existing.DetectedAt
 	}
-	resetAt := bucket.ResetAt.UTC()
+	resetAt := evidence.ResetAt.UTC()
+	resumeAt := resetAt
+	if !resumeAt.After(now) {
+		resumeAt = now.Add(backendCapacityResetJitter)
+	}
+	lastObservedAt := now
+	if !evidence.ObservedAt.IsZero() {
+		lastObservedAt = evidence.ObservedAt.UTC()
+	}
 	outage := BackendOutage{
 		Scope:          githubRESTCapacityScope,
 		Kind:           githubRESTCapacityKind,
-		Reason:         fmt.Sprintf("GitHub REST remaining %d is at or below dispatch floor %d", bucket.Remaining, o.cfg.GitHubRESTMinReserve),
+		Reason:         githubRESTCapacityReason(evidence),
 		DetectedAt:     detectedAt,
-		LastObservedAt: now,
+		LastObservedAt: lastObservedAt,
 		ResetAt:        resetAt,
-		ResumeAt:       resetAt,
+		ResumeAt:       resumeAt,
 	}
 	state.BackendOutages[githubRESTCapacityScope.Key()] = outage
 	o.markDispatchRecoveryWait(state, dispatchRecoveryGitHubREST, outage.Reason, outage.ResumeAt, now)
@@ -104,6 +188,19 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 			Message: githubRESTCapacityStatusMessage(outage),
 		})
 	}
+	return outage
+}
+
+func githubRESTCapacityReason(evidence githubRESTBudgetEvidence) string {
+	consumer := strings.TrimSpace(evidence.Consumer)
+	if consumer == "" || consumer == telemetry.RESTConsumerOrchestrator {
+		return fmt.Sprintf("GitHub REST remaining %d is at or below dispatch floor %d", evidence.Remaining, evidence.Reserve)
+	}
+	reason := fmt.Sprintf("GitHub REST %s remaining %d is at or below reserved headroom %d", consumer, evidence.Remaining, evidence.Reserve)
+	if credential := strings.TrimSpace(evidence.CredentialIdentity); credential != "" {
+		reason += " for credential " + credential
+	}
+	return reason
 }
 
 func gitHubRESTCapacityExceeded(bucket *telemetry.RateLimitBucket, floor int64, now time.Time) bool {
@@ -141,14 +238,49 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	event runpkg.Completion,
 	running Running,
 ) bool {
-	outage, ok := activeGitHubRESTCapacityOutage(state, event.CompletedAt)
-	if !ok {
+	evidence, headroom := githubRESTBudgetEvidenceFromError(event.Err)
+	outage, active := activeGitHubRESTCapacityOutage(state, event.CompletedAt)
+	if headroom {
+		if current, ok := currentGitHubRESTBudget(state, evidence); ok {
+			evidence.Limit = current.Limit
+			evidence.ObservedAt = current.ObservedAt
+			if evidence.ResetAt.IsZero() {
+				evidence.ResetAt = current.ResetAt
+			}
+			if evidence.Consumer == "" {
+				evidence.Consumer = current.Consumer
+			}
+			if evidence.CredentialIdentity == "" {
+				evidence.CredentialIdentity = current.CredentialIdentity
+			}
+		}
+		if evidence.ObservedAt.IsZero() {
+			evidence.ObservedAt = event.CompletedAt.UTC()
+		}
+		recordGitHubRESTBudgetEvidence(state, evidence)
+		outage = o.setGitHubRESTCapacityOutage(state, evidence, event.CompletedAt)
+	} else if !active {
 		return false
 	}
 	running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
 	errorMessage := githubRESTCapacityStatusMessage(outage)
 	if event.Err != nil {
 		errorMessage = event.Err.Error()
+	}
+	metadata := map[string]any(nil)
+	retryAt := time.Time{}
+	if headroom {
+		retryAt = backendCapacityResumeAt(evidence.ResetAt, event.CompletedAt)
+		metadata = map[string]any{"github_rest_wait": githubRESTWaitMetadata{
+			Consumer:           evidence.Consumer,
+			CredentialIdentity: evidence.CredentialIdentity,
+			Remaining:          evidence.Remaining,
+			Limit:              evidence.Limit,
+			Reserve:            evidence.Reserve,
+			ResetAt:            evidence.ResetAt,
+			ObservedAt:         evidence.ObservedAt,
+			RetryAt:            retryAt,
+		}}
 	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
 		ctx,
@@ -160,7 +292,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		errorMessage,
 		"waiting",
 		githubRESTCapacityStatusMessage(outage),
-		nil,
+		metadata,
 	)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
@@ -181,13 +313,181 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	if parked {
 		return true
 	}
-	o.scheduleBackendCapacityRetry(state, running, outage)
+	if headroom {
+		o.deferProjectFailureBreakerCanary(state, event.IssueID, event.CompletedAt, retryAt.Sub(event.CompletedAt))
+		o.scheduleGitHubRESTCapacityRetry(state, running, outage, retryAt)
+	} else {
+		o.scheduleBackendCapacityRetry(state, running, outage)
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "github_rest_capacity_completion_deferred",
 		Message: githubRESTCapacityStatusMessage(outage),
 	})
 	return true
+}
+
+func recordGitHubRESTBudgetEvidence(state *State, evidence githubRESTBudgetEvidence) {
+	if state == nil || evidence.Reserve <= 0 || evidence.ResetAt.IsZero() {
+		return
+	}
+	if state.RateLimits == nil {
+		state.RateLimits = &telemetry.RateLimits{}
+	}
+	consumer := strings.TrimSpace(evidence.Consumer)
+	if consumer == "" {
+		consumer = telemetry.RESTConsumerWorker
+	}
+	endpointFamily := "worker credential"
+	if consumer == telemetry.RESTConsumerSharedPool {
+		endpointFamily = "shared credential pool"
+	}
+	resetAt := evidence.ResetAt.UTC()
+	observedAt := evidence.ObservedAt.UTC()
+	used := int64(0)
+	if evidence.Limit > evidence.Remaining {
+		used = evidence.Limit - evidence.Remaining
+	}
+	state.RateLimits.GitHubRESTBudgets = mergeRESTBudgets(state.RateLimits.GitHubRESTBudgets, []telemetry.RESTBudget{{
+		Consumer:            consumer,
+		CredentialIdentity:  strings.TrimSpace(evidence.CredentialIdentity),
+		EndpointFamily:      endpointFamily,
+		Resource:            "core",
+		Remaining:           evidence.Remaining,
+		Used:                used,
+		Limit:               evidence.Limit,
+		MinRemainingReserve: evidence.Reserve,
+		ResetAt:             &resetAt,
+		ObservedAt:          &observedAt,
+	}})
+}
+
+func (o *Orchestrator) scheduleGitHubRESTCapacityRetry(state *State, running Running, outage BackendOutage, retryAt time.Time) {
+	issue := cloneIssue(running.Issue)
+	state.Retry[issue.ID] = Retry{
+		Issue:         issue,
+		Attempt:       running.Attempt,
+		DueAt:         retryAt,
+		Error:         githubRESTCapacityStatusMessage(outage),
+		WorkerHost:    running.WorkerHost,
+		CapacityScope: outage.Scope,
+	}
+}
+
+func (o *Orchestrator) recoverGitHubRESTCapacityWaits(ctx context.Context, state *State, attempts []store.WorkAttempt, now time.Time) {
+	if state == nil || len(attempts) == 0 {
+		return
+	}
+	latest := latestStoreTerminalAttemptsByIssue(attempts)
+	waits := make(map[string]githubRESTWaitMetadata, len(latest))
+	issueIDs := make([]string, 0, len(latest))
+	for issueID, attempt := range latest {
+		metadata, ok := githubRESTWaitMetadataFromAttempt(attempt)
+		if !ok {
+			continue
+		}
+		waits[issueID] = metadata
+		issueIDs = append(issueIDs, issueID)
+	}
+	if len(waits) == 0 {
+		return
+	}
+	issuesByID, validated := o.validateGitHubRESTWaitIssues(ctx, issueIDs)
+	for issueID, metadata := range waits {
+		attempt := latest[issueID]
+		issue := githubRESTWaitIssueFromAttempt(attempt)
+		if validated {
+			var ok bool
+			issue, ok = issuesByID[issueID]
+			if !ok || !stateIn(issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+				continue
+			}
+		}
+		o.restoreGitHubRESTCapacityWait(state, issue, attempt, metadata, now)
+	}
+	o.syncGitHubRESTCapacityOutage(state, now)
+}
+
+func githubRESTWaitMetadataFromAttempt(attempt store.WorkAttempt) (githubRESTWaitMetadata, bool) {
+	if attempt.TerminalState != store.WorkAttemptTerminalCapacity || strings.TrimSpace(attempt.ErrorClass) != githubRESTCapacityError {
+		return githubRESTWaitMetadata{}, false
+	}
+	var metadata struct {
+		GitHubRESTWait githubRESTWaitMetadata `json:"github_rest_wait"`
+	}
+	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
+		return githubRESTWaitMetadata{}, false
+	}
+	wait := metadata.GitHubRESTWait
+	wait.Consumer = strings.TrimSpace(wait.Consumer)
+	wait.CredentialIdentity = strings.TrimSpace(wait.CredentialIdentity)
+	if wait.Consumer != telemetry.RESTConsumerWorker && wait.Consumer != telemetry.RESTConsumerSharedPool ||
+		wait.CredentialIdentity == "" || wait.Reserve <= 0 || wait.ResetAt.IsZero() || wait.RetryAt.IsZero() || wait.RetryAt.Before(wait.ResetAt) {
+		return githubRESTWaitMetadata{}, false
+	}
+	return wait, true
+}
+
+func (o *Orchestrator) validateGitHubRESTWaitIssues(ctx context.Context, issueIDs []string) (map[string]connector.Issue, bool) {
+	if o == nil || o.connector == nil || len(issueIDs) == 0 {
+		return nil, false
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("GitHub REST wait issue validation failed; preserving durable waits", "issue_ids", issueIDs, "error", err)
+		}
+		return nil, false
+	}
+	byID := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			byID[issueID] = issue
+		}
+	}
+	return byID, true
+}
+
+func githubRESTWaitIssueFromAttempt(attempt store.WorkAttempt) connector.Issue {
+	issue := connector.NewIssue()
+	issue.ID = strings.TrimSpace(attempt.IssueID)
+	issue.Identifier = strings.TrimSpace(attempt.Identifier)
+	issue.URL = strings.TrimSpace(attempt.IssueURL)
+	issue.State = strings.TrimSpace(attempt.Lane)
+	issue.PRRepository = strings.TrimSpace(attempt.Repo)
+	if attempt.PRNumber != nil && *attempt.PRNumber > 0 {
+		number := int(*attempt.PRNumber)
+		issue.PRNumber = &number
+	}
+	return issue
+}
+
+func (o *Orchestrator) restoreGitHubRESTCapacityWait(state *State, issue connector.Issue, attempt store.WorkAttempt, metadata githubRESTWaitMetadata, now time.Time) {
+	observedAt := metadata.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = attempt.CompletedAt
+	}
+	recordGitHubRESTBudgetEvidence(state, githubRESTBudgetEvidence{
+		Consumer:           metadata.Consumer,
+		CredentialIdentity: metadata.CredentialIdentity,
+		Remaining:          metadata.Remaining,
+		Limit:              metadata.Limit,
+		Reserve:            metadata.Reserve,
+		ResetAt:            metadata.ResetAt,
+		ObservedAt:         observedAt,
+	})
+	retryAt := metadata.RetryAt
+	if retryAt.Before(now) {
+		retryAt = now
+	}
+	state.Retry[issue.ID] = Retry{
+		Issue:         cloneIssue(issue),
+		Attempt:       attempt.AttemptNumber,
+		DueAt:         retryAt.UTC(),
+		Error:         strings.TrimSpace(attempt.ErrorMessage),
+		WorkerHost:    strings.TrimSpace(attempt.WorkerHost),
+		CapacityScope: githubRESTCapacityScope,
+	}
 }
 
 func isGitHubRESTBudgetHeadroomError(err error) bool {

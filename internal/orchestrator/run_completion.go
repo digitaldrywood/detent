@@ -228,7 +228,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if event.Err == nil || event.Result.TurnStarted {
 		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
 		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
-	} else {
+	} else if !isGitHubRESTBudgetHeadroomError(event.Err) {
 		delay := event.RetryDelay
 		if delay <= 0 {
 			delay = o.cfg.OverloadRetryDelay
@@ -258,7 +258,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
-		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "github_rest_capacity", errorString(event.Err))
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, githubRESTCapacityError, errorString(event.Err))
 		return
 	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {

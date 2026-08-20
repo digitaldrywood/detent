@@ -693,6 +693,60 @@ func terminalRetryFailureAttempts(issueID string, now time.Time, count int) []te
 	return attempts
 }
 
+func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	retryAt := resetAt.Add(backendCapacityResetJitter)
+	durableMetadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
+	tests := []struct {
+		name         string
+		metadata     string
+		wantState    string
+		wantDemotion bool
+	}{
+		{name: "legacy metadata-less attempt", wantState: "Todo", wantDemotion: true},
+		{name: "durable wait metadata", metadata: durableMetadata, wantState: "In Progress"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := terminalRetryTestIssue(strings.ReplaceAll(tt.name, " ", "-"))
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			o := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			state.WorkAttempts = []telemetry.WorkAttempt{{
+				AttemptID:          1,
+				IssueID:            issue.ID,
+				Identifier:         issue.Identifier,
+				Status:             string(store.WorkAttemptStatusTerminal),
+				TerminalState:      string(store.WorkAttemptTerminalCapacity),
+				ErrorClass:         githubRESTCapacityError,
+				CompletedAt:        timePointer(now.Add(-time.Minute)),
+				WorkerMetadataJSON: tt.metadata,
+			}}
+
+			transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{issue}, now)
+
+			if got := len(transitions) == 1; got != tt.wantDemotion {
+				t.Fatalf("demoted = %v, want %v: %#v", got, tt.wantDemotion, transitions)
+			}
+			if tt.wantDemotion && transitions[0].State != tt.wantState {
+				t.Fatalf("transition state = %q, want %q", transitions[0].State, tt.wantState)
+			}
+			if got := tracker.transitionStates(); tt.wantDemotion && !slices.Equal(got, []string{tt.wantState}) {
+				t.Fatalf("state transitions = %v, want [%s]", got, tt.wantState)
+			} else if !tt.wantDemotion && len(got) != 0 {
+				t.Fatalf("state transitions = %v, want none", got)
+			}
+		})
+	}
+}
+
 func TestReconcileTerminalAttemptRetryStatesRespectsLiveForeignClaim(t *testing.T) {
 	t.Parallel()
 

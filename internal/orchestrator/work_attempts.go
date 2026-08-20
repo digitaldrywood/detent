@@ -93,6 +93,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
 		}
 		o.recoverForgeAvailabilityWaits(ctx, state, recent, now)
+		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
 	}
 	decisions, err := o.workAttempts.ListRecentSchedulerDecisions(ctx, store.SchedulerDecisionQuery{
 		ProjectID: projectID,

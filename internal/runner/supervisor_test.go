@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -99,6 +100,35 @@ func TestSupervisorDoesNotAdvanceRetryForCapacityError(t *testing.T) {
 	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
 		t.Fatalf("retry state = retryable %v attempt %d delay %s, want unchanged", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
 	}
+}
+
+func TestSupervisorDoesNotApplyGenericBackoffToGitHubRESTHeadroom(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(gitHubRESTHeadroomBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: 10 * time.Second,
+		MaxRetryBackoff:       5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-1929"},
+		Attempt: 4,
+	})
+	if !errors.Is(completion.Err, ErrWorkerGitHubRESTReserved) || !IsCapacityError(completion.Err) {
+		t.Fatalf("Err = %v, want GitHub REST capacity error", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want reset-aware orchestration", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+}
+
+type gitHubRESTHeadroomBackend struct{}
+
+func (gitHubRESTHeadroomBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, fmt.Errorf("%w: remaining=1009 reserve=1250 reset_at=2026-08-16T00:00:00Z", ErrWorkerGitHubRESTReserved)
 }
 
 func TestSupervisorDoesNotRetryOperatorStoppedRun(t *testing.T) {
