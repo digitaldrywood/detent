@@ -207,6 +207,40 @@ func TestEvaluateSpendProgress(t *testing.T) {
 	}
 }
 
+func TestSpendProgressBaselineIgnoresLaneTransitions(t *testing.T) {
+	t.Parallel()
+
+	createdAt := time.Date(2026, 7, 11, 11, 0, 0, 0, time.UTC)
+	stageUpdatedAt := createdAt.Add(30 * time.Minute)
+	acceptedAt := createdAt.Add(45 * time.Minute)
+	tests := []struct {
+		name     string
+		attempts []store.WorkAttempt
+		want     time.Time
+	}{
+		{name: "lane transition only", want: createdAt},
+		{
+			name: "accepted work product progress",
+			attempts: []store.WorkAttempt{{
+				CompletedAt: acceptedAt,
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: spendProgressRecord{AcceptedStateChange: true},
+				}),
+			}},
+			want: acceptedAt,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := connector.Issue{CreatedAt: &createdAt, StageUpdatedAt: &stageUpdatedAt}
+			if got := spendProgressBaseline(issue, tt.attempts); !got.Equal(tt.want) {
+				t.Fatalf("spendProgressBaseline() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func spendProgressIssueWithPR(headSHA string, mergeableState string, ciStatus string) connector.Issue {
 	number := 214
 	return connector.Issue{
@@ -346,43 +380,34 @@ type connectorOnly struct {
 	connector.Connector
 }
 
-func TestDispatchAcceptedStateChange(t *testing.T) {
+func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		running Running
-		want    bool
+		name       string
+		running    Running
+		decision   implementCompletionProgressDecision
+		want       bool
+		wantReason string
 	}{
-		{name: "lane transition", running: Running{DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}, want: true},
-		{name: "same lane", running: Running{DispatchSourceState: "Rework", DispatchTargetState: "Rework"}},
-		{name: "missing transition", running: Running{}},
+		{name: "retry lane transition", running: Running{DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}},
+		{name: "rework lane transition", running: Running{DispatchSourceState: "Rework", DispatchTargetState: "In Progress"}},
+		{name: "park lane transition", running: Running{DispatchSourceState: "In Progress", DispatchTargetState: "Blocked"}},
+		{name: "pull request update", decision: implementCompletionProgressDecision{Reason: "pull_request_created_or_updated"}, want: true, wantReason: "pull_request_created_or_updated"},
+		{name: "signature change", decision: implementCompletionProgressDecision{Reason: "signature_changed"}, want: true, wantReason: "signature_changed"},
+		{name: "merged completion", decision: implementCompletionProgressDecision{Reason: implementMergedCompletionReason}, want: true, wantReason: implementMergedCompletionReason},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, reason := dispatchAcceptedStateChange(tt.running)
+			got, reason := implementAcceptedStateChange(tt.running, tt.decision)
 			if got != tt.want {
 				t.Fatalf("accepted = %t, want %t", got, tt.want)
 			}
-			if got && reason != "lane_transition" {
-				t.Fatalf("reason = %q, want lane_transition", reason)
-			}
-			if !got && reason != "" {
-				t.Fatalf("reason = %q, want empty", reason)
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
 			}
 		})
-	}
-}
-
-func TestImplementAcceptedStateChangeAcceptsMergedCompletion(t *testing.T) {
-	t.Parallel()
-
-	accepted, reason := implementAcceptedStateChange(Running{}, implementCompletionProgressDecision{
-		Reason: implementMergedCompletionReason,
-	})
-	if !accepted || reason != implementMergedCompletionReason {
-		t.Fatalf("implementAcceptedStateChange() = %t, %q, want true, %q", accepted, reason, implementMergedCompletionReason)
 	}
 }
 
@@ -393,6 +418,8 @@ func TestHandleRunResultTripsTokenProgressBreakerOnSubscription(t *testing.T) {
 	createdAt := base.Add(-30 * time.Minute)
 	issue := implementProgressIssueWithoutPR()
 	issue.CreatedAt = &createdAt
+	stageUpdatedAt := base.Add(-5 * time.Minute)
+	issue.StageUpdatedAt = &stageUpdatedAt
 	tracker := &implementProgressConnector{}
 	attempts := &implementProgressAttemptStore{}
 	cfg := normalizeConfig(Config{
@@ -419,12 +446,14 @@ func TestHandleRunResultTripsTokenProgressBreakerOnSubscription(t *testing.T) {
 	}
 	state := newState(cfg)
 	running := Running{
-		Issue:         issue,
-		Attempt:       5,
-		WorkAttemptID: 42,
-		Mode:          runpkg.RunModeImplement,
-		StartedAt:     base.Add(-2 * time.Minute),
-		DiffStats:     DiffStats{FilesChanged: 2, AddedLines: 10, RemovedLines: 3, Status: "dirty"},
+		Issue:               issue,
+		Attempt:             5,
+		WorkAttemptID:       42,
+		Mode:                runpkg.RunModeImplement,
+		StartedAt:           base.Add(-2 * time.Minute),
+		DiffStats:           DiffStats{FilesChanged: 2, AddedLines: 10, RemovedLines: 3, Status: "dirty"},
+		DispatchSourceState: "Rework",
+		DispatchTargetState: "In Progress",
 	}
 	state.Running[issue.ID] = running
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: running.StartedAt}
@@ -505,11 +534,13 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 	}
 	state := newState(cfg)
 	running := Running{
-		Issue:         runningIssue,
-		Attempt:       2,
-		WorkAttemptID: 42,
-		Mode:          runpkg.RunModeImplement,
-		StartedAt:     base.Add(-5 * time.Minute),
+		Issue:               runningIssue,
+		Attempt:             2,
+		WorkAttemptID:       42,
+		Mode:                runpkg.RunModeImplement,
+		StartedAt:           base.Add(-5 * time.Minute),
+		DispatchSourceState: "Rework",
+		DispatchTargetState: "In Progress",
 	}
 	state.Running[runningIssue.ID] = running
 	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: running.StartedAt}

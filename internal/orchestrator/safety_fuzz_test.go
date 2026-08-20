@@ -27,7 +27,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true, uint8(0))
 	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false, uint8(1))
 	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(2))
-	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(3))
+	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(10), int64(0), false, uint8(3))
 
 	f.Fuzz(func(
 		t *testing.T,
@@ -162,9 +162,6 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			})
 		}
 		wantBaseline := createdAt
-		if stageUpdatedAt.After(wantBaseline) {
-			wantBaseline = stageUpdatedAt
-		}
 		if accepted && acceptedAt.After(wantBaseline) {
 			wantBaseline = acceptedAt
 		}

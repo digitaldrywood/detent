@@ -336,8 +336,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			if !pushEvidenceRefreshed && (implementProgressLinkedPullRequest(running.Issue) || event.Result.PullRequestUpdated) {
 				running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
 			}
-			accepted, acceptedReason := dispatchAcceptedStateChange(running)
-			spendProgress = o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
+			spendProgress = o.evaluateSpendProgress(ctx, running, event.CompletedAt, false, "")
 			if evidenceWarning != "" {
 				spendProgress.Warning = evidenceWarning
 				spendProgress.Block = false
