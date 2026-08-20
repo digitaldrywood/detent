@@ -22,14 +22,15 @@ type tokenCeilingRunner struct {
 }
 
 type restBudgetHeadroomRunner struct {
-	calls atomic.Int64
+	calls   atomic.Int64
+	resetAt time.Time
 }
 
 func (r *restBudgetHeadroomRunner) Run(_ context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	n := r.calls.Add(1)
 	return orchestrator.RunResult{}, fmt.Errorf(
-		"run agent turn: worker github REST budget reached reserved headroom: consumer=shared_pool credential_identity=github-rest:worker remaining=%d reserve=1250 reset_at=2026-08-16T01:00:00Z",
-		950-n,
+		"run agent turn: worker github REST budget reached reserved headroom: consumer=shared_pool credential_identity=github-rest:worker remaining=%d reserve=1250 reset_at=%s",
+		950-n, r.resetAt.Format(time.RFC3339),
 	)
 }
 
@@ -146,12 +147,13 @@ func TestRunRepeatedFailureCounterResetsOnSuccessfulCompletion(t *testing.T) {
 	}
 }
 
-func TestRunParksRESTBudgetFailuresAsTransientRecovery(t *testing.T) {
+func TestRunDefersRESTBudgetFailureAsCapacityWithoutBreaker(t *testing.T) {
 	t.Parallel()
 
 	issue := testIssue("issue-rest-budget-park", "digitaldrywood/detent#1824", "Todo")
 	tracker := newFakeConnector(issue)
-	runner := &restBudgetHeadroomRunner{}
+	resetAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	runner := &restBudgetHeadroomRunner{resetAt: resetAt}
 	metrics := &workflowMetricsRecorder{}
 
 	orch, err := orchestrator.New(orchestrator.Config{
@@ -172,38 +174,35 @@ func TestRunParksRESTBudgetFailuresAsTransientRecovery(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	stop := runOrchestrator(t, orch)
-
-	var metadataJSON string
-	waitForState(t, orch, func(state orchestrator.State) bool {
-		for _, event := range metrics.snapshot() {
-			if event.PhaseName == "Blocked" && strings.Contains(event.MetadataJSON, `"predicate":"github_rest_budget_recovered"`) {
-				metadataJSON = event.MetadataJSON
-				return true
-			}
-		}
-		return false
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, ok := state.Retry[issue.ID]
+		return ok
 	})
 	stop()
 
-	for _, want := range []string{
-		`"cause":"repeated_failure_circuit_breaker"`,
-		`"target_state":"In Progress"`,
-		`"resource_kind":"github_rest_rate_limit"`,
-		`"resource_consumer":"shared_pool"`,
-		`"resource_credential":"github-rest:worker"`,
-		`"resource_remaining":945`,
-		`"resource_reserve":1250`,
-		`"resource_reset_at":"2026-08-16T01:00:00Z"`,
-	} {
-		if !strings.Contains(metadataJSON, want) {
-			t.Fatalf("workflow metadata = %q, want %q", metadataJSON, want)
+	retry := state.Retry[issue.ID]
+	if want := resetAt.Add(5 * time.Second); !retry.DueAt.Equal(want) {
+		t.Fatalf("retry DueAt = %s, want %s", retry.DueAt, want)
+	}
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1 before reset", got)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)
+	}
+	if _, ok := state.RepeatedFailures[issue.ID]; ok {
+		t.Fatalf("RepeatedFailures[%q] present after capacity deferral", issue.ID)
+	}
+	if state.FailureBreaker.Active() {
+		t.Fatalf("FailureBreaker = %#v, want inactive", state.FailureBreaker)
+	}
+	for _, event := range metrics.snapshot() {
+		if event.PhaseName == "Blocked" {
+			t.Fatalf("workflow event = %#v, want no breaker transition", event)
 		}
 	}
-	comments := tracker.commentCalls()
-	if len(comments) != 1 ||
-		!strings.Contains(comments[0].body, "transient resource wait") ||
-		!strings.Contains(comments[0].body, "remaining=945 reserve=1250") {
-		t.Fatalf("comments = %#v, want transient REST-budget explanation", comments)
+	if comments := tracker.commentCalls(); len(comments) != 0 {
+		t.Fatalf("comments = %#v, want no breaker explanation", comments)
 	}
 }
 

@@ -142,7 +142,7 @@ func configuredCapacityScope(selection RouteSelection, backend config.AgentBacke
 
 func IsCapacityError(err error) bool {
 	var capacityErr *backendcapacity.Error
-	return errors.As(err, &capacityErr)
+	return errors.Is(err, ErrWorkerGitHubRESTReserved) || errors.As(err, &capacityErr)
 }
 
 func IsTransientOverload(err error) bool {

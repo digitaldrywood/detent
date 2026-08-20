@@ -566,6 +566,235 @@ func TestGitHubRESTCapacityOutagePausesDispatchAndResumesAtReset(t *testing.T) {
 	}
 }
 
+func TestWorkerGitHubRESTReservePausesDispatchAboveTrackerFloor(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 23, 21, 0, 0, time.UTC)
+	resetAt := now.Add(39 * time.Minute)
+	issue := connector.Issue{
+		ID:               "issue-1929-dispatch",
+		Identifier:       "gopher-corp#521",
+		Title:            "Protect worker REST headroom",
+		State:            "In Progress",
+		URL:              "https://github.test/gopher-corp/issues/521",
+		AssignedToWorker: true,
+	}
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "gopher-corp"},
+		MaxConcurrentAgents:  1,
+		ActiveStates:         []string{"Todo", "In Progress"},
+		TerminalStates:       []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve: 1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Limit: 5000, Used: 3991, Remaining: 1009, ResetAt: &resetAt, ObservedAt: timePointer(now),
+		},
+		GitHubRESTBudgets: []telemetry.RESTBudget{{
+			Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
+			EndpointFamily: "shared credential pool", Resource: "core", Limit: 5000, Used: 3991,
+			Remaining: 1009, MinRemainingReserve: 1250, ResetAt: &resetAt, ObservedAt: timePointer(now),
+		}},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+	orch.syncGitHubRESTCapacityOutage(&state, now)
+
+	dispatches := 0
+	var decision dispatchPlanDecision
+	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+		dispatch: func(dispatchAction) bool {
+			dispatches++
+			return true
+		},
+		decision: func(candidate dispatchPlanDecision) {
+			decision = candidate
+		},
+	})
+
+	if dispatches != 0 {
+		t.Fatalf("dispatches = %d, want 0 below worker reserve", dispatches)
+	}
+	if decision.SkipReason != dispatchSkipGitHubRESTCapacity {
+		t.Fatalf("SkipReason = %q, want %q", decision.SkipReason, dispatchSkipGitHubRESTCapacity)
+	}
+	outage, ok := activeGitHubRESTCapacityOutage(&state, now)
+	if !ok || !outage.ResumeAt.Equal(resetAt) || !strings.Contains(outage.Reason, "1250") {
+		t.Fatalf("GitHub REST outage = %#v, want worker reserve wait until %s", outage, resetAt)
+	}
+}
+
+func TestWorkerGitHubRESTHeadroomCompletionDefersWithoutBreakerStrike(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 23, 22, 25, 0, time.UTC)
+	resetAt := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	issue := implementProgressIssueWithoutPR()
+	issue.ID = "issue-1929-completion"
+	issue.Identifier = "gopher-corp#521"
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "gopher-corp"},
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	attempts := &implementProgressAttemptStore{}
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    &implementProgressConnector{},
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue: issue, Attempt: 4, WorkAttemptID: 42, Mode: runpkg.RunModeImplement,
+		StartedAt: now.Add(-42 * time.Second), DiffStats: DiffStats{Status: "clean"},
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-42 * time.Second)}
+	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
+	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
+	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
+	headroomErr := errors.New("run agent turn: worker github REST budget reached reserved headroom: consumer=shared_pool credential_identity=github-rest:worker remaining=1009 reserve=1250 reset_at=2026-08-16T00:00:00Z")
+	workerBudget := telemetry.RESTBudget{
+		Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
+		EndpointFamily: "shared credential pool", Resource: "core", Limit: 5000, Used: 3991,
+		Remaining: 1009, MinRemainingReserve: 1250, ResetAt: &resetAt, ObservedAt: timePointer(now),
+	}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID: issue.ID, CompletedAt: now, RetryAttempt: 5, RetryDelay: 5 * time.Minute,
+		Request: runpkg.RunRequest{Issue: issue, Attempt: 4, Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateFailed,
+			DiffStats:  DiffStats{Status: "clean"},
+			RateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{workerBudget}},
+		},
+		Err: headroomErr,
+	})
+
+	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity {
+		t.Fatalf("completions = %#v, want one capacity terminal", attempts.completions)
+	}
+	if attempts.completions[0].ErrorClass != githubRESTCapacityError || !strings.Contains(attempts.completions[0].WorkerMetadataJSON, `"github_rest_wait"`) {
+		t.Fatalf("completion = %#v, want durable GitHub REST wait metadata", attempts.completions[0])
+	}
+	retry, ok := state.Retry[issue.ID]
+	wantRetryAt := resetAt.Add(backendCapacityResetJitter)
+	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(wantRetryAt) {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at %s", issue.ID, retry, wantRetryAt)
+	}
+	if got := state.InstantFailures[issue.ID].Count; got != instantFailureThreshold-1 {
+		t.Fatalf("instant failure count = %d, want unchanged", got)
+	}
+	if got := state.RepeatedFailures[issue.ID].Count; got != repeatedFailureThreshold-1 {
+		t.Fatalf("repeated failure count = %d, want unchanged", got)
+	}
+	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
+		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
+	}
+	if _, blocked := state.Blocked[issue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)
+	}
+}
+
+func TestRecoverDurableWorkerGitHubRESTWait(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 23, 30, 0, 0, time.UTC)
+	resetAt := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	retryAt := resetAt.Add(backendCapacityResetJitter)
+	issue := connector.Issue{ID: "issue-1929-restart", Identifier: "gopher-corp#521", State: "In Progress"}
+	metadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
+	attempts := &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
+		ID: 1929, ProjectID: "gopher-corp", IssueID: issue.ID, Identifier: issue.Identifier,
+		Lane: issue.State, AttemptNumber: 4, Status: store.WorkAttemptStatusTerminal,
+		CompletedAt: now.Add(-time.Minute), TerminalState: store.WorkAttemptTerminalCapacity,
+		ErrorClass: githubRESTCapacityError, ErrorMessage: "worker GitHub REST reserve reached",
+		WorkerMetadataJSON: metadata,
+	}}}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "gopher-corp"}, ActiveStates: []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"}, MaxConcurrentAgents: 1,
+	})
+	orch := &Orchestrator{
+		cfg: cfg, connector: &rateLimitConnector{issuesByID: []connector.Issue{issue}},
+		workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.recoverDurableWorkAttempts(context.Background(), &state, now)
+
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(retryAt) || !retry.CapacityScope.Matches(githubRESTCapacityScope) {
+		t.Fatalf("Retry[%q] = %#v, want restored REST capacity wait", issue.ID, retry)
+	}
+	if outage, ok := activeGitHubRESTCapacityOutage(&state, now); !ok || !outage.ResumeAt.Equal(resetAt) {
+		t.Fatalf("BackendOutages = %#v, want restored REST outage until %s", state.BackendOutages, resetAt)
+	}
+	if terminalAttemptRetryableFailure(telemetryWorkAttempt(attempts.recent[0], now)) {
+		t.Fatal("durable GitHub REST wait treated as a generic terminal retry")
+	}
+}
+
+func TestGitHubRESTWaitMetadataFromAttempt(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	retryAt := resetAt.Add(backendCapacityResetJitter)
+	validMetadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
+	tests := []struct {
+		name     string
+		attempt  store.WorkAttempt
+		wantWait bool
+	}{
+		{
+			name: "capacity wait",
+			attempt: store.WorkAttempt{
+				TerminalState: store.WorkAttemptTerminalCapacity,
+				ErrorClass:    githubRESTCapacityError, WorkerMetadataJSON: validMetadata,
+			},
+			wantWait: true,
+		},
+		{
+			name: "generic failure",
+			attempt: store.WorkAttempt{
+				TerminalState: store.WorkAttemptTerminalFailure,
+				ErrorClass:    githubRESTCapacityError, WorkerMetadataJSON: validMetadata,
+			},
+		},
+		{
+			name: "missing credential",
+			attempt: store.WorkAttempt{
+				TerminalState:      store.WorkAttemptTerminalCapacity,
+				ErrorClass:         githubRESTCapacityError,
+				WorkerMetadataJSON: `{"github_rest_wait":{"consumer":"worker","reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`,
+			},
+		},
+		{
+			name: "retry before reset",
+			attempt: store.WorkAttempt{
+				TerminalState:      store.WorkAttemptTerminalCapacity,
+				ErrorClass:         githubRESTCapacityError,
+				WorkerMetadataJSON: `{"github_rest_wait":{"consumer":"worker","credential_identity":"github-rest:worker","reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + resetAt.Add(-time.Second).Format(time.RFC3339) + `"}}`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wait, ok := githubRESTWaitMetadataFromAttempt(tt.attempt)
+			if ok != tt.wantWait {
+				t.Fatalf("githubRESTWaitMetadataFromAttempt() ok = %v, want %v", ok, tt.wantWait)
+			}
+			if ok && (!wait.ResetAt.Equal(resetAt) || !wait.RetryAt.Equal(retryAt)) {
+				t.Fatalf("githubRESTWaitMetadataFromAttempt() = %#v, want reset %s retry %s", wait, resetAt, retryAt)
+			}
+		})
+	}
+}
+
 func TestTickDetectsGitHubRESTExhaustionBeforeDispatch(t *testing.T) {
 	t.Parallel()
 

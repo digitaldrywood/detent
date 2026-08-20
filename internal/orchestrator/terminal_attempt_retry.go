@@ -437,7 +437,7 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 }
 
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
-	if strings.TrimSpace(attempt.ErrorClass) == forgeUnavailableErrorClass {
+	if strings.TrimSpace(attempt.ErrorClass) == forgeUnavailableErrorClass || strings.TrimSpace(attempt.ErrorClass) == githubRESTCapacityError {
 		return false
 	}
 	return terminalAttemptStateRetryDemotable(store.WorkAttemptTerminalState(strings.ToLower(strings.TrimSpace(attempt.TerminalState))))
