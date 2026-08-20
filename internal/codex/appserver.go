@@ -148,6 +148,13 @@ func (e *TurnFailedError) BackendErrorMessage() string {
 	return strings.TrimSpace(e.Message)
 }
 
+func (e *TurnFailedError) BackendErrorStatus() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Status)
+}
+
 type AppServer struct {
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
@@ -1882,6 +1889,14 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			status = turnCompletedTopLevelStatus(params.Status, params.Error, params.Type)
 		}
 		errorBody, errorMessage := turnCompletedBackendError(params.Error, params.Turn.Error, params.Message, params.Turn.Message, msg.Params)
+		if status != "" && !strings.EqualFold(status, "completed") && errorBody == "" && errorMessage == "" {
+			errorBody = turnCompletedMissingErrorBody(status)
+			if strings.EqualFold(status, "interrupted") {
+				errorMessage = "codex reported an interrupted turn without error detail"
+			} else {
+				errorMessage = "codex reported turn status " + strconv.Quote(status) + " without error detail"
+			}
+		}
 		return Update{
 			Type:                UpdateTurnCompleted,
 			Method:              msg.Method,
@@ -2023,7 +2038,7 @@ func turnCompletedBackendError(
 		message := firstNonBlank(errorMessageFromJSON(params), errorMessageFromJSON(topLevelError), errorMessageFromJSON(turnError), topLevelMessage, turnMessage)
 		return body, message
 	}
-	body := compactJSON(firstRawJSON(topLevelError, turnError))
+	body := compactNonNullJSON(firstRawJSON(topLevelError, turnError))
 	message := firstNonBlank(errorMessageFromJSON(topLevelError), errorMessageFromJSON(turnError), topLevelMessage, turnMessage)
 	if body != "" {
 		if message != "" {
@@ -2035,6 +2050,20 @@ func turnCompletedBackendError(
 		return compactJSON(params), message
 	}
 	return "", ""
+}
+
+func turnCompletedMissingErrorBody(status string) string {
+	body, err := json.Marshal(struct {
+		Status string `json:"status"`
+		Detail string `json:"detail"`
+	}{
+		Status: strings.TrimSpace(status),
+		Detail: "backend supplied no error",
+	})
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
 
 func firstRawJSON(values ...json.RawMessage) json.RawMessage {

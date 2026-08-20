@@ -22,6 +22,7 @@ const (
 	maxRecentWorkAttemptSnapshots   = 50
 	maxRecentSchedulerDecisions     = 500
 	workAttemptErrorRunner          = "runner_error"
+	workAttemptErrorInterrupted     = "runner_interrupted"
 	workAttemptErrorWorkspace       = "workspace_preparation"
 	workAttemptErrorStartTransition = "start_state_transition_failed"
 	workAttemptErrorMergeIncomplete = "merge_worker_terminal_state_missing"
@@ -1040,6 +1041,16 @@ func terminalStateForRun(err error, finalState string) store.WorkAttemptTerminal
 	default:
 		return store.WorkAttemptTerminalFailure
 	}
+}
+
+func runnerWorkAttemptErrorClass(err error) string {
+	var statusCarrier interface {
+		BackendErrorStatus() string
+	}
+	if errors.As(err, &statusCarrier) && strings.EqualFold(strings.TrimSpace(statusCarrier.BackendErrorStatus()), "interrupted") {
+		return workAttemptErrorInterrupted
+	}
+	return workAttemptErrorRunner
 }
 
 func rateLimitsFromState(state *State) *telemetry.RateLimits {

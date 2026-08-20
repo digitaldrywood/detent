@@ -343,7 +343,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			}
 		}
 		terminalState := terminalStateForRun(event.Err, event.Result.FinalState)
-		errorClass := workAttemptErrorRunner
+		errorClass := runnerWorkAttemptErrorClass(event.Err)
 		errorMessage := event.Err.Error()
 		phase := "failed"
 		statusMessage := "worker failed"
@@ -435,11 +435,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
-	// Every path below is a completion without a worker error: reset both
-	// failure circuit breakers here so plan and merge-worker completions do
-	// not carry stale counts into the next attempt cycle.
-	delete(state.InstantFailures, event.IssueID)
-	delete(state.RepeatedFailures, event.IssueID)
+	if mergeWorkerIssue(running.Issue) {
+		resetWorkerFailureBreakers(state, event.IssueID)
+	}
 
 	if event.Request.Mode == runpkg.RunModePlan {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
@@ -503,6 +501,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 	running.Issue = progress.Issue
+	if terminalState == store.WorkAttemptTerminalSuccess && implementCompletionHasDurableProgress(running, progress) {
+		resetWorkerFailureBreakers(state, event.IssueID)
+	}
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		forceReapply := false
 		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(progress.CurrentSignature.HeadSHA) == "" {
@@ -786,6 +787,23 @@ func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string,
 			"error", err,
 		)
 	}
+}
+
+func resetWorkerFailureBreakers(state *State, issueID string) {
+	delete(state.InstantFailures, issueID)
+	delete(state.RepeatedFailures, issueID)
+}
+
+func implementCompletionHasDurableProgress(running Running, decision implementCompletionProgressDecision) bool {
+	if strings.TrimSpace(running.CompletionLane) != "" || implementProgressLinkedPullRequest(decision.Issue) {
+		return true
+	}
+	for _, kind := range decision.ProgressKinds {
+		if strings.TrimSpace(kind) == "tracker_state_transition" {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) tripInstantFailureCircuitBreaker(
@@ -2371,6 +2389,7 @@ func (o *Orchestrator) completePlanRunning(
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
+	resetWorkerFailureBreakers(state, issueID)
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
 	}

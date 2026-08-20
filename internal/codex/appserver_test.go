@@ -1764,6 +1764,45 @@ func TestAppServerRunTurnReportsTurnErrorBody(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnReportsInterruptedTurnWithoutNullDetail(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.142.5"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted","error":null}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "Ship issue #1928",
+	}, nil)
+	if !errors.Is(err, ErrTurnFailed) {
+		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
+	}
+	var turnErr *TurnFailedError
+	if !errors.As(err, &turnErr) {
+		t.Fatalf("RunTurn() error = %T, want TurnFailedError", err)
+	}
+	if got := turnErr.BackendErrorBody(); got != `{"status":"interrupted","detail":"backend supplied no error"}` {
+		t.Fatalf("BackendErrorBody = %q", got)
+	}
+	if got := turnErr.BackendErrorMessage(); got != "codex reported an interrupted turn without error detail" {
+		t.Fatalf("BackendErrorMessage = %q", got)
+	}
+	if strings.HasSuffix(err.Error(), ": null") {
+		t.Fatalf("RunTurn() error = %q, want actionable interruption detail", err)
+	}
+}
+
 type staticTransportFactory struct {
 	transport Transport
 }

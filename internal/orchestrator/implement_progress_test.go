@@ -204,13 +204,14 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantComment:      "loop detected after 3 dispatches",
 		},
 		{
-			name:               "new pull request creation avoids false no progress",
+			name:               "unverified pull request update counts as no progress",
 			runningIssue:       implementProgressIssueWithoutPR(),
 			diffStats:          DiffStats{Status: "clean"},
 			noProgressLimit:    3,
 			pullRequestUpdated: true,
 			wantTerminal:       store.WorkAttemptTerminalSuccess,
 			wantReason:         "pull_request_created_or_updated",
+			wantConsecutive:    1,
 			wantRetry:          true,
 		},
 		{
@@ -663,6 +664,130 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		issue          connector.Issue
+		hydrated       connector.Issue
+		refreshedState string
+		completionLane string
+		wantReset      bool
+	}{
+		{
+			name:  "yieldless completion preserves failures",
+			issue: implementProgressIssueWithoutPR(),
+		},
+		{
+			name:      "linked pull request clears failures",
+			issue:     implementProgressIssue("head", "Test"),
+			hydrated:  implementProgressIssue("head", "Test"),
+			wantReset: true,
+		},
+		{
+			name:           "current attempt completion lane clears failures",
+			issue:          implementProgressIssueWithoutPR(),
+			completionLane: "Human Review",
+			wantReset:      true,
+		},
+		{
+			name:           "tracker state transition clears failures",
+			issue:          implementProgressIssueWithoutPR(),
+			refreshedState: "Rework",
+			wantReset:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			refreshed := cloneIssue(tt.issue)
+			if tt.refreshedState != "" {
+				refreshed.State = tt.refreshedState
+			}
+			tracker := &implementProgressConnector{refreshed: refreshed, hydrated: tt.hydrated}
+			attempts := &implementProgressAttemptStore{}
+			cfg := normalizeConfig(Config{
+				Project:                scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+			state.Running[tt.issue.ID] = Running{
+				Issue:            tt.issue,
+				Attempt:          3,
+				WorkAttemptID:    42,
+				Mode:             runpkg.RunModeImplement,
+				StartedAt:        base.Add(-time.Minute),
+				DiffStats:        DiffStats{Status: "clean"},
+				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.issue, true),
+				CompletionLane:   tt.completionLane,
+			}
+			state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
+			state.InstantFailures[tt.issue.ID] = InstantFailure{Issue: tt.issue, Count: 2}
+			state.RepeatedFailures[tt.issue.ID] = RepeatedFailure{Issue: tt.issue, Count: 2}
+
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID:     tt.issue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result:      runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean"}},
+			})
+
+			_, instantPresent := state.InstantFailures[tt.issue.ID]
+			_, repeatedPresent := state.RepeatedFailures[tt.issue.ID]
+			if tt.wantReset && (instantPresent || repeatedPresent) {
+				t.Fatalf("failure breakers remain after durable work product: instant=%t repeated=%t", instantPresent, repeatedPresent)
+			}
+			if !tt.wantReset && (!instantPresent || !repeatedPresent) {
+				t.Fatalf("failure breakers cleared after yieldless completion: instant=%t repeated=%t", instantPresent, repeatedPresent)
+			}
+		})
+	}
+}
+
+func TestRunnerWorkAttemptErrorClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "generic runner failure", err: errors.New("runner failed"), want: workAttemptErrorRunner},
+		{name: "interrupted backend turn", err: backendStatusTestError{status: "interrupted"}, want: workAttemptErrorInterrupted},
+		{name: "failed backend turn", err: backendStatusTestError{status: "failed"}, want: workAttemptErrorRunner},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runnerWorkAttemptErrorClass(tt.err); got != tt.want {
+				t.Fatalf("runnerWorkAttemptErrorClass() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type backendStatusTestError struct {
+	status string
+}
+
+func (e backendStatusTestError) Error() string {
+	return "backend turn " + e.status
+}
+
+func (e backendStatusTestError) BackendErrorStatus() string {
+	return e.status
 }
 
 func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
