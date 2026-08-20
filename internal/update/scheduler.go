@@ -100,17 +100,26 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if cfg.AutoApplyEnabled && cfg.MaxDeferral == 0 {
 		cfg.MaxDeferral = defaultMaxDeferral
 	}
-	loadedLastCheckAt, lastCheckFound, err := loadSchedulerState(cfg.StatePath)
+	loadedState, stateFound, err := loadSchedulerState(cfg.StatePath)
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
 	var lastCheckAt *time.Time
-	if lastCheckFound {
-		lastCheckAt = &loadedLastCheckAt
+	if stateFound {
+		lastCheckAt = &loadedState.LastCheckAt
 	}
 	state := "disabled"
 	if cfg.Enabled {
 		state = "scheduled"
+	}
+	var pendingSince *time.Time
+	availableVersion := ""
+	critical := false
+	if cfg.Enabled && cfg.AutoApplyEnabled && stateFound && loadedState.PendingSince != nil {
+		state = "pending_idle"
+		pendingSince = loadedState.PendingSince
+		availableVersion = loadedState.AvailableVersion
+		critical = loadedState.Critical
 	}
 	return &Scheduler{
 		cfg: cfg,
@@ -122,6 +131,9 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 			State:              state,
 			LastCheckAt:        lastCheckAt,
 			LastAppliedVersion: strings.TrimSpace(cfg.LastAppliedVersion),
+			AvailableVersion:   availableVersion,
+			PendingSince:       pendingSince,
+			Critical:           critical,
 		},
 	}, nil
 }
@@ -209,11 +221,10 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		status.AvailableVersion = checked.LatestVersion
 		status.Critical = checked.Critical
 	})
-	persistErr := s.persistLastCheck(checkedAt)
 	s.cfg.Logger.Info("Detent update available", "current_version", checked.CurrentVersion, "latest_version", checked.LatestVersion, "auto_apply_enabled", s.cfg.AutoApplyEnabled)
 	if !s.cfg.AutoApplyEnabled {
 		s.updateStatus(clearPending)
-		return checked, persistErr
+		return checked, s.persistLastCheck(checkedAt)
 	}
 	if checked.InstallSource != InstallSourceRelease {
 		s.updateStatus(func(status *AutoStatus) {
@@ -221,13 +232,14 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 			clearPending(status)
 		})
 		s.cfg.Logger.Warn("automatic update apply skipped for non-release install", "install_source", checked.InstallSource, "latest_version", checked.LatestVersion)
-		return checked, persistErr
+		return checked, s.persistLastCheck(checkedAt)
 	}
 	if checked.Critical {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "pending_idle"
 			setPendingSince(status, checkedAt)
 		})
+		persistErr := s.persistLastCheck(checkedAt)
 		s.cfg.Logger.Warn("critical Detent update bypassing idle wait", "version", checked.LatestVersion)
 		applied, applyErr := s.drainAndApplyLocked(ctx)
 		return applied, errors.Join(persistErr, applyErr)
@@ -241,12 +253,12 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 			status.State = "pending_idle"
 			setPendingSince(status, checkedAt)
 		})
+		persistErr := s.persistLastCheck(checkedAt)
 		s.cfg.Logger.Info("automatic update apply deferred until runtime is idle", "version", checked.LatestVersion)
 		return checked, persistErr
 	}
 
-	applied, applyErr := s.applyLocked(ctx, releaseIdle)
-	return applied, errors.Join(persistErr, applyErr)
+	return s.applyLocked(ctx, releaseIdle)
 }
 
 func (s *Scheduler) ApplyPending(ctx context.Context) (Status, error) {
@@ -270,7 +282,7 @@ func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {
 	if !s.pendingIdle() {
 		return Status{}, nil
 	}
-	if s.deferralExpired() {
+	if s.Status().Critical || s.deferralExpired() {
 		return s.drainAndApplyLocked(ctx)
 	}
 	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
@@ -326,7 +338,7 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 			status.LastError = strings.TrimSpace(applied.Message)
 			clearPending(status)
 		})
-		return applied, nil
+		return applied, s.persistCurrentState()
 	}
 
 	s.updateStatus(func(status *AutoStatus) {
@@ -336,20 +348,21 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 		status.LastError = ""
 		clearPending(status)
 	})
+	persistErr := s.persistCurrentState()
 	restartRequested := s.cfg.RequestRestart != nil && s.cfg.RequestRestart(applied.Binary)
 	if !restartRequested {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
 		})
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
-		return applied, nil
+		return applied, persistErr
 	}
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "restart_requested"
 	})
 	keepIdleReserved = true
 	s.cfg.Logger.Info("Detent update applied; graceful restart requested", "version", applied.LatestVersion)
-	return applied, nil
+	return applied, persistErr
 }
 
 func (s *Scheduler) pendingIdle() bool {
@@ -425,7 +438,15 @@ func (s *Scheduler) recordCheckFailure(checkedAt time.Time, err error) error {
 }
 
 func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
-	if err := saveSchedulerState(s.cfg.StatePath, checkedAt); err != nil {
+	status := s.Status()
+	state := schedulerState{LastCheckAt: checkedAt}
+	if status.State == "pending_idle" && status.PendingSince != nil && strings.TrimSpace(status.AvailableVersion) != "" {
+		pendingSince := *status.PendingSince
+		state.AvailableVersion = status.AvailableVersion
+		state.PendingSince = &pendingSince
+		state.Critical = status.Critical
+	}
+	if err := saveSchedulerState(s.cfg.StatePath, state); err != nil {
 		wrapped := fmt.Errorf("persist automatic update state: %w", err)
 		s.updateStatus(func(status *AutoStatus) {
 			status.LastError = wrapped.Error()
@@ -433,6 +454,14 @@ func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
 		return wrapped
 	}
 	return nil
+}
+
+func (s *Scheduler) persistCurrentState() error {
+	status := s.Status()
+	if status.LastCheckAt == nil {
+		return nil
+	}
+	return s.persistLastCheck(*status.LastCheckAt)
 }
 
 func (s *Scheduler) nextCheck() (time.Duration, time.Time) {

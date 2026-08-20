@@ -13,47 +13,72 @@ import (
 const schedulerStateSchema = 1
 
 type schedulerState struct {
-	Schema      int       `json:"schema"`
-	LastCheckAt time.Time `json:"last_check_at"`
+	Schema           int        `json:"schema"`
+	LastCheckAt      time.Time  `json:"last_check_at"`
+	AvailableVersion string     `json:"available_version,omitempty"`
+	PendingSince     *time.Time `json:"pending_since,omitempty"`
+	Critical         bool       `json:"critical,omitempty"`
 }
 
-func loadSchedulerState(path string) (time.Time, bool, error) {
+func loadSchedulerState(path string) (schedulerState, bool, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return time.Time{}, false, nil
+		return schedulerState{}, false, nil
 	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return time.Time{}, false, nil
+		return schedulerState{}, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read scheduler state: %w", err)
+		return schedulerState{}, false, fmt.Errorf("read scheduler state: %w", err)
 	}
 	var state schedulerState
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return time.Time{}, false, fmt.Errorf("decode scheduler state: %w", err)
+		return schedulerState{}, false, fmt.Errorf("decode scheduler state: %w", err)
 	}
 	if state.Schema != schedulerStateSchema {
-		return time.Time{}, false, fmt.Errorf("decode scheduler state: unsupported schema %d", state.Schema)
+		return schedulerState{}, false, fmt.Errorf("decode scheduler state: unsupported schema %d", state.Schema)
 	}
 	if state.LastCheckAt.IsZero() {
-		return time.Time{}, false, errors.New("decode scheduler state: last check timestamp is required")
+		return schedulerState{}, false, errors.New("decode scheduler state: last check timestamp is required")
 	}
-	return state.LastCheckAt, true, nil
+	state.AvailableVersion = strings.TrimSpace(state.AvailableVersion)
+	if state.PendingSince != nil {
+		if state.PendingSince.IsZero() || state.AvailableVersion == "" {
+			return schedulerState{}, false, errors.New("decode scheduler state: pending update requires timestamp and version")
+		}
+		pendingSince := state.PendingSince.UTC()
+		state.PendingSince = &pendingSince
+	} else {
+		state.AvailableVersion = ""
+		state.Critical = false
+	}
+	state.LastCheckAt = state.LastCheckAt.UTC()
+	return state, true, nil
 }
 
-func saveSchedulerState(path string, lastCheckAt time.Time) (saveErr error) {
+func saveSchedulerState(path string, state schedulerState) (saveErr error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil
 	}
-	if lastCheckAt.IsZero() {
+	if state.LastCheckAt.IsZero() {
 		return errors.New("save scheduler state: last check timestamp is required")
 	}
-	raw, err := json.Marshal(schedulerState{
-		Schema:      schedulerStateSchema,
-		LastCheckAt: lastCheckAt.UTC(),
-	})
+	state.Schema = schedulerStateSchema
+	state.LastCheckAt = state.LastCheckAt.UTC()
+	state.AvailableVersion = strings.TrimSpace(state.AvailableVersion)
+	if state.PendingSince != nil {
+		if state.PendingSince.IsZero() || state.AvailableVersion == "" {
+			return errors.New("save scheduler state: pending update requires timestamp and version")
+		}
+		pendingSince := state.PendingSince.UTC()
+		state.PendingSince = &pendingSince
+	} else {
+		state.AvailableVersion = ""
+		state.Critical = false
+	}
+	raw, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode scheduler state: %w", err)
 	}

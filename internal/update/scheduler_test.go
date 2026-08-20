@@ -695,6 +695,102 @@ func TestSchedulerRestartAfterIntervalChecksBeforeWaiting(t *testing.T) {
 	}
 }
 
+func TestSchedulerRestartPreservesPendingDeferral(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		critical         bool
+		initialDrainFail bool
+		restartAdvance   time.Duration
+		wantIdleCalls    int
+	}{
+		{name: "busy runtime keeps original deadline", restartAdvance: 2 * time.Hour},
+		{name: "critical release retries drain immediately", critical: true, initialDrainFail: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			statePath := filepath.Join(t.TempDir(), "update-state.json")
+			pendingSince := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+			now := pendingSince
+			initialUpdater := &schedulerUpdaterStub{checkStatus: Status{
+				CurrentVersion:  "1.2.3",
+				LatestVersion:   "1.2.4",
+				UpdateAvailable: true,
+				InstallSource:   InstallSourceRelease,
+				Critical:        tt.critical,
+			}}
+			initial, err := NewScheduler(SchedulerConfig{
+				Enabled:          true,
+				AutoApplyEnabled: true,
+				CheckInterval:    time.Hour,
+				MaxDeferral:      2 * time.Hour,
+				StatePath:        statePath,
+				Updater:          initialUpdater,
+				Now:              func() time.Time { return now },
+				ReserveIdle:      func(context.Context) (func(), bool) { return nil, false },
+				ReserveDrain: func(context.Context) (func(), error) {
+					if tt.initialDrainFail {
+						return nil, errors.New("drain unavailable")
+					}
+					return schedulerDrainReservation(context.Background())
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewScheduler() initial error = %v", err)
+			}
+			_, checkErr := initial.CheckNow(context.Background())
+			if tt.initialDrainFail && checkErr == nil {
+				t.Fatal("CheckNow() error = nil, want initial drain failure")
+			}
+			if !tt.initialDrainFail && checkErr != nil {
+				t.Fatalf("CheckNow() error = %v", checkErr)
+			}
+
+			now = pendingSince.Add(tt.restartAdvance)
+			idleCalls := 0
+			drainCalls := 0
+			updater := &schedulerUpdaterStub{applyStatus: Status{
+				LatestVersion: "1.2.4",
+				Action:        ActionUpdated,
+			}}
+			restarted, err := NewScheduler(SchedulerConfig{
+				Enabled:          true,
+				AutoApplyEnabled: true,
+				CheckInterval:    time.Hour,
+				MaxDeferral:      2 * time.Hour,
+				StatePath:        statePath,
+				Updater:          updater,
+				Now:              func() time.Time { return now },
+				ReserveIdle: func(context.Context) (func(), bool) {
+					idleCalls++
+					return nil, false
+				},
+				ReserveDrain: func(context.Context) (func(), error) {
+					drainCalls++
+					return func() {}, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewScheduler() restart error = %v", err)
+			}
+			status := restarted.Status()
+			if status.State != "pending_idle" || status.AvailableVersion != "1.2.4" || status.PendingSince == nil || !status.PendingSince.Equal(pendingSince) || status.Critical != tt.critical {
+				t.Fatalf("Status() = %#v, want restored pending release", status)
+			}
+			if _, err := restarted.applyWhenIdle(context.Background()); err != nil {
+				t.Fatalf("applyWhenIdle() error = %v", err)
+			}
+			if idleCalls != tt.wantIdleCalls || drainCalls != 1 || updater.applyCalls != 1 {
+				t.Fatalf("calls: Idle=%d Drain=%d Apply=%d, want %d/1/1", idleCalls, drainCalls, updater.applyCalls, tt.wantIdleCalls)
+			}
+		})
+	}
+}
+
 func TestSchedulerRepeatedRapidRestartsCannotStarveCheck(t *testing.T) {
 	t.Parallel()
 
