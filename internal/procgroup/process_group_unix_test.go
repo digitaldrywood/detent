@@ -245,6 +245,43 @@ func TestTerminateTree(t *testing.T) {
 	}
 }
 
+func TestTerminateTreeDisambiguatesEPERM(t *testing.T) {
+	inspectErr := errors.New("inspect failed")
+	tests := []struct {
+		name       string
+		members    []processGroupMember
+		inspectErr error
+		wantErr    error
+	}{
+		{name: "exited process group"},
+		{name: "zombie-only process group", members: []processGroupMember{{state: "Z"}}},
+		{name: "live unauthorized process group", members: []processGroupMember{{state: "S"}}, wantErr: syscall.EPERM},
+		{name: "failed process group inspection", inspectErr: inspectErr, wantErr: syscall.EPERM},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signal := func(pid int, signal syscall.Signal) error {
+				if pid != -123 || signal != syscall.SIGKILL {
+					t.Fatalf("signal target = (%d, %v), want (-123, %v)", pid, signal, syscall.SIGKILL)
+				}
+				return syscall.EPERM
+			}
+			inspect := func(processGroupID int) ([]processGroupMember, error) {
+				if processGroupID != 123 {
+					t.Fatalf("inspect process group = %d, want 123", processGroupID)
+				}
+				return tt.members, tt.inspectErr
+			}
+
+			err := terminateTree(nil, 123, signal, inspect)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("terminateTree() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestCleanup(t *testing.T) {
 	tests := []struct {
 		name string
