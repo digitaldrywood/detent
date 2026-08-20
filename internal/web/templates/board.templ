@@ -214,7 +214,7 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 							class="pl-3"
 							hx-post={ alert.Action.Path }
 							hx-target={ alert.Action.Target }
-							hx-swap="innerHTML"
+							hx-swap={ boardAlertActionSwap(alert.Action) }
 							hx-confirm={ alert.Action.Confirm }
 						>
 							<input type="hidden" name="confirm" value="true"/>
@@ -225,6 +225,13 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 			}
 		</div>
 	</div>
+}
+
+func boardAlertActionSwap(action *boardAlertAction) string {
+	if action != nil && action.Swap != "" {
+		return action.Swap
+	}
+	return "innerHTML"
 }
 
 templ boardAlertGlyph(alert boardAlert, class string) {

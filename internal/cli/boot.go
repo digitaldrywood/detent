@@ -295,6 +295,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ProgressSpend:      runtimeStore,
 		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,
+		StalenessWarnings:  runtimeStore,
 		RetroStore:         runtimeStore,
 		RoutineStore:       runtimeStore,
 		AdmissionStore:     runtimeStore,

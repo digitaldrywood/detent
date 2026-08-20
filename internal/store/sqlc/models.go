@@ -323,6 +323,13 @@ type SchedulerDecision struct {
 	MetadataJson           string         `json:"metadata_json"`
 }
 
+type StalenessWarningState struct {
+	ProjectID      string         `json:"project_id"`
+	WarningID      string         `json:"warning_id"`
+	RemindedAt     sql.NullString `json:"reminded_at"`
+	AcknowledgedAt sql.NullString `json:"acknowledged_at"`
+}
+
 type UsageEvent struct {
 	ID                     int64           `json:"id"`
 	ProjectID              string          `json:"project_id"`

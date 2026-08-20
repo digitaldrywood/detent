@@ -444,7 +444,9 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 		latestEvent, eventBacked := latestCurrentLaneEntry(result.timeline.Events, issue.State)
 		trackerTransition := connector.IssueStateTransition{}
 		observedAttribution := provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
-		if !eventBacked {
+		if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+			trackerTransition.EnteredAt = issue.StageUpdatedAt.UTC()
+		} else if !eventBacked {
 			trackerTransition = o.trackerIssueStateTransition(ctx, issue)
 			observedAttribution = observedLaneAttribution(state, issue, trackerTransition.Actor)
 		}
@@ -452,7 +454,7 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 		if !enteredAt.IsZero() {
 			next[laneKey] = enteredAt
 		}
-		if !eventBacked {
+		if !eventBacked || trackerTransition.EnteredAt.After(latestEvent.StartedAt) {
 			o.recordObservedLaneEntry(ctx, issue, enteredAt, observedAttribution)
 			if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
 				observed := cloneIssue(issue)
@@ -476,6 +478,9 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 }
 
 func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue connector.Issue) connector.IssueStateTransition {
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC()}
+	}
 	reader, ok := o.connector.(connector.IssueStateTransitionReader)
 	if ok && reader != nil {
 		transition, found, err := reader.IssueStateTransition(ctx, issue)
@@ -487,9 +492,6 @@ func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue co
 			transition.EnteredAt = transition.EnteredAt.UTC()
 			return transition
 		}
-	}
-	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
-		return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC()}
 	}
 	return connector.IssueStateTransition{}
 }
@@ -548,9 +550,9 @@ func stateLaneEntryIssues(state *State) []connector.Issue {
 func resolveCurrentLaneEnteredAt(issue connector.Issue, previous time.Time, trackerEnteredAt time.Time, observedAt time.Time, events []store.WorkflowPhaseEvent) time.Time {
 	enteredAt, eventBacked := latestCurrentLaneEnteredAt(events, issue.State)
 	mayMoveForward := eventBacked && laneOccupancyChangedSince(events, issue.State, previous)
-	if enteredAt.IsZero() {
+	if !trackerEnteredAt.IsZero() && (enteredAt.IsZero() || trackerEnteredAt.After(enteredAt)) {
 		enteredAt = trackerEnteredAt
-		mayMoveForward = !trackerEnteredAt.IsZero()
+		mayMoveForward = true
 	}
 	if enteredAt.IsZero() {
 		enteredAt = workflowLaneWeakFallbackAt(issue)

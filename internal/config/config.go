@@ -87,6 +87,7 @@ const (
 	DefaultBoardSnapshotStaleAfterSeconds = 15 * 60
 	DefaultStalenessNoCompletionHours     = 24
 	DefaultStalenessNoMergeHours          = 12
+	DefaultStalenessHumanGateRearmHours   = 168
 	DefaultStalenessRepeatedCount         = 20
 	DefaultStalenessRepeatedWindowHours   = 24
 	DefaultStalenessWebhookTimeoutMS      = 5000
@@ -808,6 +809,7 @@ type OTLPObservability struct {
 type StalenessObservability struct {
 	Enabled                       bool                     `yaml:"enabled"`
 	Lanes                         []StalenessLaneThreshold `yaml:"lanes,omitempty"`
+	HumanGateRearmHours           int                      `yaml:"human_gate_rearm_hours"`
 	NoCompletionHours             int                      `yaml:"no_completion_hours"`
 	NoMergeHours                  int                      `yaml:"no_merge_hours"`
 	RepeatedDecisionCount         int                      `yaml:"repeated_decision_count"`
@@ -1462,6 +1464,7 @@ func Default() Config {
 			OTLP: OTLPObservability{TimeoutMS: 5000, ServiceName: "detent"},
 			Staleness: StalenessObservability{
 				Enabled:                       true,
+				HumanGateRearmHours:           DefaultStalenessHumanGateRearmHours,
 				NoCompletionHours:             DefaultStalenessNoCompletionHours,
 				NoMergeHours:                  DefaultStalenessNoMergeHours,
 				RepeatedDecisionCount:         DefaultStalenessRepeatedCount,
@@ -2824,6 +2827,7 @@ func (s StalenessObservability) validate(problems *[]string) {
 	}
 	validatePositive("observability.staleness.no_completion_hours", s.NoCompletionHours, problems)
 	validatePositive("observability.staleness.no_merge_hours", s.NoMergeHours, problems)
+	validatePositive("observability.staleness.human_gate_rearm_hours", s.HumanGateRearmHours, problems)
 	validatePositive("observability.staleness.repeated_decision_count", s.RepeatedDecisionCount, problems)
 	if s.RepeatedDecisionCount > MaxStalenessRepeatedCount {
 		*problems = append(*problems, "observability.staleness.repeated_decision_count must be less than or equal to 500")

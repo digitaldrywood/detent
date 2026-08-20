@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/staleness"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -66,6 +68,97 @@ func TestRefreshStalenessWarningsEmitsAndDeliversOncePerActiveCondition(t *testi
 	}
 	if events != 1 {
 		t.Fatalf("fleet_staleness_warning events = %d, want 1", events)
+	}
+}
+
+func TestRefreshStalenessWarningLifecycle(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		run  func(*testing.T, *Orchestrator, *State, store.Store)
+	}{
+		{
+			name: "human gate reminder fires once and rearms",
+			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.Store) {
+				enteredAt := now.Add(-4 * time.Hour)
+				issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
+				state.BoardIssues = []connector.Issue{issue}
+				state.laneEntries[workflowLaneEntryKey(issue)] = enteredAt
+
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now)
+				if len(state.StalenessWarnings) != 1 {
+					t.Fatalf("first refresh warnings = %#v, want one reminder", state.StalenessWarnings)
+				}
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(time.Minute))
+				if len(state.StalenessWarnings) != 0 {
+					t.Fatalf("second refresh warnings = %#v, want reminder silenced", state.StalenessWarnings)
+				}
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(2*time.Hour))
+				if len(state.StalenessWarnings) != 1 {
+					t.Fatalf("rearmed refresh warnings = %#v, want one reminder", state.StalenessWarnings)
+				}
+			},
+		},
+		{
+			name: "acknowledgement survives recompute and clears on lane reentry",
+			run: func(t *testing.T, orch *Orchestrator, state *State, backend store.Store) {
+				firstEntry := now.Add(-4 * time.Hour)
+				issue := connector.Issue{ID: "issue-ack", Identifier: "detent#1926", State: "Merging"}
+				state.BoardIssues = []connector.Issue{issue}
+				key := workflowLaneEntryKey(issue)
+				state.laneEntries[key] = firstEntry
+
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now)
+				if len(state.StalenessWarnings) != 1 {
+					t.Fatalf("first refresh warnings = %#v, want one", state.StalenessWarnings)
+				}
+				var warningID string
+				for id := range state.StalenessWarnings {
+					warningID = id
+				}
+				if err := backend.AcknowledgeStalenessWarning(t.Context(), "detent", warningID, now); err != nil {
+					t.Fatalf("AcknowledgeStalenessWarning() error = %v", err)
+				}
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(time.Minute))
+				if len(state.StalenessWarnings) != 0 {
+					t.Fatalf("acknowledged warnings = %#v, want none", state.StalenessWarnings)
+				}
+
+				state.laneEntries[key] = now.Add(-3 * time.Hour)
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(time.Minute))
+				if len(state.StalenessWarnings) != 1 {
+					t.Fatalf("new-entry warnings = %#v, want new condition", state.StalenessWarnings)
+				}
+				if _, exists := state.StalenessWarnings[warningID]; exists {
+					t.Fatalf("new lane entry reused acknowledged warning ID %q", warningID)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+			if err != nil {
+				t.Fatalf("store.Open() error = %v", err)
+			}
+			t.Cleanup(func() { _ = backend.Close() })
+			cfg := normalizeConfig(Config{
+				Staleness: staleness.Config{
+					Enabled:        true,
+					HumanGateRearm: 2 * time.Hour,
+					Lanes: []staleness.LaneThreshold{
+						{State: "Human Review", Threshold: 2 * time.Hour, HumanGate: true},
+						{State: "Merging", Threshold: 2 * time.Hour},
+					},
+				},
+			})
+			cfg.Project.ID = "detent"
+			orch := &Orchestrator{cfg: cfg, stalenessWarningStore: backend}
+			state := newState(cfg)
+			tt.run(t, orch, &state, backend)
+		})
 	}
 }
 
@@ -143,6 +236,33 @@ func TestStalenessDispatchableItemsUsesDispatchPlannerEligibility(t *testing.T) 
 	items := orch.stalenessDispatchableItems([]connector.Issue{unauthorized, authorized}, &state, now)
 	if len(items) != 1 || items[0].ID != authorized.ID {
 		t.Fatalf("dispatchable staleness items = %#v, want only authorized issue", items)
+	}
+}
+
+func TestRecordedStalenessPark(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		issue   connector.Issue
+		blocked *Blocked
+		want    bool
+	}{
+		{name: "non-blocked issue", issue: connector.Issue{ID: "1", State: "Todo"}},
+		{name: "cause-less blocked issue", issue: connector.Issue{ID: "2", State: "Blocked"}},
+		{name: "operator park cause", issue: connector.Issue{ID: "3", State: "Blocked"}, blocked: &Blocked{Reason: "operator parked pending review"}, want: true},
+		{name: "sticky breaker cause", issue: connector.Issue{ID: "4", State: "Blocked"}, blocked: &Blocked{Recovery: &workflowLaneBlockedRecoveryMetadata{Cause: "project failure breaker"}}, want: true},
+		{name: "tracked dependency", issue: connector.Issue{ID: "5", State: "Blocked", BlockedBy: []connector.BlockedRef{{Identifier: "detent#1"}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := State{Blocked: map[string]Blocked{}}
+			if tt.blocked != nil {
+				state.Blocked[tt.issue.ID] = *tt.blocked
+			}
+			if got := recordedStalenessPark(tt.issue, &state); got != tt.want {
+				t.Fatalf("recordedStalenessPark() = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -273,7 +393,7 @@ func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
 		{IssueID: "issue-gone", Reason: "merge_slot_revoked", DecisionAt: now},
 	}
 
-	got := stalenessDecisions(decisions, stalenessDecisionIssueIndex(&state, nil))
+	got := stalenessDecisions(decisions, stalenessDecisionIssueIndex(&state, nil), state.laneEntries)
 	if len(got) != len(decisions) {
 		t.Fatalf("stalenessDecisions() = %#v, want %d decisions", got, len(decisions))
 	}

@@ -124,6 +124,7 @@ type Dependencies struct {
 	ProgressSpend             store.ProgressSpendStore
 	AgentResume               store.AgentResumeStore
 	ValidatorMemo             store.ValidatorMemoStore
+	StalenessWarnings         store.StalenessWarningStore
 	Activity                  *activity.Broker
 	Events                    *hub.Hub[Event]
 	Logger                    *slog.Logger
@@ -328,6 +329,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		ProgressSpend:      deps.ProgressSpend,
 		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,
+		StalenessWarnings:  deps.StalenessWarnings,
 		Activity:           deps.Activity,
 		Release:            releaseCoordinator,
 		Logger:             logger,

@@ -973,6 +973,8 @@
 #         threshold_hours: 72
 #         # observability.staleness.lanes[].human_gate | type: boolean | default: true | required: No | validation: None
 #         human_gate: true
+#     # observability.staleness.human_gate_rearm_hours | type: integer | default: 168 | required: No | validation: must be greater than 0
+#     human_gate_rearm_hours: 168
 #     # observability.staleness.no_completion_hours | type: integer | default: 24 | required: No | validation: must be greater than 0
 #     no_completion_hours: 24
 #     # observability.staleness.no_merge_hours | type: integer | default: 12 | required: No | validation: must be greater than 0

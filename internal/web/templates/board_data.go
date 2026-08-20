@@ -86,6 +86,7 @@ type boardAlertAction struct {
 	Label   string
 	Path    string
 	Target  string
+	Swap    string
 	Confirm string
 }
 
@@ -416,8 +417,18 @@ func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 		if warning.AgeSeconds > 0 {
 			detail += " · " + formatDuration(float64(warning.AgeSeconds))
 		}
+		alertID := "board-alert-staleness-" + boardAlertRowSlug(warning.ID, index)
+		var action *boardAlertAction
+		if projectID := strings.TrimSpace(warning.ProjectID); projectID != "" && strings.TrimSpace(warning.ID) != "" {
+			action = &boardAlertAction{
+				Label:  "Dismiss",
+				Path:   "/api/v1/projects/" + url.PathEscape(projectID) + "/staleness-warnings/" + url.PathEscape(warning.ID) + "/acknowledge",
+				Target: "#" + alertID,
+				Swap:   "outerHTML",
+			}
+		}
 		alerts = append(alerts, boardAlert{
-			ID:            "board-alert-staleness-" + boardAlertRowSlug(warning.ID, index),
+			ID:            alertID,
 			Kind:          boardAlertKindStaleness,
 			Severity:      boardAlertSeverityStaleness,
 			Tone:          primitives.KindWarn,
@@ -425,6 +436,7 @@ func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 			DetailSummary: detail,
 			DeepLink:      strings.TrimSpace(warning.IssueURL),
 			DeepLinkLabel: "Open",
+			Action:        action,
 		})
 	}
 	return alerts
@@ -491,12 +503,13 @@ func refreshFailed(refresh telemetry.Refresh) bool {
 }
 
 func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	summary, ok := boardFailureBreakerSummary(snapshot.FailureBreakers)
+	breakers := actionableBoardFailureBreakers(snapshot.FailureBreakers)
+	summary, ok := boardFailureBreakerSummary(breakers)
 	if !ok {
 		return boardAlert{}, false
 	}
-	rows := make([]boardAlertDetailRow, 0, len(snapshot.FailureBreakers))
-	for index, breaker := range snapshot.FailureBreakers {
+	rows := make([]boardAlertDetailRow, 0, len(breakers))
+	for index, breaker := range breakers {
 		projectID := strings.TrimSpace(breaker.ProjectID)
 		label := projectID
 		if label == "" {
@@ -526,8 +539,8 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		})
 	}
 	rows, overflow := capBoardAlertRows(rows)
-	count := boardAffectedProjectCount(len(snapshot.FailureBreakers), func(yield func(string)) {
-		for _, breaker := range snapshot.FailureBreakers {
+	count := boardAffectedProjectCount(len(breakers), func(yield func(string)) {
+		for _, breaker := range breakers {
 			yield(breaker.ProjectID)
 		}
 	})
@@ -542,6 +555,21 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
 	}, true
+}
+
+func actionableBoardFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
+	actionable := make([]telemetry.FailureBreaker, 0, len(breakers))
+	for _, breaker := range breakers {
+		allParked := len(breaker.Items) > 0
+		for _, item := range breaker.Items {
+			allParked = allParked && item.Parked
+		}
+		if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 && allParked {
+			continue
+		}
+		actionable = append(actionable, breaker)
+	}
+	return actionable
 }
 
 func boardTrackerStaleAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {

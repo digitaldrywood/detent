@@ -2157,6 +2157,9 @@ func TestDefaultStalenessObservability(t *testing.T) {
 	if cfg.Observability.Staleness.NoCompletionHours != DefaultStalenessNoCompletionHours {
 		t.Fatalf("NoCompletionHours = %d, want %d", cfg.Observability.Staleness.NoCompletionHours, DefaultStalenessNoCompletionHours)
 	}
+	if cfg.Observability.Staleness.HumanGateRearmHours != DefaultStalenessHumanGateRearmHours {
+		t.Fatalf("HumanGateRearmHours = %d, want %d", cfg.Observability.Staleness.HumanGateRearmHours, DefaultStalenessHumanGateRearmHours)
+	}
 	if len(cfg.Observability.Staleness.Lanes) != 3 {
 		t.Fatalf("Staleness.Lanes = %#v, want three defaults", cfg.Observability.Staleness.Lanes)
 	}
@@ -2185,6 +2188,11 @@ func TestDefaultStalenessObservability(t *testing.T) {
 	cfg.Observability.Staleness.Normalize()
 	if got, want := cfg.Observability.Staleness.RepeatedDecisionBenignReasons, []string{"planned_maintenance"}; !slices.Equal(got, want) {
 		t.Fatalf("normalized RepeatedDecisionBenignReasons = %#v, want %#v", got, want)
+	}
+	cfg = Default()
+	cfg.Observability.Staleness.HumanGateRearmHours = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "observability.staleness.human_gate_rearm_hours must be greater than 0") {
+		t.Fatalf("Validate() error = %v, want human gate rearm validation", err)
 	}
 }
 

@@ -42,6 +42,18 @@ func TestEvaluate(t *testing.T) {
 			wantHuman: true,
 		},
 		{
+			name: "recorded park stays quiet",
+			input: Input{
+				ProjectID: "detent",
+				Items: []Item{{
+					ID:           "42",
+					State:        "Blocked",
+					EnteredAt:    now.Add(-72 * time.Hour),
+					RecordedPark: true,
+				}},
+			},
+		},
+		{
 			name: "dispatchable queue without completions warns",
 			input: Input{
 				ProjectID:    "detent",
@@ -101,6 +113,53 @@ func TestEvaluate(t *testing.T) {
 			}
 			if len(got) > 0 && got[0].WaitingOnHuman != tt.wantHuman {
 				t.Fatalf("Evaluate()[0].WaitingOnHuman = %t, want %t", got[0].WaitingOnHuman, tt.wantHuman)
+			}
+		})
+	}
+}
+
+func TestWarningIdentityChangesWithCondition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		first  Input
+		second Input
+	}{
+		{
+			name:   "lane reentry",
+			first:  Input{ProjectID: "detent", Items: []Item{{ID: "74", State: "Human Review", EnteredAt: now.Add(-96 * time.Hour)}}},
+			second: Input{ProjectID: "detent", Items: []Item{{ID: "74", State: "Human Review", EnteredAt: now.Add(-80 * time.Hour)}}},
+		},
+		{
+			name: "repeated decision lane change",
+			first: Input{ProjectID: "detent", Decisions: []Decision{
+				{IssueID: "1926", CurrentState: "Todo", LaneEnteredAt: now.Add(-4 * time.Hour), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-3 * time.Hour)},
+				{IssueID: "1926", CurrentState: "Todo", LaneEnteredAt: now.Add(-4 * time.Hour), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-2 * time.Hour)},
+			}},
+			second: Input{ProjectID: "detent", Decisions: []Decision{
+				{IssueID: "1926", CurrentState: "Rework", LaneEnteredAt: now.Add(-90 * time.Minute), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-time.Hour)},
+				{IssueID: "1926", CurrentState: "Rework", LaneEnteredAt: now.Add(-90 * time.Minute), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-30 * time.Minute)},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Enabled:                true,
+				Lanes:                  []LaneThreshold{{State: "Human Review", Threshold: time.Hour}},
+				RepeatedDecisionCount:  2,
+				RepeatedDecisionWindow: 24 * time.Hour,
+			}
+			first := Evaluate(cfg, tt.first, now)
+			second := Evaluate(cfg, tt.second, now)
+			if len(first) != 1 || len(second) != 1 {
+				t.Fatalf("warning counts = %d and %d, want one each", len(first), len(second))
+			}
+			if first[0].ID == second[0].ID {
+				t.Fatalf("warning ID remained %q after condition changed", first[0].ID)
 			}
 		})
 	}

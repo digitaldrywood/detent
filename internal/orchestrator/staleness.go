@@ -33,8 +33,9 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 		Dispatchable: o.stalenessDispatchableItems(candidates, state, now),
 		MergeQueue:   o.stalenessMergeQueueItems(state),
 		Completions:  stalenessCompletions(state),
-		Decisions:    stalenessDecisions(state.SchedulerDecisions, stalenessDecisionIssueIndex(state, candidates)),
+		Decisions:    stalenessDecisions(state.SchedulerDecisions, stalenessDecisionIssueIndex(state, candidates), state.laneEntries),
 	}, now)
+	evaluated = o.actionableStalenessWarnings(ctx, state, evaluated, now)
 	previous := state.StalenessWarnings
 	next := make(map[string]StalenessWarning, len(evaluated))
 	for _, warning := range evaluated {
@@ -59,6 +60,51 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 	}
 	state.StalenessWarnings = next
 	o.deliverStalenessWarnings(ctx, state, now)
+}
+
+func (o *Orchestrator) actionableStalenessWarnings(ctx context.Context, state *State, evaluated []staleness.Warning, now time.Time) []staleness.Warning {
+	if state.stalenessReminders == nil {
+		state.stalenessReminders = map[string]time.Time{}
+	}
+	persisted := make(map[string]store.StalenessWarningState)
+	projectID := strings.TrimSpace(o.cfg.Project.ID)
+	if o.stalenessWarningStore != nil {
+		states, err := o.stalenessWarningStore.ListStalenessWarningStates(ctx, projectID)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Error("list staleness warning states", "project_id", projectID, "error", err)
+			}
+		} else {
+			for _, warningState := range states {
+				persisted[warningState.WarningID] = warningState
+				if warningState.RemindedAt != nil {
+					state.stalenessReminders[warningState.WarningID] = warningState.RemindedAt.UTC()
+				}
+			}
+		}
+	}
+	actionable := make([]staleness.Warning, 0, len(evaluated))
+	for _, warning := range evaluated {
+		warningState := persisted[warning.ID]
+		if warningState.AcknowledgedAt != nil {
+			continue
+		}
+		if !warning.WaitingOnHuman {
+			actionable = append(actionable, warning)
+			continue
+		}
+		if remindedAt := state.stalenessReminders[warning.ID]; !remindedAt.IsZero() && now.Before(remindedAt.Add(o.cfg.Staleness.HumanGateRearm)) {
+			continue
+		}
+		state.stalenessReminders[warning.ID] = now.UTC()
+		if o.stalenessWarningStore != nil {
+			if err := o.stalenessWarningStore.RecordStalenessWarningReminder(ctx, projectID, warning.ID, now); err != nil && o.logger != nil {
+				o.logger.Error("record staleness warning reminder", "project_id", projectID, "warning_id", warning.ID, "error", err)
+			}
+		}
+		actionable = append(actionable, warning)
+	}
+	return actionable
 }
 
 func (o *Orchestrator) stalenessItems(issues []connector.Issue, state *State) []staleness.Item {
@@ -139,7 +185,25 @@ func (o *Orchestrator) stalenessItem(issue connector.Issue, state *State) stalen
 		EnteredAt:            enteredAt.UTC(),
 		WaitingOnHuman:       artifactGateWaitStatusBlocksDispatch(issue, o.cfg.AutoPromote.Gate),
 		HasRecoveryPredicate: hasRecovery,
+		RecordedPark:         recordedStalenessPark(issue, state),
 	}
+}
+
+func recordedStalenessPark(issue connector.Issue, state *State) bool {
+	if normalizeState(issue.State) != normalizeState("Blocked") {
+		return false
+	}
+	if strings.TrimSpace(issue.BlockerReason) != "" || len(issue.BlockedBy) > 0 {
+		return true
+	}
+	blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]
+	if !ok {
+		return false
+	}
+	if strings.TrimSpace(blocked.Reason) != "" || strings.TrimSpace(blocked.RecoveryReason) != "" || strings.TrimSpace(blocked.StopReason) != "" {
+		return true
+	}
+	return blocked.Recovery != nil && (strings.TrimSpace(blocked.Recovery.Cause) != "" || strings.TrimSpace(blocked.Recovery.HoldReason) != "")
 }
 
 func stalenessCompletions(state *State) []staleness.Completion {
@@ -171,21 +235,23 @@ func stalenessCompletions(state *State) []staleness.Completion {
 	return completions
 }
 
-func stalenessDecisions(decisions []telemetry.SchedulerDecision, issues map[string]connector.Issue) []staleness.Decision {
+func stalenessDecisions(decisions []telemetry.SchedulerDecision, issues map[string]connector.Issue, laneEntries map[string]time.Time) []staleness.Decision {
 	out := make([]staleness.Decision, 0, len(decisions))
 	for _, decision := range decisions {
 		issue, _ := stalenessDecisionIssue(decision, issues)
+		laneEnteredAt := laneEntries[workflowLaneEntryKey(issue)]
 		out = append(out, staleness.Decision{
-			IssueID:      strings.TrimSpace(decision.IssueID),
-			Identifier:   strings.TrimSpace(decision.Identifier),
-			IssueURL:     strings.TrimSpace(decision.IssueURL),
-			CurrentState: strings.TrimSpace(issue.State),
-			Closed:       issue.Closed,
-			Merged:       pullRequestMerged(issue.PullRequest),
-			Result:       strings.TrimSpace(decision.Result),
-			Reason:       strings.TrimSpace(decision.Reason),
-			Detail:       strings.TrimSpace(decision.WaitReason),
-			At:           decision.DecisionAt.UTC(),
+			IssueID:       strings.TrimSpace(decision.IssueID),
+			Identifier:    strings.TrimSpace(decision.Identifier),
+			IssueURL:      strings.TrimSpace(decision.IssueURL),
+			CurrentState:  strings.TrimSpace(issue.State),
+			Closed:        issue.Closed,
+			Merged:        pullRequestMerged(issue.PullRequest),
+			Result:        strings.TrimSpace(decision.Result),
+			Reason:        strings.TrimSpace(decision.Reason),
+			Detail:        strings.TrimSpace(decision.WaitReason),
+			At:            decision.DecisionAt.UTC(),
+			LaneEnteredAt: laneEnteredAt.UTC(),
 		})
 	}
 	return out

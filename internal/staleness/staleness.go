@@ -19,6 +19,7 @@ const (
 type Config struct {
 	Enabled                       bool
 	Lanes                         []LaneThreshold
+	HumanGateRearm                time.Duration
 	NoCompletionThreshold         time.Duration
 	NoMergeThreshold              time.Duration
 	RepeatedDecisionCount         int
@@ -51,6 +52,7 @@ type Item struct {
 	EnteredAt            time.Time
 	WaitingOnHuman       bool
 	HasRecoveryPredicate bool
+	RecordedPark         bool
 }
 
 type Completion struct {
@@ -59,16 +61,17 @@ type Completion struct {
 }
 
 type Decision struct {
-	IssueID      string
-	Identifier   string
-	IssueURL     string
-	CurrentState string
-	Closed       bool
-	Merged       bool
-	Result       string
-	Reason       string
-	Detail       string
-	At           time.Time
+	IssueID       string
+	Identifier    string
+	IssueURL      string
+	CurrentState  string
+	Closed        bool
+	Merged        bool
+	Result        string
+	Reason        string
+	Detail        string
+	At            time.Time
+	LaneEnteredAt time.Time
 }
 
 type Warning struct {
@@ -125,7 +128,7 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 	seen := make(map[string]struct{})
 	for _, item := range input.Items {
 		threshold, ok := thresholds[normalize(item.State)]
-		if !ok || item.EnteredAt.IsZero() || item.EnteredAt.After(now) {
+		if !ok || item.RecordedPark || item.EnteredAt.IsZero() || item.EnteredAt.After(now) {
 			continue
 		}
 		age := now.Sub(item.EnteredAt)
@@ -136,7 +139,7 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 		if identity == "" {
 			continue
 		}
-		key := KindLaneAging + "\x00" + identity + "\x00" + normalize(item.State)
+		key := KindLaneAging + "\x00" + identity + "\x00" + normalize(item.State) + "\x00" + timestampKey(item.EnteredAt)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -174,7 +177,7 @@ func projectLivenessWarning(cfg Config, input Input, now time.Time) (Warning, bo
 		return Warning{}, false
 	}
 	projectID := strings.TrimSpace(input.ProjectID)
-	key := KindProjectLiveness + "\x00" + projectID
+	key := KindProjectLiveness + "\x00" + projectID + "\x00" + timestampKey(baseline)
 	return Warning{
 		ID:               warningID(key),
 		ProjectID:        projectID,
@@ -199,7 +202,7 @@ func mergeLivenessWarning(cfg Config, input Input, now time.Time) (Warning, bool
 		return Warning{}, false
 	}
 	projectID := strings.TrimSpace(input.ProjectID)
-	key := KindMergeLiveness + "\x00" + projectID
+	key := KindMergeLiveness + "\x00" + projectID + "\x00" + timestampKey(baseline)
 	return Warning{
 		ID:               warningID(key),
 		ProjectID:        projectID,
@@ -270,8 +273,14 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 		if decisionDetail := strings.TrimSpace(current.decision.Detail); decisionDetail != "" && decisionDetail != strings.TrimSpace(current.decision.Reason) {
 			detail = decisionDetail
 		}
+		conditionKey := strings.Join([]string{
+			KindRepeatedDecision,
+			key,
+			normalize(current.decision.CurrentState),
+			timestampKey(current.decision.LaneEnteredAt),
+		}, "\x00")
 		warnings = append(warnings, Warning{
-			ID:               warningID(KindRepeatedDecision + "\x00" + key),
+			ID:               warningID(conditionKey),
 			ProjectID:        strings.TrimSpace(input.ProjectID),
 			Kind:             KindRepeatedDecision,
 			IssueID:          strings.TrimSpace(current.decision.IssueID),
@@ -367,6 +376,13 @@ func decisionIdentity(decision Decision) string {
 func warningID(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])[:defaultWarningIDLength]
+}
+
+func timestampKey(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func normalize(value string) string {
