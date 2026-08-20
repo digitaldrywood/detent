@@ -169,6 +169,12 @@ func TestResetFromText(t *testing.T) {
 			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, time.UTC),
 			want: time.Date(2026, 8, 15, 16, 10, 0, 0, time.UTC),
 		},
+		{
+			name: "subscription reset with date",
+			text: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 20th, 2026 10:27 AM.",
+			now:  time.Date(2026, 8, 19, 11, 28, 34, 0, chicago),
+			want: time.Date(2026, 8, 20, 15, 27, 0, 0, time.UTC),
+		},
 	}
 
 	for _, tt := range tests {

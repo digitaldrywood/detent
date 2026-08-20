@@ -85,7 +85,17 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	if details, ok := backendcapacity.ClassifyTransientOverload(text, codexOverloadRules); ok {
 		return details, true
 	}
-	return backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
+	details, ok := backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
+	if ok && codexSubscriptionLimitText(text) {
+		details.Reason = "subscription window exhausted"
+	}
+	return details, ok
+}
+
+func codexSubscriptionLimitText(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "chatgpt.com/codex/settings/usage") ||
+		strings.Contains(text, "purchase more credits or try again at")
 }
 
 func codexStartupOperation(text string) bool {
@@ -113,7 +123,7 @@ func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) 
 		return runner.CapacityStatus{}, false
 	}
 	if strings.TrimSpace(limits.ReachedType) != "" {
-		return runner.CapacityStatus{Detail: "live provider status still reports an exhausted window"}, true
+		return codexExhaustedCapacityStatus(limits, "live provider status still reports an exhausted subscription window"), true
 	}
 	minimumRemaining := int64(101)
 	found := false
@@ -124,7 +134,10 @@ func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) 
 		found = true
 		remaining := bucket.Remaining * 100 / bucket.Limit
 		minimumRemaining = min(minimumRemaining, remaining)
-		if bucket.Status == telemetry.RateLimitStatusExhausted || remaining < codexCapacityAvailableThresholdPercent {
+		if bucket.Status == telemetry.RateLimitStatusExhausted {
+			return codexExhaustedCapacityStatus(limits, fmt.Sprintf("live provider status reports an exhausted subscription window with %d%% capacity remaining", remaining)), true
+		}
+		if remaining < codexCapacityAvailableThresholdPercent {
 			return runner.CapacityStatus{Detail: fmt.Sprintf("live provider status reports %d%% capacity remaining", remaining)}, true
 		}
 	}
@@ -135,6 +148,19 @@ func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) 
 		Available: true,
 		Detail:    fmt.Sprintf("live provider status reports %d%% capacity remaining", minimumRemaining),
 	}, true
+}
+
+func codexExhaustedCapacityStatus(limits *telemetry.RateLimits, detail string) runner.CapacityStatus {
+	return runner.CapacityStatus{
+		Exhausted: true,
+		Detail:    detail,
+		Details: backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeUsageLimit,
+			Kind:    "subscription_window_exhausted",
+			Reason:  "subscription window exhausted",
+			ResetAt: codexCapacityResetAt(limits),
+		},
+	}
 }
 
 func codexCapacityErrorText(err error) string {

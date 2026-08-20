@@ -36,6 +36,15 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			wantType: backendcapacity.ErrorTypeUsageLimit,
 		},
 		{
+			name: "recorded subscription exhaustion payload",
+			err: &TurnFailedError{
+				Status: "failed",
+				Body:   `{"message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 20th, 2026 10:27 AM.","codexErrorInfo":"usageLimitExceeded","additionalDetails":null}`,
+			},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeUsageLimit,
+		},
+		{
 			name: "google resource exhausted without reset",
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"status":"RESOURCE_EXHAUSTED"}}`},
 		},
@@ -171,6 +180,7 @@ func TestCapacityStatus(t *testing.T) {
 		limits        *telemetry.RateLimits
 		wantReported  bool
 		wantAvailable bool
+		wantExhausted bool
 	}{
 		{name: "missing status"},
 		{
@@ -196,7 +206,8 @@ func TestCapacityStatus(t *testing.T) {
 				ReachedType: "primary",
 				Primary:     &telemetry.RateLimitBucket{Limit: 100, Remaining: 20},
 			},
-			wantReported: true,
+			wantReported:  true,
+			wantExhausted: true,
 		},
 	}
 
@@ -205,8 +216,8 @@ func TestCapacityStatus(t *testing.T) {
 			t.Parallel()
 
 			status, reported := CapacityStatus(tt.limits)
-			if reported != tt.wantReported || status.Available != tt.wantAvailable {
-				t.Fatalf("CapacityStatus() = %#v, %v, want available %v reported %v", status, reported, tt.wantAvailable, tt.wantReported)
+			if reported != tt.wantReported || status.Available != tt.wantAvailable || status.Exhausted != tt.wantExhausted {
+				t.Fatalf("CapacityStatus() = %#v, %v, want available %v exhausted %v reported %v", status, reported, tt.wantAvailable, tt.wantExhausted, tt.wantReported)
 			}
 		})
 	}

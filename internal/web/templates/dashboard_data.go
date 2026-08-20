@@ -7104,6 +7104,9 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 	if strings.TrimSpace(outage.Kind) == "github_rest_rate_limit" {
 		return "GitHub REST dispatch paused"
 	}
+	if strings.EqualFold(strings.TrimSpace(outage.Reason), "subscription window exhausted") {
+		return "Backend " + backendCapacityBackendID(outage) + ": subscription window exhausted"
+	}
 	return "Backend " + backendCapacityBackendID(outage) + " at usage limit"
 }
 
@@ -7507,6 +7510,9 @@ func backendCapacityOutageDetailParts(outage telemetry.BackendOutage, now time.T
 	}
 	provider := strings.TrimSpace(outage.Provider)
 	detail := "Dispatch is paused"
+	if reason := strings.TrimSpace(outage.Reason); reason != "" && !strings.EqualFold(reason, "provider usage limit reached") {
+		detail = reason + ". " + detail
+	}
 	if provider != "" {
 		detail += " for " + provider
 	}

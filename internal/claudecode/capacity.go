@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -55,7 +56,47 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	if details, ok := backendcapacity.ClassifyTransientOverload(err.Error(), claudeOverloadRules); ok {
 		return details, true
 	}
-	return backendcapacity.Classify(err.Error(), claudeCapacityResetAt(limits), now, claudeCapacityRules)
+	details, ok := backendcapacity.Classify(err.Error(), claudeCapacityResetAt(limits), now, claudeCapacityRules)
+	if ok && strings.Contains(strings.ToLower(err.Error()), "session limit") {
+		details.Reason = "subscription window exhausted"
+	}
+	return details, ok
+}
+
+func (b *AgentBackend) CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
+	if b == nil {
+		return runner.CapacityStatus{}, false
+	}
+	return CapacityStatus(limits)
+}
+
+func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
+	if limits == nil {
+		return runner.CapacityStatus{}, false
+	}
+	resetAt := claudeCapacityResetAt(limits)
+	exhausted := strings.TrimSpace(limits.ReachedType) != ""
+	if !exhausted {
+		for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
+			if bucket != nil && bucket.Status == telemetry.RateLimitStatusExhausted {
+				exhausted = true
+				break
+			}
+		}
+	}
+	if !exhausted {
+		return runner.CapacityStatus{}, false
+	}
+	return runner.CapacityStatus{
+		Exhausted: true,
+		Detail:    "live provider status reports an exhausted subscription window",
+		Details: backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeUsageLimit,
+			Kind:    "subscription_window_exhausted",
+			Reason:  "subscription window exhausted",
+			ResetAt: resetAt,
+		},
+	}, true
 }
 
 func claudeCapacityResetAt(limits *telemetry.RateLimits) *time.Time {

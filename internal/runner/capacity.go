@@ -21,7 +21,9 @@ type AgentCapacityStatusProvider interface {
 
 type CapacityStatus struct {
 	Available bool
+	Exhausted bool
 	Detail    string
+	Details   backendcapacity.Details
 }
 
 type CapacityController interface {
@@ -107,22 +109,55 @@ func classifyAgentCapacityError(
 	rateLimits *telemetry.RateLimits,
 	now time.Time,
 ) error {
-	if err == nil {
-		return nil
-	}
-	classifier, ok := backend.(AgentCapacityClassifier)
-	if !ok {
+	var capacityErr *backendcapacity.Error
+	if errors.As(err, &capacityErr) {
 		return err
+	}
+	if err != nil {
+		if classifier, ok := backend.(AgentCapacityClassifier); ok {
+			scope := configuredCapacityScope(selection, backendConfig, identity)
+			if scope.Hosted() {
+				if details, classified := classifier.ClassifyCapacityError(err, rateLimits, now); classified {
+					return backendcapacity.NewError(scope, details, err)
+				}
+			}
+		}
 	}
 	scope := configuredCapacityScope(selection, backendConfig, identity)
 	if !scope.Hosted() {
 		return err
 	}
-	details, ok := classifier.ClassifyCapacityError(err, rateLimits, now)
+	provider, ok := backend.(AgentCapacityStatusProvider)
 	if !ok {
 		return err
 	}
+	status, reported := provider.CapacityStatus(rateLimits)
+	if !reported || !status.Exhausted {
+		return err
+	}
+	details := status.Details
+	if details.Type == "" {
+		details.Type = backendcapacity.ErrorTypeUsageLimit
+	}
+	if strings.TrimSpace(details.Kind) == "" {
+		details.Kind = "subscription_window_exhausted"
+	}
+	if strings.TrimSpace(details.Reason) == "" {
+		details.Reason = "subscription window exhausted"
+	}
+	if err == nil {
+		err = errors.New(firstNonBlankCapacityDetail(status.Detail, details.Reason))
+	}
 	return backendcapacity.NewError(scope, details, err)
+}
+
+func firstNonBlankCapacityDetail(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "subscription window exhausted"
 }
 
 func configuredCapacityScope(selection RouteSelection, backend config.AgentBackend, identity agentidentity.Identity) backendcapacity.Scope {

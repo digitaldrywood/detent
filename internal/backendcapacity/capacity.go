@@ -28,6 +28,7 @@ const (
 )
 
 var retryAtPattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+(?:at\s+)?([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))(?:\s*\(([A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)\))?`)
+var retryDatePattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+(?:at\s+)?([A-Za-z]{3,9})\s+([0-9]{1,2})(?:st|nd|rd|th)?,?\s+([0-9]{4})\s+([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))(?:\s*\(([A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)\))?`)
 var http5xxPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(5[0-9]{2})\b`)
 
 type Scope struct {
@@ -218,6 +219,9 @@ func resetFromText(text string, now time.Time) *time.Time {
 			return resetAt
 		}
 	}
+	if resetAt := resetFromDatedText(text, now); resetAt != nil {
+		return resetAt
+	}
 	match := retryAtPattern.FindStringSubmatch(text)
 	if len(match) != 3 {
 		return nil
@@ -239,6 +243,38 @@ func resetFromText(text string, now time.Time) *time.Time {
 	resetAt := time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), 0, 0, location)
 	if !resetAt.After(now) {
 		resetAt = resetAt.AddDate(0, 0, 1)
+	}
+	resetAt = resetAt.UTC()
+	return &resetAt
+}
+
+func resetFromDatedText(text string, now time.Time) *time.Time {
+	match := retryDatePattern.FindStringSubmatch(text)
+	if len(match) != 6 {
+		return nil
+	}
+	location := now.Location()
+	if timezone := strings.TrimSpace(match[5]); timezone != "" {
+		var err error
+		location, err = time.LoadLocation(timezone)
+		if err != nil {
+			return nil
+		}
+	}
+	month := strings.ToLower(strings.TrimSpace(match[1]))
+	if month == "" {
+		return nil
+	}
+	month = strings.ToUpper(month[:1]) + month[1:]
+	value := strings.Join([]string{
+		month,
+		strings.TrimSpace(match[2]) + ",",
+		strings.TrimSpace(match[3]),
+		strings.ToUpper(strings.Join(strings.Fields(match[4]), "")),
+	}, " ")
+	resetAt, err := time.ParseInLocation("Jan 2, 2006 3:04PM", value, location)
+	if err != nil {
+		return nil
 	}
 	resetAt = resetAt.UTC()
 	return &resetAt
