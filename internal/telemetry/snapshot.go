@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -353,11 +354,32 @@ type Update struct {
 	LastAppliedVersion string     `json:"last_applied_version,omitempty"`
 	NextCheckAt        *time.Time `json:"next_check_at,omitempty"`
 	AvailableVersion   string     `json:"available_version,omitempty"`
+	PendingSince       *time.Time `json:"pending_since,omitempty"`
+	MaxDeferralHours   int        `json:"max_deferral_hours,omitempty"`
+	Critical           bool       `json:"critical,omitempty"`
 	LastError          string     `json:"last_error,omitempty"`
 }
 
 func (u Update) IsZero() bool {
-	return !u.Enabled && !u.AutoApplyEnabled && u.CheckIntervalHours == 0 && u.State == "" && u.LastCheckAt == nil && u.LastAppliedVersion == "" && u.NextCheckAt == nil && u.AvailableVersion == "" && u.LastError == ""
+	return !u.Enabled && !u.AutoApplyEnabled && u.CheckIntervalHours == 0 && u.State == "" && u.LastCheckAt == nil && u.LastAppliedVersion == "" && u.NextCheckAt == nil && u.AvailableVersion == "" && u.PendingSince == nil && u.MaxDeferralHours == 0 && !u.Critical && u.LastError == ""
+}
+
+func (u Update) DisplayState(now time.Time) string {
+	if strings.TrimSpace(u.State) != "pending_idle" || u.PendingSince == nil || u.MaxDeferralHours <= 0 {
+		return u.State
+	}
+	age := now.Sub(*u.PendingSince)
+	if age < 0 {
+		age = 0
+	}
+	return fmt.Sprintf("pending_idle (%s, max %dh)", compactUpdateDuration(age), u.MaxDeferralHours)
+}
+
+func compactUpdateDuration(duration time.Duration) string {
+	if duration < time.Hour {
+		return fmt.Sprintf("%dm", max(0, int(duration/time.Minute)))
+	}
+	return fmt.Sprintf("%dh", int(duration/time.Hour))
 }
 
 type Shutdown struct {

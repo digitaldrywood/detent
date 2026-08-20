@@ -80,6 +80,7 @@ type Asset struct {
 
 type Release struct {
 	TagName    string  `json:"tag_name"`
+	Body       string  `json:"body"`
 	Draft      bool    `json:"draft"`
 	Prerelease bool    `json:"prerelease"`
 	Assets     []Asset `json:"assets"`
@@ -341,6 +342,7 @@ type Status struct {
 	Command         string        `json:"command,omitempty"`
 	Binary          string        `json:"binary,omitempty"`
 	Asset           string        `json:"asset,omitempty"`
+	Critical        bool          `json:"critical,omitempty"`
 }
 
 func NewService(cfg Config) *Service {
@@ -622,6 +624,7 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 
 	status.LatestTag = release.TagName
 	status.LatestVersion = displayVersion(release.TagName)
+	status.Critical = releaseCritical(release)
 	cmp, err := CompareVersions(release.TagName, s.cfg.CurrentVersion)
 	if err != nil {
 		status.Action = ActionRefused
@@ -637,6 +640,10 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		status.Message = fmt.Sprintf("Detent %s is up to date.", status.CurrentVersion)
 	}
 	return status, release, nil
+}
+
+func releaseCritical(release Release) bool {
+	return strings.Contains(strings.ToLower(release.Body), "[detent-critical]")
 }
 
 func SelectLatestRelease(current string, releases []Release) (Release, bool, error) {

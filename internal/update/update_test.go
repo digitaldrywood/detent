@@ -676,6 +676,43 @@ func TestServiceRejectsBadChecksumSignatureBeforeReplacement(t *testing.T) {
 	}
 }
 
+func TestServiceCheckReportsCriticalReleaseMarker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		body     string
+		critical bool
+	}{
+		{name: "ordinary release", body: "Routine fixes"},
+		{name: "critical release", body: "Burn brake release\n\n[DETENT-CRITICAL]", critical: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			service := NewService(Config{
+				CurrentVersion: "1.2.3",
+				ExecutablePath: "/opt/detent/bin/detent",
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client: staticReleaseClient{releases: []Release{{
+					TagName: "v1.2.4",
+					Body:    tt.body,
+				}}},
+			})
+			status, err := service.Check(context.Background())
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			if status.Critical != tt.critical {
+				t.Fatalf("Check().Critical = %t, want %t", status.Critical, tt.critical)
+			}
+		})
+	}
+}
+
 func TestServiceGoInstallYesRunsCommandAndReportsVersion(t *testing.T) {
 	t.Parallel()
 

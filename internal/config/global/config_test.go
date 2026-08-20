@@ -302,6 +302,7 @@ update:
   auto_check_enabled: true
   check_interval_hours: 12
   auto_apply_enabled: true
+  max_deferral_hours: 4
 global:
   max_concurrent_agents: 8
   scheduling: weighted
@@ -347,8 +348,8 @@ projects:
 	if cfg.InstanceName != "buildbox" {
 		t.Fatalf("InstanceName = %q, want buildbox", cfg.InstanceName)
 	}
-	if !cfg.Update.AutoCheckEnabled || !cfg.Update.AutoApplyEnabled || cfg.Update.NormalizedCheckIntervalHours() != 12 {
-		t.Fatalf("Update = %#v, want enabled 12-hour auto-apply", cfg.Update)
+	if !cfg.Update.AutoCheckEnabled || !cfg.Update.AutoApplyEnabled || cfg.Update.NormalizedCheckIntervalHours() != 12 || cfg.Update.NormalizedMaxDeferralHours() != 4 {
+		t.Fatalf("Update = %#v, want enabled 12-hour auto-apply with 4-hour deferral", cfg.Update)
 	}
 	if cfg.Projects[0].WorkflowRef != "origin/main" {
 		t.Fatalf("Project.WorkflowRef = %q, want origin/main", cfg.Projects[0].WorkflowRef)
@@ -456,6 +457,7 @@ func TestReadValidatesUpdateSettings(t *testing.T) {
 		{name: "mapping", update: "disabled", want: "update: must be a mapping"},
 		{name: "enabled boolean", update: "\n  auto_check_enabled: yes-please", want: "update.auto_check_enabled: must be a boolean"},
 		{name: "positive interval", update: "\n  check_interval_hours: 0", want: "update.check_interval_hours: must be a positive integer"},
+		{name: "positive max deferral", update: "\n  max_deferral_hours: 0", want: "update.max_deferral_hours: must be a positive integer"},
 	}
 
 	for _, tt := range tests {
@@ -489,6 +491,9 @@ func TestUpdateUsesSixHourDefaultInterval(t *testing.T) {
 
 	if got := (Update{}).NormalizedCheckIntervalHours(); got != 6 {
 		t.Fatalf("NormalizedCheckIntervalHours() = %d, want 6", got)
+	}
+	if got := (Update{}).NormalizedMaxDeferralHours(); got != 6 {
+		t.Fatalf("NormalizedMaxDeferralHours() = %d, want 6", got)
 	}
 }
 

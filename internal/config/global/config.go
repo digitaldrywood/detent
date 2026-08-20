@@ -24,6 +24,7 @@ const (
 	APIVersion                      = "detent/v1"
 	Kind                            = "GlobalConfig"
 	DefaultUpdateCheckIntervalHours = 6
+	DefaultUpdateMaxDeferralHours   = 6
 
 	SchedulingWeighted                            = "weighted"
 	SchedulingStrict                              = "strict"
@@ -108,10 +109,11 @@ type Update struct {
 	AutoCheckEnabled   bool `yaml:"auto_check_enabled,omitempty"`
 	CheckIntervalHours int  `yaml:"check_interval_hours,omitempty"`
 	AutoApplyEnabled   bool `yaml:"auto_apply_enabled,omitempty"`
+	MaxDeferralHours   int  `yaml:"max_deferral_hours,omitempty"`
 }
 
 func (u Update) IsZero() bool {
-	return !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled
+	return !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled && u.MaxDeferralHours == 0
 }
 
 func (u Update) NormalizedCheckIntervalHours() int {
@@ -119,6 +121,13 @@ func (u Update) NormalizedCheckIntervalHours() int {
 		return u.CheckIntervalHours
 	}
 	return DefaultUpdateCheckIntervalHours
+}
+
+func (u Update) NormalizedMaxDeferralHours() int {
+	if u.MaxDeferralHours > 0 {
+		return u.MaxDeferralHours
+	}
+	return DefaultUpdateMaxDeferralHours
 }
 
 type Settings struct {
@@ -695,6 +704,9 @@ func (c Config) Validate(opts ...Option) error {
 	if c.Update.CheckIntervalHours < 0 {
 		problems = append(problems, "update.check_interval_hours: must be a positive integer")
 	}
+	if c.Update.MaxDeferralHours < 0 {
+		problems = append(problems, "update.max_deferral_hours: must be a positive integer")
+	}
 	problems = append(problems, c.Auth.validate("auth")...)
 
 	if c.Global.MaxConcurrentAgents <= 0 {
@@ -1039,6 +1051,9 @@ func updateErrors(value any) []string {
 	}
 	if interval, ok := update["check_interval_hours"]; ok && !positiveInteger(interval) {
 		problems = append(problems, "update.check_interval_hours: must be a positive integer")
+	}
+	if interval, ok := update["max_deferral_hours"]; ok && !positiveInteger(interval) {
+		problems = append(problems, "update.max_deferral_hours: must be a positive integer")
 	}
 	return problems
 }

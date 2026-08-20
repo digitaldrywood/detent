@@ -36,6 +36,7 @@ func TestTelemetryUpdateStatus(t *testing.T) {
 	t.Parallel()
 
 	lastCheck := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	pendingSince := lastCheck.Add(-4 * time.Hour)
 	got := telemetryUpdateStatus([]autoUpdateStatusSource{autoUpdateStatusStub{status: detentupdate.AutoStatus{
 		Enabled:            true,
 		AutoApplyEnabled:   true,
@@ -43,8 +44,11 @@ func TestTelemetryUpdateStatus(t *testing.T) {
 		State:              "scheduled",
 		LastCheckAt:        &lastCheck,
 		LastAppliedVersion: "1.2.4",
+		PendingSince:       &pendingSince,
+		MaxDeferral:        6 * time.Hour,
+		Critical:           true,
 	}}})
-	if !got.Enabled || !got.AutoApplyEnabled || got.CheckIntervalHours != 12 || got.LastAppliedVersion != "1.2.4" || got.LastCheckAt == nil {
+	if !got.Enabled || !got.AutoApplyEnabled || got.CheckIntervalHours != 12 || got.LastAppliedVersion != "1.2.4" || got.LastCheckAt == nil || got.PendingSince == nil || got.MaxDeferralHours != 6 || !got.Critical {
 		t.Fatalf("telemetryUpdateStatus() = %#v", got)
 	}
 }

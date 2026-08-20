@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -118,6 +119,47 @@ func TestRequestUpdateRestartUsesShutdownDrainState(t *testing.T) {
 				if tt.wantDrainEvent {
 					t.Fatal("shutdown request missing, want drain")
 				}
+			}
+		})
+	}
+}
+
+func TestWaitForRuntimeUpdateIdleHonorsCeiling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		idleAfter time.Duration
+		wantWait  time.Duration
+		wantErr   error
+	}{
+		{name: "in-flight attempts finish before ceiling", idleAfter: time.Second, wantWait: time.Second},
+		{name: "in-flight attempts consume full ceiling", idleAfter: 4 * time.Second, wantWait: 3 * time.Second, wantErr: ErrRuntimeUpdateDrainTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			startedAt := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+			now := startedAt
+			waited := time.Duration(0)
+			err := waitForRuntimeUpdateIdle(
+				context.Background(),
+				func(context.Context) bool { return now.Sub(startedAt) >= tt.idleAfter },
+				3*time.Second,
+				func() time.Time { return now },
+				func(_ context.Context, delay time.Duration) bool {
+					now = now.Add(delay)
+					waited += delay
+					return true
+				},
+			)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("waitForRuntimeUpdateIdle() error = %v, want %v", err, tt.wantErr)
+			}
+			if waited != tt.wantWait {
+				t.Fatalf("waited = %s, want %s", waited, tt.wantWait)
 			}
 		})
 	}

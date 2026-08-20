@@ -7783,6 +7783,38 @@ func TestHealthReportsRunningBuildDistinctFromAppliedUpdate(t *testing.T) {
 	}
 }
 
+func TestHealthReportsUpdateDeferralAge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 20, 14, 0, 0, 0, time.UTC)
+	pendingSince := now.Add(-4 * time.Hour)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Update: telemetry.Update{
+			Enabled:          true,
+			AutoApplyEnabled: true,
+			State:            "pending_idle",
+			PendingSince:     &pendingSince,
+			MaxDeferralHours: 6,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	update, ok := payload["update"].(map[string]any)
+	if !ok {
+		t.Fatalf("update payload = %#v, want object", payload["update"])
+	}
+	if update["state"] != "pending_idle (4h, max 6h)" {
+		t.Fatalf("update state = %#v, want deferral age", update["state"])
+	}
+}
+
 func TestHealthReportsEnvironmentPath(t *testing.T) {
 	t.Parallel()
 

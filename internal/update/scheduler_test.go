@@ -139,6 +139,7 @@ func TestSchedulerAutoApplyBehavior(t *testing.T) {
 				ReserveIdle: func(context.Context) (func(), bool) {
 					return func() { releaseCalls++ }, true
 				},
+				ReserveDrain: schedulerDrainReservation,
 				RequestRestart: func(binary string) bool {
 					restartCalls++
 					if binary != "/opt/detent/bin/detent" {
@@ -204,6 +205,7 @@ func TestSchedulerDefersAutoApplyUntilIdle(t *testing.T) {
 			reservationHeld = true
 			return func() { reservationHeld = false }, true
 		},
+		ReserveDrain: schedulerDrainReservation,
 		RequestRestart: func(string) bool {
 			if !reservationHeld {
 				t.Error("idle reservation released before restart request")
@@ -248,6 +250,97 @@ func TestSchedulerDefersAutoApplyUntilIdle(t *testing.T) {
 	}
 }
 
+func TestSchedulerDrainPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		critical          bool
+		advance           time.Duration
+		wantPendingBefore bool
+		wantIdleCalls     int
+	}{
+		{name: "busy runtime force drains at cap", advance: 2 * time.Hour, wantPendingBefore: true, wantIdleCalls: 1},
+		{name: "critical release drains immediately", critical: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+			updater := &schedulerUpdaterStub{
+				checkStatus: Status{
+					CurrentVersion:  "1.2.3",
+					LatestVersion:   "1.2.4",
+					UpdateAvailable: true,
+					InstallSource:   InstallSourceRelease,
+					Action:          ActionAvailable,
+					Critical:        tt.critical,
+				},
+				applyStatus: Status{
+					LatestVersion: "1.2.4",
+					Action:        ActionUpdated,
+					Binary:        "/opt/detent/bin/detent",
+				},
+			}
+			idleCalls := 0
+			drainCalls := 0
+			drainReserved := false
+			scheduler, err := NewScheduler(SchedulerConfig{
+				Enabled:          true,
+				AutoApplyEnabled: true,
+				CheckInterval:    time.Hour,
+				MaxDeferral:      2 * time.Hour,
+				Updater:          updater,
+				Now:              func() time.Time { return now },
+				ReserveIdle: func(context.Context) (func(), bool) {
+					idleCalls++
+					return nil, false
+				},
+				ReserveDrain: func(context.Context) (func(), error) {
+					drainCalls++
+					drainReserved = true
+					return func() { drainReserved = false }, nil
+				},
+				RequestRestart: func(string) bool {
+					if !drainReserved {
+						t.Error("restart requested before runtime drain reservation")
+					}
+					return true
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewScheduler() error = %v", err)
+			}
+
+			if _, err := scheduler.CheckNow(context.Background()); err != nil {
+				t.Fatalf("CheckNow() error = %v", err)
+			}
+			if tt.wantPendingBefore {
+				status := scheduler.Status()
+				if status.State != "pending_idle" || status.PendingSince == nil || !status.PendingSince.Equal(now) {
+					t.Fatalf("Status() before cap = %#v, want pending since %s", status, now)
+				}
+				now = now.Add(tt.advance)
+				if _, err := scheduler.applyWhenIdle(context.Background()); err != nil {
+					t.Fatalf("applyWhenIdle() error = %v", err)
+				}
+			}
+
+			if idleCalls != tt.wantIdleCalls || drainCalls != 1 || updater.applyCalls != 1 {
+				t.Fatalf("calls: Idle=%d Drain=%d Apply=%d, want %d/1/1", idleCalls, drainCalls, updater.applyCalls, tt.wantIdleCalls)
+			}
+			if got := scheduler.Status(); got.State != "restart_requested" || got.PendingSince != nil || got.Critical {
+				t.Fatalf("Status() = %#v, want cleared restart request", got)
+			}
+			if !drainReserved {
+				t.Fatal("drain reservation released before restart owns dispatch")
+			}
+		})
+	}
+}
+
 func TestSchedulerApplyPendingBypassesIdleWait(t *testing.T) {
 	t.Parallel()
 
@@ -273,6 +366,7 @@ func TestSchedulerApplyPendingBypassesIdleWait(t *testing.T) {
 		ReserveIdle: func(context.Context) (func(), bool) {
 			return nil, false
 		},
+		ReserveDrain:   schedulerDrainReservation,
 		RequestRestart: func(string) bool { return true },
 	})
 	if err != nil {
@@ -315,6 +409,7 @@ func TestSchedulerReleasesIdleReservationWhenApplyFails(t *testing.T) {
 		ReserveIdle: func(context.Context) (func(), bool) {
 			return func() { releaseCalls++ }, true
 		},
+		ReserveDrain: schedulerDrainReservation,
 	})
 	if err != nil {
 		t.Fatalf("NewScheduler() error = %v", err)
@@ -339,6 +434,23 @@ func TestSchedulerAutoApplyRequiresIdleReservation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "idle reservation") {
 		t.Fatalf("NewScheduler() error = %v, want idle reservation requirement", err)
+	}
+}
+
+func TestSchedulerAutoApplyRequiresDrainReservation(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewScheduler(SchedulerConfig{
+		Enabled:          true,
+		AutoApplyEnabled: true,
+		CheckInterval:    time.Hour,
+		Updater:          &schedulerUpdaterStub{},
+		ReserveIdle: func(context.Context) (func(), bool) {
+			return nil, false
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "drain reservation") {
+		t.Fatalf("NewScheduler() error = %v, want drain reservation requirement", err)
 	}
 }
 
@@ -367,6 +479,7 @@ func TestSchedulerRunPollsPendingUpdateUntilIdle(t *testing.T) {
 		ReserveIdle: func(context.Context) (func(), bool) {
 			return func() {}, idle
 		},
+		ReserveDrain:   schedulerDrainReservation,
 		RequestRestart: func(string) bool { return true },
 		NextDelay:      func(interval time.Duration) time.Duration { return interval },
 		Now: func() time.Time {
@@ -396,6 +509,53 @@ func TestSchedulerRunPollsPendingUpdateUntilIdle(t *testing.T) {
 	}
 	if len(delays) != 3 || delays[0] != time.Hour || delays[1] != 2*time.Second || delays[2] != time.Hour {
 		t.Fatalf("wait delays = %v, want [1h 2s 1h]", delays)
+	}
+}
+
+func TestSchedulerRunChecksOnIntervalWhilePendingIdle(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	updater := &schedulerUpdaterStub{
+		checkStatus: Status{
+			CurrentVersion:  "1.2.3",
+			LatestVersion:   "1.2.4",
+			UpdateAvailable: true,
+			Action:          ActionAvailable,
+			InstallSource:   InstallSourceRelease,
+		},
+	}
+	waits := 0
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:          true,
+		AutoApplyEnabled: true,
+		CheckInterval:    time.Hour,
+		IdlePollInterval: 30 * time.Minute,
+		Updater:          updater,
+		ReserveIdle: func(context.Context) (func(), bool) {
+			return nil, false
+		},
+		ReserveDrain: schedulerDrainReservation,
+		Now:          func() time.Time { return now },
+		NextDelay:    func(interval time.Duration) time.Duration { return interval },
+		Wait: func(_ context.Context, delay time.Duration) bool {
+			now = now.Add(delay)
+			waits++
+			if waits == 4 {
+				cancel()
+				return false
+			}
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	scheduler.Run(ctx)
+	if updater.checkCalls != 2 {
+		t.Fatalf("Check() calls = %d, want 2 while runtime remains busy", updater.checkCalls)
 	}
 }
 
@@ -754,4 +914,8 @@ func (s *schedulerUpdaterStub) Apply(context.Context, ApplyOptions) (Status, err
 	defer s.mu.Unlock()
 	s.applyCalls++
 	return s.applyStatus, s.applyErr
+}
+
+func schedulerDrainReservation(context.Context) (func(), error) {
+	return func() {}, nil
 }

@@ -665,6 +665,38 @@ func TestHealthUpdateRowShowsRuntimeStatus(t *testing.T) {
 	}
 }
 
+func TestHealthUpdateRowShowsDeferralAge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		age  time.Duration
+		want string
+	}{
+		{name: "hours", age: 4 * time.Hour, want: "pending idle (4h, max 6h)"},
+		{name: "minutes", age: 30 * time.Minute, want: "pending idle (30m, max 6h)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 8, 20, 14, 0, 0, 0, time.UTC)
+			pendingSince := now.Add(-tt.age)
+			row := healthUpdateRowAt(telemetry.Update{
+				Enabled:          true,
+				AutoApplyEnabled: true,
+				State:            "pending_idle",
+				PendingSince:     &pendingSince,
+				MaxDeferralHours: 6,
+			}, now)
+			if row.Status != tt.want {
+				t.Fatalf("healthUpdateRowAt().Status = %q, want %q", row.Status, tt.want)
+			}
+		})
+	}
+}
+
 func TestHealthExhaustedRowDetailNotHealthy(t *testing.T) {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),

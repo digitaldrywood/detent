@@ -50,6 +50,13 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Automatic update checks | | | `update.auto_check_enabled` | `false` |
 | Update check interval | | | `update.check_interval_hours` | `6` |
 | Automatic update apply when idle | | | `update.auto_apply_enabled` | `false` |
+| Maximum automatic update deferral | | | `update.max_deferral_hours` | `6` |
+
+Automatic apply waits for an idle runtime until `update.max_deferral_hours`
+elapses, then pauses new dispatches and lets in-flight attempts finish within
+their configured session ceilings before applying and restarting. Add
+`[detent-critical]` to a GitHub release body to bypass the idle wait and start
+that drain immediately.
 
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level

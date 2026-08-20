@@ -1196,6 +1196,7 @@ func (s *Server) health(c echo.Context) error {
 			status = "needs_attention"
 		}
 	}
+	updateStatus.State = updateStatus.DisplayState(now)
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:                 status,
 		Version:                s.build.Version,
