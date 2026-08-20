@@ -214,6 +214,8 @@ func TestSupervisorDoesNotRetryMissingDeliverableCredentials(t *testing.T) {
 	}{
 		{name: "missing GitHub CLI login", message: "To get started with GitHub CLI, run: gh auth login; alternatively populate GH_TOKEN"},
 		{name: "invalid configured credential", message: "HTTP 401: Bad credentials"},
+		{name: "Git HTTPS authentication rejected", message: "fatal: Authentication failed for 'https://github.com/example/repo.git/'"},
+		{name: "Git SSH public key rejected", message: "git@github.com: Permission denied (publickey)."},
 		{name: "missing deliverable executable", message: "exec: gh: executable file not found"},
 		{name: "permission rejection can be repaired by worker", message: "HTTP 403: forbidden", wantRetryable: true},
 	}
