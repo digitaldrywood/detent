@@ -83,7 +83,9 @@ func terminateTree(
 		if errors.Is(err, syscall.EPERM) {
 			members, inspectErr := inspect(processGroupID)
 			if inspectErr == nil && processGroupExited(members) {
-				return nil
+				if len(members) > 0 || errors.Is(signal(-processGroupID, 0), syscall.ESRCH) {
+					return nil
+				}
 			}
 		}
 		return err
