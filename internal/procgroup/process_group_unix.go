@@ -66,10 +66,27 @@ func Deprioritize(cmd *exec.Cmd) error {
 }
 
 func TerminateTree(cmd *exec.Cmd, processGroupID int) error {
+	return terminateTree(cmd, processGroupID, syscall.Kill, inspectProcessGroup)
+}
+
+func terminateTree(
+	cmd *exec.Cmd,
+	processGroupID int,
+	signal func(int, syscall.Signal) error,
+	inspect func(int) ([]processGroupMember, error),
+) error {
 	if processGroupID > 0 {
-		err := syscall.Kill(-processGroupID, syscall.SIGKILL)
+		err := signal(-processGroupID, syscall.SIGKILL)
 		if err == nil || errors.Is(err, syscall.ESRCH) {
 			return nil
+		}
+		if errors.Is(err, syscall.EPERM) {
+			members, inspectErr := inspect(processGroupID)
+			if inspectErr == nil && processGroupExited(members) {
+				if len(members) > 0 || errors.Is(signal(-processGroupID, 0), syscall.ESRCH) {
+					return nil
+				}
+			}
 		}
 		return err
 	}
