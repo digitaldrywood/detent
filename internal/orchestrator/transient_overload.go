@@ -55,7 +55,7 @@ func (o *Orchestrator) handleTransientOverload(
 	} else {
 		o.deferProjectFailureBreakerCanary(state, event.IssueID, event.CompletedAt, delay)
 	}
-	o.completeDurableWorkAttempt(
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
 		ctx,
 		state,
 		running,
@@ -65,6 +65,7 @@ func (o *Orchestrator) handleTransientOverload(
 		event.Err.Error(),
 		"waiting",
 		statusMessage,
+		nil,
 	)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
@@ -77,7 +78,21 @@ func (o *Orchestrator) handleTransientOverload(
 	if attempt < 1 {
 		attempt = 1
 	}
-	running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
+	var parked bool
+	running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+		ctx,
+		state,
+		running.Issue,
+		running.WorkProductPushed,
+		terminalAttemptRetryLimitCause,
+		attemptCompleted,
+		running.Mode,
+		running.DiffStats,
+		event.CompletedAt,
+	)
+	if parked {
+		return
+	}
 	o.scheduleRetryAfter(
 		state,
 		running.Issue,

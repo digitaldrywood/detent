@@ -60,7 +60,7 @@ func (o *Orchestrator) handleBackendCapacityError(
 ) {
 	running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
 	outage := o.registerBackendOutage(state, capacityErr, event.CompletedAt, running.CapacityProbe)
-	o.completeDurableWorkAttempt(
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
 		ctx,
 		state,
 		running,
@@ -70,12 +70,27 @@ func (o *Orchestrator) handleBackendCapacityError(
 		event.Err.Error(),
 		"waiting",
 		backendCapacityStatusMessage(outage),
+		nil,
 	)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
 		return
 	}
-	running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
+	var parked bool
+	running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+		ctx,
+		state,
+		running.Issue,
+		running.WorkProductPushed,
+		terminalAttemptRetryLimitCause,
+		attemptCompleted,
+		running.Mode,
+		running.DiffStats,
+		event.CompletedAt,
+	)
+	if parked {
+		return
+	}
 	o.scheduleBackendCapacityRetry(state, running, outage)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,

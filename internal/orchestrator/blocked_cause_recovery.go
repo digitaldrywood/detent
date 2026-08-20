@@ -238,7 +238,13 @@ func breakerParkCause(cause string) bool {
 		return true
 	}
 	switch cause {
-	case dispatchLoopDetectedReason, noProgressLimitReason, spendProgressReason, repeatedFailureCircuitBreakerCause, "token_ceiling_circuit_breaker":
+	case dispatchLoopDetectedReason,
+		noProgressLimitReason,
+		spendProgressReason,
+		repeatedFailureCircuitBreakerCause,
+		"token_ceiling_circuit_breaker",
+		terminalAttemptRetryLimitCause,
+		workspacePreparationRetryLimitCause:
 		return true
 	default:
 		return false
@@ -652,7 +658,11 @@ func blockedReadyPullRequestRecoverableCause(park workflowLaneBlockedRecoveryMet
 	if owner != blockedRecoveryOwnerOrchestrator || strings.TrimSpace(park.RunMode) != RunModeImplement {
 		return false
 	}
-	return cause == strandedUnpushedWorkReason || cause == noProgressLimitReason || cause == dispatchLoopDetectedReason || cause == repeatedFailureCircuitBreakerCause
+	return cause == strandedUnpushedWorkReason ||
+		cause == noProgressLimitReason ||
+		cause == dispatchLoopDetectedReason ||
+		cause == repeatedFailureCircuitBreakerCause ||
+		cause == terminalAttemptRetryLimitCause
 }
 
 func (o *Orchestrator) blockedReadyPullRequestDeferredReason(

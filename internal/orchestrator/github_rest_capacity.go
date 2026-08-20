@@ -150,7 +150,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	if event.Err != nil {
 		errorMessage = event.Err.Error()
 	}
-	o.completeDurableWorkAttempt(
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
 		ctx,
 		state,
 		running,
@@ -160,12 +160,27 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		errorMessage,
 		"waiting",
 		githubRESTCapacityStatusMessage(outage),
+		nil,
 	)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
 		return true
 	}
-	running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
+	var parked bool
+	running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+		ctx,
+		state,
+		running.Issue,
+		running.WorkProductPushed,
+		terminalAttemptRetryLimitCause,
+		attemptCompleted,
+		running.Mode,
+		running.DiffStats,
+		event.CompletedAt,
+	)
+	if parked {
+		return true
+	}
 	o.scheduleBackendCapacityRetry(state, running, outage)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,

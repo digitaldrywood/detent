@@ -367,7 +367,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			statusMessage = "no-progress circuit breaker tripped"
 		}
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
-		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+		attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
 			progressMetadata,
 			spendProgressMetadata(spendProgress),
 		))
@@ -403,7 +403,21 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 		if terminalAttemptStateRetryDemotable(terminalState) {
-			running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
+			var parked bool
+			running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+				ctx,
+				state,
+				running.Issue,
+				running.WorkProductPushed,
+				terminalAttemptRetryLimitCause,
+				attemptCompleted,
+				running.Mode,
+				running.DiffStats,
+				event.CompletedAt,
+			)
+			if parked {
+				return
+			}
 		}
 		delay := event.RetryDelay
 		if delay <= 0 {
@@ -639,9 +653,38 @@ func (o *Orchestrator) handleWorkspacePreparationFailure(
 		"error", event.Err,
 	)
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, workAttemptErrorWorkspace, errorMessage)
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorWorkspace, errorMessage, "workspace_repair", "workspace preparation failed")
-	delete(state.InstantFailures, event.IssueID)
-	delete(state.RepeatedFailures, event.IssueID)
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
+		ctx,
+		state,
+		running,
+		event.CompletedAt,
+		store.WorkAttemptTerminalFailure,
+		workAttemptErrorWorkspace,
+		errorMessage,
+		"workspace_repair",
+		"workspace preparation failed",
+		nil,
+	)
+	if attemptCompleted {
+		count, known := o.consecutiveRetryCycleCount(ctx, state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
+		switch {
+		case !known:
+			o.recordRetryCycleHistoryUnavailable(state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
+		case count >= consecutiveRetryCycleLimit:
+			if _, parked := o.parkRetryCycleLimit(
+				ctx,
+				state,
+				running.Issue,
+				running.Mode,
+				running.DiffStats,
+				workspacePreparationRetryLimitCause,
+				count,
+				event.CompletedAt,
+			); parked {
+				return
+			}
+		}
+	}
 	attempt := event.RetryAttempt
 	if attempt < 1 {
 		attempt = nextAttempt(running.Attempt)
