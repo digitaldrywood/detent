@@ -29,6 +29,7 @@ const (
 )
 
 const defaultHookTimeout = time.Minute
+const failedWorkspacePreservationTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
 const hookOutputTailBytes = 16 * 1024
 const workerScratchRelativePath = ".detent/tmp"
@@ -939,14 +940,22 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 }
 
 func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cause error) error {
-	quarantinePath, preserved, err := l.quarantineFailedWorkspace(ctx, path)
+	preservationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
+	defer cancel()
+
+	quarantinePath, preserved, err := l.quarantineFailedWorkspace(preservationCtx, path)
 	if err != nil {
 		l.logger.Warn(
 			"failed to quarantine workspace failure state",
 			slog.String("path", path),
+			slog.String("quarantine_path", quarantinePath),
+			slog.Bool("preserved", preserved),
 			slog.Any("cause", cause),
 			slog.Any("error", err),
 		)
+		if preserved {
+			return errors.Join(cause, fmt.Errorf("workspace quarantined at %q but failed to release its branch: %w", quarantinePath, err))
+		}
 		return errors.Join(cause, fmt.Errorf("quarantine failed workspace %q: %w", path, err))
 	}
 	if !preserved {
@@ -986,18 +995,20 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	if err != nil || !exists {
 		return "", false, err
 	}
-	if isDir && l.isSourceWorktree(ctx, path) {
+	linkedWorktree := false
+	if isDir {
+		_, linkedWorktree, err = readLinkedWorktreeGitDir(path)
+		if err != nil {
+			return "", false, fmt.Errorf("inspect failed workspace linkage: %w", err)
+		}
+	}
+	if isDir && linkedWorktree {
 		quarantinePath, err := l.quarantineWorktree(ctx, path)
 		if err != nil {
 			return "", false, err
 		}
-		if _, err := runGitAt(ctx, quarantinePath, "checkout", "--detach", "HEAD"); err != nil {
-			l.logger.Warn(
-				"failed to detach quarantined workspace",
-				slog.String("path", path),
-				slog.String("quarantine_path", quarantinePath),
-				slog.Any("error", withCommandOutput(err)),
-			)
+		if err := detachWorktreeHead(ctx, quarantinePath); err != nil {
+			return quarantinePath, true, err
 		}
 		return quarantinePath, true, nil
 	}
@@ -1017,6 +1028,21 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 		return "", false, fmt.Errorf("move failed workspace to quarantine: %w", err)
 	}
 	return quarantinePath, true, nil
+}
+
+func detachWorktreeHead(ctx context.Context, path string) error {
+	output, err := runGitAt(ctx, path, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve quarantined worktree HEAD: %w", withCommandOutput(err))
+	}
+	head := strings.TrimSpace(output)
+	if head == "" {
+		return errors.New("resolve quarantined worktree HEAD: empty revision")
+	}
+	if _, err := runGitAt(ctx, path, "update-ref", "--no-deref", "HEAD", head); err != nil {
+		return fmt.Errorf("detach quarantined worktree HEAD: %w", withCommandOutput(err))
+	}
+	return nil
 }
 
 func (l *LocalGit) removeDanglingSourceWorktree(ctx context.Context, path string) (bool, error) {

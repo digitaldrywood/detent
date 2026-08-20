@@ -1751,6 +1751,139 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 	}
 }
 
+func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
+	skipWindows(t)
+
+	tests := []struct {
+		name       string
+		identifier string
+		ctx        func() context.Context
+		prepare    func(*testing.T, string, string)
+		wantStatus string
+	}{
+		{
+			name:       "canceled creation context",
+			identifier: "DD-CANCELED-PRESERVE",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+		},
+		{
+			name:       "unmerged index",
+			identifier: "DD-UNMERGED-PRESERVE",
+			ctx:        context.Background,
+			prepare: func(t *testing.T, source string, workspace string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("workspace\n"), 0o600); err != nil {
+					t.Fatalf("write workspace README.md: %v", err)
+				}
+				runGit(t, workspace, "add", "README.md")
+				runGit(t, workspace, "commit", "-m", "workspace change")
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("source\n"), 0o600); err != nil {
+					t.Fatalf("write source README.md: %v", err)
+				}
+				runGit(t, source, "add", "README.md")
+				runGit(t, source, "commit", "-m", "source change")
+
+				cmd := exec.Command("git", "-C", workspace, "merge", "main")
+				output, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Fatalf("git merge succeeded, want conflict:\n%s", output)
+				}
+			},
+			wantStatus: "UU README.md",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			root := filepath.Join(t.TempDir(), "workspaces")
+			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			info, err := backend.Create(context.Background(), Issue{Identifier: tt.identifier})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if tt.prepare != nil {
+				tt.prepare(t, source, info.Path)
+			}
+
+			cause := errors.New("synthetic workspace failure")
+			err = backend.preserveFailedWorkspace(tt.ctx(), info.Path, cause)
+			if !errors.Is(err, cause) {
+				t.Fatalf("preserveFailedWorkspace() error = %v, want cause", err)
+			}
+			if _, statErr := os.Stat(info.Path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("failed workspace remains at original path, stat error = %v", statErr)
+			}
+
+			quarantinedPath := singleQuarantinedWorkspace(t, root)
+			if got := runGit(t, source, "worktree", "list", "--porcelain"); !strings.Contains(got, quarantinedPath) || strings.Contains(got, info.Path+"\n") {
+				t.Fatalf("git worktree list does not register only quarantined path:\n%s", got)
+			}
+			if got := strings.TrimSpace(runGit(t, quarantinedPath, "branch", "--show-current")); got != "" {
+				t.Fatalf("quarantined worktree branch = %q, want detached HEAD", got)
+			}
+			if tt.wantStatus != "" {
+				if got := runGit(t, quarantinedPath, "status", "--porcelain"); !strings.Contains(got, tt.wantStatus) {
+					t.Fatalf("quarantined worktree status = %q, want %q", got, tt.wantStatus)
+				}
+			}
+
+			retried, retryErr := backend.Create(context.Background(), Issue{Identifier: tt.identifier})
+			if retryErr != nil {
+				t.Fatalf("retry Create() error = %v", retryErr)
+			}
+			if !retried.Created {
+				t.Fatal("retry Create() Created = false, want true")
+			}
+		})
+	}
+}
+
+func TestLocalGitPreserveFailedWorkspaceSurfacesBranchReleaseFailure(t *testing.T) {
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-DETACH-FAILURE"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	installGitUpdateRefFailureWrapper(t)
+
+	cause := errors.New("synthetic workspace failure")
+	err = backend.preserveFailedWorkspace(context.Background(), info.Path, cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("preserveFailedWorkspace() error = %v, want cause", err)
+	}
+	for _, want := range []string{"workspace quarantined at", "failed to release its branch", "synthetic update-ref failure"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("preserveFailedWorkspace() error = %q, want %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(info.Path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed workspace remains at original path, stat error = %v", statErr)
+	}
+
+	quarantinedPath := singleQuarantinedWorkspace(t, root)
+	if !strings.Contains(err.Error(), quarantinedPath) {
+		t.Fatalf("preserveFailedWorkspace() error = %q, want quarantine path %q", err, quarantinedPath)
+	}
+	if got := strings.TrimSpace(runGit(t, quarantinedPath, "branch", "--show-current")); got != info.Branch {
+		t.Fatalf("quarantined worktree branch = %q, want %q after release failure", got, info.Branch)
+	}
+}
+
 func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 	skipWindows(t)
 
@@ -2349,6 +2482,27 @@ func installGitCreationWrapper(t *testing.T, mode string, source string, target 
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"worktree\" ] && [ \"$4\" = \"add\" ]; then\n" +
 		action + "\n" +
+		"fi\n" +
+		"exec " + shellQuote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installGitUpdateRefFailureWrapper(t *testing.T) {
+	t.Helper()
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "git")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"update-ref\" ] && [ \"$4\" = \"--no-deref\" ] && [ \"$5\" = \"HEAD\" ]; then\n" +
+		"printf 'synthetic update-ref failure\\n' >&2\n" +
+		"exit 29\n" +
 		"fi\n" +
 		"exec " + shellQuote(realGit) + " \"$@\"\n"
 	if err := os.WriteFile(wrapperPath, []byte(script), 0o700); err != nil {
