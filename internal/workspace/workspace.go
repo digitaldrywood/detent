@@ -40,6 +40,7 @@ var (
 	ErrMissingWorkspace   = errors.New("workspace missing")
 	ErrUnsafePath         = errors.New("unsafe workspace path")
 	ErrUnsupportedBackend = errors.New("unsupported workspace backend")
+	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
 )
 
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
@@ -242,6 +243,18 @@ type workspaceRemovalError struct {
 	err         error
 }
 
+type worktreeCreationError struct {
+	err error
+}
+
+func (e *worktreeCreationError) Error() string {
+	return e.err.Error()
+}
+
+func (e *worktreeCreationError) Unwrap() error {
+	return e.err
+}
+
 func (e *workspaceRemovalError) Error() string {
 	return fmt.Sprintf("remove workspace path %q: %v; remediation: %s", e.path, e.err, e.remediation)
 }
@@ -404,19 +417,26 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 
 	created, err := l.createWorktree(ctx, info.Path, info.Branch)
 	if err != nil {
+		var creationErr *worktreeCreationError
+		if errors.As(err, &creationErr) {
+			err = l.preserveFailedWorkspace(ctx, info.Path, err)
+		}
 		return Info{}, err
 	}
 	info.Created = created
 	if err := ensureGitInfoExcludes(ctx, info.Path, detentHandoffDiffExcludes); err != nil {
+		if created {
+			err = l.preserveFailedWorkspace(ctx, info.Path, err)
+		}
 		return Info{}, err
 	}
 
 	if created {
+		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
+			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
+		}
 		if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
-			if cleanupErr := l.removePath(ctx, info.Path); cleanupErr != nil {
-				l.logger.Warn("failed to clean workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
-			}
-			return Info{}, err
+			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
 	}
 
@@ -618,7 +638,7 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 
 	if l.autoBranch {
 		if err := l.addBranchedWorktree(ctx, path, branch); err != nil {
-			return false, err
+			return false, &worktreeCreationError{err: err}
 		}
 		return true, nil
 	}
@@ -627,7 +647,62 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 		_, addErr := l.runGit(ctx, "worktree", "add", "--detach", path, "HEAD")
 		return addErr
 	})
-	return err == nil, err
+	if err != nil {
+		return false, &worktreeCreationError{err: err}
+	}
+	return true, nil
+}
+
+func (l *LocalGit) validateCreatedWorktree(ctx context.Context, path string) error {
+	sourceCommon, sourceErr := gitCommonDir(ctx, l.sourceRoot)
+	workspaceCommon, workspaceErr := gitCommonDirWithinRoot(ctx, path)
+	registered, registrationErr := l.sourceWorktreeRegistered(ctx, path)
+	if sourceErr == nil && workspaceErr == nil && registrationErr == nil && workspaceCommon == sourceCommon && registered {
+		return nil
+	}
+
+	sourceObservation := fmt.Sprintf("%q", sourceCommon)
+	if sourceErr != nil {
+		sourceObservation = fmt.Sprintf("unavailable (%v)", sourceErr)
+	}
+	workspaceObservation := fmt.Sprintf("%q", workspaceCommon)
+	if workspaceErr != nil {
+		workspaceObservation = fmt.Sprintf("unavailable (%v)", workspaceErr)
+	}
+	registrationObservation := strconv.FormatBool(registered)
+	if registrationErr != nil {
+		registrationObservation = fmt.Sprintf("unavailable (%v)", registrationErr)
+	}
+	return fmt.Errorf(
+		"%w: path %q; workspace common dir: %s; source common dir: %s; registered with source: %s",
+		ErrWorktreeInvariant,
+		path,
+		workspaceObservation,
+		sourceObservation,
+		registrationObservation,
+	)
+}
+
+func (l *LocalGit) sourceWorktreeRegistered(ctx context.Context, path string) (bool, error) {
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, withCommandOutput(err)
+	}
+	want, err := canonicalExistingPath(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve workspace registration path: %w", err)
+	}
+	for _, field := range strings.Split(output, "\x00") {
+		listed, ok := strings.CutPrefix(field, "worktree ")
+		if !ok {
+			continue
+		}
+		listed, err = canonicalExistingPath(listed)
+		if err == nil && listed == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string) error {
@@ -861,6 +936,87 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 		return "", fmt.Errorf("release quarantined worktree admin name: %w", err)
 	}
 	return quarantinePath, nil
+}
+
+func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cause error) error {
+	quarantinePath, preserved, err := l.quarantineFailedWorkspace(ctx, path)
+	if err != nil {
+		l.logger.Warn(
+			"failed to quarantine workspace failure state",
+			slog.String("path", path),
+			slog.Any("cause", cause),
+			slog.Any("error", err),
+		)
+		return errors.Join(cause, fmt.Errorf("quarantine failed workspace %q: %w", path, err))
+	}
+	if !preserved {
+		return cause
+	}
+
+	quarantineCount, countErr := l.quarantineWorkspaceCount(path)
+	if countErr != nil {
+		l.logger.Warn(
+			"workspace quarantine count failed",
+			slog.String("path", path),
+			slog.String("quarantine_path", quarantinePath),
+			slog.Any("error", countErr),
+		)
+	}
+	l.logger.Warn(
+		"quarantined failed workspace",
+		slog.String("path", path),
+		slog.String("quarantine_path", quarantinePath),
+		slog.Int("quarantine_count", quarantineCount),
+		slog.Any("cause", cause),
+	)
+	if quarantineCount > quarantineAccumulationWarningThreshold {
+		l.logger.Error(
+			"workspace quarantine accumulation exceeded threshold",
+			slog.String("path", path),
+			slog.String("quarantine_path", quarantinePath),
+			slog.Int("quarantine_count", quarantineCount),
+			slog.Int("threshold", quarantineAccumulationWarningThreshold),
+		)
+	}
+	return fmt.Errorf("%w; workspace quarantined at %q", cause, quarantinePath)
+}
+
+func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (string, bool, error) {
+	exists, isDir, err := pathExists(path)
+	if err != nil || !exists {
+		return "", false, err
+	}
+	if isDir && l.isSourceWorktree(ctx, path) {
+		quarantinePath, err := l.quarantineWorktree(ctx, path)
+		if err != nil {
+			return "", false, err
+		}
+		if _, err := runGitAt(ctx, quarantinePath, "checkout", "--detach", "HEAD"); err != nil {
+			l.logger.Warn(
+				"failed to detach quarantined workspace",
+				slog.String("path", path),
+				slog.String("quarantine_path", quarantinePath),
+				slog.Any("error", withCommandOutput(err)),
+			)
+		}
+		return quarantinePath, true, nil
+	}
+
+	path, err = validateWorkspacePath(l.root, path)
+	if err != nil {
+		return "", false, err
+	}
+	quarantinePath, err := l.nextQuarantinePath(path)
+	if err != nil {
+		return "", false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(quarantinePath), 0o700); err != nil {
+		return "", false, fmt.Errorf("create quarantine parent: %w", err)
+	}
+	if err := os.Rename(path, quarantinePath); err != nil {
+		return "", false, fmt.Errorf("move failed workspace to quarantine: %w", err)
+	}
+	return quarantinePath, true, nil
 }
 
 func (l *LocalGit) removeDanglingSourceWorktree(ctx context.Context, path string) (bool, error) {

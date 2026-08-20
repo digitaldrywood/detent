@@ -1727,6 +1727,124 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(root, "DD-FAIL")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("failed after_create workspace exists, stat error = %v", statErr)
 	}
+	quarantinedPath := singleQuarantinedWorkspace(t, root)
+	if got := readFile(t, filepath.Join(quarantinedPath, "README.md")); got != "source repo\n" {
+		t.Fatalf("quarantined README.md = %q, want source repo", got)
+	}
+	if got := strings.TrimSpace(runGit(t, quarantinedPath, "branch", "--show-current")); got != "" {
+		t.Fatalf("quarantined worktree branch = %q, want detached HEAD", got)
+	}
+	if got := runGit(t, source, "worktree", "list", "--porcelain"); !strings.Contains(got, quarantinedPath) {
+		t.Fatalf("git worktree list does not contain quarantined path:\n%s", got)
+	}
+
+	retryBackend, retryErr := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+	if retryErr != nil {
+		t.Fatalf("NewLocalGit() retry error = %v", retryErr)
+	}
+	retried, retryErr := retryBackend.Create(context.Background(), Issue{Identifier: "DD-FAIL"})
+	if retryErr != nil {
+		t.Fatalf("retry Create() error = %v", retryErr)
+	}
+	if !retried.Created {
+		t.Fatal("retry Create() Created = false, want true")
+	}
+}
+
+func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
+	skipWindows(t)
+
+	tests := []struct {
+		name           string
+		mode           string
+		identifier     string
+		wantError      []string
+		wantStandalone bool
+	}{
+		{
+			name:       "partial worktree add failure",
+			mode:       "partial_failure",
+			identifier: "DD-PARTIAL-CREATE",
+			wantError: []string{
+				"synthetic worktree add failure",
+				"workspace quarantined at",
+			},
+		},
+		{
+			name:       "successful add yields standalone repository",
+			mode:       "standalone_after_add",
+			identifier: "DD-STANDALONE",
+			wantError: []string{
+				"workspace worktree invariant failed",
+				"registered with source: false",
+				"workspace quarantined at",
+			},
+			wantStandalone: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			root := filepath.Join(t.TempDir(), "workspaces")
+			target := filepath.Join(root, tt.identifier)
+			tracePath := filepath.Join(t.TempDir(), "after-create.trace")
+			installGitCreationWrapper(t, tt.mode, source, target)
+
+			backend, err := NewLocalGit(LocalGitOptions{
+				Root:       root,
+				SourceRoot: source,
+				AutoBranch: true,
+				Hooks: Hooks{
+					AfterCreate: "printf 'ran\\n' > " + shellQuote(tracePath),
+					Timeout:     time.Second,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+
+			_, err = backend.Create(context.Background(), Issue{Identifier: tt.identifier})
+			if err == nil {
+				t.Fatal("Create() error = nil, want creation failure")
+			}
+			if tt.wantStandalone && !errors.Is(err, ErrWorktreeInvariant) {
+				t.Errorf("Create() error = %v, want ErrWorktreeInvariant", err)
+			}
+			for _, want := range tt.wantError {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Create() error = %q, want %q", err, want)
+				}
+			}
+			if tt.wantStandalone {
+				for _, want := range []string{filepath.Join(target, ".git"), filepath.Join(source, ".git")} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("Create() error = %q, want common dir %q", err, want)
+					}
+				}
+			}
+			if _, statErr := os.Stat(tracePath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("after_create hook ran, stat error = %v", statErr)
+			}
+			if _, statErr := os.Stat(target); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("failed workspace remains at original path, stat error = %v", statErr)
+			}
+
+			quarantinedPath := singleQuarantinedWorkspace(t, root)
+			if got := readFile(t, filepath.Join(quarantinedPath, "forensics.txt")); got != tt.mode+"\n" {
+				t.Fatalf("quarantined forensics.txt = %q, want %q", got, tt.mode)
+			}
+			gitInfo, statErr := os.Stat(filepath.Join(quarantinedPath, ".git"))
+			switch {
+			case tt.wantStandalone && statErr != nil:
+				t.Fatalf("stat quarantined .git: %v", statErr)
+			case tt.wantStandalone && !gitInfo.IsDir():
+				t.Fatalf("quarantined .git mode = %v, want directory", gitInfo.Mode())
+			case !tt.wantStandalone && !errors.Is(statErr, os.ErrNotExist):
+				t.Fatalf("partial quarantine .git stat error = %v, want absent", statErr)
+			}
+		})
+	}
 }
 
 func TestHookErrorErrorIncludesBoundedOutputTail(t *testing.T) {
@@ -2199,6 +2317,58 @@ func runCommand(t *testing.T, dir string, name string, args ...string) string {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+func installGitCreationWrapper(t *testing.T, mode string, source string, target string) {
+	t.Helper()
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "git")
+	var action string
+	switch mode {
+	case "partial_failure":
+		action = "mkdir -p " + shellQuote(target) + "\n" +
+			"printf 'partial_failure\\n' > " + shellQuote(filepath.Join(target, "forensics.txt")) + "\n" +
+			"printf 'synthetic worktree add failure\\n' >&2\n" +
+			"exit 23"
+	case "standalone_after_add":
+		action = shellQuote(realGit) + " \"$@\"\n" +
+			"status=$?\n" +
+			"if [ \"$status\" -ne 0 ]; then exit \"$status\"; fi\n" +
+			shellQuote(realGit) + " -C " + shellQuote(source) + " worktree remove --force " + shellQuote(target) + "\n" +
+			shellQuote(realGit) + " clone --quiet " + shellQuote(source) + " " + shellQuote(target) + "\n" +
+			"printf 'standalone_after_add\\n' > " + shellQuote(filepath.Join(target, "forensics.txt")) + "\n" +
+			"exit 0"
+	default:
+		t.Fatalf("unknown git wrapper mode %q", mode)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"worktree\" ] && [ \"$4\" = \"add\" ]; then\n" +
+		action + "\n" +
+		"fi\n" +
+		"exec " + shellQuote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func singleQuarantinedWorkspace(t *testing.T, root string) string {
+	t.Helper()
+
+	parent := filepath.Join(root, ".detent", "quarantine")
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatalf("read quarantine directory: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("quarantine entries = %d, want 1", len(entries))
+	}
+	return filepath.Join(parent, entries[0].Name())
 }
 
 func readFile(t *testing.T, path string) string {
