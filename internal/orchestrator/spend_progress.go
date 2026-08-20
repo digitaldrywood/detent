@@ -282,10 +282,8 @@ func (o *Orchestrator) refreshSpendProgressIssue(ctx context.Context, issue conn
 
 func spendProgressBaseline(issue connector.Issue, attempts []store.WorkAttempt) time.Time {
 	baseline := time.Time{}
-	for _, candidate := range []*time.Time{issue.CreatedAt, issue.StageUpdatedAt} {
-		if candidate != nil && candidate.After(baseline) {
-			baseline = candidate.UTC()
-		}
+	if issue.CreatedAt != nil {
+		baseline = issue.CreatedAt.UTC()
 	}
 	for _, attempt := range attempts {
 		if !spendProgressAttemptAccepted(attempt) || !attempt.CompletedAt.After(baseline) {
@@ -375,25 +373,13 @@ func mergeWorkAttemptMetadata(groups ...map[string]any) map[string]any {
 	return merged
 }
 
-func implementAcceptedStateChange(running Running, decision implementCompletionProgressDecision) (bool, string) {
-	if accepted, reason := dispatchAcceptedStateChange(running); accepted {
-		return true, reason
-	}
+func implementAcceptedStateChange(_ Running, decision implementCompletionProgressDecision) (bool, string) {
 	switch strings.TrimSpace(decision.Reason) {
 	case "pull_request_created_or_updated", "signature_changed", implementMergedCompletionReason:
 		return true, decision.Reason
 	default:
 		return false, ""
 	}
-}
-
-func dispatchAcceptedStateChange(running Running) (bool, string) {
-	source := strings.TrimSpace(running.DispatchSourceState)
-	target := strings.TrimSpace(running.DispatchTargetState)
-	if source != "" && target != "" && !strings.EqualFold(source, target) {
-		return true, "lane_transition"
-	}
-	return false, ""
 }
 
 func (o *Orchestrator) blockSpendProgress(
