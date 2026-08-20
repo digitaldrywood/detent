@@ -231,6 +231,7 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 
 	tests := []struct {
 		name                  string
+		cause                 string
 		predicate             string
 		parked                runpkg.BlockedRecoverySnapshot
 		current               runpkg.BlockedRecoverySnapshot
@@ -291,6 +292,7 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 		},
 		{
 			name:      "stranded workspace once per unchanged fingerprint",
+			cause:     strandedUnpushedWorkReason,
 			predicate: blockedRecoveryPredicateOncePerFingerprint,
 			parked: runpkg.BlockedRecoverySnapshot{
 				ConfigFingerprint:    "config-same",
@@ -326,11 +328,15 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			parkOrch.workflowMetrics = metrics
 			parkOrch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: tt.parked}
 			parkedAt := time.Date(2026, 7, 29, 18, 30, 0, 0, time.UTC)
+			cause := tt.cause
+			if cause == "" {
+				cause = noProgressLimitReason
+			}
 			metadata := parkOrch.newBlockedRecoveryMetadata(
 				t.Context(),
 				issue,
 				RunModeImplement,
-				noProgressLimitReason,
+				cause,
 				tt.predicate,
 				"Todo",
 				DiffStats{},
@@ -355,12 +361,26 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 				BlockedAt: parkedAt,
 				Recovery:  metadata.BlockedRecovery,
 			}
-			currentFingerprint := blockedCauseFingerprint(noProgressLimitReason, orch.blockedCauseSignals(t.Context(), currentIssue, RunModeImplement, metadata.BlockedRecovery.TargetState, DiffStats{}))
+			currentFingerprint := blockedCauseFingerprint(cause, orch.blockedCauseSignals(t.Context(), currentIssue, RunModeImplement, metadata.BlockedRecovery.TargetState, DiffStats{}))
 			if tt.wantStableFingerprint && currentFingerprint != metadata.BlockedRecovery.CauseFingerprint {
 				t.Fatalf("current fingerprint = %q, parked fingerprint = %q", currentFingerprint, metadata.BlockedRecovery.CauseFingerprint)
 			}
 
-			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{currentIssue}, parkedAt.Add(time.Minute))
+			recoveryAt := parkedAt.Add(time.Minute)
+			if breakerParkCause(cause) {
+				if tt.wantTransition {
+					orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{currentIssue}, parkedAt.Add(defaultBreakerParkCooldown-time.Nanosecond))
+					if len(tracker.updates) != 0 {
+						t.Fatalf("updates before cooldown = %#v, want breaker held", tracker.updates)
+					}
+					blocked := state.Blocked[issue.ID]
+					if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != "breaker_cooldown_active" || blocked.NeedsHumanAttention {
+						t.Fatalf("pre-cooldown recovery = %#v, want machine-deferred cooldown", blocked)
+					}
+				}
+				recoveryAt = parkedAt.Add(defaultBreakerParkCooldown)
+			}
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{currentIssue}, recoveryAt)
 
 			if tt.wantTransition {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantTarget {
@@ -369,7 +389,7 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 				if _, ok := transitioned[issue.ID]; !ok {
 					t.Fatalf("transitioned[%q] missing", issue.ID)
 				}
-				assertWorkflowActionSignature(t, metrics, issue, workflowActionCauseBlockedRecovery, blockedCauseRecoverySignature(noProgressLimitReason, currentFingerprint))
+				assertWorkflowActionSignature(t, metrics, issue, workflowActionCauseBlockedRecovery, blockedCauseRecoverySignature(cause, currentFingerprint))
 
 				if tt.predicate == blockedRecoveryPredicateOncePerFingerprint {
 					recordBlockedCausePark(t, metrics, issue, parkedAt.Add(2*time.Minute), metadata)
@@ -400,6 +420,48 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 	}
 }
 
+func TestCauseBlockedRecoveryCooldownSurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 19, 4, 0, 0, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-restarted-breaker-cooldown", blockedStatusState)
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	parkOrch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+	parkOrch.workflowMetrics = metrics
+	parkOrch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{
+		ConfigFingerprint: "config-before",
+		Health:            "ready",
+	}}
+	metadata := parkOrch.newBlockedRecoveryMetadata(
+		t.Context(),
+		issue,
+		RunModeImplement,
+		dispatchLoopDetectedReason,
+		blockedRecoveryPredicateFingerprintChange,
+		"Todo",
+		DiffStats{},
+	)
+	recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+
+	tracker := &dependencyAutoUnblockConnector{}
+	restarted := blockedCauseTestOrchestrator(tracker)
+	restarted.workflowMetrics = metrics
+	restarted.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{
+		ConfigFingerprint: "config-after",
+		Health:            "ready",
+	}}
+	state := newState(restarted.cfg)
+
+	restarted.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(defaultBreakerParkCooldown-time.Nanosecond))
+	if len(tracker.updates) != 0 {
+		t.Fatalf("pre-cooldown restart updates = %#v, want park held", tracker.updates)
+	}
+	restarted.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(defaultBreakerParkCooldown))
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Todo" {
+		t.Fatalf("post-cooldown restart updates = %#v, want Todo", tracker.updates)
+	}
+}
+
 func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T) {
 	t.Parallel()
 
@@ -417,6 +479,7 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 		wantAction       string
 		wantReason       string
 		wantSurfaceParts []string
+		recoveryAfter    time.Duration
 	}{
 		{name: "budget recovers", errorMessage: budgetError, remaining: 4927, wantTransition: true},
 		{name: "current park recovers with invalid workpad", errorMessage: budgetError, remaining: 4927, workpadStatus: workpad.StatusBlocked, wantTransition: true},
@@ -429,11 +492,12 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 			wantSurfaceParts: []string{"transient GitHub REST budget", "remaining=940/5000", "reserve=1250"},
 		},
 		{
-			name:         "non-transient failure stays parked",
-			errorMessage: "run agent turn: runner transport closed",
-			remaining:    4927,
-			wantAction:   "hold",
-			wantReason:   "cause_unchanged",
+			name:          "non-transient failure stays parked",
+			errorMessage:  "run agent turn: runner transport closed",
+			remaining:     4927,
+			wantAction:    "hold",
+			wantReason:    "cause_unchanged",
+			recoveryAfter: defaultBreakerParkCooldown,
 		},
 		{
 			name:             "same exhaustion episode does not rearm twice",
@@ -539,7 +603,11 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 				Recovery:  metadata.BlockedRecovery,
 			}
 
-			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, observedAt)
+			recoveryAt := observedAt
+			if tt.recoveryAfter > 0 {
+				recoveryAt = parkedAt.Add(tt.recoveryAfter)
+			}
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, recoveryAt)
 
 			if tt.wantTransition {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != "In Progress" {
@@ -610,6 +678,12 @@ func TestBlockedCauseRecoveryUsesCurrentCauseAfterDependencyResolution(t *testin
 			tracker := &dependencyAutoUnblockConnector{blockers: []connector.Issue{blocker}}
 			orch := blockedCauseTestOrchestrator(tracker)
 			orch.workflowMetrics = metrics
+			orch.cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
+				Enabled:      true,
+				SourceStates: []string{blockedStatusState},
+				TargetState:  "Todo",
+				Readiness:    DependencyReadinessTerminalOrMerged,
+			})
 			state := newState(orch.cfg)
 			if tt.seedStale {
 				state.Blocked[issue.ID] = Blocked{
@@ -619,6 +693,13 @@ func TestBlockedCauseRecoveryUsesCurrentCauseAfterDependencyResolution(t *testin
 					BlockedAt:      parkedAt,
 					Source:         BlockedSourceProjectStatus,
 				}
+			}
+
+			if transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute)); len(transitioned) != 0 {
+				t.Fatalf("dependency auto-unblock transitioned cause-owned park: %#v", transitioned)
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("dependency auto-unblock updates = %#v, want cause-owned park held", tracker.updates)
 			}
 
 			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
@@ -984,6 +1065,29 @@ func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {
 	}
 }
 
+func TestBlockedCauseFingerprintIgnoresUnrelatedBaseForBreakerParks(t *testing.T) {
+	t.Parallel()
+
+	parked := blockedCauseSignals{ConfigFingerprint: "config-same", BaseFingerprint: "base-before", Health: "ready"}
+	current := parked
+	current.BaseFingerprint = "base-after-unrelated-merge"
+
+	for _, cause := range []string{
+		noProgressLimitReason,
+		dispatchLoopDetectedReason,
+		spendProgressReason,
+		repeatedFailureCircuitBreakerCause,
+		"token_ceiling_circuit_breaker",
+	} {
+		if blockedCauseFingerprint(cause, parked) != blockedCauseFingerprint(cause, current) {
+			t.Fatalf("breaker cause %q changed after unrelated base movement", cause)
+		}
+	}
+	if blockedCauseFingerprint(strandedUnpushedWorkReason, parked) == blockedCauseFingerprint(strandedUnpushedWorkReason, current) {
+		t.Fatal("non-breaker recovery fingerprint ignored base movement")
+	}
+}
+
 func TestBlockedCauseFingerprintIgnoresAttemptMutatedSignals(t *testing.T) {
 	t.Parallel()
 
@@ -1113,7 +1217,7 @@ func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
 	if !strings.Contains(raw, `"intent_resumable":true`) {
 		t.Fatalf("metadata = %s", raw)
 	}
-	if !strings.Contains(raw, `"cause_fingerprint_version":2`) {
+	if !strings.Contains(raw, `"cause_fingerprint_version":3`) {
 		t.Fatalf("metadata = %s", raw)
 	}
 	if strings.Contains(raw, `"resumable":true`) {

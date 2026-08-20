@@ -103,6 +103,19 @@ func TestEvaluateDispatchLoopProgress(t *testing.T) {
 			wantReason: implementDependencyDeferralReason,
 		},
 		{
+			name: "breaker park and release lane residency preserves count",
+			history: []store.WorkAttempt{
+				dispatchLoopHistoryAttemptInLane(2, store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, clean, nil, 2, "In Progress"),
+				dispatchLoopHistoryAttemptInLane(1, store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, clean, nil, 1, "In Progress"),
+			},
+			running:         dispatchLoopRunning("Rework", DiffStats{Status: "clean"}),
+			decision:        dispatchLoopDecision("Rework", store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, DiffStats{Status: "clean"}),
+			wantCount:       3,
+			wantBlock:       true,
+			wantReason:      dispatchLoopDetectedReason,
+			wantBlockReason: dispatchLoopDetectedReason,
+		},
+		{
 			name: "workpad-only changes do not reset",
 			history: []store.WorkAttempt{
 				dispatchLoopHistoryAttempt(2, store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, clean, []string{"audit_artifact"}, 2),
@@ -217,13 +230,25 @@ func dispatchLoopHistoryAttempt(
 	progressKinds []string,
 	count int,
 ) store.WorkAttempt {
+	return dispatchLoopHistoryAttemptInLane(id, terminal, signature, diff, progressKinds, count, "Rework")
+}
+
+func dispatchLoopHistoryAttemptInLane(
+	id int64,
+	terminal store.WorkAttemptTerminalState,
+	signature autoPromoteReworkSignature,
+	diff implementProgressDiffStats,
+	progressKinds []string,
+	count int,
+	lane string,
+) store.WorkAttempt {
 	return store.WorkAttempt{
 		ID:            id,
 		ProjectID:     "detent",
 		IssueID:       "issue-loop",
 		Identifier:    "digitaldrywood/detent#1886",
 		WorkerType:    "agent",
-		Lane:          "Rework",
+		Lane:          lane,
 		Status:        store.WorkAttemptStatusTerminal,
 		TerminalState: terminal,
 		CompletedAt:   time.Date(2026, 8, 18, 14, int(id), 0, 0, time.UTC),
@@ -233,7 +258,7 @@ func dispatchLoopHistoryAttempt(
 				Reason:                implementDependencyDeferralReason,
 				CurrentSignature:      implementProgressSignatureRecordFromSignature(signature),
 				WorkspaceDiffStats:    diff,
-				TrackerState:          "Rework",
+				TrackerState:          lane,
 				ConsecutiveNoProgress: count,
 				NoProgressLimit:       3,
 				ProgressKinds:         progressKinds,

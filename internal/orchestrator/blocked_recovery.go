@@ -14,6 +14,8 @@ import (
 
 const reworkBreakerStageUpdateSkew = time.Second
 
+const defaultBreakerParkCooldown = 24 * time.Hour
+
 const (
 	blockedRecoveryReasonMergeConflict        = "merge_conflict"
 	blockedRecoveryReasonStaleBase            = "stale_base"
@@ -21,10 +23,11 @@ const (
 )
 
 type BlockedRecoveryConfig struct {
-	Enabled      bool
-	SourceStates []string
-	TargetState  string
-	ReasonCodes  []string
+	Enabled         bool
+	SourceStates    []string
+	TargetState     string
+	ReasonCodes     []string
+	BreakerCooldown time.Duration
 }
 
 type BlockedRecoveryAction string
@@ -143,6 +146,9 @@ func normalizeBlockedRecoveryConfig(cfg BlockedRecoveryConfig) BlockedRecoveryCo
 		blockedRecoveryReasonStaleBase,
 		blockedRecoveryReasonMissingCurrentHeadCI,
 	}))
+	if cfg.BreakerCooldown <= 0 {
+		cfg.BreakerCooldown = defaultBreakerParkCooldown
+	}
 	return cfg
 }
 

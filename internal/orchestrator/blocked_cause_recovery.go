@@ -25,7 +25,8 @@ const (
 	blockedRecoveryPredicateFingerprintChange      = "fingerprint_changed"
 	blockedRecoveryPredicateOncePerFingerprint     = "once_per_fingerprint"
 	blockedRecoveryPredicateManaged                = "managed"
-	blockedCauseFingerprintVersion                 = 2
+	blockedCauseFingerprintVersion                 = 3
+	blockedCauseLegacyBreakerFingerprintVersion    = 2
 	workflowActionCauseBlockedRecovery             = "cause_blocked_recovery"
 	workflowActionBlockedReadyPRReconciliation     = "blocked_ready_pr_reconciliation"
 	blockedReadyPullRequestLookupAttempts          = 3
@@ -210,7 +211,6 @@ func blockedCauseFingerprint(cause string, signals blockedCauseSignals) string {
 		Cause:              strings.TrimSpace(cause),
 		ConfigFingerprint:  signals.ConfigFingerprint,
 		ToolingFingerprint: signals.ToolingFingerprint,
-		BaseFingerprint:    signals.BaseFingerprint,
 		Health:             signals.Health,
 		Description:        signals.Description,
 		ModelOverride:      signals.ModelOverride,
@@ -221,11 +221,28 @@ func blockedCauseFingerprint(cause string, signals blockedCauseSignals) string {
 		PRBaseSHA:          signals.PRBaseSHA,
 		PRDiffFingerprint:  signals.PRDiffFingerprint,
 	}
+	if !breakerParkCause(cause) {
+		identity.BaseFingerprint = signals.BaseFingerprint
+	}
 	data, err := json.Marshal(identity)
 	if err != nil {
 		return blockedCauseHash(err.Error())
 	}
 	return blockedCauseHash(string(data))
+}
+
+func breakerParkCause(cause string) bool {
+	cause = strings.ToLower(strings.TrimSpace(cause))
+	if strings.HasPrefix(cause, tokenCeilingBlockedReasonPrefix) ||
+		strings.HasPrefix(cause, repeatedFailureBlockedReasonPrefix) {
+		return true
+	}
+	switch cause {
+	case dispatchLoopDetectedReason, noProgressLimitReason, spendProgressReason, repeatedFailureCircuitBreakerCause, "token_ceiling_circuit_breaker":
+		return true
+	default:
+		return false
+	}
 }
 
 func blockedCauseHash(value string) string {
@@ -263,6 +280,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "operator_stop", nil, "")
 		return false
 	}
+	_, currentParkFound := o.currentBlockedRecoveryPark(ctx, state, issue)
 	withDependencies := o.issueWithDependencyRefs(issue)
 	withDependencies, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
@@ -320,12 +338,15 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			setBlockedEvidence(state, issue.ID, recorded.Evidence)
 			return false
 		}
-		if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
-			return true
+		if !currentParkFound {
+			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
+				return true
+			}
+			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			return false
 		}
-		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
 		setBlockedEvidence(state, issue.ID, recorded.Evidence)
-		return false
 	}
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
 	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
@@ -395,9 +416,23 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, park.CauseFingerprint)
 		return false
 	}
-	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion {
+	breakerPark := breakerParkCause(park.Cause)
+	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion &&
+		(!breakerPark || park.CauseFingerprintVersion != blockedCauseLegacyBreakerFingerprintVersion) {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "legacy_cause_fingerprint", &park, park.CauseFingerprint)
 		return false
+	}
+	if breakerPark {
+		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
+		if !found {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "breaker_cooldown_unavailable", &park, park.CauseFingerprint)
+			return false
+		}
+		cooldown := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
+		if now.Before(parkedAt.Add(cooldown)) {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "breaker_cooldown_active", &park, park.CauseFingerprint)
+			return false
+		}
 	}
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	currentFingerprint := blockedCauseFingerprint(park.Cause, signals)
@@ -780,6 +815,34 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	return *entry.Metadata.BlockedRecovery, true
 }
 
+func (o *Orchestrator) currentBlockedRecoveryParkedAt(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+) (time.Time, bool) {
+	issueID := strings.TrimSpace(issue.ID)
+	if state != nil && issueID != "" {
+		if blocked, ok := state.Blocked[issueID]; ok &&
+			blocked.Recovery != nil &&
+			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) &&
+			!blocked.BlockedAt.IsZero() {
+			return blocked.BlockedAt.UTC(), true
+		}
+	}
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if ok &&
+		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
+		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
+		entry.Metadata.BlockedRecovery != nil &&
+		!entry.Event.StartedAt.IsZero() {
+		return entry.Event.StartedAt.UTC(), true
+	}
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return issue.StageUpdatedAt.UTC(), true
+	}
+	return time.Time{}, false
+}
+
 func (o *Orchestrator) currentBlockedRecoveryParkWithLegacyRESTBudget(
 	ctx context.Context,
 	state *State,
@@ -957,6 +1020,10 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
 	case "legacy_cause_fingerprint":
 		return "Review the blocking cause, then move the issue to a lane that starts fresh work."
+	case "breaker_cooldown_active":
+		return "Detent will re-evaluate this circuit-breaker park after its cooldown expires."
+	case "breaker_cooldown_unavailable":
+		return "Restore the recorded Blocked transition time or move the issue to a lane that starts fresh work."
 	case "transition_failed":
 		return "Retry the lane transition after restoring tracker write access."
 	case githubRESTBudgetWaitingReason, githubRESTBudgetObservationPendingReason:

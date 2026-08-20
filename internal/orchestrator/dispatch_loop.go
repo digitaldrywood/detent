@@ -197,8 +197,7 @@ func dispatchLoopFingerprintFromValues(lane string, signature autoPromoteReworkS
 }
 
 func dispatchLoopFingerprintEqual(left dispatchLoopFingerprint, right dispatchLoopFingerprint) bool {
-	return left.Lane == right.Lane &&
-		left.PRNumber == right.PRNumber &&
+	return left.PRNumber == right.PRNumber &&
 		left.PRHeadSHA == right.PRHeadSHA &&
 		slices.Equal(left.FailedChecks, right.FailedChecks) &&
 		left.FilesChanged == right.FilesChanged &&
