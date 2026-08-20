@@ -1400,6 +1400,7 @@ func Default() Config {
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
 				CooldownSeconds: DefaultFailureBreakerCooldownSeconds,
 			},
+			ExperimentalThreadResume:   true,
 			ResumeOrphanedSessions:     true,
 			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
 			MaxConcurrentAgentsByState: map[string]int{},

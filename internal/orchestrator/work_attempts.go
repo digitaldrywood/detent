@@ -994,10 +994,21 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 	}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)
-		if key == "" {
+		if key == "" || key == "pr_number" || key == "pr_head_sha" || key == "pr_base_sha" {
 			continue
 		}
 		out[key] = value
+	}
+	if pullRequest := running.Issue.PullRequest; pullRequest != nil {
+		if number := workAttemptPRNumber(running.Issue); number != nil {
+			out["pr_number"] = *number
+		}
+		if headSHA := strings.TrimSpace(pullRequest.HeadSHA); headSHA != "" {
+			out["pr_head_sha"] = headSHA
+		}
+		if baseSHA := strings.TrimSpace(pullRequest.BaseSHA); baseSHA != "" {
+			out["pr_base_sha"] = baseSHA
+		}
 	}
 	return marshalWorkAttemptJSON(out)
 }

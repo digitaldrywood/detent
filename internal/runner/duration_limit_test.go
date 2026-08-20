@@ -254,9 +254,11 @@ func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
-			ID:         "issue-duration-resume",
-			Identifier: "digitaldrywood/detent#1496",
+			ID:          "issue-duration-resume",
+			Identifier:  "digitaldrywood/detent#1496",
+			PullRequest: &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
 		},
+		DispatchSourceState: "Rework",
 	})
 	if !errors.Is(err, ErrSessionDurationExceeded) {
 		t.Fatalf("Run() error = %v, want ErrSessionDurationExceeded", err)

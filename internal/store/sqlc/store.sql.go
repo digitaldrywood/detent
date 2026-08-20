@@ -1653,33 +1653,56 @@ func (q *Queries) GetDetentRun(ctx context.Context, id int64) (DetentRun, error)
 
 const getLatestCompletedAgentResumeState = `-- name: GetLatestCompletedAgentResumeState :one
 SELECT
-  id,
-  CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
-  CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
-  CAST(COALESCE(requested_model, '') AS TEXT) AS requested_model,
-  CAST(COALESCE(model, '') AS TEXT) AS model,
-  CAST(COALESCE(agent_backend_id, '') AS TEXT) AS agent_backend_id,
-  CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
-  CAST(COALESCE(agent_role, '') AS TEXT) AS agent_role,
-  CAST(completed_at AS TEXT) AS completed_at
-FROM codex_sessions
-WHERE completed_at IS NOT NULL
-  AND lower(trim(COALESCE(final_state, ''))) = 'completed'
-  AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
-  AND COALESCE(agent_backend_id, '') = ?1
-  AND COALESCE(agent_backend_kind, '') = ?2
-  AND COALESCE(agent_role, '') = ?3
-  AND COALESCE(NULLIF(requested_model, ''), COALESCE(model, '')) = ?4
+  s.id,
+  CAST(COALESCE(s.provider_thread_id, '') AS TEXT) AS provider_thread_id,
+  CAST(COALESCE(s.provider_session_id, '') AS TEXT) AS provider_session_id,
+  CAST(COALESCE(s.requested_model, '') AS TEXT) AS requested_model,
+  CAST(COALESCE(s.model, '') AS TEXT) AS model,
+  CAST(COALESCE(s.agent_backend_id, '') AS TEXT) AS agent_backend_id,
+  CAST(COALESCE(s.agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
+  CAST(COALESCE(s.agent_role, '') AS TEXT) AS agent_role,
+  CAST(s.completed_at AS TEXT) AS completed_at
+FROM codex_sessions AS s
+JOIN work_attempts AS w ON w.id = s.work_attempt_id
+WHERE s.completed_at IS NOT NULL
+  AND w.completed_at IS NOT NULL
+  AND lower(trim(COALESCE(s.final_state, ''))) = 'completed'
+  AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
+  AND COALESCE(s.project_id, '') = ?1
+  AND COALESCE(
+    CASE WHEN json_valid(w.worker_metadata_json)
+      THEN CAST(json_extract(w.worker_metadata_json, '$.pr_number') AS INTEGER)
+      ELSE NULL
+    END,
+    w.pr_number,
+    0
+  ) = CAST(?2 AS INTEGER)
+  AND CASE WHEN json_valid(w.worker_metadata_json)
+    THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_head_sha'), '') AS TEXT)
+    ELSE ''
+  END = ?3
+  AND CASE WHEN json_valid(w.worker_metadata_json)
+    THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_base_sha'), '') AS TEXT)
+    ELSE ''
+  END = ?4
+  AND COALESCE(s.agent_backend_id, '') = ?5
+  AND COALESCE(s.agent_backend_kind, '') = ?6
+  AND COALESCE(s.agent_role, '') = ?7
+  AND COALESCE(NULLIF(s.requested_model, ''), COALESCE(s.model, '')) = ?8
   AND (
-    (?5 != '' AND COALESCE(issue_id, '') = ?5)
-    OR (?6 != '' AND COALESCE(identifier, '') = ?6)
-    OR (?7 != '' AND COALESCE(issue_url, '') = ?7)
+    (?9 != '' AND COALESCE(s.issue_id, '') = ?9)
+    OR (?10 != '' AND COALESCE(s.identifier, '') = ?10)
+    OR (?11 != '' AND COALESCE(s.issue_url, '') = ?11)
   )
-ORDER BY completed_at DESC, id DESC
+ORDER BY s.completed_at DESC, s.id DESC
 LIMIT 1
 `
 
 type GetLatestCompletedAgentResumeStateParams struct {
+	ProjectID        sql.NullString `json:"project_id"`
+	PrNumber         int64          `json:"pr_number"`
+	PrHeadSha        string         `json:"pr_head_sha"`
+	PrBaseSha        string         `json:"pr_base_sha"`
 	AgentBackendID   sql.NullString `json:"agent_backend_id"`
 	AgentBackendKind sql.NullString `json:"agent_backend_kind"`
 	AgentRole        sql.NullString `json:"agent_role"`
@@ -1703,6 +1726,10 @@ type GetLatestCompletedAgentResumeStateRow struct {
 
 func (q *Queries) GetLatestCompletedAgentResumeState(ctx context.Context, arg GetLatestCompletedAgentResumeStateParams) (GetLatestCompletedAgentResumeStateRow, error) {
 	row := q.db.QueryRowContext(ctx, getLatestCompletedAgentResumeState,
+		arg.ProjectID,
+		arg.PrNumber,
+		arg.PrHeadSha,
+		arg.PrBaseSha,
 		arg.AgentBackendID,
 		arg.AgentBackendKind,
 		arg.AgentRole,

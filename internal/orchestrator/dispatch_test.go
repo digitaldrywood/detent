@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,44 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestRunningWorkAttemptMetadataJSONPersistsPullRequestFingerprint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		request  *connector.PullRequest
+		wantPR   int64
+		wantHead string
+		wantBase string
+	}{
+		{name: "current pull request", request: &connector.PullRequest{Number: 42, HeadSHA: " head-current ", BaseSHA: " base-current "}, wantPR: 42, wantHead: "head-current", wantBase: "base-current"},
+		{name: "no pull request"},
+		{name: "missing base", request: &connector.PullRequest{HeadSHA: "head-current"}, wantHead: "head-current"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			encoded := runningWorkAttemptMetadataJSON(
+				Running{Issue: connector.Issue{PullRequest: tt.request}},
+				map[string]any{"pr_number": 99, "pr_head_sha": "untrusted-head", "pr_base_sha": "untrusted-base"},
+			)
+			var metadata struct {
+				PRNumber  int64  `json:"pr_number"`
+				PRHeadSHA string `json:"pr_head_sha"`
+				PRBaseSHA string `json:"pr_base_sha"`
+			}
+			if err := json.Unmarshal([]byte(encoded), &metadata); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if metadata.PRNumber != tt.wantPR || metadata.PRHeadSHA != tt.wantHead || metadata.PRBaseSHA != tt.wantBase {
+				t.Fatalf("pull request fingerprint = %#v, want PR %d head %q base %q", metadata, tt.wantPR, tt.wantHead, tt.wantBase)
+			}
+		})
+	}
+}
 
 func TestHandleRunUpdatePersistsRuntimeIdentityHeartbeat(t *testing.T) {
 	t.Parallel()

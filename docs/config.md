@@ -500,7 +500,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.effort.code` | `string` | `none` | No | must be one of low, medium, high, xhigh, max, ultracode |
 | `agent.effort.merge` | `string` | `none` | No | must be one of low, medium, high, xhigh, max, ultracode |
 | `agent.effort.rework` | `string` | `none` | No | must be one of low, medium, high, xhigh, max, ultracode |
-| `agent.experimental_thread_resume` | `boolean` | `false` | No | None |
+| `agent.experimental_thread_resume` | `boolean` | `true` | No | None |
 | `agent.failure_breaker` | `object` | `see child fields` | No | None |
 | `agent.failure_breaker.cooldown_seconds` | `integer` | `3600` | No | must be greater than 0 |
 | `agent.failure_breaker.same_class_limit` | `integer` | `5` | No | must be greater than 0 |

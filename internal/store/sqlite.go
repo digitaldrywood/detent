@@ -420,6 +420,9 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 
 func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs AgentResumeLookup) (AgentResumeState, error) {
 	attrs = normalizeAgentResumeLookup(attrs)
+	if attrs.ProjectID == "" || attrs.PRNumber <= 0 || attrs.PRHeadSHA == "" || attrs.PRBaseSHA == "" {
+		return AgentResumeState{}, ErrNotFound
+	}
 	if attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
 		return AgentResumeState{}, ErrNotFound
 	}
@@ -428,6 +431,10 @@ func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs
 	}
 
 	row, err := s.queries.GetLatestCompletedAgentResumeState(ctx, sqlc.GetLatestCompletedAgentResumeStateParams{
+		ProjectID:        nullString(attrs.ProjectID),
+		PrNumber:         attrs.PRNumber,
+		PrHeadSha:        attrs.PRHeadSHA,
+		PrBaseSha:        attrs.PRBaseSHA,
 		AgentBackendID:   nullString(attrs.AgentBackendID),
 		AgentBackendKind: nullString(attrs.AgentBackendKind),
 		AgentRole:        nullString(attrs.AgentRole),
@@ -559,9 +566,13 @@ func (s *sqliteStore) MarkAgentSessionOrphaned(ctx context.Context, sessionID in
 
 func normalizeAgentResumeLookup(attrs AgentResumeLookup) AgentResumeLookup {
 	return AgentResumeLookup{
+		ProjectID:        strings.TrimSpace(attrs.ProjectID),
 		IssueID:          strings.TrimSpace(attrs.IssueID),
 		Identifier:       strings.TrimSpace(attrs.Identifier),
 		IssueURL:         strings.TrimSpace(attrs.IssueURL),
+		PRNumber:         attrs.PRNumber,
+		PRHeadSHA:        strings.TrimSpace(attrs.PRHeadSHA),
+		PRBaseSHA:        strings.TrimSpace(attrs.PRBaseSHA),
 		RequestedModel:   strings.TrimSpace(attrs.RequestedModel),
 		AgentBackendID:   strings.TrimSpace(attrs.AgentBackendID),
 		AgentBackendKind: strings.TrimSpace(attrs.AgentBackendKind),

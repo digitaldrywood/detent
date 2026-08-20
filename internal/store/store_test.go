@@ -1407,7 +1407,24 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		t.Fatalf("FinishSession(first) error = %v", err)
 	}
 
+	resumeMetadata := `{"pr_number":42,"pr_head_sha":"head-current","pr_base_sha":"base-current"}`
+	resumeAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:          "detent",
+		IssueID:            "issue-859",
+		Identifier:         "digitaldrywood/detent#859",
+		IssueURL:           "https://github.com/digitaldrywood/detent/issues/859",
+		Repo:               "digitaldrywood/detent",
+		WorkerType:         "agent",
+		Lane:               "Todo",
+		AttemptNumber:      2,
+		StartedAt:          startedAt.Add(4 * time.Minute),
+		WorkerMetadataJSON: resumeMetadata,
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt(resume candidate) error = %v", err)
+	}
 	secondID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:    resumeAttemptID,
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
@@ -1431,6 +1448,15 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		ResumedFromSessionID: firstID,
 	}); err != nil {
 		t.Fatalf("FinishSession(second) error = %v", err)
+	}
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+		AttemptID:          resumeAttemptID,
+		CompletedAt:        startedAt.Add(6 * time.Minute),
+		Status:             WorkAttemptStatusTerminal,
+		TerminalState:      WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: resumeMetadata,
+	}); err != nil {
+		t.Fatalf("CompleteWorkAttempt(resume candidate) error = %v", err)
 	}
 
 	validatorID, err := backend.StartSession(ctx, SessionStart{
@@ -1459,9 +1485,13 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 
 	got, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
 		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		PRNumber:         42,
+		PRHeadSHA:        "head-current",
+		PRBaseSHA:        "base-current",
 		RequestedModel:   "gpt-5-codex",
 		AgentBackendID:   "codex",
 		AgentBackendKind: "codex",
@@ -1488,7 +1518,11 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 
 	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
+		PRNumber:         42,
+		PRHeadSHA:        "head-current",
+		PRBaseSHA:        "base-current",
 		RequestedModel:   "gpt-5-codex-mini",
 		AgentBackendID:   "codex",
 		AgentBackendKind: "codex",
@@ -1499,7 +1533,11 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 
 	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+		ProjectID:        "detent",
 		IssueID:          "issue-859",
+		PRNumber:         42,
+		PRHeadSHA:        "head-current",
+		PRBaseSHA:        "base-current",
 		RequestedModel:   "gpt-5-codex",
 		AgentBackendID:   "codex",
 		AgentBackendKind: "codex",
@@ -1507,6 +1545,34 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("LatestCompletedAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		project string
+		headSHA string
+		baseSHA string
+	}{
+		{name: "project mismatch", project: "other", headSHA: "head-current", baseSHA: "base-current"},
+		{name: "head mismatch", project: "detent", headSHA: "head-stale", baseSHA: "base-current"},
+		{name: "base mismatch", project: "detent", headSHA: "head-current", baseSHA: "base-moved"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+				ProjectID:        tt.project,
+				IssueID:          "issue-859",
+				PRNumber:         42,
+				PRHeadSHA:        tt.headSHA,
+				PRBaseSHA:        tt.baseSHA,
+				RequestedModel:   "gpt-5-codex",
+				AgentBackendID:   "codex",
+				AgentBackendKind: "codex",
+				AgentRole:        "code",
+			})
+			if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("LatestCompletedAgentResumeState() error = %v, want ErrNotFound", err)
+			}
+		})
 	}
 }
 

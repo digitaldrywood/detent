@@ -449,9 +449,13 @@ type SessionFinish struct {
 }
 
 type AgentResumeLookup struct {
+	ProjectID        string
 	IssueID          string
 	Identifier       string
 	IssueURL         string
+	PRNumber         int64
+	PRHeadSHA        string
+	PRBaseSHA        string
 	RequestedModel   string
 	AgentBackendID   string
 	AgentBackendKind string
