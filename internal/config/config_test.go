@@ -1677,8 +1677,8 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.MergeFastPath.FairnessAgeSeconds != DefaultMergeFairnessAgeSeconds {
 		t.Fatalf("Agent.MergeFastPath.FairnessAgeSeconds = %d, want %d", cfg.Agent.MergeFastPath.FairnessAgeSeconds, DefaultMergeFairnessAgeSeconds)
 	}
-	if cfg.Agent.ExperimentalThreadResume {
-		t.Fatal("Agent.ExperimentalThreadResume = true, want disabled default")
+	if !cfg.Agent.ExperimentalThreadResume {
+		t.Fatal("Agent.ExperimentalThreadResume = false, want enabled default")
 	}
 	if !cfg.Agent.ResumeOrphanedSessions {
 		t.Fatal("Agent.ResumeOrphanedSessions = false, want enabled default")

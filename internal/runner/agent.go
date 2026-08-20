@@ -1115,51 +1115,92 @@ func (r *Runner) runAgentTurn(
 func (r *Runner) agentResumeState(
 	ctx context.Context,
 	cfg config.Agent,
-	issue connector.Issue,
+	req RunRequest,
 	model string,
 	backendID string,
 	backendKind string,
 	agentRole string,
 ) store.AgentResumeState {
-	if !cfg.ExperimentalThreadResume {
-		return store.AgentResumeState{}
-	}
-	model = strings.TrimSpace(model)
-	backendID = strings.TrimSpace(backendID)
-	backendKind = strings.TrimSpace(backendKind)
-	agentRole = strings.TrimSpace(agentRole)
-	if model == "" || backendID == "" || backendKind == "" || agentRole == "" {
+	lookup, ok := automaticAgentResumeLookup(r.projectID, cfg, req, model, backendID, backendKind, agentRole)
+	if !ok {
 		return store.AgentResumeState{}
 	}
 	resumeStore, ok := r.store.(store.AgentResumeStore)
 	if !ok {
 		return store.AgentResumeState{}
 	}
-	state, err := resumeStore.LatestCompletedAgentResumeState(ctx, store.AgentResumeLookup{
-		IssueID:          issue.ID,
-		Identifier:       issue.Identifier,
-		IssueURL:         issue.URL,
-		RequestedModel:   model,
-		AgentBackendID:   backendID,
-		AgentBackendKind: backendKind,
-		AgentRole:        agentRole,
-	})
+	state, err := resumeStore.LatestCompletedAgentResumeState(ctx, lookup)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			r.logger.Warn(
 				"agent resume state lookup failed",
-				slog.String("issue_id", issue.ID),
-				slog.String("issue_identifier", issue.Identifier),
-				slog.String("model", model),
-				slog.String("backend_id", backendID),
-				slog.String("backend_kind", backendKind),
-				slog.String("agent_role", agentRole),
+				slog.String("issue_id", req.Issue.ID),
+				slog.String("issue_identifier", req.Issue.Identifier),
+				slog.String("model", lookup.RequestedModel),
+				slog.String("backend_id", lookup.AgentBackendID),
+				slog.String("backend_kind", lookup.AgentBackendKind),
+				slog.String("agent_role", lookup.AgentRole),
 				slog.Any("error", err),
 			)
 		}
 		return store.AgentResumeState{}
 	}
+	r.logWorkerEvent(req.Issue, "worker_thread_resume_selected",
+		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+		"resumed_from_session_id", state.DetentSessionID,
+		"pr_number", lookup.PRNumber,
+		"pr_head_sha", lookup.PRHeadSHA,
+		"pr_base_sha", lookup.PRBaseSHA,
+	)
 	return state
+}
+
+func automaticAgentResumeLookup(
+	projectID string,
+	cfg config.Agent,
+	req RunRequest,
+	model string,
+	backendID string,
+	backendKind string,
+	agentRole string,
+) (store.AgentResumeLookup, bool) {
+	if !cfg.ExperimentalThreadResume || normalizeRunMode(req.Mode) != RunModeImplement {
+		return store.AgentResumeLookup{}, false
+	}
+	reworkState := strings.TrimSpace(cfg.AutoPromote.ReworkState)
+	if reworkState == "" {
+		reworkState = "Rework"
+	}
+	dispatchSourceState := strings.TrimSpace(req.DispatchSourceState)
+	if dispatchSourceState == "" {
+		dispatchSourceState = strings.TrimSpace(req.Issue.State)
+	}
+	if !strings.EqualFold(dispatchSourceState, reworkState) || req.Issue.PullRequest == nil {
+		return store.AgentResumeLookup{}, false
+	}
+	prNumber := int64(req.Issue.PullRequest.Number)
+	if req.Issue.PRNumber != nil && *req.Issue.PRNumber > 0 {
+		prNumber = int64(*req.Issue.PRNumber)
+	}
+	lookup := store.AgentResumeLookup{
+		ProjectID:        strings.TrimSpace(projectID),
+		IssueID:          strings.TrimSpace(req.Issue.ID),
+		Identifier:       strings.TrimSpace(req.Issue.Identifier),
+		IssueURL:         strings.TrimSpace(req.Issue.URL),
+		PRNumber:         prNumber,
+		PRHeadSHA:        strings.TrimSpace(req.Issue.PullRequest.HeadSHA),
+		PRBaseSHA:        strings.TrimSpace(req.Issue.PullRequest.BaseSHA),
+		RequestedModel:   strings.TrimSpace(model),
+		AgentBackendID:   strings.TrimSpace(backendID),
+		AgentBackendKind: strings.TrimSpace(backendKind),
+		AgentRole:        strings.TrimSpace(agentRole),
+	}
+	if lookup.ProjectID == "" || lookup.PRNumber <= 0 || lookup.PRHeadSHA == "" || lookup.PRBaseSHA == "" ||
+		lookup.RequestedModel == "" || lookup.AgentBackendID == "" || lookup.AgentBackendKind == "" || lookup.AgentRole == "" ||
+		(lookup.IssueID == "" && lookup.Identifier == "" && lookup.IssueURL == "") {
+		return store.AgentResumeLookup{}, false
+	}
+	return lookup, true
 }
 
 func (r *Runner) runRequestResumeState(
@@ -1180,7 +1221,7 @@ func (r *Runner) runRequestResumeState(
 		}
 		return req.ResumeState, nil
 	default:
-		return r.agentResumeState(ctx, cfg, req.Issue, model, backendID, backendKind, agentRole), nil
+		return r.agentResumeState(ctx, cfg, req, model, backendID, backendKind, agentRole), nil
 	}
 }
 

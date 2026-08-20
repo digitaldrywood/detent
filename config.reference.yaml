@@ -596,8 +596,8 @@
 #   max_session_token_override_label: null
 #   # agent.max_session_token_override_field | type: string | default: none | required: No | validation: None
 #   max_session_token_override_field: null
-#   # agent.experimental_thread_resume | type: boolean | default: false | required: No | validation: None
-#   experimental_thread_resume: false
+#   # agent.experimental_thread_resume | type: boolean | default: true | required: No | validation: None
+#   experimental_thread_resume: true
 #   # agent.resume_orphaned_sessions | type: boolean | default: true | required: No | validation: None
 #   resume_orphaned_sessions: true
 #   # agent.effort | type: object | default: see child fields | required: No | validation: None

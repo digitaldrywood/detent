@@ -3274,7 +3274,7 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 		"worker-model=provider-default",
 		"session-guard=max_turns=20, max_turn_duration_ms=disabled, max_session_duration_ms=7200000, no_progress_timeout_ms=5400000, merge_worker_max_duration_ms=21600000, max_session_tokens=disabled, max_session_context_multiplier=disabled",
 		"billing-mode=metered",
-		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=false",
+		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=true",
 		"prioritize-unblockers=true",
 		"authorization selectors from global.yaml and WORKFLOW.md",
 	} {

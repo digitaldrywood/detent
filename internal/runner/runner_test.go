@@ -1368,6 +1368,117 @@ func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestRunnerRunRestrictsAutomaticThreadResumeToCurrentPRRework(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		mode                string
+		dispatchSourceState string
+		pullRequest         *connector.PullRequest
+		wantLookups         int
+	}{
+		{
+			name:                "current pull request rework",
+			mode:                RunModeImplement,
+			dispatchSourceState: "Rework",
+			pullRequest:         &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
+			wantLookups:         1,
+		},
+		{
+			name:                "todo dispatch",
+			mode:                RunModeImplement,
+			dispatchSourceState: "Todo",
+			pullRequest:         &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
+		},
+		{
+			name:                "merge dispatch",
+			mode:                RunModeMerge,
+			dispatchSourceState: "Merging",
+			pullRequest:         &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
+		},
+		{
+			name:                "rework without pull request",
+			mode:                RunModeImplement,
+			dispatchSourceState: "Rework",
+		},
+		{
+			name:                "rework without head",
+			mode:                RunModeImplement,
+			dispatchSourceState: "Rework",
+			pullRequest:         &connector.PullRequest{Number: 42, BaseSHA: "base-current"},
+		},
+		{
+			name:                "rework without base",
+			mode:                RunModeImplement,
+			dispatchSourceState: "Rework",
+			pullRequest:         &connector.PullRequest{Number: 42, HeadSHA: "head-current"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			startedAt := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-1930", Branch: "detent/issue-1930"},
+			}
+			agentBackend := &fakeCodexClient{
+				result: AgentTurnResult{ThreadID: "thread-current", TurnID: "turn-2", SessionID: "session-current"},
+			}
+			sessionStore := &fakeSessionStore{
+				sessionID: 1930,
+				resumeState: store.AgentResumeState{
+					DetentSessionID:   1929,
+					ProviderThreadID:  "thread-prior",
+					ProviderSessionID: "session-prior",
+				},
+			}
+			runner, err := NewRunner(Dependencies{
+				ProjectID: "detent",
+				Workflow: config.Workflow{
+					Config: config.Config{Agent: config.Agent{ExperimentalThreadResume: true}},
+					Prompt: "Work",
+				},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+				Store:        sessionStore,
+				Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, err = runner.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{
+					ID:            "issue-1930",
+					Identifier:    "digitaldrywood/detent#1930",
+					Title:         "Resume current PR rework",
+					State:         "In Progress",
+					PullRequest:   tt.pullRequest,
+					ModelOverride: "gpt-5-codex",
+				},
+				Mode:                tt.mode,
+				DispatchSourceState: tt.dispatchSourceState,
+				StartedAt:           startedAt,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if sessionStore.resumeLookups != tt.wantLookups {
+				t.Fatalf("resume lookups = %d, want %d", sessionStore.resumeLookups, tt.wantLookups)
+			}
+			if tt.wantLookups == 1 {
+				lookup := sessionStore.resumeLookup
+				if lookup.ProjectID != "detent" || lookup.PRNumber != 42 || lookup.PRHeadSHA != "head-current" || lookup.PRBaseSHA != "base-current" {
+					t.Fatalf("resume lookup = %#v, want current pull request fingerprint", lookup)
+				}
+			}
+		})
+	}
+}
+
 func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
 	t.Parallel()
 
@@ -2037,8 +2148,10 @@ func TestRunnerRunFallsBackFreshWhenResumeFails(t *testing.T) {
 			Identifier:    "digitaldrywood/detent#859",
 			Title:         "Thread resume spike",
 			ModelOverride: "gpt-5-codex",
+			PullRequest:   &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
 		},
-		StartedAt: startedAt,
+		DispatchSourceState: "Rework",
+		StartedAt:           startedAt,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v, want fresh fallback success", err)
@@ -2108,8 +2221,10 @@ func TestRunnerRunDoesNotFallbackFreshForCapacityError(t *testing.T) {
 			Identifier:    "digitaldrywood/detent#1142",
 			Title:         "Capacity outage",
 			ModelOverride: "gpt-5-codex",
+			PullRequest:   &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
 		},
-		StartedAt: startedAt,
+		DispatchSourceState: "Rework",
+		StartedAt:           startedAt,
 	})
 	if !IsCapacityError(err) {
 		t.Fatalf("Run() error = %v, want capacity error", err)
@@ -2158,8 +2273,10 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 			Identifier:    "digitaldrywood/detent#859",
 			Title:         "Thread resume spike",
 			ModelOverride: "gpt-5-codex",
+			PullRequest:   &connector.PullRequest{Number: 42, HeadSHA: "head-current", BaseSHA: "base-current"},
 		},
-		StartedAt: startedAt,
+		DispatchSourceState: "Rework",
+		StartedAt:           startedAt,
 	})
 	if err == nil {
 		t.Fatal("Run() error = nil, want resumed turn failure")
@@ -3793,7 +3910,7 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 	}
 }
 
-func TestRunnerRunThreadResumeUsesDerivedRoleKey(t *testing.T) {
+func TestRunnerRunDoesNotResumeMergeRole(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
@@ -3853,8 +3970,8 @@ func TestRunnerRunThreadResumeUsesDerivedRoleKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if sessionStore.resumeLookup.AgentRole != RoleMerge {
-		t.Fatalf("resume lookup role = %q, want %q", sessionStore.resumeLookup.AgentRole, RoleMerge)
+	if sessionStore.resumeLookups != 0 {
+		t.Fatalf("resume lookups = %d, want none for merge", sessionStore.resumeLookups)
 	}
 	if !agentResumeEmpty(agentBackend.request.Resume) {
 		t.Fatalf("AgentTurnRequest.Resume = %#v, want no implement resume state for merge", agentBackend.request.Resume)
