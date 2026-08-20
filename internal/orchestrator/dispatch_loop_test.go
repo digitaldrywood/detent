@@ -55,6 +55,24 @@ func TestEvaluateDispatchLoopProgress(t *testing.T) {
 			wantBlockReason: dispatchLoopDetectedReason,
 		},
 		{
+			name: "unverified pull request updates count",
+			history: []store.WorkAttempt{
+				dispatchLoopReportedPRUpdateAttempt(2),
+				dispatchLoopReportedPRUpdateAttempt(1),
+			},
+			running: dispatchLoopRunning("In Progress", DiffStats{Status: "clean"}),
+			decision: func() implementCompletionProgressDecision {
+				decision := dispatchLoopDecision("In Progress", store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, DiffStats{Status: "clean"})
+				decision.Reason = "pull_request_created_or_updated"
+				decision.ProgressKinds = []string{"pull_request"}
+				return decision
+			}(),
+			wantCount:       3,
+			wantBlock:       true,
+			wantReason:      dispatchLoopDetectedReason,
+			wantBlockReason: dispatchLoopDetectedReason,
+		},
+		{
 			name:       "single completed run does not trip even with limit one",
 			running:    dispatchLoopRunning("Rework", DiffStats{Status: "clean"}),
 			decision:   dispatchLoopDecision("Rework", store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, DiffStats{Status: "clean"}),
@@ -262,6 +280,28 @@ func dispatchLoopHistoryAttemptInLane(
 				ConsecutiveNoProgress: count,
 				NoProgressLimit:       3,
 				ProgressKinds:         progressKinds,
+			},
+		}),
+	}
+}
+
+func dispatchLoopReportedPRUpdateAttempt(id int64) store.WorkAttempt {
+	return store.WorkAttempt{
+		ID:            id,
+		ProjectID:     "detent",
+		IssueID:       "issue-loop",
+		Identifier:    "digitaldrywood/detent#1886",
+		WorkerType:    "agent",
+		Lane:          "In Progress",
+		Status:        store.WorkAttemptStatusTerminal,
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		CompletedAt:   time.Date(2026, 8, 18, 14, int(id), 0, 0, time.UTC),
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			implementProgressMetadataKey: implementProgressRecord{
+				Outcome:            string(store.WorkAttemptTerminalSuccess),
+				Reason:             "pull_request_created_or_updated",
+				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
+				ProgressKinds:      []string{"pull_request"},
 			},
 		}),
 	}

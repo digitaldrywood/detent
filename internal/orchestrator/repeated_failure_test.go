@@ -108,7 +108,7 @@ func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
 	}
 }
 
-func TestRunRepeatedFailureCounterResetsOnSuccessfulCompletion(t *testing.T) {
+func TestRunRepeatedFailureCounterSurvivesYieldlessCompletion(t *testing.T) {
 	t.Parallel()
 
 	issue := testIssue("issue-repeated-fail-reset", "digitaldrywood/detent#980", "Todo")
@@ -142,8 +142,8 @@ func TestRunRepeatedFailureCounterResetsOnSuccessfulCompletion(t *testing.T) {
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] present after successful completion", issue.ID)
 	}
-	if _, ok := state.RepeatedFailures[issue.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] present after successful completion", issue.ID)
+	if got := state.RepeatedFailures[issue.ID].Count; got != 4 {
+		t.Fatalf("RepeatedFailures[%q].Count = %d, want 4 after yieldless completion", issue.ID, got)
 	}
 }
 

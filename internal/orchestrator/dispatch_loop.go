@@ -106,7 +106,9 @@ func dispatchLoopCurrentAdvanced(
 	found bool,
 ) bool {
 	switch strings.TrimSpace(decision.Reason) {
-	case "pull_request_created_or_updated", implementMergedCompletionReason:
+	case "pull_request_created_or_updated":
+		return implementProgressSignatureUsable(decision.CurrentSignature)
+	case implementMergedCompletionReason:
 		return true
 	case "pull_request_hydrator_unavailable", "pull_request_hydration_failed", "pull_request_hydration_unavailable",
 		"attempt_history_lookup_failed", "workspace_diffstat_unavailable", "workspace_diffstat_unavailable_without_pull_request",
@@ -153,12 +155,18 @@ func dispatchLoopRecordAdvanced(record implementProgressRecord) bool {
 	}
 	for _, kind := range record.ProgressKinds {
 		switch strings.TrimSpace(kind) {
-		case "tracker_state_transition", "pull_request", "workspace_diff":
+		case "tracker_state_transition", "workspace_diff":
 			return true
+		case "pull_request":
+			if implementProgressSignatureUsable(record.CurrentSignature.signature()) {
+				return true
+			}
 		}
 	}
 	switch strings.TrimSpace(record.Reason) {
-	case "pull_request_created_or_updated", "signature_changed", implementMergedCompletionReason:
+	case "pull_request_created_or_updated":
+		return implementProgressSignatureUsable(record.CurrentSignature.signature())
+	case "signature_changed", implementMergedCompletionReason:
 		return true
 	default:
 		return false
