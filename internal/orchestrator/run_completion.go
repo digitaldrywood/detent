@@ -435,7 +435,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
-	if mergeWorkerIssue(running.Issue) || implementProgressLinkedPullRequest(running.Issue) {
+	if mergeWorkerIssue(running.Issue) {
 		resetWorkerFailureBreakers(state, event.IssueID)
 	}
 
@@ -501,6 +501,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 	running.Issue = progress.Issue
+	if terminalState == store.WorkAttemptTerminalSuccess && implementCompletionHasDurableProgress(running, progress) {
+		resetWorkerFailureBreakers(state, event.IssueID)
+	}
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		forceReapply := false
 		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(progress.CurrentSignature.HeadSHA) == "" {
@@ -789,6 +792,18 @@ func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string,
 func resetWorkerFailureBreakers(state *State, issueID string) {
 	delete(state.InstantFailures, issueID)
 	delete(state.RepeatedFailures, issueID)
+}
+
+func implementCompletionHasDurableProgress(running Running, decision implementCompletionProgressDecision) bool {
+	if strings.TrimSpace(running.CompletionLane) != "" || implementProgressLinkedPullRequest(decision.Issue) {
+		return true
+	}
+	for _, kind := range decision.ProgressKinds {
+		if strings.TrimSpace(kind) == "tracker_state_transition" {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) tripInstantFailureCircuitBreaker(

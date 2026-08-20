@@ -671,10 +671,12 @@ func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testin
 
 	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name      string
-		issue     connector.Issue
-		hydrated  connector.Issue
-		wantReset bool
+		name           string
+		issue          connector.Issue
+		hydrated       connector.Issue
+		refreshedState string
+		completionLane string
+		wantReset      bool
 	}{
 		{
 			name:  "yieldless completion preserves failures",
@@ -686,13 +688,29 @@ func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testin
 			hydrated:  implementProgressIssue("head", "Test"),
 			wantReset: true,
 		},
+		{
+			name:           "current attempt completion lane clears failures",
+			issue:          implementProgressIssueWithoutPR(),
+			completionLane: "Human Review",
+			wantReset:      true,
+		},
+		{
+			name:           "tracker state transition clears failures",
+			issue:          implementProgressIssueWithoutPR(),
+			refreshedState: "Rework",
+			wantReset:      true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := &implementProgressConnector{refreshed: tt.issue, hydrated: tt.hydrated}
+			refreshed := cloneIssue(tt.issue)
+			if tt.refreshedState != "" {
+				refreshed.State = tt.refreshedState
+			}
+			tracker := &implementProgressConnector{refreshed: refreshed, hydrated: tt.hydrated}
 			attempts := &implementProgressAttemptStore{}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
@@ -705,12 +723,14 @@ func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testin
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
 			state.Running[tt.issue.ID] = Running{
-				Issue:         tt.issue,
-				Attempt:       3,
-				WorkAttemptID: 42,
-				Mode:          runpkg.RunModeImplement,
-				StartedAt:     base.Add(-time.Minute),
-				DiffStats:     DiffStats{Status: "clean"},
+				Issue:            tt.issue,
+				Attempt:          3,
+				WorkAttemptID:    42,
+				Mode:             runpkg.RunModeImplement,
+				StartedAt:        base.Add(-time.Minute),
+				DiffStats:        DiffStats{Status: "clean"},
+				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.issue, true),
+				CompletionLane:   tt.completionLane,
 			}
 			state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
 			state.InstantFailures[tt.issue.ID] = InstantFailure{Issue: tt.issue, Count: 2}
