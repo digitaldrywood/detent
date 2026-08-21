@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -59,6 +60,121 @@ func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 	}
 	if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
 		t.Fatalf("issue failure breakers = instant %#v repeated %#v, want no capacity strikes", state.InstantFailures, state.RepeatedFailures)
+	}
+}
+
+func TestSubscriptionStatusArmsOutageBeforeCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 19, 16, 30, 43, 0, time.UTC)
+	resetAt := time.Date(2026, 8, 20, 15, 27, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	controller := backendCapacityTestController{
+		scope: scope,
+		status: runpkg.CapacityStatus{
+			Exhausted: true,
+			Detail:    "live provider status reports an exhausted subscription window",
+			Details: backendcapacity.Details{
+				Type:    backendcapacity.ErrorTypeUsageLimit,
+				Kind:    "subscription_window_exhausted",
+				Reason:  "subscription window exhausted",
+				ResetAt: &resetAt,
+			},
+		},
+		hasStatus: true,
+	}
+	orch := &Orchestrator{capacityController: controller, capacityStatus: controller, now: func() time.Time { return now }}
+	state := newState(normalizeConfig(Config{}))
+	issue := connector.Issue{ID: "issue-live-exhaustion", State: "In Progress"}
+	state.Running[issue.ID] = Running{Issue: issue, CapacityScope: scope, StartedAt: now.Add(-time.Minute)}
+
+	orch.handleRunUpdate(&state, runUpdate{
+		issueID: issue.ID,
+		usage: runpkg.UsageUpdate{
+			LastEventAt: now,
+			RateLimits: &telemetry.RateLimits{
+				ReachedType: "primary",
+				Primary: &telemetry.RateLimitBucket{
+					Status:  telemetry.RateLimitStatusExhausted,
+					ResetAt: &resetAt,
+				},
+			},
+		},
+	})
+
+	outage, ok := state.BackendOutages[scope.Key()]
+	if !ok || outage.Kind != "subscription_window_exhausted" || outage.Reason != "subscription window exhausted" || !outage.ResetAt.Equal(resetAt) {
+		t.Fatalf("BackendOutages = %#v, want named subscription outage reset at %s", state.BackendOutages, resetAt)
+	}
+	if _, _, paused := orch.backendCapacityDispatch(&state, runpkg.RunRequest{Issue: connector.Issue{ID: "issue-next"}}, now); !paused {
+		t.Fatal("backendCapacityDispatch() paused = false after rejected subscription status")
+	}
+	message := backendCapacityStatusMessage(outage)
+	if !strings.Contains(message, "backend codex: subscription window exhausted") || !strings.Contains(message, "resumes ~2026-08-20 15:27 UTC") {
+		t.Fatalf("backendCapacityStatusMessage() = %q", message)
+	}
+
+	orch.capacityStatus = backendCapacityTestController{
+		scope:     scope,
+		status:    runpkg.CapacityStatus{Exhausted: true},
+		hasStatus: true,
+	}
+	orch.recoverBackendCapacityFromStatus(&state, state.Running[issue.ID], &telemetry.RateLimits{}, now.Add(time.Minute))
+	outage = state.BackendOutages[scope.Key()]
+	if outage.Kind != "subscription_window_exhausted" || outage.Reason != "subscription window exhausted" {
+		t.Fatalf("defaulted BackendOutage = %#v, want named subscription outage", outage)
+	}
+}
+
+func TestSlippedSubscriptionAttemptsFinishAsCapacityBeforeSessionBrakes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 19, 20, 0, 0, 0, time.UTC)
+	resetAt := now.Add(12 * time.Hour)
+	scope := backendcapacity.Scope{BackendID: "claude-video", BackendKind: "claude_code", Provider: "anthropic"}
+	attempts := &recordingWorkAttemptStore{}
+	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}})
+	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	issue := connector.Issue{ID: "issue-slipped-capacity", State: "In Progress"}
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		Attempt:       3,
+		WorkAttemptID: 42,
+		CapacityScope: scope,
+		StartedAt:     now.Add(-5 * time.Minute),
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-5 * time.Minute)}
+	ceilingErr := &runpkg.SessionTokenCeilingError{
+		TotalTokens:   16_100_000,
+		CeilingTokens: 16_000_000,
+		Source:        runpkg.TokenCeilingSourceAbsolute,
+	}
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID: issue.ID,
+		Request: runpkg.RunRequest{Issue: issue, Attempt: 3, Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateTokenCeilingExceeded,
+			Tokens:     TokenTotals{TotalTokens: 16_100_000},
+		},
+		Err: backendcapacity.NewError(scope, backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeUsageLimit,
+			Kind:    "subscription_window_exhausted",
+			Reason:  "subscription window exhausted",
+			ResetAt: &resetAt,
+		}, ceilingErr),
+		CompletedAt: now,
+	})
+
+	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || attempts.completions[0].ErrorClass != backendcapacity.ErrorClass {
+		t.Fatalf("work attempt completions = %#v, want backend capacity", attempts.completions)
+	}
+	if len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || state.FailureBreaker.Active() {
+		t.Fatalf("outage-era brakes = blocked %#v instant %#v repeated %#v project %#v", state.Blocked, state.InstantFailures, state.RepeatedFailures, state.FailureBreaker)
+	}
+	if retry, ok := state.Retry[issue.ID]; !ok || !retry.CapacityScope.Matches(scope) || retry.Attempt != 3 {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt capacity wait", issue.ID, retry)
 	}
 }
 
@@ -739,9 +855,10 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 	}
 	outage := BackendOutage{
 		Scope:    backendcapacity.Scope{BackendKind: "codex"},
+		Reason:   "subscription window exhausted",
 		ResumeAt: now,
 	}
-	if got := backendCapacityStatusMessage(outage); !strings.Contains(got, "backend codex") || !strings.Contains(got, now.Format(time.RFC3339)) {
+	if got := backendCapacityStatusMessage(outage); !strings.Contains(got, "backend codex: subscription window exhausted") || !strings.Contains(got, "resumes ~2026-07-10 01:55 UTC") {
 		t.Fatalf("backendCapacityStatusMessage() = %q", got)
 	}
 
@@ -1196,6 +1313,273 @@ func TestRecoverBackendCapacityBlockedIssues(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRecoverBackendCapacityOutageEraBreakerParks(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 19, 22, 0, 0, 0, time.UTC)
+	detectedAt := parkedAt.Add(-3 * time.Minute)
+	recoveredAt := parkedAt.Add(5 * time.Minute)
+	scope := backendcapacity.Scope{BackendID: "claude-video", BackendKind: "claude_code", Provider: "anthropic"}
+	otherScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	otherProviderScope := backendcapacity.Scope{BackendID: scope.BackendID, BackendKind: scope.BackendKind, Provider: "openai"}
+	withScope := func(attempt store.WorkAttempt, attemptScope backendcapacity.Scope) store.WorkAttempt {
+		attempt.RuntimeIdentity.BackendID = attemptScope.BackendID
+		attempt.RuntimeIdentity.BackendKind = attemptScope.BackendKind
+		attempt.RuntimeIdentity.Provider.Value = attemptScope.Provider
+		return attempt
+	}
+	artifactAttempt := func(completedAt time.Time, consecutive int, tripped bool) store.WorkAttempt {
+		return withScope(store.WorkAttempt{
+			Status:        store.WorkAttemptStatusTerminal,
+			TerminalState: store.WorkAttemptTerminalSuccess,
+			CompletedAt:   completedAt,
+			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+				artifactGateConvergenceMetadataKey: artifactGateConvergenceRecord{
+					StatusField:          "Artifact Status",
+					DispatchStatus:       "Pending",
+					CompletionStatus:     "Pending",
+					Unchanged:            true,
+					ConsecutiveUnchanged: consecutive,
+					Limit:                artifactGateConvergenceLimit,
+					Tripped:              tripped,
+				},
+			}),
+		}, scope)
+	}
+	mismatchedArtifact := artifactAttempt(parkedAt.Add(-time.Minute), 2, false)
+	mismatchedArtifact.WorkerMetadataJSON = marshalWorkAttemptJSON(map[string]any{
+		artifactGateConvergenceMetadataKey: artifactGateConvergenceRecord{
+			StatusField:          "Artifact Status",
+			DispatchStatus:       "Pending",
+			CompletionStatus:     "Changed",
+			Unchanged:            true,
+			ConsecutiveUnchanged: 2,
+			Limit:                artifactGateConvergenceLimit,
+		},
+	})
+	tests := []struct {
+		name            string
+		reason          string
+		attempts        []store.WorkAttempt
+		historyErr      error
+		wantTransition  bool
+		wantSuppression string
+	}{
+		{
+			name:   "token ceiling evidence entirely inside outage",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				Status:        store.WorkAttemptStatusTerminal,
+				TerminalState: store.WorkAttemptTerminalFailure,
+				ErrorClass:    "runner_error",
+				ErrorMessage:  "session token ceiling exceeded: total_tokens=16100000 ceiling_tokens=16000000",
+				CompletedAt:   parkedAt,
+			}, scope)},
+			wantTransition: true,
+		},
+		{
+			name:   "token ceiling evidence outside outage stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  detectedAt.Add(-time.Minute),
+			}, scope)},
+			wantSuppression: "falls outside",
+		},
+		{
+			name:   "token ceiling evidence from another backend stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  parkedAt,
+			}, otherScope)},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "token ceiling evidence from another provider stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  parkedAt,
+			}, otherProviderScope)},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "token ceiling evidence without runtime identity stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  parkedAt,
+			}},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "non token ceiling evidence stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				ErrorMessage: "ordinary runner failure",
+				CompletedAt:  parkedAt,
+			}, scope)},
+			wantSuppression: "not a token-ceiling",
+		},
+		{
+			name:   "artifact convergence evidence entirely inside outage",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				artifactAttempt(parkedAt, 3, true),
+				artifactAttempt(parkedAt.Add(-time.Minute), 2, false),
+				artifactAttempt(parkedAt.Add(-2*time.Minute), 1, false),
+			},
+			wantTransition: true,
+		},
+		{
+			name:   "artifact convergence with pre-outage evidence stays parked",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				artifactAttempt(parkedAt, 3, true),
+				artifactAttempt(parkedAt.Add(-time.Minute), 2, false),
+				artifactAttempt(detectedAt.Add(-time.Minute), 1, false),
+			},
+			wantSuppression: "falls outside",
+		},
+		{
+			name:   "artifact convergence from another backend stays parked",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				withScope(artifactAttempt(parkedAt, 3, true), otherScope),
+				artifactAttempt(parkedAt.Add(-time.Minute), 2, false),
+				artifactAttempt(parkedAt.Add(-2*time.Minute), 1, false),
+			},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "artifact convergence with older evidence from another backend stays parked",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				artifactAttempt(parkedAt, 3, true),
+				withScope(artifactAttempt(parkedAt.Add(-time.Minute), 2, false), otherScope),
+				artifactAttempt(parkedAt.Add(-2*time.Minute), 1, false),
+			},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:            "artifact convergence without history stays parked",
+			reason:          artifactGateConvergenceReason,
+			wantSuppression: "history is unavailable",
+		},
+		{
+			name:            "artifact convergence incomplete history stays parked",
+			reason:          artifactGateConvergenceReason,
+			attempts:        []store.WorkAttempt{artifactAttempt(parkedAt, 3, true)},
+			wantSuppression: "evidence is incomplete",
+		},
+		{
+			name:   "artifact convergence mismatched history stays parked",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				artifactAttempt(parkedAt, 3, true),
+				mismatchedArtifact,
+				artifactAttempt(parkedAt.Add(-2*time.Minute), 1, false),
+			},
+			wantSuppression: "evidence is incomplete",
+		},
+		{
+			name:            "attempt history lookup failure stays parked",
+			reason:          artifactGateConvergenceReason,
+			historyErr:      errors.New("history unavailable"),
+			wantSuppression: "lookup failed",
+		},
+		{
+			name:            "independent breaker stays parked",
+			reason:          "operator_hold",
+			wantSuppression: "independent cause",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stageUpdatedAt := parkedAt
+			issue := connector.Issue{
+				ID:             "issue-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Identifier:     "digitaldrywood/video#99",
+				State:          blockedStatusState,
+				StageUpdatedAt: &stageUpdatedAt,
+				Comments:       []connector.IssueComment{{Body: "ordinary operator note"}},
+				WorkpadSignal: &workpad.Signal{
+					Source: workpad.SourceStructured,
+					Status: workpad.StatusInProgress,
+				},
+			}
+			tracker := &backendCapacityTestConnector{}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			attemptStore := &recordingWorkAttemptStore{history: tt.attempts, historyErr: tt.historyErr}
+			orch := &Orchestrator{
+				cfg:                normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "video"}, ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}}),
+				connector:          tracker,
+				capacityController: backendCapacityTestController{scope: scope},
+				workflowMetrics:    metrics,
+				workAttempts:       attemptStore,
+			}
+			if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+				ProjectID:         "video",
+				IssueID:           issue.ID,
+				Identifier:        issue.Identifier,
+				PhaseType:         store.WorkflowPhaseTypeLane,
+				PhaseName:         blockedStatusState,
+				PreviousPhaseName: "In Progress",
+				Reason:            tt.reason,
+				Status:            "entered",
+				StartedAt:         parkedAt,
+			}); err != nil {
+				t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+			}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: parkedAt, Source: BlockedSourceProjectStatus}
+			state.BackendRecoveries[scope.Key()] = BackendRecovery{
+				Outage: BackendOutage{
+					Scope:      scope,
+					DetectedAt: detectedAt,
+					Reason:     "subscription window exhausted",
+				},
+				RecoveredAt: recoveredAt,
+			}
+
+			transitioned := orch.recoverBackendCapacityBlockedIssues(t.Context(), &state, []connector.Issue{issue}, recoveredAt)
+			if tt.wantTransition {
+				if _, ok := transitioned[issue.ID]; !ok || len(tracker.updates) != 1 || tracker.updates[0].state != "In Progress" {
+					t.Fatalf("recovery = transitioned %#v updates %#v, want In Progress", transitioned, tracker.updates)
+				}
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					t.Fatalf("Blocked[%q] remains after outage-era breaker recovery", issue.ID)
+				}
+				return
+			}
+			if len(transitioned) != 0 || len(tracker.updates) != 0 {
+				t.Fatalf("recovery = transitioned %#v updates %#v, want sticky park", transitioned, tracker.updates)
+			}
+			recovery := state.BackendRecoveries[scope.Key()]
+			if got := recovery.SuppressedIssues[issue.ID]; !strings.Contains(got, tt.wantSuppression) {
+				t.Fatalf("suppression = %q, want %q", got, tt.wantSuppression)
+			}
+		})
+	}
+}
+
+func TestBackendCapacityBreakerRecoveryRequiresDurableProvenance(t *testing.T) {
+	t.Parallel()
+
+	orch := &Orchestrator{}
+	issue := connector.Issue{ID: "issue-no-history", State: blockedStatusState}
+	if _, reason := orch.backendCapacityBreakerRecoveryTarget(t.Context(), issue, BackendRecovery{}); !strings.Contains(reason, "provenance is unavailable") {
+		t.Fatalf("recovery target suppression = %q, want missing provenance", reason)
+	}
+	if ok, reason := orch.backendCapacityBreakerEvidenceWithinOutage(t.Context(), issue, "token_ceiling_circuit_breaker", BackendRecovery{}); ok || !strings.Contains(reason, "history is unavailable") {
+		t.Fatalf("recovery evidence = (%v, %q), want missing history", ok, reason)
 	}
 }
 

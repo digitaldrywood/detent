@@ -254,13 +254,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleMergeFallbackBudgetExceeded(ctx, state, event, running) {
 		return
 	}
-	if o.handleSessionBrake(ctx, state, event, running) {
-		return
-	}
-	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
-		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, githubRESTCapacityError, errorString(event.Err))
-		return
-	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
 		if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 			o.handleTransientOverload(ctx, state, event, running, capacityErr)
@@ -268,6 +261,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, "backend_capacity", errorString(event.Err))
 		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
+		return
+	}
+	if o.handleSessionBrake(ctx, state, event, running) {
+		return
+	}
+	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, githubRESTCapacityError, errorString(event.Err))
 		return
 	}
 	if event.Err == nil || event.Result.TurnStarted {

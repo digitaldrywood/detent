@@ -195,12 +195,16 @@ func backendCapacityStatusMessage(outage BackendOutage) string {
 	if backend == "" {
 		backend = "agent backend"
 	}
+	reason := strings.TrimSpace(outage.Reason)
 	message := "backend " + backend + " at usage limit"
+	if reason != "" {
+		message = "backend " + backend + ": " + reason
+	}
 	if !outage.ResumeAt.IsZero() {
-		message += " — provider-recorded resume at " + outage.ResumeAt.UTC().Format(time.RFC3339)
+		message += ", resumes ~" + outage.ResumeAt.UTC().Format("2006-01-02 15:04 UTC")
 	}
 	if !outage.NextProbeAt.IsZero() {
-		message += "; next probe at " + outage.NextProbeAt.UTC().Format(time.RFC3339)
+		message += "; next probe ~" + outage.NextProbeAt.UTC().Format("2006-01-02 15:04 UTC")
 	}
 	return message
 }
@@ -428,16 +432,65 @@ func (o *Orchestrator) recoverBackendCapacityFromStatus(
 	if o.capacityStatus == nil || rateLimits == nil || !running.CapacityScope.Hosted() {
 		return
 	}
-	key, outage, ok := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
-	if !ok {
-		return
-	}
 	status, ok := o.capacityStatus.BackendCapacityStatus(running.CapacityScope, rateLimits)
 	if !ok {
 		return
 	}
 	if observedAt.IsZero() {
 		observedAt = o.clockNow()
+	}
+	key, outage, active := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+	if status.Exhausted {
+		wasActive := active
+		details := status.Details
+		if details.Type == "" {
+			details.Type = backendcapacity.ErrorTypeUsageLimit
+		}
+		if strings.TrimSpace(details.Kind) == "" {
+			details.Kind = "subscription_window_exhausted"
+		}
+		if strings.TrimSpace(details.Reason) == "" {
+			details.Reason = "subscription window exhausted"
+		}
+		detail := strings.TrimSpace(status.Detail)
+		if detail == "" {
+			detail = details.Reason
+		}
+		capacityErr, classified := backendcapacity.As(backendcapacity.NewError(
+			running.CapacityScope,
+			details,
+			errors.New(detail),
+		))
+		if !classified {
+			return
+		}
+		o.registerBackendOutage(state, capacityErr, observedAt, running.CapacityProbe)
+		key, outage, active = matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+		if !active {
+			return
+		}
+		outage.LastProbeAt = observedAt
+		outage.LastProbeResult = "status_exhausted"
+		outage.LastProbeDetail = strings.TrimSpace(status.Detail)
+		state.BackendOutages[key] = outage
+		if !wasActive {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      observedAt,
+				Event:   "backend_capacity_paused",
+				Message: backendCapacityStatusMessage(outage),
+			})
+			telemetry.LogLifecycleMessage(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, "backend_capacity_paused", "backend capacity paused from provider status", o.runningLifecycleCorrelation(running.Issue, running),
+				"backend_id", outage.Scope.BackendID,
+				"backend_kind", outage.Scope.BackendKind,
+				"provider", outage.Scope.Provider,
+				"reset_at", outage.ResetAt,
+				"resume_at", outage.ResumeAt,
+			)
+		}
+		return
+	}
+	if !active {
+		return
 	}
 	outage.LastProbeAt = observedAt
 	outage.LastProbeDetail = strings.TrimSpace(status.Detail)
@@ -640,6 +693,33 @@ func (o *Orchestrator) recoverBackendCapacityBlockedIssues(
 	for _, issue := range issuesInStates(issues, []string{blockedStatusState}) {
 		capacityErr, capacityComment, hydratedIssue, ok := o.classifyBlockedCapacityIssue(ctx, state, issue, now)
 		if !ok {
+			request := runpkg.RunRequest{
+				Issue:           hydratedIssue,
+				Mode:            runpkg.RunModeImplement,
+				SelectorContext: o.selectorContext(),
+			}
+			scope, scoped := o.backendCapacityScope(request)
+			if !scoped {
+				continue
+			}
+			if _, _, active := matchingBackendOutage(state.BackendOutages, scope); active {
+				continue
+			}
+			recoveryKey, recovery, recovered := matchingBackendRecovery(state.BackendRecoveries, scope)
+			if !recovered {
+				continue
+			}
+			targetState, suppression := o.backendCapacityBreakerRecoveryTarget(ctx, hydratedIssue, recovery)
+			if suppression != "" {
+				recovery = o.recordBackendCapacityBlockedRecoverySuppressed(state, hydratedIssue, recovery, suppression, now)
+				state.BackendRecoveries[recoveryKey] = recovery
+				continue
+			}
+			if !o.applyBackendCapacityBlockedRecovery(ctx, state, hydratedIssue, targetState, recovery.Outage, recovery, now) {
+				continue
+			}
+			transitioned[hydratedIssue.ID] = struct{}{}
+			consumedRecoveries[recoveryKey] = struct{}{}
 			continue
 		}
 		key, outage, active := matchingBackendOutage(state.BackendOutages, capacityErr.Scope)
@@ -679,6 +759,151 @@ func (o *Orchestrator) recoverBackendCapacityBlockedIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func (o *Orchestrator) backendCapacityBreakerRecoveryTarget(
+	ctx context.Context,
+	issue connector.Issue,
+	recovery BackendRecovery,
+) (string, string) {
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok {
+		return "", "current Blocked-entry provenance is unavailable"
+	}
+	if normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
+		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) {
+		return "", "latest durable lane entry is not the current Blocked entry"
+	}
+	reason := strings.TrimSpace(entry.Event.Reason)
+	switch reason {
+	case "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
+	default:
+		return "", "current Blocked entry has independent cause " + reason
+	}
+	if recovery.Outage.DetectedAt.IsZero() || recovery.RecoveredAt.IsZero() {
+		return "", "backend capacity outage window is incomplete"
+	}
+	if entry.Event.StartedAt.Before(recovery.Outage.DetectedAt.Add(-reworkBreakerStageUpdateSkew)) ||
+		entry.Event.StartedAt.After(recovery.RecoveredAt) {
+		return "", "breaker park falls outside the backend capacity outage window"
+	}
+	if ok, evidenceReason := o.backendCapacityBreakerEvidenceWithinOutage(ctx, issue, reason, recovery); !ok {
+		return "", evidenceReason
+	}
+	if independentReason := o.backendCapacityIndependentBlockerReason(issue); independentReason != "" {
+		return "", independentReason
+	}
+	targetState := strings.TrimSpace(entry.Event.PreviousPhaseName)
+	if targetState == "" || normalizeState(targetState) == normalizeState(blockedStatusState) || stateIn(targetState, o.cfg.TerminalStates) {
+		return "", "current Blocked entry has no recoverable captured source lane"
+	}
+	return targetState, ""
+}
+
+func (o *Orchestrator) backendCapacityBreakerEvidenceWithinOutage(
+	ctx context.Context,
+	issue connector.Issue,
+	reason string,
+	recovery BackendRecovery,
+) (bool, string) {
+	if o.workAttempts == nil {
+		return false, "breaker attempt history is unavailable"
+	}
+	limit := 1
+	if reason == artifactGateConvergenceReason {
+		limit = artifactGateConvergenceLimit + 1
+	}
+	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
+		WorkerType: workAttemptWorkerType(issue, runpkg.RunModeImplement),
+		Limit:      limit,
+	})
+	if err != nil {
+		return false, "breaker attempt history lookup failed"
+	}
+	if reason == "token_ceiling_circuit_breaker" {
+		if len(attempts) == 0 || !backendCapacityTokenCeilingAttempt(attempts[0]) {
+			return false, "latest breaker attempt is not a token-ceiling failure"
+		}
+		if !backendCapacityAttemptMatchesScope(attempts[0], recovery.Outage.Scope) {
+			return false, "token-ceiling evidence belongs to a different backend capacity scope"
+		}
+		if !backendCapacityEvidenceInWindow(attempts[0].CompletedAt, recovery) {
+			return false, "token-ceiling evidence falls outside the backend capacity outage window"
+		}
+		return true, ""
+	}
+	if len(attempts) == 0 {
+		return false, "artifact-gate convergence history is unavailable"
+	}
+	latest, ok := artifactGateConvergenceRecordFromAttempt(attempts[0])
+	if !ok || !latest.Tripped || latest.Limit <= 0 || latest.ConsecutiveUnchanged < latest.Limit || len(attempts) < latest.Limit {
+		return false, "artifact-gate convergence evidence is incomplete"
+	}
+	for index := range latest.Limit {
+		attempt := attempts[index]
+		record, found := artifactGateConvergenceRecordFromAttempt(attempt)
+		if !found || !record.Unchanged ||
+			!strings.EqualFold(strings.TrimSpace(record.StatusField), strings.TrimSpace(latest.StatusField)) ||
+			!strings.EqualFold(strings.TrimSpace(record.DispatchStatus), strings.TrimSpace(latest.DispatchStatus)) ||
+			!strings.EqualFold(strings.TrimSpace(record.CompletionStatus), strings.TrimSpace(latest.CompletionStatus)) {
+			return false, "artifact-gate convergence evidence is incomplete"
+		}
+		if !backendCapacityAttemptMatchesScope(attempt, recovery.Outage.Scope) {
+			return false, "artifact-gate convergence evidence belongs to a different backend capacity scope"
+		}
+		if !backendCapacityEvidenceInWindow(attempt.CompletedAt, recovery) {
+			return false, "artifact-gate convergence evidence falls outside the backend capacity outage window"
+		}
+	}
+	return true, ""
+}
+
+func backendCapacityTokenCeilingAttempt(attempt store.WorkAttempt) bool {
+	text := strings.ToLower(strings.TrimSpace(attempt.ErrorClass + "\n" + attempt.ErrorMessage))
+	return strings.Contains(text, "token_ceiling") || strings.Contains(text, "session token ceiling exceeded")
+}
+
+func backendCapacityEvidenceInWindow(at time.Time, recovery BackendRecovery) bool {
+	return !at.IsZero() &&
+		!at.Before(recovery.Outage.DetectedAt.Add(-reworkBreakerStageUpdateSkew)) &&
+		!at.After(recovery.RecoveredAt)
+}
+
+func backendCapacityAttemptMatchesScope(attempt store.WorkAttempt, scope backendcapacity.Scope) bool {
+	identity := attempt.RuntimeIdentity.Normalize()
+	scope = scope.Normalize()
+	if identity.BackendID == "" || identity.BackendKind == "" ||
+		!strings.EqualFold(identity.BackendID, scope.BackendID) ||
+		!strings.EqualFold(identity.BackendKind, scope.BackendKind) {
+		return false
+	}
+	return scope.Provider == "" ||
+		(identity.Provider.Known() && strings.EqualFold(identity.Provider.Value, scope.Provider))
+}
+
+func (o *Orchestrator) backendCapacityIndependentBlockerReason(issue connector.Issue) string {
+	if blockedRefsUnresolved(issue.BlockedBy, o.cfg.TerminalStates) {
+		return "current issue has independent dependency blockers"
+	}
+	if signal, found := autoPromoteIssueWorkpadSignal(issue); found && signal != nil && signal.Source == workpad.SourceStructured {
+		if signal.Invalid != nil {
+			return "current structured Workpad blocker status is invalid"
+		}
+		if strings.TrimSpace(signal.HumanAction) != "" {
+			return "current structured Workpad declares a human action"
+		}
+		if len(signal.Blockers) > 0 {
+			return "current structured Workpad declares independent typed blockers"
+		}
+		if strings.TrimSpace(signal.Status) == workpad.StatusBlocked {
+			return "current structured Workpad declares an independent blocked reason"
+		}
+	}
+	return ""
 }
 
 func (o *Orchestrator) classifyBlockedCapacityIssue(
@@ -749,22 +974,8 @@ func (o *Orchestrator) backendCapacityBlockedRecoveryTarget(
 	if !recoveredAt.IsZero() && (recoveredAt.Before(entry.Event.StartedAt) || recoveredAt.Before(commentAt)) {
 		return "", "backend capacity recovery predates the current Blocked entry evidence"
 	}
-	if blockedRefsUnresolved(issue.BlockedBy, o.cfg.TerminalStates) {
-		return "", "current issue has independent dependency blockers"
-	}
-	if signal, found := autoPromoteIssueWorkpadSignal(issue); found && signal != nil && signal.Source == workpad.SourceStructured {
-		if signal.Invalid != nil {
-			return "", "current structured Workpad blocker status is invalid"
-		}
-		if strings.TrimSpace(signal.HumanAction) != "" {
-			return "", "current structured Workpad declares a human action"
-		}
-		if len(signal.Blockers) > 0 {
-			return "", "current structured Workpad declares independent typed blockers"
-		}
-		if strings.TrimSpace(signal.Status) == workpad.StatusBlocked {
-			return "", "current structured Workpad declares an independent blocked reason"
-		}
+	if independentReason := o.backendCapacityIndependentBlockerReason(issue); independentReason != "" {
+		return "", independentReason
 	}
 	targetState := strings.TrimSpace(entry.Event.PreviousPhaseName)
 	if targetState == "" || normalizeState(targetState) == normalizeState(blockedStatusState) || stateIn(targetState, o.cfg.TerminalStates) {

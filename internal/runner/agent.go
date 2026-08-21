@@ -1582,9 +1582,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
-	if execution.err != nil {
-		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
-	}
+	execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -1610,9 +1608,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
-		if execution.err != nil {
-			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
-		}
+		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
 	if req.ForgeRetry != nil && strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
 		execution.result.ForgeWriteCompleted = true
@@ -1644,9 +1640,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, execution.result.RuntimeIdentity)
 		recovery.err = sessionBrake.wrapTurnLimit(ctx, recovery.err)
 		recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
-		if recovery.err != nil {
-			recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
-		}
+		recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
 		initialErr := execution.err
 		execution = mergeAgentTurnExecutions(execution, recovery)
 		turns = int64(max(execution.turnCount, 1))
@@ -2344,9 +2338,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.DiffStats = brakeDiff
 	}
 	turnErr = errors.Join(turnErr, scratchCleanupErr)
-	if turnErr != nil {
-		turnErr = classifyAgentCapacityError(backend, selection, backendConfig, runResult.RuntimeIdentity, turnErr, runResult.RateLimits, runStartedAt)
-	}
+	turnErr = classifyAgentCapacityError(backend, selection, backendConfig, runResult.RuntimeIdentity, turnErr, runResult.RateLimits, runStartedAt)
 	checkFinishedAttrs := []any{
 		"workspace_path", info.Path,
 		"detent_session_id", sessionID,

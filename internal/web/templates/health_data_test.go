@@ -106,6 +106,20 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Backend codex at usage limit.",
 		},
 		{
+			name: "subscription outage names condition",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				BackendOutages: []telemetry.BackendOutage{{
+					BackendID: "codex",
+					Provider:  "openai",
+					Reason:    "subscription window exhausted",
+					ResumeAt:  now.Add(44 * time.Minute),
+				}},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Backend codex: subscription window exhausted.",
+		},
+		{
 			name: "failure breaker warns",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -401,6 +415,25 @@ func TestHealthRowsIncludeBackendCapacityOutage(t *testing.T) {
 	})
 	row := rows[len(rows)-1]
 	if row.Component != "Backend codex" || row.Status != "Usage limit" || !row.ResetAt.Equal(now.Add(44*time.Minute)) {
+		t.Fatalf("backend outage row = %+v", row)
+	}
+}
+
+func TestHealthRowsNameSubscriptionExhaustion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 19, 22, 0, 0, 0, time.UTC)
+	rows := healthRows(telemetry.Snapshot{
+		GeneratedAt: now,
+		BackendOutages: []telemetry.BackendOutage{{
+			BackendID: "codex",
+			Provider:  "openai",
+			Reason:    "subscription window exhausted",
+			ResumeAt:  now.Add(44 * time.Minute),
+		}},
+	})
+	row := rows[len(rows)-1]
+	if row.Status != "Subscription exhausted" || !strings.Contains(row.Detail, "subscription window exhausted") {
 		t.Fatalf("backend outage row = %+v", row)
 	}
 }

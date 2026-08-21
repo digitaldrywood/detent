@@ -838,11 +838,15 @@ func healthReleaseRow(release telemetry.Release) healthRow {
 
 func healthBackendOutageRow(outage telemetry.BackendOutage, now time.Time) healthRow {
 	detail, resumeAt, _ := backendCapacityOutageDetailParts(outage, now)
+	status := "Usage limit"
+	if strings.EqualFold(strings.TrimSpace(outage.Reason), "subscription window exhausted") {
+		status = "Subscription exhausted"
+	}
 	return healthRow{
 		ID:        "health-backend-" + boardCardSlug(outage.BackendID),
 		Component: "Backend " + outage.BackendID,
 		Kind:      primitives.KindWarn,
-		Status:    "Usage limit",
+		Status:    status,
 		Detail:    detail,
 		DetailAt:  resumeAt,
 		Resets:    "—",
