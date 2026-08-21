@@ -306,8 +306,7 @@ func (o *Orchestrator) reconcileLifetimeLimitPark(
 			o.logger.Warn("lifetime issue recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}
 	}
-	delete(state.Blocked, issue.ID)
-	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
 	o.recordBlockedRecoveryDecision(ctx, state, issue, "transition", "lifetime_limit_recovered", &park, signature)
+	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
 	return true, true
 }
