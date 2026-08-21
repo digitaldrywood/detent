@@ -1098,6 +1098,10 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 
 func appendDispatchLoopWorkspaceEvidence(b *strings.Builder, decision implementCompletionProgressDecision) {
 	diffStats := decision.WorkspaceDiffStats
+	if !diffStatsPresent(diffStats) {
+		b.WriteString("\n- workspace evidence: unavailable")
+		return
+	}
 	b.WriteString("\n- evidence: workspace unchanged across ")
 	b.WriteString(strconv.Itoa(decision.ConsecutiveNoProgress))
 	b.WriteString(" attempts")

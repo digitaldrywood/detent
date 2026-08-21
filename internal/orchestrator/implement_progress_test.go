@@ -1507,6 +1507,16 @@ func TestImplementProgressBlockComment(t *testing.T) {
 			},
 			wantAbsent: []string{"workspace_diffstat", "(changed)"},
 		},
+		{
+			name: "dispatch loop unavailable workspace evidence",
+			decision: implementCompletionProgressDecision{
+				BlockReason:           dispatchLoopDetectedReason,
+				NoProgressLimit:       3,
+				ConsecutiveNoProgress: 3,
+			},
+			wantContains: []string{"workspace evidence: unavailable"},
+			wantAbsent:   []string{"workspace unchanged", "identical since"},
+		},
 	}
 	issue := connector.Issue{PullRequest: &connector.PullRequest{URL: "https://github.test/pull/42"}}
 	for _, tt := range tests {
