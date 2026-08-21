@@ -79,6 +79,31 @@ func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs Workfl
 	return event.ID, nil
 }
 
+func (s *sqliteStore) UpdateWorkflowPhaseEventMetadata(ctx context.Context, eventID int64, metadataJSON string) error {
+	if eventID <= 0 {
+		return errors.New("workflow phase event id is required")
+	}
+	metadataJSON = strings.TrimSpace(metadataJSON)
+	if metadataJSON == "" {
+		metadataJSON = "{}"
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE workflow_phase_events
+SET metadata_json = ?
+WHERE id = ?`, metadataJSON, eventID)
+	if err != nil {
+		return fmt.Errorf("updating workflow phase event metadata: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reading updated workflow phase event count: %w", err)
+	}
+	if updated == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sqliteStore) ProvenanceAttributionTrustBoundary(ctx context.Context) (time.Time, error) {
 	value, err := s.queries.ProvenanceAttributionTrustBoundary(ctx)
 	if err != nil {

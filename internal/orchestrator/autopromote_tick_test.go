@@ -6054,8 +6054,24 @@ func (r *autoPromoteWorkflowMetricsRecorder) RecordWorkflowPhaseEvent(_ context.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if event.ID <= 0 {
+		event.ID = int64(len(r.events) + 1)
+	}
 	r.events = append(r.events, event)
-	return int64(len(r.events)), nil
+	return event.ID, nil
+}
+
+func (r *autoPromoteWorkflowMetricsRecorder) UpdateWorkflowPhaseEventMetadata(_ context.Context, eventID int64, metadataJSON string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.events {
+		if r.events[index].ID == eventID {
+			r.events[index].MetadataJSON = metadataJSON
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (r *autoPromoteWorkflowMetricsRecorder) IssueWorkflowTimeline(_ context.Context, identity store.IssueIdentity) (store.WorkflowTimeline, error) {
