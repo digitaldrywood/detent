@@ -1457,30 +1457,77 @@ func TestImplementProgressMergedCompletionQualification(t *testing.T) {
 	}
 }
 
-func TestImplementProgressBlockCommentIncludesBoundaryEvidence(t *testing.T) {
+func TestImplementProgressBlockComment(t *testing.T) {
 	t.Parallel()
 
-	decision := implementCompletionProgressDecision{
-		BlockReason:            workpadBlockedUnactionedReason,
-		NoProgressLimit:        3,
-		ConsecutiveNoProgress:  2,
-		ConsecutiveHumanAction: 3,
-		HumanAction:            "Approve release\nConfirm rollback",
-		CurrentSignature:       autoPromoteReworkSignature{PRNumber: 42, HeadSHA: "head", FailedChecks: []string{"test"}},
-		PreviousSignature:      autoPromoteReworkSignature{HeadSHA: "previous"},
-		FailedChecksAdded:      []string{"test"},
-		FailedChecksRemoved:    []string{"lint"},
-		WorkspaceDiffStats:     DiffStats{Status: "clean"},
+	tests := []struct {
+		name         string
+		decision     implementCompletionProgressDecision
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{
+			name: "boundary evidence",
+			decision: implementCompletionProgressDecision{
+				BlockReason:            workpadBlockedUnactionedReason,
+				NoProgressLimit:        3,
+				ConsecutiveNoProgress:  2,
+				ConsecutiveHumanAction: 3,
+				HumanAction:            "Approve release\nConfirm rollback",
+				CurrentSignature:       autoPromoteReworkSignature{PRNumber: 42, HeadSHA: "head", FailedChecks: []string{"test"}},
+				PreviousSignature:      autoPromoteReworkSignature{HeadSHA: "previous"},
+				FailedChecksAdded:      []string{"test"},
+				FailedChecksRemoved:    []string{"lint"},
+				WorkspaceDiffStats:     DiffStats{Status: "clean"},
+			},
+			wantContains: []string{"workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"},
+		},
+		{
+			name: "dispatch loop stale carry",
+			decision: implementCompletionProgressDecision{
+				BlockReason:           dispatchLoopDetectedReason,
+				NoProgressLimit:       3,
+				ConsecutiveNoProgress: 3,
+				WorkspaceDiffStats: DiffStats{
+					FilesChanged:    1,
+					AddedLines:      1,
+					RemovedLines:    1,
+					UnpushedCommits: 2,
+					HeadSHA:         "workspace-head",
+					Fingerprint:     "diff-fingerprint",
+					Status:          "changed",
+				},
+			},
+			wantContains: []string{
+				"workspace unchanged across 3 attempts",
+				"head `workspace-head`",
+				"diff fingerprint `diff-fingerprint`",
+				"identical since attempt 1",
+				"carrying 1 changed file (+1/-1), 2 unpushed commits, unchanged since attempt 1",
+			},
+			wantAbsent: []string{"workspace_diffstat", "(changed)"},
+		},
 	}
 	issue := connector.Issue{PullRequest: &connector.PullRequest{URL: "https://github.test/pull/42"}}
-	comment := implementProgressBlockComment(issue, decision)
-	for _, want := range []string{"workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"} {
-		if !strings.Contains(comment, want) {
-			t.Fatalf("comment missing %q:\n%s", want, comment)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			comment := implementProgressBlockComment(issue, tt.decision)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(comment, want) {
+					t.Fatalf("comment missing %q:\n%s", want, comment)
+				}
+			}
+			for _, unwanted := range tt.wantAbsent {
+				if strings.Contains(comment, unwanted) {
+					t.Fatalf("comment contains misleading evidence %q:\n%s", unwanted, comment)
+				}
+			}
+		})
 	}
-	if got := implementProgressRecoveryReason(decision); got != decision.HumanAction {
-		t.Fatalf("implementProgressRecoveryReason() = %q, want %q", got, decision.HumanAction)
+	if got := implementProgressRecoveryReason(tests[0].decision); got != tests[0].decision.HumanAction {
+		t.Fatalf("implementProgressRecoveryReason() = %q, want %q", got, tests[0].decision.HumanAction)
 	}
 }
 

@@ -1062,24 +1062,28 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 		b.WriteString("\n- failed_checks_removed: ")
 		b.WriteString(removed)
 	}
-	b.WriteString("\n- workspace_diffstat: ")
-	if diffStatsPresent(decision.WorkspaceDiffStats) {
-		b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.FilesChanged))
-		b.WriteString(" files, +")
-		b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.AddedLines))
-		b.WriteString("/-")
-		b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.RemovedLines))
-		if status := strings.TrimSpace(decision.WorkspaceDiffStats.Status); status != "" {
-			b.WriteString(" (")
-			b.WriteString(status)
-			b.WriteString(")")
-		}
+	if blockReason == dispatchLoopDetectedReason {
+		appendDispatchLoopWorkspaceEvidence(&b, decision)
 	} else {
-		b.WriteString("unavailable")
-	}
-	if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
-		b.WriteString("\n- unpushed_commits: ")
-		b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.UnpushedCommits))
+		b.WriteString("\n- workspace_diffstat: ")
+		if diffStatsPresent(decision.WorkspaceDiffStats) {
+			b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.FilesChanged))
+			b.WriteString(" files, +")
+			b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.AddedLines))
+			b.WriteString("/-")
+			b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.RemovedLines))
+			if status := strings.TrimSpace(decision.WorkspaceDiffStats.Status); status != "" {
+				b.WriteString(" (")
+				b.WriteString(status)
+				b.WriteString(")")
+			}
+		} else {
+			b.WriteString("unavailable")
+		}
+		if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+			b.WriteString("\n- unpushed_commits: ")
+			b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.UnpushedCommits))
+		}
 	}
 	if humanAction := strings.TrimSpace(decision.HumanAction); humanAction != "" {
 		b.WriteString("\n\nHuman action requested by the Workpad:\n\n")
@@ -1090,4 +1094,47 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 		}
 	}
 	return b.String()
+}
+
+func appendDispatchLoopWorkspaceEvidence(b *strings.Builder, decision implementCompletionProgressDecision) {
+	diffStats := decision.WorkspaceDiffStats
+	b.WriteString("\n- evidence: workspace unchanged across ")
+	b.WriteString(strconv.Itoa(decision.ConsecutiveNoProgress))
+	b.WriteString(" attempts")
+	if headSHA := strings.TrimSpace(diffStats.HeadSHA); headSHA != "" {
+		b.WriteString(" — head `")
+		b.WriteString(headSHA)
+		b.WriteString("`")
+		if fingerprint := strings.TrimSpace(diffStats.Fingerprint); fingerprint != "" {
+			b.WriteString(" and diff fingerprint `")
+			b.WriteString(fingerprint)
+			b.WriteString("`")
+		}
+	} else if fingerprint := strings.TrimSpace(diffStats.Fingerprint); fingerprint != "" {
+		b.WriteString(" — diff fingerprint `")
+		b.WriteString(fingerprint)
+		b.WriteString("`")
+	}
+	b.WriteString(" identical since attempt 1")
+
+	if diffStats.FilesChanged == 0 && diffStats.AddedLines == 0 && diffStats.RemovedLines == 0 && diffStats.UnpushedCommits == 0 {
+		return
+	}
+	b.WriteString("\n- carried stale work: carrying ")
+	b.WriteString(strconv.Itoa(diffStats.FilesChanged))
+	b.WriteString(" changed file")
+	if diffStats.FilesChanged != 1 {
+		b.WriteString("s")
+	}
+	b.WriteString(" (+")
+	b.WriteString(strconv.Itoa(diffStats.AddedLines))
+	b.WriteString("/-")
+	b.WriteString(strconv.Itoa(diffStats.RemovedLines))
+	b.WriteString("), ")
+	b.WriteString(strconv.Itoa(diffStats.UnpushedCommits))
+	b.WriteString(" unpushed commit")
+	if diffStats.UnpushedCommits != 1 {
+		b.WriteString("s")
+	}
+	b.WriteString(", unchanged since attempt 1")
 }
