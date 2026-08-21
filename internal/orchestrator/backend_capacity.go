@@ -828,6 +828,9 @@ func (o *Orchestrator) backendCapacityBreakerEvidenceWithinOutage(
 		if len(attempts) == 0 || !backendCapacityTokenCeilingAttempt(attempts[0]) {
 			return false, "latest breaker attempt is not a token-ceiling failure"
 		}
+		if !backendCapacityAttemptMatchesScope(attempts[0], recovery.Outage.Scope) {
+			return false, "token-ceiling evidence belongs to a different backend capacity scope"
+		}
 		if !backendCapacityEvidenceInWindow(attempts[0].CompletedAt, recovery) {
 			return false, "token-ceiling evidence falls outside the backend capacity outage window"
 		}
@@ -849,6 +852,9 @@ func (o *Orchestrator) backendCapacityBreakerEvidenceWithinOutage(
 			!strings.EqualFold(strings.TrimSpace(record.CompletionStatus), strings.TrimSpace(latest.CompletionStatus)) {
 			return false, "artifact-gate convergence evidence is incomplete"
 		}
+		if !backendCapacityAttemptMatchesScope(attempt, recovery.Outage.Scope) {
+			return false, "artifact-gate convergence evidence belongs to a different backend capacity scope"
+		}
 		if !backendCapacityEvidenceInWindow(attempt.CompletedAt, recovery) {
 			return false, "artifact-gate convergence evidence falls outside the backend capacity outage window"
 		}
@@ -865,6 +871,18 @@ func backendCapacityEvidenceInWindow(at time.Time, recovery BackendRecovery) boo
 	return !at.IsZero() &&
 		!at.Before(recovery.Outage.DetectedAt.Add(-reworkBreakerStageUpdateSkew)) &&
 		!at.After(recovery.RecoveredAt)
+}
+
+func backendCapacityAttemptMatchesScope(attempt store.WorkAttempt, scope backendcapacity.Scope) bool {
+	identity := attempt.RuntimeIdentity.Normalize()
+	scope = scope.Normalize()
+	if identity.BackendID == "" || identity.BackendKind == "" ||
+		!strings.EqualFold(identity.BackendID, scope.BackendID) ||
+		!strings.EqualFold(identity.BackendKind, scope.BackendKind) {
+		return false
+	}
+	return scope.Provider == "" ||
+		(identity.Provider.Known() && strings.EqualFold(identity.Provider.Value, scope.Provider))
 }
 
 func (o *Orchestrator) backendCapacityIndependentBlockerReason(issue connector.Issue) string {

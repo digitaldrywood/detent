@@ -1323,8 +1323,16 @@ func TestRecoverBackendCapacityOutageEraBreakerParks(t *testing.T) {
 	detectedAt := parkedAt.Add(-3 * time.Minute)
 	recoveredAt := parkedAt.Add(5 * time.Minute)
 	scope := backendcapacity.Scope{BackendID: "claude-video", BackendKind: "claude_code", Provider: "anthropic"}
+	otherScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	otherProviderScope := backendcapacity.Scope{BackendID: scope.BackendID, BackendKind: scope.BackendKind, Provider: "openai"}
+	withScope := func(attempt store.WorkAttempt, attemptScope backendcapacity.Scope) store.WorkAttempt {
+		attempt.RuntimeIdentity.BackendID = attemptScope.BackendID
+		attempt.RuntimeIdentity.BackendKind = attemptScope.BackendKind
+		attempt.RuntimeIdentity.Provider.Value = attemptScope.Provider
+		return attempt
+	}
 	artifactAttempt := func(completedAt time.Time, consecutive int, tripped bool) store.WorkAttempt {
-		return store.WorkAttempt{
+		return withScope(store.WorkAttempt{
 			Status:        store.WorkAttemptStatusTerminal,
 			TerminalState: store.WorkAttemptTerminalSuccess,
 			CompletedAt:   completedAt,
@@ -1339,7 +1347,7 @@ func TestRecoverBackendCapacityOutageEraBreakerParks(t *testing.T) {
 					Tripped:              tripped,
 				},
 			}),
-		}
+		}, scope)
 	}
 	mismatchedArtifact := artifactAttempt(parkedAt.Add(-time.Minute), 2, false)
 	mismatchedArtifact.WorkerMetadataJSON = marshalWorkAttemptJSON(map[string]any{
@@ -1363,31 +1371,58 @@ func TestRecoverBackendCapacityOutageEraBreakerParks(t *testing.T) {
 		{
 			name:   "token ceiling evidence entirely inside outage",
 			reason: "token_ceiling_circuit_breaker",
-			attempts: []store.WorkAttempt{{
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
 				Status:        store.WorkAttemptStatusTerminal,
 				TerminalState: store.WorkAttemptTerminalFailure,
 				ErrorClass:    "runner_error",
 				ErrorMessage:  "session token ceiling exceeded: total_tokens=16100000 ceiling_tokens=16000000",
 				CompletedAt:   parkedAt,
-			}},
+			}, scope)},
 			wantTransition: true,
 		},
 		{
 			name:   "token ceiling evidence outside outage stays parked",
 			reason: "token_ceiling_circuit_breaker",
-			attempts: []store.WorkAttempt{{
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
 				ErrorMessage: "session token ceiling exceeded",
 				CompletedAt:  detectedAt.Add(-time.Minute),
-			}},
+			}, scope)},
 			wantSuppression: "falls outside",
+		},
+		{
+			name:   "token ceiling evidence from another backend stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  parkedAt,
+			}, otherScope)},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "token ceiling evidence from another provider stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  parkedAt,
+			}, otherProviderScope)},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "token ceiling evidence without runtime identity stays parked",
+			reason: "token_ceiling_circuit_breaker",
+			attempts: []store.WorkAttempt{{
+				ErrorMessage: "session token ceiling exceeded",
+				CompletedAt:  parkedAt,
+			}},
+			wantSuppression: "different backend capacity scope",
 		},
 		{
 			name:   "non token ceiling evidence stays parked",
 			reason: "token_ceiling_circuit_breaker",
-			attempts: []store.WorkAttempt{{
+			attempts: []store.WorkAttempt{withScope(store.WorkAttempt{
 				ErrorMessage: "ordinary runner failure",
 				CompletedAt:  parkedAt,
-			}},
+			}, scope)},
 			wantSuppression: "not a token-ceiling",
 		},
 		{
@@ -1409,6 +1444,26 @@ func TestRecoverBackendCapacityOutageEraBreakerParks(t *testing.T) {
 				artifactAttempt(detectedAt.Add(-time.Minute), 1, false),
 			},
 			wantSuppression: "falls outside",
+		},
+		{
+			name:   "artifact convergence from another backend stays parked",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				withScope(artifactAttempt(parkedAt, 3, true), otherScope),
+				artifactAttempt(parkedAt.Add(-time.Minute), 2, false),
+				artifactAttempt(parkedAt.Add(-2*time.Minute), 1, false),
+			},
+			wantSuppression: "different backend capacity scope",
+		},
+		{
+			name:   "artifact convergence with older evidence from another backend stays parked",
+			reason: artifactGateConvergenceReason,
+			attempts: []store.WorkAttempt{
+				artifactAttempt(parkedAt, 3, true),
+				withScope(artifactAttempt(parkedAt.Add(-time.Minute), 2, false), otherScope),
+				artifactAttempt(parkedAt.Add(-2*time.Minute), 1, false),
+			},
+			wantSuppression: "different backend capacity scope",
 		},
 		{
 			name:            "artifact convergence without history stays parked",
