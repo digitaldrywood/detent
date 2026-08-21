@@ -26,7 +26,6 @@ const (
 	blockedRecoveryPredicateOncePerFingerprint     = "once_per_fingerprint"
 	blockedRecoveryPredicateManaged                = "managed"
 	blockedCauseFingerprintVersion                 = 3
-	blockedCauseLegacyBreakerFingerprintVersion    = 2
 	workflowActionCauseBlockedRecovery             = "cause_blocked_recovery"
 	workflowActionBlockedReadyPRReconciliation     = "blocked_ready_pr_reconciliation"
 	blockedReadyPullRequestLookupAttempts          = 3
@@ -423,10 +422,17 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		return false
 	}
 	breakerPark := breakerParkCause(park.Cause)
-	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion &&
-		(!breakerPark || park.CauseFingerprintVersion != blockedCauseLegacyBreakerFingerprintVersion) {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "legacy_cause_fingerprint", &park, park.CauseFingerprint)
-		return false
+	signals := blockedCauseSignals{}
+	currentFingerprint := ""
+	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion {
+		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)
+		rebased, ok := o.rebaselineLegacyBlockedRecoveryPark(ctx, state, issue, park, signals, currentFingerprint)
+		if !ok {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "legacy_cause_fingerprint", &park, park.CauseFingerprint)
+			return false
+		}
+		park = rebased
 	}
 	if breakerPark {
 		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
@@ -440,8 +446,10 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			return false
 		}
 	}
-	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-	currentFingerprint := blockedCauseFingerprint(park.Cause, signals)
+	if currentFingerprint == "" {
+		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)
+	}
 	if park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
 		return false
@@ -465,6 +473,71 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
+}
+
+func (o *Orchestrator) rebaselineLegacyBlockedRecoveryPark(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park workflowLaneBlockedRecoveryMetadata,
+	signals blockedCauseSignals,
+	fingerprint string,
+) (workflowLaneBlockedRecoveryMetadata, bool) {
+	if o == nil || o.workflowMetrics == nil || strings.TrimSpace(park.Cause) == "" || strings.TrimSpace(fingerprint) == "" {
+		return park, false
+	}
+	updater, ok := o.workflowMetrics.(WorkflowMetricsMetadataUpdater)
+	if !ok {
+		return park, false
+	}
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok ||
+		entry.Event.ID <= 0 ||
+		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
+		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) ||
+		entry.Metadata.BlockedRecovery == nil ||
+		!sameBlockedRecoveryPark(*entry.Metadata.BlockedRecovery, park) {
+		return park, false
+	}
+
+	rebased := park
+	rebased.Cause = strings.TrimSpace(rebased.Cause)
+	rebased.CauseFingerprint = strings.TrimSpace(fingerprint)
+	rebased.CauseFingerprintVersion = blockedCauseFingerprintVersion
+	rebased.TargetState = blockedCauseTargetState(issue, signals, rebased.TargetState)
+	rebased.RunMode = strings.TrimSpace(rebased.RunMode)
+	rebased.IntentResumable = blockedCauseResumable(issue, signals)
+	rebased.Resumable = false
+	rebased.Reachability = ""
+	rebased.HoldReason = ""
+	rebased.OperatorRemedy = ""
+
+	metadata := entry.Metadata
+	metadata.BlockedRecovery = &rebased
+	if err := updater.UpdateWorkflowPhaseEventMetadata(ctx, entry.Event.ID, workflowLaneMetadataJSON(issue, metadata)); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("legacy blocked recovery fingerprint rebaseline failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return park, false
+	}
+	if state != nil {
+		if blocked, found := state.Blocked[strings.TrimSpace(issue.ID)]; found {
+			blocked.Recovery = &rebased
+			state.Blocked[strings.TrimSpace(issue.ID)] = blocked
+		}
+	}
+	if o.logger != nil {
+		o.logger.Info("legacy blocked recovery fingerprint rebaselined", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", rebased.Cause, "fingerprint_version", blockedCauseFingerprintVersion)
+	}
+	return rebased, true
+}
+
+func sameBlockedRecoveryPark(left workflowLaneBlockedRecoveryMetadata, right workflowLaneBlockedRecoveryMetadata) bool {
+	return strings.EqualFold(strings.TrimSpace(left.Owner), strings.TrimSpace(right.Owner)) &&
+		strings.TrimSpace(left.Cause) == strings.TrimSpace(right.Cause) &&
+		strings.TrimSpace(left.Predicate) == strings.TrimSpace(right.Predicate) &&
+		strings.TrimSpace(left.CauseFingerprint) == strings.TrimSpace(right.CauseFingerprint) &&
+		left.CauseFingerprintVersion == right.CauseFingerprintVersion
 }
 
 func (o *Orchestrator) reconcileInvalidWorkpadPark(
@@ -1029,7 +1102,7 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 	case "fingerprint_already_consumed":
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
 	case "legacy_cause_fingerprint":
-		return "Review the blocking cause, then move the issue to a lane that starts fresh work."
+		return "Park predates the current recovery schema; move the issue to Todo or Rework to re-evaluate it."
 	case "breaker_cooldown_active":
 		return "Detent will re-evaluate this circuit-breaker park after its cooldown expires."
 	case "breaker_cooldown_unavailable":

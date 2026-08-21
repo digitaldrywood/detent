@@ -31,6 +31,10 @@ type WorkflowMetricsTimelineReader interface {
 	IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error)
 }
 
+type WorkflowMetricsMetadataUpdater interface {
+	UpdateWorkflowPhaseEventMetadata(context.Context, int64, string) error
+}
+
 type workflowLaneMetadata struct {
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`

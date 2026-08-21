@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,6 +70,46 @@ func TestParkDefinition(t *testing.T) {
 				t.Fatalf("Causes = %#v, want one %q", summary.Causes, tt.wantCause)
 			}
 		})
+	}
+}
+
+func TestWorkflowPhaseMetadataUpdatePreservesParkCount(t *testing.T) {
+	t.Parallel()
+
+	db := openParkTestStore(t, filepath.Join(t.TempDir(), "detent.db"))
+	at := time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC)
+	eventID, err := db.RecordWorkflowPhaseEvent(t.Context(), WorkflowPhaseEvent{
+		ProjectID:    "detent",
+		IssueID:      "issue-6",
+		Identifier:   "digitaldrywood/detent.build#6",
+		IssueURL:     "https://github.com/digitaldrywood/detent.build/issues/6",
+		PhaseType:    WorkflowPhaseTypeLane,
+		PhaseName:    "Blocked",
+		Reason:       "no_progress_limit",
+		Status:       "entered",
+		StartedAt:    at,
+		MetadataJSON: `{"blocked_recovery":{"owner":"orchestrator","cause":"no_progress_limit","cause_fingerprint":"legacy"}}`,
+	})
+	if err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	if err := db.UpdateWorkflowPhaseEventMetadata(t.Context(), eventID, `{"blocked_recovery":{"owner":"orchestrator","cause":"no_progress_limit","cause_fingerprint":"current","cause_fingerprint_version":2}}`); err != nil {
+		t.Fatalf("UpdateWorkflowPhaseEventMetadata() error = %v", err)
+	}
+
+	summary, err := db.IssueParkSummary(t.Context(), parkTestIdentity())
+	if err != nil {
+		t.Fatalf("IssueParkSummary() error = %v", err)
+	}
+	if summary.ParkCount != 1 || len(summary.Causes) != 1 || summary.Causes[0].Count != 1 {
+		t.Fatalf("park summary = %#v, want one migrated park", summary)
+	}
+	timeline, err := db.IssueWorkflowTimeline(t.Context(), parkTestIdentity())
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	if len(timeline.Events) != 1 || !strings.Contains(timeline.Events[0].MetadataJSON, `"cause_fingerprint":"current"`) {
+		t.Fatalf("workflow timeline = %#v, want one event with current metadata", timeline.Events)
 	}
 }
 
