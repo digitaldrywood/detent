@@ -488,6 +488,12 @@
 #       updated_at: null
 #       # tracker.issues[].stage_updated_at | type: mapping | default: none | required: No | validation: None
 #       stage_updated_at: null
+#       # tracker.issues[].stage_updated_actor | type: object | default: see child fields | required: No | validation: None
+#       stage_updated_actor:
+#         # tracker.issues[].stage_updated_actor.login | type: string | default: none | required: No | validation: None
+#         login: null
+#         # tracker.issues[].stage_updated_actor.kind | type: string | default: none | required: No | validation: None
+#         kind: null
 #       # tracker.issues[].model_override | type: string | default: none | required: No | validation: None
 #       model_override: null
 # # polling | type: object | default: see child fields | required: No | validation: None
@@ -975,6 +981,8 @@
 #         human_gate: true
 #     # observability.staleness.human_gate_rearm_hours | type: integer | default: 168 | required: No | validation: must be greater than 0
 #     human_gate_rearm_hours: 168
+#     # observability.staleness.lane_reentry_window_hours | type: integer | default: 168 | required: No | validation: must be greater than 0
+#     lane_reentry_window_hours: 168
 #     # observability.staleness.no_completion_hours | type: integer | default: 24 | required: No | validation: must be greater than 0
 #     no_completion_hours: 24
 #     # observability.staleness.no_merge_hours | type: integer | default: 12 | required: No | validation: must be greater than 0

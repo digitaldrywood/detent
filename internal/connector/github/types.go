@@ -197,8 +197,9 @@ type pullRequestCodexReviews struct {
 }
 
 type actor struct {
-	Login string `json:"login"`
-	Type  string `json:"type"`
+	Login    string `json:"login"`
+	Type     string `json:"type"`
+	TypeName string `json:"__typename"`
 }
 
 type restIssue struct {

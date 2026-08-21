@@ -2160,6 +2160,9 @@ func TestDefaultStalenessObservability(t *testing.T) {
 	if cfg.Observability.Staleness.HumanGateRearmHours != DefaultStalenessHumanGateRearmHours {
 		t.Fatalf("HumanGateRearmHours = %d, want %d", cfg.Observability.Staleness.HumanGateRearmHours, DefaultStalenessHumanGateRearmHours)
 	}
+	if cfg.Observability.Staleness.LaneReentryWindowHours != DefaultStalenessLaneReentryWindowHours {
+		t.Fatalf("LaneReentryWindowHours = %d, want %d", cfg.Observability.Staleness.LaneReentryWindowHours, DefaultStalenessLaneReentryWindowHours)
+	}
 	if len(cfg.Observability.Staleness.Lanes) != 3 {
 		t.Fatalf("Staleness.Lanes = %#v, want three defaults", cfg.Observability.Staleness.Lanes)
 	}
@@ -2193,6 +2196,11 @@ func TestDefaultStalenessObservability(t *testing.T) {
 	cfg.Observability.Staleness.HumanGateRearmHours = 0
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "observability.staleness.human_gate_rearm_hours must be greater than 0") {
 		t.Fatalf("Validate() error = %v, want human gate rearm validation", err)
+	}
+	cfg = Default()
+	cfg.Observability.Staleness.LaneReentryWindowHours = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "observability.staleness.lane_reentry_window_hours must be greater than 0") {
+		t.Fatalf("Validate() error = %v, want lane reentry window validation", err)
 	}
 }
 

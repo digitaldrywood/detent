@@ -29,8 +29,8 @@ query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
       timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
         nodes {
           __typename
-          ... on LabeledEvent { createdAt label { name } actor { login } }
-          ... on UnlabeledEvent { createdAt label { name } actor { login } }
+          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
+          ... on UnlabeledEvent { createdAt label { name } actor { __typename login } }
         }
       }
       closedByPullRequestsReferences(first: 100) {
@@ -186,8 +186,9 @@ func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.C
 		for batchIndex, id := range batch {
 			node := nodesByID[id]
 			for _, index := range indexesByID[id] {
-				if enteredAt, ok := currentLabelEnteredAt(node.TimelineItems.Nodes, c.statusLabelForState(issues[index].State)); ok {
-					issues[index].StageUpdatedAt = &enteredAt
+				if transition, ok := currentLabelTransition(node.TimelineItems.Nodes, c.statusLabelForState(issues[index].State)); ok {
+					issues[index].StageUpdatedAt = &transition.EnteredAt
+					issues[index].StageUpdatedActor = transition.Actor
 				}
 			}
 			needsPullRequest := false
@@ -242,12 +243,13 @@ func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.C
 	return nil
 }
 
-func currentLabelEnteredAt(events []timelineItem, labelName string) (time.Time, bool) {
+func currentLabelTransition(events []timelineItem, labelName string) (connector.IssueStateTransition, bool) {
 	labelName = normalizeLabelName(labelName)
 	if labelName == "" {
-		return time.Time{}, false
+		return connector.IssueStateTransition{}, false
 	}
 	var enteredAt time.Time
+	var transitionActor connector.IssueActor
 	present := false
 	for _, event := range events {
 		if event.Label == nil || normalizeLabelName(event.Label.Name) != labelName {
@@ -258,13 +260,15 @@ func currentLabelEnteredAt(events []timelineItem, labelName string) (time.Time, 
 		case "LabeledEvent":
 			if !present && at != nil && !at.IsZero() {
 				enteredAt = at.UTC()
+				transitionActor = connector.IssueActor{Login: actorLogin(event.Actor), Kind: actorType(event.Actor)}
 			}
 			present = true
 		case "UnlabeledEvent":
 			present = false
+			transitionActor = connector.IssueActor{}
 		}
 	}
-	return enteredAt, present && !enteredAt.IsZero()
+	return connector.IssueStateTransition{EnteredAt: enteredAt, Actor: transitionActor}, present && !enteredAt.IsZero()
 }
 
 func (c *Connector) fetchRemainingLabelIssuePullRequestReferences(
@@ -515,7 +519,10 @@ func actorType(value *actor) string {
 	if value == nil {
 		return ""
 	}
-	return strings.TrimSpace(value.Type)
+	if actorType := strings.TrimSpace(value.Type); actorType != "" {
+		return actorType
+	}
+	return strings.TrimSpace(value.TypeName)
 }
 
 func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, issue githubIssueNode, targetState string) error {

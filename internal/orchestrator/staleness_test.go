@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -94,6 +96,21 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 				if len(state.StalenessWarnings) != 0 {
 					t.Fatalf("second refresh warnings = %#v, want reminder silenced", state.StalenessWarnings)
 				}
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(2*time.Hour))
+				if len(state.StalenessWarnings) != 1 {
+					t.Fatalf("rearmed refresh warnings = %#v, want one reminder", state.StalenessWarnings)
+				}
+			},
+		},
+		{
+			name: "human gate reminder rearms without an intervening refresh",
+			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.Store) {
+				enteredAt := now.Add(-4 * time.Hour)
+				issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
+				state.BoardIssues = []connector.Issue{issue}
+				state.laneEntries[workflowLaneEntryKey(issue)] = enteredAt
+
+				orch.refreshStalenessWarnings(t.Context(), state, nil, now)
 				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(2*time.Hour))
 				if len(state.StalenessWarnings) != 1 {
 					t.Fatalf("rearmed refresh warnings = %#v, want one reminder", state.StalenessWarnings)
@@ -204,6 +221,96 @@ func TestDeliverStalenessWarningsBoundsWorkPerTick(t *testing.T) {
 	}
 }
 
+func TestHumanGateDeliveryRemainsRetryableUntilSuccess(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	cfg := normalizeConfig(Config{Staleness: staleness.Config{
+		Enabled:        true,
+		HumanGateRearm: 24 * time.Hour,
+		Lanes:          []staleness.LaneThreshold{{State: "Human Review", Threshold: time.Hour, HumanGate: true}},
+	}})
+	cfg.Project.ID = "detent"
+	attempts := 0
+	orch := &Orchestrator{
+		cfg:                   cfg,
+		stalenessWarningStore: backend,
+		newStalenessNotifier: func(staleness.DeliveryConfig) (staleness.Notifier, error) {
+			return stalenessNotifierFunc(func(context.Context, staleness.Warning) error {
+				attempts++
+				if attempts == 1 {
+					return errors.New("webhook unavailable")
+				}
+				return nil
+			}), nil
+		},
+	}
+	orch.cfg.StalenessDelivery.WebhookURL = "https://example.test/warnings"
+	state := newState(cfg)
+	issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
+	state.BoardIssues = []connector.Issue{issue}
+	state.laneEntries[workflowLaneEntryKey(issue)] = now.Add(-2 * time.Hour)
+
+	orch.refreshStalenessWarnings(t.Context(), &state, nil, now)
+	states, err := backend.ListStalenessWarningStates(t.Context(), "detent")
+	if err != nil {
+		t.Fatalf("ListStalenessWarningStates() error = %v", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("warning states after failed delivery = %#v, want no reminder marker", states)
+	}
+	orch.refreshStalenessWarnings(t.Context(), &state, nil, now.Add(stalenessDeliveryRetryBase))
+	if attempts != 2 {
+		t.Fatalf("webhook attempts = %d, want retry after failed delivery", attempts)
+	}
+	states, err = backend.ListStalenessWarningStates(t.Context(), "detent")
+	if err != nil {
+		t.Fatalf("ListStalenessWarningStates() after success error = %v", err)
+	}
+	if len(states) != 1 || states[0].RemindedAt == nil {
+		t.Fatalf("warning states after successful delivery = %#v, want reminder marker", states)
+	}
+}
+
+func TestQueuedHumanGateDeliveriesSurviveReminderCadence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{Staleness: staleness.Config{
+		Enabled:        true,
+		HumanGateRearm: 24 * time.Hour,
+		Lanes:          []staleness.LaneThreshold{{State: "Human Review", Threshold: time.Hour, HumanGate: true}},
+	}})
+	cfg.Project.ID = "detent"
+	delivered := []string{}
+	orch := &Orchestrator{
+		cfg: cfg,
+		newStalenessNotifier: func(staleness.DeliveryConfig) (staleness.Notifier, error) {
+			return stalenessNotifierFunc(func(_ context.Context, warning staleness.Warning) error {
+				delivered = append(delivered, warning.IssueID)
+				return nil
+			}), nil
+		},
+	}
+	orch.cfg.StalenessDelivery.WebhookURL = "https://example.test/warnings"
+	state := newState(cfg)
+	for _, id := range []string{"issue-a", "issue-b"} {
+		issue := connector.Issue{ID: id, Identifier: id, State: "Human Review"}
+		state.BoardIssues = append(state.BoardIssues, issue)
+		state.laneEntries[workflowLaneEntryKey(issue)] = now.Add(-2 * time.Hour)
+	}
+
+	orch.refreshStalenessWarnings(t.Context(), &state, nil, now)
+	orch.refreshStalenessWarnings(t.Context(), &state, nil, now.Add(time.Minute))
+	slices.Sort(delivered)
+	if !slices.Equal(delivered, []string{"issue-a", "issue-b"}) {
+		t.Fatalf("delivered warnings = %v, want both queued reminders", delivered)
+	}
+}
+
 func TestStalenessDispatchableItemsUsesDispatchPlannerEligibility(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
@@ -242,25 +349,105 @@ func TestStalenessDispatchableItemsUsesDispatchPlannerEligibility(t *testing.T) 
 func TestRecordedStalenessPark(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		issue   connector.Issue
-		blocked *Blocked
-		want    bool
+		name        string
+		issue       connector.Issue
+		blocked     *Blocked
+		attribution provenance.Attribution
+		want        bool
 	}{
 		{name: "non-blocked issue", issue: connector.Issue{ID: "1", State: "Todo"}},
 		{name: "cause-less blocked issue", issue: connector.Issue{ID: "2", State: "Blocked"}},
-		{name: "operator park cause", issue: connector.Issue{ID: "3", State: "Blocked"}, blocked: &Blocked{Reason: "operator parked pending review"}, want: true},
-		{name: "sticky breaker cause", issue: connector.Issue{ID: "4", State: "Blocked"}, blocked: &Blocked{Recovery: &workflowLaneBlockedRecoveryMetadata{Cause: "project failure breaker"}}, want: true},
-		{name: "tracked dependency", issue: connector.Issue{ID: "5", State: "Blocked", BlockedBy: []connector.BlockedRef{{Identifier: "detent#1"}}}, want: true},
+		{name: "generic blocked reason", issue: connector.Issue{ID: "3", State: "Blocked"}, blocked: &Blocked{Reason: "waiting for dependency"}},
+		{name: "operator stop cause", issue: connector.Issue{ID: "4", State: "Blocked"}, blocked: &Blocked{Source: BlockedSourceOperatorStop, StopReason: "operator parked pending review"}, want: true},
+		{name: "sticky breaker cause", issue: connector.Issue{ID: "5", State: "Blocked"}, blocked: &Blocked{Reason: dispatchLoopDetectedReason}, want: true},
+		{name: "tracked dependency", issue: connector.Issue{ID: "6", State: "Blocked", BlockedBy: []connector.BlockedRef{{Identifier: "detent#1"}}}},
+		{
+			name:        "authenticated human park with cause",
+			issue:       connector.Issue{ID: "7", State: "Blocked", BlockerReason: "operator parked pending decision"},
+			attribution: provenance.AttributionFromSource(provenance.SourceHumanSession, provenance.Actor{Login: "operator", Kind: "User"}),
+			want:        true,
+		},
+		{
+			name:        "authenticated human move without cause",
+			issue:       connector.Issue{ID: "8", State: "Blocked"},
+			attribution: provenance.AttributionFromSource(provenance.SourceHumanSession, provenance.Actor{Login: "operator", Kind: "User"}),
+		},
+		{
+			name:    "human-owned recovery park",
+			issue:   connector.Issue{ID: "9", State: "Blocked"},
+			blocked: &Blocked{Recovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: "waiting for operator approval"}},
+			want:    true,
+		},
+		{
+			name:    "orchestrator-owned recovery",
+			issue:   connector.Issue{ID: "10", State: "Blocked"},
+			blocked: &Blocked{Recovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerOrchestrator, Cause: "waiting for config fingerprint"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state := State{Blocked: map[string]Blocked{}}
+			state := State{Blocked: map[string]Blocked{}, laneProvenance: map[string]provenance.Attribution{}}
 			if tt.blocked != nil {
 				state.Blocked[tt.issue.ID] = *tt.blocked
 			}
-			if got := recordedStalenessPark(tt.issue, &state); got != tt.want {
+			if tt.attribution.Origin != "" {
+				state.laneProvenance[workflowLaneEntryKey(tt.issue)] = tt.attribution
+			}
+			_, got := recordedStalenessPark(tt.issue, &state, nil)
+			if got != tt.want {
 				t.Fatalf("recordedStalenessPark() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStaleRecordedParkCause(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	recordedAt := now.Add(-6 * time.Hour)
+	expiredAt := now.Add(-time.Hour)
+	tests := []struct {
+		name    string
+		issue   connector.Issue
+		blocked Blocked
+		want    bool
+		detail  string
+	}{
+		{
+			name:    "holding evidence remains quiet",
+			issue:   connector.Issue{ID: "1", State: "Blocked"},
+			blocked: Blocked{BlockerEvidence: []telemetry.BlockerEvidence{{Status: "holds", RecordedAt: &recordedAt}}},
+		},
+		{
+			name:    "expired holding evidence needs review",
+			issue:   connector.Issue{ID: "2", State: "Blocked"},
+			blocked: Blocked{BlockerEvidence: []telemetry.BlockerEvidence{{Status: "holds", Detail: "predicate expired", RecordedAt: &recordedAt, ExpiresAt: &expiredAt}}},
+			want:    true,
+			detail:  "predicate expired",
+		},
+		{
+			name:    "cleared evidence needs review",
+			issue:   connector.Issue{ID: "3", State: "Blocked"},
+			blocked: Blocked{BlockerEvidence: []telemetry.BlockerEvidence{{Status: blockerEvidenceStatusCleared, Detail: "dependency merged", RecordedAt: &recordedAt}}},
+			want:    true,
+			detail:  "dependency merged",
+		},
+		{
+			name:   "resolved tracked dependency needs review",
+			issue:  connector.Issue{ID: "4", State: "Blocked", BlockedBy: []connector.BlockedRef{{Identifier: "detent#1", State: "Done"}}},
+			want:   true,
+			detail: "the recorded dependencies no longer block this item",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := State{Blocked: map[string]Blocked{tt.issue.ID: tt.blocked}}
+			_, got, detail, _ := staleRecordedParkCause(tt.issue, &state, recordedAt, "operator park", []string{"done"}, now)
+			if got != tt.want {
+				t.Fatalf("staleRecordedParkCause() stale = %t, want %t", got, tt.want)
+			}
+			if detail != tt.detail {
+				t.Fatalf("staleRecordedParkCause() detail = %q, want %q", detail, tt.detail)
 			}
 		})
 	}

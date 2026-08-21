@@ -1176,6 +1176,10 @@ func stalenessExceptionTitle(warning telemetry.StalenessWarning) string {
 		return "Merge queue is not advancing"
 	case "repeated_decision":
 		return "Scheduler decision is repeating"
+	case "lane_reentry":
+		return "Lane re-entry is accumulating"
+	case "park_cause_stale":
+		return "Recorded park cause needs review"
 	default:
 		if warning.WaitingOnHuman {
 			return "Human gate needs a reminder"

@@ -10,6 +10,8 @@ import (
 
 const (
 	KindLaneAging          = "lane_aging"
+	KindLaneReentry        = "lane_reentry"
+	KindParkCauseStale     = "park_cause_stale"
 	KindProjectLiveness    = "project_liveness"
 	KindMergeLiveness      = "merge_liveness"
 	KindRepeatedDecision   = "repeated_decision"
@@ -20,6 +22,7 @@ type Config struct {
 	Enabled                       bool
 	Lanes                         []LaneThreshold
 	HumanGateRearm                time.Duration
+	LaneReentryWindow             time.Duration
 	NoCompletionThreshold         time.Duration
 	NoMergeThreshold              time.Duration
 	RepeatedDecisionCount         int
@@ -53,6 +56,17 @@ type Item struct {
 	WaitingOnHuman       bool
 	HasRecoveryPredicate bool
 	RecordedPark         bool
+	ParkCauseKey         string
+	ParkCauseStale       bool
+	ParkCauseDetail      string
+	ParkCauseSince       time.Time
+	LaneVisits           []LaneVisit
+}
+
+type LaneVisit struct {
+	State     string
+	EnteredAt time.Time
+	ExitedAt  time.Time
 }
 
 type Completion struct {
@@ -128,11 +142,35 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 	seen := make(map[string]struct{})
 	for _, item := range input.Items {
 		threshold, ok := thresholds[normalize(item.State)]
-		if !ok || item.RecordedPark || item.EnteredAt.IsZero() || item.EnteredAt.After(now) {
+		if !ok {
+			continue
+		}
+		if item.RecordedPark {
+			warning, ok := parkCauseWarning(input.ProjectID, item, now)
+			if !ok {
+				continue
+			}
+			if _, ok := seen[warning.ID]; ok {
+				continue
+			}
+			seen[warning.ID] = struct{}{}
+			warnings = append(warnings, warning)
+			continue
+		}
+		if item.EnteredAt.IsZero() || item.EnteredAt.After(now) {
 			continue
 		}
 		age := now.Sub(item.EnteredAt)
 		if age < threshold.Threshold {
+			warning, ok := laneReentryWarning(cfg, input.ProjectID, item, threshold, now)
+			if !ok {
+				continue
+			}
+			if _, ok := seen[warning.ID]; ok {
+				continue
+			}
+			seen[warning.ID] = struct{}{}
+			warnings = append(warnings, warning)
 			continue
 		}
 		identity := itemIdentity(item)
@@ -164,6 +202,113 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 		})
 	}
 	return warnings
+}
+
+func parkCauseWarning(projectID string, item Item, now time.Time) (Warning, bool) {
+	if !item.ParkCauseStale {
+		return Warning{}, false
+	}
+	identity := itemIdentity(item)
+	if identity == "" {
+		return Warning{}, false
+	}
+	since := item.ParkCauseSince.UTC()
+	if since.IsZero() || since.After(now) {
+		since = item.EnteredAt.UTC()
+	}
+	if since.IsZero() || since.After(now) {
+		since = now
+	}
+	detail := strings.TrimSpace(item.ParkCauseDetail)
+	if detail == "" {
+		detail = "the recorded reason for this deliberate park no longer matches current evidence"
+	}
+	key := KindParkCauseStale + "\x00" + identity + "\x00" + normalize(item.State) + "\x00" + strings.TrimSpace(item.ParkCauseKey) + "\x00" + timestampKey(item.EnteredAt)
+	return Warning{
+		ID:                   warningID(key),
+		ProjectID:            strings.TrimSpace(projectID),
+		Kind:                 KindParkCauseStale,
+		IssueID:              strings.TrimSpace(item.ID),
+		Identifier:           strings.TrimSpace(item.Identifier),
+		IssueURL:             strings.TrimSpace(item.URL),
+		Title:                strings.TrimSpace(item.Title),
+		Lane:                 strings.TrimSpace(item.State),
+		Reason:               "recorded park cause is stale",
+		Detail:               detail,
+		Since:                since,
+		AgeSeconds:           int64(now.Sub(since) / time.Second),
+		HasRecoveryPredicate: item.HasRecoveryPredicate,
+	}, true
+}
+
+func laneReentryWarning(cfg Config, projectID string, item Item, threshold LaneThreshold, now time.Time) (Warning, bool) {
+	if cfg.LaneReentryWindow <= 0 {
+		return Warning{}, false
+	}
+	identity := itemIdentity(item)
+	if identity == "" {
+		return Warning{}, false
+	}
+	cutoff := now.Add(-cfg.LaneReentryWindow)
+	seconds, visits, since := rollingLaneResidency(item, cutoff, now)
+	if visits < 2 || time.Duration(seconds)*time.Second < threshold.Threshold {
+		return Warning{}, false
+	}
+	waitingOnHuman := threshold.HumanGate || item.WaitingOnHuman
+	key := KindLaneReentry + "\x00" + identity + "\x00" + normalize(item.State) + "\x00" + timestampKey(item.EnteredAt)
+	return Warning{
+		ID:                   warningID(key),
+		ProjectID:            strings.TrimSpace(projectID),
+		Kind:                 KindLaneReentry,
+		IssueID:              strings.TrimSpace(item.ID),
+		Identifier:           strings.TrimSpace(item.Identifier),
+		IssueURL:             strings.TrimSpace(item.URL),
+		Title:                strings.TrimSpace(item.Title),
+		Lane:                 strings.TrimSpace(item.State),
+		Reason:               "lane re-entry threshold exceeded",
+		Detail:               "the item has repeatedly re-entered this lane and exceeded its cumulative residency threshold within the rolling window",
+		Since:                since,
+		AgeSeconds:           seconds,
+		ThresholdSeconds:     int64(threshold.Threshold / time.Second),
+		Count:                visits,
+		WaitingOnHuman:       waitingOnHuman,
+		HasRecoveryPredicate: item.HasRecoveryPredicate,
+	}, true
+}
+
+func rollingLaneResidency(item Item, cutoff time.Time, now time.Time) (int64, int, time.Time) {
+	state := normalize(item.State)
+	var total time.Duration
+	visits := 0
+	var since time.Time
+	add := func(enteredAt time.Time, exitedAt time.Time) {
+		if enteredAt.IsZero() || exitedAt.IsZero() || !exitedAt.After(enteredAt) || !exitedAt.After(cutoff) || enteredAt.After(now) {
+			return
+		}
+		start := enteredAt.UTC()
+		if start.Before(cutoff) {
+			start = cutoff
+		}
+		end := exitedAt.UTC()
+		if end.After(now) {
+			end = now
+		}
+		if !end.After(start) {
+			return
+		}
+		total += end.Sub(start)
+		visits++
+		if since.IsZero() || start.Before(since) {
+			since = start
+		}
+	}
+	for _, visit := range item.LaneVisits {
+		if normalize(visit.State) == state {
+			add(visit.EnteredAt, visit.ExitedAt)
+		}
+	}
+	add(item.EnteredAt, now)
+	return int64(total / time.Second), visits, since
 }
 
 func projectLivenessWarning(cfg Config, input Input, now time.Time) (Warning, bool) {

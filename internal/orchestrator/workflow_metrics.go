@@ -443,13 +443,15 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 
 		latestEvent, eventBacked := latestCurrentLaneEntry(result.timeline.Events, issue.State)
 		trackerTransition := connector.IssueStateTransition{}
-		observedAttribution := provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
 		if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
-			trackerTransition.EnteredAt = issue.StageUpdatedAt.UTC()
+			trackerTransition = connector.IssueStateTransition{
+				EnteredAt: issue.StageUpdatedAt.UTC(),
+				Actor:     issue.StageUpdatedActor,
+			}
 		} else if !eventBacked {
 			trackerTransition = o.trackerIssueStateTransition(ctx, issue)
-			observedAttribution = observedLaneAttribution(state, issue, trackerTransition.Actor)
 		}
+		observedAttribution := observedLaneAttribution(state, issue, trackerTransition.Actor)
 		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], trackerTransition.EnteredAt, observedAt, result.timeline.Events)
 		if !enteredAt.IsZero() {
 			next[laneKey] = enteredAt
@@ -479,7 +481,7 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 
 func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue connector.Issue) connector.IssueStateTransition {
 	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
-		return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC()}
+		return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC(), Actor: issue.StageUpdatedActor}
 	}
 	reader, ok := o.connector.(connector.IssueStateTransitionReader)
 	if ok && reader != nil {

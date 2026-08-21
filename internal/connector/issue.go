@@ -73,6 +73,7 @@ type Issue struct {
 	CreatedAt         *time.Time           `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 	UpdatedAt         *time.Time           `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 	StageUpdatedAt    *time.Time           `json:"stage_updated_at,omitempty" yaml:"stage_updated_at,omitempty"`
+	StageUpdatedActor IssueActor           `json:"stage_updated_actor,omitzero" yaml:"stage_updated_actor,omitempty"`
 	ModelOverride     string               `json:"model_override" yaml:"model_override"`
 }
 

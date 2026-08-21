@@ -468,10 +468,11 @@ func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
 	state := newState(cfg)
 	state.laneEntries["id:I_74\x00human review"] = firstEntry
 	state.BoardIssues = []connector.Issue{{
-		ID:             "I_74",
-		Identifier:     "gopherguides/corp#74",
-		State:          "Human Review",
-		StageUpdatedAt: &latestEntry,
+		ID:                "I_74",
+		Identifier:        "gopherguides/corp#74",
+		State:             "Human Review",
+		StageUpdatedAt:    &latestEntry,
+		StageUpdatedActor: connector.IssueActor{Login: "corylanou", Kind: "User"},
 	}}
 	orch := &Orchestrator{cfg: cfg, workflowMetrics: backend}
 
@@ -479,6 +480,18 @@ func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
 	snapshot := state.Snapshot(latestEntry.Add(time.Hour))
 	if got := snapshot.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(latestEntry) {
 		t.Fatalf("CurrentLaneEnteredAt = %v, want %v", got, latestEntry)
+	}
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "corp", IssueID: "I_74"})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	latest, ok := latestCurrentLaneEntryForAt(timeline.Events, "Human Review", latestEntry)
+	if !ok {
+		t.Fatalf("latest lane entry missing from timeline: %#v", timeline.Events)
+	}
+	metadata, ok := provenance.Parse(latest.MetadataJSON)
+	if !ok || metadata.Provenance.Actor == nil || metadata.Provenance.Actor.Login != "corylanou" {
+		t.Fatalf("latest lane provenance = %#v, want hydrated tracker actor", metadata.Provenance)
 	}
 }
 

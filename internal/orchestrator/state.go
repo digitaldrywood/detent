@@ -113,6 +113,7 @@ type State struct {
 
 type StalenessWarning struct {
 	Warning               staleness.Warning
+	Visible               bool
 	DetectedAt            time.Time
 	LastObservedAt        time.Time
 	DeliveredAt           time.Time

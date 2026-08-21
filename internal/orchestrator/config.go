@@ -150,6 +150,7 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability, term
 		Enabled:                       cfg.Enabled,
 		Lanes:                         lanes,
 		HumanGateRearm:                time.Duration(cfg.HumanGateRearmHours) * time.Hour,
+		LaneReentryWindow:             time.Duration(cfg.LaneReentryWindowHours) * time.Hour,
 		NoCompletionThreshold:         time.Duration(cfg.NoCompletionHours) * time.Hour,
 		NoMergeThreshold:              time.Duration(cfg.NoMergeHours) * time.Hour,
 		RepeatedDecisionCount:         cfg.RepeatedDecisionCount,
@@ -189,6 +190,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.Staleness.HumanGateRearm <= 0 {
 		cfg.Staleness.HumanGateRearm = time.Duration(workflowconfig.DefaultStalenessHumanGateRearmHours) * time.Hour
+	}
+	if cfg.Staleness.LaneReentryWindow <= 0 {
+		cfg.Staleness.LaneReentryWindow = time.Duration(workflowconfig.DefaultStalenessLaneReentryWindowHours) * time.Hour
 	}
 	if cfg.MergeWorkerStartupTimeout <= 0 {
 		cfg.MergeWorkerStartupTimeout = durationFromMillis(workflowconfig.DefaultMergeWorkerStartupTimeoutMS)
