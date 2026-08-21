@@ -921,6 +921,29 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 	if got.Workflow().Prompt != "reloaded\n" {
 		t.Fatalf("Workflow().Prompt after invalid reload = %q, want last valid workflow", got.Workflow().Prompt)
 	}
+	sourceStatus := got.WorkflowSourceStatus()
+	if !strings.Contains(sourceStatus.LastReloadError, "workflow reload failed") || sourceStatus.ReloadFailedAt.IsZero() {
+		t.Fatalf("WorkflowSourceStatus() = %#v, want persistent reload failure", sourceStatus)
+	}
+	registry := project.NewRegistry()
+	if err := registry.Set(got); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	health := registry.Health()
+	if len(health) != 1 || health[0].Status != project.HealthStatusDegraded || !strings.Contains(health[0].LastError, "workflow reload failed") {
+		t.Fatalf("Registry.Health() = %#v, want degraded last-good project", health)
+	}
+
+	writeProjectGitHubWorkflow(t, workflowPath, 60000, "recovered")
+	waitForWorkflowPrompt(t, got, "recovered\n")
+	_ = receiveConnectorConfig(t, connectorConfigs)
+	if recovered := got.WorkflowSourceStatus(); recovered.LastReloadError != "" || !recovered.ReloadFailedAt.IsZero() {
+		t.Fatalf("WorkflowSourceStatus() after recovery = %#v, want cleared reload failure", recovered)
+	}
+	health = registry.Health()
+	if len(health) != 1 || health[0].Status != project.HealthStatusReady || health[0].LastError != "" {
+		t.Fatalf("Registry.Health() after recovery = %#v, want ready project", health)
+	}
 }
 
 func TestProjectStartRunsProvisionerWhenAutoProvisionEnabled(t *testing.T) {

@@ -1443,6 +1443,8 @@ func (s *Server) workflowSources() []healthWorkflowSource {
 			LastWatchEventAt: status.LastWatchEventAt,
 			LastReconcileAt:  status.LastReconcileAt,
 			WatcherArmed:     status.WatcherArmed,
+			LastReloadError:  status.LastReloadError,
+			ReloadFailedAt:   status.ReloadFailedAt,
 		})
 	}
 	return sources
@@ -1701,6 +1703,8 @@ type healthWorkflowSource struct {
 	LastWatchEventAt time.Time `json:"last_watch_event_at,omitzero"`
 	LastReconcileAt  time.Time `json:"last_reconcile_at,omitzero"`
 	WatcherArmed     bool      `json:"watcher_armed"`
+	LastReloadError  string    `json:"last_reload_error,omitempty"`
+	ReloadFailedAt   time.Time `json:"reload_failed_at,omitzero"`
 }
 
 type healthBudget struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -71,6 +72,7 @@ func New(path string, opts ...Option) (*Watcher, error) {
 			workflowconfig.DefinitionPath(path),
 			workflowconfig.LocalWorkflowPath(path),
 			workflowconfig.LocalDefinitionPath(path),
+			filepath.Join(filepath.Dir(path), workflowconfig.BacklogAdmissionEffortFileAgents),
 		),
 	}, cfg.fileOptions...)...)
 	if err != nil {

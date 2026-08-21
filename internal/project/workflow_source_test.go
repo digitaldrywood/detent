@@ -119,6 +119,58 @@ func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
 	}
 }
 
+func TestLoadWorkflowUsesAdmissionEffortGuidanceFromConfiguredGitRef(t *testing.T) {
+	t.Parallel()
+
+	repo := initWorkflowSourceRepo(t)
+	workflowPrompt := "## Admission Criteria\n\n- **Alignment** — ready.\n"
+	config := `schema: 1
+tracker:
+  kind: memory
+backlog_admission:
+  enabled: true
+  sources:
+    states: [Backlog]
+  target_state: Todo
+  criteria_section: Admission Criteria
+  require_effort: true
+  effort_file: AGENTS.md
+  effort_section: Issue Effort Selection
+`
+	agents := "## Issue Effort Selection\n\n- `medium` — small.\n- `high` — standard.\n"
+	for fileName, content := range map[string]string{
+		"WORKFLOW.md": workflowPrompt,
+		"detent.yaml": config,
+		"AGENTS.md":   agents,
+	} {
+		if err := os.WriteFile(filepath.Join(repo, fileName), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", fileName, err)
+		}
+	}
+	runWorkflowSourceGit(t, repo, "add", "WORKFLOW.md", "detent.yaml", "AGENTS.md")
+	runWorkflowSourceGit(t, repo, "commit", "-m", "configure admission effort source")
+	updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("working tree guidance\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(AGENTS.md) error = %v", err)
+	}
+
+	workflow, err := LoadWorkflow(globalconfig.Project{
+		Workflow:    "WORKFLOW.md",
+		WorkflowRef: "origin/main",
+		Workdir:     repo,
+	})
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	rubric, err := workflowconfig.ResolveWorkflowAdmissionEffortRubric(workflow)
+	if err != nil {
+		t.Fatalf("ResolveWorkflowAdmissionEffortRubric() error = %v", err)
+	}
+	if len(rubric.Efforts) != 2 || rubric.Efforts[0] != "medium" || strings.Contains(workflow.AgentsPrompt, "working tree guidance") {
+		t.Fatalf("rubric = %#v agents prompt = %q, want configured-ref AGENTS.md", rubric, workflow.AgentsPrompt)
+	}
+}
+
 func TestLoadWorkflowUsesLocalOverlayWithConfiguredGitRef(t *testing.T) {
 	t.Parallel()
 

@@ -5171,6 +5171,61 @@ func TestCheckDoctorWorkflowDriftReportsStaleLiveConfig(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorWorkflowDriftReportsLastGoodReloadFailure(t *testing.T) {
+	t.Parallel()
+
+	loadedAt := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	failedAt := loadedAt.Add(5 * time.Minute)
+	tests := []struct {
+		name      string
+		reloadErr string
+		want      string
+	}{
+		{name: "watch reload validation", reloadErr: "workflow reload validation failed: effort section missing", want: "workflow reload validation failed"},
+		{name: "reconcile load", reloadErr: "workflow reconcile failed: invalid detent.yaml", want: "workflow reconcile failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			payload, err := json.Marshal(map[string]any{
+				"status": "ok",
+				"mode":   "running",
+				"checks": map[string]string{
+					"hub": "configured", "store": "configured", "registry": "configured", "connector": "configured",
+				},
+				"workflows": []map[string]any{{
+					"project_id":        "detent",
+					"path":              "WORKFLOW.md",
+					"source_hash":       "last-good-hash",
+					"loaded_at":         loadedAt,
+					"last_reload_error": tt.reloadErr,
+					"reload_failed_at":  failedAt,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			port := 4001
+			checks := checkDoctorWorkflowDrift(context.Background(), globalconfig.Config{
+				Projects: []globalconfig.Project{{ID: "detent", Workflow: "WORKFLOW.md"}},
+			}, BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+				httpDo: func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(payload))}, nil
+				},
+			})
+
+			if len(checks) != 1 || checks[0].Status != doctorFail {
+				t.Fatalf("checks = %#v, want one failure", checks)
+			}
+			for _, want := range []string{"running its last-good workflow", "loaded at 2026-08-20T15:00:00Z", "reload failed at 2026-08-20T15:05:00Z", tt.want} {
+				if !strings.Contains(checks[0].Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", checks[0].Detail, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckDoctorWorkflowDriftDefersPausedProject(t *testing.T) {
 	t.Parallel()
 

@@ -1224,8 +1224,13 @@ probes.
    Gates`, and sets `criteria_section` to the exact heading. It writes no
    admission heading or dangling `criteria_section` key when admission is off.
    It always creates or appends the operator-approved four-tier rubric in
-   `AGENTS.md`, without replacing existing content, and leaves `model` unset.
-   The four admission run ceilings are always written explicitly.
+   `AGENTS.md`, replacing an incomplete matching section while preserving
+   complete existing guidance and unrelated content, and leaves `model` unset.
+   When admission is enabled, it also sets
+   `require_effort: true`, `effort_file: AGENTS.md`, and `effort_section` to
+   that exact generated heading. The builder resolves both named sections from
+   their configured files before it writes any proposal. The four admission
+   run ceilings are always written explicitly.
 
 7. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
    wants to override a selected profile's `KANBAN_MODE`, switch to
@@ -2889,6 +2894,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      rg -Fx "## $CRITERIA_SECTION" <source-root>/WORKFLOW.md
      rg -n '^### (Alignment|Readiness|Size|Safety Gates)$' \
        <source-root>/WORKFLOW.md
+     rg -q '^[[:space:]]*require_effort:[[:space:]]*true$' \
+       <source-root>/detent.yaml
+     rg -q '^[[:space:]]*effort_file:[[:space:]]*AGENTS.md$' \
+       <source-root>/detent.yaml
+     rg -q '^[[:space:]]*effort_section:[[:space:]]*Issue effort selection$' \
+       <source-root>/detent.yaml
    else
      ! rg -q '^[[:space:]]*criteria_section:' <source-root>/detent.yaml
    fi
@@ -3485,7 +3496,7 @@ the card instead of auto-resolving it.
 | Backlog admission ceilings | `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN`, `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN`, `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS`, and `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` map to the same-named lower-case `backlog_admission` keys. |
 | Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`; `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` maps to the trusted `backlog_admission.authors.allow_association` scopes. |
 | Admission criteria prose | `ADMISSION_ALIGNMENT_CRITERIA`, `ADMISSION_READINESS_CRITERIA`, `ADMISSION_SIZE_CRITERIA`, and `ADMISSION_SAFETY_GATES` generate the matching `WORKFLOW.md` subsections when admission is enabled. |
-| Issue effort rubric | `EFFORT_MEDIUM_CRITERIA`, `EFFORT_HIGH_CRITERIA`, `EFFORT_XHIGH_CRITERIA`, and `EFFORT_MAX_CRITERIA` generate the four-tier `detent-agent` rubric in `AGENTS.md`; `model` remains unset. |
+| Issue effort rubric | `EFFORT_MEDIUM_CRITERIA`, `EFFORT_HIGH_CRITERIA`, `EFFORT_XHIGH_CRITERIA`, and `EFFORT_MAX_CRITERIA` generate the four-tier `detent-agent` rubric in `AGENTS.md`; enabled admission points `effort_file` and `effort_section` at that rubric, and `model` remains unset. |
 | Scheduled repository routine | `ROUTINES_ENABLED`, `ROUTINE_NAME`, `ROUTINE_SCHEDULE`, and `ROUTINE_PROMPT` control the generated `routines` entry. |
 | Built-in stale-TODO intake | `STALE_TODOS_ENABLED` and `STALE_TODOS_SCHEDULE` control the generated scheduled `intake.sources` scanner. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |

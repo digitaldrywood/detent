@@ -580,8 +580,14 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 			if workflow.Config.BacklogAdmission.CriteriaSection != onboardingAdmissionCriteriaHeading {
 				t.Fatalf("CriteriaSection = %q, want exact generated heading %q", workflow.Config.BacklogAdmission.CriteriaSection, onboardingAdmissionCriteriaHeading)
 			}
+			if !workflow.Config.BacklogAdmission.RequireEffort ||
+				workflow.Config.BacklogAdmission.EffortFile != workflowconfig.BacklogAdmissionEffortFileAgents ||
+				workflow.Config.BacklogAdmission.EffortSection != onboardingEffortRubricHeading {
+				t.Fatalf("BacklogAdmission effort source = %#v, want AGENTS.md rubric", workflow.Config.BacklogAdmission)
+			}
 			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.enabled", "answer")
 			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.max_candidates_per_run", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.effort_file", "preset")
 		})
 	}
 }
@@ -598,9 +604,9 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 		{name: "creates AGENTS.md when absent", wantHeadingCount: 1},
 		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n", wantHeadingCount: 1},
 		{
-			name:             "appends when matching heading lacks guidance",
+			name:             "replaces matching heading that lacks guidance",
 			existing:         "# Repository agent guidance\n\n## Issue effort selection\n\nRecord estimates here.\n",
-			wantHeadingCount: 2,
+			wantHeadingCount: 1,
 		},
 		{
 			name: "preserves complete existing guidance",
@@ -656,7 +662,7 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 			if tt.wantUnchanged && got != tt.existing {
 				t.Fatalf("AGENTS.md changed complete existing guidance:\n%s", got)
 			}
-			if tt.existing != "" && !strings.HasPrefix(got, strings.TrimRight(tt.existing, "\n")) {
+			if tt.existing != "" && !strings.HasPrefix(got, "# Repository agent guidance") {
 				t.Fatalf("AGENTS.md did not preserve existing content:\n%s", got)
 			}
 			if count := strings.Count(got, "## Issue effort selection"); count != tt.wantHeadingCount {
@@ -853,6 +859,9 @@ func parseOnboardingBuildWorkflowResult(result onboardingBuildWorkflowResult) (w
 		ConfigPath:   result.ConfigPath,
 		Config:       []byte(result.Config),
 		HasConfig:    true,
+		AgentsPath:   result.AgentsPath,
+		Agents:       []byte(result.Agents),
+		HasAgents:    true,
 	})
 }
 

@@ -134,6 +134,7 @@ type Workflow struct {
 	Config       Config
 	Prompt       string
 	SharedPrompt string
+	AgentsPrompt string
 	SourceHash   string
 	Overlay      WorkflowOverlay
 	Definition   ProjectDefinition
@@ -1502,6 +1503,7 @@ func Default() Config {
 		Budget: budget,
 		BacklogAdmission: BacklogAdmission{
 			Schedule:               DefaultBacklogAdmissionSchedule,
+			EffortFile:             BacklogAdmissionEffortFileWorkflow,
 			MaxCandidatesPerRun:    DefaultBacklogAdmissionMaxCandidatesPerRun,
 			MaxProposalsPerRun:     DefaultBacklogAdmissionMaxProposalsPerRun,
 			MaxOpenProposals:       DefaultBacklogAdmissionMaxOpenProposals,

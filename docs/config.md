@@ -634,6 +634,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `backlog_admission.auto_admit_by_label` | `mapping<string, boolean>` | `{}` | No | None |
 | `backlog_admission.auto_admit_min_confidence` | `number` | `0.9` | No | None |
 | `backlog_admission.criteria_section` | `string` | `none` | Conditional | is required |
+| `backlog_admission.effort_file` | `string` | `"WORKFLOW.md"` | No | must be WORKFLOW.md or AGENTS.md |
 | `backlog_admission.effort_section` | `string` | `none` | Conditional | is required when require_effort is true |
 | `backlog_admission.enabled` | `boolean` | `false` | No | None |
 | `backlog_admission.exclude_labels` | `list<string>` | `[]` | No | None |

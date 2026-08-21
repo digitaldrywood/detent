@@ -186,6 +186,9 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		ConfigPath:   projectConfigPath,
 		Config:       []byte(projectConfig),
 		HasConfig:    true,
+		AgentsPath:   agentsPath,
+		Agents:       []byte(agents),
+		HasAgents:    true,
 	}); err != nil {
 		return onboardingBuildWorkflowResult{}, fmt.Errorf("parse generated project definition: %w", err)
 	}
@@ -803,7 +806,9 @@ func applyOnboardingWorkflowAdmissionDecisions(root *yaml.Node, answers onboardi
 	decisions.set(root, "backlog_admission.sources.states", []string{sourceState}, sourceProvenance, sourceWhy)
 	decisions.set(root, "backlog_admission.target_state", targetState, targetProvenance, targetWhy)
 	decisions.set(root, "backlog_admission.criteria_section", criteriaSection, criteriaProvenance, criteriaWhy)
-	decisions.set(root, "backlog_admission.require_effort", false, "preset", "effort rubric generation is handled separately")
+	decisions.set(root, "backlog_admission.require_effort", true, "preset", "admitted issues require an explicit project-owned effort recommendation")
+	decisions.set(root, "backlog_admission.effort_file", workflowconfig.BacklogAdmissionEffortFileAgents, "preset", "onboarding writes the project effort rubric to AGENTS.md")
+	decisions.set(root, "backlog_admission.effort_section", onboardingEffortRubricHeading, "preset", "generated project-owned effort rubric heading")
 	decisions.set(root, "backlog_admission.max_candidates_per_run", maxCandidates, maxCandidatesProvenance, maxCandidatesWhy)
 	decisions.set(root, "backlog_admission.max_proposals_per_run", maxProposals, maxProposalsProvenance, maxProposalsWhy)
 	decisions.set(root, "backlog_admission.max_open_proposals", maxOpenProposals, maxOpenProposalsProvenance, maxOpenProposalsWhy)
@@ -1126,6 +1131,10 @@ func renderOnboardingAgentGuidance(existing string, answers onboardingAnswers) (
 	rubric := markdownLines(lines...)
 	if strings.TrimSpace(existing) == "" {
 		return rubric, nil
+	}
+	heading := "## " + onboardingEffortRubricHeading
+	if _, found := onboardingMarkdownSection(existing, heading); found {
+		return replaceProjectRefreshMarkdownSection(existing, heading, rubric), nil
 	}
 	return strings.TrimRight(existing, "\n") + "\n\n" + rubric, nil
 }

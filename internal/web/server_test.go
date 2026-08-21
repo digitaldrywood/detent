@@ -34,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/efficiency"
@@ -7668,6 +7669,72 @@ func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *test
 	}
 }
 
+func TestHealthReportsProjectPinnedToLastGoodWorkflow(t *testing.T) {
+	updates := make(chan configwatcher.Update, 1)
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md"},
+		Workflow: workflowconfig.Workflow{
+			Config:     workflowCfg,
+			Prompt:     "last-good",
+			SourceHash: "last-good-hash",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "memory"},
+		Runner:    orchestrator.FakeRunner{},
+		WorkflowWatcherFactory: func(string) (project.WorkflowWatcher, error) {
+			return healthWorkflowWatcher{updates: updates}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+	if err := trackedProject.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := trackedProject.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Project.Stop() error = %v", err)
+		}
+	})
+	deadline := time.Now().Add(time.Second)
+	for !trackedProject.WorkflowSourceStatus().WatcherArmed {
+		if time.Now().After(deadline) {
+			t.Fatal("workflow watcher did not arm")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	updates <- configwatcher.Update{Path: "WORKFLOW.md", Err: errors.New("effort section missing"), At: time.Now()}
+	for trackedProject.WorkflowSourceStatus().LastReloadError == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("workflow reload failure was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	deps := testDeps(t)
+	if err := deps.Registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if payload["project_status"] != "degraded" {
+		t.Fatalf("project_status = %#v, want degraded", payload["project_status"])
+	}
+	projects := payload["projects"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["status"] != "degraded" || !strings.Contains(projects[0].(map[string]any)["last_error"].(string), "workflow reload failed") {
+		t.Fatalf("projects = %#v, want degraded reload failure", projects)
+	}
+	workflows := payload["workflows"].([]any)
+	if len(workflows) != 1 || !strings.Contains(workflows[0].(map[string]any)["last_reload_error"].(string), "effort section missing") || workflows[0].(map[string]any)["reload_failed_at"] == nil {
+		t.Fatalf("workflows = %#v, want persisted reload failure", workflows)
+	}
+}
+
 func TestHealthRespondsDuringDrainWithoutSupplementalProjectReads(t *testing.T) {
 	t.Parallel()
 
@@ -11961,6 +12028,14 @@ type healthBudgetRunner struct {
 type blockingHealthBudgetRunner struct {
 	blocked chan<- struct{}
 	release <-chan struct{}
+}
+
+type healthWorkflowWatcher struct {
+	updates <-chan configwatcher.Update
+}
+
+func (w healthWorkflowWatcher) Watch(context.Context) (<-chan configwatcher.Update, error) {
+	return w.updates, nil
 }
 
 func (blockingHealthBudgetRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {

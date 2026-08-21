@@ -83,6 +83,21 @@ func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot
 			})
 			continue
 		}
+		if runtimeWorkflow.LastReloadError != "" {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf(
+					"project %s is running its last-good workflow loaded at %s because reload failed at %s: %s",
+					id,
+					doctorWorkflowTimestamp(runtimeWorkflow.LoadedAt),
+					doctorWorkflowTimestamp(runtimeWorkflow.ReloadFailedAt),
+					runtimeWorkflow.LastReloadError,
+				),
+				Hint: "Fix the configured project-definition source; Detent will clear the degraded status after a successful reload.",
+			})
+			continue
+		}
 
 		diskWorkflow, loadErr := loadDoctorProjectWorkflow(ctx, configuredProject, deps)
 		if loadErr != nil {

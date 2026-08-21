@@ -1147,6 +1147,8 @@
 #   criteria_section: null
 #   # backlog_admission.require_effort | type: boolean | default: false | required: No | validation: None
 #   require_effort: false
+#   # backlog_admission.effort_file | type: string | default: "WORKFLOW.md" | required: No | validation: must be WORKFLOW.md or AGENTS.md
+#   effort_file: "WORKFLOW.md"
 #   # backlog_admission.effort_section | type: string | default: none | required: Conditional | validation: is required when require_effort is true
 #   effort_section: null
 #   # backlog_admission.exclude_labels | type: list<string> | default: [] | required: No | validation: None
