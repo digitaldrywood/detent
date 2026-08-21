@@ -228,6 +228,20 @@ func TestResolveCurrentLaneEnteredAt(t *testing.T) {
 			want: transitionAt,
 		},
 		{
+			name: "tracker reentry supersedes stale durable entry",
+			issue: connector.Issue{
+				State:     "Human Review",
+				CreatedAt: &createdAt,
+				UpdatedAt: &updatedAt,
+			},
+			previous:         enteredAt,
+			trackerEnteredAt: transitionAt,
+			events: []store.WorkflowPhaseEvent{
+				{ID: 1, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Human Review", Status: "entered", StartedAt: enteredAt},
+			},
+			want: transitionAt,
+		},
+		{
 			name: "restart restores durable entry",
 			issue: connector.Issue{
 				State:     "In Progress",
@@ -425,6 +439,59 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 	}
 	if tracker.stateEnteredAtCalls != 1 {
 		t.Fatalf("IssueStateEnteredAt() calls after restart = %d, want persisted event to avoid another call", tracker.stateEnteredAtCalls)
+	}
+}
+
+func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	firstEntry := time.Date(2026, 8, 17, 4, 53, 35, 0, time.UTC)
+	latestEntry := time.Date(2026, 8, 18, 22, 30, 8, 0, time.UTC)
+	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:  "corp",
+		IssueID:    "I_74",
+		Identifier: "gopherguides/corp#74",
+		PhaseType:  store.WorkflowPhaseTypeLane,
+		PhaseName:  "Human Review",
+		Status:     "entered",
+		StartedAt:  firstEntry,
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "corp"}})
+	state := newState(cfg)
+	state.laneEntries["id:I_74\x00human review"] = firstEntry
+	state.BoardIssues = []connector.Issue{{
+		ID:                "I_74",
+		Identifier:        "gopherguides/corp#74",
+		State:             "Human Review",
+		StageUpdatedAt:    &latestEntry,
+		StageUpdatedActor: connector.IssueActor{Login: "corylanou", Kind: "User"},
+	}}
+	orch := &Orchestrator{cfg: cfg, workflowMetrics: backend}
+
+	orch.refreshCurrentLaneEntries(ctx, &state, latestEntry.Add(time.Hour))
+	snapshot := state.Snapshot(latestEntry.Add(time.Hour))
+	if got := snapshot.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(latestEntry) {
+		t.Fatalf("CurrentLaneEnteredAt = %v, want %v", got, latestEntry)
+	}
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "corp", IssueID: "I_74"})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	latest, ok := latestCurrentLaneEntryForAt(timeline.Events, "Human Review", latestEntry)
+	if !ok {
+		t.Fatalf("latest lane entry missing from timeline: %#v", timeline.Events)
+	}
+	metadata, ok := provenance.Parse(latest.MetadataJSON)
+	if !ok || metadata.Provenance.Actor == nil || metadata.Provenance.Actor.Login != "corylanou" {
+		t.Fatalf("latest lane provenance = %#v, want hydrated tracker actor", metadata.Provenance)
 	}
 }
 

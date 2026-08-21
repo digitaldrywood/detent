@@ -168,6 +168,7 @@ type Dependencies struct {
 	AgentResume          store.AgentResumeStore
 	OrphanSessions       store.OrphanSessionStore
 	ValidatorMemo        store.ValidatorMemoStore
+	StalenessWarnings    store.StalenessWarningStore
 	Activity             *activity.Broker
 	Release              releasepkg.Coordinator
 	GlobalDispatchGate   scheduler.ProjectDispatchGate
@@ -236,6 +237,7 @@ type Orchestrator struct {
 	validatorResults        map[string]validatorStageResult
 	validatorFailures       map[string]validatorStageFailure
 	validatorMemo           store.ValidatorMemoStore
+	stalenessWarningStore   store.StalenessWarningStore
 	activity                *activity.Broker
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
@@ -552,6 +554,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorResults:        map[string]validatorStageResult{},
 		validatorFailures:       map[string]validatorStageFailure{},
 		validatorMemo:           validatorMemo,
+		stalenessWarningStore:   deps.StalenessWarnings,
 		activity:                deps.Activity,
 		release:                 deps.Release,
 		retrospector:            deps.Retrospector,

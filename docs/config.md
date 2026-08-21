@@ -356,9 +356,16 @@ interview-to-config mapping that exists before YAML is rendered.
 
 `observability.staleness` detects work items that exceed lane-specific aging
 thresholds, non-empty dispatch or merge queues that stop advancing, and
-repeated identical scheduler decisions. Human-gate lanes remain warnings rather
-than failures, so they provide a single durable reminder without treating a
-deliberate review wait as an unattended stall.
+repeated identical scheduler decisions. Lane residency starts at the most
+recent entry. Repeated entries can still raise a cumulative warning when their
+residency exceeds the lane threshold within
+`observability.staleness.lane_reentry_window_hours`. Human-gate lanes emit one
+reminder at their threshold, then remain quiet until the lane changes or
+`observability.staleness.human_gate_rearm_hours` passes. Sticky breaker and
+operator parks with a recorded cause are excluded from lane aging because the
+Blocked lane already carries their operator signal. A `park_cause_stale`
+warning replaces lane aging when recorded evidence is cleared or can no longer
+be verified.
 
 The repeated-decision detector considers only current, non-terminal items.
 Closed and merged items and items in a configured terminal state are excluded.
@@ -378,7 +385,9 @@ Warnings appear in the dashboard, `/health`, and `detent doctor`. Configure
 `observability.staleness.webhook.url` to push each newly active warning as a
 `detent.staleness.warning` JSON event. The payload includes a stable warning ID,
 the affected project or item, the reason, and age and threshold values in
-seconds. A delivered warning is not sent again on every scheduler tick.
+seconds. A delivered warning is not sent again on every scheduler tick. A
+dashboard dismissal persists until the warning condition changes, such as a
+new lane entry or a new scheduler cause.
 
 ## Unstarted GitHub checks
 
@@ -734,6 +743,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `observability.render_interval_ms` | `integer` | `16` | No | must be greater than 0 |
 | `observability.staleness` | `object` | `see child fields` | No | None |
 | `observability.staleness.enabled` | `boolean` | `true` | No | None |
+| `observability.staleness.human_gate_rearm_hours` | `integer` | `168` | No | must be greater than 0 |
+| `observability.staleness.lane_reentry_window_hours` | `integer` | `168` | No | must be greater than 0 |
 | `observability.staleness.lanes` | `list<object>` | `[{"State":"Human Review","ThresholdHours":72,"HumanGate":true},{"State":"Blocked","ThresholdHours":48,"HumanGate":false},{"State":"Merging","ThresholdHours":2,"HumanGate":false}]` | No | None |
 | `observability.staleness.lanes[].human_gate` | `boolean` | `true` | No | None |
 | `observability.staleness.lanes[].state` | `string` | `"Human Review"` | Conditional | is required |
@@ -1002,6 +1013,9 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].pull_request.unstarted_checks[].status` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.unstarted_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.url` | `string` | `none` | No | None |
+| `tracker.issues[].stage_updated_actor` | `object` | `see child fields` | No | None |
+| `tracker.issues[].stage_updated_actor.kind` | `string` | `none` | No | None |
+| `tracker.issues[].stage_updated_actor.login` | `string` | `none` | No | None |
 | `tracker.issues[].stage_updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].state` | `string` | `none` | No | None |
 | `tracker.issues[].title` | `string` | `none` | No | None |

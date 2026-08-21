@@ -74,9 +74,17 @@ type githubIssueNode struct {
 	Comments                       nodeConnection[issueComment] `json:"comments"`
 	Repository                     repository                   `json:"repository"`
 	ClosedByPullRequestsReferences nodeConnection[pullRequest]  `json:"closedByPullRequestsReferences"`
+	TimelineItems                  nodeConnection[timelineItem] `json:"timelineItems"`
 	ProjectItems                   *projectItemsConnection      `json:"projectItems"`
 	SubIssues                      linkedIssuesConnection       `json:"subIssues"`
 	TrackedIssues                  linkedIssuesConnection       `json:"trackedIssues"`
+}
+
+type timelineItem struct {
+	TypeName  string  `json:"__typename"`
+	CreatedAt *string `json:"createdAt"`
+	Label     *label  `json:"label"`
+	Actor     *actor  `json:"actor"`
 }
 
 type linkedIssuesConnection struct {
@@ -189,8 +197,9 @@ type pullRequestCodexReviews struct {
 }
 
 type actor struct {
-	Login string `json:"login"`
-	Type  string `json:"type"`
+	Login    string `json:"login"`
+	Type     string `json:"type"`
+	TypeName string `json:"__typename"`
 }
 
 type restIssue struct {

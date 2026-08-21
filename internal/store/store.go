@@ -55,6 +55,7 @@ type Store interface {
 	WorkAttemptStore
 	ProjectDispatchStatusStore
 	HealthNotificationStateStore
+	StalenessWarningStore
 	WorkAttemptCapacityReleaseStore
 	MergeRequiredCheckStore
 	OperatorStopStore
@@ -172,6 +173,12 @@ type ProjectDispatchStatusStore interface {
 type HealthNotificationStateStore interface {
 	ListHealthNotificationStates(context.Context) ([]HealthNotificationState, error)
 	SaveHealthNotificationStates(context.Context, []HealthNotificationState) error
+}
+
+type StalenessWarningStore interface {
+	ListStalenessWarningStates(context.Context, string) ([]StalenessWarningState, error)
+	RecordStalenessWarningReminder(context.Context, string, string, time.Time) error
+	AcknowledgeStalenessWarning(context.Context, string, string, time.Time) error
 }
 
 type WorkAttemptCapacityReleaseStore interface {
@@ -829,6 +836,13 @@ type HealthNotificationState struct {
 	Identity  string
 	StateJSON []byte
 	UpdatedAt time.Time
+}
+
+type StalenessWarningState struct {
+	ProjectID      string
+	WarningID      string
+	RemindedAt     *time.Time
+	AcknowledgedAt *time.Time
 }
 
 type IssueSchedulerDecisionQuery struct {

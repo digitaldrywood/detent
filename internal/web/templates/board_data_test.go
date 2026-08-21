@@ -2644,6 +2644,44 @@ func TestBoardAlertsCollapseStalenessWarnings(t *testing.T) {
 	}
 }
 
+func TestBoardAlertCountIncludesOnlyActionableConditions(t *testing.T) {
+	t.Parallel()
+	data := boardTestData()
+	eligibleCandidates := 0
+	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
+		ProjectID:              "detent",
+		Class:                  "runner_error",
+		EligibleCandidateCount: &eligibleCandidates,
+		Items:                  []telemetry.FailureBreakerItem{{IssueID: "parked", Parked: true}},
+	}}
+	data.Snapshot.StalenessWarnings = []telemetry.StalenessWarning{{
+		ID:         "warning-actionable",
+		ProjectID:  "detent",
+		Kind:       "repeated_decision",
+		Identifier: "digitaldrywood/detent#1926",
+		Detail:     "dispatch decision is repeating",
+	}}
+
+	alerts := boardAlerts(data.Snapshot)
+	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindStaleness {
+		t.Fatalf("boardAlerts() = %#v, want only actionable staleness warning", alerts)
+	}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`data-board-alert-count="1"`,
+		`hx-post="/api/v1/projects/detent/staleness-warnings/warning-actionable/acknowledge"`,
+		`hx-swap="outerHTML"`,
+		">Dismiss<",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("board alert missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "Project failure breaker") {
+		t.Fatalf("board counted deliberate parked breaker:\n%s", html)
+	}
+}
+
 func TestBoardAlertsSurfaceCIUnavailableEvidence(t *testing.T) {
 	t.Parallel()
 

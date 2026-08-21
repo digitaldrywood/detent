@@ -91,6 +91,7 @@ type State struct {
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
+	stalenessReminders       map[string]time.Time
 	TrackerUnavailable       *TrackerCondition
 	trackerEvidence          map[string]trackerAvailabilityEvidence
 	deferredCompletions      map[string]deferredCompletion
@@ -112,6 +113,7 @@ type State struct {
 
 type StalenessWarning struct {
 	Warning               staleness.Warning
+	Visible               bool
 	DetectedAt            time.Time
 	LastObservedAt        time.Time
 	DeliveredAt           time.Time
@@ -371,6 +373,7 @@ func newState(cfg Config) State {
 		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		DispatchRecoveries:       map[string]DispatchRecovery{},
 		StalenessWarnings:        map[string]StalenessWarning{},
+		stalenessReminders:       map[string]time.Time{},
 		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
 		deferredCompletions:      map[string]deferredCompletion{},
 		ForgeUnavailable:         map[string]ForgeCondition{},
@@ -452,6 +455,7 @@ func (s State) clone() State {
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
+		stalenessReminders:       maps.Clone(s.stalenessReminders),
 		TrackerUnavailable:       cloneTrackerCondition(s.TrackerUnavailable),
 		trackerEvidence:          maps.Clone(s.trackerEvidence),
 		deferredCompletions:      cloneDeferredCompletions(s.deferredCompletions),

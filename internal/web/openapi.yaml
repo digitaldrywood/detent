@@ -262,6 +262,34 @@ paths:
         "404": {$ref: "#/components/responses/Problem"}
         "409": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/staleness-warnings/{warning_id}/acknowledge:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - in: path
+        name: warning_id
+        required: true
+        schema: {type: string, minLength: 1}
+    post:
+      operationId: acknowledgeStalenessWarning
+      summary: Dismiss an active staleness warning condition
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge
+      responses:
+        "200":
+          description: The warning condition was acknowledged.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/timeseries:
     parameters:
       - $ref: "#/components/parameters/ProjectID"

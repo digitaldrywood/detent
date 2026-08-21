@@ -72,6 +72,31 @@ func TestConnectorIssueStateTransitionUsesLatestMatchingLabelEvent(t *testing.T)
 	}
 }
 
+func TestAttachLabelIssuePullRequestReferencesHydratesLatestLaneEntry(t *testing.T) {
+	t.Parallel()
+
+	want := time.Date(2026, 8, 18, 22, 30, 8, 0, time.UTC)
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_74","timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-08-17T04:53:35Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"first"}},{"__typename":"UnlabeledEvent","createdAt":"2026-08-18T21:35:57Z","label":{"name":"detent:human-review"},"actor":{"__typename":"Bot","login":"detent[bot]"}},{"__typename":"LabeledEvent","createdAt":"2026-08-18T22:30:08Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"corylanou"}}]},"closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "gopherguides/corp",
+		ObservedStates:     []string{"Human Review"},
+	})
+	issues := []connector.Issue{{ID: "I_74", State: "Human Review"}}
+
+	if err := c.attachLabelIssuePullRequestReferences(t.Context(), issues); err != nil {
+		t.Fatalf("attachLabelIssuePullRequestReferences() error = %v", err)
+	}
+	if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(want) {
+		t.Fatalf("StageUpdatedAt = %v, want %v", issues[0].StageUpdatedAt, want)
+	}
+	if got := issues[0].StageUpdatedActor; got.Login != "corylanou" || got.Kind != "User" {
+		t.Fatalf("StageUpdatedActor = %#v, want latest label actor", got)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 	t.Parallel()
 

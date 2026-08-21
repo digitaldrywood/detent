@@ -80,21 +80,23 @@ const (
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
 
-	DefaultPollingIntervalMS              = 120000
-	DefaultRefreshFailureThreshold        = 3
-	MinPollingIntervalMS                  = 60000
-	DefaultShutdownDrainTimeoutMS         = 75000
-	DefaultBoardSnapshotStaleAfterSeconds = 15 * 60
-	DefaultStalenessNoCompletionHours     = 24
-	DefaultStalenessNoMergeHours          = 12
-	DefaultStalenessRepeatedCount         = 20
-	DefaultStalenessRepeatedWindowHours   = 24
-	DefaultStalenessWebhookTimeoutMS      = 5000
-	DefaultStrandedActiveThresholdSeconds = 10 * 60
-	DefaultDispatchStallThresholdSeconds  = 2 * 60 * 60
-	DefaultParkReviewThreshold            = 3
-	DefaultGitHubUnstartedSeconds         = 15 * 60
-	MaxStalenessRepeatedCount             = 500
+	DefaultPollingIntervalMS               = 120000
+	DefaultRefreshFailureThreshold         = 3
+	MinPollingIntervalMS                   = 60000
+	DefaultShutdownDrainTimeoutMS          = 75000
+	DefaultBoardSnapshotStaleAfterSeconds  = 15 * 60
+	DefaultStalenessNoCompletionHours      = 24
+	DefaultStalenessNoMergeHours           = 12
+	DefaultStalenessHumanGateRearmHours    = 168
+	DefaultStalenessLaneReentryWindowHours = 168
+	DefaultStalenessRepeatedCount          = 20
+	DefaultStalenessRepeatedWindowHours    = 24
+	DefaultStalenessWebhookTimeoutMS       = 5000
+	DefaultStrandedActiveThresholdSeconds  = 10 * 60
+	DefaultDispatchStallThresholdSeconds   = 2 * 60 * 60
+	DefaultParkReviewThreshold             = 3
+	DefaultGitHubUnstartedSeconds          = 15 * 60
+	MaxStalenessRepeatedCount              = 500
 
 	defaultCodexProtocol                      = "app-server"
 	defaultClaudeCodeProtocol                 = "headless"
@@ -808,6 +810,8 @@ type OTLPObservability struct {
 type StalenessObservability struct {
 	Enabled                       bool                     `yaml:"enabled"`
 	Lanes                         []StalenessLaneThreshold `yaml:"lanes,omitempty"`
+	HumanGateRearmHours           int                      `yaml:"human_gate_rearm_hours"`
+	LaneReentryWindowHours        int                      `yaml:"lane_reentry_window_hours"`
 	NoCompletionHours             int                      `yaml:"no_completion_hours"`
 	NoMergeHours                  int                      `yaml:"no_merge_hours"`
 	RepeatedDecisionCount         int                      `yaml:"repeated_decision_count"`
@@ -1462,6 +1466,8 @@ func Default() Config {
 			OTLP: OTLPObservability{TimeoutMS: 5000, ServiceName: "detent"},
 			Staleness: StalenessObservability{
 				Enabled:                       true,
+				HumanGateRearmHours:           DefaultStalenessHumanGateRearmHours,
+				LaneReentryWindowHours:        DefaultStalenessLaneReentryWindowHours,
 				NoCompletionHours:             DefaultStalenessNoCompletionHours,
 				NoMergeHours:                  DefaultStalenessNoMergeHours,
 				RepeatedDecisionCount:         DefaultStalenessRepeatedCount,
@@ -2824,6 +2830,8 @@ func (s StalenessObservability) validate(problems *[]string) {
 	}
 	validatePositive("observability.staleness.no_completion_hours", s.NoCompletionHours, problems)
 	validatePositive("observability.staleness.no_merge_hours", s.NoMergeHours, problems)
+	validatePositive("observability.staleness.human_gate_rearm_hours", s.HumanGateRearmHours, problems)
+	validatePositive("observability.staleness.lane_reentry_window_hours", s.LaneReentryWindowHours, problems)
 	validatePositive("observability.staleness.repeated_decision_count", s.RepeatedDecisionCount, problems)
 	if s.RepeatedDecisionCount > MaxStalenessRepeatedCount {
 		*problems = append(*problems, "observability.staleness.repeated_decision_count must be less than or equal to 500")

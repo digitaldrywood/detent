@@ -12,7 +12,8 @@ func TestEvaluate(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
 	cfg := Config{
-		Enabled: true,
+		Enabled:           true,
+		LaneReentryWindow: 7 * 24 * time.Hour,
 		Lanes: []LaneThreshold{
 			{State: "Human Review", Threshold: 48 * time.Hour, HumanGate: true},
 			{State: "Blocked", Threshold: 24 * time.Hour},
@@ -39,6 +40,52 @@ func TestEvaluate(t *testing.T) {
 				},
 			},
 			wantKinds: []string{KindLaneAging},
+			wantHuman: true,
+		},
+		{
+			name: "recorded park stays quiet",
+			input: Input{
+				ProjectID: "detent",
+				Items: []Item{{
+					ID:           "42",
+					State:        "Blocked",
+					EnteredAt:    now.Add(-72 * time.Hour),
+					RecordedPark: true,
+				}},
+			},
+		},
+		{
+			name: "stale recorded park cause warns",
+			input: Input{
+				ProjectID: "detent",
+				Items: []Item{{
+					ID:              "43",
+					State:           "Blocked",
+					EnteredAt:       now.Add(-72 * time.Hour),
+					RecordedPark:    true,
+					ParkCauseKey:    "config-a",
+					ParkCauseStale:  true,
+					ParkCauseDetail: "the recorded config fingerprint no longer matches",
+					ParkCauseSince:  now.Add(-time.Hour),
+				}},
+			},
+			wantKinds: []string{KindParkCauseStale},
+		},
+		{
+			name: "rolling lane reentry warns without restoring lifetime residency",
+			input: Input{
+				ProjectID: "detent",
+				Items: []Item{{
+					ID:        "44",
+					State:     "Human Review",
+					EnteredAt: now.Add(-20 * time.Hour),
+					LaneVisits: []LaneVisit{
+						{State: "Human Review", EnteredAt: now.Add(-6 * 24 * time.Hour), ExitedAt: now.Add(-4 * 24 * time.Hour)},
+						{State: "Human Review", EnteredAt: now.Add(-3 * 24 * time.Hour), ExitedAt: now.Add(-2 * 24 * time.Hour)},
+					},
+				}},
+			},
+			wantKinds: []string{KindLaneReentry},
 			wantHuman: true,
 		},
 		{
@@ -101,6 +148,102 @@ func TestEvaluate(t *testing.T) {
 			}
 			if len(got) > 0 && got[0].WaitingOnHuman != tt.wantHuman {
 				t.Fatalf("Evaluate()[0].WaitingOnHuman = %t, want %t", got[0].WaitingOnHuman, tt.wantHuman)
+			}
+		})
+	}
+}
+
+func TestEvaluateLaneReentryUsesBoundedCumulativeResidency(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 21, 15, 0, 0, 0, time.UTC)
+	cfg := Config{
+		Enabled:           true,
+		LaneReentryWindow: 7 * 24 * time.Hour,
+		Lanes:             []LaneThreshold{{State: "Human Review", Threshold: 72 * time.Hour, HumanGate: true}},
+	}
+	tests := []struct {
+		name     string
+		item     Item
+		wantKind string
+	}{
+		{
+			name: "recent round trips accumulate",
+			item: Item{ID: "74", State: "Human Review", EnteredAt: now.Add(-20 * time.Hour), LaneVisits: []LaneVisit{
+				{State: "Human Review", EnteredAt: now.Add(-6 * 24 * time.Hour), ExitedAt: now.Add(-4 * 24 * time.Hour)},
+				{State: "Human Review", EnteredAt: now.Add(-3 * 24 * time.Hour), ExitedAt: now.Add(-2 * 24 * time.Hour)},
+			}},
+			wantKind: KindLaneReentry,
+		},
+		{
+			name: "old residency falls outside rolling window",
+			item: Item{ID: "74", State: "Human Review", EnteredAt: now.Add(-20 * time.Hour), LaneVisits: []LaneVisit{
+				{State: "Human Review", EnteredAt: now.Add(-14 * 24 * time.Hour), ExitedAt: now.Add(-10 * 24 * time.Hour)},
+			}},
+		},
+		{
+			name:     "current continuous residency uses lane aging",
+			item:     Item{ID: "74", State: "Human Review", EnteredAt: now.Add(-72 * time.Hour)},
+			wantKind: KindLaneAging,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Evaluate(cfg, Input{ProjectID: "detent", Items: []Item{tt.item}}, now)
+			if tt.wantKind == "" {
+				if len(got) != 0 {
+					t.Fatalf("Evaluate() = %#v, want no warning", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Kind != tt.wantKind {
+				t.Fatalf("Evaluate() = %#v, want one %s warning", got, tt.wantKind)
+			}
+		})
+	}
+}
+
+func TestWarningIdentityChangesWithCondition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		first  Input
+		second Input
+	}{
+		{
+			name:   "lane reentry",
+			first:  Input{ProjectID: "detent", Items: []Item{{ID: "74", State: "Human Review", EnteredAt: now.Add(-96 * time.Hour)}}},
+			second: Input{ProjectID: "detent", Items: []Item{{ID: "74", State: "Human Review", EnteredAt: now.Add(-80 * time.Hour)}}},
+		},
+		{
+			name: "repeated decision lane change",
+			first: Input{ProjectID: "detent", Decisions: []Decision{
+				{IssueID: "1926", CurrentState: "Todo", LaneEnteredAt: now.Add(-4 * time.Hour), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-3 * time.Hour)},
+				{IssueID: "1926", CurrentState: "Todo", LaneEnteredAt: now.Add(-4 * time.Hour), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-2 * time.Hour)},
+			}},
+			second: Input{ProjectID: "detent", Decisions: []Decision{
+				{IssueID: "1926", CurrentState: "Rework", LaneEnteredAt: now.Add(-90 * time.Minute), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-time.Hour)},
+				{IssueID: "1926", CurrentState: "Rework", LaneEnteredAt: now.Add(-90 * time.Minute), Result: "skipped", Reason: "dispatch_loop", At: now.Add(-30 * time.Minute)},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Enabled:                true,
+				Lanes:                  []LaneThreshold{{State: "Human Review", Threshold: time.Hour}},
+				RepeatedDecisionCount:  2,
+				RepeatedDecisionWindow: 24 * time.Hour,
+			}
+			first := Evaluate(cfg, tt.first, now)
+			second := Evaluate(cfg, tt.second, now)
+			if len(first) != 1 || len(second) != 1 {
+				t.Fatalf("warning counts = %d and %d, want one each", len(first), len(second))
+			}
+			if first[0].ID == second[0].ID {
+				t.Fatalf("warning ID remained %q after condition changed", first[0].ID)
 			}
 		})
 	}
