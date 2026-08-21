@@ -26,6 +26,7 @@ backlog_admission:
   target_state: Todo
   criteria_section: Admission criteria
   require_effort: true
+  effort_file: WORKFLOW.md
   effort_section: Issue effort selection
   exclude_labels: [Skip, skip]
   authors:
@@ -64,7 +65,7 @@ backlog_admission:
 		got.MaxCandidatesPerRun != 20 || got.MaxProposalsPerRun != 2 ||
 		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 ||
 		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 || got.Sources.Untracked ||
-		!got.RequireEffort || got.EffortSection != "Issue effort selection" {
+		!got.RequireEffort || got.EffortFile != BacklogAdmissionEffortFileWorkflow || got.EffortSection != "Issue effort selection" {
 		t.Fatalf("BacklogAdmission = %#v", got)
 	}
 	if len(got.AutoAdmitByLabel) != 2 || !got.AutoAdmitByLabel["defect"] || got.AutoAdmitByLabel["requires-human-review"] {
@@ -131,6 +132,11 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "missing effort section", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
 			cfg.RequireEffort = true
 		}, want: "effort_section is required"},
+		{name: "invalid effort file", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.RequireEffort = true
+			cfg.EffortFile = "README.md"
+			cfg.EffortSection = "Effort"
+		}, want: "effort_file must be WORKFLOW.md or AGENTS.md"},
 		{name: "zero candidate cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxCandidatesPerRun = 0 }, want: "max_candidates_per_run must be greater than 0"},
 		{name: "negative proposal cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxProposalsPerRun = -1 }, want: "max_proposals_per_run must be greater than 0"},
 		{name: "zero open cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxOpenProposals = 0 }, want: "max_open_proposals must be greater than 0"},
@@ -578,6 +584,134 @@ func TestResolveAdmissionEffortRubric(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProjectDefinitionResolvesAdmissionEffortFromConfiguredFile(t *testing.T) {
+	t.Parallel()
+
+	config := []byte(`schema: 1
+tracker:
+  kind: memory
+backlog_admission:
+  enabled: true
+  sources:
+    states: [Backlog]
+  target_state: Todo
+  criteria_section: Admission Criteria
+  require_effort: true
+  effort_file: AGENTS.md
+  effort_section: Issue Effort Selection
+`)
+	workflowPrompt := []byte("## Admission Criteria\n\n- **Alignment** — ready.\n")
+	agentsPrompt := []byte("## Issue Effort Selection\n\n- `medium` — small.\n- `high` — standard.\n")
+
+	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
+		WorkflowPath: "WORKFLOW.md",
+		Workflow:     workflowPrompt,
+		ConfigPath:   "detent.yaml",
+		Config:       config,
+		HasConfig:    true,
+		AgentsPath:   "AGENTS.md",
+		Agents:       agentsPrompt,
+		HasAgents:    true,
+	})
+	if err != nil {
+		t.Fatalf("ParseProjectDefinition() error = %v", err)
+	}
+	rubric, err := ResolveWorkflowAdmissionEffortRubric(workflow)
+	if err != nil {
+		t.Fatalf("ResolveWorkflowAdmissionEffortRubric() error = %v", err)
+	}
+	if rubric.Section != "Issue Effort Selection" || len(rubric.Efforts) != 2 || rubric.Efforts[0] != "medium" || rubric.Efforts[1] != "high" {
+		t.Fatalf("rubric = %#v, want AGENTS.md efforts", rubric)
+	}
+}
+
+func TestProjectDefinitionReportsAdmissionEffortInDifferentFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		effortFile string
+		workflow   string
+		agents     string
+		want       string
+	}{
+		{
+			name:       "configured agents but section is in workflow",
+			effortFile: BacklogAdmissionEffortFileAgents,
+			workflow:   "## Admission Criteria\n\n- **Alignment** — ready.\n\n## Issue Effort Selection\n\n- `high` — standard.\n",
+			agents:     "# Agent guidance\n",
+			want:       "exists in WORKFLOW.md instead; set backlog_admission.effort_file to WORKFLOW.md",
+		},
+		{
+			name:       "configured workflow but section is in agents",
+			effortFile: BacklogAdmissionEffortFileWorkflow,
+			workflow:   "## Admission Criteria\n\n- **Alignment** — ready.\n",
+			agents:     "## Issue Effort Selection\n\n- `high` — standard.\n",
+			want:       "exists in AGENTS.md instead; set backlog_admission.effort_file to AGENTS.md",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := []byte("schema: 1\ntracker:\n  kind: memory\nbacklog_admission:\n  enabled: true\n  sources:\n    states: [Backlog]\n  target_state: Todo\n  criteria_section: Admission Criteria\n  require_effort: true\n  effort_file: " + tt.effortFile + "\n  effort_section: Issue Effort Selection\n")
+			_, err := ParseProjectDefinition(ProjectDefinitionSources{
+				WorkflowPath: "WORKFLOW.md",
+				Workflow:     []byte(tt.workflow),
+				ConfigPath:   "detent.yaml",
+				Config:       config,
+				HasConfig:    true,
+				AgentsPath:   "AGENTS.md",
+				Agents:       []byte(tt.agents),
+				HasAgents:    true,
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ParseProjectDefinition() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectDefinitionHashesConfiguredAdmissionEffortFile(t *testing.T) {
+	t.Parallel()
+
+	parse := func(t *testing.T, effortFile string, agents string) Workflow {
+		t.Helper()
+		workflowPrompt := "## Admission Criteria\n\n- **Alignment** — ready.\n"
+		if effortFile == BacklogAdmissionEffortFileWorkflow {
+			workflowPrompt += "\n## Issue Effort Selection\n\n- `high` — standard.\n"
+		}
+		config := []byte("schema: 1\ntracker:\n  kind: memory\nbacklog_admission:\n  enabled: true\n  sources:\n    states: [Backlog]\n  target_state: Todo\n  criteria_section: Admission Criteria\n  require_effort: true\n  effort_file: " + effortFile + "\n  effort_section: Issue Effort Selection\n")
+		workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
+			WorkflowPath: "WORKFLOW.md",
+			Workflow:     []byte(workflowPrompt),
+			ConfigPath:   "detent.yaml",
+			Config:       config,
+			HasConfig:    true,
+			AgentsPath:   "AGENTS.md",
+			Agents:       []byte(agents),
+			HasAgents:    true,
+		})
+		if err != nil {
+			t.Fatalf("ParseProjectDefinition() error = %v", err)
+		}
+		return workflow
+	}
+
+	agentsA := "## Issue Effort Selection\n\n- `high` — standard.\n"
+	agentsB := "## Issue Effort Selection\n\n- `high` — cross-cutting.\n"
+	fromAgentsA := parse(t, BacklogAdmissionEffortFileAgents, agentsA)
+	fromAgentsB := parse(t, BacklogAdmissionEffortFileAgents, agentsB)
+	if fromAgentsA.SourceHash == fromAgentsB.SourceHash {
+		t.Fatal("AGENTS.md-backed source hash did not change with the configured rubric")
+	}
+	fromWorkflowA := parse(t, BacklogAdmissionEffortFileWorkflow, agentsA)
+	fromWorkflowB := parse(t, BacklogAdmissionEffortFileWorkflow, agentsB)
+	if fromWorkflowA.SourceHash != fromWorkflowB.SourceHash {
+		t.Fatal("WORKFLOW.md-backed source hash changed for unrelated AGENTS.md guidance")
 	}
 }
 

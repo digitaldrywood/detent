@@ -20,6 +20,8 @@ const (
 	DefaultBacklogAdmissionMaxOpenProposals       = 10
 	DefaultBacklogAdmissionProposalExpiryDays     = 7
 	DefaultBacklogAdmissionAutoAdmitMinConfidence = 0.9
+	BacklogAdmissionEffortFileWorkflow            = "WORKFLOW.md"
+	BacklogAdmissionEffortFileAgents              = "AGENTS.md"
 )
 
 var (
@@ -35,6 +37,7 @@ type BacklogAdmission struct {
 	TargetState            string                  `yaml:"target_state"`
 	CriteriaSection        string                  `yaml:"criteria_section"`
 	RequireEffort          bool                    `yaml:"require_effort"`
+	EffortFile             string                  `yaml:"effort_file,omitempty"`
 	EffortSection          string                  `yaml:"effort_section,omitempty"`
 	ExcludeLabels          []string                `yaml:"exclude_labels,omitempty"`
 	Authors                BacklogAdmissionAuthors `yaml:"authors,omitempty"`
@@ -91,6 +94,7 @@ func (a *BacklogAdmission) Normalize() {
 	a.Sources.Labels = normalizeAdmissionSourceLabels(a.Sources.Labels)
 	a.TargetState = strings.TrimSpace(a.TargetState)
 	a.CriteriaSection = strings.TrimSpace(a.CriteriaSection)
+	a.EffortFile = normalizeAdmissionEffortFile(a.EffortFile)
 	a.EffortSection = strings.TrimSpace(a.EffortSection)
 	a.ExcludeLabels = normalizeLabels(a.ExcludeLabels)
 	a.AutoAdmitByLabel = normalizeAdmissionLabelPolicies(a.AutoAdmitByLabel)
@@ -135,6 +139,9 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	}
 	if a.RequireEffort && a.EffortSection == "" {
 		problems = append(problems, prefix+".effort_section is required when require_effort is true")
+	}
+	if a.EffortFile != BacklogAdmissionEffortFileWorkflow && a.EffortFile != BacklogAdmissionEffortFileAgents {
+		problems = append(problems, prefix+".effort_file must be WORKFLOW.md or AGENTS.md")
 	}
 	validatePositive(prefix+".max_candidates_per_run", a.MaxCandidatesPerRun, &problems)
 	validatePositive(prefix+".max_proposals_per_run", a.MaxProposalsPerRun, &problems)
@@ -328,7 +335,7 @@ func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria,
 	if section == "" {
 		return AdmissionCriteria{}, errors.New("backlog admission criteria section is required")
 	}
-	match, text, err := resolveAdmissionSection(prompt, section, "criteria")
+	match, text, err := resolveAdmissionSection(prompt, section, "criteria", BacklogAdmissionEffortFileWorkflow)
 	if err != nil {
 		return AdmissionCriteria{}, err
 	}
@@ -343,11 +350,43 @@ func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria,
 }
 
 func ResolveAdmissionEffortRubric(prompt string, section string) (AdmissionEffortRubric, error) {
+	return resolveAdmissionEffortRubric(prompt, section, BacklogAdmissionEffortFileWorkflow)
+}
+
+func ResolveWorkflowAdmissionEffortRubric(workflow Workflow) (AdmissionEffortRubric, error) {
+	file := normalizeAdmissionEffortFile(workflow.Config.BacklogAdmission.EffortFile)
+	prompt := workflow.SharedPrompt
+	alternatePrompt := workflow.AgentsPrompt
+	alternateFile := BacklogAdmissionEffortFileAgents
+	switch file {
+	case BacklogAdmissionEffortFileWorkflow:
+	case BacklogAdmissionEffortFileAgents:
+		prompt = workflow.AgentsPrompt
+		alternatePrompt = workflow.SharedPrompt
+		alternateFile = BacklogAdmissionEffortFileWorkflow
+	default:
+		return AdmissionEffortRubric{}, fmt.Errorf("backlog admission effort file %q must be WORKFLOW.md or AGENTS.md", file)
+	}
+
+	rubric, err := resolveAdmissionEffortRubric(prompt, workflow.Config.BacklogAdmission.EffortSection, file)
+	if err == nil || !admissionHeadingExists(alternatePrompt, workflow.Config.BacklogAdmission.EffortSection) {
+		return rubric, err
+	}
+	return AdmissionEffortRubric{}, fmt.Errorf(
+		"%w; section %q exists in %s instead; set backlog_admission.effort_file to %s or move the section",
+		err,
+		strings.TrimSpace(workflow.Config.BacklogAdmission.EffortSection),
+		alternateFile,
+		alternateFile,
+	)
+}
+
+func resolveAdmissionEffortRubric(prompt string, section string, source string) (AdmissionEffortRubric, error) {
 	section = strings.TrimSpace(section)
 	if section == "" {
 		return AdmissionEffortRubric{}, errors.New("backlog admission effort section is required")
 	}
-	match, text, err := resolveAdmissionSection(prompt, section, "effort")
+	match, text, err := resolveAdmissionSection(prompt, section, "effort", source)
 	if err != nil {
 		return AdmissionEffortRubric{}, err
 	}
@@ -361,7 +400,7 @@ func ResolveAdmissionEffortRubric(prompt string, section string) (AdmissionEffor
 	return AdmissionEffortRubric{Section: match.Title, Text: text, Efforts: efforts}, nil
 }
 
-func resolveAdmissionSection(prompt string, section string, kind string) (markdownHeading, string, error) {
+func resolveAdmissionSection(prompt string, section string, kind string, source string) (markdownHeading, string, error) {
 	headings := markdownHeadings(prompt)
 	matches := make([]markdownHeading, 0, 1)
 	for _, heading := range headings {
@@ -370,10 +409,10 @@ func resolveAdmissionSection(prompt string, section string, kind string) (markdo
 		}
 	}
 	if len(matches) == 0 {
-		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q was not found in shared WORKFLOW.md", kind, section)
+		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q was not found in %s", kind, section, source)
 	}
 	if len(matches) > 1 {
-		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q is duplicated in shared WORKFLOW.md", kind, section)
+		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q is duplicated in %s", kind, section, source)
 	}
 	match := matches[0]
 	end := len(prompt)
@@ -386,7 +425,7 @@ func resolveAdmissionSection(prompt string, section string, kind string) (markdo
 	}
 	text := strings.TrimSpace(prompt[match.End:end])
 	if text == "" {
-		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q is empty in shared WORKFLOW.md", kind, section)
+		return markdownHeading{}, "", fmt.Errorf("backlog admission %s section %q is empty in %s", kind, section, source)
 	}
 	return match, text, nil
 }
@@ -401,8 +440,29 @@ func ValidateWorkflowAdmission(workflow Workflow) error {
 	if !workflow.Config.BacklogAdmission.RequireEffort {
 		return nil
 	}
-	_, err := ResolveAdmissionEffortRubric(workflow.SharedPrompt, workflow.Config.BacklogAdmission.EffortSection)
+	_, err := ResolveWorkflowAdmissionEffortRubric(workflow)
 	return err
+}
+
+func normalizeAdmissionEffortFile(file string) string {
+	switch strings.ToLower(strings.TrimSpace(file)) {
+	case "", "workflow.md":
+		return BacklogAdmissionEffortFileWorkflow
+	case "agents.md":
+		return BacklogAdmissionEffortFileAgents
+	default:
+		return strings.TrimSpace(file)
+	}
+}
+
+func admissionHeadingExists(prompt string, section string) bool {
+	section = strings.TrimSpace(section)
+	for _, heading := range markdownHeadings(prompt) {
+		if strings.EqualFold(strings.TrimSpace(heading.Title), section) {
+			return true
+		}
+	}
+	return false
 }
 
 type markdownHeading struct {

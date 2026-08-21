@@ -85,6 +85,8 @@ type WorkflowSourceStatus struct {
 	LastWatchEventAt time.Time
 	LastReconcileAt  time.Time
 	WatcherArmed     bool
+	LastReloadError  string
+	ReloadFailedAt   time.Time
 }
 
 type Config struct {
@@ -270,10 +272,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 			return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
 		}
 		if workflow.Config.BacklogAdmission.RequireEffort {
-			admissionEffortRubric, err = workflowconfig.ResolveAdmissionEffortRubric(
-				workflow.SharedPrompt,
-				workflow.Config.BacklogAdmission.EffortSection,
-			)
+			admissionEffortRubric, err = workflowconfig.ResolveWorkflowAdmissionEffortRubric(workflow)
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
 			}
@@ -1232,11 +1231,12 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	p.mu.Unlock()
 	if err != nil {
 		if ctx.Err() == nil {
-			p.logger.Warn("workflow reconcile failed", "project_id", p.id, "path", workflowSourceDisplayPath(projectConfig), "error", err)
+			return p.workflowReloadError("workflow reconcile failed", workflowSourceDisplayPath(projectConfig), err)
 		}
 		return fmt.Errorf("load workflow: %w", err)
 	}
 	if workflow.SourceHash == "" || workflow.SourceHash == loadedHash {
+		p.clearWorkflowReloadError()
 		return nil
 	}
 
@@ -1289,10 +1289,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		}
 		admissionCriteria = resolvedCriteria
 		if workflow.Config.BacklogAdmission.RequireEffort {
-			resolvedRubric, rubricErr := workflowconfig.ResolveAdmissionEffortRubric(
-				workflow.SharedPrompt,
-				workflow.Config.BacklogAdmission.EffortSection,
-			)
+			resolvedRubric, rubricErr := workflowconfig.ResolveWorkflowAdmissionEffortRubric(workflow)
 			if rubricErr != nil {
 				return p.workflowReloadError("workflow reload backlog admission effort rubric failed", update.Path, rubricErr)
 			}
@@ -1418,6 +1415,8 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	} else {
 		p.workflowSource.LoadedAt = update.At.UTC()
 	}
+	p.workflowSource.LastReloadError = ""
+	p.workflowSource.ReloadFailedAt = time.Time{}
 	p.connector = projectConnector
 	p.retroProduct = retroProductConnector
 	retainRetroProduct = true
@@ -1447,7 +1446,19 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 
 func (p *Project) workflowReloadError(message, path string, err error) error {
 	p.logger.Warn(message, "project_id", p.id, "path", path, "error", err)
-	return fmt.Errorf("%s: %w", message, err)
+	reloadErr := fmt.Errorf("%s: %w", message, err)
+	p.mu.Lock()
+	p.workflowSource.LastReloadError = reloadErr.Error()
+	p.workflowSource.ReloadFailedAt = time.Now().UTC()
+	p.mu.Unlock()
+	return reloadErr
+}
+
+func (p *Project) clearWorkflowReloadError() {
+	p.mu.Lock()
+	p.workflowSource.LastReloadError = ""
+	p.workflowSource.ReloadFailedAt = time.Time{}
+	p.mu.Unlock()
 }
 
 type releaseCoordinatorBuild struct {

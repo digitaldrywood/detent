@@ -288,7 +288,7 @@ func planProjectRefresh(ctx context.Context, cfg projectRefreshConfig) (projectR
 	if err != nil {
 		return projectRefreshPlan{}, err
 	}
-	if err := validateProjectRefreshCandidate(workflowPath, []byte(refreshedWorkflow), configPath, refreshedConfig); err != nil {
+	if err := validateProjectRefreshCandidate(workflowPath, []byte(refreshedWorkflow), configPath, refreshedConfig, agentsPath, []byte(refreshedAgents)); err != nil {
 		return projectRefreshPlan{}, err
 	}
 
@@ -691,7 +691,9 @@ func refreshProjectWorkflow(existing string, generated string, cfg workflowconfi
 	if projectRefreshYAMLTextSectionRequired(cfg.BacklogAdmission.Enabled, cfg.BacklogAdmission.CriteriaSection) {
 		refreshed = appendProjectRefreshMarkdownSection(refreshed, generated, cfg.BacklogAdmission.CriteriaSection)
 	}
-	if cfg.BacklogAdmission.RequireEffort && strings.TrimSpace(cfg.BacklogAdmission.EffortSection) != "" {
+	if cfg.BacklogAdmission.RequireEffort &&
+		cfg.BacklogAdmission.EffortFile != workflowconfig.BacklogAdmissionEffortFileAgents &&
+		strings.TrimSpace(cfg.BacklogAdmission.EffortSection) != "" {
 		section := strings.TrimSpace(cfg.BacklogAdmission.EffortSection)
 		if _, found := onboardingMarkdownSection(refreshed, "## "+section); !found {
 			refreshed = strings.TrimRight(refreshed, "\n") + "\n\n" + projectRefreshEffortSection(section)
@@ -787,13 +789,16 @@ func projectRefreshEffortSection(section string) string {
 	)
 }
 
-func validateProjectRefreshCandidate(workflowPath string, workflow []byte, configPath string, config []byte) error {
+func validateProjectRefreshCandidate(workflowPath string, workflow []byte, configPath string, config []byte, agentsPath string, agents []byte) error {
 	sources := workflowconfig.ProjectDefinitionSources{
 		WorkflowPath: workflowPath,
 		Workflow:     workflow,
 		ConfigPath:   configPath,
 		Config:       config,
 		HasConfig:    true,
+		AgentsPath:   agentsPath,
+		Agents:       agents,
+		HasAgents:    true,
 	}
 	localWorkflowPath := workflowconfig.LocalWorkflowPath(workflowPath)
 	localWorkflow, _, localWorkflowExists, err := readOptionalProjectRefreshFile(localWorkflowPath)

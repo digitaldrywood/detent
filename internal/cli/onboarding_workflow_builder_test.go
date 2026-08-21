@@ -580,8 +580,14 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 			if workflow.Config.BacklogAdmission.CriteriaSection != onboardingAdmissionCriteriaHeading {
 				t.Fatalf("CriteriaSection = %q, want exact generated heading %q", workflow.Config.BacklogAdmission.CriteriaSection, onboardingAdmissionCriteriaHeading)
 			}
+			if !workflow.Config.BacklogAdmission.RequireEffort ||
+				workflow.Config.BacklogAdmission.EffortFile != workflowconfig.BacklogAdmissionEffortFileAgents ||
+				workflow.Config.BacklogAdmission.EffortSection != onboardingEffortRubricHeading {
+				t.Fatalf("BacklogAdmission effort source = %#v, want AGENTS.md rubric", workflow.Config.BacklogAdmission)
+			}
 			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.enabled", "answer")
 			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.max_candidates_per_run", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.effort_file", "preset")
 		})
 	}
 }
@@ -591,6 +597,9 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 
 	tests := []struct {
 		name             string
+		outputDir        string
+		rootAgents       string
+		intakeProfile    string
 		existing         string
 		wantHeadingCount int
 		wantUnchanged    bool
@@ -598,9 +607,16 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 		{name: "creates AGENTS.md when absent", wantHeadingCount: 1},
 		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n", wantHeadingCount: 1},
 		{
-			name:             "appends when matching heading lacks guidance",
+			name:             "writes AGENTS.md beside nested workflow",
+			outputDir:        "config",
+			rootAgents:       "# Root agent guidance\n\nPreserve this root-owned content.\n",
+			intakeProfile:    "assisted_intake",
+			wantHeadingCount: 1,
+		},
+		{
+			name:             "replaces matching heading that lacks guidance",
 			existing:         "# Repository agent guidance\n\n## Issue effort selection\n\nRecord estimates here.\n",
-			wantHeadingCount: 2,
+			wantHeadingCount: 1,
 		},
 		{
 			name: "preserves complete existing guidance",
@@ -632,14 +648,24 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 			t.Parallel()
 
 			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
-			agentsPath := filepath.Join(root, "AGENTS.md")
+			if tt.rootAgents != "" {
+				writeOnboardingWorkflowBuilderFile(t, filepath.Join(root, "AGENTS.md"), tt.rootAgents)
+			}
+			outputDir := filepath.Join(root, tt.outputDir)
+			outputPath := filepath.Join(outputDir, defaultWorkflowFile)
+			agentsPath := filepath.Join(outputDir, "AGENTS.md")
 			if tt.existing != "" {
 				writeOnboardingWorkflowBuilderFile(t, agentsPath, tt.existing)
 			}
-			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "github_local", "review_gate", "INTAKE_PROFILE=manual_intake"))
+			intakeProfile := tt.intakeProfile
+			if intakeProfile == "" {
+				intakeProfile = "manual_intake"
+			}
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "github_local", "review_gate", "INTAKE_PROFILE="+intakeProfile))
 
 			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
 				AnswersPath: answersPath,
+				OutputPath:  outputPath,
 				Write:       true,
 			})
 			if err != nil {
@@ -656,8 +682,20 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 			if tt.wantUnchanged && got != tt.existing {
 				t.Fatalf("AGENTS.md changed complete existing guidance:\n%s", got)
 			}
-			if tt.existing != "" && !strings.HasPrefix(got, strings.TrimRight(tt.existing, "\n")) {
+			if tt.existing != "" && !strings.HasPrefix(got, "# Repository agent guidance") {
 				t.Fatalf("AGENTS.md did not preserve existing content:\n%s", got)
+			}
+			if tt.rootAgents != "" {
+				rootAgents, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+				if err != nil {
+					t.Fatalf("ReadFile(root AGENTS.md) error = %v", err)
+				}
+				if string(rootAgents) != tt.rootAgents {
+					t.Fatalf("root AGENTS.md changed:\n%s", rootAgents)
+				}
+			}
+			if _, err := workflowconfig.LoadWorkflow(outputPath); err != nil {
+				t.Fatalf("LoadWorkflow(%s) error = %v", outputPath, err)
 			}
 			if count := strings.Count(got, "## Issue effort selection"); count != tt.wantHeadingCount {
 				t.Fatalf("effort heading count = %d, want %d:\n%s", count, tt.wantHeadingCount, got)
@@ -853,6 +891,9 @@ func parseOnboardingBuildWorkflowResult(result onboardingBuildWorkflowResult) (w
 		ConfigPath:   result.ConfigPath,
 		Config:       []byte(result.Config),
 		HasConfig:    true,
+		AgentsPath:   result.AgentsPath,
+		Agents:       []byte(result.Agents),
+		HasAgents:    true,
 	})
 }
 

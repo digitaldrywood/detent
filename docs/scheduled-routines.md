@@ -169,6 +169,7 @@ backlog_admission:
   target_state: Todo
   criteria_section: "Admission criteria"
   require_effort: false
+  effort_file: WORKFLOW.md
   effort_section: "Issue effort selection"
   exclude_labels: []
   authors:

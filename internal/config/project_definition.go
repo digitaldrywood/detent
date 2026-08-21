@@ -50,6 +50,9 @@ type ProjectDefinitionSources struct {
 	LocalConfigPath   string
 	LocalConfig       []byte
 	HasLocalConfig    bool
+	AgentsPath        string
+	Agents            []byte
+	HasAgents         bool
 }
 
 type ProjectDefinitionError struct {
@@ -112,6 +115,10 @@ func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error)
 	if sources.LocalConfig, sources.HasLocalConfig, err = readOptionalDefinitionFile(sources.LocalConfigPath); err != nil {
 		return ProjectDefinitionSources{}, projectDefinitionReadError(path, "read local project config", err)
 	}
+	sources.AgentsPath = filepath.Join(filepath.Dir(path), BacklogAdmissionEffortFileAgents)
+	if sources.Agents, sources.HasAgents, err = readOptionalDefinitionFile(sources.AgentsPath); err != nil {
+		return ProjectDefinitionSources{}, projectDefinitionReadError(path, "read agent guidance", err)
+	}
 	return sources, nil
 }
 
@@ -145,6 +152,7 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) 
 		if parseErr != nil {
 			return Workflow{}, definitionError(definition, parseErr)
 		}
+		workflow = attachProjectDefinitionAgents(workflow, sources)
 		workflow.Definition = definition
 		workflow.Definition.Revision = workflow.SourceHash
 		if validationErr := ValidateWorkflowAdmission(workflow); validationErr != nil {
@@ -156,6 +164,7 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) 
 		if parseErr != nil {
 			return Workflow{}, definitionError(definition, parseErr)
 		}
+		workflow = attachProjectDefinitionAgents(workflow, sources)
 		workflow.Definition = definition
 		workflow.Definition.Revision = workflow.SourceHash
 		if validationErr := ValidateWorkflowAdmission(workflow); validationErr != nil {
@@ -380,7 +389,7 @@ func parseSplitProjectDefinition(
 	if sources.HasLocalWorkflow {
 		prompt = mergeWorkflowPrompts(sharedPrompt, normalizeProjectDefinitionPrompt(local.prompt))
 	}
-	hash := projectDefinitionHash(sources)
+	hash := projectDefinitionHash(sources, false)
 	workflow := Workflow{
 		Config:       cfg,
 		Prompt:       prompt,
@@ -481,7 +490,23 @@ func mixedProjectDefinitionError(
 	return errors.New("mixed project definition has ambiguous authority: " + strings.Join(conflicts, "; "))
 }
 
-func projectDefinitionHash(sources ProjectDefinitionSources) string {
+func attachProjectDefinitionAgents(workflow Workflow, sources ProjectDefinitionSources) Workflow {
+	admission := workflow.Config.BacklogAdmission
+	admission.Normalize()
+	if !admission.RequireEffort {
+		return workflow
+	}
+	if sources.HasAgents && (admission.EffortFile == BacklogAdmissionEffortFileAgents ||
+		!admissionHeadingExists(workflow.SharedPrompt, admission.EffortSection)) {
+		workflow.AgentsPrompt = string(normalizeProjectDefinitionPrompt(sources.Agents))
+	}
+	if admission.EffortFile == BacklogAdmissionEffortFileAgents {
+		workflow.SourceHash = projectDefinitionHash(sources, true)
+	}
+	return workflow
+}
+
+func projectDefinitionHash(sources ProjectDefinitionSources, includeAgents bool) string {
 	hash := sha256.New()
 	for _, source := range []struct {
 		name    string
@@ -492,6 +517,7 @@ func projectDefinitionHash(sources ProjectDefinitionSources) string {
 		{name: "detent.yaml", raw: sources.Config, present: sources.HasConfig},
 		{name: "WORKFLOW.local.md", raw: sources.LocalWorkflow, present: sources.HasLocalWorkflow},
 		{name: "detent.local.yaml", raw: sources.LocalConfig, present: sources.HasLocalConfig},
+		{name: BacklogAdmissionEffortFileAgents, raw: sources.Agents, present: includeAgents && sources.HasAgents},
 	} {
 		if !source.present {
 			continue

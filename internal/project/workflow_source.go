@@ -88,6 +88,7 @@ func workflowFileModifiedAt(cfg globalconfig.Project) time.Time {
 		workflowconfig.DefinitionPath(path),
 		workflowconfig.LocalWorkflowPath(path),
 		workflowconfig.LocalDefinitionPath(path),
+		filepath.Join(filepath.Dir(path), workflowconfig.BacklogAdmissionEffortFileAgents),
 	} {
 		info, err := os.Stat(candidate)
 		if err == nil && info.ModTime().After(modified) {
@@ -190,6 +191,11 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, err
 	}
+	agentsPath := path.Join(path.Dir(s.path), workflowconfig.BacklogAdmissionEffortFileAgents)
+	agentsRaw, hasAgents, err := s.loadOptionalRefFile(ctx, revision, agentsPath)
+	if err != nil {
+		return workflowconfig.Workflow{}, revision, err
+	}
 	localWorkflowPath := s.localPath()
 	localRaw, hasLocalWorkflow, err := readOptionalWorkflowSourceFile(localWorkflowPath)
 	if err != nil {
@@ -212,6 +218,9 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 		LocalConfigPath:   localConfigPath,
 		LocalConfig:       localConfigRaw,
 		HasLocalConfig:    hasLocalConfig,
+		AgentsPath:        revision + ":" + agentsPath,
+		Agents:            agentsRaw,
+		HasAgents:         hasAgents,
 	})
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, err

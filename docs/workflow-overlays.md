@@ -17,6 +17,12 @@ reconciliation covers missed filesystem events. `detent doctor` reports an
 active overlay, lists its structured override keys, and warns if Git tracks the
 local file.
 
+If a changed definition cannot be loaded or validated, Detent keeps the last
+good workflow active and marks the project degraded in `/health`. The workflow
+source entry records `last_reload_error` and `reload_failed_at`, and
+`detent doctor` reports that the project is pinned to its last-good revision.
+A later successful reload clears the degraded state.
+
 For example:
 
 ```yaml

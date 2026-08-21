@@ -25,12 +25,17 @@ not proposed again.
 
 `require_effort` is off by default, preserving admission behavior for existing
 projects. When enabled, `effort_section` must identify a separate project-owned
-rubric in the shared `WORKFLOW.md`. Effort names are taken from bold or
-code-formatted list items in that section rather than from a built-in Detent
-rubric. The read-only admission agent recommends one listed effort and explains
-why. If the issue has no `detent-agent` block, Detent appends the recommendation
-before moving it to the target state. Existing blocks remain authoritative and
-are never modified. A missing or invalid recommendation prevents admission.
+rubric in `effort_file`. The file defaults to `WORKFLOW.md`; set it to
+`AGENTS.md` when the repository keeps effort-selection guidance with its agent
+instructions. Both files are read from the same project-definition directory
+or configured git ref, and only these two explicit sources are accepted. A
+section found in the other file fails validation with a correction hint rather
+than silently selecting it. Effort names are taken from bold or code-formatted
+list items in that section rather than from a built-in Detent rubric. The
+read-only admission agent recommends one listed effort and explains why. If the
+issue has no `detent-agent` block, Detent appends the recommendation before
+moving it to the target state. Existing blocks remain authoritative and are
+never modified. A missing or invalid recommendation prevents admission.
 
 `auto_admit` is off by default. When enabled, Detent admits proposals whose
 confidence is at least `auto_admit_min_confidence`, after revalidating the source
