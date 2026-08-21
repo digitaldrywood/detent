@@ -161,7 +161,15 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 	if err != nil {
 		return onboardingBuildWorkflowResult{}, err
 	}
-	agentsPath := filepath.Join(sourceRoot, "AGENTS.md")
+	outputPath := strings.TrimSpace(cfg.OutputPath)
+	if outputPath == "" {
+		outputPath = filepath.Join(sourceRoot, defaultWorkflowFile)
+	}
+	if !filepath.IsAbs(outputPath) {
+		outputPath = filepath.Join(sourceRoot, outputPath)
+	}
+	outputPath = filepath.Clean(outputPath)
+	agentsPath := filepath.Join(filepath.Dir(outputPath), "AGENTS.md")
 	existingAgents, err := readOnboardingAgentsFile(agentsPath)
 	if err != nil {
 		return onboardingBuildWorkflowResult{}, err
@@ -171,14 +179,6 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		return onboardingBuildWorkflowResult{}, err
 	}
 
-	outputPath := strings.TrimSpace(cfg.OutputPath)
-	if outputPath == "" {
-		outputPath = filepath.Join(sourceRoot, defaultWorkflowFile)
-	}
-	if !filepath.IsAbs(outputPath) {
-		outputPath = filepath.Join(sourceRoot, outputPath)
-	}
-	outputPath = filepath.Clean(outputPath)
 	projectConfigPath := workflowconfig.DefinitionPath(outputPath)
 	if _, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 		WorkflowPath: outputPath,
