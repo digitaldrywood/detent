@@ -40,13 +40,13 @@ ORDER BY finished_at, id`
 const costPerOutcomeCompletionsSQL = `
 SELECT project_id, pr_number, completed_at
 FROM efficiency_receipts
-WHERE completed_at >= ? AND completed_at < ?
+WHERE in_progress = 0 AND completed_at >= ? AND completed_at < ?
 ORDER BY completed_at, id`
 
 const costPerOutcomeProjectCompletionsSQL = `
 SELECT project_id, pr_number, completed_at
 FROM efficiency_receipts
-WHERE project_id = ? AND completed_at >= ? AND completed_at < ?
+WHERE project_id = ? AND in_progress = 0 AND completed_at >= ? AND completed_at < ?
 ORDER BY completed_at, id`
 
 func (s *sqliteStore) CostPerOutcome(ctx context.Context, query efficiency.CostPerOutcomeQuery) (efficiency.CostPerOutcomeReport, error) {

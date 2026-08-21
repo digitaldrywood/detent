@@ -90,6 +90,10 @@ type Config struct {
 	OverloadRetryDelay            time.Duration
 	NoProgressTokenLimit          int64
 	NoProgressSpendLimitUSD       float64
+	LifetimeSessionLimit          int64
+	LifetimeTokenLimit            int64
+	LifetimeLimitCooldown         time.Duration
+	LifetimeLimitOverrideLabel    string
 	BillingMode                   string
 	RateWindowPacing              workflowconfig.RateWindowPacing
 	FailureBreaker                FailureBreakerConfig
@@ -165,6 +169,7 @@ type Dependencies struct {
 	WorkAttempts         store.WorkAttemptStore
 	MergeRequiredChecks  store.MergeRequiredCheckStore
 	ProgressSpend        store.ProgressSpendStore
+	LifetimeUsage        LifetimeUsageStore
 	AgentResume          store.AgentResumeStore
 	OrphanSessions       store.OrphanSessionStore
 	ValidatorMemo        store.ValidatorMemoStore
@@ -223,6 +228,7 @@ type Orchestrator struct {
 	mergeRequiredChecks     store.MergeRequiredCheckStore
 	operatorStops           store.OperatorStopStore
 	progressSpend           store.ProgressSpendStore
+	lifetimeUsage           LifetimeUsageStore
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
@@ -472,6 +478,17 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			progressSpend = candidate
 		}
 	}
+	lifetimeUsage := deps.LifetimeUsage
+	if lifetimeUsage == nil {
+		if candidate, ok := deps.WorkflowMetrics.(LifetimeUsageStore); ok {
+			lifetimeUsage = candidate
+		}
+	}
+	if lifetimeUsage == nil {
+		if candidate, ok := deps.WorkAttempts.(LifetimeUsageStore); ok {
+			lifetimeUsage = candidate
+		}
+	}
 	mergeRequiredChecks := deps.MergeRequiredChecks
 	if mergeRequiredChecks == nil {
 		if candidate, ok := deps.WorkAttempts.(store.MergeRequiredCheckStore); ok {
@@ -542,6 +559,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		mergeRequiredChecks:     mergeRequiredChecks,
 		operatorStops:           operatorStops,
 		progressSpend:           progressSpend,
+		lifetimeUsage:           lifetimeUsage,
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,
 		supervisor:              supervisor,

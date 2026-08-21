@@ -601,6 +601,7 @@ const (
 	dispatchSkipBlocked                   = "blocked"
 	dispatchSkipBudgetCooldown            = "budget_cooldown"
 	dispatchSkipBudgetHardHold            = "budget_hard_hold"
+	dispatchSkipLifetimeLimit             = "lifetime_limit"
 	dispatchSkipLocalSlotUnavailable      = "local_slot_unavailable"
 	dispatchSkipWorkerHostUnavailable     = "worker_host_unavailable"
 	dispatchSkipGlobalCapacityFull        = "global_capacity_full"
@@ -728,7 +729,11 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if _, ok := state.Claimed[issue.ID]; ok && !allowClaimed {
 		return dispatchableDecision{reason: dispatchSkipAlreadyClaimed}
 	}
-	if _, ok := state.Blocked[issue.ID]; ok {
+	if blocked, ok := state.Blocked[issue.ID]; ok {
+		reason := strings.ToLower(strings.TrimSpace(blocked.Reason))
+		if reason == lifetimeLimitReason || strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) {
+			return dispatchableDecision{reason: dispatchSkipLifetimeLimit}
+		}
 		return dispatchableDecision{reason: dispatchSkipBlocked}
 	}
 	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {

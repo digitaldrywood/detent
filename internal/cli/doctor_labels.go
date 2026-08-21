@@ -106,7 +106,7 @@ func checkDoctorConfiguredLabels(
 }
 
 func doctorConfiguredLabels(cfg workflowconfig.Config) []doctorConfiguredLabel {
-	labels := make([]doctorConfiguredLabel, 0, 2)
+	labels := make([]doctorConfiguredLabel, 0, 3)
 	if name := strings.TrimSpace(cfg.Agent.AutoPromote.OptoutLabel); name != "" {
 		labels = append(labels, doctorConfiguredLabel{
 			ConfigKey:   "agent.auto_promote.optout_label",
@@ -121,6 +121,14 @@ func doctorConfiguredLabels(cfg workflowconfig.Config) []doctorConfiguredLabel {
 			ConfigKey:   "agent.max_session_token_override_label",
 			Name:        name,
 			Description: "Allows an issue to exceed the configured agent session token ceiling.",
+			Color:       "fbca04",
+		})
+	}
+	if name := strings.TrimSpace(cfg.Agent.LifetimeLimitOverrideLabel); name != "" {
+		labels = append(labels, doctorConfiguredLabel{
+			ConfigKey:   "agent.lifetime_limit_override_label",
+			Name:        name,
+			Description: "Allows an issue to bypass the configured lifetime session and token limits.",
 			Color:       "fbca04",
 		})
 	}

@@ -189,6 +189,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	o.refreshEfficiencyReceipt(ctx, running.Issue, event.CompletedAt)
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
 		return
 	}
@@ -2563,6 +2564,26 @@ func (o *Orchestrator) recordEfficiencyReceipt(ctx context.Context, issue connec
 	}
 	if err := o.lifecycleExporter.ExportLifecycle(ctx, receipt); err != nil && o.logger != nil {
 		o.logger.Warn("export efficiency lifecycle failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+}
+
+func (o *Orchestrator) refreshEfficiencyReceipt(ctx context.Context, issue connector.Issue, observedAt time.Time) {
+	recorder, ok := o.efficiency.(efficiency.LiveRecorder)
+	if !ok || recorder == nil || stateIn(issue.State, o.cfg.TerminalStates) {
+		return
+	}
+	_, _, err := recorder.RefreshEfficiencyReceipt(ctx, efficiency.Observation{
+		ProjectID:               o.workflowMetricsProjectID(),
+		IssueID:                 issue.ID,
+		Identifier:              issue.Identifier,
+		IssueURL:                issue.URL,
+		PRNumber:                workflowMetricsPRNumber(issue),
+		ObservedAt:              observedAt,
+		RefreshIntervalSessions: 5,
+		Thresholds:              o.cfg.EfficiencyThresholds,
+	})
+	if err != nil && o.logger != nil {
+		o.logger.Warn("refresh live efficiency receipt failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 	}
 }
 

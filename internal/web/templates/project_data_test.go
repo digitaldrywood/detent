@@ -31,13 +31,35 @@ func TestProjectRunRowsRenderEfficiencyReceipt(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows len = %d, want 1", len(rows))
 	}
-	if rows[0].Receipt != "3 sessions · 97% cached · $3.25 notional USD" || !rows[0].Anomaly {
+	if rows[0].Receipt != "3 sessions · 0 redispatches · 1,200,000 tokens" || !rows[0].Anomaly {
 		t.Fatalf("receipt row = %#v", rows[0])
 	}
-	for _, want := range []string{"1,200,000 tokens", "2 attempts", "10m"} {
+	for _, want := range []string{"97% cached", "$3.25 notional USD", "2 attempts", "10m"} {
 		if !strings.Contains(rows[0].ReceiptTitle, want) {
 			t.Fatalf("receipt title %q missing %q", rows[0].ReceiptTitle, want)
 		}
+	}
+}
+
+func TestProjectRunRowsRenderLiveEfficiencyReceipt(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{ID: "issue-1926", Identifier: "digitaldrywood/detent#1926", ProjectID: "detent"}
+	rows := projectRunRowsWithReceipts(telemetry.Snapshot{Running: []telemetry.Running{{Issue: issue}}}, []efficiency.Receipt{{
+		ProjectID:    "detent",
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		Sessions:     10,
+		Attempts:     10,
+		TotalTokens:  40_000_000,
+		Redispatches: 9,
+		InProgress:   true,
+	}}, 0)
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1", len(rows))
+	}
+	if rows[0].Receipt != "10 sessions · 9 redispatches · 40,000,000 tokens" {
+		t.Fatalf("live receipt row = %#v", rows[0])
 	}
 }
 

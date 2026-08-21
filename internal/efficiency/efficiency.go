@@ -21,6 +21,17 @@ type Completion struct {
 	Thresholds  Thresholds
 }
 
+type Observation struct {
+	ProjectID               string
+	IssueID                 string
+	Identifier              string
+	IssueURL                string
+	PRNumber                *int64
+	ObservedAt              time.Time
+	RefreshIntervalSessions int64
+	Thresholds              Thresholds
+}
+
 type Receipt struct {
 	ProjectID             string
 	IssueID               string
@@ -51,6 +62,8 @@ type Receipt struct {
 	TokensAnomaly         bool
 	SessionsAnomaly       bool
 	DwellAnomaly          bool
+	InProgress            bool
+	RefreshedAt           time.Time
 }
 
 func (r Receipt) CacheShare() float64 {
@@ -73,10 +86,11 @@ func (r Receipt) Anomalous() bool {
 }
 
 type Query struct {
-	ProjectID string
-	From      time.Time
-	To        time.Time
-	Limit     int
+	ProjectID         string
+	From              time.Time
+	To                time.Time
+	Limit             int
+	IncludeInProgress bool
 }
 
 type Percentiles struct {
@@ -153,6 +167,10 @@ type CostPerOutcomeReport struct {
 
 type Recorder interface {
 	CompleteEfficiencyReceipt(context.Context, Completion) (Receipt, error)
+}
+
+type LiveRecorder interface {
+	RefreshEfficiencyReceipt(context.Context, Observation) (Receipt, bool, error)
 }
 
 type Reader interface {

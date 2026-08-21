@@ -939,7 +939,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		ProjectPauseExitResolver:  project.PauseExitResolver,
 	}
 	if loadDetails {
-		receipts, err := s.store.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: project.ID, Limit: 100})
+		receipts, err := s.store.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: project.ID, Limit: 100, IncludeInProgress: true})
 		if err != nil {
 			s.logger.Warn("efficiency receipts query failed", slog.Any("error", err))
 		} else {

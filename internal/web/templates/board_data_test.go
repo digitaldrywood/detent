@@ -44,9 +44,10 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 		Redispatches:      1,
 		CIReruns:          1,
 		TokensAnomaly:     true,
+		InProgress:        true,
 	}}
 	html := renderBoardComponent(t, BoardCardSheet(data, card, false, false, KanbanConversationData{}, BoardActivityData{}, BoardSessionData{}))
-	for _, want := range []string{"efficiency-receipt", "Efficiency receipt", "97%", "$1.25", "redispatches", "Anomaly"} {
+	for _, want := range []string{"efficiency-receipt", "Efficiency receipt", "97%", "$1.25", "redispatches", "Live", "Anomaly"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("detail sheet missing %q:\n%s", want, html)
 		}

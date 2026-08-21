@@ -1076,6 +1076,7 @@ func stickyBlockReason(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) ||
 		strings.HasPrefix(reason, repeatedFailureBlockedReasonPrefix) ||
+		strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) ||
 		strings.HasPrefix(reason, artifactGateConvergenceBlockedReasonPrefix) ||
 		strings.HasPrefix(reason, mergeWorkerRetryExhaustedReason) {
 		return true
@@ -1085,6 +1086,7 @@ func stickyBlockReason(reason string) bool {
 		string(AutoPromoteReasonMergeRevocationLimit),
 		noProgressLimitReason,
 		dispatchLoopDetectedReason,
+		lifetimeLimitReason,
 		spendProgressReason,
 		repeatedFailureCircuitBreakerCause,
 		"workpad_blocked_unactioned",

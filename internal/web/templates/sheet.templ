@@ -250,8 +250,15 @@ templ BoardEfficiencyReceipt(receipt efficiency.Receipt, present bool, path stri
 	<section id="efficiency-receipt" class="flex min-h-32 flex-col gap-2" aria-label="Efficiency receipt" aria-busy="false" data-detail-enrichment>
 		<div class="flex items-center justify-between gap-2">
 			<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Efficiency receipt</h3>
-			if present && receipt.Anomalous() {
-				@primitives.Chip(primitives.KindWarn, "Anomaly")
+			if present {
+				<div class="flex items-center gap-1.5">
+					if receipt.InProgress {
+						@primitives.Chip(primitives.KindNeutral, "Live")
+					}
+					if receipt.Anomalous() {
+						@primitives.Chip(primitives.KindWarn, "Anomaly")
+					}
+				</div>
 			}
 		</div>
 		if message != "" {

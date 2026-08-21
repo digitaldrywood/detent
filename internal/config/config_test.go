@@ -701,6 +701,80 @@ func TestNoProgressTokenLimitConfiguration(t *testing.T) {
 	}
 }
 
+func TestLifetimeLimitConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		raw          string
+		wantSessions int64
+		wantTokens   int64
+		wantCooldown int
+		wantOverride string
+		wantErr      string
+	}{
+		{
+			name:         "default enabled",
+			raw:          "---\ntracker:\n  kind: memory\n---\nPrompt\n",
+			wantSessions: DefaultLifetimeSessionLimit,
+			wantTokens:   DefaultLifetimeTokenLimit,
+			wantCooldown: DefaultLifetimeLimitCooldownSeconds,
+			wantOverride: DefaultLifetimeLimitOverrideLabel,
+		},
+		{
+			name:         "custom values normalize override label",
+			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 20\n  lifetime_token_limit: 50000000\n  lifetime_limit_cooldown_seconds: 7200\n  lifetime_limit_override_label: Allow-Hard-Issue\n---\nPrompt\n",
+			wantSessions: 20,
+			wantTokens:   50_000_000,
+			wantCooldown: 7200,
+			wantOverride: "allow-hard-issue",
+		},
+		{
+			name:         "limits can be disabled",
+			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 0\n  lifetime_token_limit: 0\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
+			wantOverride: DefaultLifetimeLimitOverrideLabel,
+		},
+		{
+			name:    "negative sessions rejected",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: -1\n---\nPrompt\n",
+			wantErr: "agent.lifetime_session_limit must be greater than or equal to 0",
+		},
+		{
+			name:    "negative tokens rejected",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_token_limit: -1\n---\nPrompt\n",
+			wantErr: "agent.lifetime_token_limit must be greater than or equal to 0",
+		},
+		{
+			name:    "enabled limit requires cooldown",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
+			wantErr: "agent.lifetime_limit_cooldown_seconds must be greater than 0 when a lifetime limit is enabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.raw))
+			if tt.wantErr != "" {
+				if err == nil {
+					err = workflow.Config.Validate()
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			agent := workflow.Config.Agent
+			if agent.LifetimeSessionLimit != tt.wantSessions || agent.LifetimeTokenLimit != tt.wantTokens || agent.LifetimeLimitCooldownSeconds != tt.wantCooldown || agent.LifetimeLimitOverrideLabel != tt.wantOverride {
+				t.Fatalf("lifetime config = sessions %d tokens %d cooldown %d override %q", agent.LifetimeSessionLimit, agent.LifetimeTokenLimit, agent.LifetimeLimitCooldownSeconds, agent.LifetimeLimitOverrideLabel)
+			}
+		})
+	}
+}
+
 func TestFailureBreakerConfiguration(t *testing.T) {
 	t.Parallel()
 

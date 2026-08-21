@@ -1287,7 +1287,7 @@ test("project overview renders tabs, hero, and recent runs", async ({
   await capturePageAndAttach(page, "project-overview.png", testInfo);
 });
 
-test("project runs render completed efficiency receipts", async ({ page }) => {
+test("project runs render completed lifetime usage receipts", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "fleet-healthy-parallel-work",
@@ -1297,8 +1297,9 @@ test("project runs render completed efficiency receipts", async ({ page }) => {
   });
 
   await expect(page.locator("#project-runs")).toContainText("Efficiency receipt");
-  await expect(page.locator("#project-runs")).toContainText("cached");
-  await expect(page.locator("#project-runs")).toContainText("$1.75");
+  await expect(page.locator("#project-runs")).toContainText(
+    "1 sessions · 0 redispatches · 64,000 tokens",
+  );
 });
 
 test("project kanban board scopes cards to the project", async ({

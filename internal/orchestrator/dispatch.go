@@ -133,6 +133,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		return
 	}
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	o.enforceLifetimeLimits(ctx, state, issues, now)
 	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
 	o.logOwnershipEligibilityStartup(planner, issues)
@@ -263,6 +264,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 		return
 	}
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	o.enforceLifetimeLimits(ctx, state, issues, now)
 	for _, issue := range issues {
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 			return

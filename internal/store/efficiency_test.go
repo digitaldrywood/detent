@@ -96,6 +96,104 @@ func TestEfficiencyReceiptReconcilesRawRowsAndFlagsOutlier(t *testing.T) {
 	}
 }
 
+func TestRefreshEfficiencyReceiptTracksIncompleteIssueAtSessionIntervals(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openTestStore(t, ctx)
+	live, ok := backend.(efficiency.LiveRecorder)
+	if !ok {
+		t.Fatal("store does not implement efficiency.LiveRecorder")
+	}
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	issueID := "issue-live"
+	identifier := "digitaldrywood/detent#1926"
+	issueURL := "https://github.com/digitaldrywood/detent/issues/1926"
+	observation := efficiency.Observation{
+		ProjectID:               "detent",
+		IssueID:                 issueID,
+		Identifier:              identifier,
+		IssueURL:                issueURL,
+		ObservedAt:              base.Add(5 * time.Minute),
+		RefreshIntervalSessions: 5,
+		Thresholds:              efficiency.Thresholds{TokensMultiple: 2, SessionsMultiple: 2, DwellMultiple: 2},
+	}
+
+	appendEfficiencySessions(t, ctx, backend, issueID, identifier, issueURL, base, 1, 4)
+	if receipt, refreshed, err := live.RefreshEfficiencyReceipt(ctx, observation); err != nil {
+		t.Fatalf("RefreshEfficiencyReceipt() below threshold error = %v", err)
+	} else if refreshed {
+		t.Fatalf("RefreshEfficiencyReceipt() below threshold = %#v, true; want no refresh", receipt)
+	}
+
+	appendEfficiencySessions(t, ctx, backend, issueID, identifier, issueURL, base, 5, 5)
+	receipt, refreshed, err := live.RefreshEfficiencyReceipt(ctx, observation)
+	if err != nil {
+		t.Fatalf("RefreshEfficiencyReceipt() at threshold error = %v", err)
+	}
+	if !refreshed || !receipt.InProgress || receipt.Sessions != 5 || receipt.Attempts != 5 || receipt.Redispatches != 4 || receipt.TotalTokens != 500 {
+		t.Fatalf("live receipt = %#v, want refreshed 5-session incomplete receipt", receipt)
+	}
+	if !receipt.CompletedAt.IsZero() || !receipt.RefreshedAt.Equal(observation.ObservedAt) {
+		t.Fatalf("live receipt timestamps = completed %s refreshed %s, want zero/%s", receipt.CompletedAt, receipt.RefreshedAt, observation.ObservedAt)
+	}
+
+	completed, err := backend.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: "detent"})
+	if err != nil {
+		t.Fatalf("ListEfficiencyReceipts() completed-only error = %v", err)
+	}
+	if len(completed) != 0 {
+		t.Fatalf("completed-only receipts = %#v, want live receipt excluded", completed)
+	}
+	liveReceipts, err := backend.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: "detent", IncludeInProgress: true})
+	if err != nil {
+		t.Fatalf("ListEfficiencyReceipts() including live error = %v", err)
+	}
+	if len(liveReceipts) != 1 || !liveReceipts[0].InProgress {
+		t.Fatalf("receipts including live = %#v, want one incomplete receipt", liveReceipts)
+	}
+
+	appendEfficiencySessions(t, ctx, backend, issueID, identifier, issueURL, base, 6, 9)
+	observation.ObservedAt = base.Add(9 * time.Minute)
+	if got, refreshed, err := live.RefreshEfficiencyReceipt(ctx, observation); err != nil {
+		t.Fatalf("RefreshEfficiencyReceipt() before next interval error = %v", err)
+	} else if refreshed || got.Sessions != 5 {
+		t.Fatalf("RefreshEfficiencyReceipt() before next interval = %#v, %t; want cached 5-session receipt", got, refreshed)
+	}
+
+	appendEfficiencySessions(t, ctx, backend, issueID, identifier, issueURL, base, 10, 10)
+	observation.ObservedAt = base.Add(10 * time.Minute)
+	receipt, refreshed, err = live.RefreshEfficiencyReceipt(ctx, observation)
+	if err != nil {
+		t.Fatalf("RefreshEfficiencyReceipt() at next interval error = %v", err)
+	}
+	if !refreshed || receipt.Sessions != 10 || receipt.Redispatches != 9 {
+		t.Fatalf("second live receipt = %#v, want refreshed 10-session receipt", receipt)
+	}
+
+	completedAt := base.Add(20 * time.Minute)
+	final, err := backend.CompleteEfficiencyReceipt(ctx, efficiency.Completion{
+		ProjectID:   "detent",
+		IssueID:     issueID,
+		Identifier:  identifier,
+		IssueURL:    issueURL,
+		CompletedAt: completedAt,
+	})
+	if err != nil {
+		t.Fatalf("CompleteEfficiencyReceipt() error = %v", err)
+	}
+	if final.InProgress || !final.CompletedAt.Equal(completedAt) || final.Sessions != 10 {
+		t.Fatalf("final receipt = %#v, want completed 10-session receipt", final)
+	}
+	completed, err = backend.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: "detent"})
+	if err != nil {
+		t.Fatalf("ListEfficiencyReceipts() after completion error = %v", err)
+	}
+	if len(completed) != 1 || completed[0].InProgress {
+		t.Fatalf("completed receipts = %#v, want finalized receipt", completed)
+	}
+}
+
 type efficiencySeed struct {
 	issueID       string
 	identifier    string
@@ -226,4 +324,58 @@ func seedEfficiencyIssue(t *testing.T, ctx context.Context, backend Store, seed 
 		t.Fatalf("CompleteEfficiencyReceipt() error = %v", err)
 	}
 	return receipt
+}
+
+func appendEfficiencySessions(
+	t *testing.T,
+	ctx context.Context,
+	backend Store,
+	issueID string,
+	identifier string,
+	issueURL string,
+	base time.Time,
+	from int,
+	to int,
+) {
+	t.Helper()
+
+	for attempt := from; attempt <= to; attempt++ {
+		startedAt := base.Add(time.Duration(attempt-1) * time.Minute)
+		attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+			ProjectID:     "detent",
+			IssueID:       issueID,
+			Identifier:    identifier,
+			IssueURL:      issueURL,
+			WorkerType:    "agent",
+			Lane:          "In Progress",
+			AttemptNumber: attempt,
+			StartedAt:     startedAt,
+		})
+		if err != nil {
+			t.Fatalf("StartWorkAttempt(%d) error = %v", attempt, err)
+		}
+		sessionID, err := backend.StartSession(ctx, SessionStart{
+			ProjectID:     "detent",
+			WorkAttemptID: attemptID,
+			IssueID:       issueID,
+			Identifier:    identifier,
+			IssueURL:      issueURL,
+			StartedAt:     startedAt,
+			Model:         "gpt-5",
+		})
+		if err != nil {
+			t.Fatalf("StartSession(%d) error = %v", attempt, err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+			CompletedAt:       startedAt.Add(time.Minute),
+			InputTokens:       80,
+			CachedInputTokens: 60,
+			OutputTokens:      20,
+			TotalTokens:       100,
+			FinalState:        "completed",
+			Model:             "gpt-5",
+		}); err != nil {
+			t.Fatalf("FinishSession(%d) error = %v", attempt, err)
+		}
+	}
 }

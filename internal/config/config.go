@@ -68,6 +68,10 @@ const (
 	DefaultNoProgressLimit                   = 3
 	DefaultNoProgressTokenLimit              = 25_000_000
 	DefaultNoProgressSpendLimitUSD           = 3.0
+	DefaultLifetimeSessionLimit              = 15
+	DefaultLifetimeTokenLimit                = 40_000_000
+	DefaultLifetimeLimitCooldownSeconds      = 3600
+	DefaultLifetimeLimitOverrideLabel        = "allow-lifetime-limit"
 	DefaultFailureBreakerSameClassLimit      = 5
 	DefaultFailureBreakerWindowSeconds       = 3600
 	DefaultFailureBreakerCooldownSeconds     = 3600
@@ -314,6 +318,10 @@ type Agent struct {
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
 	NoProgressTokenLimit         int64                        `yaml:"no_progress_token_limit"`
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
+	LifetimeSessionLimit         int64                        `yaml:"lifetime_session_limit"`
+	LifetimeTokenLimit           int64                        `yaml:"lifetime_token_limit"`
+	LifetimeLimitCooldownSeconds int                          `yaml:"lifetime_limit_cooldown_seconds"`
+	LifetimeLimitOverrideLabel   string                       `yaml:"lifetime_limit_override_label"`
 	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
 	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
@@ -1382,19 +1390,23 @@ func Default() Config {
 			GitHubRESTPollIntervalMS: 60000,
 		},
 		Agent: Agent{
-			MaxConcurrentAgents:         10,
-			RateWindowPacing:            DefaultRateWindowPacing(),
-			MaxTurns:                    20,
-			MaxSessionDurationMS:        DefaultMaxSessionDurationMS,
-			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
-			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
-			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
-			MergeFallbackMaxDurationMS:  DefaultMergeFallbackMaxDurationMS,
-			MaxRetryBackoffMS:           300000,
-			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
-			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
-			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
-			StopRun:                     StopRun{TargetState: "Blocked"},
+			MaxConcurrentAgents:          10,
+			RateWindowPacing:             DefaultRateWindowPacing(),
+			MaxTurns:                     20,
+			MaxSessionDurationMS:         DefaultMaxSessionDurationMS,
+			NoProgressTimeoutMS:          DefaultNoProgressTimeoutMS,
+			MergeWorkerStartupTimeoutMS:  DefaultMergeWorkerStartupTimeoutMS,
+			MergeWorkerMaxDurationMS:     DefaultMergeWorkerMaxDurationMS,
+			MergeFallbackMaxDurationMS:   DefaultMergeFallbackMaxDurationMS,
+			MaxRetryBackoffMS:            300000,
+			OverloadRetryDelayMS:         DefaultOverloadRetryDelayMS,
+			NoProgressTokenLimit:         DefaultNoProgressTokenLimit,
+			NoProgressSpendLimitUSD:      DefaultNoProgressSpendLimitUSD,
+			LifetimeSessionLimit:         DefaultLifetimeSessionLimit,
+			LifetimeTokenLimit:           DefaultLifetimeTokenLimit,
+			LifetimeLimitCooldownSeconds: DefaultLifetimeLimitCooldownSeconds,
+			LifetimeLimitOverrideLabel:   DefaultLifetimeLimitOverrideLabel,
+			StopRun:                      StopRun{TargetState: "Blocked"},
 			MergeFastPath: MergeFastPath{
 				Enabled:            true,
 				FairnessAgeSeconds: DefaultMergeFairnessAgeSeconds,
@@ -1743,6 +1755,7 @@ func (c *Config) normalize() {
 	}
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
+	c.Agent.LifetimeLimitOverrideLabel = normalizeLabel(c.Agent.LifetimeLimitOverrideLabel)
 	c.Agent.MaxSessionTokenOverrideLabel = normalizeLabel(c.Agent.MaxSessionTokenOverrideLabel)
 	c.Agent.MaxSessionTokenOverrideField = strings.TrimSpace(c.Agent.MaxSessionTokenOverrideField)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
@@ -2189,6 +2202,15 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.NoProgressSpendLimitUSD < 0 {
 		*problems = append(*problems, prefix+".no_progress_spend_limit_usd must be greater than or equal to 0")
+	}
+	if a.LifetimeSessionLimit < 0 {
+		*problems = append(*problems, prefix+".lifetime_session_limit must be greater than or equal to 0")
+	}
+	if a.LifetimeTokenLimit < 0 {
+		*problems = append(*problems, prefix+".lifetime_token_limit must be greater than or equal to 0")
+	}
+	if (a.LifetimeSessionLimit > 0 || a.LifetimeTokenLimit > 0) && a.LifetimeLimitCooldownSeconds <= 0 {
+		*problems = append(*problems, prefix+".lifetime_limit_cooldown_seconds must be greater than 0 when a lifetime limit is enabled")
 	}
 	validatePositive(prefix+".failure_breaker.same_class_limit", a.FailureBreaker.SameClassLimit, problems)
 	validatePositive(prefix+".failure_breaker.window_seconds", a.FailureBreaker.WindowSeconds, problems)
