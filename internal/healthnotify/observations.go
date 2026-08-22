@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -59,6 +60,8 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 	projectRefreshFailures := map[string][]telemetry.RefreshFailure{}
 	fleetCauses := []string{}
 	fleetWaitReasons := []string{}
+	faultBreakers := []telemetry.FailureBreaker{}
+	faultOutages := []telemetry.BackendOutage{}
 	for _, condition := range snapshot.TrackerUnavailable {
 		projectID := strings.TrimSpace(condition.ProjectID)
 		if projectID == "" {
@@ -84,7 +87,7 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		fleetCauses = append(fleetCauses, CauseForgeUnavailable)
 	}
 	for _, stall := range snapshot.DispatchStalls {
-		if !stall.Stalled {
+		if dispatchConditionClass(stall) != observability.ClassFault {
 			continue
 		}
 		projectID := strings.TrimSpace(stall.ProjectID)
@@ -111,6 +114,9 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		fleetCauses = append(fleetCauses, CauseCIUnavailable)
 	}
 	for _, breaker := range snapshot.FailureBreakers {
+		if !failureBreakerNeedsOperator(breaker) {
+			continue
+		}
 		projectID := strings.TrimSpace(breaker.ProjectID)
 		if projectID == "" {
 			continue
@@ -120,9 +126,13 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		}
 		projectCauses[projectID][CauseProjectFailureBreaker] = nil
 		projectBreakers[projectID] = append(projectBreakers[projectID], breaker)
+		faultBreakers = append(faultBreakers, breaker)
 		fleetCauses = append(fleetCauses, CauseProjectFailureBreaker)
 	}
 	for _, outage := range snapshot.BackendOutages {
+		if observability.BackendOutage(outage.Kind) != observability.ClassFault {
+			continue
+		}
 		projectID := strings.TrimSpace(outage.ProjectID)
 		if projectID == "" {
 			continue
@@ -132,6 +142,7 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		}
 		projectCauses[projectID][CauseBackendCapacity] = nil
 		projectOutages[projectID] = append(projectOutages[projectID], outage)
+		faultOutages = append(faultOutages, outage)
 		fleetCauses = append(fleetCauses, CauseBackendCapacity)
 	}
 	for _, failure := range snapshot.RefreshFailures() {
@@ -211,11 +222,25 @@ func observations(snapshot telemetry.Snapshot, health []project.Health) []observ
 		WaitReasons:       compactSorted(fleetWaitReasons),
 		TrackerConditions: append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...),
 		ForgeConditions:   append([]telemetry.ForgeCondition(nil), snapshot.ForgeUnavailable...),
-		FailureBreakers:   append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
-		BackendOutages:    append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
+		FailureBreakers:   faultBreakers,
+		BackendOutages:    faultOutages,
 		RefreshFailures:   append([]telemetry.RefreshFailure(nil), snapshot.RefreshFailures()...),
 	})
 	return result
+}
+
+func dispatchConditionClass(status telemetry.DispatchStatus) observability.Class {
+	return observability.Normalize(status.Class, observability.Dispatch(status.Stalled, status.WaitReasonCode))
+}
+
+func failureBreakerNeedsOperator(breaker telemetry.FailureBreaker) bool {
+	parkedItems := 0
+	for _, item := range breaker.Items {
+		if item.Parked {
+			parkedItems++
+		}
+	}
+	return observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) == observability.ClassFault
 }
 
 func projectIdentity(projectID string, cause string) string {

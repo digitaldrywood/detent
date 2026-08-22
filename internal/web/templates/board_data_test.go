@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -142,14 +143,12 @@ func TestBoardExceptionsIncludeFleetStalenessWarning(t *testing.T) {
 		},
 	}
 	exceptions := boardExceptions(data, false)
-	if len(exceptions) != 1 {
-		t.Fatalf("boardExceptions() = %#v, want one", exceptions)
+	if len(exceptions) != 0 {
+		t.Fatalf("boardExceptions() = %#v, want staleness excluded", exceptions)
 	}
-	if exceptions[0].Title != "Work item is stale" || exceptions[0].Ref != "#1574" || exceptions[0].ActionLabel != "Open" {
-		t.Fatalf("exception = %#v", exceptions[0])
-	}
-	if exceptions := boardExceptions(data, true); len(exceptions) != 0 {
-		t.Fatalf("board staleness exceptions = %#v, want compact alerts instead", exceptions)
+	rows := diagnosticsConditionRows(data.Snapshot)
+	if len(rows) != 1 || rows[0].Class != observability.ClassDiagnostic || rows[0].Target != "digitaldrywood/detent#1574" {
+		t.Fatalf("diagnostics conditions = %#v, want relocated staleness row", rows)
 	}
 }
 
@@ -2491,13 +2490,13 @@ func TestBoardSnapshotRendersLastKnownState(t *testing.T) {
 	data.Snapshot.LastKnown = true
 	html := renderBoardComponent(t, BoardSnapshot(data))
 
+	if strings.Contains(html, `id="board-alerts"`) {
+		t.Fatalf("last-known state without a refresh fault rendered a banner:\n%s", html)
+	}
 	for _, want := range []string{
-		`id="board-alerts"`,
-		`id="board-alert-last-known"`,
-		`data-board-snapshot-stale="true"`,
-		"Board showing last-known state",
-		"Tracker refresh is behind; no refresh failure is reported.",
-		"grayscale",
+		`id="board-freshness"`,
+		"Last-known data",
+		`id="board-lanes"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("last-known board snapshot missing %q:\n%s", want, html)
@@ -2530,7 +2529,7 @@ func TestBoardAlertsExcludeRoutineStartup(t *testing.T) {
 				Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusInitializing},
 			},
 		},
-		{name: "legacy last-known remains a warning", snapshot: telemetry.Snapshot{LastKnown: true}, want: 1},
+		{name: "legacy last-known without a fault is quiet", snapshot: telemetry.Snapshot{LastKnown: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2551,8 +2550,6 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 		boardAlertKindLastKnown,
 		boardAlertKindFailureBreaker,
 		boardAlertKindBackendCapacity,
-		boardAlertKindDispatchRecovery,
-		boardAlertKindUpdatePending,
 	}
 	if len(alerts) != len(wantKinds) {
 		t.Fatalf("boardAlerts() count = %d, want %d: %#v", len(alerts), len(wantKinds), alerts)
@@ -2568,80 +2565,85 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 
 	currentSnapshot := snapshot
 	currentSnapshot.LastKnown = false
-	var tracker boardAlert
-	for _, alert := range boardAlerts(currentSnapshot) {
-		if alert.Kind == boardAlertKindTrackerStale {
-			tracker = alert
-			break
-		}
+	if alerts := boardAlerts(currentSnapshot); len(alerts) != 2 {
+		t.Fatalf("boardAlerts() = %#v, want only failure and backend faults", alerts)
 	}
-	if tracker.DetailSummary != "7 projects, oldest 4m 28s ago" {
-		t.Fatalf("tracker detail summary = %q", tracker.DetailSummary)
-	}
-	if len(tracker.DetailRows) != boardAlertDetailLimit || tracker.Overflow != 2 {
-		t.Fatalf("tracker rows = %d with overflow %d, want %d with overflow 2", len(tracker.DetailRows), tracker.Overflow, boardAlertDetailLimit)
-	}
-	first := tracker.DetailRows[0]
-	if first.Summary != "candidate/drift/status" {
-		t.Fatalf("grouped tracker sources = %q", first.Summary)
-	}
-	for _, want := range []string{"3 consecutive failures", "status 503"} {
-		if !strings.Contains(first.Detail, want) {
-			t.Fatalf("tracker detail missing %q: %q", want, first.Detail)
-		}
+	rows := diagnosticsConditionRows(currentSnapshot)
+	if len(rows) == 0 {
+		t.Fatal("diagnostics omitted refresh failure details")
 	}
 }
 
-func TestBoardAlertsCollapseStalenessWarnings(t *testing.T) {
+func TestBoardAlertsRenderOnlyFaultConditions(t *testing.T) {
 	t.Parallel()
-
-	snapshot := telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 7, 30, 20, 0, 0, 0, time.UTC),
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     int
+	}{
+		{
+			name: "finished fleet",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Counts:      telemetry.Counts{Completed: 14},
+				StalenessWarnings: []telemetry.StalenessWarning{
+					{ID: "lane-age", Class: observability.ClassDiagnostic, Kind: "lane_aging", AgeSeconds: 86_400},
+					{ID: "review-age", Class: observability.ClassReviewQueue, Kind: "lane_aging", WaitingOnHuman: true, AgeSeconds: 604_800},
+					{ID: "decline", Class: observability.ClassDiagnostic, Kind: "repeated_decision", Detail: "authorization selector declined one issue"},
+				},
+				DispatchStalls: []telemetry.DispatchStatus{{Stalled: true, WaitReasonCode: "github_rest_capacity_paused", Class: observability.ClassDiagnostic}},
+			},
+		},
+		{
+			name: "provider out of tokens",
+			snapshot: telemetry.Snapshot{GeneratedAt: now, BackendOutages: []telemetry.BackendOutage{{
+				ProjectID: "detent", BackendID: "codex", Kind: "usage_limit_exceeded", Reason: "provider usage limit reached",
+			}}},
+			want: 1,
+		},
+		{
+			name: "total selector exclusion",
+			snapshot: telemetry.Snapshot{GeneratedAt: now, DispatchStalls: []telemetry.DispatchStatus{{
+				ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, Stalled: true, WaitReasonCode: "authorization_selector_declined", WaitReason: "authorization selector excludes every candidate",
+			}}},
+			want: 1,
+		},
+		{
+			name: "per issue selector decline",
+			snapshot: telemetry.Snapshot{GeneratedAt: now, StalenessWarnings: []telemetry.StalenessWarning{{
+				ID: "issue-decline", Class: observability.ClassDiagnostic, Kind: "repeated_decision", Detail: "authorization selector declined one issue",
+			}}},
+		},
+		{
+			name: "review wait at any age",
+			snapshot: telemetry.Snapshot{GeneratedAt: now, StalenessWarnings: []telemetry.StalenessWarning{{
+				ID: "review-wait", Class: observability.ClassReviewQueue, Kind: "lane_aging", WaitingOnHuman: true, AgeSeconds: 31_536_000,
+			}}},
+		},
 	}
-	for index := range 20 {
-		number := 1600 + index
-		snapshot.StalenessWarnings = append(snapshot.StalenessWarnings, telemetry.StalenessWarning{
-			ID:         "warning-" + strconv.Itoa(index+1),
-			ProjectID:  "detent",
-			Kind:       "repeated_decision",
-			Identifier: "digitaldrywood/detent#" + strconv.Itoa(number),
-			IssueURL:   "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(number),
-			Detail:     "scheduler returned already_running repeatedly",
-			AgeSeconds: int64((index + 1) * 60),
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			alerts := boardAlerts(tt.snapshot)
+			if len(alerts) != tt.want {
+				t.Fatalf("boardAlerts() = %#v, want %d faults", alerts, tt.want)
+			}
+			for _, alert := range alerts {
+				if alert.Tone != primitives.KindErr {
+					t.Fatalf("alert tone = %q, want error", alert.Tone)
+				}
+			}
+			data := boardTestData()
+			data.Snapshot = tt.snapshot
+			html := renderBoardComponent(t, BoardSnapshot(data))
+			if tt.want == 0 && strings.Contains(html, `id="board-alerts"`) {
+				t.Fatalf("board rendered a banner for non-fault conditions:\n%s", html)
+			}
+			if tt.want > 0 && (!strings.Contains(html, `data-board-alert-count="1"`) || !strings.Contains(html, ">1 fault<")) {
+				t.Fatalf("board fault count missing:\n%s", html)
+			}
 		})
-	}
-
-	alerts := boardAlerts(snapshot)
-	if len(alerts) != 20 {
-		t.Fatalf("boardAlerts() count = %d, want 20", len(alerts))
-	}
-	if alerts[0].Tone != primitives.KindWarn || alerts[0].Kind != boardAlertKindStaleness {
-		t.Fatalf("highest alert = %#v, want staleness warning", alerts[0])
-	}
-	for index, alert := range alerts {
-		if alert.DeepLinkLabel != "Open" || alert.DeepLink == "" {
-			t.Fatalf("alert %d link = %q %q, want preserved issue link", index, alert.DeepLinkLabel, alert.DeepLink)
-		}
-		want := "digitaldrywood/detent#" + strconv.Itoa(1600+index)
-		if !strings.Contains(alert.TerseSummary, want) {
-			t.Fatalf("alert %d summary = %q, want %q", index, alert.TerseSummary, want)
-		}
-	}
-
-	data := boardTestData()
-	data.Snapshot.StalenessWarnings = snapshot.StalenessWarnings
-	html := renderBoardComponent(t, BoardSnapshot(data))
-	if strings.Count(html, `id="board-alerts"`) != 1 {
-		t.Fatalf("board alert indicators = %d, want 1", strings.Count(html, `id="board-alerts"`))
-	}
-	if !strings.Contains(html, `data-board-alert-count="20"`) || !strings.Contains(html, ">20 warnings<") {
-		t.Fatalf("board indicator missing accurate warning count:\n%s", html)
-	}
-	if strings.Count(html, `data-board-alert="staleness-warning"`) != 20 {
-		t.Fatalf("expanded staleness alerts = %d, want 20", strings.Count(html, `data-board-alert="staleness-warning"`))
-	}
-	if strings.Contains(html, `id="board-exceptions"`) || strings.Contains(html, `id="exception-staleness-`) {
-		t.Fatalf("board rendered staleness banner stack:\n%s", html)
 	}
 }
 
@@ -2657,6 +2659,7 @@ func TestBoardAlertCountIncludesOnlyActionableConditions(t *testing.T) {
 	}}
 	data.Snapshot.StalenessWarnings = []telemetry.StalenessWarning{{
 		ID:         "warning-actionable",
+		Class:      observability.ClassFault,
 		ProjectID:  "detent",
 		Kind:       "repeated_decision",
 		Identifier: "digitaldrywood/detent#1926",
@@ -2826,6 +2829,7 @@ func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 		ProjectID:                "detent",
 		CandidateCount:           8,
 		WaitReason:               authorizationDetail,
+		WaitReasonCode:           "authorization_selector_declined",
 		SecondsSinceLastSelected: &secondsSinceLastSelected,
 		StallDurationSeconds:     10_800,
 		Stalled:                  true,
@@ -2851,7 +2855,7 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	for _, want := range []string{
 		`id="board-alerts"`,
 		`class="min-w-0 max-w-full self-center overflow-hidden`,
-		`data-board-alert-count="5"`,
+		`data-board-alert-count="3"`,
 		`role="alert"`,
 		`aria-live="polite"`,
 		`type="button"`,
@@ -2910,21 +2914,17 @@ func TestBoardAdmissionProposalIndicator(t *testing.T) {
 		}
 	}
 	tests := []struct {
-		name         string
-		proposals    []telemetry.AdmissionProposal
-		wantText     string
-		wantRows     int
-		wantOverflow int
+		name      string
+		proposals []telemetry.AdmissionProposal
+		wantRows  int
 	}{
 		{name: "zero"},
-		{name: "one", proposals: []telemetry.AdmissionProposal{proposal(1)}, wantText: "1 admission proposal awaiting decision", wantRows: 1},
-		{name: "several", proposals: []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3)}, wantText: "3 admission proposals awaiting decision", wantRows: 3},
+		{name: "one", proposals: []telemetry.AdmissionProposal{proposal(1)}, wantRows: 1},
+		{name: "several", proposals: []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3)}, wantRows: 3},
 		{
-			name:         "overflow",
-			proposals:    []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3), proposal(4), proposal(5), proposal(6), proposal(7)},
-			wantText:     "7 admission proposals awaiting decision",
-			wantRows:     boardAlertDetailLimit,
-			wantOverflow: 2,
+			name:      "several beyond banner cap",
+			proposals: []telemetry.AdmissionProposal{proposal(1), proposal(2), proposal(3), proposal(4), proposal(5), proposal(6), proposal(7)},
+			wantRows:  7,
 		},
 	}
 	for _, tt := range tests {
@@ -2933,42 +2933,17 @@ func TestBoardAdmissionProposalIndicator(t *testing.T) {
 			data.Snapshot.GeneratedAt = now
 			data.Snapshot.AdmissionProposals = tt.proposals
 			html := renderBoardComponent(t, BoardSnapshot(data))
-			if len(tt.proposals) == 0 {
-				if strings.Contains(html, `data-board-alert="admission-proposal"`) {
-					t.Fatalf("zero proposals rendered an admission indicator:\n%s", html)
+			if strings.Contains(html, `data-board-alert="admission-proposal"`) || strings.Contains(html, `id="board-alerts"`) {
+				t.Fatalf("review queue rendered a board fault banner:\n%s", html)
+			}
+			rows := diagnosticsConditionRows(data.Snapshot)
+			if len(rows) != tt.wantRows {
+				t.Fatalf("diagnostics admission rows = %#v, want %d", rows, tt.wantRows)
+			}
+			for _, row := range rows {
+				if row.Class != observability.ClassReviewQueue {
+					t.Fatalf("admission class = %q, want review queue", row.Class)
 				}
-				return
-			}
-			alert, ok := boardAdmissionProposalAlert(data.Snapshot)
-			if !ok {
-				t.Fatal("boardAdmissionProposalAlert() did not return an alert")
-			}
-			if len(alert.DetailRows) != tt.wantRows || alert.Overflow != tt.wantOverflow {
-				t.Fatalf("admission rows = %d with overflow %d, want %d with overflow %d", len(alert.DetailRows), alert.Overflow, tt.wantRows, tt.wantOverflow)
-			}
-			if alert.DeepLink != "/health/ui" {
-				t.Fatalf("admission deep link = %q, want /health/ui", alert.DeepLink)
-			}
-			for _, want := range []string{
-				`data-board-alert="admission-proposal"`,
-				`id="board-alert-admission-proposals"`,
-				tt.wantText,
-				"88% confidence",
-				`href="https://github.com/digitaldrywood/detent/issues/1601"`,
-			} {
-				if !strings.Contains(html, want) {
-					t.Fatalf("admission indicator missing %q:\n%s", want, html)
-				}
-			}
-			if tt.wantOverflow > 0 {
-				for _, want := range []string{`href="/health/ui"`, `+2 more · Health`} {
-					if !strings.Contains(html, want) {
-						t.Fatalf("admission overflow missing %q:\n%s", want, html)
-					}
-				}
-			}
-			if strings.Contains(html, `id="admission-proposal-banner"`) {
-				t.Fatalf("admission proposals rendered a stacked banner:\n%s", html)
 			}
 		})
 	}
@@ -3351,7 +3326,7 @@ func TestBoardSnapshotHidesRampActiveDispatchRecovery(t *testing.T) {
 	}
 }
 
-func TestBoardSnapshotCollapsesWaitingDispatchRecoveries(t *testing.T) {
+func TestBoardSnapshotMovesWaitingDispatchRecoveriesToDiagnostics(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
@@ -3361,17 +3336,17 @@ func TestBoardSnapshotCollapsesWaitingDispatchRecoveries(t *testing.T) {
 		{ProjectID: "billing", Kind: "backend_capacity", Status: "ramping", Limit: 1, MaxConcurrent: 6},
 	}
 	html := renderBoardComponent(t, BoardSnapshot(data))
-	for _, want := range []string{`id="board-alert-dispatch-recovery"`, `data-board-alert="dispatch-recovery-status"`, "Dispatch waiting on GitHub REST capacity — 2 projects"} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("waiting recovery summary missing %q:\n%s", want, html)
+	if strings.Contains(html, `id="board-alert-dispatch-recovery"`) {
+		t.Fatalf("waiting recovery rendered a fault banner:\n%s", html)
+	}
+	rows := diagnosticsConditionRows(data.Snapshot)
+	if len(rows) != 3 {
+		t.Fatalf("diagnostics recovery rows = %#v, want all three recovery states", rows)
+	}
+	for _, row := range rows {
+		if row.Class != observability.ClassDiagnostic {
+			t.Fatalf("diagnostics recovery class = %q, want diagnostic", row.Class)
 		}
-	}
-	alerts := boardAlerts(data.Snapshot)
-	if len(alerts) != 1 || len(alerts[0].DetailRows) != 2 || alerts[0].DetailSummary != "1 recovery issue" {
-		t.Fatalf("waiting recovery alert = %#v", alerts)
-	}
-	if strings.Contains(html, "Dispatch recovery ramp active") {
-		t.Fatalf("waiting recovery summary included ramp detail:\n%s", html)
 	}
 }
 
@@ -3416,7 +3391,7 @@ func TestHealthSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
 	}
 }
 
-func TestHealthSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *testing.T) {
+func TestDiagnosticsSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
@@ -3433,7 +3408,7 @@ func TestHealthSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *testing.T
 		ResumeAt:               data.Snapshot.GeneratedAt,
 	}}
 
-	html := renderBoardComponent(t, HealthSnapshotV2(data))
+	html := renderBoardComponent(t, ProjectDiagnosticsSnapshot(data))
 	for _, want := range []string{
 		"Project canary dispatch is ready, but no eligible candidate is currently available",
 		"affected Blocked item will not retry merely because the project canary is eligible",
@@ -3458,7 +3433,7 @@ func TestBoardSnapshotRendersTransientOverloadCounterWithoutOutage(t *testing.T)
 	}
 }
 
-func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
+func TestBoardSnapshotMovesGitHubRESTCapacityToDiagnostics(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
@@ -3470,24 +3445,16 @@ func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 		Reason:      "GitHub REST remaining 0 is at or below dispatch floor 1000",
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
-	for _, want := range []string{
-		`id="board-alert-backend-capacity"`,
-		`data-board-alert="backend-capacity-outage"`,
-		"GitHub REST dispatch paused — 1 project",
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("GitHub REST capacity banner missing %q:\n%s", want, html)
-		}
+	if strings.Contains(html, `id="board-alerts"`) {
+		t.Fatalf("GitHub REST throttling rendered a fault banner:\n%s", html)
 	}
-	if !strings.Contains(html, "remaining 0") || !strings.Contains(html, `href="/health/ui"`) {
-		t.Fatalf("GitHub REST Board overlay missing reachable Health detail:\n%s", html)
-	}
-	if strings.Contains(html, `data-local-time`) {
-		t.Fatalf("GitHub REST Board overlay rendered unnecessary time markup:\n%s", html)
+	rows := diagnosticsConditionRows(data.Snapshot)
+	if len(rows) != 1 || rows[0].Class != observability.ClassDiagnostic || !strings.Contains(rows[0].Detail, "remaining 0") {
+		t.Fatalf("diagnostics GitHub REST row = %#v", rows)
 	}
 }
 
-func TestHealthSnapshotKeepsRecoveryAndOverloadDetail(t *testing.T) {
+func TestDiagnosticsSnapshotKeepsRecoveryAndOverloadDetail(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
@@ -3496,15 +3463,10 @@ func TestHealthSnapshotKeepsRecoveryAndOverloadDetail(t *testing.T) {
 		{ProjectID: "docs", Kind: "backend_capacity", Status: "ramping", Limit: 1, MaxConcurrent: 6},
 	}
 	data.Snapshot.OverloadRetriesLastHour = 3
-	html := renderBoardComponent(t, HealthSnapshotV2(data))
+	html := renderBoardComponent(t, ProjectDiagnosticsSnapshot(data))
 	for _, want := range []string{
-		"Dispatch waiting on GitHub REST capacity",
 		"GitHub REST capacity is delaying dispatch: quota exhausted.",
-		"Project detent",
-		"Dispatch recovery ramp active",
 		"backend capacity cleared; recovery is admitting up to 1 of 6 configured workers",
-		"Project docs",
-		`id="backend-overload-retries"`,
 		"3 overload retries last hour",
 	} {
 		if !strings.Contains(html, want) {

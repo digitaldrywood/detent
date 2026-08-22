@@ -47,7 +47,7 @@ func TestManagerDeliversConfiguredWebhook(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
 	health := readyHealth("detent")
-	active := dispatchSnapshot("detent", "github_rest_capacity_paused")
+	active := dispatchSnapshot("detent", "authorization_selector_declined")
 	managerReconcile(t, manager, active, health, now)
 	managerReconcile(t, manager, active, health, now.Add(time.Second))
 
@@ -72,10 +72,10 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 		{
 			name: "dispatch payload carries wait reason",
 			snapshot: telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
-				ProjectID: "detent", Stalled: true, WaitReason: "github_rest_capacity_paused",
+				ProjectID: "detent", Stalled: true, WaitReason: "authorization selector excludes every candidate", WaitReasonCode: "authorization_selector_declined",
 			}}},
 			cause:           CauseDispatchStall,
-			wantWaitReasons: []string{"github_rest_capacity_paused"},
+			wantWaitReasons: []string{"authorization selector excludes every candidate"},
 		},
 		{
 			name: "tracker payload carries scoped condition",
@@ -150,7 +150,7 @@ func TestManagerBreakerPayloadCarriesOperatorEvidence(t *testing.T) {
 
 	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
 	resetAt := now.Add(39 * time.Minute)
-	eligibleCandidates := 0
+	eligibleCandidates := 1
 	breaker := telemetry.FailureBreaker{
 		ProjectID:              "digitaldrywood-video",
 		Class:                  "runner_error:b6c174a86dfb",
@@ -224,6 +224,66 @@ func TestManagerSuppressesFlapInsideDebounce(t *testing.T) {
 	}
 }
 
+func TestManagerNotifiesOnlyFaultTransitions(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	zero := 0
+	tests := []struct {
+		name       string
+		snapshot   telemetry.Snapshot
+		wantEvents int
+	}{
+		{
+			name:     "provider pacing is diagnostic",
+			snapshot: dispatchSnapshot("detent", "provider_rate_window_backpressure"),
+		},
+		{
+			name:     "human gate is review queue",
+			snapshot: dispatchSnapshot("detent", "artifact_gate_wait_status"),
+		},
+		{
+			name: "github rest pause is diagnostic",
+			snapshot: telemetry.Snapshot{BackendOutages: []telemetry.BackendOutage{{
+				ProjectID: "detent", Kind: "github_rest_rate_limit",
+			}}},
+		},
+		{
+			name: "fully parked breaker is diagnostic",
+			snapshot: telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{{
+				ProjectID: "detent", EligibleCandidateCount: &zero, Items: []telemetry.FailureBreakerItem{{IssueID: "issue-1", Parked: true}},
+			}}},
+		},
+		{
+			name:       "total selector exclusion is fault",
+			snapshot:   dispatchSnapshot("detent", "authorization_selector_declined"),
+			wantEvents: 2,
+		},
+		{
+			name: "provider exhaustion is fault",
+			snapshot: telemetry.Snapshot{BackendOutages: []telemetry.BackendOutage{{
+				ProjectID: "detent", Kind: "usage_limit_exceeded",
+			}}},
+			wantEvents: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stateStore := newMemoryStateStore()
+			sender := &recordingSender{}
+			manager := newTestManager(t, stateStore, sender, Config{Debounce: time.Minute})
+			health := readyHealth("detent")
+
+			managerReconcile(t, manager, tt.snapshot, health, now)
+			managerReconcile(t, manager, tt.snapshot, health, now.Add(time.Minute))
+
+			if events := sender.Events(); len(events) != tt.wantEvents {
+				t.Fatalf("events = %#v, want %d", events, tt.wantEvents)
+			}
+		})
+	}
+}
+
 func TestManagerPairsOneRecoveryWithEachEntry(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
@@ -231,7 +291,7 @@ func TestManagerPairsOneRecoveryWithEachEntry(t *testing.T) {
 	sender := &recordingSender{}
 	manager := newTestManager(t, stateStore, sender, Config{Debounce: 10 * time.Minute})
 	health := readyHealth("detent")
-	active := dispatchSnapshot("detent", "github_rest_capacity_paused")
+	active := dispatchSnapshot("detent", "authorization_selector_declined")
 
 	managerReconcile(t, manager, active, health, now)
 	managerReconcile(t, manager, active, health, now.Add(10*time.Minute))
@@ -322,7 +382,7 @@ func TestManagerFleetRecoveryWaitsForEveryProjectCause(t *testing.T) {
 	sender := &recordingSender{}
 	manager := newTestManager(t, stateStore, sender, Config{Debounce: 10 * time.Minute})
 	health := readyHealth("detent")
-	both := dispatchSnapshot("detent", "github_rest_capacity_paused")
+	both := dispatchSnapshot("detent", "authorization_selector_declined")
 	both.CIUnavailable = []telemetry.CICondition{{ProjectID: "detent"}}
 	ciOnly := telemetry.Snapshot{CIUnavailable: []telemetry.CICondition{{ProjectID: "detent"}}}
 
@@ -362,7 +422,7 @@ func TestManagerRestartPreservesActiveAndPendingDelivery(t *testing.T) {
 	cfg := Config{Debounce: 10 * time.Minute, RetryBase: time.Minute, RetryMax: time.Minute}
 	first := newTestManager(t, stateStore, failing, cfg)
 	health := readyHealth("detent")
-	active := dispatchSnapshot("detent", "github_rest_capacity_paused")
+	active := dispatchSnapshot("detent", "authorization_selector_declined")
 
 	managerReconcile(t, first, active, health, now)
 	managerReconcile(t, first, active, health, now.Add(10*time.Minute))
@@ -391,7 +451,7 @@ func TestManagerRestartDoesNotRefireDeliveredActiveCondition(t *testing.T) {
 	cfg := Config{Debounce: 10 * time.Minute}
 	first := newTestManager(t, stateStore, firstSender, cfg)
 	health := readyHealth("detent")
-	active := dispatchSnapshot("detent", "github_rest_capacity_paused")
+	active := dispatchSnapshot("detent", "authorization_selector_declined")
 
 	managerReconcile(t, first, active, health, now)
 	managerReconcile(t, first, active, health, now.Add(10*time.Minute))
@@ -419,7 +479,7 @@ func TestManagerDeliveryRetriesAreBoundedAndSurfaced(t *testing.T) {
 		RetryMax:    time.Minute,
 	})
 	health := readyHealth("detent")
-	active := dispatchSnapshot("detent", "github_rest_capacity_paused")
+	active := dispatchSnapshot("detent", "authorization_selector_declined")
 
 	managerReconcile(t, manager, active, health, now)
 	managerReconcile(t, manager, active, health, now.Add(10*time.Minute))
@@ -572,9 +632,10 @@ func readyHealth(projectID string) []project.Health {
 
 func dispatchSnapshot(projectID string, waitReason string) telemetry.Snapshot {
 	return telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
-		ProjectID:  projectID,
-		Stalled:    true,
-		WaitReason: waitReason,
+		ProjectID:      projectID,
+		Stalled:        true,
+		WaitReason:     waitReason,
+		WaitReasonCode: waitReason,
 	}}}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/a-h/templ"
 
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -40,17 +41,14 @@ const (
 	boardAlertKindForgeUnavailable       boardAlertKind = "forge-unavailable"
 	boardAlertKindCIUnavailable          boardAlertKind = "ci-unavailable"
 	boardAlertKindStaleness              boardAlertKind = "staleness-warning"
-	boardAlertKindTrackerStale           boardAlertKind = "board-stale-data"
-	boardAlertKindAdmissionProposal      boardAlertKind = "admission-proposal"
 	boardAlertKindBackendCapacity        boardAlertKind = "backend-capacity-outage"
 	boardAlertKindDispatchRecovery       boardAlertKind = "dispatch-recovery-status"
 	boardAlertKindUpdatePending          boardAlertKind = "update-pending"
+	boardAlertKindStrandedActive         boardAlertKind = "stranded-active"
 	boardAlertDetailLimit                               = 5
 	boardAlertSeverityUpdatePending                     = 100
 	boardAlertSeverityDispatchRecovery                  = 200
 	boardAlertSeverityBackendCapacity                   = 300
-	boardAlertSeverityAdmissionProposal                 = 425
-	boardAlertSeverityTrackerStale                      = 400
 	boardAlertSeverityStaleness                         = 450
 	boardAlertSeverityFailureBreaker                    = 500
 	boardAlertSeverityCIUnavailable                     = 550
@@ -58,6 +56,7 @@ const (
 	boardAlertSeverityForgeUnavailable                  = 565
 	boardAlertSeverityDispatchStall                     = 575
 	boardAlertSeverityLastKnown                         = 600
+	boardAlertSeverityStrandedActive                    = 580
 )
 
 type boardAlert struct {
@@ -111,10 +110,7 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	alerts = append(alerts, boardStalenessAlerts(snapshot.StalenessWarnings)...)
-	if alert, ok := boardTrackerStaleAlert(snapshot); ok {
-		alerts = append(alerts, alert)
-	}
-	if alert, ok := boardAdmissionProposalAlert(snapshot); ok {
+	if alert, ok := boardStrandedActiveAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardBackendCapacityAlert(snapshot); ok {
@@ -133,11 +129,17 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 }
 
 func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	if len(snapshot.DispatchStalls) == 0 {
+	faults := make([]telemetry.DispatchStatus, 0, len(snapshot.DispatchStalls))
+	for _, stall := range snapshot.DispatchStalls {
+		if dispatchConditionClass(stall) == observability.ClassFault {
+			faults = append(faults, stall)
+		}
+	}
+	if len(faults) == 0 {
 		return boardAlert{}, false
 	}
-	rows := make([]boardAlertDetailRow, 0, len(snapshot.DispatchStalls))
-	for index, stall := range snapshot.DispatchStalls {
+	rows := make([]boardAlertDetailRow, 0, len(faults))
+	for index, stall := range faults {
 		projectID := strings.TrimSpace(stall.ProjectID)
 		if projectID == "" {
 			projectID = "Fleet"
@@ -159,7 +161,7 @@ func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		Kind:          boardAlertKindDispatchStall,
 		Severity:      boardAlertSeverityDispatchStall,
 		Tone:          primitives.KindErr,
-		TerseSummary:  "Dispatch stalled (" + boardCountLabel(len(snapshot.DispatchStalls), "project", "projects") + ")",
+		TerseSummary:  "Dispatch stalled (" + boardCountLabel(len(faults), "project", "projects") + ")",
 		DetailSummary: "Eligible work is not moving and requires an operator decision.",
 		DetailRows:    rows,
 		Overflow:      overflow,
@@ -357,35 +359,6 @@ func ciUnavailableConditionDetail(condition telemetry.CICondition) string {
 	return detail
 }
 
-func boardAdmissionProposalAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	if len(snapshot.AdmissionProposals) == 0 {
-		return boardAlert{}, false
-	}
-	rows := make([]boardAlertDetailRow, 0, len(snapshot.AdmissionProposals))
-	for index, proposal := range snapshot.AdmissionProposals {
-		rows = append(rows, boardAlertDetailRow{
-			ID:      "board-alert-admission-" + boardAlertRowSlug(proposal.ID, index),
-			Label:   admissionProposalTarget(proposal),
-			Link:    strings.TrimSpace(proposal.IssueURL),
-			Summary: strings.TrimSpace(proposal.ProjectID),
-			Detail:  admissionProposalTiming(proposal, snapshot.GeneratedAt),
-		})
-	}
-	total := len(rows)
-	rows, overflow := capBoardAlertRows(rows)
-	return boardAlert{
-		ID:            "board-alert-admission-proposals",
-		Kind:          boardAlertKindAdmissionProposal,
-		Severity:      boardAlertSeverityAdmissionProposal,
-		Tone:          primitives.KindWarn,
-		TerseSummary:  boardCountLabel(total, "admission proposal awaiting decision", "admission proposals awaiting decision"),
-		DetailSummary: "Human admission decisions are required.",
-		DetailRows:    rows,
-		Overflow:      overflow,
-		DeepLink:      "/health/ui",
-	}, true
-}
-
 func admissionProposalTarget(proposal telemetry.AdmissionProposal) string {
 	for _, value := range []string{proposal.IssueIdentifier, proposal.IssueID} {
 		if value = strings.TrimSpace(value); value != "" {
@@ -405,6 +378,9 @@ func admissionProposalTiming(proposal telemetry.AdmissionProposal, observedAt ti
 func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 	alerts := make([]boardAlert, 0, len(warnings))
 	for index, warning := range warnings {
+		if stalenessConditionClass(warning) != observability.ClassFault {
+			continue
+		}
 		target := strings.TrimSpace(warning.Identifier)
 		if target == "" {
 			target = strings.TrimSpace(warning.ProjectID)
@@ -431,7 +407,7 @@ func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 			ID:            alertID,
 			Kind:          boardAlertKindStaleness,
 			Severity:      boardAlertSeverityStaleness,
-			Tone:          primitives.KindWarn,
+			Tone:          primitives.KindErr,
 			TerseSummary:  summary,
 			DetailSummary: detail,
 			DeepLink:      strings.TrimSpace(warning.IssueURL),
@@ -442,23 +418,28 @@ func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 	return alerts
 }
 
+func stalenessConditionClass(warning telemetry.StalenessWarning) observability.Class {
+	return observability.Normalize(warning.Class, observability.Staleness(warning.WaitingOnHuman))
+}
+
+func dispatchConditionClass(status telemetry.DispatchStatus) observability.Class {
+	return observability.Normalize(status.Class, observability.Dispatch(status.Stalled, status.WaitReasonCode))
+}
+
 func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 	if !snapshot.LastKnown || snapshotUsesStartupCache(snapshot) {
 		return boardAlert{}, false
 	}
-	tone := primitives.KindWarn
-	detailSummary := "Tracker refresh is behind; no refresh failure is reported."
-	detail := "The board is showing cached state while tracker refresh continues."
-	if refreshSnapshotFailed(snapshot) {
-		tone = primitives.KindErr
-		detailSummary = "The live board snapshot is unavailable because tracker refresh failed."
-		detail = "The board is showing cached state until tracker refresh recovers."
+	if !refreshSnapshotFailed(snapshot) {
+		return boardAlert{}, false
 	}
+	detailSummary := "The live board snapshot is unavailable because tracker refresh failed."
+	detail := "The board is showing cached state until tracker refresh recovers."
 	return boardAlert{
 		ID:            "board-alert-last-known",
 		Kind:          boardAlertKindLastKnown,
 		Severity:      boardAlertSeverityLastKnown,
-		Tone:          tone,
+		Tone:          primitives.KindErr,
 		TerseSummary:  "Board showing last-known state",
 		DetailSummary: detailSummary,
 		DetailRows: []boardAlertDetailRow{{
@@ -472,34 +453,7 @@ func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 }
 
 func refreshSnapshotFailed(snapshot telemetry.Snapshot) bool {
-	if refreshFailed(snapshot.Refresh) {
-		return true
-	}
-	for _, project := range snapshot.Projects {
-		if refreshFailed(project.Refresh) {
-			return true
-		}
-	}
-	return false
-}
-
-func refreshFailed(refresh telemetry.Refresh) bool {
-	if !refresh.Degraded() || refresh.StalenessWindowExceeded {
-		return false
-	}
-	if strings.TrimSpace(refresh.LastError) != "" {
-		return true
-	}
-	threshold := refresh.FailureThreshold
-	if threshold <= 0 {
-		threshold = 3
-	}
-	for _, source := range refresh.Sources {
-		if source.Degraded || source.FailureStreak >= threshold {
-			return true
-		}
-	}
-	return false
+	return len(snapshot.RefreshFailures()) > 0
 }
 
 func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
@@ -560,11 +514,13 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 func actionableBoardFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
 	actionable := make([]telemetry.FailureBreaker, 0, len(breakers))
 	for _, breaker := range breakers {
-		allParked := len(breaker.Items) > 0
+		parkedItems := 0
 		for _, item := range breaker.Items {
-			allParked = allParked && item.Parked
+			if item.Parked {
+				parkedItems++
+			}
 		}
-		if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 && allParked {
+		if observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) != observability.ClassFault {
 			continue
 		}
 		actionable = append(actionable, breaker)
@@ -572,49 +528,19 @@ func actionableBoardFailureBreakers(breakers []telemetry.FailureBreaker) []telem
 	return actionable
 }
 
-func boardTrackerStaleAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	if snapshot.LastKnown {
-		return boardAlert{}, false
-	}
-	if refreshFreshnessKind(snapshot) != primitives.KindWarn {
-		return boardAlert{}, false
-	}
-	details := refreshStaleDetailRows(snapshot)
-	rows := make([]boardAlertDetailRow, 0, len(details))
-	for index, detail := range details {
-		rows = append(rows, boardAlertDetailRow{
-			ID:      "board-alert-tracker-" + boardAlertRowSlug(detail.ProjectID, index),
-			Label:   detail.ProjectID,
-			Summary: detail.Sources,
-			Detail:  detail.Detail,
-		})
-	}
-	rows, overflow := capBoardAlertRows(rows)
-	summary := refreshStaleSummary(snapshot)
-	terse := "Tracker stale"
-	if projectCount := refreshStaleProjectCount(snapshot); projectCount > 0 {
-		terse += " (" + boardCountLabel(projectCount, "project", "projects") + ")"
-	}
-	return boardAlert{
-		ID:            "board-alert-tracker-stale",
-		Kind:          boardAlertKindTrackerStale,
-		Severity:      boardAlertSeverityTrackerStale,
-		Tone:          primitives.KindWarn,
-		TerseSummary:  terse,
-		DetailSummary: summary,
-		DetailRows:    rows,
-		Overflow:      overflow,
-		DeepLink:      "/health/ui",
-	}, true
-}
-
 func boardBackendCapacityAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	summaries := boardBackendCapacitySummaries(snapshot.BackendOutages, snapshot.GeneratedAt)
+	faults := make([]telemetry.BackendOutage, 0, len(snapshot.BackendOutages))
+	for _, outage := range snapshot.BackendOutages {
+		if observability.BackendOutage(outage.Kind) == observability.ClassFault {
+			faults = append(faults, outage)
+		}
+	}
+	summaries := boardBackendCapacitySummaries(faults, snapshot.GeneratedAt)
 	if len(summaries) == 0 {
 		return boardAlert{}, false
 	}
-	rows := make([]boardAlertDetailRow, 0, len(snapshot.BackendOutages))
-	for index, outage := range backendCapacityOutageDetails(snapshot.BackendOutages) {
+	rows := make([]boardAlertDetailRow, 0, len(faults))
+	for index, outage := range backendCapacityOutageDetails(faults) {
 		title, selected := boardBackendCapacityTitle(outage, snapshot.GeneratedAt)
 		if !selected {
 			continue
@@ -636,7 +562,7 @@ func boardBackendCapacityAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		ID:            "board-alert-backend-capacity",
 		Kind:          boardAlertKindBackendCapacity,
 		Severity:      boardAlertSeverityBackendCapacity,
-		Tone:          primitives.KindWarn,
+		Tone:          primitives.KindErr,
 		TerseSummary:  summaries[0].Title,
 		DetailSummary: boardCountLabel(len(summaries), "capacity issue", "capacity issues"),
 		DetailRows:    rows,
@@ -673,7 +599,7 @@ func boardDispatchRecoveryAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 		ID:            "board-alert-dispatch-recovery",
 		Kind:          boardAlertKindDispatchRecovery,
 		Severity:      boardAlertSeverityDispatchRecovery,
-		Tone:          primitives.KindWarn,
+		Tone:          primitives.KindErr,
 		TerseSummary:  summaries[0].Title,
 		DetailSummary: boardCountLabel(len(summaries), "recovery issue", "recovery issues"),
 		DetailRows:    rows,
@@ -683,50 +609,74 @@ func boardDispatchRecoveryAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 }
 
 func boardUpdatePendingAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	if !detentUpdatePending(snapshot.Update) {
+	errorDetail := strings.TrimSpace(snapshot.Update.LastError)
+	if errorDetail == "" {
 		return boardAlert{}, false
 	}
-	version := detentPendingUpdateVersion(snapshot.Update)
 	target := "board-alert-update-pending-status"
 	return boardAlert{
 		ID:            "board-alert-update-pending",
 		Kind:          boardAlertKindUpdatePending,
 		Severity:      boardAlertSeverityUpdatePending,
-		Tone:          primitives.KindInfo,
-		TerseSummary:  "Detent " + version + " pending",
-		DetailSummary: "A Detent update is ready to apply.",
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Detent update failed",
+		DetailSummary: "Automatic update work cannot proceed without operator attention.",
 		DetailRows: []boardAlertDetailRow{{
 			ID:      target,
 			Label:   "Update",
-			Summary: version,
-			Detail:  "Automatic apply is waiting for all active work attempts across every project to finish.",
+			Summary: strings.TrimSpace(snapshot.Update.State),
+			Detail:  errorDetail,
 		}},
-		Action: &boardAlertAction{
-			Label:   "Apply now",
-			Path:    "/api/v1/update/apply",
-			Target:  "#" + target,
-			Confirm: "Apply the update now? Detent will drain active attempts and restart.",
-		},
 	}, true
 }
 
-func boardDispatchRecoveryAlertTitle(recovery telemetry.DispatchRecovery, now time.Time) (string, bool) {
-	status := strings.TrimSpace(recovery.Status)
-	switch status {
-	case "ramping":
-		return "", false
-	case "waiting":
-		if automaticRecoveryPending(recovery.ResumeAt, now) {
-			return "", false
-		}
-		kind := dispatchRecoveryKindLabel(recovery.Kind)
-		if automaticRecoveryOverdue(recovery.ResumeAt, now) {
-			return "Dispatch retry overdue for " + kind, true
-		}
-		return "Dispatch waiting on " + kind, true
-	default:
-		return "Dispatch recovery requires attention for " + dispatchRecoveryKindLabel(recovery.Kind), true
+func boardStrandedActiveAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if len(snapshot.StrandedActiveIssues) == 0 {
+		return boardAlert{}, false
 	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.StrandedActiveIssues))
+	for index, issue := range snapshot.StrandedActiveIssues {
+		label := boardFirstNonBlank(issue.Identifier, issue.IssueID, issue.ProjectID, "issue")
+		detail := formatDuration(float64(issue.DurationSeconds)) + " without a live worker"
+		if reason := strings.TrimSpace(issue.LastRefusalReason); reason != "" {
+			detail += " · " + reason
+		}
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-stranded-" + boardAlertRowSlug(label, index),
+			Label:   label,
+			Link:    strings.TrimSpace(issue.IssueURL),
+			Summary: strings.TrimSpace(issue.State),
+			Detail:  detail,
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-stranded-active",
+		Kind:          boardAlertKindStrandedActive,
+		Severity:      boardAlertSeverityStrandedActive,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Active work is stranded (" + boardCountLabel(len(snapshot.StrandedActiveIssues), "item", "items") + ")",
+		DetailSummary: "No live worker can advance this work.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func boardFirstNonBlank(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func boardDispatchRecoveryAlertTitle(recovery telemetry.DispatchRecovery, now time.Time) (string, bool) {
+	if observability.DispatchRecovery(recovery.Status, recovery.ResumeAt, now) == observability.ClassFault {
+		return "Dispatch retry overdue for " + dispatchRecoveryKindLabel(recovery.Kind), true
+	}
+	return "", false
 }
 
 func boardAlertDetailWithTime(detail string, detailAt time.Time, now time.Time, include bool) string {
@@ -773,9 +723,9 @@ func boardAlertKindActive(alerts []boardAlert, kind boardAlertKind) bool {
 
 func boardAlertButtonLabel(alerts []boardAlert) string {
 	if len(alerts) == 0 {
-		return "No board warnings"
+		return "No board faults"
 	}
-	return boardCountLabel(len(alerts), "board warning", "board warnings") + ". Highest severity: " + alerts[0].TerseSummary + ". Expand details."
+	return boardCountLabel(len(alerts), "board fault", "board faults") + ". Highest severity: " + alerts[0].TerseSummary + ". Expand details."
 }
 
 func boardAlertsClass(alerts []boardAlert) string {
@@ -1108,9 +1058,6 @@ func boardFiguresFromDashboard(data DashboardData) []primitives.Figure {
 // Overview pages pass false so their Review sheets stay read-only.
 func boardExceptions(data DashboardData, boardActions bool) []primitives.Exception {
 	var exceptions []primitives.Exception
-	if !boardActions {
-		exceptions = stalenessExceptions(data.Snapshot)
-	}
 	if boardActions && !data.Kanban.ShowBlockedAlerts {
 		return exceptions
 	}
@@ -1135,35 +1082,6 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 	}
 	if len(reviewRows) > 0 {
 		exceptions = append(exceptions, boardBlockedExceptionSummary(data, reviewRows, boardActions))
-	}
-	return exceptions
-}
-
-func stalenessExceptions(snapshot telemetry.Snapshot) []primitives.Exception {
-	exceptions := make([]primitives.Exception, 0, len(snapshot.StalenessWarnings))
-	for _, warning := range snapshot.StalenessWarnings {
-		repo, ref := splitIssueIdentifier(strings.TrimSpace(warning.Identifier))
-		if repo == "" {
-			repo = strings.TrimSpace(warning.ProjectID)
-		}
-		rest := strings.TrimSpace(warning.Detail)
-		if warning.AgeSeconds > 0 {
-			rest += " · " + formatDuration(float64(warning.AgeSeconds))
-		}
-		exception := primitives.Exception{
-			ID:     "exception-staleness-" + boardCardSlug(warning.ID),
-			Kind:   primitives.KindWarn,
-			Title:  stalenessExceptionTitle(warning),
-			Repo:   repo,
-			Ref:    ref,
-			RefURL: strings.TrimSpace(warning.IssueURL),
-			Rest:   rest,
-		}
-		if exception.RefURL != "" {
-			exception.ActionLabel = "Open"
-			exception.ActionHref = exception.RefURL
-		}
-		exceptions = append(exceptions, exception)
 	}
 	return exceptions
 }

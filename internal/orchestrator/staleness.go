@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -47,16 +48,6 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 		}
 		current, exists := previous[warning.ID]
 		visible := true
-		if warning.WaitingOnHuman {
-			if remindedAt := state.stalenessReminders[warning.ID]; !remindedAt.IsZero() {
-				if now.Before(remindedAt.Add(o.cfg.Staleness.HumanGateRearm)) {
-					continue
-				}
-				current = StalenessWarning{}
-				exists = false
-			}
-			visible = !exists
-		}
 		if !exists {
 			current = StalenessWarning{
 				Warning:    warning,
@@ -66,11 +57,11 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 			if visible {
 				recordStateEvent(state, telemetry.ActivityEvent{
 					At:      now.UTC(),
-					Event:   "fleet_staleness_warning",
+					Event:   "fleet_observability_condition",
 					Message: stalenessWarningMessage(warning),
 				})
 				if o.logger != nil {
-					o.logger.Warn("fleet staleness warning", "project_id", warning.ProjectID, "kind", warning.Kind, "issue_id", warning.IssueID, "identifier", warning.Identifier, "lane", warning.Lane, "reason", warning.Reason, "age_seconds", warning.AgeSeconds, "threshold_seconds", warning.ThresholdSeconds, "count", warning.Count, "waiting_on_human", warning.WaitingOnHuman)
+					o.logger.Debug("fleet observability condition", "class", warning.Class, "project_id", warning.ProjectID, "kind", warning.Kind, "issue_id", warning.IssueID, "identifier", warning.Identifier, "lane", warning.Lane, "reason", warning.Reason, "age_seconds", warning.AgeSeconds, "threshold_seconds", warning.ThresholdSeconds, "count", warning.Count, "waiting_on_human", warning.WaitingOnHuman)
 				}
 			}
 		}
@@ -78,9 +69,6 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 		current.Visible = visible
 		current.LastObservedAt = now.UTC()
 		next[warning.ID] = current
-		if warning.WaitingOnHuman && !o.stalenessWebhookConfigured() {
-			o.recordStalenessWarningReminder(ctx, state, warning.ID, now)
-		}
 	}
 	state.StalenessWarnings = next
 	o.deliverStalenessWarnings(ctx, state, now)
@@ -119,10 +107,6 @@ func (o *Orchestrator) recordStalenessWarningReminder(ctx context.Context, state
 	if err := o.stalenessWarningStore.RecordStalenessWarningReminder(ctx, projectID, warningID, at); err != nil && o.logger != nil {
 		o.logger.Error("record staleness warning reminder", "project_id", projectID, "warning_id", warningID, "error", err)
 	}
-}
-
-func (o *Orchestrator) stalenessWebhookConfigured() bool {
-	return o.newStalenessNotifier != nil && strings.TrimSpace(o.cfg.StalenessDelivery.WebhookURL) != ""
 }
 
 func (o *Orchestrator) stalenessItems(ctx context.Context, issues []connector.Issue, state *State, now time.Time) []staleness.Item {
@@ -519,6 +503,9 @@ func (o *Orchestrator) deliverStalenessWarnings(ctx context.Context, state *Stat
 	attempted := 0
 	for _, id := range ids {
 		current := state.StalenessWarnings[id]
+		if observability.Normalize(current.Warning.Class, observability.Staleness(current.Warning.WaitingOnHuman)) != observability.ClassFault {
+			continue
+		}
 		if !current.DeliveredAt.IsZero() || !stalenessDeliveryDue(current, now) {
 			continue
 		}
@@ -596,6 +583,7 @@ func stalenessWarningSnapshots(values map[string]StalenessWarning) []telemetry.S
 		}
 		out = append(out, telemetry.StalenessWarning{
 			ID:                    value.Warning.ID,
+			Class:                 observability.Normalize(value.Warning.Class, observability.Staleness(value.Warning.WaitingOnHuman)),
 			ProjectID:             value.Warning.ProjectID,
 			Kind:                  value.Warning.Kind,
 			IssueID:               value.Warning.IssueID,

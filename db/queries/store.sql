@@ -951,10 +951,11 @@ INSERT INTO project_dispatch_status (
   selected_count,
   skipped_count,
   wait_reason,
+  wait_reason_code,
   all_skipped_since,
   last_selected_at,
   observed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id) DO UPDATE SET
   candidate_count = excluded.candidate_count,
   eligible_candidate_count = excluded.eligible_candidate_count,
@@ -962,6 +963,7 @@ ON CONFLICT(project_id) DO UPDATE SET
   selected_count = excluded.selected_count,
   skipped_count = excluded.skipped_count,
   wait_reason = excluded.wait_reason,
+  wait_reason_code = excluded.wait_reason_code,
   all_skipped_since = excluded.all_skipped_since,
   last_selected_at = excluded.last_selected_at,
   observed_at = excluded.observed_at
