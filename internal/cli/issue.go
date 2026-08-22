@@ -66,15 +66,15 @@ func classifyDashboardReadError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return err
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return NewClassifiedError(ErrDashboardTimeout, errorCodeDashboardTimeout, "dashboard API request timed out", "Confirm Detent is responsive, or retry the command.", nil)
-	}
 	var transport *DashboardTransportError
 	if errors.As(err, &transport) {
 		if transport.Timeout {
-			return NewClassifiedError(ErrDashboardTimeout, errorCodeDashboardTimeout, "dashboard API request timed out", "Confirm Detent is responsive, or retry the command.", nil)
+			return NewClassifiedError(ErrDashboardTimeout, errorCodeDashboardTimeout, transport.Error(), "Confirm Detent is responsive, or retry the command.", nil)
 		}
-		return NewClassifiedError(ErrDashboardUnreachable, errorCodeDashboardUnreachable, "dashboard service is stopped or unreachable", "Start Detent or verify the configured host and port.", nil)
+		return NewClassifiedError(ErrDashboardUnreachable, errorCodeDashboardUnreachable, transport.Error(), "Start Detent or verify the configured host and port.", nil)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return NewClassifiedError(ErrDashboardTimeout, errorCodeDashboardTimeout, "dashboard API request timed out", "Confirm Detent is responsive, or retry the command.", nil)
 	}
 	var response *DashboardResponseError
 	if !errors.As(err, &response) {

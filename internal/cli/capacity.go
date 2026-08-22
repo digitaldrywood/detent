@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 type capacityClearResult struct {
@@ -17,6 +19,24 @@ type capacityClearResult struct {
 	Project string `json:"project,omitempty"`
 	Scope   string `json:"scope,omitempty"`
 	Cleared int    `json:"cleared"`
+}
+
+type dashboardAddress struct {
+	Value      string
+	HostSource string
+	PortSource string
+}
+
+const dashboardAddressSourceServiceFlag = "service flag"
+
+func (a dashboardAddress) String() string {
+	if a.Value == "" {
+		return ""
+	}
+	if a.HostSource == a.PortSource {
+		return fmt.Sprintf("%s (from %s)", a.Value, a.HostSource)
+	}
+	return fmt.Sprintf("%s (host from %s, port from %s)", a.Value, a.HostSource, a.PortSource)
 }
 
 func newCapacityCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
@@ -67,7 +87,7 @@ func runCapacityClear(
 	scope string,
 	opts options,
 ) (capacityClearResult, error) {
-	boot, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
+	boot, address, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
 	if err != nil {
 		return capacityClearResult{}, err
 	}
@@ -88,7 +108,7 @@ func runCapacityClear(
 	}
 	response, err := opts.httpDo(request)
 	if err != nil {
-		return capacityClearResult{}, fmt.Errorf("clear capacity outage: %w", err)
+		return capacityClearResult{}, fmt.Errorf("clear capacity outage via %s: %w", address, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -122,14 +142,14 @@ func resolveDashboardBoot(
 	port int,
 	portSet bool,
 	opts options,
-) (BootConfig, error) {
+) (BootConfig, dashboardAddress, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
-		return BootConfig{}, err
+		return BootConfig{}, dashboardAddress{}, err
 	}
 	cfg, err := opts.read(resolution.Path)
 	if err != nil {
-		return BootConfig{}, err
+		return BootConfig{}, dashboardAddress{}, err
 	}
 	portSetting, err := resolveRuntimePort(ctx, runtimeInput{
 		Config:     &cfg,
@@ -140,14 +160,74 @@ func resolveDashboardBoot(
 		},
 	}, runtimeDepsFromOptions(opts))
 	if err != nil {
-		return BootConfig{}, err
+		return BootConfig{}, dashboardAddress{}, err
+	}
+	hostSetting := resolveDashboardHost(ctx, host, firstGlobalProject(cfg))
+	if hostSetting.Source != runtimeSourceFlag || portSetting.Source != runtimeSourceFlag {
+		serviceArguments := runningServiceArguments(ctx, resolution.Path, opts)
+		if hostSetting.Source != runtimeSourceFlag {
+			if serviceHost, ok := serviceStringFlag(serviceArguments, "--host"); ok {
+				hostSetting = RuntimeValue{Value: serviceHost, Source: dashboardAddressSourceServiceFlag}
+			}
+		}
+		if portSetting.Source != runtimeSourceFlag {
+			if servicePort, ok := serviceIntFlag(serviceArguments, "--port"); ok {
+				portSetting = RuntimeIntValue{Value: servicePort, Source: dashboardAddressSourceServiceFlag}
+			}
+		}
 	}
 	resolvedPort := portSetting.Value
-	return BootConfig{
+	boot := BootConfig{
 		Mode:           BootModeRunning,
 		Global:         cfg,
 		ConfigPathRule: resolution.Rule,
-		Host:           bootHost(ctx, host, firstGlobalProject(cfg)),
+		Host:           hostSetting.Value,
 		Port:           &resolvedPort,
+	}
+	return boot, dashboardAddress{
+		Value:      dashboardServerAddr(boot),
+		HostSource: dashboardAddressSource(hostSetting.Source),
+		PortSource: dashboardAddressSource(portSetting.Source),
 	}, nil
+}
+
+func resolveDashboardHost(ctx context.Context, host string, project globalconfig.Project) RuntimeValue {
+	if host = strings.TrimSpace(host); host != "" {
+		return RuntimeValue{Value: host, Source: runtimeSourceFlag}
+	}
+	if host = bootHost(ctx, "", project); host != "" {
+		return RuntimeValue{Value: host, Source: runtimeSourceConfig}
+	}
+	return RuntimeValue{Value: defaultWebHost, Source: runtimeSourceDefault}
+}
+
+func dashboardAddressSource(source string) string {
+	if source == runtimeSourceWorkflow {
+		return runtimeSourceConfig
+	}
+	return sourceDetail(source)
+}
+
+func serviceStringFlag(arguments []string, name string) (string, bool) {
+	var value string
+	var found bool
+	for index, argument := range arguments {
+		if argument == name && index+1 < len(arguments) {
+			value = strings.TrimSpace(arguments[index+1])
+			found = value != ""
+		}
+		if raw, ok := strings.CutPrefix(argument, name+"="); ok {
+			value = strings.TrimSpace(raw)
+			found = value != ""
+		}
+	}
+	return value, found
+}
+
+func serviceIntFlag(arguments []string, name string) (int, bool) {
+	raw, ok := serviceStringFlag(arguments, name)
+	if !ok {
+		return 0, false
+	}
+	return validServicePort(raw)
 }

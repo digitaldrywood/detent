@@ -30,6 +30,7 @@ type dashboardHTTPClient interface {
 
 type DashboardReadClient struct {
 	baseURL    *url.URL
+	address    dashboardAddress
 	credential string
 	http       dashboardHTTPClient
 	timeout    time.Duration
@@ -61,6 +62,7 @@ func (e *DashboardResponseError) Error() string {
 type DashboardTransportError struct {
 	Timeout bool
 	Err     error
+	Address dashboardAddress
 }
 
 type DashboardState struct {
@@ -84,7 +86,13 @@ func (e *DashboardTransportError) Error() string {
 		return ""
 	}
 	if e.Timeout {
+		if detail := e.Address.String(); detail != "" {
+			return "dashboard API request to " + detail + " timed out"
+		}
 		return "dashboard API request timed out"
+	}
+	if detail := e.Address.String(); detail != "" {
+		return "dashboard API at " + detail + " is unreachable"
 	}
 	return "dashboard API is unreachable"
 }
@@ -104,7 +112,7 @@ func newDashboardReadClient(
 	portSet bool,
 	opts options,
 ) (*DashboardReadClient, error) {
-	boot, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
+	boot, address, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +129,7 @@ func newDashboardReadClient(
 	}
 	return &DashboardReadClient{
 		baseURL:    baseURL,
+		address:    address,
 		credential: credential,
 		http:       dashboardHTTPClientFunc(opts.httpDo),
 		timeout:    dashboardReadTimeout,
@@ -254,6 +263,7 @@ func (c *DashboardReadClient) requestJSON(ctx context.Context, method string, re
 		return 0, &DashboardTransportError{
 			Timeout: errors.Is(requestContext.Err(), context.DeadlineExceeded),
 			Err:     err,
+			Address: c.address,
 		}
 	}
 	defer response.Body.Close()
@@ -372,6 +382,7 @@ func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Cal
 		return operatortool.Result{}, &DashboardTransportError{
 			Timeout: errors.Is(requestContext.Err(), context.DeadlineExceeded),
 			Err:     err,
+			Address: c.address,
 		}
 	}
 	defer response.Body.Close()

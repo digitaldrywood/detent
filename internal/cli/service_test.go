@@ -229,6 +229,17 @@ func TestStoppedManagedServiceUsesNonzeroExitCode(t *testing.T) {
 	}
 }
 
+func TestSystemdDefinitionArgumentsDecodesLiteralPercents(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`ExecStart="/opt/detent%%worker" --config "/config/tenant%%2/global.yaml" --host "fe80::1%%eth0"`)
+	want := []string{"/opt/detent%worker", "--config", "/config/tenant%2/global.yaml", "--host", "fe80::1%eth0"}
+
+	if got := systemdDefinitionArguments(content); !reflect.DeepEqual(got, want) {
+		t.Fatalf("systemdDefinitionArguments() = %#v, want %#v", got, want)
+	}
+}
+
 func TestServiceCommandResolvesConfigAndRuntime(t *testing.T) {
 	t.Parallel()
 

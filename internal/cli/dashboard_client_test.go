@@ -363,6 +363,48 @@ func TestClassifyDashboardReadProblems(t *testing.T) {
 	}
 }
 
+func TestClassifyDashboardReadTransportIncludesAddressSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		timeout bool
+		err     error
+		want    string
+	}{
+		{
+			name: "unreachable",
+			err:  errors.New("connection refused"),
+			want: "dashboard API at 100.109.187.102:4101 (host from config, port from default) is unreachable",
+		},
+		{
+			name:    "timeout",
+			timeout: true,
+			err:     context.DeadlineExceeded,
+			want:    "dashboard API request to 100.109.187.102:4101 (host from config, port from default) timed out",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := &DashboardTransportError{
+				Timeout: tt.timeout,
+				Err:     tt.err,
+				Address: dashboardAddress{
+					Value:      "100.109.187.102:4101",
+					HostSource: runtimeSourceConfig,
+					PortSource: runtimeSourceDefault,
+				},
+			}
+			problem := ProblemForError(classifyDashboardReadError(err))
+			if problem.Detail != tt.want {
+				t.Fatalf("problem detail = %q, want %q", problem.Detail, tt.want)
+			}
+		})
+	}
+}
+
 func dashboardClientForServer(t *testing.T, server *httptest.Server, credential string) *DashboardReadClient {
 	t.Helper()
 	parsed, err := url.Parse(server.URL)
