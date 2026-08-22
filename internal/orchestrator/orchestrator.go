@@ -285,6 +285,7 @@ type Orchestrator struct {
 	refreshes               chan manualRefreshRequest
 	reconciles              chan targetedRefreshRequest
 	capacityClearRequests   chan capacityClearRequest
+	credentialChanges       chan backendCredentialChangeRequest
 	trackerClearRequests    chan trackerClearRequest
 	forgeClearRequests      chan forgeClearRequest
 	failureCanaryRequests   chan failureBreakerCanaryRequest
@@ -601,6 +602,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
 		capacityClearRequests:   make(chan capacityClearRequest),
+		credentialChanges:       make(chan backendCredentialChangeRequest),
 		trackerClearRequests:    make(chan trackerClearRequest),
 		forgeClearRequests:      make(chan forgeClearRequest),
 		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
@@ -695,6 +697,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
+		case request := <-o.credentialChanges:
+			scheduled := o.scheduleBackendCredentialProbe(&state, request.scope, request.at)
+			request.reply <- scheduled
+			if scheduled {
+				o.startTick(&state, request.at)
+				o.tick(ctx, &state, request.at)
+				o.finishTick(&state)
+				resetTicker(ticker, state.PollInterval)
+			}
 		case request := <-o.trackerClearRequests:
 			request.reply <- trackerClearReply{cleared: o.clearTrackerAvailability(&state, request.at)}
 		case request := <-o.forgeClearRequests:

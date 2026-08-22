@@ -491,6 +491,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		go updateScheduler.Run(ctx)
 		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload)
+		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)
+		resourceWorkers.Go(func() {
+			<-credentialWatcherDone
+		})
 		select {
 		case globalWatcherStarted <- globalWatcherDone:
 		default:
