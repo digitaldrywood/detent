@@ -239,19 +239,83 @@ func installedServicePort(manager servicepkg.ManagerName, path string) (int, boo
 	return 0, false
 }
 
+func runningServiceArguments(ctx context.Context, configPath string, opts options) []string {
+	factory := opts.service
+	if factory == nil {
+		factory = defaultServiceFactory
+	}
+	runCommand := opts.runCommand
+	if runCommand == nil {
+		runCommand = defaultCommandRunner
+	}
+	runner, err := factory(servicepkg.Config{
+		GOOS:       runtime.GOOS,
+		ConfigPath: configPath,
+		LockPath:   filepath.Join(filepath.Dir(configPath), "detent.db.lock"),
+		RunCommand: servicepkg.CommandRunner(runCommand),
+	})
+	if err != nil {
+		return nil
+	}
+	status, err := runner.Status(ctx)
+	if err != nil || !status.Running() {
+		return nil
+	}
+	switch status.ServiceManager {
+	case servicepkg.ManagerSystemd:
+		arguments := []string{"cat", status.Service}
+		if status.ServiceScope == "user" {
+			arguments = append([]string{"--user"}, arguments...)
+		}
+		if content, runErr := runCommand(ctx, "systemctl", arguments...); runErr == nil {
+			if parsed := systemdDefinitionArguments([]byte(content)); len(parsed) > 0 {
+				return serviceArgumentsForConfig(parsed, configPath)
+			}
+		}
+	case servicepkg.ManagerLaunchd:
+		if content, readErr := os.ReadFile(status.DefinitionPath); readErr == nil {
+			return serviceArgumentsForConfig(launchdDefinitionArguments(content), configPath)
+		}
+	}
+	if content, readErr := os.ReadFile(status.DefinitionPath); readErr == nil {
+		return serviceArgumentsForConfig(systemdDefinitionArguments(content), configPath)
+	}
+	return nil
+}
+
+func serviceArgumentsForConfig(arguments []string, configPath string) []string {
+	serviceConfig, ok := serviceStringFlag(arguments, "--config")
+	if !ok {
+		return nil
+	}
+	serviceConfig, serviceErr := filepath.Abs(serviceConfig)
+	configPath, configErr := filepath.Abs(configPath)
+	if serviceErr != nil || configErr != nil || filepath.Clean(serviceConfig) != filepath.Clean(configPath) {
+		return nil
+	}
+	return arguments
+}
+
 func validServicePort(raw string) (int, bool) {
 	port, err := strconv.Atoi(strings.TrimSpace(raw))
 	return port, err == nil && port >= 0
 }
 
 func systemdDefinitionArguments(content []byte) []string {
+	var arguments []string
 	for line := range strings.SplitSeq(string(content), "\n") {
 		value, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
-		if ok {
-			return splitDefinitionArguments(value)
+		if !ok {
+			continue
+		}
+		if parsed := splitDefinitionArguments(value); len(parsed) > 0 {
+			for index := range parsed {
+				parsed[index] = strings.ReplaceAll(parsed[index], "%%", "%")
+			}
+			arguments = parsed
 		}
 	}
-	return nil
+	return arguments
 }
 
 func splitDefinitionArguments(value string) []string {
