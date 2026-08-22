@@ -99,6 +99,27 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			name: "invalid request",
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"type":"invalid_request_error"}}`},
 		},
+		{
+			name: "untyped quota prose with rate telemetry",
+			err:  errors.New("workspace instructions mention quota exceeded while describing an incident"),
+			limits: &telemetry.RateLimits{
+				Primary: &telemetry.RateLimitBucket{ResetAt: &resetAt},
+			},
+		},
+		{
+			name: "untyped overload prose",
+			err:  errors.New("workspace instructions mention that the selected model is at capacity"),
+		},
+		{
+			name: "typed provider http 429",
+			err:  &TurnFailedError{Status: "failed", Body: `{"status_code":429,"message":"retry later"}`},
+			limits: &telemetry.RateLimits{
+				Primary: &telemetry.RateLimitBucket{ResetAt: &resetAt},
+			},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeUsageLimit,
+			wantKind: "http_429",
+		},
 	}
 
 	backend := &AgentBackend{}
@@ -110,7 +131,7 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			if ok != tt.want {
 				t.Fatalf("ClassifyCapacityError() ok = %v, want %v", ok, tt.want)
 			}
-			if tt.limits != nil && (details.ResetAt == nil || !details.ResetAt.Equal(resetAt)) {
+			if tt.want && tt.limits != nil && (details.ResetAt == nil || !details.ResetAt.Equal(resetAt)) {
 				t.Fatalf("ClassifyCapacityError() ResetAt = %v, want %v", details.ResetAt, resetAt)
 			}
 			if tt.want && details.Type != tt.wantType {

@@ -898,8 +898,11 @@ func (o *Orchestrator) blockImplementProgress(
 		blockReason = noProgressLimitReason
 	}
 	predicate := blockedRecoveryPredicateFingerprintChange
-	if blockReason == strandedUnpushedWorkReason {
+	switch blockReason {
+	case strandedUnpushedWorkReason:
 		predicate = blockedRecoveryPredicateOncePerFingerprint
+	case noProgressLimitReason, dispatchLoopDetectedReason:
+		predicate = blockedRecoveryPredicateManaged
 	}
 	if strings.TrimSpace(decision.HumanAction) != "" || blockReason == workpadBlockedUnactionedReason {
 		predicate = blockedRecoveryPredicateManaged

@@ -32,6 +32,7 @@ var codexCapacityRules = backendcapacity.Rules{
 		"quota exceeded",
 		"insufficient quota",
 	},
+	HTTP429:      true,
 	RequireReset: true,
 }
 
@@ -70,32 +71,69 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
 			return backendcapacity.Details{
-				Type:   backendcapacity.ErrorTypeTransientOverload,
-				Kind:   backendcapacity.StartupTimeoutKind,
-				Reason: "backend startup handshake timed out",
+				Type:    backendcapacity.ErrorTypeTransientOverload,
+				Kind:    backendcapacity.StartupTimeoutKind,
+				Reason:  "backend startup handshake timed out",
+				Trigger: boundedCapacityTrigger(text),
 			}, true
 		case errors.Is(err, io.EOF), strings.Contains(strings.ToLower(text), "process exited"), strings.Contains(strings.ToLower(text), "start codex app-server transport"):
 			return backendcapacity.Details{
-				Type:   backendcapacity.ErrorTypeTransientOverload,
-				Kind:   backendcapacity.StartupFailureKind,
-				Reason: "backend startup handshake failed",
+				Type:    backendcapacity.ErrorTypeTransientOverload,
+				Kind:    backendcapacity.StartupFailureKind,
+				Reason:  "backend startup handshake failed",
+				Trigger: boundedCapacityTrigger(text),
 			}, true
 		}
 	}
-	if details, ok := backendcapacity.ClassifyTransientOverload(text, codexOverloadRules); ok {
+	evidence, ok := codexProviderCapacityEvidence(err)
+	if !ok {
+		return backendcapacity.Details{}, false
+	}
+	if details, ok := backendcapacity.ClassifyTransientOverload(evidence, codexOverloadRules); ok {
+		details.Trigger = boundedCapacityTrigger(evidence)
 		return details, true
 	}
-	details, ok := backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
-	if ok && codexSubscriptionLimitText(text) {
+	details, ok := backendcapacity.Classify(evidence, codexCapacityResetAt(limits), now, codexCapacityRules)
+	if !ok {
+		return backendcapacity.Details{}, false
+	}
+	if codexSubscriptionLimitText(evidence) {
 		details.Reason = "subscription window exhausted"
 	}
-	return details, ok
+	details.Trigger = boundedCapacityTrigger(evidence)
+	return details, true
 }
 
 func codexSubscriptionLimitText(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	return strings.Contains(text, "chatgpt.com/codex/settings/usage") ||
 		strings.Contains(text, "purchase more credits or try again at")
+}
+
+func codexProviderCapacityEvidence(err error) (string, bool) {
+	parts := make([]string, 0, 3)
+	var bodyCarrier interface {
+		BackendErrorBody() string
+		BackendErrorMessage() string
+	}
+	if errors.As(err, &bodyCarrier) {
+		parts = append(parts, bodyCarrier.BackendErrorBody(), bodyCarrier.BackendErrorMessage())
+	}
+	var statusCarrier interface {
+		BackendErrorStatus() string
+	}
+	if errors.As(err, &statusCarrier) {
+		parts = append(parts, statusCarrier.BackendErrorStatus())
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n")), len(parts) > 0
+}
+
+func boundedCapacityTrigger(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 2048 {
+		return value[len(value)-2048:]
+	}
+	return value
 }
 
 func codexStartupOperation(text string) bool {
