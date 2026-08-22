@@ -24,15 +24,20 @@ func TestCheckDoctorDispatchStalls(t *testing.T) {
 			wantStatus: doctorOK,
 		},
 		{
-			name:        "stalled fleet warns",
-			body:        `{"status":"needs_attention","mode":"fleet","checks":{"hub":"ok","store":"ok","registry":"ok","connector":"ok"},"dispatch_stalls":[{"project_id":"detent","candidate_count":8,"wait_reason":"github_rest_capacity","stall_duration_seconds":10800,"stalled":true,"needs_human_attention":true}]}`,
+			name:        "total selector exclusion warns",
+			body:        `{"status":"needs_attention","mode":"fleet","checks":{"hub":"ok","store":"ok","registry":"ok","connector":"ok"},"dispatch_stalls":[{"project_id":"detent","candidate_count":8,"wait_reason":"authorization selector excludes every candidate","wait_reason_code":"authorization_selector_declined","stall_duration_seconds":10800,"stalled":true,"needs_human_attention":true,"class":"fault"}]}`,
 			wantStatus:  doctorWarn,
 			wantProject: "detent stalled for 3h0m0s",
 		},
 		{
+			name:       "pacing stall is diagnostic",
+			body:       `{"status":"ok","mode":"fleet","checks":{"hub":"ok","store":"ok","registry":"ok","connector":"ok"},"dispatch_stalls":[{"project_id":"detent","candidate_count":8,"wait_reason":"GitHub REST capacity paused","wait_reason_code":"github_rest_capacity_paused","stall_duration_seconds":10800,"stalled":true,"class":"diagnostic"}]}`,
+			wantStatus: doctorOK,
+		},
+		{
 			name:       "project scope ignores another project",
 			projectID:  "drywood",
-			body:       `{"status":"needs_attention","mode":"fleet","checks":{"hub":"ok","store":"ok","registry":"ok","connector":"ok"},"dispatch_stalls":[{"project_id":"detent","candidate_count":8,"wait_reason":"github_rest_capacity","stall_duration_seconds":10800,"stalled":true,"needs_human_attention":true}]}`,
+			body:       `{"status":"needs_attention","mode":"fleet","checks":{"hub":"ok","store":"ok","registry":"ok","connector":"ok"},"dispatch_stalls":[{"project_id":"detent","candidate_count":8,"wait_reason":"authorization selector excludes every candidate","wait_reason_code":"authorization_selector_declined","stall_duration_seconds":10800,"stalled":true,"needs_human_attention":true,"class":"fault"}]}`,
 			wantStatus: doctorOK,
 		},
 	}

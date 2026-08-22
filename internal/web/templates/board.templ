@@ -120,9 +120,6 @@ templ boardAlertsBar(alerts []boardAlert) {
 			if boardAlertKindActive(alerts, boardAlertKindLastKnown) {
 				data-board-snapshot-stale="true"
 			}
-			if boardAlertKindActive(alerts, boardAlertKindTrackerStale) {
-				data-board-data-stale="true"
-			}
 		>
 			<button
 				id="board-alerts-toggle"
@@ -134,7 +131,7 @@ templ boardAlertsBar(alerts []boardAlert) {
 				aria-label={ boardAlertButtonLabel(alerts) }
 			>
 				@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
-				<span class="shrink-0 font-medium">{ boardCountLabel(len(alerts), "warning", "warnings") }</span>
+				<span class="shrink-0 font-medium">{ boardCountLabel(len(alerts), "fault", "faults") }</span>
 				<span class="hidden shrink-0 text-current/60 md:inline" aria-hidden="true">·</span>
 				<span class="hidden min-w-0 flex-1 truncate text-text md:inline">{ alerts[0].TerseSummary }</span>
 				if len(alerts) > 1 {
@@ -155,7 +152,7 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 	<div class="divide-y divide-line" data-board-alerts-overlay-content>
 		<header class="sticky top-0 z-10 flex h-10 items-center gap-2 border-b border-line bg-page px-3 text-sm">
 			@boardAlertGlyph(alerts[0], "size-4 shrink-0")
-			<p class="min-w-0 flex-1 truncate font-medium text-text">{ boardCountLabel(len(alerts), "warning", "warnings") }</p>
+			<p class="min-w-0 flex-1 truncate font-medium text-text">{ boardCountLabel(len(alerts), "fault", "faults") }</p>
 			<button
 				type="button"
 				class="inline-flex shrink-0 items-center gap-1 rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"

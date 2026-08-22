@@ -246,7 +246,7 @@ func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 		items []string
 	}{
 		{id: "primary", items: []string{"board"}},
-		{id: "monitor", label: "Monitor", items: []string{"fleet", "health"}},
+		{id: "monitor", label: "Monitor", items: []string{"fleet", "diagnostics", "health"}},
 		{id: "insights", label: "Insights", items: []string{"reports", "library"}},
 		{id: "system", label: "System", items: []string{"analytics", "api-keys", "settings"}},
 	}
@@ -345,8 +345,8 @@ func TestAppShellHealthKindReflectsScheduledPacing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := appShellHealthKind(DashboardShellData{Snapshot: tt.snapshot}); got != primitives.KindWarn {
-				t.Fatalf("appShellHealthKind() = %q, want %q", got, primitives.KindWarn)
+			if got := appShellHealthKind(DashboardShellData{Snapshot: tt.snapshot}); got != primitives.KindOK {
+				t.Fatalf("appShellHealthKind() = %q, want %q", got, primitives.KindOK)
 			}
 		})
 	}
@@ -369,10 +369,10 @@ func TestAppLiveStatusReflectsTrackerFreshness(t *testing.T) {
 		},
 	}}
 
-	if got := appLiveStatusKind(data); got != primitives.KindWarn {
-		t.Fatalf("appLiveStatusKind() = %q, want %q", got, primitives.KindWarn)
+	if got := appLiveStatusKind(data); got != primitives.KindNeutral {
+		t.Fatalf("appLiveStatusKind() = %q, want %q", got, primitives.KindNeutral)
 	}
-	if got := appLiveStatusLabel(data); got != "Live · stale data" {
+	if got := appLiveStatusLabel(data); got != "Live · data delayed" {
 		t.Fatalf("appLiveStatusLabel() = %q", got)
 	}
 }

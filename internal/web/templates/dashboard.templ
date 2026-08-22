@@ -1213,12 +1213,12 @@ templ diagnosticsTabsScript() {
 				const active = tabs(root).find(function(tab) {
 					return tab.getAttribute("aria-selected") === "true";
 				});
-				return active ? active.dataset.diagnosticsTab : "overview";
+				return active ? active.dataset.diagnosticsTab : "conditions";
 			}
 
 			function setActiveTab(root, id, persist) {
 				if (!hasTab(root, id)) {
-					id = "overview";
+					id = "conditions";
 				}
 				tabs(root).forEach(function(tab) {
 					const active = tab.dataset.diagnosticsTab === id;
@@ -1255,7 +1255,7 @@ templ diagnosticsTabsScript() {
 				}
 				const next = list[(index + offset + list.length) % list.length];
 				next.focus();
-				setActiveTab(root, next.dataset.diagnosticsTab || "overview", true);
+				setActiveTab(root, next.dataset.diagnosticsTab || "conditions", true);
 			}
 
 			document.addEventListener("click", function(event) {
@@ -1267,7 +1267,7 @@ templ diagnosticsTabsScript() {
 				if (!root) {
 					return;
 				}
-				setActiveTab(root, tab.dataset.diagnosticsTab || "overview", true);
+				setActiveTab(root, tab.dataset.diagnosticsTab || "conditions", true);
 			});
 
 			document.addEventListener("keydown", function(event) {
@@ -1290,7 +1290,7 @@ templ diagnosticsTabsScript() {
 					const first = tabs(root)[0];
 					if (first) {
 						first.focus();
-						setActiveTab(root, first.dataset.diagnosticsTab || "overview", true);
+						setActiveTab(root, first.dataset.diagnosticsTab || "conditions", true);
 					}
 				} else if (event.key === "End") {
 					event.preventDefault();
@@ -1298,7 +1298,7 @@ templ diagnosticsTabsScript() {
 					const last = list[list.length - 1];
 					if (last) {
 						last.focus();
-						setActiveTab(root, last.dataset.diagnosticsTab || "overview", true);
+						setActiveTab(root, last.dataset.diagnosticsTab || "conditions", true);
 					}
 				}
 			});
@@ -2112,8 +2112,6 @@ templ ProjectDiagnosticsSnapshot(data DashboardData) {
 	if !snapshotReady(data.Snapshot) && !diagnosticsSnapshotHasLoadedData(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
-		@failureBreakerBanner(data.Snapshot)
-		@dispatchRecoveryBanner(data.Snapshot)
 		@diagnosticsOperationsSummary(data)
 		@trackerDriftWarning(data.Snapshot)
 		@diagnosticsTabbedView(data)
@@ -2148,7 +2146,8 @@ templ diagnosticsTabbedView(data DashboardData) {
 	<section class="flex flex-none flex-col gap-3" aria-label="Diagnostics operations view" data-diagnostics-tabs data-diagnostics-storage-name={ diagnosticsStorageName(data) }>
 		<div class="overflow-x-auto rounded-card border border-line bg-surface p-1" role="tablist" aria-label="Diagnostics sections">
 			<div class="flex min-w-max items-center gap-1">
-				@diagnosticsTabButton("overview", "Overview", true)
+				@diagnosticsTabButton("conditions", "Conditions", true)
+				@diagnosticsTabButton("overview", "Overview", false)
 				@diagnosticsTabButton("workflow-timing", "Workflow timing", false)
 				@diagnosticsTabButton("active-work", "Active work", false)
 				@diagnosticsTabButton("queues-blockers", "Queues & blockers", false)
@@ -2158,7 +2157,10 @@ templ diagnosticsTabbedView(data DashboardData) {
 			</div>
 		</div>
 		<div class="grid min-w-0">
-			@diagnosticsTabPanel("overview", "Overview", true) {
+			@diagnosticsTabPanel("conditions", "Conditions", true) {
+				@diagnosticsConditionsTab(data)
+			}
+			@diagnosticsTabPanel("overview", "Overview", false) {
 				@diagnosticsOverviewTab(data)
 			}
 			@diagnosticsTabPanel("workflow-timing", "Workflow timing", false) {
@@ -2181,6 +2183,52 @@ templ diagnosticsTabbedView(data DashboardData) {
 			}
 		</div>
 	</section>
+}
+
+templ diagnosticsConditionsTab(data DashboardData) {
+	{{ rows := diagnosticsConditionRows(data.Snapshot) }}
+	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-conditions", Title: "Operational conditions", Count: formatCount(len(rows))}) {
+		<p class="border-b border-line px-4 py-3 text-xs text-sec">Expected waits and pacing stay visible here. Only faults appear in the board banner or trigger health notifications.</p>
+		if len(rows) == 0 {
+			@primitives.EmptyLine("No operational conditions")
+		} else {
+			<div class="overflow-x-auto" data-diagnostics-condition-scroll>
+				<div class="min-w-[780px]">
+					<div class="grid grid-cols-[105px_140px_150px_minmax(0,1fr)_120px] gap-3 border-b border-line px-4 py-2">
+						<span class="text-2xs font-semibold uppercase text-dim">Class</span>
+						<span class="text-2xs font-semibold uppercase text-dim">Project</span>
+						<span class="text-2xs font-semibold uppercase text-dim">Target</span>
+						<span class="text-2xs font-semibold uppercase text-dim">Condition</span>
+						<span class="text-2xs font-semibold uppercase text-dim">Observed</span>
+					</div>
+					for index, row := range rows {
+						<div id={ row.ID } class={ diagnosticsConditionRowClass(index == len(rows)-1) } data-diagnostics-condition-class={ string(row.Class) }>
+							<span class={ "flex items-center gap-1.5 text-xs font-medium " + boardExtraTextClass(row.Kind) }>
+								@primitives.StatusDot(row.Kind, false)
+								{ row.ClassLabel }
+							</span>
+							if row.ProjectID != "Fleet" {
+								<a class="truncate font-mono text-xs text-accent hover:underline" href={ templ.SafeURL(projectDiagnosticsPath(row.ProjectID)) }>{ row.ProjectID }</a>
+							} else {
+								<span class="truncate font-mono text-xs text-sec">{ row.ProjectID }</span>
+							}
+							if row.TargetURL != "" {
+								<a class="truncate font-mono text-xs text-accent hover:underline" href={ templ.SafeURL(row.TargetURL) }>{ row.Target }</a>
+							} else {
+								<span class="truncate font-mono text-xs text-sec">{ row.Target }</span>
+							}
+							<span class="min-w-0 text-xs text-sec"><strong class="font-medium text-text">{ row.Summary }</strong><span class="block break-words">{ row.Detail }</span></span>
+							if !row.ObservedAt.IsZero() {
+								<span class="font-mono text-xs text-sec">@LocalTime(row.ObservedAt, LocalTimeOptions{Relative: true})</span>
+							} else {
+								<span class="font-mono text-xs text-dim">—</span>
+							}
+						</div>
+					}
+				</div>
+			</div>
+		}
+	}
 }
 
 templ diagnosticsTabButton(id string, label string, active bool) {

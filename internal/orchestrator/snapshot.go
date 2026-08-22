@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -179,6 +180,7 @@ func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.D
 		SelectedCount:          status.SelectedCount,
 		SkippedCount:           status.SkippedCount,
 		WaitReason:             strings.TrimSpace(status.WaitReason),
+		WaitReasonCode:         strings.TrimSpace(status.WaitReasonCode),
 		AllSkippedSince:        cloneTimePointer(status.AllSkippedSince),
 		LastSelectedAt:         cloneTimePointer(status.LastSelectedAt),
 		StallThresholdSeconds:  int64(threshold / time.Second),
@@ -198,7 +200,8 @@ func dispatchStatusSnapshot(status store.ProjectDispatchStatus, threshold time.D
 		status.SkippedCount == status.CandidateCount &&
 		result.WaitReason != "" &&
 		now.Sub(*status.AllSkippedSince) >= threshold
-	result.NeedsHumanAttention = result.Stalled
+	result.Class = observability.Dispatch(result.Stalled, result.WaitReasonCode)
+	result.NeedsHumanAttention = result.Class == observability.ClassFault
 	return result
 }
 

@@ -194,10 +194,14 @@ func TestSSESnapshotComponent(t *testing.T) {
 			wantComponent: templates.ProjectDiagnosticsSnapshot,
 		},
 		{
-			name:          "diagnostics global view falls through",
+			name:          "diagnostics global view uses fleet diagnostics snapshot",
 			selectedView:  sseViewDiagnostics,
-			wantActiveNav: "initial",
-			wantComponent: templates.SnapshotView,
+			wantActiveNav: sseViewDiagnostics,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewDiagnostics
+				return data
+			},
+			wantComponent: templates.ProjectDiagnosticsSnapshot,
 		},
 		{
 			name:              "configuration project view keeps default snapshot",

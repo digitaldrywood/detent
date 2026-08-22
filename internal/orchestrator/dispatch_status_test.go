@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -17,16 +18,19 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 	fingerprint := dispatchCandidateFingerprint(dispatchCandidateIdentities([]connector.Issue{alpha, beta}))
 
 	tests := []struct {
-		name         string
-		previous     store.ProjectDispatchStatus
-		candidates   []connector.Issue
-		decisions    []dispatchPlanDecision
-		outcomes     map[string]dispatchIssueOutcome
-		wantCount    int
-		wantEligible int
-		wantSkipped  int
-		wantReason   string
-		wantStall    bool
+		name          string
+		previous      store.ProjectDispatchStatus
+		candidates    []connector.Issue
+		decisions     []dispatchPlanDecision
+		outcomes      map[string]dispatchIssueOutcome
+		wantCount     int
+		wantEligible  int
+		wantSkipped   int
+		wantReason    string
+		wantCode      string
+		wantStall     bool
+		wantClass     observability.Class
+		wantAttention bool
 	}{
 		{
 			name: "no candidates is healthy",
@@ -63,6 +67,7 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantCount:   2,
 			wantSkipped: 2,
 			wantReason:  dispatchSkipGitHubRESTCapacity,
+			wantCode:    dispatchSkipGitHubRESTCapacity,
 		},
 		{
 			name: "uniform skips over threshold are stalled",
@@ -81,7 +86,32 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantCount:   2,
 			wantSkipped: 2,
 			wantReason:  dispatchSkipGitHubRESTCapacity,
+			wantCode:    dispatchSkipGitHubRESTCapacity,
 			wantStall:   true,
+			wantClass:   observability.ClassDiagnostic,
+		},
+		{
+			name: "total authorization exclusion is a fault",
+			previous: store.ProjectDispatchStatus{
+				CandidateCount:       2,
+				CandidateFingerprint: fingerprint,
+				SkippedCount:         2,
+				WaitReason:           schedulerDecisionWaitReason(dispatchSkipAuthorizationSelector),
+				WaitReasonCode:       dispatchSkipAuthorizationSelector,
+				AllSkippedSince:      dispatchStatusTimePointer(now.Add(-3 * time.Hour)),
+			},
+			candidates: []connector.Issue{alpha, beta},
+			decisions: []dispatchPlanDecision{
+				{Issue: alpha, SkipReason: dispatchSkipAuthorizationSelector, SkipDetail: "alpha does not match selector"},
+				{Issue: beta, SkipReason: dispatchSkipAuthorizationSelector, SkipDetail: "beta does not match selector"},
+			},
+			wantCount:     2,
+			wantSkipped:   2,
+			wantReason:    schedulerDecisionWaitReason(dispatchSkipAuthorizationSelector),
+			wantCode:      dispatchSkipAuthorizationSelector,
+			wantStall:     true,
+			wantClass:     observability.ClassFault,
+			wantAttention: true,
 		},
 		{
 			name:       "failure breaker counts only otherwise eligible candidates",
@@ -102,6 +132,7 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantCount:   1,
 			wantSkipped: 1,
 			wantReason:  schedulerDecisionWaitReason(dispatchIssueFailureBackendCapacityPaused),
+			wantCode:    dispatchIssueFailureBackendCapacityPaused,
 		},
 		{
 			name:        "failed selection does not advance dispatch",
@@ -111,6 +142,7 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantCount:   1,
 			wantSkipped: 1,
 			wantReason:  dispatchIssueFailureClaimFailed,
+			wantCode:    dispatchIssueFailureClaimFailed,
 		},
 		{
 			name:       "already running candidate is healthy idle",
@@ -129,11 +161,11 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			t.Parallel()
 			status := projectDispatchStatusFromCycle(tt.previous, "detent", tt.candidates, tt.decisions, tt.outcomes, now)
 			got := dispatchStatusSnapshot(status, threshold, now)
-			if got.CandidateCount != tt.wantCount || got.EligibleCandidateCount != tt.wantEligible || got.SkippedCount != tt.wantSkipped || got.WaitReason != tt.wantReason || got.Stalled != tt.wantStall {
-				t.Fatalf("dispatch status = %#v, want count=%d eligible=%d skipped=%d reason=%q stalled=%t", got, tt.wantCount, tt.wantEligible, tt.wantSkipped, tt.wantReason, tt.wantStall)
+			if got.CandidateCount != tt.wantCount || got.EligibleCandidateCount != tt.wantEligible || got.SkippedCount != tt.wantSkipped || got.WaitReason != tt.wantReason || got.WaitReasonCode != tt.wantCode || got.Stalled != tt.wantStall || got.Class != tt.wantClass {
+				t.Fatalf("dispatch status = %#v, want count=%d eligible=%d skipped=%d reason=%q code=%q stalled=%t class=%q", got, tt.wantCount, tt.wantEligible, tt.wantSkipped, tt.wantReason, tt.wantCode, tt.wantStall, tt.wantClass)
 			}
-			if got.NeedsHumanAttention != tt.wantStall {
-				t.Fatalf("NeedsHumanAttention = %t, want %t", got.NeedsHumanAttention, tt.wantStall)
+			if got.NeedsHumanAttention != tt.wantAttention {
+				t.Fatalf("NeedsHumanAttention = %t, want %t", got.NeedsHumanAttention, tt.wantAttention)
 			}
 			if tt.name == "candidate selected is healthy" && (got.LastSelectedAt == nil || !got.LastSelectedAt.Equal(now)) {
 				t.Fatalf("LastSelectedAt = %#v, want %s", got.LastSelectedAt, now)

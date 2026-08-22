@@ -1879,7 +1879,7 @@ func (q *Queries) GetLatestIssueAgentSession(ctx context.Context, arg GetLatestI
 }
 
 const getProjectDispatchStatus = `-- name: GetProjectDispatchStatus :one
-SELECT project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at, eligible_candidate_count
+SELECT project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at, eligible_candidate_count, wait_reason_code
 FROM project_dispatch_status
 WHERE project_id = ?
 `
@@ -1898,6 +1898,7 @@ func (q *Queries) GetProjectDispatchStatus(ctx context.Context, projectID string
 		&i.LastSelectedAt,
 		&i.ObservedAt,
 		&i.EligibleCandidateCount,
+		&i.WaitReasonCode,
 	)
 	return i, err
 }
@@ -4395,10 +4396,11 @@ INSERT INTO project_dispatch_status (
   selected_count,
   skipped_count,
   wait_reason,
+  wait_reason_code,
   all_skipped_since,
   last_selected_at,
   observed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id) DO UPDATE SET
   candidate_count = excluded.candidate_count,
   eligible_candidate_count = excluded.eligible_candidate_count,
@@ -4406,10 +4408,11 @@ ON CONFLICT(project_id) DO UPDATE SET
   selected_count = excluded.selected_count,
   skipped_count = excluded.skipped_count,
   wait_reason = excluded.wait_reason,
+  wait_reason_code = excluded.wait_reason_code,
   all_skipped_since = excluded.all_skipped_since,
   last_selected_at = excluded.last_selected_at,
   observed_at = excluded.observed_at
-RETURNING project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at, eligible_candidate_count
+RETURNING project_id, candidate_count, candidate_fingerprint, selected_count, skipped_count, wait_reason, all_skipped_since, last_selected_at, observed_at, eligible_candidate_count, wait_reason_code
 `
 
 type UpsertProjectDispatchStatusParams struct {
@@ -4420,6 +4423,7 @@ type UpsertProjectDispatchStatusParams struct {
 	SelectedCount          int64          `json:"selected_count"`
 	SkippedCount           int64          `json:"skipped_count"`
 	WaitReason             sql.NullString `json:"wait_reason"`
+	WaitReasonCode         sql.NullString `json:"wait_reason_code"`
 	AllSkippedSince        sql.NullString `json:"all_skipped_since"`
 	LastSelectedAt         sql.NullString `json:"last_selected_at"`
 	ObservedAt             string         `json:"observed_at"`
@@ -4434,6 +4438,7 @@ func (q *Queries) UpsertProjectDispatchStatus(ctx context.Context, arg UpsertPro
 		arg.SelectedCount,
 		arg.SkippedCount,
 		arg.WaitReason,
+		arg.WaitReasonCode,
 		arg.AllSkippedSince,
 		arg.LastSelectedAt,
 		arg.ObservedAt,
@@ -4450,6 +4455,7 @@ func (q *Queries) UpsertProjectDispatchStatus(ctx context.Context, arg UpsertPro
 		&i.LastSelectedAt,
 		&i.ObservedAt,
 		&i.EligibleCandidateCount,
+		&i.WaitReasonCode,
 	)
 	return i, err
 }
