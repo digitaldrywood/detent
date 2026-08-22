@@ -829,6 +829,7 @@ type ProjectDispatchStatus struct {
 	SelectedCount          int
 	SkippedCount           int
 	WaitReason             string
+	WaitReasonCode         string
 	AllSkippedSince        *time.Time
 	LastSelectedAt         *time.Time
 	ObservedAt             time.Time

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -307,28 +308,29 @@ type DispatchRecovery struct {
 }
 
 type StalenessWarning struct {
-	ID                    string     `json:"id"`
-	ProjectID             string     `json:"project_id,omitempty"`
-	Kind                  string     `json:"kind"`
-	IssueID               string     `json:"issue_id,omitempty"`
-	Identifier            string     `json:"identifier,omitempty"`
-	IssueURL              string     `json:"issue_url,omitempty"`
-	Title                 string     `json:"title,omitempty"`
-	Lane                  string     `json:"lane,omitempty"`
-	Reason                string     `json:"reason"`
-	Detail                string     `json:"detail"`
-	Since                 time.Time  `json:"since"`
-	DetectedAt            time.Time  `json:"detected_at"`
-	LastObservedAt        time.Time  `json:"last_observed_at"`
-	AgeSeconds            int64      `json:"age_seconds"`
-	ThresholdSeconds      int64      `json:"threshold_seconds"`
-	Count                 int        `json:"count,omitempty"`
-	WaitingOnHuman        bool       `json:"waiting_on_human,omitempty"`
-	HasRecoveryPredicate  bool       `json:"has_recovery_predicate,omitempty"`
-	DeliveredAt           *time.Time `json:"delivered_at,omitempty"`
-	DeliveryAttempts      int        `json:"delivery_attempts,omitempty"`
-	LastDeliveryAttemptAt *time.Time `json:"last_delivery_attempt_at,omitempty"`
-	DeliveryError         string     `json:"delivery_error,omitempty"`
+	ID                    string              `json:"id"`
+	Class                 observability.Class `json:"class"`
+	ProjectID             string              `json:"project_id,omitempty"`
+	Kind                  string              `json:"kind"`
+	IssueID               string              `json:"issue_id,omitempty"`
+	Identifier            string              `json:"identifier,omitempty"`
+	IssueURL              string              `json:"issue_url,omitempty"`
+	Title                 string              `json:"title,omitempty"`
+	Lane                  string              `json:"lane,omitempty"`
+	Reason                string              `json:"reason"`
+	Detail                string              `json:"detail"`
+	Since                 time.Time           `json:"since"`
+	DetectedAt            time.Time           `json:"detected_at"`
+	LastObservedAt        time.Time           `json:"last_observed_at"`
+	AgeSeconds            int64               `json:"age_seconds"`
+	ThresholdSeconds      int64               `json:"threshold_seconds"`
+	Count                 int                 `json:"count,omitempty"`
+	WaitingOnHuman        bool                `json:"waiting_on_human,omitempty"`
+	HasRecoveryPredicate  bool                `json:"has_recovery_predicate,omitempty"`
+	DeliveredAt           *time.Time          `json:"delivered_at,omitempty"`
+	DeliveryAttempts      int                 `json:"delivery_attempts,omitempty"`
+	LastDeliveryAttemptAt *time.Time          `json:"last_delivery_attempt_at,omitempty"`
+	DeliveryError         string              `json:"delivery_error,omitempty"`
 }
 
 type StrandedIssue struct {
@@ -491,21 +493,23 @@ func (s SnapshotSection) Available() bool {
 }
 
 type DispatchStatus struct {
-	ProjectID                string           `json:"project_id,omitempty"`
-	CandidateCount           int              `json:"candidate_count"`
-	EligibleCandidateCount   int              `json:"eligible_candidate_count"`
-	SelectedCount            int              `json:"selected_count"`
-	SkippedCount             int              `json:"skipped_count"`
-	WaitReason               string           `json:"wait_reason,omitempty"`
-	AllSkippedSince          *time.Time       `json:"all_skipped_since,omitempty"`
-	LastSelectedAt           *time.Time       `json:"last_selected_at,omitempty"`
-	SecondsSinceLastSelected *int64           `json:"seconds_since_last_selected,omitempty"`
-	StallDurationSeconds     int64            `json:"stall_duration_seconds,omitempty"`
-	StallThresholdSeconds    int64            `json:"stall_threshold_seconds,omitempty"`
-	ObservedAt               time.Time        `json:"observed_at,omitzero"`
-	Stalled                  bool             `json:"stalled"`
-	NeedsHumanAttention      bool             `json:"needs_human_attention"`
-	RateWindowPacing         RateWindowPacing `json:"rate_window_pacing"`
+	ProjectID                string              `json:"project_id,omitempty"`
+	CandidateCount           int                 `json:"candidate_count"`
+	EligibleCandidateCount   int                 `json:"eligible_candidate_count"`
+	SelectedCount            int                 `json:"selected_count"`
+	SkippedCount             int                 `json:"skipped_count"`
+	WaitReason               string              `json:"wait_reason,omitempty"`
+	WaitReasonCode           string              `json:"wait_reason_code,omitempty"`
+	AllSkippedSince          *time.Time          `json:"all_skipped_since,omitempty"`
+	LastSelectedAt           *time.Time          `json:"last_selected_at,omitempty"`
+	SecondsSinceLastSelected *int64              `json:"seconds_since_last_selected,omitempty"`
+	StallDurationSeconds     int64               `json:"stall_duration_seconds,omitempty"`
+	StallThresholdSeconds    int64               `json:"stall_threshold_seconds,omitempty"`
+	ObservedAt               time.Time           `json:"observed_at,omitzero"`
+	Stalled                  bool                `json:"stalled"`
+	NeedsHumanAttention      bool                `json:"needs_human_attention"`
+	Class                    observability.Class `json:"class,omitempty"`
+	RateWindowPacing         RateWindowPacing    `json:"rate_window_pacing"`
 }
 
 const (
@@ -866,6 +870,9 @@ func (r Refresh) failure(projectID string) (RefreshFailure, bool) {
 		threshold = 3
 	}
 	source := mostRelevantFailedRefreshSource(r.Sources, threshold, r.LastRefreshAt == nil)
+	if strings.TrimSpace(projectID) == "" {
+		projectID = strings.TrimSpace(source.ProjectID)
+	}
 	lastError := strings.TrimSpace(r.LastError)
 	lastErrorAt := r.LastErrorAt
 	if lastError == "" {

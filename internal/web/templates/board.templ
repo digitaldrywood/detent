@@ -122,9 +122,6 @@ templ boardAlertsBar(alerts []boardAlert) {
 			if boardAlertKindActive(alerts, boardAlertKindLastKnown) {
 				data-board-snapshot-stale="true"
 			}
-			if boardAlertKindActive(alerts, boardAlertKindTrackerStale) {
-				data-board-data-stale="true"
-			}
 		>
 			<button
 				id="board-alerts-toggle"
@@ -138,7 +135,7 @@ templ boardAlertsBar(alerts []boardAlert) {
 				<span class="contents" data-board-alert-lead-glyph>
 					@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
 				</span>
-				<span class="shrink-0 font-medium" data-board-alert-count-label>{ boardCountLabel(len(alerts), "warning", "warnings") }</span>
+				<span class="shrink-0 font-medium" data-board-alert-count-label>{ boardCountLabel(len(alerts), "fault", "faults") }</span>
 				<span class="hidden shrink-0 text-current/60 md:inline" aria-hidden="true">·</span>
 				<span class="hidden min-w-0 flex-1 truncate text-text md:inline" data-board-alert-lead-summary>{ alerts[0].TerseSummary }</span>
 				if len(alerts) > 1 {
@@ -162,7 +159,7 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 			<span class="contents" data-board-alert-lead-glyph>
 				@boardAlertGlyph(alerts[0], "size-4 shrink-0")
 			</span>
-			<p class="min-w-0 flex-1 truncate font-medium text-text" data-board-alert-count-label>{ boardCountLabel(len(alerts), "warning", "warnings") }</p>
+			<p class="min-w-0 flex-1 truncate font-medium text-text" data-board-alert-count-label>{ boardCountLabel(len(alerts), "fault", "faults") }</p>
 			for _, dismissal := range dismissals {
 				<form
 					class="shrink-0"

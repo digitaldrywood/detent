@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -26,7 +27,8 @@ func checkDoctorDispatchStalls(ctx context.Context, boot BootConfig, projectID s
 	projectID = strings.TrimSpace(projectID)
 	filtered := make([]telemetry.DispatchStatus, 0, len(stalls))
 	for _, stall := range stalls {
-		if projectID == "" || strings.TrimSpace(stall.ProjectID) == projectID {
+		class := observability.Normalize(stall.Class, observability.Dispatch(stall.Stalled, stall.WaitReasonCode))
+		if class == observability.ClassFault && (projectID == "" || strings.TrimSpace(stall.ProjectID) == projectID) {
 			filtered = append(filtered, stall)
 		}
 	}

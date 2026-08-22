@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -18,6 +19,68 @@ func TestWorkAttemptStatusClassTreatsDeliveredAsSuccessful(t *testing.T) {
 	got := workAttemptStatusClass(telemetry.WorkAttempt{TerminalState: "delivered"})
 	if !strings.Contains(got, "bg-ok/15") {
 		t.Fatalf("workAttemptStatusClass(delivered) = %q, want success class", got)
+	}
+}
+
+func TestDiagnosticsConditionRowsPreserveEveryConditionClass(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     observability.Class
+	}{
+		{
+			name: "review wait",
+			snapshot: telemetry.Snapshot{StalenessWarnings: []telemetry.StalenessWarning{{
+				ID: "review", Class: observability.ClassReviewQueue, ProjectID: "detent", Kind: "lane_aging", WaitingOnHuman: true, AgeSeconds: 86_400,
+			}}},
+			want: observability.ClassReviewQueue,
+		},
+		{
+			name: "per issue selector decline",
+			snapshot: telemetry.Snapshot{StalenessWarnings: []telemetry.StalenessWarning{{
+				ID: "decline", Class: observability.ClassDiagnostic, ProjectID: "detent", Kind: "repeated_decision", Detail: "authorization selector declined one issue",
+			}}},
+			want: observability.ClassDiagnostic,
+		},
+		{
+			name: "provider pacing",
+			snapshot: telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
+				ProjectID: "detent", Stalled: true, WaitReasonCode: "provider_rate_window_backpressure", WaitReason: "provider pacing",
+			}}},
+			want: observability.ClassDiagnostic,
+		},
+		{
+			name: "total selector exclusion",
+			snapshot: telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
+				ProjectID: "detent", Stalled: true, WaitReasonCode: "authorization_selector_declined", WaitReason: "authorization selector excludes every candidate",
+			}}},
+			want: observability.ClassFault,
+		},
+		{
+			name: "github rest throttle",
+			snapshot: telemetry.Snapshot{BackendOutages: []telemetry.BackendOutage{{
+				ProjectID: "detent", Kind: "github_rest_rate_limit", LastObservedAt: now,
+			}}},
+			want: observability.ClassDiagnostic,
+		},
+		{
+			name: "provider exhaustion",
+			snapshot: telemetry.Snapshot{BackendOutages: []telemetry.BackendOutage{{
+				ProjectID: "detent", BackendID: "codex", Kind: "usage_limit_exceeded", LastObservedAt: now,
+			}}},
+			want: observability.ClassFault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rows := diagnosticsConditionRows(tt.snapshot)
+			if len(rows) != 1 || rows[0].Class != tt.want {
+				t.Fatalf("diagnosticsConditionRows() = %#v, want one %q row", rows, tt.want)
+			}
+		})
 	}
 }
 

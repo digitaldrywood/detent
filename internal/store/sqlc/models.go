@@ -258,6 +258,7 @@ type ProjectDispatchStatus struct {
 	LastSelectedAt         sql.NullString `json:"last_selected_at"`
 	ObservedAt             string         `json:"observed_at"`
 	EligibleCandidateCount int64          `json:"eligible_candidate_count"`
+	WaitReasonCode         sql.NullString `json:"wait_reason_code"`
 }
 
 type ProvenanceAttributionBoundary struct {

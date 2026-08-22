@@ -10,7 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestCheckDoctorFleetStalenessSurfacesLiveWarnings(t *testing.T) {
+func TestCheckDoctorFleetStalenessSurfacesLiveFaults(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -19,7 +19,9 @@ func TestCheckDoctorFleetStalenessSurfacesLiveWarnings(t *testing.T) {
 			"mode":"running",
 			"checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"},
 			"staleness_warnings":[
-				{"id":"warning-1","project_id":"detent","kind":"lane_aging","identifier":"digitaldrywood/detent#1574","reason":"lane threshold exceeded","detail":"stale"}
+				{"id":"warning-1","class":"fault","project_id":"detent","kind":"stranded_park","identifier":"digitaldrywood/detent#1574","reason":"park cannot recover","detail":"stale"},
+				{"id":"diagnostic-1","class":"diagnostic","project_id":"detent","kind":"lane_aging","identifier":"digitaldrywood/detent#1575","reason":"lane threshold exceeded","detail":"aged"},
+				{"id":"review-1","class":"review_queue","project_id":"detent","kind":"human_gate","identifier":"digitaldrywood/detent#1576","reason":"waiting for review","detail":"review"}
 			]
 		}`))
 	}))
@@ -32,7 +34,7 @@ func TestCheckDoctorFleetStalenessSurfacesLiveWarnings(t *testing.T) {
 
 	check := checkDoctorFleetStaleness(t.Context(), BootConfig{Host: host, Port: &port}, "detent", doctorDeps{httpDo: server.Client().Do}.withDefaults())
 	if check.Status != doctorWarn || len(check.StalenessWarnings) != 1 {
-		t.Fatalf("check = %#v, want one warning", check)
+		t.Fatalf("check = %#v, want one fault", check)
 	}
 	if !strings.Contains(check.Detail, "digitaldrywood/detent#1574") {
 		t.Fatalf("detail = %q, want issue identifier", check.Detail)

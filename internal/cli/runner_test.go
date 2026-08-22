@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/observability"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -1787,9 +1788,9 @@ func TestMergeSnapshotMergesFleetDispatchStatus(t *testing.T) {
 		GeneratedAt: now,
 		Project:     telemetry.Project{ID: "alpha"},
 		Dispatch: telemetry.DispatchStatus{
-			CandidateCount: 2, SkippedCount: 2, LastSelectedAt: &alphaSelectedAt, Stalled: true, NeedsHumanAttention: true, WaitReason: "github_rest_capacity",
+			CandidateCount: 2, SkippedCount: 2, LastSelectedAt: &alphaSelectedAt, Stalled: true, NeedsHumanAttention: true, WaitReason: "authorization selector excludes every candidate", WaitReasonCode: "authorization_selector_declined",
 		},
-		DispatchStalls: []telemetry.DispatchStatus{{CandidateCount: 2, Stalled: true, NeedsHumanAttention: true}},
+		DispatchStalls: []telemetry.DispatchStatus{{CandidateCount: 2, Stalled: true, NeedsHumanAttention: true, WaitReasonCode: "authorization_selector_declined"}},
 	})
 	got = mergeSnapshot(got, telemetry.Snapshot{
 		GeneratedAt: now,
@@ -1801,6 +1802,9 @@ func TestMergeSnapshotMergesFleetDispatchStatus(t *testing.T) {
 
 	if got.Dispatch.CandidateCount != 3 || got.Dispatch.SelectedCount != 1 || got.Dispatch.SkippedCount != 2 || !got.Dispatch.Stalled || !got.Dispatch.NeedsHumanAttention {
 		t.Fatalf("fleet Dispatch = %#v", got.Dispatch)
+	}
+	if got.Dispatch.Class != observability.ClassFault || got.Dispatch.WaitReasonCode != "authorization_selector_declined" {
+		t.Fatalf("fleet Dispatch class/reason = %q/%q, want fault authorization exclusion", got.Dispatch.Class, got.Dispatch.WaitReasonCode)
 	}
 	if got.Dispatch.LastSelectedAt == nil || !got.Dispatch.LastSelectedAt.Equal(betaSelectedAt) {
 		t.Fatalf("fleet LastSelectedAt = %#v, want %s", got.Dispatch.LastSelectedAt, betaSelectedAt)

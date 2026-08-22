@@ -70,9 +70,8 @@ var sseSnapshotViews = map[string]sseSnapshotView{
 		component:      templates.ProjectRunsSnapshotV2,
 	},
 	sseViewDiagnostics: {
-		nav:            "diagnostics",
-		requireProject: true,
-		component:      templates.ProjectDiagnosticsSnapshot,
+		nav:       "diagnostics",
+		component: templates.ProjectDiagnosticsSnapshot,
 	},
 	sseViewConfiguration: {
 		nav:            "configuration",

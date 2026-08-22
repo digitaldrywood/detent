@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -405,6 +406,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/fleet", s.dashboard)
 	s.echo.GET("/kanban", s.redirectToBoard)
 	s.echo.GET("/health/ui", s.healthDashboard)
+	s.echo.GET("/diagnostics", s.diagnosticsDashboard)
 	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/library", s.library)
 	s.echo.GET("/projects/:project_id/issues/:issue_ref", s.issueDetail)
@@ -655,6 +657,13 @@ func (s *Server) analyticsDashboard(c echo.Context) error {
 	return render(c, templates.AnalyticsPageV2(data))
 }
 
+func (s *Server) diagnosticsDashboard(c echo.Context) error {
+	ctx := c.Request().Context()
+	data := s.diagnosticsDashboardData(ctx, s.latestSnapshot(ctx))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.DiagnosticsPageV2(data))
+}
+
 func (s *Server) projectDashboard(c echo.Context) error {
 	ctx := c.Request().Context()
 	projectID, view := projectRouteViewParam(c)
@@ -868,6 +877,13 @@ func (s *Server) analyticsDashboardData(ctx context.Context, snapshot telemetry.
 	data := s.dashboardData(ctx, snapshot)
 	data.ActiveNav = "analytics"
 	data.Title = instancePageTitle(s.instanceName(), "Analytics - Detent")
+	return data
+}
+
+func (s *Server) diagnosticsDashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
+	data := s.dashboardData(ctx, snapshot)
+	data.ActiveNav = "diagnostics"
+	data.Title = instancePageTitle(s.instanceName(), "Diagnostics - Detent")
 	return data
 }
 
@@ -1189,13 +1205,16 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, dispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, failureBreakers, dispatchLoops, backendOutages, tickLiveness, refreshFailures)
+	faultDispatchStalls := faultDispatchStatuses(dispatchStalls)
+	actionableBreakers := faultFailureBreakers(failureBreakers)
+	actionableOutages := faultBackendOutages(backendOutages)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableBreakers, dispatchLoops, actionableOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(dispatchStalls) > 0 || len(failureBreakers) > 0 || len(dispatchLoops) > 0 || len(backendOutages) > 0 || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1237,6 +1256,52 @@ func (s *Server) health(c echo.Context) error {
 		TickLiveness:           tickLiveness,
 		OrphanedAgentProcesses: orphanedProcesses,
 	})
+}
+
+func faultDispatchStatuses(statuses []telemetry.DispatchStatus) []telemetry.DispatchStatus {
+	faults := make([]telemetry.DispatchStatus, 0, len(statuses))
+	for _, status := range statuses {
+		if observability.Normalize(status.Class, observability.Dispatch(status.Stalled, status.WaitReasonCode)) == observability.ClassFault {
+			faults = append(faults, status)
+		}
+	}
+	return faults
+}
+
+func faultFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
+	faults := make([]telemetry.FailureBreaker, 0, len(breakers))
+	for _, breaker := range breakers {
+		parkedItems := 0
+		for _, item := range breaker.Items {
+			if item.Parked {
+				parkedItems++
+			}
+		}
+		if observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) == observability.ClassFault {
+			faults = append(faults, breaker)
+		}
+	}
+	return faults
+}
+
+func faultBackendOutages(outages []telemetry.BackendOutage) []telemetry.BackendOutage {
+	faults := make([]telemetry.BackendOutage, 0, len(outages))
+	for _, outage := range outages {
+		if observability.BackendOutage(outage.Kind) == observability.ClassFault {
+			faults = append(faults, outage)
+		}
+	}
+	return faults
+}
+
+func faultStalenessWarnings(warnings []telemetry.StalenessWarning) []telemetry.StalenessWarning {
+	faults := make([]telemetry.StalenessWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		if observability.Normalize(warning.Class, observability.Staleness(warning.WaitingOnHuman)) == observability.ClassFault {
+			faults = append(faults, warning)
+		}
+	}
+	return faults
 }
 
 func (s *Server) orphanedAgentProcesses(ctx context.Context, snapshot telemetry.Snapshot, now time.Time) (telemetry.OrphanedAgentProcesses, error) {

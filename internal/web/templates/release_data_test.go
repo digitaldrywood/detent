@@ -21,7 +21,7 @@ func TestHealthReleaseRow(t *testing.T) {
 		UnreleasedMerges: 4,
 		NextTriggerAt:    &next,
 	})
-	if row.Component != "Auto-release · detent" || row.Kind != primitives.KindWarn || row.Status != "release pending" {
+	if row.Component != "Auto-release · detent" || row.Kind != primitives.KindNeutral || row.Status != "release pending" {
 		t.Fatalf("healthReleaseRow() = %#v", row)
 	}
 	if !strings.Contains(row.Detail, "v1.2.3") || !strings.Contains(row.Detail, "4 unreleased merges") {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -39,16 +40,19 @@ type healthRow struct {
 
 func healthViewFromDashboard(data DashboardData) healthView {
 	snapshot := data.Snapshot
-	api := gitHubAPIHealth(snapshot)
+	dispatchFaults := healthFaultDispatchStalls(snapshot.DispatchStalls)
+	backendFaults := healthFaultBackendOutages(snapshot.BackendOutages)
+	breakerFaults := actionableBoardFailureBreakers(snapshot.FailureBreakers)
+	recoveryFaults := healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt)
 	view := healthView{
 		CheckedAt: snapshot.GeneratedAt,
-		Footnote:  "GitHub quota bars turn amber at 90%; project budget bars warn at 80% and turn red at the cap.",
+		Footnote:  "Project budget bars warn at 80% and turn red at the cap.",
 		Rows:      append(append(healthRows(snapshot), healthActiveHoursRows(data)...), healthBudgetRows(data)...),
 	}
-	if len(snapshot.DispatchStalls) > 0 {
+	if len(dispatchFaults) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "Dispatch is stalled."
-		view.Detail = boardCountLabel(len(snapshot.DispatchStalls), "Project needs", "Projects need") + " human attention."
+		view.Detail = boardCountLabel(len(dispatchFaults), "Project needs", "Projects need") + " human attention."
 		return view
 	}
 	if len(snapshot.TrackerUnavailable) > 0 {
@@ -69,82 +73,65 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = ciUnavailableHealthDetail(snapshot.CIUnavailable)
 		return view
 	}
-	if len(snapshot.StalenessWarnings) > 0 {
-		view.Kind = primitives.KindWarn
-		view.Verdict = "Fleet work is stale."
-		view.Detail = stalenessHealthDetail(snapshot.StalenessWarnings)
-		return view
-	}
 	if len(snapshot.StrandedActiveIssues) > 0 {
-		view.Kind = primitives.KindWarn
+		view.Kind = primitives.KindErr
 		view.Verdict = "Active work has no live worker."
 		view.Detail = strandedActiveHealthDetail(snapshot.StrandedActiveIssues)
 		return view
 	}
-	outages := backendCapacityOutages(snapshot.BackendOutages)
-	if len(outages) > 0 {
-		view.Kind = primitives.KindWarn
-		view.Verdict = backendCapacityHealthVerdict(snapshot)
-		view.Detail, view.DetailAt, view.DetailRelative = backendCapacityOutageDetailParts(outages[0], snapshot.GeneratedAt)
-		return view
-	}
-	if refreshFreshnessKind(snapshot) == primitives.KindWarn {
-		view.Kind = primitives.KindWarn
-		view.Verdict = "Tracker data is stale."
-		view.Detail = refreshStaleHealthDetail(snapshot)
-		return view
-	}
-	switch api.State {
-	case gitHubAPIHealthStateWarning:
-		view.Kind = primitives.KindWarn
-		view.Verdict = api.Label + "."
-		view.Detail = api.Detail
-		return view
-	case gitHubAPIHealthStateBackoff, gitHubAPIHealthStateExhausted:
+	if len(recoveryFaults) > 0 {
 		view.Kind = primitives.KindErr
-		view.Verdict = api.Label + "."
-		view.Detail = api.Detail
+		view.Verdict = "Dispatch recovery is overdue."
+		view.Detail = boardCountLabel(len(recoveryFaults), "Project needs", "Projects need") + " operator attention."
 		return view
 	}
-	if summary, ok := boardFailureBreakerSummary(snapshot.FailureBreakers); ok {
-		view.Kind = primitives.KindWarn
+	if len(backendFaults) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = backendCapacityHealthVerdict(snapshot)
+		view.Detail, view.DetailAt, view.DetailRelative = backendCapacityOutageDetailParts(backendFaults[0], snapshot.GeneratedAt)
+		return view
+	}
+	if refreshSnapshotFailed(snapshot) {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Tracker refresh failed."
+		view.Detail = "Live tracker state cannot be refreshed; the board is using last-known data."
+		return view
+	}
+	if detail := strings.TrimSpace(snapshot.Update.LastError); detail != "" {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Automatic update failed."
+		view.Detail = detail
+		return view
+	}
+	if summary, ok := boardFailureBreakerSummary(breakerFaults); ok {
+		view.Kind = primitives.KindErr
 		view.Verdict = summary.Title + "."
-		view.Detail = "Only the named projects are paused; expand breaker evidence for item and recovery details."
+		view.Detail = "The affected project cannot resume without operator action."
 		return view
 	}
-	if summaries := healthDispatchRecoverySummaries(snapshot.DispatchRecoveries); len(summaries) > 0 {
-		details := make([]string, 0, len(summaries))
-		for _, summary := range summaries {
-			details = append(details, summary.Title)
-		}
-		view.Kind = primitives.KindWarn
-		view.Verdict = "Dispatch is waiting on capacity."
-		view.Detail = strings.Join(details, "; ") + "."
-		return view
-	}
-	if len(snapshot.AdmissionProposals) > 0 {
-		view.Kind = primitives.KindWarn
-		view.Verdict = boardCountLabel(len(snapshot.AdmissionProposals), "Admission proposal awaits human decision", "Admission proposals await human decision") + "."
-		view.Detail = "Review the affected issues before the proposals expire."
-		return view
-	}
-	if snapshot.Refresh.Behind() {
-		view.Kind = primitives.KindNeutral
-		view.Verdict = "Refresh loop is behind."
-		view.Detail = "The latest tracker refresh succeeded; the loop is pacing behind its target cadence."
-		return view
-	}
-	switch api.State {
-	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
-		view.Kind = primitives.KindOK
-		view.Verdict = "All systems nominal."
-		view.Detail = api.Summary
-	default:
+	if !diagnosticsSnapshotHasLoadedData(snapshot) {
 		view.Kind = primitives.KindNeutral
 		view.Verdict = "Waiting for the first health snapshot."
-		view.Detail = api.Detail
+		view.Detail = "No live telemetry is available yet."
+		return view
 	}
+	view.Kind = primitives.KindOK
+	view.Verdict = "All systems nominal."
+	view.Detail = "No fault-class conditions need operator attention."
 	return view
+}
+
+func healthFaultSnapshot(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot.FailureBreakers = actionableBoardFailureBreakers(snapshot.FailureBreakers)
+	backendOutages := make([]telemetry.BackendOutage, 0, len(snapshot.BackendOutages))
+	for _, outage := range snapshot.BackendOutages {
+		if observability.BackendOutage(outage.Kind) == observability.ClassFault {
+			backendOutages = append(backendOutages, outage)
+		}
+	}
+	snapshot.BackendOutages = backendOutages
+	snapshot.DispatchRecoveries = healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt)
+	return snapshot
 }
 
 func healthActiveHoursRows(data DashboardData) []healthRow {
@@ -206,7 +193,7 @@ func healthBudgetRows(data DashboardData) []healthRow {
 			kind = primitives.KindErr
 			status = "At limit"
 		} else if percent >= 80 {
-			kind = primitives.KindWarn
+			kind = primitives.KindNeutral
 			status = "Approaching limit"
 		}
 		detail := formatUSD(project.CurrentSpendUSD) + " notional USD today"
@@ -238,54 +225,102 @@ func healthBudgetRows(data DashboardData) []healthRow {
 
 func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows := make([]healthRow, 0, 4)
-	for _, stall := range snapshot.DispatchStalls {
+	for _, stall := range healthFaultDispatchStalls(snapshot.DispatchStalls) {
 		rows = append(rows, healthDispatchStallRow(stall))
 	}
 	rows = append(rows, healthTrackerUnavailableRows(snapshot.TrackerUnavailable)...)
 	rows = append(rows, healthForgeUnavailableRows(snapshot.ForgeUnavailable)...)
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
-	for _, warning := range snapshot.StalenessWarnings {
-		rows = append(rows, healthStalenessRow(warning))
-	}
 	rows = append(rows, healthStrandedActiveRows(snapshot.StrandedActiveIssues)...)
-	if snapshot.RateLimits != nil {
-		for _, provider := range []struct {
-			id        string
-			component string
-			bucket    *telemetry.RateLimitBucket
-		}{
-			{id: "health-provider-primary", component: "Provider primary window", bucket: snapshot.RateLimits.Primary},
-			{id: "health-provider-secondary", component: "Provider secondary window", bucket: snapshot.RateLimits.Secondary},
-		} {
-			if provider.bucket != nil {
-				rows = append(rows, healthProviderBucketRow(provider.id, provider.component, provider.bucket))
-			}
-		}
-		if bucket := snapshot.RateLimits.GitHubREST; bucket != nil {
-			row := healthBucketRow("health-github-rest", "GitHub REST", bucket)
-			// Keep the exhaustion/backoff detail on unhealthy rows rather than
-			// overwriting it with the raw request count.
-			if usage := snapshot.RateLimits.RESTUsage; usage != nil && usage.TotalRequests > 0 && row.Kind == primitives.KindOK {
-				row.Detail = formatInt(usage.TotalRequests) + " requests in the last poll cycle"
-			}
-			rows = append(rows, row)
-		}
-		if bucket := snapshot.RateLimits.GitHubGraphQL; bucket != nil {
-			row := healthBucketRow("health-github-graphql", "GitHub GraphQL", bucket)
-			if cost := snapshot.RateLimits.GraphQLCost; cost != nil && cost.TotalQueries > 0 && row.Kind == primitives.KindOK {
-				row.Detail = formatInt(cost.TotalQueries) + " queries · cost " + formatInt(cost.TotalCost)
-			}
-			rows = append(rows, row)
-		}
-	}
-	rows = append(rows, healthRefreshRows(snapshot)...)
-	rows = append(rows, healthAdmissionProposalRows(snapshot.AdmissionProposals, snapshot.GeneratedAt)...)
-	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRowAt(snapshot.Update, snapshot.GeneratedAt), healthBackoffRow(snapshot))
+	rows = append(rows, healthDispatchRecoveryRows(healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt), snapshot.GeneratedAt)...)
+	rows = append(rows, healthRefreshFailureRows(snapshot.RefreshFailures())...)
+	rows = append(rows, healthFailureBreakerRows(actionableBoardFailureBreakers(snapshot.FailureBreakers))...)
+	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRowAt(snapshot.Update, snapshot.GeneratedAt))
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))
 	}
-	for _, outage := range backendCapacityOutages(snapshot.BackendOutages) {
+	for _, outage := range healthFaultBackendOutages(snapshot.BackendOutages) {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
+	}
+	return rows
+}
+
+func healthFaultDispatchRecoveries(recoveries []telemetry.DispatchRecovery, observedAt time.Time) []telemetry.DispatchRecovery {
+	faults := make([]telemetry.DispatchRecovery, 0, len(recoveries))
+	for _, recovery := range recoveries {
+		if observability.DispatchRecovery(recovery.Status, recovery.ResumeAt, observedAt) == observability.ClassFault {
+			faults = append(faults, recovery)
+		}
+	}
+	return faults
+}
+
+func healthDispatchRecoveryRows(recoveries []telemetry.DispatchRecovery, observedAt time.Time) []healthRow {
+	rows := make([]healthRow, 0, len(recoveries))
+	for index, recovery := range recoveries {
+		detail, detailAt, _ := dispatchRecoveryDetailParts(recovery, observedAt)
+		rows = append(rows, healthRow{
+			ID:        "health-dispatch-recovery-" + boardAlertRowSlug(recovery.ProjectID+recovery.Kind, index),
+			Component: "Dispatch recovery · " + diagnosticsConditionProject(recovery.ProjectID),
+			Kind:      primitives.KindErr,
+			Status:    "Overdue",
+			Detail:    detail,
+			ResetAt:   detailAt,
+		})
+	}
+	return rows
+}
+
+func healthRefreshFailureRows(failures []telemetry.RefreshFailure) []healthRow {
+	rows := make([]healthRow, 0, len(failures))
+	for index, failure := range failures {
+		projectID := diagnosticsConditionProject(failure.ProjectID)
+		detail := strings.Trim(strings.TrimSpace(failure.Condition)+" · "+strings.TrimSpace(failure.LastError), " ·")
+		rows = append(rows, healthRow{
+			ID:        "health-refresh-failure-" + boardAlertRowSlug(failure.ProjectID+string(failure.Source), index),
+			Component: "Tracker refresh · " + projectID,
+			Kind:      primitives.KindErr,
+			Status:    "Failed",
+			Detail:    detail,
+			Resets:    "on successful refresh",
+			DetailAt:  diagnosticsConditionObservedAt(failure.LastErrorAt, time.Time{}),
+		})
+	}
+	return rows
+}
+
+func healthFaultDispatchStalls(stalls []telemetry.DispatchStatus) []telemetry.DispatchStatus {
+	faults := make([]telemetry.DispatchStatus, 0, len(stalls))
+	for _, stall := range stalls {
+		if dispatchConditionClass(stall) == observability.ClassFault {
+			faults = append(faults, stall)
+		}
+	}
+	return faults
+}
+
+func healthFaultBackendOutages(outages []telemetry.BackendOutage) []telemetry.BackendOutage {
+	faults := make([]telemetry.BackendOutage, 0, len(outages))
+	for _, outage := range outages {
+		if observability.BackendOutage(outage.Kind) == observability.ClassFault {
+			faults = append(faults, outage)
+		}
+	}
+	return backendCapacityOutages(faults)
+}
+
+func healthFailureBreakerRows(breakers []telemetry.FailureBreaker) []healthRow {
+	rows := make([]healthRow, 0, len(breakers))
+	for index, breaker := range breakers {
+		projectID := diagnosticsConditionProject(breaker.ProjectID)
+		rows = append(rows, healthRow{
+			ID:        "health-failure-breaker-" + boardAlertRowSlug(projectID+breaker.Class, index),
+			Component: "Failure breaker · " + projectID,
+			Kind:      primitives.KindErr,
+			Status:    "Needs attention",
+			Detail:    failureBreakerCauseLabel(breaker),
+			Resets:    "operator action",
+		})
 	}
 	return rows
 }
@@ -486,32 +521,6 @@ func ciUnavailableHealthDetail(conditions []telemetry.CICondition) string {
 	return detail + "."
 }
 
-func healthProviderBucketRow(id string, component string, bucket *telemetry.RateLimitBucket) healthRow {
-	row := healthRow{
-		ID:        id,
-		Component: component,
-		Kind:      primitives.KindOK,
-		Status:    "Healthy",
-		Detail:    "Provider window has full dispatch capacity",
-		Resets:    "—",
-	}
-	if bucket.Limit > 0 {
-		remaining := max(int64(0), min(bucket.Remaining, bucket.Limit))
-		used := bucket.Limit - remaining
-		remainingPct := int(float64(remaining) / float64(bucket.Limit) * 100)
-		row.Quota = formatInt(used) + " / " + formatInt(bucket.Limit)
-		row.QuotaPct = 100 - remainingPct
-		if remaining < bucket.Limit {
-			row.Status = "Pacing"
-			row.Detail = formatCount(remainingPct) + "% remaining · dispatch capacity scales with the provider window"
-		}
-	}
-	if bucket.ResetAt != nil {
-		row.ResetAt = *bucket.ResetAt
-	}
-	return row
-}
-
 func healthAdmissionProposalRows(proposals []telemetry.AdmissionProposal, observedAt time.Time) []healthRow {
 	byProject := make(map[string][]telemetry.AdmissionProposal)
 	for _, proposal := range proposals {
@@ -540,7 +549,7 @@ func healthAdmissionProposalRows(proposals []telemetry.AdmissionProposal, observ
 		rows = append(rows, healthRow{
 			ID:        "health-admission-proposals-" + boardCardSlug(projectID),
 			Component: "Admission · " + projectID,
-			Kind:      primitives.KindWarn,
+			Kind:      primitives.KindNeutral,
 			Status:    boardCountLabel(len(projectProposals), "awaiting decision", "awaiting decisions"),
 			Detail:    strings.Join(details, "; "),
 			Resets:    "on decision",
@@ -577,7 +586,7 @@ func healthStrandedActiveRows(issues []telemetry.StrandedIssue) []healthRow {
 		rows = append(rows, healthRow{
 			ID:        "health-stranded-active-" + boardCardSlug(projectID),
 			Component: "Active work · " + projectID,
-			Kind:      primitives.KindWarn,
+			Kind:      primitives.KindErr,
 			Status:    "No live worker",
 			Detail:    strings.Join(details, "; "),
 			Resets:    "on dispatch",
@@ -609,36 +618,6 @@ func strandedActiveHealthTarget(issue telemetry.StrandedIssue) string {
 		}
 	}
 	return "issue"
-}
-
-func healthStalenessRow(warning telemetry.StalenessWarning) healthRow {
-	component := "Fleet staleness"
-	if projectID := strings.TrimSpace(warning.ProjectID); projectID != "" {
-		component += " · " + projectID
-	}
-	detail := doctorStyleStalenessTarget(warning) + " · " + strings.TrimSpace(warning.Detail)
-	if warning.AgeSeconds > 0 {
-		detail += " · " + formatDuration(float64(warning.AgeSeconds))
-	}
-	status := "Stale"
-	if warning.WaitingOnHuman {
-		status = "Reminder due"
-	}
-	return healthRow{
-		ID:        "health-staleness-" + boardCardSlug(warning.ID),
-		Component: component,
-		Kind:      primitives.KindWarn,
-		Status:    status,
-		Detail:    detail,
-		Resets:    "on progress",
-	}
-}
-
-func stalenessHealthDetail(warnings []telemetry.StalenessWarning) string {
-	if len(warnings) == 1 {
-		return doctorStyleStalenessTarget(warnings[0]) + " needs operator attention."
-	}
-	return formatCount(len(warnings)) + " warnings need operator attention."
 }
 
 func healthCopyPayload(view healthView) string {
@@ -726,15 +705,6 @@ func healthCopyKind(kind primitives.Kind) string {
 	}
 }
 
-func doctorStyleStalenessTarget(warning telemetry.StalenessWarning) string {
-	for _, value := range []string{warning.Identifier, warning.IssueID, warning.ProjectID} {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return "fleet"
-}
-
 func healthUpdateRow(update telemetry.Update) healthRow {
 	return healthUpdateRowAt(update, time.Now())
 }
@@ -766,7 +736,7 @@ func healthUpdateRowAt(update telemetry.Update, now time.Time) healthRow {
 		row.Detail += " · notify only"
 	}
 	if update.AvailableVersion != "" {
-		row.Kind = primitives.KindWarn
+		row.Kind = primitives.KindNeutral
 		row.Detail += " · " + update.AvailableVersion + " available"
 	}
 	if update.LastAppliedVersion != "" {
@@ -827,7 +797,7 @@ func healthReleaseRow(release telemetry.Release) healthRow {
 		kind = primitives.KindErr
 		detail = release.LastError
 	case "waiting_for_ci", "rerunning_ci", "release_pending":
-		kind = primitives.KindWarn
+		kind = primitives.KindNeutral
 	}
 	row := healthRow{ID: "health-release-" + boardCardSlug(release.ProjectID), Component: component, Kind: kind, Status: status, Detail: detail, Resets: "—"}
 	if release.NextTriggerAt != nil {
@@ -845,56 +815,13 @@ func healthBackendOutageRow(outage telemetry.BackendOutage, now time.Time) healt
 	return healthRow{
 		ID:        "health-backend-" + boardCardSlug(outage.BackendID),
 		Component: "Backend " + outage.BackendID,
-		Kind:      primitives.KindWarn,
+		Kind:      primitives.KindErr,
 		Status:    status,
 		Detail:    detail,
 		DetailAt:  resumeAt,
 		Resets:    "—",
 		ResetAt:   outage.ResumeAt,
 	}
-}
-
-func healthBucketRow(id string, component string, bucket *telemetry.RateLimitBucket) healthRow {
-	row := healthRow{
-		ID:        id,
-		Component: component,
-		Kind:      primitives.KindOK,
-		Status:    "Healthy",
-		Detail:    "Within budget",
-		Resets:    "—",
-	}
-	switch strings.TrimSpace(bucket.Status) {
-	case telemetry.RateLimitStatusBackoff:
-		row.Kind = primitives.KindWarn
-		row.Status = "Backoff"
-		row.Detail = "Requests in backoff"
-	case telemetry.RateLimitStatusExhausted:
-		row.Kind = primitives.KindErr
-		row.Status = "Exhausted"
-		row.Detail = "Quota exhausted"
-	}
-	// A bucket can be exhausted via zero remaining without an explicit status
-	// (the orchestrator and primary-exhausted demo snapshots use this shape),
-	// so mirror the verdict's exhaustion test to avoid a Healthy row under an
-	// exhaustion alert.
-	if row.Kind != primitives.KindErr && gitHubAPIBucketExhausted(bucket) {
-		row.Kind = primitives.KindErr
-		row.Status = "Exhausted"
-		row.Detail = "Quota exhausted"
-	}
-	if bucket.Limit > 0 {
-		used := bucket.Limit - bucket.Remaining
-		if used < 0 {
-			used = 0
-		}
-		row.Quota = formatInt(used) + " / " + formatInt(bucket.Limit)
-		row.QuotaPct = int(float64(used) / float64(bucket.Limit) * 100)
-		row.QuotaWarn = row.QuotaPct >= 90
-	}
-	if bucket.ResetAt != nil {
-		row.ResetAt = *bucket.ResetAt
-	}
-	return row
 }
 
 func healthSchedulerRow(snapshot telemetry.Snapshot) healthRow {
@@ -917,56 +844,6 @@ func healthSchedulerRow(snapshot telemetry.Snapshot) healthRow {
 	if running == 0 && queued == 0 {
 		row.Status = "Idle"
 		row.Detail = "No active sessions or queued work"
-	}
-	return row
-}
-
-func healthBackoffRow(snapshot telemetry.Snapshot) healthRow {
-	row := healthRow{
-		ID:        "health-backoff",
-		Component: "Backoff",
-		Kind:      primitives.KindOK,
-		Status:    "None",
-		Detail:    "No endpoints in backoff",
-		Resets:    "—",
-	}
-	if snapshot.RateLimits == nil {
-		return row
-	}
-	affected := make([]string, 0, 2)
-	seen := make(map[string]bool, 3)
-	addAffected := func(name string) {
-		if seen[name] {
-			return
-		}
-		seen[name] = true
-		affected = append(affected, name)
-	}
-	for _, candidate := range []struct {
-		name   string
-		bucket *telemetry.RateLimitBucket
-	}{
-		{name: "REST", bucket: snapshot.RateLimits.GitHubREST},
-		{name: "GraphQL", bucket: snapshot.RateLimits.GitHubGraphQL},
-		{name: "primary", bucket: snapshot.RateLimits.Primary},
-	} {
-		if candidate.bucket == nil {
-			continue
-		}
-		switch strings.TrimSpace(candidate.bucket.Status) {
-		case telemetry.RateLimitStatusBackoff, telemetry.RateLimitStatusExhausted:
-			addAffected(candidate.name)
-		}
-	}
-	// A secondary REST throttle surfaces through RESTUsage.RateLimited /
-	// BackoffUntil, not a bucket status, so include it explicitly.
-	if gitHubAPIInBackoff(snapshot) {
-		addAffected("REST")
-	}
-	if len(affected) > 0 {
-		row.Kind = primitives.KindWarn
-		row.Status = "Active"
-		row.Detail = "Backoff active on " + strings.Join(affected, ", ")
 	}
 	return row
 }
