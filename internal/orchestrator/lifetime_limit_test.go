@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,15 +46,39 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		usage      store.TokenSpend
-		labels     []string
-		usageErr   error
-		wantParked bool
+		name         string
+		usage        store.TokenSpend
+		history      store.ProjectLifetimeUsage
+		labels       []string
+		usageErr     error
+		sessionLimit int64
+		tokenLimit   int64
+		wantParked   bool
+		wantComment  []string
 	}{
 		{name: "below limits", usage: store.TokenSpend{Sessions: 14, TotalTokens: 39_000_000}},
 		{name: "session limit", usage: store.TokenSpend{Sessions: 15, TotalTokens: 12_000_000}, wantParked: true},
 		{name: "token limit", usage: store.TokenSpend{Sessions: 8, TotalTokens: 40_000_000}, wantParked: true},
+		{
+			name:         "project p95 remains allowed by calibrated defaults",
+			usage:        store.TokenSpend{Sessions: 60, TotalTokens: 200_000_000},
+			history:      store.ProjectLifetimeUsage{ProjectID: "detent", CompletedIssues: 270, MeanSessions: 11.7, P95Sessions: 60, P95Tokens: 200_000_000},
+			sessionLimit: 120,
+			tokenLimit:   750_000_000,
+		},
+		{
+			name:         "ten times mean reaches runaway cap",
+			usage:        store.TokenSpend{Sessions: 120, TotalTokens: 200_000_000},
+			history:      store.ProjectLifetimeUsage{ProjectID: "detent", CompletedIssues: 270, MeanSessions: 12, P95Sessions: 60, P95Tokens: 200_000_000},
+			sessionLimit: 120,
+			tokenLimit:   750_000_000,
+			wantParked:   true,
+			wantComment: []string{
+				"120 sessions; project p95 is 60",
+				"200000000 tokens; project p95 is 200000000",
+				"270 completed issues",
+			},
+		},
 		{name: "operator override", usage: store.TokenSpend{Sessions: 20, TotalTokens: 50_000_000}, labels: []string{"ALLOW-LIFETIME-LIMIT"}},
 		{name: "usage unavailable fails open", usageErr: errors.New("database unavailable")},
 	}
@@ -62,8 +87,14 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 			t.Parallel()
 
 			cfg := lifetimeLimitTestConfig()
+			if test.sessionLimit > 0 {
+				cfg.LifetimeSessionLimit = test.sessionLimit
+			}
+			if test.tokenLimit > 0 {
+				cfg.LifetimeTokenLimit = test.tokenLimit
+			}
 			tracker := &backendCapacityTestConnector{}
-			usage := &lifetimeUsageStoreStub{spend: test.usage, err: test.usageErr}
+			usage := &lifetimeUsageStoreStub{spend: test.usage, history: test.history, err: test.usageErr}
 			metrics := &lifetimeWorkflowMetricsStub{}
 			orch := &Orchestrator{
 				cfg:             cfg,
@@ -93,6 +124,11 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 			}
 			if len(tracker.comments) != 1 {
 				t.Fatalf("tracker comments = %d, want 1", len(tracker.comments))
+			}
+			for _, fragment := range test.wantComment {
+				if !strings.Contains(tracker.comments[0], fragment) {
+					t.Fatalf("tracker comment = %q, want containing %q", tracker.comments[0], fragment)
+				}
 			}
 			if blocked.Recovery == nil || blocked.Recovery.Predicate != blockedRecoveryPredicateLifetimeLimit {
 				t.Fatalf("blocked recovery = %#v, want lifetime predicate", blocked.Recovery)
@@ -183,12 +219,17 @@ func lifetimeLimitTestIssue() connector.Issue {
 }
 
 type lifetimeUsageStoreStub struct {
-	spend store.TokenSpend
-	err   error
+	spend   store.TokenSpend
+	history store.ProjectLifetimeUsage
+	err     error
 }
 
 func (s *lifetimeUsageStoreStub) IssueTokenSpend(context.Context, store.IssueIdentity) (store.TokenSpend, error) {
 	return s.spend, s.err
+}
+
+func (s *lifetimeUsageStoreStub) ProjectLifetimeUsage(context.Context, string) (store.ProjectLifetimeUsage, error) {
+	return s.history, nil
 }
 
 type lifetimeWorkflowMetricsStub struct {

@@ -70,8 +70,8 @@ const (
 	DefaultNoProgressLimit                   = 3
 	DefaultNoProgressTokenLimit              = 25_000_000
 	DefaultNoProgressSpendLimitUSD           = 3.0
-	DefaultLifetimeSessionLimit              = 15
-	DefaultLifetimeTokenLimit                = 40_000_000
+	DefaultLifetimeSessionLimit              = 120
+	DefaultLifetimeTokenLimit                = 750_000_000
 	DefaultLifetimeLimitCooldownSeconds      = 3600
 	DefaultLifetimeLimitOverrideLabel        = "allow-lifetime-limit"
 	DefaultFailureBreakerSameClassLimit      = 5
