@@ -20,6 +20,7 @@ const (
 	stalenessDeliveryRetryBase = 5 * time.Minute
 	stalenessDeliveryRetryMax  = time.Hour
 	stalenessDeliveriesPerTick = 1
+	stalenessStateRetention    = 30 * 24 * time.Hour
 )
 
 func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *State, candidates []connector.Issue, now time.Time) {
@@ -27,6 +28,7 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 		return
 	}
 	if !o.cfg.Staleness.Enabled {
+		o.stalenessWarningStates(ctx, state, nil, now)
 		state.StalenessWarnings = map[string]StalenessWarning{}
 		return
 	}
@@ -39,7 +41,7 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 		Decisions:    stalenessDecisions(state.SchedulerDecisions, stalenessDecisionIssueIndex(state, candidates), state.laneEntries),
 	}, now)
 	evaluated = operatorFacingStalenessWarnings(evaluated, state)
-	persisted := o.stalenessWarningStates(ctx, state)
+	persisted := o.stalenessWarningStates(ctx, state, evaluated, now)
 	previous := state.StalenessWarnings
 	next := make(map[string]StalenessWarning, len(evaluated))
 	for _, warning := range evaluated {
@@ -111,17 +113,34 @@ func operatorFacingStalenessWarnings(warnings []staleness.Warning, state *State)
 	return out
 }
 
-func (o *Orchestrator) stalenessWarningStates(ctx context.Context, state *State) map[string]store.StalenessWarningState {
+func (o *Orchestrator) stalenessWarningStates(
+	ctx context.Context,
+	state *State,
+	evaluated []staleness.Warning,
+	now time.Time,
+) map[string]store.StalenessWarningState {
 	if state.stalenessReminders == nil {
 		state.stalenessReminders = map[string]time.Time{}
 	}
 	persisted := make(map[string]store.StalenessWarningState)
 	projectID := strings.TrimSpace(o.cfg.Project.ID)
 	if o.stalenessWarningStore != nil {
-		states, err := o.stalenessWarningStore.ListStalenessWarningStates(ctx, projectID)
+		activeWarningIDs := make([]string, 0, len(evaluated))
+		for _, warning := range evaluated {
+			if warningID := strings.TrimSpace(warning.ID); warningID != "" {
+				activeWarningIDs = append(activeWarningIDs, warningID)
+			}
+		}
+		states, err := o.stalenessWarningStore.ReconcileStalenessWarningStates(
+			ctx,
+			projectID,
+			activeWarningIDs,
+			now,
+			now.Add(-stalenessStateRetention),
+		)
 		if err != nil {
 			if o.logger != nil {
-				o.logger.Error("list staleness warning states", "project_id", projectID, "error", err)
+				o.logger.Error("reconcile staleness warning states", "project_id", projectID, "error", err)
 			}
 		} else {
 			for _, warningState := range states {

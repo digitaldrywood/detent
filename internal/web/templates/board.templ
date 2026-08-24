@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
@@ -117,6 +118,7 @@ templ boardAlertsBar(alerts []boardAlert) {
 			role="alert"
 			aria-live="polite"
 			data-board-alert-count={ strconv.Itoa(len(alerts)) }
+			data-board-alert-tone={ string(alerts[0].Tone) }
 			if boardAlertKindActive(alerts, boardAlertKindLastKnown) {
 				data-board-snapshot-stale="true"
 			}
@@ -133,12 +135,14 @@ templ boardAlertsBar(alerts []boardAlert) {
 				aria-controls="board-alerts-overlay"
 				aria-label={ boardAlertButtonLabel(alerts) }
 			>
-				@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
-				<span class="shrink-0 font-medium">{ boardCountLabel(len(alerts), "warning", "warnings") }</span>
+				<span class="contents" data-board-alert-lead-glyph>
+					@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
+				</span>
+				<span class="shrink-0 font-medium" data-board-alert-count-label>{ boardCountLabel(len(alerts), "warning", "warnings") }</span>
 				<span class="hidden shrink-0 text-current/60 md:inline" aria-hidden="true">·</span>
-				<span class="hidden min-w-0 flex-1 truncate text-text md:inline">{ alerts[0].TerseSummary }</span>
+				<span class="hidden min-w-0 flex-1 truncate text-text md:inline" data-board-alert-lead-summary>{ alerts[0].TerseSummary }</span>
 				if len(alerts) > 1 {
-					<span class="shrink-0 font-medium">{ "+" + strconv.Itoa(len(alerts)-1) }</span>
+					<span class="shrink-0 font-medium" data-board-alert-overflow>{ "+" + strconv.Itoa(len(alerts)-1) }</span>
 				}
 				<span class="shrink-0 transition-transform duration-150 data-[open=true]:rotate-180" data-board-alerts-chevron data-open="false" aria-hidden="true">
 					@icon.ChevronDown(icon.Props{Class: "size-3.5"})
@@ -152,10 +156,29 @@ templ boardAlertsBar(alerts []boardAlert) {
 }
 
 templ boardAlertsOverlayContents(alerts []boardAlert) {
+	{{ dismissals := boardStalenessDismissals(alerts) }}
 	<div class="divide-y divide-line" data-board-alerts-overlay-content>
 		<header class="sticky top-0 z-10 flex h-10 items-center gap-2 border-b border-line bg-page px-3 text-sm">
-			@boardAlertGlyph(alerts[0], "size-4 shrink-0")
-			<p class="min-w-0 flex-1 truncate font-medium text-text">{ boardCountLabel(len(alerts), "warning", "warnings") }</p>
+			<span class="contents" data-board-alert-lead-glyph>
+				@boardAlertGlyph(alerts[0], "size-4 shrink-0")
+			</span>
+			<p class="min-w-0 flex-1 truncate font-medium text-text" data-board-alert-count-label>{ boardCountLabel(len(alerts), "warning", "warnings") }</p>
+			for _, dismissal := range dismissals {
+				<form
+					class="shrink-0"
+					hx-post={ "/api/v1/projects/" + url.PathEscape(dismissal.ProjectID) + "/staleness-warnings/acknowledge" }
+					hx-swap="none"
+					hx-confirm={ "Dismiss " + strconv.Itoa(len(dismissal.WarningIDs)) + " staleness warnings?" }
+					data-staleness-dismiss-form
+					data-staleness-dismiss-bulk
+					data-staleness-project-id={ dismissal.ProjectID }
+				>
+					for _, warningID := range dismissal.WarningIDs {
+						<input type="hidden" name="warning_id" value={ warningID }/>
+					}
+					<button type="submit" class="inline-flex shrink-0 items-center rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-staleness-dismiss-label>{ boardStalenessDismissalLabel(dismissal, len(dismissals)) }</button>
+				</form>
+			}
 			<button
 				type="button"
 				class="inline-flex shrink-0 items-center gap-1 rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -168,7 +191,20 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 		</header>
 		<div class="grid divide-y divide-line">
 			for _, alert := range alerts {
-				<section id={ alert.ID } class="grid min-w-0 gap-2 px-4 py-3" data-board-alert={ string(alert.Kind) }>
+				<section
+					id={ alert.ID }
+					class="grid min-w-0 gap-2 px-4 py-3"
+					data-board-alert={ string(alert.Kind) }
+					data-board-alert-summary={ alert.TerseSummary }
+					data-board-alert-tone={ string(alert.Tone) }
+					if alert.StalenessWarningID != "" {
+						data-staleness-warning-id={ alert.StalenessWarningID }
+						data-staleness-project-id={ alert.StalenessProjectID }
+					}
+				>
+					<template data-board-alert-glyph-template>
+						@boardAlertGlyph(alert, "size-3.5 shrink-0")
+					</template>
 					<div class="flex min-w-0 items-start gap-3">
 						<div class="min-w-0 flex-1">
 							<p class="font-medium text-text">{ alert.TerseSummary }</p>
@@ -216,6 +252,11 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 							hx-target={ alert.Action.Target }
 							hx-swap={ boardAlertActionSwap(alert.Action) }
 							hx-confirm={ alert.Action.Confirm }
+							if alert.StalenessWarningID != "" {
+								data-staleness-dismiss-form
+								data-staleness-warning-id={ alert.StalenessWarningID }
+								data-staleness-project-id={ alert.StalenessProjectID }
+							}
 						>
 							<input type="hidden" name="confirm" value="true"/>
 							<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-card border border-current/40 bg-surface px-3 py-1.5 text-xs font-medium text-text hover:bg-current/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/50">{ alert.Action.Label }</button>
@@ -373,6 +414,126 @@ templ boardAlertScript() {
 				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
 			}
 
+			function dismissedWarningIDs(form) {
+				var ids = [];
+				var directID = form.dataset.stalenessWarningId || "";
+				if (directID) ids.push(directID);
+				form.querySelectorAll("input[name='warning_id']").forEach(function (input) {
+					if (input.value && !ids.includes(input.value)) ids.push(input.value);
+				});
+				return ids;
+			}
+
+			function removeDismissedWarnings(root, projectID, warningIDs) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert='staleness-warning'][data-staleness-warning-id]").forEach(function (warning) {
+					if (warning.dataset.stalenessProjectId !== projectID) return;
+					if (warningIDs.includes(warning.dataset.stalenessWarningId || "")) warning.remove();
+				});
+			}
+
+			function syncBulkDismissals(root) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-staleness-dismiss-bulk]").forEach(function (form) {
+					var projectID = form.dataset.stalenessProjectId || "";
+					var active = [];
+					root.querySelectorAll("[data-board-alert='staleness-warning'][data-staleness-warning-id]").forEach(function (warning) {
+						if (warning.dataset.stalenessProjectId === projectID) active.push(warning.dataset.stalenessWarningId || "");
+					});
+					form.querySelectorAll("input[name='warning_id']").forEach(function (input) {
+						if (!active.includes(input.value)) input.remove();
+					});
+					if (active.length === 0) {
+						form.remove();
+						return;
+					}
+					var label = form.querySelector("[data-staleness-dismiss-label]");
+					if (label) label.textContent = label.textContent.replace(/\(\d+\)$/, "(" + active.length + ")");
+				});
+			}
+
+			function warningCountLabel(count) {
+				return count + (count === 1 ? " warning" : " warnings");
+			}
+
+			function syncAlertCountRoot(root, count) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert-count-label]").forEach(function (label) {
+					label.textContent = warningCountLabel(count);
+				});
+			}
+
+			function syncLeadAlertRoot(root, lead, glyphTemplate) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert-lead-glyph]").forEach(function (glyph) {
+					glyph.replaceChildren(glyphTemplate.content.cloneNode(true));
+				});
+				root.querySelectorAll("[data-board-alert-lead-summary]").forEach(function (summary) {
+					summary.textContent = lead.dataset.boardAlertSummary || "";
+				});
+			}
+
+			function syncLeadAlert(bar, roots, lead, count) {
+				var glyphTemplate = lead.querySelector("template[data-board-alert-glyph-template]");
+				if (!(glyphTemplate instanceof HTMLTemplateElement)) return;
+				roots.forEach(function (root) {
+					syncLeadAlertRoot(root, lead, glyphTemplate);
+				});
+				var tones = {
+					err: ["border-err/40", "bg-err/10", "text-err"],
+					info: ["border-info/40", "bg-info/10", "text-info"],
+					warn: ["border-warn/40", "bg-warn/10", "text-warn"],
+				};
+				Object.values(tones).flat().forEach(function (className) {
+					bar.classList.remove(className);
+				});
+				var tone = lead.dataset.boardAlertTone || "warn";
+				(tones[tone] || tones.warn).forEach(function (className) {
+					bar.classList.add(className);
+				});
+				bar.dataset.boardAlertTone = tone;
+				var toggle = alertsToggle();
+				if (toggle) {
+					var countLabel = count + (count === 1 ? " board warning" : " board warnings");
+					toggle.setAttribute("aria-label", countLabel + ". Highest severity: " + (lead.dataset.boardAlertSummary || "") + ". Expand details.");
+				}
+			}
+
+			function settleStalenessDismissal(form) {
+				var projectID = form.dataset.stalenessProjectId || "";
+				var warningIDs = dismissedWarningIDs(form);
+				if (!projectID || warningIDs.length === 0) return;
+				var host = overlayHost();
+				var template = overlayTemplate();
+				removeDismissedWarnings(host, projectID, warningIDs);
+				if (template instanceof HTMLTemplateElement) removeDismissedWarnings(template.content, projectID, warningIDs);
+				syncBulkDismissals(host);
+				if (template instanceof HTMLTemplateElement) syncBulkDismissals(template.content);
+				var countRoot = template instanceof HTMLTemplateElement ? template.content : host;
+				var count = countRoot && typeof countRoot.querySelectorAll === "function" ? countRoot.querySelectorAll("[data-board-alert]").length : 0;
+				var bar = alertsBar();
+				if (!bar || count === 0) {
+					if (bar) bar.remove();
+					closeOverlay(false);
+					return;
+				}
+				bar.dataset.boardAlertCount = String(count);
+				syncAlertCountRoot(bar, count);
+				syncAlertCountRoot(host, count);
+				if (template instanceof HTMLTemplateElement) syncAlertCountRoot(template.content, count);
+				var lead = countRoot.querySelector("[data-board-alert]");
+				if (lead) {
+					var leadRoots = [bar, host];
+					if (template instanceof HTMLTemplateElement) leadRoots.push(template.content);
+					syncLeadAlert(bar, leadRoots, lead, count);
+				}
+				var overflow = bar.querySelector("[data-board-alert-overflow]");
+				if (overflow) {
+					overflow.textContent = "+" + Math.max(0, count - 1);
+					overflow.hidden = count <= 1;
+				}
+			}
+
 			document.addEventListener("click", function (event) {
 				var target = event.target instanceof Element ? event.target : null;
 				if (!target) return;
@@ -394,6 +555,16 @@ templ boardAlertScript() {
 
 			document.addEventListener("htmx:afterSettle", function (event) {
 				if (settledSnapshot(event)) syncOverlayAfterMorph();
+			});
+
+			document.addEventListener("htmx:beforeSwap", function (event) {
+				var requestElement = event.detail && event.detail.requestConfig && event.detail.requestConfig.elt;
+				var form = requestElement instanceof Element ? requestElement.closest("[data-staleness-dismiss-form]") : null;
+				if (!(form instanceof HTMLFormElement)) return;
+				var status = event.detail.xhr ? event.detail.xhr.status : 0;
+				if (status < 200 || status >= 300) return;
+				event.detail.shouldSwap = false;
+				settleStalenessDismissal(form);
 			});
 
 			window.addEventListener("resize", requestOverlayPosition);

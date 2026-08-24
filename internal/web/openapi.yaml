@@ -262,6 +262,44 @@ paths:
         "404": {$ref: "#/components/responses/Problem"}
         "409": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/staleness-warnings/acknowledge:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    post:
+      operationId: acknowledgeStalenessWarnings
+      summary: Dismiss an explicit set of active staleness warning conditions
+      description: Acknowledges only the warning IDs supplied by the caller in one transactional operation.
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/staleness-warnings/acknowledge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warning_ids]
+              properties:
+                warning_ids:
+                  type: array
+                  minItems: 1
+                  items: {type: string, minLength: 1}
+      responses:
+        "200":
+          description: The explicit warning conditions were acknowledged.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/staleness-warnings/{warning_id}/acknowledge:
     parameters:
       - $ref: "#/components/parameters/ProjectID"
@@ -289,6 +327,7 @@ paths:
         "400": {$ref: "#/components/responses/Problem"}
         "401": {$ref: "#/components/responses/Problem"}
         "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/timeseries:
     parameters:

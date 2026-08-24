@@ -62,17 +62,19 @@ const (
 )
 
 type boardAlert struct {
-	ID            string
-	Kind          boardAlertKind
-	Severity      int
-	Tone          primitives.Kind
-	TerseSummary  string
-	DetailSummary string
-	DetailRows    []boardAlertDetailRow
-	Overflow      int
-	DeepLink      string
-	DeepLinkLabel string
-	Action        *boardAlertAction
+	ID                 string
+	Kind               boardAlertKind
+	Severity           int
+	Tone               primitives.Kind
+	TerseSummary       string
+	DetailSummary      string
+	DetailRows         []boardAlertDetailRow
+	Overflow           int
+	DeepLink           string
+	DeepLinkLabel      string
+	StalenessProjectID string
+	StalenessWarningID string
+	Action             *boardAlertAction
 }
 
 type boardAlertDetailRow struct {
@@ -89,6 +91,11 @@ type boardAlertAction struct {
 	Target  string
 	Swap    string
 	Confirm string
+}
+
+type boardStalenessDismissal struct {
+	ProjectID  string
+	WarningIDs []string
 }
 
 func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
@@ -429,18 +436,48 @@ func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
 			}
 		}
 		alerts = append(alerts, boardAlert{
-			ID:            alertID,
-			Kind:          boardAlertKindStaleness,
-			Severity:      boardAlertSeverityStaleness,
-			Tone:          primitives.KindWarn,
-			TerseSummary:  summary,
-			DetailSummary: detail,
-			DeepLink:      strings.TrimSpace(warning.IssueURL),
-			DeepLinkLabel: "Open",
-			Action:        action,
+			ID:                 alertID,
+			Kind:               boardAlertKindStaleness,
+			Severity:           boardAlertSeverityStaleness,
+			Tone:               primitives.KindWarn,
+			TerseSummary:       summary,
+			DetailSummary:      detail,
+			DeepLink:           strings.TrimSpace(warning.IssueURL),
+			DeepLinkLabel:      "Open",
+			StalenessProjectID: strings.TrimSpace(warning.ProjectID),
+			StalenessWarningID: strings.TrimSpace(warning.ID),
+			Action:             action,
 		})
 	}
 	return alerts
+}
+
+func boardStalenessDismissals(alerts []boardAlert) []boardStalenessDismissal {
+	indices := make(map[string]int)
+	dismissals := make([]boardStalenessDismissal, 0)
+	for _, alert := range alerts {
+		projectID := strings.TrimSpace(alert.StalenessProjectID)
+		warningID := strings.TrimSpace(alert.StalenessWarningID)
+		if alert.Kind != boardAlertKindStaleness || projectID == "" || warningID == "" {
+			continue
+		}
+		index, exists := indices[projectID]
+		if !exists {
+			index = len(dismissals)
+			indices[projectID] = index
+			dismissals = append(dismissals, boardStalenessDismissal{ProjectID: projectID})
+		}
+		dismissals[index].WarningIDs = append(dismissals[index].WarningIDs, warningID)
+	}
+	return dismissals
+}
+
+func boardStalenessDismissalLabel(dismissal boardStalenessDismissal, projectCount int) string {
+	count := len(dismissal.WarningIDs)
+	if projectCount > 1 {
+		return "Dismiss " + dismissal.ProjectID + " staleness warnings (" + strconv.Itoa(count) + ")"
+	}
+	return "Dismiss all staleness warnings (" + strconv.Itoa(count) + ")"
 }
 
 func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {

@@ -179,6 +179,8 @@ type StalenessWarningStore interface {
 	ListStalenessWarningStates(context.Context, string) ([]StalenessWarningState, error)
 	RecordStalenessWarningReminder(context.Context, string, string, time.Time) error
 	AcknowledgeStalenessWarning(context.Context, string, string, time.Time) error
+	AcknowledgeStalenessWarnings(context.Context, string, []string, time.Time) error
+	ReconcileStalenessWarningStates(context.Context, string, []string, time.Time, time.Time) ([]StalenessWarningState, error)
 }
 
 type WorkAttemptCapacityReleaseStore interface {
@@ -843,6 +845,7 @@ type StalenessWarningState struct {
 	WarningID      string
 	RemindedAt     *time.Time
 	AcknowledgedAt *time.Time
+	LastSeenAt     *time.Time
 }
 
 type IssueSchedulerDecisionQuery struct {

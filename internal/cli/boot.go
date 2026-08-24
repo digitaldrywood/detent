@@ -38,6 +38,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -279,6 +280,15 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
 	managerConfig := managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get())
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	projectIDs := make([]string, 0, len(cfg.Global.Projects))
+	for _, projectConfig := range cfg.Global.Projects {
+		projectIDs = append(projectIDs, projectConfig.ID)
+	}
+	stalenessAcknowledgements, err := staleness.NewAcknowledgements(runCtx, runtimeStore, snapshotHub, projectIDs)
+	if err != nil {
+		return err
+	}
 	dispatchPacer := runnerpkg.NewStartupDispatchPacer(runnerpkg.StartupDispatchPacerConfig{
 		MaxStartsPerSecond: managerConfig.Startup.MaxSpawnPerSecond,
 		Jitter:             managerConfig.Startup.Jitter,
@@ -295,7 +305,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ProgressSpend:      runtimeStore,
 		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,
-		StalenessWarnings:  runtimeStore,
+		StalenessWarnings:  stalenessAcknowledgements,
 		RetroStore:         runtimeStore,
 		RoutineStore:       runtimeStore,
 		AdmissionStore:     runtimeStore,
@@ -334,7 +344,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 	}()
 
-	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
 	providerStatus := deps.providerStatusManager
 	if providerStatus == nil {
@@ -387,10 +396,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		logger.Warn("load board snapshot failed", "error", loadErr)
 	}
 	if cached {
-		if err := snapshotHub.Publish(cachedSnapshot); err != nil {
+		if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
 			return fmt.Errorf("publish cached board snapshot: %w", err)
 		}
-	} else if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
+	} else if err := publishStartupSnapshotOnce(runCtx, cfg.Global, stalenessAcknowledgements, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
 		return err
 	}
 	chatProvider := buildChatProvider(manager.Registry(), logger)
@@ -426,7 +435,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}, time.Now)
 	})
 	resourceWorkers.Go(func() {
-		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, time.Now, updateScheduler)
+		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, time.Now, updateScheduler)
 	})
 	if healthNotifications.Enabled() {
 		resourceWorkers.Go(func() {
@@ -471,6 +480,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		IssueExplainer:      newIssueExplainer(snapshotHub, runtimeStore),
 		HealthNotifications: healthNotifications,
 		WorkerProcesses:     runtimeStore,
+		StalenessWarnings:   stalenessAcknowledgements,
 	})
 	if err != nil {
 		return err

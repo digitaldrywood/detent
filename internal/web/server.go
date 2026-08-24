@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -66,6 +67,7 @@ type Dependencies struct {
 	HealthNotifications healthnotify.FailureReader
 	TickLiveness        TickLivenessSource
 	WorkerProcesses     WorkerProcessStore
+	StalenessWarnings   *staleness.Acknowledgements
 	ObserveProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 }
 
@@ -184,6 +186,7 @@ type Server struct {
 	healthNotifications healthnotify.FailureReader
 	tickLiveness        TickLivenessSource
 	workerProcesses     WorkerProcessStore
+	stalenessWarnings   *staleness.Acknowledgements
 	observeProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 	now                 func() time.Time
 	operatorTools       *operatortool.Executor
@@ -305,6 +308,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		healthNotifications: deps.HealthNotifications,
 		tickLiveness:        tickLiveness,
 		workerProcesses:     deps.WorkerProcesses,
+		stalenessWarnings:   deps.StalenessWarnings,
 		observeProcesses:    observeProcesses,
 		now:                 cfg.now(),
 	}
@@ -438,6 +442,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/issues/explanation", s.apiIssueParkAcknowledgement, apiMutateAuth, apiProjectWriteScope)
+	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/acknowledge", s.apiStalenessWarningsAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge", s.apiStalenessWarningAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/runs/:attempt/stop", s.apiStopRunDialog, apiDashboardReadAuth, apiReadScope)

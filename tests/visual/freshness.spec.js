@@ -231,6 +231,92 @@ test("zero, one, and twenty warnings keep one indicator slot and fixed lanes", a
   await expect(overlay.getByRole("link", { name: "Open" })).toHaveCount(20);
 });
 
+test("dismiss updates both counts and stays gone through the next SSE morph", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/projects/**", async (route) => {
+    if (route.request().url().includes("/staleness-warnings/")) {
+      await route.fulfill({ status: 200, body: "" });
+      return;
+    }
+    await route.continue();
+  });
+  await openBoardScenario(page, "board-staleness-twenty");
+  await page.locator("#board-alerts-toggle").click();
+
+  const bar = page.locator("#board-alerts");
+  const overlay = page.locator("body > #board-alerts-overlay");
+  const warnings = overlay.locator('[data-board-alert="staleness-warning"]');
+  const dismissedID = await warnings.first().getAttribute("data-staleness-warning-id");
+  const nextLead = warnings.nth(1);
+  const nextLeadSummary = await nextLead.getAttribute("data-board-alert-summary");
+  const nextLeadTone = await nextLead.getAttribute("data-board-alert-tone");
+  const nextLeadGlyph = await nextLead
+    .locator("template[data-board-alert-glyph-template]")
+    .evaluate((element) => element.innerHTML);
+  await warnings.first().getByRole("button", { name: "Dismiss", exact: true }).click();
+
+  await expect(bar).toHaveAttribute("data-board-alert-count", "19");
+  await expect(bar.locator("[data-board-alert-count-label]")).toHaveText("19 warnings");
+  await expect(overlay.locator("[data-board-alert-count-label]")).toHaveText("19 warnings");
+  await expect(bar).toHaveAttribute("data-board-alert-tone", nextLeadTone);
+  await expect(bar.locator("[data-board-alert-lead-summary]")).toHaveText(nextLeadSummary);
+  await expect(page.locator("#board-alerts-toggle")).toHaveAttribute(
+    "aria-label",
+    `19 board warnings. Highest severity: ${nextLeadSummary}. Expand details.`,
+  );
+  expect(
+    await bar.locator("[data-board-alert-lead-glyph]").evaluate((element) => element.innerHTML),
+  ).toBe(nextLeadGlyph);
+  expect(
+    await overlay
+      .locator("[data-board-alert-lead-glyph]")
+      .evaluate((element) => element.innerHTML),
+  ).toBe(nextLeadGlyph);
+  await expect(warnings).toHaveCount(19);
+  await expect(
+    overlay.locator(`[data-staleness-warning-id="${dismissedID}"]`),
+  ).toHaveCount(0);
+  await expect(
+    overlay.getByRole("button", { name: "Dismiss all staleness warnings (19)" }),
+  ).toBeVisible();
+
+  await morphCurrentSnapshot(page);
+  await expect(bar).toHaveAttribute("data-board-alert-count", "19");
+  await expect(warnings).toHaveCount(19);
+  await expect(
+    overlay.locator(`[data-staleness-warning-id="${dismissedID}"]`),
+  ).toHaveCount(0);
+});
+
+test("bulk dismiss submits the rendered warning IDs and clears both counts", async ({
+  page,
+}) => {
+  let submittedBody = "";
+  await page.route("**/api/v1/projects/**", async (route) => {
+    if (route.request().url().includes("/staleness-warnings/")) {
+      submittedBody = route.request().postData() || "";
+      await route.fulfill({ status: 200, body: "" });
+      return;
+    }
+    await route.continue();
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await openBoardScenario(page, "board-staleness-twenty");
+  await page.locator("#board-alerts-toggle").click();
+
+  const overlay = page.locator("body > #board-alerts-overlay");
+  await overlay
+    .getByRole("button", { name: "Dismiss all staleness warnings (20)" })
+    .click();
+
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+  await expect(overlay).toBeHidden();
+  expect(new URLSearchParams(submittedBody).getAll("warning_id")).toHaveLength(20);
+  await morphCurrentSnapshot(page);
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+});
+
 test("warning disclosure state survives morphs without auto-expanding", async ({
   page,
 }) => {
