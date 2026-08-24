@@ -422,9 +422,10 @@ func TestLocalGitCreateClassifiesOccupiedBranch(t *testing.T) {
 	if !errors.As(err, &heldErr) {
 		t.Fatalf("Create() error = %T, want *BranchHeldError", err)
 	}
-	if heldErr.Branch != "detent/dd-conflict" || heldErr.Path != occupiedPath {
-		t.Fatalf("BranchHeldError = %#v, want branch detent/dd-conflict at %q", heldErr, occupiedPath)
+	if heldErr.Branch != "detent/dd-conflict" {
+		t.Fatalf("BranchHeldError branch = %q, want detent/dd-conflict", heldErr.Branch)
 	}
+	requireSameFile(t, heldErr.Path, occupiedPath)
 }
 
 func TestRunWorktreeAddWithPrune(t *testing.T) {
@@ -2007,13 +2008,15 @@ func TestLocalGitBranchHeldByWorktree(t *testing.T) {
 			if !errors.As(err, &heldErr) {
 				t.Fatalf("Create() error = %v, want BranchHeldError", err)
 			}
-			if heldErr.Branch != branch || heldErr.Path != holder {
-				t.Fatalf("BranchHeldError = %#v, want branch %q path %q", heldErr, branch, holder)
+			if heldErr.Branch != branch {
+				t.Fatalf("BranchHeldError branch = %q, want %q", heldErr.Branch, branch)
 			}
+			requireSameFile(t, heldErr.Path, holder)
 			hold, held, err := backend.BranchHold(t.Context(), issue)
-			if err != nil || !held || hold.Branch != branch || hold.Path != holder {
+			if err != nil || !held || hold.Branch != branch {
 				t.Fatalf("BranchHold() = %#v, %v, %v", hold, held, err)
 			}
+			requireSameFile(t, hold.Path, holder)
 
 			if !tt.releaseBeforeRetry {
 				return
@@ -2030,6 +2033,21 @@ func TestLocalGitBranchHeldByWorktree(t *testing.T) {
 				t.Fatalf("Create() after release = %#v, want Created=%v branch=%q", info, tt.wantCreated, branch)
 			}
 		})
+	}
+}
+
+func requireSameFile(t *testing.T, got string, want string) {
+	t.Helper()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat %q: %v", want, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("path %q does not identify %q", got, want)
 	}
 }
 
