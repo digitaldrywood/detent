@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -45,8 +46,8 @@ func TestHealthViewVerdicts(t *testing.T) {
 					ObservedSweepSeconds: 160,
 				},
 			},
-			wantKind:    primitives.KindNeutral,
-			wantVerdict: "Refresh loop is behind.",
+			wantKind:    primitives.KindOK,
+			wantVerdict: "All systems nominal.",
 		},
 		{
 			name: "tracker unavailability requires attention",
@@ -71,6 +72,39 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "CI is unavailable.",
 		},
 		{
+			name: "fault staleness requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StalenessWarnings: []telemetry.StalenessWarning{{
+					ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "digitaldrywood/detent#1960",
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Fleet work needs attention.",
+		},
+		{
+			name: "diagnostic staleness stays nominal",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StalenessWarnings: []telemetry.StalenessWarning{{
+					ID: "diagnostic", Class: observability.ClassDiagnostic, ProjectID: "detent",
+				}},
+			},
+			wantKind:    primitives.KindOK,
+			wantVerdict: "All systems nominal.",
+		},
+		{
+			name: "review queue staleness stays nominal",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StalenessWarnings: []telemetry.StalenessWarning{{
+					ID: "review", Class: observability.ClassReviewQueue, ProjectID: "detent", WaitingOnHuman: true,
+				}},
+			},
+			wantKind:    primitives.KindOK,
+			wantVerdict: "All systems nominal.",
+		},
+		{
 			name: "forge write unavailability requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -86,14 +120,14 @@ func TestHealthViewVerdicts(t *testing.T) {
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				DispatchStalls: []telemetry.DispatchStatus{{
-					ProjectID: "detent", CandidateCount: 8, WaitReason: "github_rest_capacity", StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true,
+					ProjectID: "detent", CandidateCount: 8, WaitReason: "authorization selector excludes every candidate", WaitReasonCode: "authorization_selector_declined", StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true, Class: observability.ClassFault,
 				}},
 			},
 			wantKind:    primitives.KindErr,
 			wantVerdict: "Dispatch is stalled.",
 		},
 		{
-			name: "backend capacity outage warns",
+			name: "backend capacity outage requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				BackendOutages: []telemetry.BackendOutage{{
@@ -102,7 +136,7 @@ func TestHealthViewVerdicts(t *testing.T) {
 					ResumeAt:  now.Add(44 * time.Minute),
 				}},
 			},
-			wantKind:    primitives.KindWarn,
+			wantKind:    primitives.KindErr,
 			wantVerdict: "Backend codex at usage limit.",
 		},
 		{
@@ -116,22 +150,22 @@ func TestHealthViewVerdicts(t *testing.T) {
 					ResumeAt:  now.Add(44 * time.Minute),
 				}},
 			},
-			wantKind:    primitives.KindWarn,
+			wantKind:    primitives.KindErr,
 			wantVerdict: "Backend codex: subscription window exhausted.",
 		},
 		{
-			name: "failure breaker warns",
+			name: "failure breaker requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				FailureBreakers: []telemetry.FailureBreaker{{
 					ProjectID: "detent",
 				}},
 			},
-			wantKind:    primitives.KindWarn,
+			wantKind:    primitives.KindErr,
 			wantVerdict: "Project failure breaker active — 1 project.",
 		},
 		{
-			name: "waiting recovery warns",
+			name: "waiting recovery stays diagnostic",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				DispatchRecoveries: []telemetry.DispatchRecovery{{
@@ -140,18 +174,18 @@ func TestHealthViewVerdicts(t *testing.T) {
 					Status:    "waiting",
 				}},
 			},
-			wantKind:    primitives.KindWarn,
-			wantVerdict: "Dispatch is waiting on capacity.",
+			wantKind:    primitives.KindOK,
+			wantVerdict: "All systems nominal.",
 		},
 		{
-			name: "stranded active issue warns",
+			name: "stranded active issue requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				StrandedActiveIssues: []telemetry.StrandedIssue{{
 					ProjectID: "detent", Identifier: "digitaldrywood/detent#1606", DurationSeconds: 900,
 				}},
 			},
-			wantKind:    primitives.KindWarn,
+			wantKind:    primitives.KindErr,
 			wantVerdict: "Active work has no live worker.",
 		},
 	}
@@ -166,6 +200,44 @@ func TestHealthViewVerdicts(t *testing.T) {
 			}
 			if !view.CheckedAt.Equal(now) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
+			}
+		})
+	}
+}
+
+func TestHealthRowsIncludeOnlyFaultStaleness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		warning telemetry.StalenessWarning
+		want    bool
+	}{
+		{
+			name: "fault",
+			warning: telemetry.StalenessWarning{
+				ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "digitaldrywood/detent#1960", IssueURL: "https://github.com/digitaldrywood/detent/issues/1960", Detail: "operator action required",
+			},
+			want: true,
+		},
+		{name: "diagnostic", warning: telemetry.StalenessWarning{ID: "diagnostic", Class: observability.ClassDiagnostic}},
+		{name: "review queue", warning: telemetry.StalenessWarning{ID: "review", Class: observability.ClassReviewQueue, WaitingOnHuman: true}},
+		{name: "legacy diagnostic fallback", warning: telemetry.StalenessWarning{ID: "legacy-diagnostic"}},
+		{name: "legacy review fallback", warning: telemetry.StalenessWarning{ID: "legacy-review", WaitingOnHuman: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rows := healthStalenessRows(healthFaultStalenessWarnings([]telemetry.StalenessWarning{tt.warning}))
+			if got := len(rows) == 1; got != tt.want {
+				t.Fatalf("fault row present = %v, want %v: %#v", got, tt.want, rows)
+			}
+			if !tt.want {
+				return
+			}
+			if rows[0].Kind != primitives.KindErr || rows[0].Status != "Needs attention" || rows[0].Link != tt.warning.IssueURL {
+				t.Fatalf("fault row = %#v", rows[0])
 			}
 		})
 	}
@@ -217,7 +289,7 @@ func TestHealthDispatchStallRows(t *testing.T) {
 	t.Parallel()
 
 	rows := healthRows(telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
-		ProjectID: "detent", CandidateCount: 8, WaitReason: "github_rest_capacity", StallDurationSeconds: 10_800,
+		ProjectID: "detent", CandidateCount: 8, WaitReason: "authorization selector excludes every candidate", WaitReasonCode: "authorization_selector_declined", StallDurationSeconds: 10_800, Stalled: true,
 	}}})
 	var got healthRow
 	for _, row := range rows {
@@ -226,7 +298,7 @@ func TestHealthDispatchStallRows(t *testing.T) {
 			break
 		}
 	}
-	if got.Kind != primitives.KindErr || got.Status != "Needs attention" || !strings.Contains(got.Detail, "8 candidates skipped for 3h") || !strings.Contains(got.Detail, "github_rest_capacity") {
+	if got.Kind != primitives.KindErr || got.Status != "Needs attention" || !strings.Contains(got.Detail, "8 candidates skipped for 3h") || !strings.Contains(got.Detail, "authorization selector") {
 		t.Fatalf("dispatch stall row = %#v", got)
 	}
 }
@@ -368,7 +440,7 @@ func TestHealthAdmissionProposalRowsGroupByProject(t *testing.T) {
 		GeneratedAt:        now,
 		AdmissionProposals: []telemetry.AdmissionProposal{{ProjectID: "detent"}},
 	}})
-	if view.Kind != primitives.KindWarn || view.Verdict != "1 Admission proposal awaits human decision." {
+	if view.Kind != primitives.KindOK || view.Verdict != "All systems nominal." {
 		t.Fatalf("health verdict = (%q, %q)", view.Kind, view.Verdict)
 	}
 }
@@ -477,8 +549,46 @@ func TestHealthRefreshRowsDegradeAtFailureThreshold(t *testing.T) {
 		t.Fatalf("health row missing failure detail: %q", rows[0].Detail)
 	}
 	view := healthViewFromDashboard(DashboardData{Snapshot: snapshot})
-	if view.Kind != primitives.KindWarn || view.Verdict != "Tracker data is stale." {
+	if view.Kind != primitives.KindErr || view.Verdict != "Tracker refresh failed." {
 		t.Fatalf("health verdict = (%q, %q)", view.Kind, view.Verdict)
+	}
+}
+
+func TestRefreshFailureDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		failure telemetry.RefreshFailure
+		want    []string
+	}{
+		{
+			name: "consecutive candidate failures",
+			failure: telemetry.RefreshFailure{
+				Source:        telemetry.RefreshSourceCandidates,
+				FailureStreak: 3,
+				Condition:     "GitHub candidate query",
+				LastError:     "status 503",
+			},
+			want: []string{"candidate fetch", "3 consecutive failures", "GitHub candidate query", "status 503"},
+		},
+		{
+			name:    "sourceless project failure",
+			failure: telemetry.RefreshFailure{LastError: "runtime unavailable"},
+			want:    []string{"runtime unavailable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := refreshFailureDetail(tt.failure)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("refreshFailureDetail() = %q, want %q", got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -498,15 +608,15 @@ func TestFleetFreshnessPreservesSourcelessProjectFailure(t *testing.T) {
 		},
 	}
 
-	if got := refreshFreshnessKind(snapshot); got != primitives.KindWarn {
-		t.Fatalf("refreshFreshnessKind() = %q, want %q", got, primitives.KindWarn)
+	if got := refreshFreshnessKind(snapshot); got != primitives.KindErr {
+		t.Fatalf("refreshFreshnessKind() = %q, want %q", got, primitives.KindErr)
 	}
-	rows := healthRefreshRows(snapshot)
-	if len(rows) != 2 || rows[1].Component != "Tracker freshness · docs" || rows[1].Kind != primitives.KindWarn {
-		t.Fatalf("health refresh rows = %#v", rows)
+	rows := diagnosticsConditionRows(snapshot)
+	if len(rows) != 1 || rows[0].ProjectID != "docs" || rows[0].Class != observability.ClassFault {
+		t.Fatalf("diagnostics refresh rows = %#v", rows)
 	}
-	if !strings.Contains(rows[1].Detail, "project refresh") || !strings.Contains(rows[1].Detail, "runtime unavailable") {
-		t.Fatalf("degraded project detail = %q", rows[1].Detail)
+	if !strings.Contains(rows[0].Detail, "runtime unavailable") {
+		t.Fatalf("degraded project detail = %q", rows[0].Detail)
 	}
 }
 
@@ -537,7 +647,7 @@ func TestHealthBudgetRowsShowEffectiveCapAndOverride(t *testing.T) {
 		t.Fatalf("healthBudgetRows() len = %d, want 1", len(rows))
 	}
 	row := rows[0]
-	if row.Kind != primitives.KindWarn || row.Status != "Approaching limit" || row.QuotaPct != 85 {
+	if row.Kind != primitives.KindNeutral || row.Status != "Approaching limit" || row.QuotaPct != 85 {
 		t.Fatalf("budget row = %#v", row)
 	}
 	if !strings.Contains(row.Detail, "override daily $200.00") || !strings.Contains(row.Detail, "expires in 4h0m0s") || !strings.Contains(row.Detail, "release work") {
@@ -557,30 +667,18 @@ func TestHealthRows(t *testing.T) {
 	}
 
 	rows := healthRows(snapshot)
-	if len(rows) != 5 {
-		t.Fatalf("expected 5 rows, got %d", len(rows))
+	if len(rows) != 2 {
+		t.Fatalf("expected scheduler and update rows, got %d", len(rows))
 	}
-	rest := rows[0]
-	if rest.Quota != "4,178 / 5,000" || rest.QuotaPct != 83 || rest.QuotaWarn {
-		t.Fatalf("rest quota = %q pct=%d warn=%v", rest.Quota, rest.QuotaPct, rest.QuotaWarn)
-	}
-	if !rest.ResetAt.Equal(resetAt) {
-		t.Fatalf("rest reset at = %s", rest.ResetAt)
-	}
-	graphql := rows[1]
-	if graphql.Kind != primitives.KindWarn || graphql.Status != "Backoff" || !graphql.QuotaWarn {
-		t.Fatalf("graphql row = %+v", graphql)
-	}
-	scheduler := rows[2]
+	scheduler := rows[0]
 	if scheduler.Status != "Running" || !strings.Contains(scheduler.Detail, "2 active sessions") {
 		t.Fatalf("scheduler row = %+v", scheduler)
 	}
-	if update := rows[3]; update.Status != "Disabled" {
+	if update := rows[1]; update.Status != "Disabled" {
 		t.Fatalf("update row = %+v", update)
 	}
-	backoff := rows[4]
-	if backoff.Status != "Active" || !strings.Contains(backoff.Detail, "GraphQL") {
-		t.Fatalf("backoff row = %+v", backoff)
+	if got := gitHubAPIHealth(snapshot); got.State != gitHubAPIHealthStateBackoff {
+		t.Fatalf("diagnostics GitHub API state = %q, want backoff", got.State)
 	}
 }
 
@@ -600,7 +698,7 @@ func TestHealthRowsShowProviderRateWindowPacing(t *testing.T) {
 				Primary: &telemetry.RateLimitBucket{Remaining: 48, Limit: 100, ResetAt: &resetAt},
 			},
 			wantRows:  1,
-			wantNames: []string{"Provider primary window"},
+			wantNames: []string{"Primary"},
 		},
 		{
 			name: "primary and secondary depressed",
@@ -609,7 +707,7 @@ func TestHealthRowsShowProviderRateWindowPacing(t *testing.T) {
 				Secondary: &telemetry.RateLimitBucket{Remaining: 30, Limit: 100},
 			},
 			wantRows:  2,
-			wantNames: []string{"Provider primary window", "Provider secondary window"},
+			wantNames: []string{"Primary", "Secondary"},
 		},
 	}
 
@@ -617,16 +715,16 @@ func TestHealthRowsShowProviderRateWindowPacing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			rows := healthRows(telemetry.Snapshot{RateLimits: tt.limits})
-			providerRows := rows[:len(rows)-3]
-			if len(providerRows) != tt.wantRows {
-				t.Fatalf("provider rows = %#v, want %d", providerRows, tt.wantRows)
+			if len(rows) != 2 {
+				t.Fatalf("health rows = %#v, want only scheduler and update", rows)
 			}
-			for index, row := range providerRows {
-				if row.Component != tt.wantNames[index] || row.Kind != primitives.KindOK || row.Status != "Pacing" {
-					t.Fatalf("provider row %d = %#v", index, row)
-				}
-				if row.Quota == "" || row.QuotaPct == 0 || row.QuotaWarn {
-					t.Fatalf("provider quota row %d = %#v", index, row)
+			diagnosticRows := rateLimitRows(tt.limits)
+			if len(diagnosticRows) != tt.wantRows {
+				t.Fatalf("diagnostic provider rows = %#v, want %d", diagnosticRows, tt.wantRows)
+			}
+			for index, row := range diagnosticRows {
+				if row.Name != tt.wantNames[index] {
+					t.Fatalf("diagnostic provider row %d = %#v", index, row)
 				}
 			}
 		})
@@ -642,9 +740,11 @@ func TestHealthRowsExhaustedByRemainingCount(t *testing.T) {
 			GitHubREST: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000},
 		},
 	}
-	rest := healthRows(snapshot)[0]
-	if rest.Kind != primitives.KindErr || rest.Status != "Exhausted" {
-		t.Fatalf("exhausted REST row = %+v", rest)
+	if rows := healthRows(snapshot); len(rows) != 2 {
+		t.Fatalf("health rows = %#v, want no rate-limit diagnostic", rows)
+	}
+	if got := gitHubAPIHealth(snapshot); got.State != gitHubAPIHealthStateExhausted {
+		t.Fatalf("diagnostics GitHub API state = %q, want exhausted", got.State)
 	}
 }
 
@@ -660,18 +760,20 @@ func TestHealthRowsRESTUsageBackoff(t *testing.T) {
 		},
 	}
 	rows := healthRows(snapshot)
-	backoff := rows[len(rows)-1]
-	if backoff.Status != "Active" || !strings.Contains(backoff.Detail, "REST") {
-		t.Fatalf("REST usage backoff row = %+v", backoff)
+	if len(rows) != 2 {
+		t.Fatalf("health rows = %#v, want no REST backoff diagnostic", rows)
+	}
+	if got := gitHubAPIHealth(snapshot); got.State != gitHubAPIHealthStateBackoff {
+		t.Fatalf("diagnostics GitHub API state = %q, want backoff", got.State)
 	}
 }
 
 func TestHealthRowsIdleWithoutData(t *testing.T) {
 	rows := healthRows(telemetry.Snapshot{})
-	if len(rows) != 3 {
-		t.Fatalf("expected scheduler, update, and backoff rows, got %d", len(rows))
+	if len(rows) != 2 {
+		t.Fatalf("expected scheduler and update rows, got %d", len(rows))
 	}
-	if rows[0].Status != "Idle" || rows[1].Status != "Disabled" || rows[2].Status != "None" {
+	if rows[0].Status != "Idle" || rows[1].Status != "Disabled" {
 		t.Fatalf("idle rows = %+v", rows)
 	}
 }
@@ -738,11 +840,7 @@ func TestHealthExhaustedRowDetailNotHealthy(t *testing.T) {
 			RESTUsage:  &telemetry.RESTUsage{TotalRequests: 4200},
 		},
 	}
-	rest := healthRows(snapshot)[0]
-	if rest.Status != "Exhausted" {
-		t.Fatalf("expected Exhausted, got %q", rest.Status)
-	}
-	if rest.Detail == "Within budget" {
-		t.Fatalf("exhausted row detail must not say Within budget: %q", rest.Detail)
+	if got := gitHubAPIHealth(snapshot); got.State != gitHubAPIHealthStateExhausted || strings.Contains(got.Detail, "Within budget") {
+		t.Fatalf("diagnostics GitHub API view = %#v, want exhausted detail", got)
 	}
 }

@@ -74,6 +74,8 @@ func projectDispatchStatusFromCycle(
 	}
 
 	commonWaitReason := ""
+	commonWaitReasonCode := ""
+	mixedWaitReasonDetail := false
 	allSkipped := len(identities) > 0
 	for _, identity := range identities {
 		decision, ok := latest[identity]
@@ -82,6 +84,7 @@ func projectDispatchStatusFromCycle(
 			continue
 		}
 		waitReason := ""
+		waitReasonCode := ""
 		if decision.Selected {
 			outcome, attempted := outcomes[identity]
 			if attempted && outcome.dispatched {
@@ -91,26 +94,31 @@ func projectDispatchStatusFromCycle(
 				continue
 			}
 			if attempted {
+				waitReasonCode = strings.TrimSpace(outcome.reason)
 				waitReason = schedulerDecisionWaitReason(outcome.reason)
 				if outcome.reason == projectFailureBreakerDispatchPaused {
 					status.EligibleCandidateCount++
 				}
 			}
 		} else {
+			waitReasonCode = strings.TrimSpace(decision.SkipReason)
 			waitReason = dispatchPlanDecisionWaitReason(decision)
 			if decision.SkipReason == dispatchSkipProjectFailureBreaker {
 				status.EligibleCandidateCount++
 			}
 		}
 		status.SkippedCount++
-		if waitReason == "" {
+		if waitReason == "" || waitReasonCode == "" {
 			allSkipped = false
 			continue
 		}
-		if commonWaitReason == "" {
+		if commonWaitReasonCode == "" {
+			commonWaitReasonCode = waitReasonCode
 			commonWaitReason = waitReason
-		} else if commonWaitReason != waitReason {
+		} else if commonWaitReasonCode != waitReasonCode {
 			allSkipped = false
+		} else if commonWaitReason != waitReason {
+			mixedWaitReasonDetail = true
 		}
 	}
 
@@ -121,15 +129,29 @@ func projectDispatchStatusFromCycle(
 	if !allSkipped || status.SkippedCount != status.CandidateCount {
 		return status
 	}
+	status.WaitReasonCode = commonWaitReasonCode
 	status.WaitReason = commonWaitReason
+	if mixedWaitReasonDetail {
+		status.WaitReason = schedulerDecisionWaitReason(commonWaitReasonCode)
+	}
 	if previous.CandidateFingerprint == status.CandidateFingerprint &&
-		strings.TrimSpace(previous.WaitReason) == status.WaitReason &&
+		dispatchStatusWaitReasonMatches(previous, status) &&
 		previous.AllSkippedSince != nil && !previous.AllSkippedSince.IsZero() {
 		status.AllSkippedSince = cloneTimePointer(previous.AllSkippedSince)
 	} else {
 		status.AllSkippedSince = &now
 	}
 	return status
+}
+
+func dispatchStatusWaitReasonMatches(previous store.ProjectDispatchStatus, current store.ProjectDispatchStatus) bool {
+	previousCode := strings.TrimSpace(previous.WaitReasonCode)
+	currentCode := strings.TrimSpace(current.WaitReasonCode)
+	if previousCode != "" {
+		return previousCode == currentCode
+	}
+	previousReason := strings.TrimSpace(previous.WaitReason)
+	return previousReason == strings.TrimSpace(current.WaitReason) || previousReason == currentCode
 }
 
 func dispatchPlanDecisionWaitReason(decision dispatchPlanDecision) string {

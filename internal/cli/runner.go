@@ -19,6 +19,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
@@ -1666,14 +1667,18 @@ func snapshotIssueProjectID(issue telemetry.Issue, fallbackProjectID string) str
 }
 
 func mergeFleetDispatchStatus(current telemetry.DispatchStatus, next telemetry.DispatchStatus, now time.Time) telemetry.DispatchStatus {
+	currentClass := observability.Normalize(current.Class, observability.Dispatch(current.Stalled, current.WaitReasonCode))
+	nextClass := observability.Normalize(next.Class, observability.Dispatch(next.Stalled, next.WaitReasonCode))
 	merged := telemetry.DispatchStatus{
-		CandidateCount:      current.CandidateCount + next.CandidateCount,
-		SelectedCount:       current.SelectedCount + next.SelectedCount,
-		SkippedCount:        current.SkippedCount + next.SkippedCount,
-		Stalled:             current.Stalled || next.Stalled,
-		NeedsHumanAttention: current.NeedsHumanAttention || next.NeedsHumanAttention,
-		RateWindowPacing:    mergeFleetRateWindowPacing(current.RateWindowPacing, next.RateWindowPacing),
+		CandidateCount:         current.CandidateCount + next.CandidateCount,
+		EligibleCandidateCount: current.EligibleCandidateCount + next.EligibleCandidateCount,
+		SelectedCount:          current.SelectedCount + next.SelectedCount,
+		SkippedCount:           current.SkippedCount + next.SkippedCount,
+		Stalled:                current.Stalled || next.Stalled,
+		Class:                  observability.Merge(currentClass, nextClass),
+		RateWindowPacing:       mergeFleetRateWindowPacing(current.RateWindowPacing, next.RateWindowPacing),
 	}
+	merged.NeedsHumanAttention = merged.Class == observability.ClassFault
 	merged.LastSelectedAt = latestTime(current.LastSelectedAt, next.LastSelectedAt)
 	merged.ObservedAt = current.ObservedAt
 	if next.ObservedAt.After(merged.ObservedAt) {
@@ -1683,13 +1688,15 @@ func mergeFleetDispatchStatus(current telemetry.DispatchStatus, next telemetry.D
 		seconds := max(int64(now.Sub(*merged.LastSelectedAt)/time.Second), 0)
 		merged.SecondsSinceLastSelected = &seconds
 	}
-	if current.Stalled && next.Stalled && strings.TrimSpace(current.WaitReason) != strings.TrimSpace(next.WaitReason) {
+	if current.Stalled && next.Stalled && (strings.TrimSpace(current.WaitReason) != strings.TrimSpace(next.WaitReason) || strings.TrimSpace(current.WaitReasonCode) != strings.TrimSpace(next.WaitReasonCode)) {
 		return merged
 	}
 	if next.Stalled {
 		merged.WaitReason = next.WaitReason
+		merged.WaitReasonCode = next.WaitReasonCode
 	} else if current.Stalled {
 		merged.WaitReason = current.WaitReason
+		merged.WaitReasonCode = current.WaitReasonCode
 	}
 	return merged
 }

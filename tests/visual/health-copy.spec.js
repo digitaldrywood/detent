@@ -34,9 +34,10 @@ test("copies every rendered health signal and restores its label", async ({
 
   const payload = await copy.getAttribute("data-copy");
   expect(payload).toContain("Detent health —");
-  expect(payload).toContain("[OK]   GitHub REST");
-  expect(payload).toContain("[OK]   GitHub GraphQL");
-  expect(payload).toContain("[WARN] Budget · billing-api");
+  expect(payload).toContain("[OK]   Scheduler");
+  expect(payload).toContain("[INFO] Budget · billing-api");
+  expect(payload).not.toContain("GitHub REST");
+  expect(payload).not.toContain("GitHub GraphQL");
   expect(payload).toContain("checked 2026-");
   expect(payload).not.toContain("{{detent-time:");
   const copiedRows = payload.split("\n").filter((line) => line.startsWith("["));
@@ -68,7 +69,7 @@ test("keeps its identity and refreshes its payload across a snapshot morph", asy
 
   const response = await request.get(`${runtime.url}/health/ui`, {
     headers: {
-      "X-Detent-Demo-Scenario": "github-api-primary-exhausted",
+      "X-Detent-Demo-Scenario": "backend-capacity-outage",
     },
   });
   expect(response.ok()).toBeTruthy();
@@ -98,7 +99,7 @@ test("keeps its identity and refreshes its payload across a snapshot morph", asy
   expect(await original.evaluate((element) => element.isConnected)).toBe(true);
   const refreshedPayload = await copy.getAttribute("data-copy");
   expect(refreshedPayload).not.toBe(originalPayload);
-  expect(refreshedPayload).toContain("[ERR]  GitHub REST");
+  expect(refreshedPayload).toContain("[ERR]  Backend openai");
   await expect(copy.locator("[data-copy-label]")).toHaveText("Copy");
 
   await copy.click();

@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestRefreshStalenessWarningsEmitsAndDeliversOncePerActiveCondition(t *testing.T) {
+func TestRefreshStalenessWarningsRecordsDiagnosticWithoutDelivery(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
 	enteredAt := now.Add(-3 * time.Hour)
@@ -60,17 +60,17 @@ func TestRefreshStalenessWarningsEmitsAndDeliversOncePerActiveCondition(t *testi
 	if len(state.StalenessWarnings) != 1 {
 		t.Fatalf("staleness warnings = %#v, want one active warning", state.StalenessWarnings)
 	}
-	if deliveries != 1 {
-		t.Fatalf("webhook deliveries = %d, want 1", deliveries)
+	if deliveries != 0 {
+		t.Fatalf("webhook deliveries = %d, want 0", deliveries)
 	}
 	events := 0
 	for _, event := range state.RecentEvents {
-		if event.Event == "fleet_staleness_warning" {
+		if event.Event == "fleet_observability_condition" {
 			events++
 		}
 	}
 	if events != 1 {
-		t.Fatalf("fleet_staleness_warning events = %d, want 1", events)
+		t.Fatalf("fleet_observability_condition events = %d, want 1", events)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 		run  func(*testing.T, *Orchestrator, *State, store.Store)
 	}{
 		{
-			name: "human gate reminder fires once and rearms",
+			name: "human review age remains visible as a review queue condition",
 			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.Store) {
 				enteredAt := now.Add(-4 * time.Hour)
 				issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
@@ -94,17 +94,22 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 					t.Fatalf("first refresh warnings = %#v, want one reminder", state.StalenessWarnings)
 				}
 				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(time.Minute))
-				if len(state.StalenessWarnings) != 0 {
-					t.Fatalf("second refresh warnings = %#v, want reminder silenced", state.StalenessWarnings)
+				if len(state.StalenessWarnings) != 1 {
+					t.Fatalf("second refresh warnings = %#v, want one diagnostic condition", state.StalenessWarnings)
 				}
 				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(2*time.Hour))
 				if len(state.StalenessWarnings) != 1 {
-					t.Fatalf("rearmed refresh warnings = %#v, want one reminder", state.StalenessWarnings)
+					t.Fatalf("aged refresh warnings = %#v, want one diagnostic condition", state.StalenessWarnings)
+				}
+				for _, warning := range state.StalenessWarnings {
+					if warning.Warning.Class != observability.ClassReviewQueue || !warning.DeliveredAt.IsZero() || warning.DeliveryAttempts != 0 {
+						t.Fatalf("review queue condition = %#v, want undelivered review queue class", warning)
+					}
 				}
 			},
 		},
 		{
-			name: "human gate reminder rearms without an intervening refresh",
+			name: "human review condition survives a sparse refresh cadence",
 			run: func(t *testing.T, orch *Orchestrator, state *State, _ store.Store) {
 				enteredAt := now.Add(-4 * time.Hour)
 				issue := connector.Issue{ID: "issue-human", Identifier: "corp#74", State: "Human Review"}
@@ -114,7 +119,7 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 				orch.refreshStalenessWarnings(t.Context(), state, nil, now)
 				orch.refreshStalenessWarnings(t.Context(), state, nil, now.Add(2*time.Hour))
 				if len(state.StalenessWarnings) != 1 {
-					t.Fatalf("rearmed refresh warnings = %#v, want one reminder", state.StalenessWarnings)
+					t.Fatalf("aged refresh warnings = %#v, want one diagnostic condition", state.StalenessWarnings)
 				}
 			},
 		},
@@ -206,23 +211,24 @@ func TestDeliverStalenessWarningsBoundsWorkPerTick(t *testing.T) {
 	orch.cfg.StalenessDelivery.WebhookURL = "https://example.test/warnings"
 	state := newState(cfg)
 	for _, id := range []string{"issue-a", "issue-b"} {
-		enteredAt := now.Add(-2 * time.Hour)
-		issue := connector.Issue{ID: id, Identifier: id, State: "Merging", StageUpdatedAt: &enteredAt}
-		state.BoardIssues = append(state.BoardIssues, issue)
-		state.laneEntries[workflowLaneEntryKey(issue)] = enteredAt
+		state.StalenessWarnings[id] = StalenessWarning{
+			Warning:    staleness.Warning{ID: id, Class: observability.ClassFault, IssueID: id},
+			DetectedAt: now,
+			Visible:    true,
+		}
 	}
 
-	orch.refreshStalenessWarnings(t.Context(), &state, nil, now)
+	orch.deliverStalenessWarnings(t.Context(), &state, now)
 	if deliveries != 1 {
 		t.Fatalf("first tick webhook deliveries = %d, want 1", deliveries)
 	}
-	orch.refreshStalenessWarnings(t.Context(), &state, nil, now.Add(time.Minute))
+	orch.deliverStalenessWarnings(t.Context(), &state, now.Add(time.Minute))
 	if deliveries != 2 {
 		t.Fatalf("second tick webhook deliveries = %d, want 2", deliveries)
 	}
 }
 
-func TestHumanGateDeliveryRemainsRetryableUntilSuccess(t *testing.T) {
+func TestHumanGateConditionNeverDelivers(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
@@ -243,9 +249,6 @@ func TestHumanGateDeliveryRemainsRetryableUntilSuccess(t *testing.T) {
 		newStalenessNotifier: func(staleness.DeliveryConfig) (staleness.Notifier, error) {
 			return stalenessNotifierFunc(func(context.Context, staleness.Warning) error {
 				attempts++
-				if attempts == 1 {
-					return errors.New("webhook unavailable")
-				}
 				return nil
 			}), nil
 		},
@@ -265,19 +268,19 @@ func TestHumanGateDeliveryRemainsRetryableUntilSuccess(t *testing.T) {
 		t.Fatalf("warning states after failed delivery = %#v, want no reminder marker", states)
 	}
 	orch.refreshStalenessWarnings(t.Context(), &state, nil, now.Add(stalenessDeliveryRetryBase))
-	if attempts != 2 {
-		t.Fatalf("webhook attempts = %d, want retry after failed delivery", attempts)
+	if attempts != 0 {
+		t.Fatalf("webhook attempts = %d, want none", attempts)
 	}
 	states, err = backend.ListStalenessWarningStates(t.Context(), "detent")
 	if err != nil {
 		t.Fatalf("ListStalenessWarningStates() after success error = %v", err)
 	}
-	if len(states) != 1 || states[0].RemindedAt == nil {
-		t.Fatalf("warning states after successful delivery = %#v, want reminder marker", states)
+	if len(states) != 0 {
+		t.Fatalf("warning states after diagnostic refresh = %#v, want none", states)
 	}
 }
 
-func TestQueuedHumanGateDeliveriesSurviveReminderCadence(t *testing.T) {
+func TestQueuedHumanGateConditionsNeverDeliver(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{Staleness: staleness.Config{
@@ -306,9 +309,11 @@ func TestQueuedHumanGateDeliveriesSurviveReminderCadence(t *testing.T) {
 
 	orch.refreshStalenessWarnings(t.Context(), &state, nil, now)
 	orch.refreshStalenessWarnings(t.Context(), &state, nil, now.Add(time.Minute))
-	slices.Sort(delivered)
-	if !slices.Equal(delivered, []string{"issue-a", "issue-b"}) {
-		t.Fatalf("delivered warnings = %v, want both queued reminders", delivered)
+	if len(delivered) != 0 {
+		t.Fatalf("delivered warnings = %v, want none", delivered)
+	}
+	if len(state.StalenessWarnings) != 2 {
+		t.Fatalf("diagnostic conditions = %#v, want both review queue items", state.StalenessWarnings)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -460,6 +461,7 @@ func demoBoardStalenessWarningsSnapshot(count int) telemetry.Snapshot {
 		reason := reasons[index%len(reasons)]
 		snapshot.StalenessWarnings = append(snapshot.StalenessWarnings, telemetry.StalenessWarning{
 			ID:         "demo-repeated-decision-" + strconv.Itoa(index+1),
+			Class:      observability.ClassFault,
 			ProjectID:  demoPrimaryProjectID,
 			Kind:       "repeated_decision",
 			IssueID:    "demo-warning-" + strconv.Itoa(index+1),

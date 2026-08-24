@@ -246,7 +246,7 @@ func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 		items []string
 	}{
 		{id: "primary", items: []string{"board"}},
-		{id: "monitor", label: "Monitor", items: []string{"fleet", "health"}},
+		{id: "monitor", label: "Monitor", items: []string{"fleet", "diagnostics", "health"}},
 		{id: "insights", label: "Insights", items: []string{"reports", "library"}},
 		{id: "system", label: "System", items: []string{"analytics", "api-keys", "settings"}},
 	}
@@ -314,13 +314,14 @@ func TestAppSidebarContentRendersNavIconsAndTooltipMetadata(t *testing.T) {
 	}
 }
 
-func TestAppShellHealthKindReflectsScheduledPacing(t *testing.T) {
+func TestAppShellHealthKind(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 16, 15, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name     string
 		snapshot telemetry.Snapshot
+		want     primitives.Kind
 	}{
 		{
 			name: "scheduled dispatch recovery",
@@ -330,6 +331,7 @@ func TestAppShellHealthKindReflectsScheduledPacing(t *testing.T) {
 					Kind: "github_rest", Status: "waiting", ResumeAt: now.Add(10 * time.Minute),
 				}},
 			},
+			want: primitives.KindOK,
 		},
 		{
 			name: "scheduled capacity resume",
@@ -339,14 +341,32 @@ func TestAppShellHealthKindReflectsScheduledPacing(t *testing.T) {
 					BackendID: "github-rest", Kind: "github_rest_rate_limit", ResumeAt: now.Add(10 * time.Minute),
 				}},
 			},
+			want: primitives.KindOK,
+		},
+		{
+			name: "current refresh failure",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Project:     telemetry.Project{ID: "detent"},
+				Refresh: telemetry.Refresh{
+					Status:           telemetry.RefreshStatusDegraded,
+					FailureThreshold: 3,
+					Sources: []telemetry.RefreshSource{{
+						Name:          telemetry.RefreshSourceCandidates,
+						FailureStreak: 3,
+						LastError:     "status 503",
+					}},
+				},
+			},
+			want: primitives.KindErr,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := appShellHealthKind(DashboardShellData{Snapshot: tt.snapshot}); got != primitives.KindWarn {
-				t.Fatalf("appShellHealthKind() = %q, want %q", got, primitives.KindWarn)
+			if got := appShellHealthKind(DashboardShellData{Snapshot: tt.snapshot}); got != tt.want {
+				t.Fatalf("appShellHealthKind() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -369,10 +389,10 @@ func TestAppLiveStatusReflectsTrackerFreshness(t *testing.T) {
 		},
 	}}
 
-	if got := appLiveStatusKind(data); got != primitives.KindWarn {
-		t.Fatalf("appLiveStatusKind() = %q, want %q", got, primitives.KindWarn)
+	if got := appLiveStatusKind(data); got != primitives.KindNeutral {
+		t.Fatalf("appLiveStatusKind() = %q, want %q", got, primitives.KindNeutral)
 	}
-	if got := appLiveStatusLabel(data); got != "Live · stale data" {
+	if got := appLiveStatusLabel(data); got != "Live · data delayed" {
 		t.Fatalf("appLiveStatusLabel() = %q", got)
 	}
 }

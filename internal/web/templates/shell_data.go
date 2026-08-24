@@ -95,6 +95,7 @@ func appShellNavGroups(data DashboardShellData) []appNavGroup {
 			Label: "Monitor",
 			Items: []appNavItem{
 				{ID: "fleet", Label: "Fleet", Href: "/fleet", Icon: "network", Active: active == "fleet"},
+				{ID: "diagnostics", Label: "Diagnostics", Href: "/diagnostics", Icon: "gauge", Active: active == "diagnostics"},
 				{ID: "health", Label: "Health", Href: "/health/ui", Icon: "activity", Active: active == "health", HealthDot: true},
 			},
 		},
@@ -131,30 +132,24 @@ func appShellActiveNav(data DashboardShellData) string {
 		return "board"
 	case "fleet":
 		return "fleet"
-	case "library", "reports", "analytics", "health", "api-keys", "settings":
+	case "library", "reports", "analytics", "diagnostics", "health", "api-keys", "settings":
 		return nav
 	}
 	return ""
 }
 
 func appShellHealthKind(data DashboardShellData) primitives.Kind {
-	if len(data.Snapshot.TrackerUnavailable) > 0 || len(data.Snapshot.ForgeUnavailable) > 0 || len(data.Snapshot.CIUnavailable) > 0 {
+	if refreshSnapshotFailed(data.Snapshot) {
 		return primitives.KindErr
 	}
-	switch gitHubAPIHealth(data.Snapshot).State {
-	case gitHubAPIHealthStateBackoff, gitHubAPIHealthStateExhausted:
+	if len(boardAlerts(data.Snapshot)) > 0 {
 		return primitives.KindErr
-	case gitHubAPIHealthStateWarning:
-		return primitives.KindWarn
-	}
-	if len(data.Snapshot.BackendOutages) > 0 || len(data.Snapshot.FailureBreakers) > 0 || len(data.Snapshot.DispatchRecoveries) > 0 {
-		return primitives.KindWarn
-	}
-	if refreshFreshnessKind(data.Snapshot) == primitives.KindWarn {
-		return primitives.KindWarn
 	}
 	switch gitHubAPIHealth(data.Snapshot).State {
 	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
+		return primitives.KindOK
+	}
+	if !data.Snapshot.GeneratedAt.IsZero() || diagnosticsSnapshotHasLoadedData(data.Snapshot) {
 		return primitives.KindOK
 	}
 	return primitives.KindNeutral
@@ -165,17 +160,25 @@ func appLiveStatusKind(data DashboardShellData) primitives.Kind {
 }
 
 func appLiveStatusLabel(data DashboardShellData) string {
-	switch appLiveStatusKind(data) {
-	case primitives.KindWarn:
-		return "Live · stale data"
-	case primitives.KindOK:
-		return "Live · data current"
-	default:
-		return "Live · waiting for data"
+	if refreshSnapshotFailed(data.Snapshot) {
+		return "Live · refresh failed"
 	}
+	if data.Snapshot.LastKnown {
+		return "Live · last-known data"
+	}
+	if data.Snapshot.Refresh.Stale(data.Snapshot.GeneratedAt) || data.Snapshot.Refresh.Behind() {
+		return "Live · data delayed"
+	}
+	if appLiveStatusKind(data) == primitives.KindOK {
+		return "Live · data current"
+	}
+	return "Live · waiting for data"
 }
 
 func appLiveStatusTextClass(data DashboardShellData) string {
+	if appLiveStatusKind(data) == primitives.KindErr {
+		return "text-err"
+	}
 	if appLiveStatusKind(data) == primitives.KindWarn {
 		return "text-warn"
 	}

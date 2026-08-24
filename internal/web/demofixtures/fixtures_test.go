@@ -3,6 +3,7 @@ package demofixtures
 import (
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -107,8 +108,8 @@ func TestBoardStalenessWarningScenarios(t *testing.T) {
 				t.Fatalf("staleness warnings = %d, want %d", len(snapshot.StalenessWarnings), tt.want)
 			}
 			for _, warning := range snapshot.StalenessWarnings {
-				if warning.Kind != "repeated_decision" || warning.IssueURL == "" {
-					t.Fatalf("warning = %#v, want linked repeated decision", warning)
+				if warning.Class != observability.ClassFault || warning.Kind != "repeated_decision" || warning.IssueURL == "" {
+					t.Fatalf("warning = %#v, want linked fault-class repeated decision", warning)
 				}
 			}
 		})

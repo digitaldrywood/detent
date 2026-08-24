@@ -10,11 +10,17 @@ import (
 )
 
 func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
+	if refreshSnapshotFailed(snapshot) {
+		return primitives.KindErr
+	}
 	if snapshot.Refresh.Status == telemetry.RefreshStatusInitializing {
 		return primitives.KindNeutral
 	}
+	if snapshot.LastKnown {
+		return primitives.KindNeutral
+	}
 	if snapshot.Refresh.Stale(snapshot.GeneratedAt) {
-		return primitives.KindWarn
+		return primitives.KindNeutral
 	}
 	if snapshot.Refresh.Behind() {
 		return primitives.KindNeutral
@@ -26,18 +32,24 @@ func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
 		return primitives.KindOK
 	}
 	if snapshotDegraded(snapshot) {
-		return primitives.KindWarn
+		return primitives.KindNeutral
 	}
 	return primitives.KindOK
 }
 
 func refreshFreshnessLabel(snapshot telemetry.Snapshot) string {
+	if refreshSnapshotFailed(snapshot) {
+		return "Refresh failed"
+	}
+	if snapshot.LastKnown {
+		return "Last-known data"
+	}
 	if snapshot.Refresh.Behind() {
 		return "Loop behind"
 	}
 	switch refreshFreshnessKind(snapshot) {
-	case primitives.KindWarn:
-		return "Data stale"
+	case primitives.KindErr:
+		return "Refresh failed"
 	case primitives.KindOK:
 		return "Data current"
 	default:
@@ -57,191 +69,6 @@ func refreshFreshnessSummary(snapshot telemetry.Snapshot) string {
 		return label
 	}
 	return label + " · " + prPipelineAge(oldest, snapshot.GeneratedAt) + " ago"
-}
-
-type refreshStaleDetailRow struct {
-	ProjectID string
-	Sources   string
-	Detail    string
-}
-
-func refreshStaleSummary(snapshot telemetry.Snapshot) string {
-	stale := refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt)
-	if len(stale) == 0 {
-		if strings.TrimSpace(snapshot.Refresh.LastError) != "" {
-			return "The latest tracker refresh failed."
-		}
-		return "Live snapshots do not contain current tracker data."
-	}
-	summary := "Tracker sources"
-	if projectCount := refreshStaleProjectCount(snapshot); projectCount > 0 {
-		summary = boardCountLabel(projectCount, "project", "projects")
-	}
-	if oldest := refreshOldestSuccess(stale); !oldest.IsZero() {
-		summary += ", oldest " + prPipelineAge(oldest, snapshot.GeneratedAt) + " ago"
-	}
-	return summary
-}
-
-func refreshStaleProjectCount(snapshot telemetry.Snapshot) int {
-	projects := make(map[string]struct{})
-	for _, source := range refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt) {
-		projectID := strings.TrimSpace(source.ProjectID)
-		if projectID == "" {
-			projectID = strings.TrimSpace(snapshot.Project.ID)
-		}
-		if projectID != "" {
-			projects[projectID] = struct{}{}
-		}
-	}
-	return len(projects)
-}
-
-func refreshStaleDetailRows(snapshot telemetry.Snapshot) []refreshStaleDetailRow {
-	stale := refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt)
-	if len(stale) == 0 {
-		detail := strings.TrimSpace(snapshot.Refresh.LastError)
-		if detail == "" {
-			detail = "The live connection is still receiving snapshots without current tracker data."
-		}
-		projectID := strings.TrimSpace(snapshot.Project.ID)
-		if projectID == "" {
-			projectID = "Tracker"
-		}
-		return []refreshStaleDetailRow{{
-			ProjectID: projectID,
-			Sources:   "tracker refresh",
-			Detail:    detail,
-		}}
-	}
-	groups := make(map[string][]telemetry.RefreshSource)
-	for _, source := range stale {
-		projectID := strings.TrimSpace(source.ProjectID)
-		if projectID == "" {
-			projectID = strings.TrimSpace(snapshot.Project.ID)
-		}
-		if projectID == "" {
-			projectID = "Tracker"
-		}
-		groups[projectID] = append(groups[projectID], source)
-	}
-	projectIDs := make([]string, 0, len(groups))
-	for projectID := range groups {
-		projectIDs = append(projectIDs, projectID)
-	}
-	sort.Strings(projectIDs)
-	rows := make([]refreshStaleDetailRow, 0, len(projectIDs))
-	for _, projectID := range projectIDs {
-		sources := groups[projectID]
-		sort.SliceStable(sources, func(i, j int) bool {
-			return refreshAlertSourceOrder(sources[i].Name) < refreshAlertSourceOrder(sources[j].Name)
-		})
-		names := make([]string, 0, len(sources))
-		details := make([]string, 0, len(sources))
-		for _, source := range sources {
-			name := refreshAlertSourceName(source.Name)
-			names = append(names, name)
-			detail := name
-			if source.LastSuccessAt != nil {
-				detail += " last succeeded " + prPipelineAge(*source.LastSuccessAt, snapshot.GeneratedAt) + " ago"
-			} else {
-				detail += " has not succeeded"
-			}
-			if source.FailureStreak > 0 {
-				detail += " · " + formatCount(source.FailureStreak) + " consecutive failures"
-			}
-			if condition := refreshSourceConditionDetail(source); condition != "" {
-				detail += " · " + condition
-			}
-			if lastError := strings.TrimSpace(source.LastError); lastError != "" {
-				detail += " · " + lastError
-			}
-			details = append(details, detail)
-		}
-		rows = append(rows, refreshStaleDetailRow{
-			ProjectID: projectID,
-			Sources:   strings.Join(names, "/"),
-			Detail:    strings.Join(details, "; "),
-		})
-	}
-	return rows
-}
-
-func refreshStaleHealthDetail(snapshot telemetry.Snapshot) string {
-	stale := refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt)
-	if len(stale) == 0 {
-		if detail := strings.TrimSpace(snapshot.Refresh.LastError); detail != "" {
-			return "Tracker data is stale: " + detail
-		}
-		return "Tracker data is stale; the live connection is still receiving snapshots without current tracker data."
-	}
-	parts := make([]string, 0, len(stale))
-	for _, source := range stale {
-		part := refreshSourceDisplayName(source.Name)
-		if projectID := strings.TrimSpace(source.ProjectID); projectID != "" {
-			part = projectID + " " + part
-		}
-		if source.LastSuccessAt != nil {
-			part += " last succeeded " + prPipelineAge(*source.LastSuccessAt, snapshot.GeneratedAt) + " ago"
-		} else {
-			part += " has not succeeded"
-		}
-		if source.FailureStreak > 0 {
-			part += " · " + formatCount(source.FailureStreak) + " consecutive failures"
-		}
-		if condition := refreshSourceConditionDetail(source); condition != "" {
-			part += " · " + condition
-		}
-		if lastError := strings.TrimSpace(source.LastError); lastError != "" {
-			part += " · " + lastError
-		}
-		parts = append(parts, part)
-	}
-	return "Tracker data is stale: " + strings.Join(parts, "; ")
-}
-
-func refreshAlertSourceName(name telemetry.RefreshSourceName) string {
-	switch name {
-	case telemetry.RefreshSourceCandidates:
-		return "candidate"
-	case telemetry.RefreshSourceDrift:
-		return "drift"
-	case telemetry.RefreshSourceStatuses:
-		return "status"
-	case telemetry.RefreshSourceProject:
-		return "project"
-	default:
-		value := strings.TrimSpace(string(name))
-		if value == "" {
-			return "tracker"
-		}
-		return value
-	}
-}
-
-func refreshAlertSourceOrder(name telemetry.RefreshSourceName) int {
-	switch name {
-	case telemetry.RefreshSourceCandidates:
-		return 0
-	case telemetry.RefreshSourceDrift:
-		return 1
-	case telemetry.RefreshSourceStatuses:
-		return 2
-	case telemetry.RefreshSourceProject:
-		return 3
-	default:
-		return 4
-	}
-}
-
-func refreshStaleSources(refresh telemetry.Refresh, now time.Time) []telemetry.RefreshSource {
-	stale := make([]telemetry.RefreshSource, 0, len(refresh.Sources))
-	for _, source := range refresh.Sources {
-		if refreshSourceStale(refresh, source, now) {
-			stale = append(stale, source)
-		}
-	}
-	return stale
 }
 
 func refreshSourceStale(refresh telemetry.Refresh, source telemetry.RefreshSource, now time.Time) bool {
@@ -287,6 +114,23 @@ func refreshSourceDisplayName(name telemetry.RefreshSourceName) string {
 	default:
 		return strings.TrimSpace(string(name)) + " fetch"
 	}
+}
+
+func refreshFailureDetail(failure telemetry.RefreshFailure) string {
+	details := make([]string, 0, 4)
+	if failure.Source != "" {
+		details = append(details, refreshSourceDisplayName(failure.Source))
+	}
+	if failure.FailureStreak > 0 {
+		details = append(details, formatCount(failure.FailureStreak)+" consecutive failures")
+	}
+	if condition := strings.TrimSpace(failure.Condition); condition != "" {
+		details = append(details, condition)
+	}
+	if lastError := strings.TrimSpace(failure.LastError); lastError != "" {
+		details = append(details, lastError)
+	}
+	return strings.Join(details, " · ")
 }
 
 func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {

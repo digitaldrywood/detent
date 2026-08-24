@@ -13,7 +13,7 @@ test.afterAll(async () => {
   await runtime?.stop();
 });
 
-test("faked tracker failures show stale data without hiding live SSE", async ({
+test("faked tracker failures stay off the banner and remain visible elsewhere", async ({
   page,
 }) => {
   await page.setExtraHTTPHeaders({
@@ -21,36 +21,23 @@ test("faked tracker failures show stale data without hiding live SSE", async ({
   });
   await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
 
-  const bar = page.locator("#board-alerts");
-  const toggle = page.locator("#board-alerts-toggle");
-  const overlay = page.locator("body > #board-alerts-overlay");
-  await expect(bar).toBeVisible();
-  await expect(bar).toHaveAttribute("data-board-alert-count", "1");
-  await expect(bar).toHaveAttribute("data-board-data-stale", "true");
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(overlay).toBeVisible();
-  await expect(overlay.locator("#board-alert-tracker-stale")).toContainText(
-    "dogfood",
-  );
-  await expect(overlay).toContainText("candidate last succeeded");
-  await expect(overlay).toContainText("3 consecutive failures");
-  await expect(overlay).toContainText("status 503");
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+  await expect(page.locator('[data-sidebar-nav-item="health"] .bg-err')).toHaveCount(1);
 
   const live = page.locator("#live-indicator");
-  await expect(live).toHaveAttribute("data-freshness-kind", "warn");
-  await expect(live).toContainText("Live · stale data");
+  await expect(live).toHaveAttribute("data-freshness-kind", "err");
+  await expect(live).toContainText("Live · refresh failed");
 
-  const originalBar = await bar.elementHandle();
-  const originalOverlay = await overlay.elementHandle();
   await morphCurrentSnapshot(page);
-  expect(await originalBar?.evaluate((element) => element.isConnected)).toBe(true);
-  expect(
-    await originalOverlay?.evaluate((element) => element.isConnected),
-  ).toBe(true);
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(overlay).toBeVisible();
+
+  await page.goto(`${runtime.url}/diagnostics`, {
+    waitUntil: "domcontentloaded",
+  });
+  const diagnostic = page.locator('[id^="diagnostics-condition-refresh-"]');
+  await expect(diagnostic).toHaveAttribute("data-diagnostics-condition-class", "fault");
+  await expect(diagnostic).toContainText("candidate fetch");
+  await expect(diagnostic).toContainText("3 consecutive failures");
+  await expect(diagnostic).toContainText("status 503");
 
   await page.setExtraHTTPHeaders({
     "X-Detent-Demo-Scenario": "health-tracker-stale",
@@ -58,8 +45,8 @@ test("faked tracker failures show stale data without hiding live SSE", async ({
   await page.goto(`${runtime.url}/health/ui`, {
     waitUntil: "domcontentloaded",
   });
-  const health = page.locator("#health-tracker-dogfood");
-  await expect(health).toContainText("Stale");
+  const health = page.locator('[id^="health-refresh-failure-"]');
+  await expect(health).toContainText("Failed");
   await expect(health).toContainText("candidate fetch");
   await expect(health).toContainText("3 consecutive failures");
   await expect(health).toContainText("status 503");
@@ -124,9 +111,9 @@ test("heavy alerts stay one line and never reflow lanes", async ({ page }) => {
     const toggle = page.locator("#board-alerts-toggle");
     const lanes = page.locator("#board-lanes");
     const overlay = page.locator("body > #board-alerts-overlay");
-    await expect(bar).toHaveAttribute("data-board-alert-count", "5");
-    await expect(bar).toContainText("Board showing last-known state");
-    await expect(bar).toContainText("+4");
+    await expect(bar).toHaveAttribute("data-board-alert-count", "3");
+    await expect(bar).toContainText("Project failure breaker (2 projects)");
+    await expect(bar).toContainText("+2");
     const heavyHeight = await bar.evaluate((element) => element.getBoundingClientRect().height);
     expect(heavyHeight).toBe(22);
     expect(await bar.evaluate((element) => element.scrollHeight)).toBe(20);
@@ -165,7 +152,7 @@ test("heavy alerts stay one line and never reflow lanes", async ({ page }) => {
 test("collapsed alert height is independent of alert count", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.setExtraHTTPHeaders({
-    "X-Detent-Demo-Scenario": "board-tracker-stale",
+    "X-Detent-Demo-Scenario": "board-staleness-one",
   });
   await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
   const oneAlertHeight = await page
@@ -183,14 +170,14 @@ test("collapsed alert height is independent of alert count", async ({ page }) =>
   expect(fiveAlertHeight).toBe(oneAlertHeight);
 });
 
-test("zero, one, and twenty warnings keep one indicator slot and fixed lanes", async ({
+test("zero, one, and twenty faults keep one indicator slot and fixed lanes", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
 
   await openBoardScenario(page, "fleet-healthy-parallel-work");
   await expect(page.locator("#board-alerts")).toHaveCount(0);
-  const zeroWarningLaneY = await page
+  const zeroFaultLaneY = await page
     .locator("#board-lanes")
     .evaluate((element) => element.getBoundingClientRect().y);
 
@@ -198,14 +185,14 @@ test("zero, one, and twenty warnings keep one indicator slot and fixed lanes", a
   const oneIndicator = page.locator("#board-alerts");
   await expect(oneIndicator).toHaveCount(1);
   await expect(oneIndicator).toHaveAttribute("data-board-alert-count", "1");
-  await expect(oneIndicator).toContainText("1 warning");
-  await expect(oneIndicator).toHaveClass(/border-warn/);
+  await expect(oneIndicator).toContainText("1 fault");
+  await expect(oneIndicator).toHaveClass(/border-err/);
   await expect(page.locator("[id^='exception-staleness-']")).toHaveCount(0);
   expect(
     await page
       .locator("#board-lanes")
       .evaluate((element) => element.getBoundingClientRect().y),
-  ).toBe(zeroWarningLaneY);
+  ).toBe(zeroFaultLaneY);
 
   await openBoardScenario(page, "board-staleness-twenty");
   const twentyIndicator = page.locator("#board-alerts");
@@ -214,20 +201,20 @@ test("zero, one, and twenty warnings keep one indicator slot and fixed lanes", a
     "data-board-alert-count",
     "20",
   );
-  await expect(twentyIndicator).toContainText("20 warnings");
+  await expect(twentyIndicator).toContainText("20 faults");
   await expect(twentyIndicator).toContainText("+19");
   expect(
     await page
       .locator("#board-lanes")
       .evaluate((element) => element.getBoundingClientRect().y),
-  ).toBe(zeroWarningLaneY);
+  ).toBe(zeroFaultLaneY);
 
   await page.locator("#board-alerts-toggle").click();
   const overlay = page.locator("body > #board-alerts-overlay");
-  const warnings = overlay.locator('[data-board-alert="staleness-warning"]');
-  await expect(warnings).toHaveCount(20);
-  await expect(warnings.first()).toContainText("digitaldrywood/detent#1573");
-  await expect(warnings.last()).toContainText("digitaldrywood/detent#1554");
+  const faults = overlay.locator('[data-board-alert="staleness-warning"]');
+  await expect(faults).toHaveCount(20);
+  await expect(faults.first()).toContainText("digitaldrywood/detent#1573");
+  await expect(faults.last()).toContainText("digitaldrywood/detent#1554");
   await expect(overlay.getByRole("link", { name: "Open" })).toHaveCount(20);
 });
 
@@ -257,13 +244,13 @@ test("dismiss updates both counts and stays gone through the next SSE morph", as
   await warnings.first().getByRole("button", { name: "Dismiss", exact: true }).click();
 
   await expect(bar).toHaveAttribute("data-board-alert-count", "19");
-  await expect(bar.locator("[data-board-alert-count-label]")).toHaveText("19 warnings");
-  await expect(overlay.locator("[data-board-alert-count-label]")).toHaveText("19 warnings");
+  await expect(bar.locator("[data-board-alert-count-label]")).toHaveText("19 faults");
+  await expect(overlay.locator("[data-board-alert-count-label]")).toHaveText("19 faults");
   await expect(bar).toHaveAttribute("data-board-alert-tone", nextLeadTone);
   await expect(bar.locator("[data-board-alert-lead-summary]")).toHaveText(nextLeadSummary);
   await expect(page.locator("#board-alerts-toggle")).toHaveAttribute(
     "aria-label",
-    `19 board warnings. Highest severity: ${nextLeadSummary}. Expand details.`,
+    `19 board faults. Highest severity: ${nextLeadSummary}. Expand details.`,
   );
   expect(
     await bar.locator("[data-board-alert-lead-glyph]").evaluate((element) => element.innerHTML),
@@ -289,7 +276,7 @@ test("dismiss updates both counts and stays gone through the next SSE morph", as
   ).toHaveCount(0);
 });
 
-test("bulk dismiss submits the rendered warning IDs and clears both counts", async ({
+test("bulk dismiss submits the rendered fault IDs and clears both counts", async ({
   page,
 }) => {
   let submittedBody = "";
@@ -317,7 +304,7 @@ test("bulk dismiss submits the rendered warning IDs and clears both counts", asy
   await expect(page.locator("#board-alerts")).toHaveCount(0);
 });
 
-test("warning disclosure state survives morphs without auto-expanding", async ({
+test("fault disclosure state survives morphs without auto-expanding", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -372,7 +359,7 @@ test("warning disclosure state survives morphs without auto-expanding", async ({
   ).toBe(true);
 });
 
-test("twenty-warning panel scrolls internally at narrow width", async ({
+test("twenty-fault panel scrolls internally at narrow width", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -415,10 +402,9 @@ test("project board installs alert disclosure behavior", async ({ page }) => {
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(overlay).toBeVisible();
-  await expect(overlay.locator("#board-alert-update-pending")).toContainText(
-    "A Detent update is ready to apply.",
+  await expect(overlay.locator("#board-alert-backend-capacity")).toContainText(
+    "Dispatch is paused for anthropic",
   );
-  await expect(overlay.getByRole("button", { name: "Apply now" })).toBeVisible();
 });
 
 async function boardLaneGeometry(page) {

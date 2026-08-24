@@ -9,6 +9,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -28,8 +29,8 @@ func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
 		GeneratedAt: now,
 		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
 		StalenessWarnings: []telemetry.StalenessWarning{
-			{ID: "warning-1", ProjectID: "detent", Kind: "lane_aging", Identifier: "detent#1", Detail: "first warning"},
-			{ID: "warning-2", ProjectID: "detent", Kind: "repeated_decision", Identifier: "detent#2", Detail: "second warning"},
+			{ID: "warning-1", Class: observability.ClassFault, ProjectID: "detent", Kind: "lane_aging", Identifier: "detent#1", Detail: "first warning"},
+			{ID: "warning-2", Class: observability.ClassFault, ProjectID: "detent", Kind: "repeated_decision", Identifier: "detent#2", Detail: "second warning"},
 		},
 	}
 	deps := testDeps(t)
@@ -46,7 +47,7 @@ func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
 		GlobalConfig:        globalconfig.Config{APIToken: "detent_test_token"},
 		Now:                 func() time.Time { return now },
 		SSETickInterval:     time.Hour,
-		SSEFragmentInterval: time.Millisecond,
+		SSEFragmentInterval: -1,
 	}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -177,7 +178,7 @@ func TestBulkStalenessWarningAcknowledgementUsesExplicitTransactionalIDs(t *test
 
 func assertFilteredStalenessSnapshot(t *testing.T, snapshot string) {
 	t.Helper()
-	for _, want := range []string{`data-board-alert-count="1"`, ">1 warning<", "detent#2"} {
+	for _, want := range []string{`data-board-alert-count="1"`, ">1 fault<", "detent#2"} {
 		if !strings.Contains(snapshot, want) {
 			t.Fatalf("filtered snapshot missing %q:\n%s", want, snapshot)
 		}

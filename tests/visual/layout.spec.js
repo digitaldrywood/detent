@@ -12,6 +12,7 @@ const groupedSidebarSequence = [
   "section:projects",
   "section:monitor",
   "nav:fleet",
+  "nav:diagnostics",
   "nav:health",
   "section:insights",
   "nav:reports",
@@ -497,7 +498,7 @@ test("board hides informational recovery and overload notices", async ({
   );
 });
 
-test("board hides scheduled pacing while health retains its signal", async ({
+test("board and health stay quiet while diagnostics retains scheduled pacing", async ({
   page,
 }) => {
   await openScenario(page, {
@@ -516,8 +517,25 @@ test("board hides scheduled pacing while health retains its signal", async ({
     "board-figures",
   );
   await expect(
-    page.locator('[data-sidebar-nav-item="health"] .bg-warn'),
+    page.locator('[data-sidebar-nav-item="health"] .bg-ok'),
   ).toBeVisible();
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-warn'),
+  ).toHaveCount(0);
+
+  await page.goto(`${screenshotsRuntime.url}/diagnostics`, {
+    waitUntil: "domcontentloaded",
+  });
+  const recovery = page.locator('[id^="diagnostics-condition-recovery-"]');
+  await expect(recovery).toHaveCount(3);
+  expect(
+    await recovery.evaluateAll((rows) =>
+      rows.map((row) => row.dataset.diagnosticsConditionClass),
+    ),
+  ).toEqual(["diagnostic", "diagnostic", "diagnostic"]);
+  await expect(
+    recovery.filter({ hasText: "GitHub REST capacity" }),
+  ).toHaveCount(2);
 });
 
 test("board shows only health states needing attention", async ({
@@ -1213,7 +1231,7 @@ test("health page covers key rate-limit states", async ({ page }, testInfo) => {
   }
 });
 
-test("health keeps full waiting and ramp recovery detail", async ({ page }) => {
+test("health keeps only fault-class recovery detail", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "health-dispatch-recoveries",
@@ -1227,47 +1245,48 @@ test("health keeps full waiting and ramp recovery detail", async ({ page }) => {
     recoveries.getByText("Dispatch waiting on GitHub REST capacity", {
       exact: true,
     }),
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   await expect(
     recoveries.getByText("Dispatch recovery ramp active", { exact: true }),
-  ).toHaveCount(1);
-  await expect(recoveries).toContainText("Project dogfood");
+  ).toHaveCount(0);
+  await expect(recoveries).not.toContainText("Project dogfood");
   await expect(recoveries).toContainText("Project docs-site");
-  await expect(recoveries).toContainText("Project billing-api");
+  await expect(recoveries).not.toContainText("Project billing-api");
   await expect(page.locator("#health-verdict")).not.toContainText(
     "All systems nominal",
   );
-  await expect(page.locator("#backend-overload-retries")).toContainText(
-    "3 overload retries last hour",
-  );
+  await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
 });
 
-test("health keeps full scheduled pacing detail hidden from the board", async ({
+test("diagnostics keeps full scheduled pacing detail hidden from the board", async ({
   page,
 }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
-    scenario: "health-scheduled-pacing",
-    route: "/health/ui",
-    waitSelector: "#dispatch-recovery-status",
+    scenario: "diagnostics-scheduled-pacing",
+    route: "/diagnostics",
+    waitSelector: "#diagnostics-conditions",
     viewport: desktopViewport,
   });
 
-  const recoveries = page.locator("#dispatch-recovery-status");
+  const recoveries = page.locator('[id^="diagnostics-condition-recovery-"]');
   await expect(
-    recoveries.getByText("Dispatch waiting on GitHub REST capacity", {
-      exact: true,
-    }),
+    recoveries.filter({ hasText: "GitHub REST capacity" }),
   ).toHaveCount(2);
-  await expect(recoveries).toContainText(
-    "remaining 288 at or below dispatch floor",
-  );
-  await expect(recoveries).toContainText("rest_budget_reserved");
-  await expect(page.locator("#backend-capacity-outage")).toContainText(
-    "GitHub REST dispatch paused",
-  );
   await expect(
-    page.locator('[data-sidebar-nav-item="health"] .bg-warn'),
+    recoveries.filter({ hasText: "remaining 288 at or below dispatch floor" }),
+  ).toHaveCount(1);
+  await expect(
+    recoveries.filter({ hasText: "rest_budget_reserved" }),
+  ).toHaveCount(1);
+  const outage = page.locator('[id^="diagnostics-condition-backend-"]');
+  await expect(outage).toHaveAttribute(
+    "data-diagnostics-condition-class",
+    "diagnostic",
+  );
+  await expect(outage).toContainText("GitHub REST dispatch paused");
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-ok'),
   ).toBeVisible();
 });
 

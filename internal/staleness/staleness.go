@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/observability"
 )
 
 const (
@@ -91,22 +93,23 @@ type Decision struct {
 }
 
 type Warning struct {
-	ID                   string    `json:"id"`
-	ProjectID            string    `json:"project_id,omitempty"`
-	Kind                 string    `json:"kind"`
-	IssueID              string    `json:"issue_id,omitempty"`
-	Identifier           string    `json:"identifier,omitempty"`
-	IssueURL             string    `json:"issue_url,omitempty"`
-	Title                string    `json:"title,omitempty"`
-	Lane                 string    `json:"lane,omitempty"`
-	Reason               string    `json:"reason"`
-	Detail               string    `json:"detail"`
-	Since                time.Time `json:"since"`
-	AgeSeconds           int64     `json:"age_seconds"`
-	ThresholdSeconds     int64     `json:"threshold_seconds"`
-	Count                int       `json:"count,omitempty"`
-	WaitingOnHuman       bool      `json:"waiting_on_human,omitempty"`
-	HasRecoveryPredicate bool      `json:"has_recovery_predicate,omitempty"`
+	ID                   string              `json:"id"`
+	Class                observability.Class `json:"class"`
+	ProjectID            string              `json:"project_id,omitempty"`
+	Kind                 string              `json:"kind"`
+	IssueID              string              `json:"issue_id,omitempty"`
+	Identifier           string              `json:"identifier,omitempty"`
+	IssueURL             string              `json:"issue_url,omitempty"`
+	Title                string              `json:"title,omitempty"`
+	Lane                 string              `json:"lane,omitempty"`
+	Reason               string              `json:"reason"`
+	Detail               string              `json:"detail"`
+	Since                time.Time           `json:"since"`
+	AgeSeconds           int64               `json:"age_seconds"`
+	ThresholdSeconds     int64               `json:"threshold_seconds"`
+	Count                int                 `json:"count,omitempty"`
+	WaitingOnHuman       bool                `json:"waiting_on_human,omitempty"`
+	HasRecoveryPredicate bool                `json:"has_recovery_predicate,omitempty"`
 }
 
 func Evaluate(cfg Config, input Input, now time.Time) []Warning {
@@ -187,6 +190,7 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 		waitingOnHuman := threshold.HumanGate || item.WaitingOnHuman
 		warnings = append(warnings, Warning{
 			ID:                   warningID(key),
+			Class:                observability.Staleness(waitingOnHuman),
 			ProjectID:            strings.TrimSpace(input.ProjectID),
 			Kind:                 KindLaneAging,
 			IssueID:              strings.TrimSpace(item.ID),
@@ -228,6 +232,7 @@ func parkCauseWarning(projectID string, item Item, now time.Time) (Warning, bool
 	key := KindParkCauseStale + "\x00" + identity + "\x00" + normalize(item.State) + "\x00" + strings.TrimSpace(item.ParkCauseKey) + "\x00" + timestampKey(item.EnteredAt)
 	return Warning{
 		ID:                   warningID(key),
+		Class:                observability.ClassDiagnostic,
 		ProjectID:            strings.TrimSpace(projectID),
 		Kind:                 KindParkCauseStale,
 		IssueID:              strings.TrimSpace(item.ID),
@@ -260,6 +265,7 @@ func laneReentryWarning(cfg Config, projectID string, item Item, threshold LaneT
 	key := KindLaneReentry + "\x00" + identity + "\x00" + normalize(item.State) + "\x00" + timestampKey(item.EnteredAt)
 	return Warning{
 		ID:                   warningID(key),
+		Class:                observability.Staleness(waitingOnHuman),
 		ProjectID:            strings.TrimSpace(projectID),
 		Kind:                 KindLaneReentry,
 		IssueID:              strings.TrimSpace(item.ID),
@@ -327,6 +333,7 @@ func projectLivenessWarning(cfg Config, input Input, now time.Time) (Warning, bo
 	key := KindProjectLiveness + "\x00" + projectID + "\x00" + timestampKey(baseline)
 	return Warning{
 		ID:               warningID(key),
+		Class:            observability.ClassDiagnostic,
 		ProjectID:        projectID,
 		Kind:             KindProjectLiveness,
 		Reason:           "dispatchable work has no recent completion",
@@ -352,6 +359,7 @@ func mergeLivenessWarning(cfg Config, input Input, now time.Time) (Warning, bool
 	key := KindMergeLiveness + "\x00" + projectID + "\x00" + timestampKey(baseline)
 	return Warning{
 		ID:               warningID(key),
+		Class:            observability.ClassDiagnostic,
 		ProjectID:        projectID,
 		Kind:             KindMergeLiveness,
 		Lane:             "Merging",
@@ -428,6 +436,7 @@ func repeatedDecisionWarnings(cfg Config, input Input, now time.Time) []Warning 
 		}, "\x00")
 		warnings = append(warnings, Warning{
 			ID:               warningID(conditionKey),
+			Class:            observability.ClassDiagnostic,
 			ProjectID:        strings.TrimSpace(input.ProjectID),
 			Kind:             KindRepeatedDecision,
 			IssueID:          strings.TrimSpace(current.decision.IssueID),

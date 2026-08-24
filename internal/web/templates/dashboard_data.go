@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -357,6 +358,19 @@ type diagnosticsSummaryFact struct {
 	DetailReferenceURL string
 	DetailSuffix       string
 	Kind               primitives.Kind
+}
+
+type diagnosticsConditionRow struct {
+	ID         string
+	Class      observability.Class
+	ClassLabel string
+	Kind       primitives.Kind
+	ProjectID  string
+	Target     string
+	TargetURL  string
+	Summary    string
+	Detail     string
+	ObservedAt time.Time
 }
 
 type runtimeStoreTableRow struct {
@@ -735,6 +749,13 @@ func ProjectDiagnosticsShellDataFromDashboard(data DashboardData) DashboardShell
 	return shell
 }
 
+func DiagnosticsShellDataFromDashboard(data DashboardData) DashboardShellData {
+	shell := DashboardShellDataFromDashboard(data)
+	shell.ActiveNav = "diagnostics"
+	shell.IncludeDashboardCharts = true
+	return shell
+}
+
 func HealthShellDataFromDashboard(data DashboardData) DashboardShellData {
 	shell := DashboardShellDataFromDashboard(data)
 	shell.ActiveNav = "health"
@@ -825,6 +846,9 @@ func eventsPath(data DashboardShellData) string {
 	}
 	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "kanban" {
 		return "/events?view=kanban"
+	}
+	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "diagnostics" {
+		return "/events?view=diagnostics"
 	}
 	if activeNav := staticSidebarNav(data.ActiveNav); activeNav != "" {
 		values := url.Values{"nav": []string{activeNav}}
@@ -1638,11 +1662,24 @@ func diagnosticsSnapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
 		len(snapshot.Events) > 0 ||
 		len(snapshot.WorkAttempts) > 0 ||
 		len(snapshot.SchedulerDecisions) > 0 ||
+		len(snapshot.StalenessWarnings) > 0 ||
+		len(snapshot.DispatchStalls) > 0 ||
+		len(snapshot.BackendOutages) > 0 ||
+		len(snapshot.DispatchRecoveries) > 0 ||
+		len(snapshot.AdmissionProposals) > 0 ||
+		len(snapshot.FailureBreakers) > 0 ||
+		len(snapshot.StrandedActiveIssues) > 0 ||
 		len(snapshot.TokenTrend) > 0 ||
 		snapshot.Counts != (telemetry.Counts{}) ||
 		snapshot.Tokens != (telemetry.Tokens{}) ||
 		snapshot.Throughput != (telemetry.TokenThroughput{}) ||
 		snapshot.RateLimits != nil ||
+		snapshotHasRefreshSignal(snapshot.Refresh) ||
+		len(snapshot.TrackerUnavailable) > 0 ||
+		len(snapshot.ForgeUnavailable) > 0 ||
+		len(snapshot.CIUnavailable) > 0 ||
+		!snapshot.Update.IsZero() ||
+		!snapshot.Release.IsZero() ||
 		diagnosticsBudgetHasLoadedData(snapshot.Budget) ||
 		diagnosticsProjectSnapshotsHaveLoadedData(snapshot.Projects) ||
 		snapshot.LifetimeTotals.Available ||
@@ -5171,6 +5208,350 @@ func diagnosticsTabIndex(active bool) string {
 	return "-1"
 }
 
+func diagnosticsConditionRowClass(last bool) string {
+	class := "grid grid-cols-[105px_140px_150px_minmax(0,1fr)_120px] items-start gap-3 px-4 py-3"
+	if !last {
+		class += " border-b border-line"
+	}
+	return class
+}
+
+func diagnosticsConditionRows(snapshot telemetry.Snapshot) []diagnosticsConditionRow {
+	rows := make([]diagnosticsConditionRow, 0, len(snapshot.StalenessWarnings)+len(snapshot.DispatchStalls)+len(snapshot.BackendOutages)+len(snapshot.DispatchRecoveries)+len(snapshot.AdmissionProposals)+len(snapshot.Projects))
+	for index, warning := range snapshot.StalenessWarnings {
+		class := stalenessConditionClass(warning)
+		target := boardFirstNonBlank(warning.Identifier, warning.IssueID, warning.Lane, "project")
+		detail := strings.TrimSpace(warning.Detail)
+		if warning.AgeSeconds > 0 {
+			detail = strings.Trim(strings.TrimSpace(detail)+" · age "+formatDuration(float64(warning.AgeSeconds)), " ·")
+		}
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-staleness-" + boardAlertRowSlug(warning.ID, index),
+			Class:      class,
+			ClassLabel: diagnosticsConditionClassLabel(class),
+			Kind:       diagnosticsConditionKind(class),
+			ProjectID:  diagnosticsConditionProject(warning.ProjectID),
+			Target:     target,
+			TargetURL:  strings.TrimSpace(warning.IssueURL),
+			Summary:    stalenessExceptionTitle(warning),
+			Detail:     detail,
+			ObservedAt: warning.LastObservedAt,
+		})
+	}
+	for index, stall := range snapshot.DispatchStalls {
+		class := dispatchConditionClass(stall)
+		if class == "" {
+			continue
+		}
+		detail := boardCountLabel(stall.CandidateCount, "candidate", "candidates") + " skipped for " + formatDuration(float64(stall.StallDurationSeconds))
+		if reason := strings.TrimSpace(stall.WaitReason); reason != "" {
+			detail += " · " + reason
+		}
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-dispatch-" + boardAlertRowSlug(stall.ProjectID, index),
+			Class:      class,
+			ClassLabel: diagnosticsConditionClassLabel(class),
+			Kind:       diagnosticsConditionKind(class),
+			ProjectID:  diagnosticsConditionProject(stall.ProjectID),
+			Target:     "Dispatch",
+			Summary:    diagnosticsDispatchConditionSummary(stall, class),
+			Detail:     detail,
+			ObservedAt: stall.ObservedAt,
+		})
+	}
+	for index, outage := range snapshot.BackendOutages {
+		class := observability.BackendOutage(outage.Kind)
+		detail, detailAt, showDetailAt := backendCapacityOutageDetailParts(outage, snapshot.GeneratedAt)
+		if showDetailAt && !detailAt.IsZero() {
+			detail += " " + localTimeToken(detailAt, LocalDateTimeZone)
+		}
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-backend-" + boardAlertRowSlug(boardAlertBackendCapacityRowKey(outage), index),
+			Class:      class,
+			ClassLabel: diagnosticsConditionClassLabel(class),
+			Kind:       diagnosticsConditionKind(class),
+			ProjectID:  diagnosticsConditionProject(outage.ProjectID),
+			Target:     backendCapacityBackendID(outage),
+			Summary:    backendCapacityOutageTitle(outage),
+			Detail:     detail,
+			ObservedAt: outage.LastObservedAt,
+		})
+	}
+	for index, breaker := range snapshot.FailureBreakers {
+		class := failureBreakerConditionClass(breaker)
+		detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt)
+		if showResumeAt && !resumeAt.IsZero() {
+			detail += " " + localTimeToken(resumeAt, LocalDateTimeZone)
+		}
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-breaker-" + boardAlertRowSlug(breaker.ProjectID+breaker.Class, index),
+			Class:      class,
+			ClassLabel: diagnosticsConditionClassLabel(class),
+			Kind:       diagnosticsConditionKind(class),
+			ProjectID:  diagnosticsConditionProject(breaker.ProjectID),
+			Target:     "Failure breaker",
+			Summary:    failureBreakerCauseLabel(breaker),
+			Detail:     detail,
+			ObservedAt: breaker.TrippedAt,
+		})
+	}
+	for index, issue := range snapshot.StrandedActiveIssues {
+		target := boardFirstNonBlank(issue.Identifier, issue.IssueID, "issue")
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-stranded-" + boardAlertRowSlug(target, index),
+			Class:      observability.ClassFault,
+			ClassLabel: diagnosticsConditionClassLabel(observability.ClassFault),
+			Kind:       diagnosticsConditionKind(observability.ClassFault),
+			ProjectID:  diagnosticsConditionProject(issue.ProjectID),
+			Target:     target,
+			TargetURL:  strings.TrimSpace(issue.IssueURL),
+			Summary:    "Active work has no live worker",
+			Detail:     strings.Trim(formatDuration(float64(issue.DurationSeconds))+" · "+strings.TrimSpace(issue.LastRefusalReason), " ·"),
+			ObservedAt: diagnosticsConditionObservedAt(issue.LastRefusalAt, issue.Since),
+		})
+	}
+	for index, condition := range snapshot.TrackerUnavailable {
+		rows = append(rows, diagnosticsFaultRow(
+			"tracker-"+boardAlertRowSlug(condition.ProjectID, index),
+			condition.ProjectID,
+			"Tracker",
+			"Tracker is unavailable",
+			strings.Trim(strings.TrimSpace(condition.Operation)+" · "+strings.TrimSpace(condition.LastError), " ·"),
+			condition.LastObservedAt,
+		))
+	}
+	for index, condition := range snapshot.ForgeUnavailable {
+		rows = append(rows, diagnosticsFaultRow(
+			"forge-"+boardAlertRowSlug(condition.ProjectID, index),
+			condition.ProjectID,
+			"Forge",
+			"Forge writes are unavailable",
+			strings.Trim(strings.TrimSpace(condition.Operation)+" · "+strings.TrimSpace(condition.LastError), " ·"),
+			condition.LastObservedAt,
+		))
+	}
+	for index, condition := range snapshot.CIUnavailable {
+		rows = append(rows, diagnosticsFaultRow(
+			"ci-"+boardAlertRowSlug(condition.ProjectID, index),
+			condition.ProjectID,
+			"CI",
+			"Required checks are unavailable",
+			boardCountLabel(condition.UnstartedCheckCount, "check", "checks")+" did not start",
+			condition.LastObservedAt,
+		))
+	}
+	for index, failure := range snapshot.RefreshFailures() {
+		rows = append(rows, diagnosticsFaultRow(
+			"refresh-"+boardAlertRowSlug(failure.ProjectID+string(failure.Source), index),
+			failure.ProjectID,
+			"Tracker refresh",
+			"Live tracker refresh failed",
+			refreshFailureDetail(failure),
+			diagnosticsConditionObservedAt(failure.LastErrorAt, time.Time{}),
+		))
+	}
+	for index, recovery := range snapshot.DispatchRecoveries {
+		class := observability.DispatchRecovery(recovery.Status, recovery.ResumeAt, snapshot.GeneratedAt)
+		detail, detailAt, showDetailAt := dispatchRecoveryDetailParts(recovery, snapshot.GeneratedAt)
+		if showDetailAt && !detailAt.IsZero() {
+			detail += " " + localTimeToken(detailAt, LocalDateTimeZone)
+		}
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-recovery-" + boardAlertRowSlug(recovery.ProjectID+recovery.Kind, index),
+			Class:      class,
+			ClassLabel: diagnosticsConditionClassLabel(class),
+			Kind:       diagnosticsConditionKind(class),
+			ProjectID:  diagnosticsConditionProject(recovery.ProjectID),
+			Target:     "Dispatch recovery",
+			Summary:    dispatchRecoveryKindLabel(recovery.Kind) + " · " + strings.TrimSpace(recovery.Status),
+			Detail:     detail,
+			ObservedAt: recovery.StartedAt,
+		})
+	}
+	for index, proposal := range snapshot.AdmissionProposals {
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-admission-" + boardAlertRowSlug(proposal.ID, index),
+			Class:      observability.ClassReviewQueue,
+			ClassLabel: diagnosticsConditionClassLabel(observability.ClassReviewQueue),
+			Kind:       diagnosticsConditionKind(observability.ClassReviewQueue),
+			ProjectID:  diagnosticsConditionProject(proposal.ProjectID),
+			Target:     admissionProposalTarget(proposal),
+			TargetURL:  strings.TrimSpace(proposal.IssueURL),
+			Summary:    "Admission decision",
+			Detail:     admissionProposalTiming(proposal, snapshot.GeneratedAt),
+			ObservedAt: proposal.CreatedAt,
+		})
+	}
+	rows = append(rows, diagnosticsPacingRows(snapshot)...)
+	if snapshot.OverloadRetriesLastHour > 0 {
+		class := observability.ClassDiagnostic
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-overload-retries",
+			Class:      class,
+			ClassLabel: diagnosticsConditionClassLabel(class),
+			Kind:       diagnosticsConditionKind(class),
+			ProjectID:  "Fleet",
+			Target:     "Backend capacity",
+			Summary:    formatCount(snapshot.OverloadRetriesLastHour) + " overload retries last hour",
+			Detail:     "Transient overload retries are handled automatically.",
+			ObservedAt: snapshot.GeneratedAt,
+		})
+	}
+	if detail := strings.TrimSpace(snapshot.Update.LastError); detail != "" {
+		rows = append(rows, diagnosticsFaultRow(
+			"update",
+			"",
+			"Detent update",
+			"Automatic update failed",
+			detail,
+			diagnosticsConditionObservedAt(snapshot.Update.LastCheckAt, time.Time{}),
+		))
+	} else if detentUpdatePending(snapshot.Update) {
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-update",
+			Class:      observability.ClassDiagnostic,
+			ClassLabel: diagnosticsConditionClassLabel(observability.ClassDiagnostic),
+			Kind:       diagnosticsConditionKind(observability.ClassDiagnostic),
+			ProjectID:  "Fleet",
+			Target:     "Detent update",
+			Summary:    "Update is waiting for active work to drain",
+			Detail:     detentPendingUpdateVersion(snapshot.Update),
+			ObservedAt: diagnosticsConditionObservedAt(snapshot.Update.PendingSince, time.Time{}),
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if diagnosticsConditionRank(rows[i].Class) != diagnosticsConditionRank(rows[j].Class) {
+			return diagnosticsConditionRank(rows[i].Class) < diagnosticsConditionRank(rows[j].Class)
+		}
+		if rows[i].ProjectID != rows[j].ProjectID {
+			return rows[i].ProjectID < rows[j].ProjectID
+		}
+		if !rows[i].ObservedAt.Equal(rows[j].ObservedAt) {
+			return rows[i].ObservedAt.After(rows[j].ObservedAt)
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	return rows
+}
+
+func diagnosticsFaultRow(id string, projectID string, target string, summary string, detail string, observedAt time.Time) diagnosticsConditionRow {
+	return diagnosticsConditionRow{
+		ID:         "diagnostics-condition-" + id,
+		Class:      observability.ClassFault,
+		ClassLabel: diagnosticsConditionClassLabel(observability.ClassFault),
+		Kind:       diagnosticsConditionKind(observability.ClassFault),
+		ProjectID:  diagnosticsConditionProject(projectID),
+		Target:     target,
+		Summary:    summary,
+		Detail:     detail,
+		ObservedAt: observedAt,
+	}
+}
+
+func diagnosticsConditionObservedAt(value *time.Time, fallback time.Time) time.Time {
+	if value != nil && !value.IsZero() {
+		return value.UTC()
+	}
+	return fallback
+}
+
+func failureBreakerConditionClass(breaker telemetry.FailureBreaker) observability.Class {
+	if len(actionableBoardFailureBreakers([]telemetry.FailureBreaker{breaker})) == 1 {
+		return observability.ClassFault
+	}
+	return observability.ClassDiagnostic
+}
+
+func diagnosticsPacingRows(snapshot telemetry.Snapshot) []diagnosticsConditionRow {
+	type pacingScope struct {
+		projectID string
+		pacing    telemetry.RateWindowPacing
+	}
+	scopes := make([]pacingScope, 0, len(snapshot.Projects)+1)
+	if snapshot.Dispatch.RateWindowPacing.Applicable || snapshot.Dispatch.RateWindowPacing.ScalingApplied {
+		scopes = append(scopes, pacingScope{projectID: snapshot.Dispatch.ProjectID, pacing: snapshot.Dispatch.RateWindowPacing})
+	}
+	for _, project := range snapshot.Projects {
+		if project.Dispatch.RateWindowPacing.Applicable || project.Dispatch.RateWindowPacing.ScalingApplied {
+			scopes = append(scopes, pacingScope{projectID: project.Project.ID, pacing: project.Dispatch.RateWindowPacing})
+		}
+	}
+	rows := make([]diagnosticsConditionRow, 0, len(scopes))
+	seen := map[string]struct{}{}
+	for index, scope := range scopes {
+		projectID := diagnosticsConditionProject(scope.projectID)
+		if _, ok := seen[projectID]; ok {
+			continue
+		}
+		seen[projectID] = struct{}{}
+		detail := "permit ceiling " + formatCount(scope.pacing.PermitCeiling) + " · bucket " + strings.TrimSpace(scope.pacing.BucketStatus)
+		if scope.pacing.ObservedRemainingPercent != nil {
+			detail += " · " + formatContextPercent(*scope.pacing.ObservedRemainingPercent) + " remaining"
+		}
+		rows = append(rows, diagnosticsConditionRow{
+			ID:         "diagnostics-condition-pacing-" + boardAlertRowSlug(projectID, index),
+			Class:      observability.ClassDiagnostic,
+			ClassLabel: diagnosticsConditionClassLabel(observability.ClassDiagnostic),
+			Kind:       diagnosticsConditionKind(observability.ClassDiagnostic),
+			ProjectID:  projectID,
+			Target:     "Provider pacing",
+			Summary:    strings.TrimSpace(scope.pacing.Mode),
+			Detail:     detail,
+		})
+	}
+	return rows
+}
+
+func diagnosticsConditionClassLabel(class observability.Class) string {
+	switch class {
+	case observability.ClassFault:
+		return "Fault"
+	case observability.ClassReviewQueue:
+		return "Review queue"
+	default:
+		return "Diagnostic"
+	}
+}
+
+func diagnosticsConditionKind(class observability.Class) primitives.Kind {
+	switch class {
+	case observability.ClassFault:
+		return primitives.KindErr
+	case observability.ClassDiagnostic:
+		return primitives.KindInfo
+	default:
+		return primitives.KindNeutral
+	}
+}
+
+func diagnosticsConditionRank(class observability.Class) int {
+	switch class {
+	case observability.ClassFault:
+		return 0
+	case observability.ClassDiagnostic:
+		return 1
+	default:
+		return 2
+	}
+}
+
+func diagnosticsConditionProject(projectID string) string {
+	if projectID = strings.TrimSpace(projectID); projectID != "" {
+		return projectID
+	}
+	return "Fleet"
+}
+
+func diagnosticsDispatchConditionSummary(stall telemetry.DispatchStatus, class observability.Class) string {
+	if class == observability.ClassFault && strings.TrimSpace(stall.WaitReasonCode) == "authorization_selector_declined" {
+		return "Authorization selector excludes every candidate"
+	}
+	if class == observability.ClassReviewQueue {
+		return "Waiting on review by design"
+	}
+	return "Dispatch pacing or cooldown"
+}
+
 func diagnosticsSummaryFacts(data DashboardData) []diagnosticsSummaryFact {
 	snapshot := data.Snapshot
 	bottleneck := workflowBottleneck(snapshot.WorkflowMetrics)
@@ -7315,15 +7696,6 @@ func boardFailureBreakerSummary(breakers []telemetry.FailureBreaker) (boardBanne
 func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery, now time.Time) []boardBannerSummary {
 	return dispatchRecoverySummaries(recoveries, func(recovery telemetry.DispatchRecovery) (string, bool) {
 		return boardDispatchRecoveryAlertTitle(recovery, now)
-	})
-}
-
-func healthDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery) []boardBannerSummary {
-	return dispatchRecoverySummaries(recoveries, func(recovery telemetry.DispatchRecovery) (string, bool) {
-		if strings.TrimSpace(recovery.Status) != "waiting" {
-			return "", false
-		}
-		return "Dispatch waiting on " + dispatchRecoveryKindLabel(recovery.Kind), true
 	})
 }
 

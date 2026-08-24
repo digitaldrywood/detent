@@ -7086,7 +7086,7 @@ func TestHealthReportsNotificationDeliveryFailures(t *testing.T) {
 	}
 }
 
-func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
+func TestHealthReportsTotalSelectorExclusionAsNeedsHumanAttention(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -7094,7 +7094,7 @@ func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
 	now := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
 	lastSelectedAt := now.Add(-4 * time.Hour)
 	stall := telemetry.DispatchStatus{
-		ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, WaitReason: "github_rest_capacity", LastSelectedAt: &lastSelectedAt, StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true,
+		ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, WaitReason: "authorization selector excludes every candidate", WaitReasonCode: "authorization_selector_declined", LastSelectedAt: &lastSelectedAt, StallDurationSeconds: 10_800, Stalled: true, NeedsHumanAttention: true,
 		RateWindowPacing: telemetry.RateWindowPacing{Mode: "floor", FloorPercent: 25, StaleAfterSeconds: 900, Applicable: true, BucketStatus: telemetry.RateWindowBucketFresh, PermitCeiling: 2, ScalingApplied: true},
 	}
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, Dispatch: stall, DispatchStalls: []telemetry.DispatchStatus{stall}}); err != nil {
@@ -7127,6 +7127,37 @@ func TestHealthReportsDispatchStallAsNeedsHumanAttention(t *testing.T) {
 	}
 	if got := nestedString(t, state, "dispatch", "rate_window_pacing", "permit_ceiling"); got != "2" {
 		t.Fatalf("state dispatch pacing ceiling = %q, want 2", got)
+	}
+}
+
+func TestHealthStatusIncludesOnlyFaultDispatchConditions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		reasonCode string
+		wantStatus string
+	}{
+		{name: "provider pacing", reasonCode: "provider_rate_window_backpressure", wantStatus: "ok"},
+		{name: "review queue", reasonCode: "artifact_gate_wait_status", wantStatus: "ok"},
+		{name: "total selector exclusion", reasonCode: "authorization_selector_declined", wantStatus: "needs_attention"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			deps := testDeps(t)
+			stall := telemetry.DispatchStatus{ProjectID: "detent", CandidateCount: 2, SkippedCount: 2, WaitReasonCode: tt.reasonCode, Stalled: true}
+			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), DispatchStalls: []telemetry.DispatchStatus{stall}}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+			health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			if health["status"] != tt.wantStatus {
+				t.Fatalf("health status = %#v, want %q", health["status"], tt.wantStatus)
+			}
+		})
 	}
 }
 
@@ -9187,14 +9218,17 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 	for _, want := range []string{
 		`id="health-verdict"`,
 		`id="health-details"`,
-		`id="health-github-rest"`,
-		`id="health-github-graphql"`,
-		"122 / 5,000",
-		"120 / 5,000",
-		"Loop behind",
+		`id="health-scheduler"`,
+		`id="health-update"`,
+		"All systems nominal",
 	} {
 		if !strings.Contains(snapshotEvent.data, want) {
 			t.Fatalf("health snapshot event missing %q:\n%s", want, snapshotEvent.data)
+		}
+	}
+	for _, unwanted := range []string{`id="health-github-rest"`, `id="health-github-graphql"`, "Requests in backoff", "Loop behind"} {
+		if strings.Contains(snapshotEvent.data, unwanted) {
+			t.Fatalf("health snapshot event included diagnostic %q:\n%s", unwanted, snapshotEvent.data)
 		}
 	}
 
@@ -10620,7 +10654,7 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 	}
 }
 
-func TestAdmissionProposalsRefreshAcrossBoardAndHealth(t *testing.T) {
+func TestAdmissionProposalsRefreshOnDiagnosticsWithoutBoardFaults(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -10671,20 +10705,18 @@ func TestAdmissionProposalsRefreshAcrossBoardAndHealth(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	health := requestHTML(t, server.Handler(), http.MethodGet, "/health/ui", http.StatusOK)
-	for _, want := range []string{"Admission · detent", "digitaldrywood/detent#1623", "88% confidence", "age 1h 0m", "expires in 23h 0m"} {
-		if !strings.Contains(health, want) {
-			t.Fatalf("Health missing %q:\n%s", want, health)
+	diagnostics := requestHTML(t, server.Handler(), http.MethodGet, "/diagnostics", http.StatusOK)
+	for _, want := range []string{`data-diagnostics-condition-class="review_queue"`, "Admission decision", "digitaldrywood/detent#1623", "88% confidence", "age 1h 0m", "expires in 23h 0m"} {
+		if !strings.Contains(diagnostics, want) {
+			t.Fatalf("Diagnostics missing %q:\n%s", want, diagnostics)
 		}
 	}
-	if strings.Contains(health, "digitaldrywood/detent#1600") {
-		t.Fatalf("Health rendered wall-clock-expired proposal:\n%s", health)
+	if strings.Contains(diagnostics, "digitaldrywood/detent#1600") {
+		t.Fatalf("Diagnostics rendered wall-clock-expired proposal:\n%s", diagnostics)
 	}
 	board := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
-	for _, want := range []string{`data-board-alert="admission-proposal"`, "1 admission proposal awaiting decision", proposal.IssueURL} {
-		if !strings.Contains(board, want) {
-			t.Fatalf("Board missing %q:\n%s", want, board)
-		}
+	if strings.Contains(board, `data-board-alert="admission-proposal"`) || strings.Contains(board, `id="board-alerts"`) {
+		t.Fatalf("Board rendered review queue as a fault:\n%s", board)
 	}
 
 	if err := backend.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalAccepted, now.Add(time.Minute)); err != nil {
@@ -10693,9 +10725,9 @@ func TestAdmissionProposalsRefreshAcrossBoardAndHealth(t *testing.T) {
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now.Add(time.Minute)}); err != nil {
 		t.Fatalf("Publish(refresh) error = %v", err)
 	}
-	health = requestHTML(t, server.Handler(), http.MethodGet, "/health/ui", http.StatusOK)
-	if strings.Contains(health, "health-admission-proposals") || strings.Contains(health, proposal.IssueIdentifier) {
-		t.Fatalf("resolved proposal remained after one refresh:\n%s", health)
+	diagnostics = requestHTML(t, server.Handler(), http.MethodGet, "/diagnostics", http.StatusOK)
+	if strings.Contains(diagnostics, "diagnostics-condition-admission") || strings.Contains(diagnostics, proposal.IssueIdentifier) {
+		t.Fatalf("resolved proposal remained after one refresh:\n%s", diagnostics)
 	}
 }
 
