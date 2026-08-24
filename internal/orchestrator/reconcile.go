@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -541,6 +542,19 @@ func clearBlockedStatusIssue(state *State, issueID string) {
 func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue, now time.Time) {
 	if existing, ok := state.Blocked[issue.ID]; ok && existing.Source == BlockedSourceProjectStatus {
 		existing.Issue = mergeIssueTrackerFields(existing.Issue, issue)
+		refreshedReason := blockedStatusReason(existing.Issue, o.cfg.TerminalStates)
+		if currentReason := strings.TrimSpace(existing.Reason); currentReason == "" ||
+			(strings.EqualFold(currentReason, staleness.ReasonBlockedCauseUnrecorded) &&
+				!strings.EqualFold(refreshedReason, staleness.ReasonBlockedCauseUnrecorded)) {
+			recovery := evaluateBlockedRecovery(existing.Issue, normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
+				Enabled:      true,
+				SourceStates: []string{blockedStatusState},
+				TargetState:  autoPromoteReworkState,
+			}), o.cfg.TerminalStates)
+			existing.Reason = refreshedReason
+			existing.RecoveryReason = string(recovery.Reason)
+			existing.RecoveryTarget = recovery.TargetState
+		}
 		state.Blocked[issue.ID] = existing
 		return
 	}
@@ -551,7 +565,7 @@ func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue
 	}), o.cfg.TerminalStates)
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          cloneIssue(issue),
-		Reason:         blockedStatusReason(issue),
+		Reason:         blockedStatusReason(issue, o.cfg.TerminalStates),
 		RecoveryReason: string(recovery.Reason),
 		RecoveryTarget: recovery.TargetState,
 		BlockedAt:      now,
@@ -564,6 +578,12 @@ func blockedFromDependency(blocked Blocked) bool {
 		(blocked.Source == "" && blocked.Reason == blockedReasonDependency)
 }
 
-func blockedStatusReason(issue connector.Issue) string {
-	return strings.TrimSpace(issue.BlockerReason)
+func blockedStatusReason(issue connector.Issue, terminalStates []string) string {
+	if reason := strings.TrimSpace(issue.BlockerReason); reason != "" {
+		return reason
+	}
+	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) {
+		return blockedReasonDependency
+	}
+	return staleness.ReasonBlockedCauseUnrecorded
 }

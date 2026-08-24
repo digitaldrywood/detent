@@ -717,6 +717,54 @@ func TestRefreshCurrentLaneEntriesCapturesObservedReworkOnce(t *testing.T) {
 	}
 }
 
+func TestRecordObservedBlockedEntryClassifiesUnrecordedCause(t *testing.T) {
+	t.Parallel()
+
+	enteredAt := time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		issue       connector.Issue
+		attribution provenance.Attribution
+		wantStatus  string
+	}{
+		{
+			name:        "indeterminate observation without cause",
+			issue:       connector.Issue{ID: "issue-1", State: "Blocked"},
+			attribution: provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{}),
+			wantStatus:  blockedCauseStatusUnrecorded,
+		},
+		{
+			name:        "tracker cause is recorded",
+			issue:       connector.Issue{ID: "issue-2", State: "Blocked", BlockerReason: "waiting for operator approval"},
+			attribution: provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{}),
+		},
+		{
+			name:        "agent provenance is already attributable",
+			issue:       connector.Issue{ID: "issue-3", State: "Blocked"},
+			attribution: provenance.AttributionFromSource(provenance.SourceDetentAgentSession, provenance.Actor{}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := &workflowMetricsRecorderSpy{}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{}), workflowMetrics: recorder}
+			orch.recordObservedLaneEntry(t.Context(), tt.issue, enteredAt, tt.attribution)
+			if len(recorder.events) != 1 {
+				t.Fatalf("events = %#v, want one", recorder.events)
+			}
+			metadata, ok := workflowLaneMetadataFromJSON(recorder.events[0].MetadataJSON)
+			if !ok {
+				t.Fatalf("metadata = %q, want valid lane metadata", recorder.events[0].MetadataJSON)
+			}
+			if metadata.BlockedCauseStatus != tt.wantStatus {
+				t.Fatalf("BlockedCauseStatus = %q, want %q", metadata.BlockedCauseStatus, tt.wantStatus)
+			}
+		})
+	}
+}
+
 type workflowMetricsRecorderSpy struct {
 	events []store.WorkflowPhaseEvent
 }

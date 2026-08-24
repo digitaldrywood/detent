@@ -1888,6 +1888,15 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 			wantText: "waiting - transient GitHub REST budget waiting for capacity: remaining=940/5000 reserve=1250",
 		},
 		{
+			name: "unrecorded cause needs review",
+			card: projectKanbanCard{
+				BlockedSource: telemetry.BlockedSourceProjectStatus,
+				BlockedReason: "blocked, cause unrecorded",
+			},
+			wantKind: primitives.KindErr,
+			wantText: "needs review - blocked, cause unrecorded",
+		},
+		{
 			name: "human delivery failure needs review",
 			card: projectKanbanCard{
 				BlockedSource:         telemetry.BlockedSourceProjectStatus,

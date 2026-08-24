@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/retro"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -2861,6 +2862,16 @@ func (s StalenessObservability) validate(problems *[]string) {
 		*problems = append(*problems, "observability.staleness.repeated_decision_count must be less than or equal to 500")
 	}
 	validatePositive("observability.staleness.repeated_window_hours", s.RepeatedWindowHours, problems)
+	for _, reason := range s.RepeatedDecisionBenignReasons {
+		if scheduler.IsEmittedDecisionReason(reason) {
+			continue
+		}
+		*problems = append(*problems, fmt.Sprintf(
+			"observability.staleness.repeated_decision_benign_reasons contains %q, which does not match a scheduler-emitted reason; emitted reasons include %q",
+			reason,
+			scheduler.EmittedDecisionReasonExamples(),
+		))
+	}
 	seen := make(map[string]struct{}, len(s.Lanes))
 	for index, lane := range s.Lanes {
 		prefix := fmt.Sprintf("observability.staleness.lanes[%d]", index)

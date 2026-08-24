@@ -21,6 +21,7 @@ const (
 	workflowActionBlockedRecoveryExhausted = "blocked_recovery_exhausted"
 	workflowActionPlanReviewRework         = "plan_review_rework"
 	workflowActionReworkBreakerAutoUnpark  = "rework_breaker_auto_unpark"
+	blockedCauseStatusUnrecorded           = "unrecorded"
 )
 
 type WorkflowMetricsRecorder interface {
@@ -40,6 +41,7 @@ type workflowLaneMetadata struct {
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
 	ReworkBreaker         *workflowLaneReworkBreakerMetadata         `json:"rework_breaker,omitempty"`
 	BlockedRecovery       *workflowLaneBlockedRecoveryMetadata       `json:"blocked_recovery,omitempty"`
+	BlockedCauseStatus    string                                     `json:"blocked_cause_status,omitempty"`
 	ActionSignatures      []workflowLaneActionSignatureMetadata      `json:"action_signatures,omitempty"`
 	Provenance            provenance.Attribution                     `json:"provenance"`
 	Admission             *provenance.Admission                      `json:"admission,omitempty"`
@@ -513,6 +515,11 @@ func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connec
 	}
 	metadata := workflowLaneMetadata{
 		Provenance: attribution,
+	}
+	if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
+		provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginIndeterminate &&
+		firstNonBlank(strings.TrimSpace(issue.BlockerReason), workpadParkCause(issue)) == "" {
+		metadata.BlockedCauseStatus = blockedCauseStatusUnrecorded
 	}
 	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(o.cfg.AdmissionTargetState)) &&
 		strings.TrimSpace(o.cfg.AdmissionTargetState) != "" {

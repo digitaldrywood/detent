@@ -367,13 +367,30 @@ Blocked lane already carries their operator signal. A `park_cause_stale`
 warning replaces lane aging when recorded evidence is cleared or can no longer
 be verified.
 
+Operator-facing warnings use the same authorization selector as board and
+runtime rows. Item warnings outside that selector are excluded before they are
+logged, delivered, or counted. Project-level liveness warnings are computed
+from authorized dispatch and merge queues. Repeated decisions about the
+authorization boundary itself, including `authorization_selector_declined`,
+remain visible even when the affected item is out of scope because the selector
+decision is the condition the operator must correct.
+
+A Blocked item observed from tracker state without a recorded blocker cause is
+classified as `blocked, cause unrecorded`. The card keeps that classification
+beside its lane provenance, and an eventual lane-aging warning names the missing
+cause and the remedy instead of presenting an unexplained generic Blocked age.
+
 The repeated-decision detector considers only current, non-terminal items.
 Closed and merged items and items in a configured terminal state are excluded.
 `observability.staleness.repeated_decision_benign_reasons` lists scheduler
 reasons that represent healthy waits rather than operator-actionable stalls.
 Its defaults cover active workers, dependency waits, global-capacity waits, and
 GitHub REST pacing. Set the list explicitly to replace those defaults for a
-project.
+project. Values must exactly match a scheduler-emitted reason. Configuration
+validation reports the configured value and the emitted reason set when they do
+not match; for example, `unauthorized` does not match
+`authorization_selector_declined`. This validation is also surfaced by
+`detent doctor` during config resolution.
 
 The detector evaluates decisions inside
 `observability.staleness.repeated_window_hours`, but the orchestrator retains
@@ -756,7 +773,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `observability.staleness.lanes[].threshold_hours` | `integer` | `72` | No | must be greater than 0 |
 | `observability.staleness.no_completion_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.no_merge_hours` | `integer` | `12` | No | must be greater than 0 |
-| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","provider_rate_window_backpressure","reserved_for_higher_priority_project"]` | No | None |
+| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","provider_rate_window_backpressure","reserved_for_higher_priority_project"]` | No | contains "__invalid__", which does not match a scheduler-emitted reason; emitted reasons include ["already_running" "authorization_selector_declined" "blocked_by_dependency" "github_rest_capacity_paused" "github_rest_recovery" "global_capacity_full" "outside_active_window" "provider_rate_window_backpressure" "reserved_for_higher_priority_project"]<br>contains "todo", which does not match a scheduler-emitted reason; emitted reasons include ["already_running" "authorization_selector_declined" "blocked_by_dependency" "github_rest_capacity_paused" "github_rest_recovery" "global_capacity_full" "outside_active_window" "provider_rate_window_backpressure" "reserved_for_higher_priority_project"] |
 | `observability.staleness.repeated_decision_count` | `integer` | `20` | No | must be greater than 0 |
 | `observability.staleness.repeated_window_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.webhook` | `object` | `see child fields` | No | None |

@@ -11,6 +11,7 @@ import (
 	"github.com/a-h/templ"
 
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -1691,6 +1692,9 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 }
 
 func boardBlockedWaiting(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, reason string) bool {
+	if strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedCauseUnrecorded) {
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(recoveryAction)) {
 	case "hold":
 		return false

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/provenance"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -31,12 +32,13 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 	}
 	evaluated := staleness.Evaluate(o.cfg.Staleness, staleness.Input{
 		ProjectID:    strings.TrimSpace(o.cfg.Project.ID),
-		Items:        o.stalenessItems(ctx, stateLaneEntryIssues(state), state, now),
+		Items:        o.stalenessItems(ctx, authorizedSnapshotIssues(stateLaneEntryIssues(state), o.cfg.Authorization, o.cfg.SelectorContext), state, now),
 		Dispatchable: o.stalenessDispatchableItems(candidates, state, now),
 		MergeQueue:   o.stalenessMergeQueueItems(state),
 		Completions:  stalenessCompletions(state),
 		Decisions:    stalenessDecisions(state.SchedulerDecisions, stalenessDecisionIssueIndex(state, candidates), state.laneEntries),
 	}, now)
+	evaluated = operatorFacingStalenessWarnings(evaluated, state)
 	persisted := o.stalenessWarningStates(ctx, state)
 	previous := state.StalenessWarnings
 	next := make(map[string]StalenessWarning, len(evaluated))
@@ -84,6 +86,29 @@ func (o *Orchestrator) refreshStalenessWarnings(ctx context.Context, state *Stat
 	}
 	state.StalenessWarnings = next
 	o.deliverStalenessWarnings(ctx, state, now)
+}
+
+func operatorFacingStalenessWarnings(warnings []staleness.Warning, state *State) []staleness.Warning {
+	if state == nil || !state.Authorization.Configured() {
+		return warnings
+	}
+	authorizer := newSnapshotRuntimeAuthorizer(*state)
+	out := make([]staleness.Warning, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning.Kind == staleness.KindRepeatedDecision && scheduler.IsAuthorizationBoundaryDecisionReason(warning.Reason) {
+			out = append(out, warning)
+			continue
+		}
+		issue := connector.Issue{
+			ID:         strings.TrimSpace(warning.IssueID),
+			Identifier: strings.TrimSpace(warning.Identifier),
+			URL:        strings.TrimSpace(warning.IssueURL),
+		}
+		if workflowIssueIdentityKey(issue) == "" || authorizer.authorized(issue) {
+			out = append(out, warning)
+		}
+	}
+	return out
 }
 
 func (o *Orchestrator) stalenessWarningStates(ctx context.Context, state *State) map[string]store.StalenessWarningState {
@@ -172,6 +197,9 @@ func (o *Orchestrator) stalenessMergeQueueItems(state *State) []staleness.Item {
 		if normalizeState(issue.State) != normalizeState(autoPromoteMergingState) {
 			continue
 		}
+		if !snapshotIssueAuthorized(issue, o.cfg.Authorization, o.cfg.SelectorContext) {
+			continue
+		}
 		key := workflowIssueIdentityKey(issue)
 		if key == "" {
 			continue
@@ -205,18 +233,21 @@ func (o *Orchestrator) stalenessBasicItem(issue connector.Issue, state *State) s
 		enteredAt = workflowLaneFallbackAt(issue)
 	}
 	hasRecovery := blockedRefsUnresolved(issue.BlockedBy, o.cfg.TerminalStates)
+	blockedCauseUnrecorded := false
 	if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok {
 		hasRecovery = hasRecovery || blocked.Recovery != nil || strings.TrimSpace(blocked.RecoveryReason) != ""
+		blockedCauseUnrecorded = strings.EqualFold(strings.TrimSpace(blocked.Reason), staleness.ReasonBlockedCauseUnrecorded)
 	}
 	return staleness.Item{
-		ID:                   strings.TrimSpace(issue.ID),
-		Identifier:           strings.TrimSpace(issue.Identifier),
-		URL:                  strings.TrimSpace(issue.URL),
-		Title:                strings.TrimSpace(issue.Title),
-		State:                strings.TrimSpace(issue.State),
-		EnteredAt:            enteredAt.UTC(),
-		WaitingOnHuman:       artifactGateWaitStatusBlocksDispatch(issue, o.cfg.AutoPromote.Gate),
-		HasRecoveryPredicate: hasRecovery,
+		ID:                     strings.TrimSpace(issue.ID),
+		Identifier:             strings.TrimSpace(issue.Identifier),
+		URL:                    strings.TrimSpace(issue.URL),
+		Title:                  strings.TrimSpace(issue.Title),
+		State:                  strings.TrimSpace(issue.State),
+		EnteredAt:              enteredAt.UTC(),
+		WaitingOnHuman:         artifactGateWaitStatusBlocksDispatch(issue, o.cfg.AutoPromote.Gate),
+		HasRecoveryPredicate:   hasRecovery,
+		BlockedCauseUnrecorded: blockedCauseUnrecorded,
 	}
 }
 

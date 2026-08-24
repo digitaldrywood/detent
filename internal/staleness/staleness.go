@@ -9,13 +9,14 @@ import (
 )
 
 const (
-	KindLaneAging          = "lane_aging"
-	KindLaneReentry        = "lane_reentry"
-	KindParkCauseStale     = "park_cause_stale"
-	KindProjectLiveness    = "project_liveness"
-	KindMergeLiveness      = "merge_liveness"
-	KindRepeatedDecision   = "repeated_decision"
-	defaultWarningIDLength = 16
+	KindLaneAging                = "lane_aging"
+	KindLaneReentry              = "lane_reentry"
+	KindParkCauseStale           = "park_cause_stale"
+	KindProjectLiveness          = "project_liveness"
+	KindMergeLiveness            = "merge_liveness"
+	KindRepeatedDecision         = "repeated_decision"
+	defaultWarningIDLength       = 16
+	ReasonBlockedCauseUnrecorded = "blocked, cause unrecorded"
 )
 
 type Config struct {
@@ -47,20 +48,21 @@ type Input struct {
 }
 
 type Item struct {
-	ID                   string
-	Identifier           string
-	URL                  string
-	Title                string
-	State                string
-	EnteredAt            time.Time
-	WaitingOnHuman       bool
-	HasRecoveryPredicate bool
-	RecordedPark         bool
-	ParkCauseKey         string
-	ParkCauseStale       bool
-	ParkCauseDetail      string
-	ParkCauseSince       time.Time
-	LaneVisits           []LaneVisit
+	ID                     string
+	Identifier             string
+	URL                    string
+	Title                  string
+	State                  string
+	EnteredAt              time.Time
+	WaitingOnHuman         bool
+	HasRecoveryPredicate   bool
+	BlockedCauseUnrecorded bool
+	RecordedPark           bool
+	ParkCauseKey           string
+	ParkCauseStale         bool
+	ParkCauseDetail        string
+	ParkCauseSince         time.Time
+	LaneVisits             []LaneVisit
 }
 
 type LaneVisit struct {
@@ -192,7 +194,7 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 			IssueURL:             strings.TrimSpace(item.URL),
 			Title:                strings.TrimSpace(item.Title),
 			Lane:                 strings.TrimSpace(item.State),
-			Reason:               "lane threshold exceeded",
+			Reason:               laneWarningReason(item),
 			Detail:               laneWarningDetail(item, waitingOnHuman),
 			Since:                item.EnteredAt.UTC(),
 			AgeSeconds:           int64(age / time.Second),
@@ -461,10 +463,20 @@ func laneWarningDetail(item Item, waitingOnHuman bool) string {
 	if waitingOnHuman {
 		return "the item is waiting on a person by design and has exceeded its reminder threshold"
 	}
+	if item.BlockedCauseUnrecorded {
+		return "the item entered Blocked without a recorded cause; record the blocker cause and provenance to classify the park"
+	}
 	if normalize(item.State) == "blocked" && !item.HasRecoveryPredicate {
 		return "the item is blocked beyond its threshold without a recovery predicate"
 	}
 	return "the item has remained in the same lane beyond its configured threshold"
+}
+
+func laneWarningReason(item Item) string {
+	if item.BlockedCauseUnrecorded {
+		return ReasonBlockedCauseUnrecorded
+	}
+	return "lane threshold exceeded"
 }
 
 func latestCompletion(completions []Completion, mergedOnly bool, now time.Time) time.Time {

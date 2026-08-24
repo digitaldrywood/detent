@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -199,6 +200,32 @@ func TestEvaluateLaneReentryUsesBoundedCumulativeResidency(t *testing.T) {
 				t.Fatalf("Evaluate() = %#v, want one %s warning", got, tt.wantKind)
 			}
 		})
+	}
+}
+
+func TestEvaluateClassifiesBlockedCauseUnrecorded(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)
+	warnings := Evaluate(Config{
+		Enabled: true,
+		Lanes:   []LaneThreshold{{State: "Blocked", Threshold: 48 * time.Hour}},
+	}, Input{
+		ProjectID: "parable",
+		Items: []Item{{
+			ID:                     "1898",
+			Identifier:             "getparable/parable#1898",
+			State:                  "Blocked",
+			EnteredAt:              now.Add(-72 * time.Hour),
+			BlockedCauseUnrecorded: true,
+		}},
+	}, now)
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one", warnings)
+	}
+	if warnings[0].Reason != ReasonBlockedCauseUnrecorded || !strings.Contains(warnings[0].Detail, "record the blocker cause and provenance") {
+		t.Fatalf("warning = %#v, want explicit unrecorded-cause remedy", warnings[0])
 	}
 }
 

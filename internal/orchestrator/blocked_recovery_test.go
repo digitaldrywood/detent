@@ -93,18 +93,34 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		cause      string
-		wantReason BlockedRecoveryReason
+		name         string
+		cause        string
+		blockedState string
+		trackerState string
+		wantCause    string
+		wantReason   BlockedRecoveryReason
 	}{
 		{
-			name:       "resolved dependency has no generic error",
-			wantReason: BlockedRecoveryReasonMissingPullRequest,
+			name:         "resolved dependency records missing cause",
+			blockedState: "Done",
+			trackerState: connector.BlockedRefTrackerStateClosed,
+			wantCause:    "blocked, cause unrecorded",
+			wantReason:   BlockedRecoveryReasonMissingPullRequest,
 		},
 		{
-			name:       "human attention cause stays actionable",
-			cause:      "pull request delivery needs human attention",
-			wantReason: BlockedRecoveryReasonHumanBlocker,
+			name:         "unresolved dependency records structured cause",
+			blockedState: "In Progress",
+			trackerState: connector.BlockedRefTrackerStateOpen,
+			wantCause:    blockedReasonDependency,
+			wantReason:   BlockedRecoveryReasonDependencyBlocker,
+		},
+		{
+			name:         "human attention cause stays actionable",
+			cause:        "pull request delivery needs human attention",
+			blockedState: "Done",
+			trackerState: connector.BlockedRefTrackerStateClosed,
+			wantCause:    "pull request delivery needs human attention",
+			wantReason:   BlockedRecoveryReasonHumanBlocker,
 		},
 	}
 
@@ -121,19 +137,74 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 				BlockerReason: tt.cause,
 				BlockedBy: []connector.BlockedRef{{
 					Identifier:   "digitaldrywood/detent#1900",
-					State:        "Done",
-					TrackerState: connector.BlockedRefTrackerStateClosed,
+					State:        tt.blockedState,
+					TrackerState: tt.trackerState,
 				}},
 			}
 
 			orch.setBlockedStatusIssue(&state, issue, time.Date(2026, 8, 18, 22, 30, 0, 0, time.UTC))
 
 			blocked := state.Blocked[issue.ID]
-			if blocked.Reason != tt.cause || blocked.RecoveryReason != string(tt.wantReason) {
-				t.Fatalf("stored cause = %q/%q, want %q/%q", blocked.Reason, blocked.RecoveryReason, tt.cause, tt.wantReason)
+			if blocked.Reason != tt.wantCause || blocked.RecoveryReason != string(tt.wantReason) {
+				t.Fatalf("stored cause = %q/%q, want %q/%q", blocked.Reason, blocked.RecoveryReason, tt.wantCause, tt.wantReason)
 			}
 			if blocked.Reason == "blocked by project status" {
 				t.Fatalf("stored generic project-status error: %#v", blocked)
+			}
+		})
+	}
+}
+
+func TestSetBlockedStatusIssueReplacesUnrecordedCause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		refreshed    connector.Issue
+		wantCause    string
+		wantRecovery BlockedRecoveryReason
+	}{
+		{
+			name: "explicit tracker cause",
+			refreshed: connector.Issue{
+				BlockerReason: "waiting for human approval",
+			},
+			wantCause:    "waiting for human approval",
+			wantRecovery: BlockedRecoveryReasonHumanBlocker,
+		},
+		{
+			name: "structured dependency cause",
+			refreshed: connector.Issue{
+				BlockedBy: []connector.BlockedRef{{
+					Identifier:   "digitaldrywood/detent#1902",
+					State:        "In Progress",
+					TrackerState: connector.BlockedRefTrackerStateOpen,
+				}},
+			},
+			wantCause:    blockedReasonDependency,
+			wantRecovery: BlockedRecoveryReasonDependencyBlocker,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			now := time.Date(2026, 8, 24, 16, 45, 0, 0, time.UTC)
+			issue := connector.Issue{ID: "issue-refresh", State: blockedStatusState}
+			orch.setBlockedStatusIssue(&state, issue, now)
+
+			refreshed := tt.refreshed
+			refreshed.ID = issue.ID
+			refreshed.State = blockedStatusState
+			orch.setBlockedStatusIssue(&state, refreshed, now.Add(time.Minute))
+
+			blocked := state.Blocked[issue.ID]
+			if blocked.Reason != tt.wantCause || blocked.RecoveryReason != string(tt.wantRecovery) {
+				t.Fatalf("stored cause = %q/%q, want %q/%q", blocked.Reason, blocked.RecoveryReason, tt.wantCause, tt.wantRecovery)
 			}
 		})
 	}
