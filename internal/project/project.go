@@ -1599,12 +1599,25 @@ type coordinatedRoutineStore struct {
 	coordinator *scheduleowner.IssueCoordinator
 }
 
-func (s coordinatedRoutineStore) EnsureIntakeIssue(
+func (s coordinatedRoutineStore) EnsureRoutineIssue(
 	ctx context.Context,
 	marker string,
 	draft intake.IssueDraft,
 ) (intake.Issue, bool, error) {
-	return s.coordinator.Ensure(ctx, marker, draft, s.IssueStore)
+	return s.coordinator.EnsureRecurring(ctx, marker, draft, s)
+}
+
+func (s coordinatedRoutineStore) IntakeIssueClosed(ctx context.Context, issueID string) (bool, error) {
+	issues, err := s.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		return false, err
+	}
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == strings.TrimSpace(issueID) {
+			return issue.Closed, nil
+		}
+	}
+	return false, nil
 }
 
 func coordinatedRoutineIssueStore(projectConnector connector.Connector, coordinator *scheduleowner.IssueCoordinator) routine.IssueStore {

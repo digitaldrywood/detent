@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -94,6 +95,33 @@ func TestIssueCoordinatorCompletesAfterCreateContextCancellation(t *testing.T) {
 	}
 }
 
+func TestIssueCoordinatorRecurringIssueReplacesClosedCompletion(t *testing.T) {
+	t.Parallel()
+	clock := newTestClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC))
+	store := newMemoryCoordinationStore(clock.Now)
+	coordinator := newTestIssueCoordinator(t, testConfig(), "alpha", store, clock)
+	marker := "<!-- detent-routine:recurring -->"
+	backend := &blockingIssueBackend{marker: marker}
+	draft := intake.IssueDraft{Title: "Recurring", Body: marker}
+
+	first, created, err := coordinator.EnsureRecurring(t.Context(), marker, draft, backend)
+	if err != nil || !created || first.ID != "issue-1" {
+		t.Fatalf("first EnsureRecurring() = %#v, %t, %v", first, created, err)
+	}
+	backend.Close(first.ID)
+	second, created, err := coordinator.EnsureRecurring(t.Context(), marker, draft, backend)
+	if err != nil || !created || second.ID != "issue-2" {
+		t.Fatalf("second EnsureRecurring() = %#v, %t, %v", second, created, err)
+	}
+	third, created, err := coordinator.EnsureRecurring(t.Context(), marker, draft, backend)
+	if err != nil || created || third.ID != second.ID {
+		t.Fatalf("third EnsureRecurring() = %#v, %t, %v", third, created, err)
+	}
+	if got := backend.CreateCount(); got != 2 {
+		t.Fatalf("CreateIntakeIssue() calls = %d, want 2", got)
+	}
+}
+
 type ensureResult struct {
 	issue   intake.Issue
 	created bool
@@ -138,7 +166,7 @@ func (b *blockingIssueBackend) FindIntakeIssue(_ context.Context, marker string)
 func (b *blockingIssueBackend) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
 	b.mu.Lock()
 	b.creates++
-	b.issue = intake.Issue{ID: "issue-1", Identifier: "example#1", Body: draft.Body}
+	b.issue = intake.Issue{ID: fmt.Sprintf("issue-%d", b.creates), Identifier: fmt.Sprintf("example#%d", b.creates), Body: draft.Body}
 	issue := b.issue
 	b.mu.Unlock()
 	if b.createStarted != nil {
@@ -152,6 +180,20 @@ func (b *blockingIssueBackend) CreateIntakeIssue(ctx context.Context, draft inta
 		}
 	}
 	return issue, nil
+}
+
+func (b *blockingIssueBackend) IntakeIssueClosed(_ context.Context, issueID string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.issue.ID == issueID && b.issue.Closed, nil
+}
+
+func (b *blockingIssueBackend) Close(issueID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.issue.ID == issueID {
+		b.issue.Closed = true
+	}
 }
 
 func (b *blockingIssueBackend) CreateCount() int {

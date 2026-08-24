@@ -59,6 +59,10 @@ type IssueStore interface {
 	SetIntakeIssueState(context.Context, string, string) error
 }
 
+type IssueCreator interface {
+	EnsureRoutineIssue(context.Context, string, intake.IssueDraft) (intake.Issue, bool, error)
+}
+
 type RunRecord = routinemodel.RunRecord
 
 type IssueRecord = routinemodel.IssueRecord
@@ -493,6 +497,9 @@ func createRoutineIssue(
 	marker string,
 	draft intake.IssueDraft,
 ) (intake.Issue, bool, error) {
+	if creator, ok := store.(IssueCreator); ok {
+		return creator.EnsureRoutineIssue(ctx, marker, draft)
+	}
 	if creator, ok := store.(intake.IssueCreator); ok {
 		return creator.EnsureIntakeIssue(ctx, marker, draft)
 	}
