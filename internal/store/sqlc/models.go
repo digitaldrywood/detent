@@ -330,6 +330,7 @@ type StalenessWarningState struct {
 	WarningID      string         `json:"warning_id"`
 	RemindedAt     sql.NullString `json:"reminded_at"`
 	AcknowledgedAt sql.NullString `json:"acknowledged_at"`
+	LastSeenAt     sql.NullString `json:"last_seen_at"`
 }
 
 type UsageEvent struct {

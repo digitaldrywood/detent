@@ -55,6 +55,11 @@ type providerStatusEnricher interface {
 	Enrich(telemetry.Snapshot, []statuspage.Source) telemetry.Snapshot
 }
 
+type telemetrySnapshotPublisher interface {
+	Publish(telemetry.Snapshot) error
+	Latest() (telemetry.Snapshot, bool)
+}
+
 // withRunnerFactory returns a project.Factory that constructs a
 // per-project agent Runner from the project's own workflow (so each project's
 // codex command and workspace root are honored), injects it into the project's
@@ -323,7 +328,7 @@ func publishSnapshots(
 	ctx context.Context,
 	registry *project.Registry,
 	poolSource agentPoolSnapshotSource,
-	snapshotHub *hub.Hub[telemetry.Snapshot],
+	snapshotPublisher telemetrySnapshotPublisher,
 	seq *atomic.Uint64,
 	shutdown *ShutdownController,
 	lifetimeSource lifetimeTotalsSource,
@@ -333,7 +338,7 @@ func publishSnapshots(
 	now func() time.Time,
 	updateSources ...autoUpdateStatusSource,
 ) {
-	if registry == nil || snapshotHub == nil {
+	if registry == nil || snapshotPublisher == nil {
 		return
 	}
 	if interval <= 0 {
@@ -351,7 +356,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotHub, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, providerStatus, updateSources...); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotPublisher, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, providerStatus, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -476,17 +481,17 @@ func persistBoardSnapshots(
 func publishStartupSnapshotOnce(
 	ctx context.Context,
 	cfg globalconfig.Config,
-	snapshotHub *hub.Hub[telemetry.Snapshot],
+	snapshotPublisher telemetrySnapshotPublisher,
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
 	now time.Time,
 	updateSources ...autoUpdateStatusSource,
 ) error {
-	if snapshotHub == nil {
+	if snapshotPublisher == nil {
 		return nil
 	}
 	snapshot := startupSnapshot(ctx, cfg, lifetimeSource, dashboardURL, now, updateSources...)
-	if err := snapshotHub.Publish(snapshot); err != nil {
+	if err := snapshotPublisher.Publish(snapshot); err != nil {
 		return fmt.Errorf("publish startup snapshot: %w", err)
 	}
 	return nil
@@ -557,7 +562,7 @@ func publishSnapshotOnce(
 	ctx context.Context,
 	registry *project.Registry,
 	poolSource agentPoolSnapshotSource,
-	snapshotHub *hub.Hub[telemetry.Snapshot],
+	snapshotPublisher telemetrySnapshotPublisher,
 	seq *atomic.Uint64,
 	shutdown *ShutdownController,
 	now time.Time,
@@ -675,10 +680,10 @@ func publishSnapshotOnce(
 	}
 	merged.Seq = seq.Add(1)
 	summarizeSnapshotSections(&merged)
-	if current, ok := snapshotHub.Latest(); ok {
+	if current, ok := snapshotPublisher.Latest(); ok {
 		merged = composeLastKnownTrackerState(current, merged, now)
 	}
-	if err := snapshotHub.Publish(merged); err != nil {
+	if err := snapshotPublisher.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	return nil

@@ -2680,8 +2680,11 @@ func TestBoardAlertCountIncludesOnlyActionableConditions(t *testing.T) {
 	for _, want := range []string{
 		`data-board-alert-count="1"`,
 		`hx-post="/api/v1/projects/detent/staleness-warnings/warning-actionable/acknowledge"`,
+		`hx-post="/api/v1/projects/detent/staleness-warnings/acknowledge"`,
 		`hx-swap="outerHTML"`,
+		`data-staleness-warning-id="warning-actionable"`,
 		">Dismiss<",
+		">Dismiss all staleness warnings (1)<",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("board alert missing %q:\n%s", want, html)
