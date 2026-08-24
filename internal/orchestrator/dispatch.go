@@ -175,9 +175,14 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
 			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
+			rescheduled.Wait = retry.Wait
+			rescheduled.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 			state.Retry[issue.ID] = rescheduled
 		},
 		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+			if retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
+				return o.pollWorkspaceBranchHold(ctx, state, issue, retry, now)
+			}
 			return o.pollMergeWorkerCurrentHeadCI(ctx, state, issue, retry, now)
 		},
 		preserveMissingDueRetry: func(retry Retry) bool {

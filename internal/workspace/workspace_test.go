@@ -398,7 +398,7 @@ func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
 	}
 }
 
-func TestLocalGitCreateIncludesWorktreeAddStderr(t *testing.T) {
+func TestLocalGitCreateClassifiesOccupiedBranch(t *testing.T) {
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -418,16 +418,12 @@ func TestLocalGitCreateIncludesWorktreeAddStderr(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create() error = nil, want occupied branch error")
 	}
-	var commandErr *CommandError
-	if !errors.As(err, &commandErr) {
-		t.Fatalf("Create() error = %T, want *CommandError", err)
+	var heldErr *BranchHeldError
+	if !errors.As(err, &heldErr) {
+		t.Fatalf("Create() error = %T, want *BranchHeldError", err)
 	}
-	output := strings.TrimSpace(commandErr.Output)
-	if output == "" {
-		t.Fatal("CommandError.Output is empty, want git stderr")
-	}
-	if !strings.Contains(err.Error(), output) {
-		t.Fatalf("Create() error = %q, want git stderr %q", err, output)
+	if heldErr.Branch != "detent/dd-conflict" || heldErr.Path != occupiedPath {
+		t.Fatalf("BranchHeldError = %#v, want branch detent/dd-conflict at %q", heldErr, occupiedPath)
 	}
 }
 
@@ -1975,6 +1971,63 @@ func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 				t.Fatalf("quarantined .git mode = %v, want directory", gitInfo.Mode())
 			case !tt.wantStandalone && !errors.Is(statErr, os.ErrNotExist):
 				t.Fatalf("partial quarantine .git stat error = %v, want absent", statErr)
+			}
+		})
+	}
+}
+
+func TestLocalGitBranchHeldByWorktree(t *testing.T) {
+	skipWindows(t)
+
+	tests := []struct {
+		name               string
+		releaseBeforeRetry bool
+		wantCreated        bool
+	}{
+		{name: "held branch is classified"},
+		{name: "released branch creates workspace", releaseBeforeRetry: true, wantCreated: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			root := filepath.Join(t.TempDir(), "workspaces")
+			holder := filepath.Join(t.TempDir(), "review-pr")
+			branch := "detent/reviewer-held"
+			runGit(t, source, "worktree", "add", "-b", branch, holder)
+
+			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			issue := Issue{Identifier: "DD-HELD", BranchName: branch}
+
+			_, err = backend.Create(t.Context(), issue)
+			var heldErr *BranchHeldError
+			if !errors.As(err, &heldErr) {
+				t.Fatalf("Create() error = %v, want BranchHeldError", err)
+			}
+			if heldErr.Branch != branch || heldErr.Path != holder {
+				t.Fatalf("BranchHeldError = %#v, want branch %q path %q", heldErr, branch, holder)
+			}
+			hold, held, err := backend.BranchHold(t.Context(), issue)
+			if err != nil || !held || hold.Branch != branch || hold.Path != holder {
+				t.Fatalf("BranchHold() = %#v, %v, %v", hold, held, err)
+			}
+
+			if !tt.releaseBeforeRetry {
+				return
+			}
+			runGit(t, source, "worktree", "remove", holder)
+			if hold, held, err = backend.BranchHold(t.Context(), issue); err != nil || held {
+				t.Fatalf("BranchHold() after release = %#v, %v, %v", hold, held, err)
+			}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("Create() after release error = %v", err)
+			}
+			if info.Created != tt.wantCreated || info.Branch != branch {
+				t.Fatalf("Create() after release = %#v, want Created=%v branch=%q", info, tt.wantCreated, branch)
 			}
 		})
 	}

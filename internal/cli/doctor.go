@@ -258,6 +258,7 @@ type doctorDeps struct {
 	openSQLite           func(context.Context, string) (doctorStore, error)
 	openSQLiteReadOnly   func(context.Context, string) (doctorTelemetryStore, error)
 	gitWorkTree          func(context.Context, string) error
+	gitWorktrees         func(context.Context, string) ([]doctorGitWorktree, error)
 	gitRemoteURL         func(context.Context, string) (string, error)
 	gitTracked           func(context.Context, string) (bool, error)
 	workflowSourcePolicy doctorWorkflowSourcePolicyFunc
@@ -1170,6 +1171,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.gitWorkTree == nil {
 		d.gitWorkTree = defaults.gitWorkTree
 	}
+	if d.gitWorktrees == nil {
+		d.gitWorktrees = defaults.gitWorktrees
+	}
 	if d.gitRemoteURL == nil {
 		d.gitRemoteURL = defaults.gitRemoteURL
 	}
@@ -1223,6 +1227,7 @@ func defaultDoctorDeps() doctorDeps {
 		openSQLite:           openDoctorSQLite,
 		openSQLiteReadOnly:   openDoctorSQLiteReadOnly,
 		gitWorkTree:          defaultGitWorkTree,
+		gitWorktrees:         defaultDoctorGitWorktrees,
 		gitRemoteURL:         defaultGitRemoteURL,
 		gitTracked:           defaultGitTracked,
 		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,

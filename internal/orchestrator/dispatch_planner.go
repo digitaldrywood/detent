@@ -107,7 +107,7 @@ func (p dispatchPlanner) plan(
 			continue
 		}
 		if retry, ok := dueRetries[issue.ID]; ok {
-			if retry.Wait.Kind == retryWaitCurrentHeadCI {
+			if retry.Wait.Kind == retryWaitCurrentHeadCI || retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
 				var handled bool
 				reason := ""
 				if hooks.pollRetryWait != nil {
@@ -616,6 +616,7 @@ const (
 	dispatchSkipProjectFailureBreaker     = projectFailureBreakerDispatchPaused
 	dispatchSkipRateWindowBackpressure    = "provider_rate_window_backpressure"
 	dispatchSkipCurrentHeadCIWait         = "current_head_ci_wait"
+	dispatchSkipWorkspaceBranchHeld       = "workspace_branch_held"
 )
 
 func (p dispatchPlanner) previewCurrentHeadCIWait(

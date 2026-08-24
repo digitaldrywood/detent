@@ -264,6 +264,9 @@ type RetryWait struct {
 	StartedAt             time.Time
 	PollCount             int
 	PendingChecks         []string
+	WorkspaceBranch       string
+	WorkspaceHolderPath   string
+	WorkspacePRNumber     int
 	WorkspaceCreateCount  int
 	WorkspaceDestroyCount int
 }

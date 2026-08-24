@@ -462,6 +462,10 @@ func checkDoctorProjectWithProgress(
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
+	if deps.gitWorktrees != nil {
+		setDoctorCurrentCheck("Project " + id + " external branch worktrees")
+		checks = append(checks, checkDoctorExternalBranchWorktrees(ctx, id, expandedSourceRoot, workflow.Config.Workspace.Root, deps))
+	}
 	setDoctorCurrentCheck("Project " + id + " issue effort guidance")
 	checks = append(checks, checkDoctorIssueEffortGuidance(id, expandedSourceRoot))
 	setDoctorCurrentCheck("Project " + id + " skills")

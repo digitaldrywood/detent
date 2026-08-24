@@ -2850,6 +2850,45 @@ func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{createErr: &workspace.BranchHeldError{
+		Branch: "detent/issue-1965",
+		Path:   "/review/PR-1917",
+	}}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: &fakeCodexClient{},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	prNumber := 1917
+	_, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
+		ID:         "issue-held",
+		Identifier: "digitaldrywood/pyroapex#1838",
+		BranchName: "detent/issue-1965",
+		PRNumber:   &prNumber,
+	}})
+	var heldErr *WorkspaceBranchHeldError
+	if !errors.As(err, &heldErr) {
+		t.Fatalf("Run() error = %v, want WorkspaceBranchHeldError", err)
+	}
+	if errors.Is(err, ErrWorkspacePreparation) {
+		t.Fatalf("Run() error = %v, must be distinct from ErrWorkspacePreparation", err)
+	}
+	if heldErr.Branch != "detent/issue-1965" || heldErr.WorktreePath != "/review/PR-1917" || heldErr.PRNumber != prNumber {
+		t.Fatalf("WorkspaceBranchHeldError = %#v", heldErr)
+	}
+	want := "branch held by worktree at \"/review/PR-1917\" (PR #1917 checkout) — will resume when released"
+	if err.Error() != want {
+		t.Fatalf("Run() error = %q, want %q", err, want)
+	}
+}
+
 func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	t.Parallel()
 

@@ -193,6 +193,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
 		return
 	}
+	if o.handleWorkspaceBranchHoldCompletion(ctx, state, event, running) {
+		return
+	}
 	if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 		return
 	}

@@ -61,9 +61,42 @@ var (
 	ErrAgentTurnCleanup             = errors.New("agent turn cleanup failed")
 	ErrWorkerProcessReap            = errors.New("worker process reap failed")
 	ErrWorkspacePreparation         = errors.New("workspace preparation failed")
+	ErrWorkspaceBranchHeld          = errors.New("workspace branch held by worktree")
 	ErrAgentResumeUnsupported       = errors.New("agent backend does not support resume verification")
 	ErrDeliverableRecoveryExhausted = errors.New("deliverable recovery exhausted")
 )
+
+type WorkspaceBranchHeldError struct {
+	Branch       string
+	WorktreePath string
+	PRNumber     int
+}
+
+func (e *WorkspaceBranchHeldError) Error() string {
+	if e == nil {
+		return ErrWorkspaceBranchHeld.Error()
+	}
+	detail := fmt.Sprintf("branch held by worktree at %q", strings.TrimSpace(e.WorktreePath))
+	if e.PRNumber > 0 {
+		detail += fmt.Sprintf(" (PR #%d checkout)", e.PRNumber)
+	}
+	return detail + " — will resume when released"
+}
+
+func (e *WorkspaceBranchHeldError) Unwrap() error {
+	return ErrWorkspaceBranchHeld
+}
+
+type WorkspaceBranchHold struct {
+	Branch       string
+	WorktreePath string
+	PRNumber     int
+	Held         bool
+}
+
+type WorkspaceBranchHoldInspector interface {
+	InspectWorkspaceBranchHold(context.Context, connector.Issue) (WorkspaceBranchHold, error)
+}
 
 type DeliverableCommandError struct {
 	OperationClass string
