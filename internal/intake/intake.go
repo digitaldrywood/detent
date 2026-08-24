@@ -57,6 +57,10 @@ type IssueStore interface {
 	SetIntakeIssueState(context.Context, string, string) error
 }
 
+type IssueCreator interface {
+	EnsureIntakeIssue(context.Context, string, IssueDraft) (Issue, bool, error)
+}
+
 type WebhookAdapter interface {
 	Decode([]byte) (Event, error)
 }
@@ -397,13 +401,18 @@ func (m *Manager) process(ctx context.Context, source Source, store IssueStore, 
 	if found {
 		return m.updateExisting(ctx, source, store, marker, issue, draft, pendingDraft, result)
 	}
-	issue, err = store.CreateIntakeIssue(ctx, pendingDraft)
+	created := true
+	if creator, ok := store.(IssueCreator); ok {
+		issue, created, err = creator.EnsureIntakeIssue(ctx, marker, pendingDraft)
+	} else {
+		issue, err = store.CreateIntakeIssue(ctx, pendingDraft)
+	}
 	if err != nil {
 		return result, fmt.Errorf("create intake issue: %w", err)
 	}
 	m.issues[marker] = issue
 	result.Issue = issue
-	result.Created = true
+	result.Created = created
 	if err := store.SetIntakeIssueState(ctx, issue.ID, source.Creates.Status); err != nil {
 		return result, fmt.Errorf("set intake issue %s state: %w", issue.Identifier, err)
 	}

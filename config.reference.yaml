@@ -1057,6 +1057,28 @@
 #   before_remove: null
 #   # hooks.timeout_ms | type: integer | default: 60000 | required: No | validation: must be greater than 0
 #   timeout_ms: 60000
+# # schedule_ownership | type: object | default: see child fields | required: No | validation: None
+# schedule_ownership:
+#   # schedule_ownership.enabled | type: boolean | default: false | required: No | validation: None
+#   enabled: false
+#   # schedule_ownership.backend | type: string | default: "github_ref" | required: No | validation: must be github_ref
+#   backend: "github_ref"
+#   # schedule_ownership.key | type: string | default: none | required: Conditional | validation: is required when enabled is true
+#   key: null
+#   # schedule_ownership.endpoint | type: string | default: none | required: No | validation: None
+#   endpoint: null
+#   # schedule_ownership.repository | type: string | default: none | required: No | validation: must use owner/name syntax
+#   repository: null
+#   # schedule_ownership.branch | type: string | default: "detent-schedule-coordination" | required: No | validation: must be a valid branch name
+#   branch: "detent-schedule-coordination"
+#   # schedule_ownership.lease_seconds | type: integer | default: 300 | required: No | validation: must be greater than zero
+#   lease_seconds: 300
+#   # schedule_ownership.heartbeat_seconds | type: integer | default: 60 | required: No | validation: must be greater than zero; must leave more than twice max_clock_skew_seconds before lease expiry
+#   heartbeat_seconds: 60
+#   # schedule_ownership.retry_seconds | type: integer | default: 15 | required: No | validation: must be greater than zero
+#   retry_seconds: 15
+#   # schedule_ownership.max_clock_skew_seconds | type: integer | default: 15 | required: No | validation: must be less than half lease_seconds; must not be negative
+#   max_clock_skew_seconds: 15
 # # intake | type: object | default: see child fields | required: Conditional | validation: tracker.repository is required for intake sources
 # intake:
 #   # intake.sources | type: list<object> | default: [] | required: No | validation: requires tracker.kind github

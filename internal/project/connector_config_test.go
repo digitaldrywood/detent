@@ -28,6 +28,18 @@ func TestTrackerStateMapConvertsWorkflowMap(t *testing.T) {
 	}
 }
 
+func TestWorkflowConfigWithGitHubTokenSupportsScheduleOwnership(t *testing.T) {
+	t.Parallel()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.ScheduleOwnership.Enabled = true
+
+	got := workflowConfigWithGitHubToken(cfg, "runtime-token")
+	if got.Tracker.APIKey != "runtime-token" {
+		t.Fatalf("Tracker.APIKey = %q, want runtime-token", got.Tracker.APIKey)
+	}
+}
+
 func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.T) {
 	t.Parallel()
 

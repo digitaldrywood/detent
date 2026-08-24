@@ -422,7 +422,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		}
 		fileAttempts++
 		labels := proposalLabels(definition, proposal)
-		issue, createErr := settings.Issues.CreateIntakeIssue(ctx, intake.IssueDraft{
+		issue, created, createErr := createRoutineIssue(ctx, settings.Issues, marker, intake.IssueDraft{
 			Title:  proposal.Title,
 			Body:   scopeMarker + "\n" + marker + "\n\n" + proposal.Body,
 			Labels: labels,
@@ -431,6 +431,17 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		openMarkers[marker] = struct{}{}
 		record := IssueRecord{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL}
 		if strings.TrimSpace(record.ID) != "" {
+			if !created {
+				if _, ok := filedIssueSet[strings.TrimSpace(record.ID)]; !ok {
+					if err := m.store.RecordRoutineIssue(ctx, settings.ProjectID, definition.Name, record); err != nil {
+						runErr = errors.Join(runErr, fmt.Errorf("record reconciled routine issue %s: %w", proposal.DedupKey, err))
+						break
+					}
+					filedIssueSet[strings.TrimSpace(record.ID)] = struct{}{}
+				}
+				result.Deduplicated++
+				continue
+			}
 			result.Filed = append(result.Filed, record)
 			filedIssueSet[strings.TrimSpace(record.ID)] = struct{}{}
 			if err := m.store.RecordRoutineIssue(ctx, settings.ProjectID, definition.Name, record); err != nil {
@@ -474,6 +485,19 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		)
 	}
 	return result, runErr
+}
+
+func createRoutineIssue(
+	ctx context.Context,
+	store IssueStore,
+	marker string,
+	draft intake.IssueDraft,
+) (intake.Issue, bool, error) {
+	if creator, ok := store.(intake.IssueCreator); ok {
+		return creator.EnsureIntakeIssue(ctx, marker, draft)
+	}
+	issue, err := store.CreateIntakeIssue(ctx, draft)
+	return issue, true, err
 }
 
 func (m *Manager) nextScheduled(ctx context.Context) (time.Time, string, bool, error) {

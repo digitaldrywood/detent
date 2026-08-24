@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/activity"
@@ -18,8 +22,10 @@ import (
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -29,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -136,6 +143,8 @@ type Dependencies struct {
 	RetroStore                store.RetroStore
 	RoutineStore              store.RoutineStore
 	AdmissionStore            store.AdmissionStore
+	ScheduleStore             coordination.Store
+	ScheduleOwner             string
 }
 
 type Project struct {
@@ -157,6 +166,9 @@ type Project struct {
 	retro                     *retro.Manager
 	routine                   *routine.Manager
 	admission                 *admission.Manager
+	scheduleOwner             *scheduleowner.Manager
+	issueCoordinator          *scheduleowner.IssueCoordinator
+	scheduleConfig            scheduleowner.Config
 	retroProduct              connector.Connector
 	events                    *hub.Hub[Event]
 	logger                    *slog.Logger
@@ -222,12 +234,24 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	projectScheduleOwner, issueCoordinator, scheduleConfig, err := buildScheduleOwnership(workflow.Config, deps, logger)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create project schedule ownership: %w", err), closeConnector(projectConnector))
+	}
+	retainScheduleOwner := false
+	defer func() {
+		if !retainScheduleOwner {
+			if closeErr := closeScheduleOwner(projectScheduleOwner); closeErr != nil {
+				logger.Warn("close unused schedule ownership failed", "project_id", id, "error", closeErr)
+			}
+		}
+	}()
 	intakeDependencies := deps.IntakeDependencies
 	intakeDependencies.Root = intakeRoot(cfg.Project, workflow.Config)
 	if intakeDependencies.Logger == nil {
 		intakeDependencies.Logger = logger
 	}
-	projectIntake, err := intake.New(workflow.Config.Intake, intakeStore(projectConnector), intakeDependencies)
+	projectIntake, err := intake.New(workflow.Config.Intake, coordinatedIntakeStore(projectConnector, issueCoordinator), intakeDependencies)
 	if err != nil {
 		return nil, fmt.Errorf("create project intake: %w", err)
 	}
@@ -255,7 +279,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Definitions:  workflow.Config.Routines,
 		SearchStates: workflow.Config.KanbanStateNames(),
 		Runner:       deps.Runner,
-		Issues:       routineIssueStore(projectConnector),
+		Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator),
 		Metrics:      deps.WorkflowMetrics,
 	}, deps.RoutineStore, logger, nil)
 	if err != nil {
@@ -349,7 +373,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	workflowModifiedAt := workflowFileModifiedAt(cfg.Project)
 
 	cfg.Project.ID = string(id)
-	return &Project{
+	project := &Project{
 		id:                        id,
 		cfg:                       cfg.Project,
 		workflow:                  workflow,
@@ -368,6 +392,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		retro:                     projectRetro,
 		routine:                   projectRoutine,
 		admission:                 projectAdmission,
+		scheduleOwner:             projectScheduleOwner,
+		issueCoordinator:          issueCoordinator,
+		scheduleConfig:            scheduleConfig,
 		retroProduct:              retroProductConnector,
 		events:                    projectEvents,
 		logger:                    logger,
@@ -381,7 +408,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 			ModifiedAt: workflowModifiedAt,
 			LoadedAt:   time.Now().UTC(),
 		},
-	}, nil
+	}
+	retainScheduleOwner = true
+	return project, nil
 }
 
 func (p *Project) ID() ID {
@@ -781,9 +810,10 @@ func (p *Project) closeConnector() error {
 	p.mu.Lock()
 	projectConnector := p.connector
 	retroProductConnector := p.retroProduct
+	scheduleOwner := p.scheduleOwner
 	p.mu.Unlock()
 
-	return errors.Join(closeConnector(projectConnector), closeConnector(retroProductConnector))
+	return errors.Join(closeConnector(projectConnector), closeConnector(retroProductConnector), closeScheduleOwner(scheduleOwner))
 }
 
 func (p *Project) stop(ctx context.Context, publishEvents bool) error {
@@ -873,14 +903,10 @@ func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrator.Orchestrator) {
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	watcherDone := p.startWorkflowWatcher(watcherCtx)
-	intakeCtx, stopIntake := context.WithCancel(ctx)
-	intakeDone := p.startIntake(intakeCtx)
 	retroCtx, stopRetro := context.WithCancel(ctx)
 	retroDone := p.startRetro(retroCtx)
-	routineCtx, stopRoutine := context.WithCancel(ctx)
-	routineDone := p.startRoutine(routineCtx)
-	admissionCtx, stopAdmission := context.WithCancel(ctx)
-	admissionDone := p.startAdmission(admissionCtx)
+	schedulesCtx, stopSchedules := context.WithCancel(ctx)
+	schedulesDone := p.startSchedules(schedulesCtx)
 
 	runStarted := logProjectShutdownBoundaryBegin(p.logger, "orchestrator_run", "component", "orchestrator", "project_id", p.id)
 	err := orch.Run(ctx)
@@ -897,14 +923,6 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "workflow_watcher_stop", watcherStarted, "skipped", nil, "component", "workflow_watcher", "project_id", p.id)
 	}
-	intakeStarted := logProjectShutdownBoundaryBegin(p.logger, "intake_stop", "component", "intake", "project_id", p.id)
-	stopIntake()
-	if intakeDone != nil {
-		<-intakeDone
-		logProjectShutdownBoundaryEnd(p.logger, "intake_stop", intakeStarted, nil, "component", "intake", "project_id", p.id)
-	} else {
-		logProjectShutdownBoundaryEndResult(p.logger, "intake_stop", intakeStarted, "skipped", nil, "component", "intake", "project_id", p.id)
-	}
 	retroStarted := logProjectShutdownBoundaryBegin(p.logger, "retro_stop", "component", "retro", "project_id", p.id)
 	stopRetro()
 	if retroDone != nil {
@@ -913,22 +931,10 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "retro_stop", retroStarted, "skipped", nil, "component", "retro", "project_id", p.id)
 	}
-	routineStarted := logProjectShutdownBoundaryBegin(p.logger, "routine_stop", "component", "routine", "project_id", p.id)
-	stopRoutine()
-	if routineDone != nil {
-		<-routineDone
-		logProjectShutdownBoundaryEnd(p.logger, "routine_stop", routineStarted, nil, "component", "routine", "project_id", p.id)
-	} else {
-		logProjectShutdownBoundaryEndResult(p.logger, "routine_stop", routineStarted, "skipped", nil, "component", "routine", "project_id", p.id)
-	}
-	admissionStarted := logProjectShutdownBoundaryBegin(p.logger, "backlog_admission_stop", "component", "backlog_admission", "project_id", p.id)
-	stopAdmission()
-	if admissionDone != nil {
-		<-admissionDone
-		logProjectShutdownBoundaryEnd(p.logger, "backlog_admission_stop", admissionStarted, nil, "component", "backlog_admission", "project_id", p.id)
-	} else {
-		logProjectShutdownBoundaryEndResult(p.logger, "backlog_admission_stop", admissionStarted, "skipped", nil, "component", "backlog_admission", "project_id", p.id)
-	}
+	schedulesStarted := logProjectShutdownBoundaryBegin(p.logger, "schedules_stop", "component", "schedules", "project_id", p.id)
+	stopSchedules()
+	<-schedulesDone
+	logProjectShutdownBoundaryEnd(p.logger, "schedules_stop", schedulesStarted, nil, "component", "schedules", "project_id", p.id)
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
 	}
@@ -957,23 +963,6 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	close(done)
 }
 
-func (p *Project) startIntake(ctx context.Context) <-chan struct{} {
-	p.mu.Lock()
-	manager := p.intake
-	p.mu.Unlock()
-	if manager == nil {
-		return nil
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
-			p.logger.Error("project intake stopped", "project_id", p.id, "error", err)
-		}
-	}()
-	return done
-}
-
 func (p *Project) startRetro(ctx context.Context) <-chan struct{} {
 	p.mu.Lock()
 	manager := p.retro
@@ -991,38 +980,45 @@ func (p *Project) startRetro(ctx context.Context) <-chan struct{} {
 	return done
 }
 
-func (p *Project) startRoutine(ctx context.Context) <-chan struct{} {
+func (p *Project) startSchedules(ctx context.Context) <-chan struct{} {
 	p.mu.Lock()
-	manager := p.routine
+	owner := p.scheduleOwner
+	schedulersEnabled := p.workflow.Config.SchedulersEnabled()
 	p.mu.Unlock()
-	if manager == nil {
-		return nil
-	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
-			p.logger.Error("project routine stopped", "project_id", p.id, "error", err)
+		if owner == nil {
+			if schedulersEnabled {
+				p.logger.Error("project schedules disabled because schedule ownership is not configured", "project_id", p.id)
+			}
+			<-ctx.Done()
+			return
+		}
+		if err := owner.Run(ctx, p.runOwnedSchedules); err != nil && ctx.Err() == nil {
+			p.logger.Error("project schedules stopped", "project_id", p.id, "error", err)
 		}
 	}()
 	return done
 }
 
-func (p *Project) startAdmission(ctx context.Context) <-chan struct{} {
+func (p *Project) runOwnedSchedules(ctx context.Context) error {
 	p.mu.Lock()
-	manager := p.admission
+	intakeManager := p.intake
+	routineManager := p.routine
+	admissionManager := p.admission
 	p.mu.Unlock()
-	if manager == nil {
-		return nil
+	group, runCtx := errgroup.WithContext(ctx)
+	if intakeManager != nil {
+		group.Go(func() error { return intakeManager.Run(runCtx) })
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
-			p.logger.Error("project backlog admission stopped", "project_id", p.id, "error", err)
-		}
-	}()
-	return done
+	if routineManager != nil {
+		group.Go(func() error { return routineManager.Run(runCtx) })
+	}
+	if admissionManager != nil {
+		group.Go(func() error { return admissionManager.Run(runCtx) })
+	}
+	return group.Wait()
 }
 
 func logProjectShutdownBoundaryBegin(logger *slog.Logger, operation string, attrs ...any) time.Time {
@@ -1265,6 +1261,8 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	projectRetro := p.retro
 	projectRoutine := p.routine
 	projectAdmission := p.admission
+	issueCoordinator := p.issueCoordinator
+	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
@@ -1276,6 +1274,9 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	}
 	if err := workflowconfig.ValidateWorkflowAdmission(workflow); err != nil {
 		return p.workflowReloadError("workflow reload validation failed", update.Path, err)
+	}
+	if workflow.Config.ScheduleOwnership != scheduleConfig {
+		return p.workflowReloadError("workflow reload validation failed", update.Path, errors.New("schedule_ownership changes require a Detent restart"))
 	}
 	admissionCriteria := workflowconfig.AdmissionCriteria{}
 	admissionEffortRubric := workflowconfig.AdmissionEffortRubric{}
@@ -1330,7 +1331,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	if projectIntake != nil {
 		preparedIntake, err = projectIntake.Prepare(
 			workflow.Config.Intake,
-			intakeStore(projectConnector),
+			coordinatedIntakeStore(projectConnector, issueCoordinator),
 			intakeRoot(projectConfig, workflow.Config),
 		)
 		if err != nil {
@@ -1375,7 +1376,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Definitions:  workflow.Config.Routines,
 			SearchStates: workflow.Config.KanbanStateNames(),
 			Runner:       runner,
-			Issues:       routineIssueStore(projectConnector),
+			Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator),
 			Metrics:      p.orchDeps.WorkflowMetrics,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow routine reload failed", update.Path, err)
@@ -1564,12 +1565,137 @@ func intakeStore(projectConnector connector.Connector) intake.IssueStore {
 	return store
 }
 
+type coordinatedIntakeIssueStore struct {
+	intake.IssueStore
+	coordinator *scheduleowner.IssueCoordinator
+}
+
+func (s coordinatedIntakeIssueStore) EnsureIntakeIssue(
+	ctx context.Context,
+	marker string,
+	draft intake.IssueDraft,
+) (intake.Issue, bool, error) {
+	return s.coordinator.Ensure(ctx, marker, draft, s.IssueStore)
+}
+
+func coordinatedIntakeStore(projectConnector connector.Connector, coordinator *scheduleowner.IssueCoordinator) intake.IssueStore {
+	store := intakeStore(projectConnector)
+	if store == nil || coordinator == nil {
+		return store
+	}
+	return coordinatedIntakeIssueStore{IssueStore: store, coordinator: coordinator}
+}
+
 func routineIssueStore(projectConnector connector.Connector) routine.IssueStore {
 	issueStore, ok := projectConnector.(routine.IssueStore)
 	if !ok {
 		return nil
 	}
 	return issueStore
+}
+
+type coordinatedRoutineStore struct {
+	routine.IssueStore
+	coordinator *scheduleowner.IssueCoordinator
+}
+
+func (s coordinatedRoutineStore) EnsureIntakeIssue(
+	ctx context.Context,
+	marker string,
+	draft intake.IssueDraft,
+) (intake.Issue, bool, error) {
+	return s.coordinator.Ensure(ctx, marker, draft, s.IssueStore)
+}
+
+func coordinatedRoutineIssueStore(projectConnector connector.Connector, coordinator *scheduleowner.IssueCoordinator) routine.IssueStore {
+	store := routineIssueStore(projectConnector)
+	if store == nil || coordinator == nil {
+		return store
+	}
+	return coordinatedRoutineStore{IssueStore: store, coordinator: coordinator}
+}
+
+func buildScheduleOwnership(
+	cfg workflowconfig.Config,
+	deps Dependencies,
+	logger *slog.Logger,
+) (*scheduleowner.Manager, *scheduleowner.IssueCoordinator, scheduleowner.Config, error) {
+	coordinationEndpoint := ""
+	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
+		coordinationEndpoint = cfg.Tracker.Endpoint
+	}
+	ownership := cfg.ScheduleOwnership.Normalized(cfg.Tracker.Repository, coordinationEndpoint)
+	if !ownership.Enabled {
+		return nil, nil, ownership, nil
+	}
+	coordinationStore := deps.ScheduleStore
+	var coordinationCloser io.Closer
+	if coordinationStore == nil {
+		httpClient := ghconnector.NewPooledHTTPClient(ghconnector.HTTPTransportConfig{
+			MaxIdleConns:        cfg.Tracker.HTTPMaxIdleConns,
+			MaxIdleConnsPerHost: cfg.Tracker.HTTPMaxIdleConnsPerHost,
+			IdleConnTimeout:     time.Duration(cfg.Tracker.HTTPIdleConnTimeoutMS) * time.Millisecond,
+		})
+		coordinationToken := strings.TrimSpace(deps.GitHubToken)
+		if coordinationToken == "" {
+			coordinationToken = strings.TrimSpace(cfg.Tracker.APIKey)
+		}
+		var tokenSource ghconnector.TokenSource = ghconnector.NewTokenResolver(ghconnector.TokenResolverConfig{
+			Endpoint:                ownership.Endpoint,
+			APIKey:                  coordinationToken,
+			GitHubAppID:             cfg.Tracker.GitHubAppID,
+			GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
+			GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
+			GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
+			HTTPClient:              httpClient,
+		})
+		if deps.RefreshGitHubToken != nil && coordinationToken != "" {
+			tokenSource = ghconnector.NewRefreshableTokenSource(coordinationToken, deps.RefreshGitHubToken)
+		}
+		client, err := ghconnector.NewClient(ghconnector.ClientConfig{
+			Endpoint:    ownership.Endpoint,
+			TokenSource: tokenSource,
+			HTTPClient:  httpClient,
+			Logger:      logger,
+		})
+		if err != nil {
+			return nil, nil, ownership, errors.Join(err, httpClient.Close())
+		}
+		githubStore, storeErr := coordination.NewGitHubRefStore(coordination.GitHubRefConfig{
+			Repository: ownership.Repository,
+			Branch:     ownership.Branch,
+			Client:     client,
+		})
+		if storeErr != nil {
+			return nil, nil, ownership, errors.Join(storeErr, client.Close())
+		}
+		coordinationStore = githubStore
+		coordinationCloser = githubStore
+	}
+	owner := strings.TrimSpace(deps.ScheduleOwner)
+	if owner == "" {
+		hostname, hostnameErr := os.Hostname()
+		if hostnameErr != nil {
+			if coordinationCloser != nil {
+				return nil, nil, ownership, errors.Join(hostnameErr, coordinationCloser.Close())
+			}
+			return nil, nil, ownership, hostnameErr
+		}
+		owner = hostname
+		owner = strings.TrimSpace(owner)
+	}
+	manager, err := scheduleowner.New(ownership, owner, coordinationStore, scheduleowner.Dependencies{Closer: coordinationCloser, Logger: logger})
+	if err != nil {
+		if coordinationCloser != nil {
+			return nil, nil, ownership, errors.Join(err, coordinationCloser.Close())
+		}
+		return nil, nil, ownership, err
+	}
+	coordinator, err := scheduleowner.NewIssueCoordinator(ownership, coordinationStore, scheduleowner.Dependencies{})
+	if err != nil {
+		return nil, nil, ownership, errors.Join(err, manager.Close())
+	}
+	return manager, coordinator, ownership, nil
 }
 
 func admissionIssueStore(projectConnector connector.Connector) admission.IssueStore {
@@ -1674,7 +1800,7 @@ func projectRelativePath(base string, path string) string {
 
 func workflowConfigWithGitHubToken(workflow workflowconfig.Config, token string) workflowconfig.Config {
 	token = strings.TrimSpace(token)
-	if token != "" && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
+	if token != "" && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal || workflow.ScheduleOwnership.Enabled) {
 		workflow.Tracker.APIKey = token
 	}
 	return workflow
@@ -1797,6 +1923,13 @@ func closeConnector(projectConnector connector.Connector) error {
 		return nil
 	}
 	return closer.Close()
+}
+
+func closeScheduleOwner(owner *scheduleowner.Manager) error {
+	if owner == nil {
+		return nil
+	}
+	return owner.Close()
 }
 
 func resolveSchedulerFactory(deps Dependencies) schedulerFactory {

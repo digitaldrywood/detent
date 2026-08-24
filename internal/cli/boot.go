@@ -312,6 +312,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Activity:           activityBroker,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,
+		ScheduleOwner:      cfg.Global.InstanceName,
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
 	}, runtimeStore, nil, runtimeGitHubToken.get)
