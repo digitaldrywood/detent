@@ -1336,7 +1336,6 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 }
 
 type projectStatusView struct {
-	Rank       int
 	Label      string
 	DotClass   string
 	BadgeClass string
@@ -1344,50 +1343,50 @@ type projectStatusView struct {
 
 func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
 	sort.SliceStable(projects, func(i, j int) bool {
-		left := projectSmallMultipleStatus(projects[i])
-		right := projectSmallMultipleStatus(projects[j])
-		if left.Rank != right.Rank {
-			return left.Rank < right.Rank
+		leftName := projectSmallMultipleName(projects[i])
+		rightName := projectSmallMultipleName(projects[j])
+		leftFolded := strings.ToLower(leftName)
+		rightFolded := strings.ToLower(rightName)
+		if leftFolded != rightFolded {
+			return leftFolded < rightFolded
 		}
-		leftActivity := projectSmallMultipleActivity(projects[i])
-		rightActivity := projectSmallMultipleActivity(projects[j])
-		if leftActivity != rightActivity {
-			return leftActivity > rightActivity
+		if leftName != rightName {
+			return leftName < rightName
 		}
-		return projectSmallMultipleName(projects[i]) < projectSmallMultipleName(projects[j])
+		return projects[i].ID < projects[j].ID
 	})
 }
 
 func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView {
 	switch {
 	case project.Dispatch.NeedsHumanAttention:
-		return projectStatusView{Rank: 0, Label: "needs attention", DotClass: "bg-err", BadgeClass: "bg-err/15 text-err"}
+		return projectStatusView{Label: "needs attention", DotClass: "bg-err", BadgeClass: "bg-err/15 text-err"}
 	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Degraded():
 		label := "stale"
 		if !project.Refresh.StalenessWindowExceeded && strings.TrimSpace(project.Refresh.LastError) != "" {
 			label = "refresh failed"
 		}
-		return projectStatusView{Rank: 0, Label: label, DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
+		return projectStatusView{Label: label, DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.Paused:
-		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
+		return projectStatusView{Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Initializing():
-		return projectStatusView{Rank: 3, Label: "initializing", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
+		return projectStatusView{Label: "initializing", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case snapshotHasRefreshSignal(project.Refresh) && project.Refresh.Behind():
-		return projectStatusView{Rank: 2, Label: "behind", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
+		return projectStatusView{Label: "behind", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.ActiveHours.Configured && !project.ActiveHours.Open:
-		return projectStatusView{Rank: 3, Label: "off hours", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
+		return projectStatusView{Label: "off hours", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case project.BoardBlocked > 0:
 		dotClass := "bg-dim"
 		if project.Running > 0 {
 			dotClass = "bg-ok dt-pulse"
 		}
-		return projectStatusView{Rank: 0, Label: "blocked", DotClass: dotClass, BadgeClass: "bg-err/15 text-err"}
+		return projectStatusView{Label: "blocked", DotClass: dotClass, BadgeClass: "bg-err/15 text-err"}
 	case project.Running > 0:
-		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-ok dt-pulse", BadgeClass: "bg-elev text-sec"}
+		return projectStatusView{Label: "active", DotClass: "bg-ok dt-pulse", BadgeClass: "bg-elev text-sec"}
 	case project.BoardLoad > 0:
-		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
+		return projectStatusView{Label: "queued", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	default:
-		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
+		return projectStatusView{Label: "idle", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	}
 }
 
@@ -1531,11 +1530,6 @@ func projectSmallMultiplesGridClass(cards []projectSmallMultipleCard) string {
 		return "mt-4 grid min-w-0 gap-2"
 	}
 	return "mt-4 grid min-w-0 gap-2"
-}
-
-func projectSmallMultipleActivity(project ProjectSmallMultiple) float64 {
-	active := project.Running*10000 + project.QueueCount*1000 + project.Blocked*100 + project.Completed
-	return float64(active) + project.ThroughputTokensPerSecond + project.CurrentSpendUSD
 }
 
 func projectSmallMultipleName(project ProjectSmallMultiple) string {

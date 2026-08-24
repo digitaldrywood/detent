@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -905,7 +906,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 		wantFirst projectSmallMultipleCard
 	}{
 		{
-			name: "sorts by activity and builds compact charts",
+			name: "sorts alphabetically and builds compact charts",
 			projects: []ProjectSmallMultiple{
 				{
 					ID:         "quiet",
@@ -1133,39 +1134,61 @@ func TestProjectKanbanCardsUseProjectColors(t *testing.T) {
 	}
 }
 
-func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
+func TestProjectListOrderRemainsStableAcrossLiveUpdates(t *testing.T) {
 	t.Parallel()
 
-	got := sidebarProjectItems(DashboardShellData{Projects: []ProjectSmallMultiple{
-		{ID: "paused", Name: "Paused", Paused: true, BoardLoad: 2, BoardBlocked: 1},
-		{ID: "idle", Name: "Idle"},
-		{ID: "queued", Name: "Queued", QueueCount: 1, BoardLoad: 1, BoardTodo: 1},
-		{ID: "active", Name: "Active", Running: 1, BoardLoad: 1, BoardActive: 1},
-		{ID: "blocked", Name: "Blocked", Blocked: 1, BoardBlocked: 1},
-	}})
-	want := []string{"blocked", "active", "queued", "idle", "paused"}
+	initial := []ProjectSmallMultiple{
+		{ID: "charlie", Name: "charlie", Paused: true, BoardLoad: 2, BoardBlocked: 1},
+		{ID: "alpha", Name: "alpha", Running: 1, BoardLoad: 1, BoardActive: 1},
+		{ID: "bravo", Name: "Bravo"},
+		{ID: "zoo", Name: "Zoo", Running: 2},
+	}
+	updated := []ProjectSmallMultiple{
+		{ID: "charlie", Name: "charlie", Running: 3, BoardLoad: 3, BoardActive: 3},
+		{ID: "alpha", Name: "alpha", Paused: true},
+		{ID: "bravo", Name: "Bravo", BoardBlocked: 2},
+		{ID: "zoo", Name: "Zoo"},
+	}
+	want := []string{"alpha", "bravo", "charlie", "zoo"}
+	tests := []struct {
+		name string
+		list func([]ProjectSmallMultiple) []string
+	}{
+		{
+			name: "fleet project cards",
+			list: func(projects []ProjectSmallMultiple) []string {
+				cards := projectSmallMultipleCards(DashboardData{Projects: projects})
+				ids := make([]string, 0, len(cards))
+				for _, card := range cards {
+					ids = append(ids, card.ID)
+				}
+				return ids
+			},
+		},
+		{
+			name: "sidebar and board project filter",
+			list: func(projects []ProjectSmallMultiple) []string {
+				items := appShellProjects(DashboardShellData{Projects: projects})
+				ids := make([]string, 0, len(items))
+				for _, item := range items {
+					ids = append(ids, item.ID)
+				}
+				return ids
+			},
+		},
+	}
 
-	if len(got) != len(want) {
-		t.Fatalf("sidebarProjectItems() len = %d, want %d; got %#v", len(got), len(want), got)
-	}
-	for i, wantID := range want {
-		if got[i].ID != wantID {
-			t.Fatalf("sidebarProjectItems()[%d].ID = %q, want %q; got %#v", i, got[i].ID, wantID, got)
-		}
-		if got[i].DefaultIndex != i {
-			t.Fatalf("sidebarProjectItems()[%d].DefaultIndex = %d, want %d; got %#v", i, got[i].DefaultIndex, i, got)
-		}
-		if got[i].Href != "/projects/"+wantID+"/kanban" {
-			t.Fatalf("sidebarProjectItems()[%d].Href = %q, want kanban project opener; got %#v", i, got[i].Href, got)
-		}
-	}
-	idle := got[3]
-	paused := got[4]
-	if paused.StatusLabel != "paused" {
-		t.Fatalf("paused StatusLabel = %q, want paused", paused.StatusLabel)
-	}
-	if paused.DotClass == idle.DotClass {
-		t.Fatalf("paused DotClass = idle DotClass = %q, want distinct classes", paused.DotClass)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for state, projects := range map[string][]ProjectSmallMultiple{"initial": initial, "updated": updated} {
+				got := tt.list(projects)
+				if !slices.Equal(got, want) {
+					t.Fatalf("%s project IDs = %v, want %v", state, got, want)
+				}
+			}
+		})
 	}
 }
 
