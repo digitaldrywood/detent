@@ -1138,16 +1138,18 @@ func TestProjectListOrderRemainsStableAcrossLiveUpdates(t *testing.T) {
 	t.Parallel()
 
 	initial := []ProjectSmallMultiple{
-		{ID: "charlie", Name: "Charlie", Paused: true, BoardLoad: 2, BoardBlocked: 1},
-		{ID: "alpha", Name: "Alpha", Running: 1, BoardLoad: 1, BoardActive: 1},
+		{ID: "charlie", Name: "charlie", Paused: true, BoardLoad: 2, BoardBlocked: 1},
+		{ID: "alpha", Name: "alpha", Running: 1, BoardLoad: 1, BoardActive: 1},
 		{ID: "bravo", Name: "Bravo"},
+		{ID: "zoo", Name: "Zoo", Running: 2},
 	}
 	updated := []ProjectSmallMultiple{
-		{ID: "charlie", Name: "Charlie", Running: 3, BoardLoad: 3, BoardActive: 3},
-		{ID: "alpha", Name: "Alpha", Paused: true},
+		{ID: "charlie", Name: "charlie", Running: 3, BoardLoad: 3, BoardActive: 3},
+		{ID: "alpha", Name: "alpha", Paused: true},
 		{ID: "bravo", Name: "Bravo", BoardBlocked: 2},
+		{ID: "zoo", Name: "Zoo"},
 	}
-	want := []string{"alpha", "bravo", "charlie"}
+	want := []string{"alpha", "bravo", "charlie", "zoo"}
 	tests := []struct {
 		name string
 		list func([]ProjectSmallMultiple) []string

@@ -1343,7 +1343,17 @@ type projectStatusView struct {
 
 func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
 	sort.SliceStable(projects, func(i, j int) bool {
-		return projectSmallMultipleName(projects[i]) < projectSmallMultipleName(projects[j])
+		leftName := projectSmallMultipleName(projects[i])
+		rightName := projectSmallMultipleName(projects[j])
+		leftFolded := strings.ToLower(leftName)
+		rightFolded := strings.ToLower(rightName)
+		if leftFolded != rightFolded {
+			return leftFolded < rightFolded
+		}
+		if leftName != rightName {
+			return leftName < rightName
+		}
+		return projects[i].ID < projects[j].ID
 	})
 }
 
