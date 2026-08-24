@@ -193,7 +193,7 @@ func TestBackendCapacityDispatchAllowsOneResetProbe(t *testing.T) {
 	state := newState(normalizeConfig(Config{}))
 	capacityErr, ok := backendcapacity.As(backendcapacity.NewError(
 		scope,
-		backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &resetAt},
+		backendcapacity.Details{Kind: "usageLimitExceeded", Reason: "provider usage limit reached", Trigger: `{"error":{"type":"usageLimitExceeded"}}`, ResetAt: &resetAt},
 		errors.New("usage limit reached"),
 	))
 	if !ok {
@@ -866,7 +866,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 	resetAt := now.Add(time.Hour)
 	capacityErr, ok := backendcapacity.As(backendcapacity.NewError(
 		scope,
-		backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &resetAt},
+		backendcapacity.Details{Kind: "usageLimitExceeded", Reason: "provider usage limit reached", Trigger: `{"error":{"type":"usageLimitExceeded"}}`, ResetAt: &resetAt},
 		errors.New("usage limit reached"),
 	))
 	if !ok {
@@ -878,7 +878,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 		Claimed: map[string]Claimed{},
 	}
 	registered := orch.registerBackendOutage(&state, capacityErr, time.Time{}, false)
-	if !registered.DetectedAt.Equal(now) || state.BackendOutages[scope.Key()].Kind != "usageLimitExceeded" {
+	if !registered.DetectedAt.Equal(now) || state.BackendOutages[scope.Key()].Kind != "usageLimitExceeded" || state.BackendOutages[scope.Key()].Trigger == "" {
 		t.Fatalf("registered outage = %#v", registered)
 	}
 
@@ -904,7 +904,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 	orch.recoverBackendCapacity(&state, Running{CapacityScope: scope, CapacityProbe: true}, now)
 	state.BackendOutages[scope.Key()] = registered
 	orch.deferBackendCapacityProbe(&state, Running{CapacityScope: scope, CapacityProbe: true}, time.Time{}, errors.New("probe failed"))
-	if !strings.Contains(logs.String(), "backend capacity recovered") || !strings.Contains(logs.String(), "probe failed") {
+	if !strings.Contains(logs.String(), "backend capacity recovered") || !strings.Contains(logs.String(), "probe failed") || !strings.Contains(logs.String(), "capacity_trigger") || !strings.Contains(logs.String(), "usageLimitExceeded") {
 		t.Fatalf("capacity logs = %q", logs.String())
 	}
 
@@ -1625,6 +1625,14 @@ func TestBackendCapacityBlockedRecoveryTargetBoundaries(t *testing.T) {
 			wantReason:  "has no timestamp",
 		},
 		{
+			name:        "no progress park is never capacity recovered",
+			entryPhase:  "Blocked",
+			entryReason: noProgressLimitReason,
+			sourceState: "Rework",
+			commentTime: "created",
+			wantReason:  "independent cause " + noProgressLimitReason,
+		},
+		{
 			name:        "capacity evidence predates entry",
 			entryPhase:  "Blocked",
 			entryReason: "instant_fail_circuit_breaker",
@@ -1751,6 +1759,53 @@ func TestBackendCapacityBlockedRecoveryTargetBoundaries(t *testing.T) {
 			target, reason := orch.backendCapacityBlockedRecoveryTarget(t.Context(), issue, comment, tt.recoveredAt)
 			if target != tt.wantTarget || !strings.Contains(reason, tt.wantReason) {
 				t.Fatalf("backendCapacityBlockedRecoveryTarget() = %q, %q, want %q and reason containing %q", target, reason, tt.wantTarget, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestLegacyFailureBreakerBackendErrorExtractsTypedEvidence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "inline provider body",
+			body: `Detent stopped retrying this worker after 5 consecutive instant failures with the same backend error. backend_error_body: {"error":{"type":"usageLimitExceeded"}}`,
+			want: `{"error":{"type":"usageLimitExceeded"}}`,
+		},
+		{
+			name: "fenced provider body",
+			body: "Detent stopped retrying this worker after 5 consecutive instant failures with the same backend error.\n\n- backend_error_body:\n\n```json\n{\"status_code\":429}\n```\n\noperator guidance",
+			want: `{"status_code":429}`,
+		},
+		{
+			name: "narrative capacity phrase without provider body",
+			body: "Detent stopped retrying this worker after 5 consecutive instant failures with the same backend error. The issue instructions mention quota exceeded.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err, ok := LegacyFailureBreakerBackendError(tt.body)
+			if (tt.want != "") != ok {
+				t.Fatalf("LegacyFailureBreakerBackendError() ok = %v, want %v", ok, tt.want != "")
+			}
+			if ok && err.Error() != tt.want {
+				t.Fatalf("LegacyFailureBreakerBackendError() = %q, want %q", err, tt.want)
+			}
+			if ok {
+				carrier := err.(interface {
+					BackendErrorBody() string
+					BackendErrorMessage() string
+					BackendErrorStatus() string
+				})
+				if carrier.BackendErrorBody() != tt.want || carrier.BackendErrorMessage() != "" || carrier.BackendErrorStatus() != "" {
+					t.Fatalf("backend error evidence = body %q message %q status %q", carrier.BackendErrorBody(), carrier.BackendErrorMessage(), carrier.BackendErrorStatus())
+				}
 			}
 		})
 	}

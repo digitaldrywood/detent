@@ -25,6 +25,7 @@ type BackendOutage struct {
 	Scope           backendcapacity.Scope
 	Kind            string
 	Reason          string
+	Trigger         string
 	DetectedAt      time.Time
 	LastObservedAt  time.Time
 	ResetAt         time.Time
@@ -102,6 +103,9 @@ func (o *Orchestrator) handleBackendCapacityError(
 			"backend_id", outage.Scope.BackendID,
 			"backend_kind", outage.Scope.BackendKind,
 			"provider", outage.Scope.Provider,
+			"capacity_kind", outage.Kind,
+			"capacity_reason", outage.Reason,
+			"capacity_trigger", outage.Trigger,
 			"reset_at", outage.ResetAt,
 			"resume_at", outage.ResumeAt,
 			"error", event.Err,
@@ -133,6 +137,7 @@ func (o *Orchestrator) registerBackendOutage(
 	existing.Scope = scope
 	existing.Kind = strings.TrimSpace(capacityErr.Details.Kind)
 	existing.Reason = strings.TrimSpace(capacityErr.Details.Reason)
+	existing.Trigger = strings.TrimSpace(capacityErr.Details.Trigger)
 	existing.LastObservedAt = observedAt
 	existing.ResetAt = time.Time{}
 	if capacityErr.Details.ResetAt != nil {
@@ -337,6 +342,9 @@ func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validato
 			telemetry.LogLifecycleMessage(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, "backend_capacity_paused", "validator backend capacity paused", telemetry.LifecycleCorrelation{ProjectID: o.cfg.Project.ID},
 				"backend_id", outage.Scope.BackendID,
 				"provider", outage.Scope.Provider,
+				"capacity_kind", outage.Kind,
+				"capacity_reason", outage.Reason,
+				"capacity_trigger", outage.Trigger,
 				"resume_at", outage.ResumeAt,
 				"error", event.CapacityErr,
 			)
@@ -655,6 +663,7 @@ func backendOutagesCapacitySnapshot(outages map[string]BackendOutage) []map[stri
 			"provider":          outage.Scope.Provider,
 			"kind":              outage.Kind,
 			"reason":            outage.Reason,
+			"trigger":           outage.Trigger,
 			"detected_at":       outage.DetectedAt,
 			"last_observed_at":  outage.LastObservedAt,
 			"reset_at":          outage.ResetAt,
@@ -677,6 +686,54 @@ func IsLegacyFailureBreakerComment(body string) bool {
 	}
 	return strings.Contains(body, " consecutive instant failures with the same backend error.") ||
 		strings.Contains(body, " consecutive failed attempts.")
+}
+
+type legacyFailureBreakerBackendError struct {
+	body string
+}
+
+func (e *legacyFailureBreakerBackendError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.body
+}
+
+func (e *legacyFailureBreakerBackendError) BackendErrorBody() string {
+	return e.Error()
+}
+
+func (e *legacyFailureBreakerBackendError) BackendErrorMessage() string {
+	return ""
+}
+
+func (e *legacyFailureBreakerBackendError) BackendErrorStatus() string {
+	return ""
+}
+
+func LegacyFailureBreakerBackendError(body string) (error, bool) {
+	const marker = "backend_error_body:"
+
+	if !IsLegacyFailureBreakerComment(body) {
+		return nil, false
+	}
+	_, evidence, ok := strings.Cut(body, marker)
+	if !ok {
+		return nil, false
+	}
+	evidence = strings.TrimSpace(evidence)
+	if strings.HasPrefix(evidence, "```json") {
+		evidence = strings.TrimSpace(strings.TrimPrefix(evidence, "```json"))
+		if value, _, found := strings.Cut(evidence, "```"); found {
+			evidence = strings.TrimSpace(value)
+		}
+	} else if value, _, found := strings.Cut(evidence, "\n"); found {
+		evidence = strings.TrimSpace(value)
+	}
+	if evidence == "" {
+		return nil, false
+	}
+	return &legacyFailureBreakerBackendError{body: evidence}, true
 }
 
 func (o *Orchestrator) recoverBackendCapacityBlockedIssues(
@@ -934,10 +991,11 @@ func (o *Orchestrator) classifyBlockedCapacityIssue(
 	}
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
 		body := strings.TrimSpace(issue.Comments[index].Body)
-		if !IsLegacyFailureBreakerComment(body) {
+		backendErr, ok := LegacyFailureBreakerBackendError(body)
+		if !ok {
 			continue
 		}
-		capacityErr, ok := o.capacityController.ClassifyCapacityError(request, errors.New(body), state.RateLimits, now)
+		capacityErr, ok := o.capacityController.ClassifyCapacityError(request, backendErr, state.RateLimits, now)
 		if ok && capacityErr != nil && capacityErr.Details.Type != backendcapacity.ErrorTypeTransientOverload {
 			return capacityErr, issue.Comments[index], issue, true
 		}

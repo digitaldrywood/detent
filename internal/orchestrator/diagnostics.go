@@ -484,6 +484,8 @@ func workerOutcome(err error, finalState string) string {
 		return workerOutcomeTimedOut
 	case errors.Is(err, runpkg.ErrSessionTokenCeilingExceeded):
 		return runpkg.FinalStateTokenCeilingExceeded
+	case errors.Is(err, runpkg.ErrSessionBudgetProjectionExceeded):
+		return runpkg.FinalStateBudgetProjectionExceeded
 	case err != nil:
 		return workerOutcomeFailed
 	case strings.EqualFold(strings.TrimSpace(finalState), FinalStateCompleted), strings.TrimSpace(finalState) == "":

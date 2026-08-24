@@ -204,6 +204,42 @@ func TestSupervisorDoesNotRetryLaneRevokedRun(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotRetryMissingDeliverableCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		message       string
+		wantRetryable bool
+	}{
+		{name: "missing GitHub CLI login", message: "To get started with GitHub CLI, run: gh auth login; alternatively populate GH_TOKEN"},
+		{name: "invalid configured credential", message: "HTTP 401: Bad credentials"},
+		{name: "Git HTTPS authentication rejected", message: "fatal: Authentication failed for 'https://github.com/example/repo.git/'"},
+		{name: "Git SSH public key rejected", message: "git@github.com: Permission denied (publickey)."},
+		{name: "missing deliverable executable", message: "exec: gh: executable file not found"},
+		{name: "permission rejection can be repaired by worker", message: "HTTP 403: forbidden", wantRetryable: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			supervisor, err := NewSupervisor(deliverableCredentialBackend{message: tt.message}, SupervisorConfig{})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+			completion := supervisor.Run(t.Context(), RunRequest{
+				Issue:   connector.Issue{ID: "issue-1943"},
+				Attempt: 1,
+			})
+			if completion.Retryable != tt.wantRetryable {
+				t.Fatalf("Retryable = %v, want %v", completion.Retryable, tt.wantRetryable)
+			}
+			if !tt.wantRetryable && (completion.RetryAttempt != 0 || completion.RetryDelay != 0) {
+				t.Fatalf("retry state = attempt %d delay %s, want non-retryable credential failure", completion.RetryAttempt, completion.RetryDelay)
+			}
+		})
+	}
+}
+
 func TestMergeWorkerDurationExceededFinalState(t *testing.T) {
 	t.Parallel()
 
@@ -612,6 +648,19 @@ type laneRevokedBackend struct{}
 
 func (laneRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{FinalState: FinalStateLaneRevoked}, ErrLaneRevoked
+}
+
+type deliverableCredentialBackend struct {
+	message string
+}
+
+func (b deliverableCredentialBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateFailed}, &DeliverableCommandError{
+		OperationClass: "push",
+		Operation:      "git push",
+		Status:         "failed",
+		Message:        b.message,
+	}
 }
 
 type contextErrorBackend struct{}

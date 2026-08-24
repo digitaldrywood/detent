@@ -994,10 +994,15 @@ func (r *Runner) runAgentTurn(
 	runStartedAt time.Time,
 	detentSessionID int64,
 	initialIdentity agentidentity.Identity,
+	budgetProjection *dispatchBudgetProjection,
+	budgetCostOffsetUSD float64,
+	sessionModel string,
+	backendKind string,
 ) agentTurnExecution {
 	result := RunResult{
-		FinalState:      FinalStateCompleted,
-		RuntimeIdentity: initialIdentity.Normalize(),
+		FinalState:       FinalStateCompleted,
+		RuntimeIdentity:  initialIdentity.Normalize(),
+		budgetProjection: budgetProjection,
 	}
 	progress := newAgentRunProgress(
 		runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes},
@@ -1052,6 +1057,10 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, info.Path, update, eventAt); err != nil {
+			return err
+		}
+		observedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, sessionModel)
+		if err := r.enforceSessionBudgetProjection(budgetProjection, budgetCostOffsetUSD, observedModel, backendKind, update); err != nil {
 			return err
 		}
 		if err := runRequest.sessionBrake.observe(updateCtx, progress.turnCount(), result.Tokens.TotalTokens); err != nil {
@@ -1582,7 +1591,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			turnRequest.ToolInstructions = admissionToolInstructions
 		}
 	}
-	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
+	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity, budgetProjection, 0, sessionModel, backendConfig.Kind)
 	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
@@ -1608,7 +1617,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.logger.Warn("clear agent session resume state failed", "detent_session_id", sessionID, "issue_id", req.Issue.ID, "error", updateErr)
 		}
 		resumeState = store.AgentResumeState{}
-		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
+		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity, budgetProjection, 0, sessionModel, backendConfig.Kind)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
@@ -1640,7 +1649,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		recoveryRunRequest := req
 		recoveryRunRequest.deliverableRecoveryBranch = branch
 		recoveryRunRequest.sessionTurnOffset = execution.turnCount
-		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, execution.result.RuntimeIdentity)
+		budgetCostOffsetUSD := r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
+		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, execution.result.RuntimeIdentity, budgetProjection, budgetCostOffsetUSD, sessionModel, backendConfig.Kind)
 		recovery.err = sessionBrake.wrapTurnLimit(ctx, recovery.err)
 		recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
@@ -1844,6 +1854,35 @@ func classifyForgeDeliverableError(err error, fallbackHost string, workProductPu
 		return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
 	}
 	return err
+}
+
+func IsDeliverableConfigurationError(err error) bool {
+	errorsFound, _ := deliverableCommandErrors(err)
+	for _, deliverableErr := range errorsFound {
+		if deliverableErr == nil {
+			continue
+		}
+		detail := strings.ToLower(strings.TrimSpace(deliverableErr.Message + "\n" + deliverableErr.Body))
+		for _, phrase := range []string{
+			"gh auth login",
+			"populate gh_token",
+			"not logged into any github hosts",
+			"no credentials provided",
+			"bad credentials",
+			"authentication failed",
+			"authentication required",
+			"could not read username",
+			"permission denied (publickey)",
+			"github token is not configured",
+			"gh_token environment variable is empty",
+			"executable file not found",
+		} {
+			if strings.Contains(detail, phrase) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func classifyForgeOperationError(err error, operation string, host string) error {
@@ -2993,6 +3032,33 @@ func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Is
 	return err
 }
 
+func (r *Runner) enforceSessionBudgetProjection(
+	projection *dispatchBudgetProjection,
+	costOffsetUSD float64,
+	model string,
+	backendKind string,
+	update AgentUpdate,
+) error {
+	if projection == nil || projection.CostUSD <= 0 || update.Type != AgentUpdateTokenUsage {
+		return nil
+	}
+	observedCostUSD := costOffsetUSD + r.usageCostUSD(
+		model,
+		update.Tokens.InputTokens,
+		update.Tokens.CachedInputTokens,
+		update.Tokens.OutputTokens,
+		backendKind,
+	)
+	if observedCostUSD <= projection.CostUSD {
+		return nil
+	}
+	return &SessionBudgetProjectionError{
+		ObservedCostUSD:  observedCostUSD,
+		ProjectedCostUSD: projection.CostUSD,
+		Model:            model,
+	}
+}
+
 func sessionTokenCeilingForUsage(cfg config.Agent, tokens AgentTokenUsage) (sessionTokenCeiling, bool) {
 	candidates := make([]sessionTokenCeiling, 0, 2)
 	if cfg.MaxSessionTokens > 0 {
@@ -3111,6 +3177,9 @@ func finalStateForTurnError(err error) string {
 	}
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded
+	}
+	if errors.Is(err, ErrSessionBudgetProjectionExceeded) {
+		return FinalStateBudgetProjectionExceeded
 	}
 	if errors.Is(err, ErrSessionMemoryCeilingExceeded) {
 		return FinalStateMemoryCeilingExceeded
@@ -3373,6 +3442,8 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		eventMessage = "agent route selected"
 	case AgentUpdateToolStarted:
 		p.recordDeliverableToolStart(update)
+	case AgentUpdateToolOutput:
+		p.recordDeliverableToolOutput(update)
 	case AgentUpdateToolCompleted:
 		p.recordDeliverableToolCompletion(update)
 	case AgentUpdateMCPElicitation:
@@ -3391,8 +3462,19 @@ type deliverableToolInvocation struct {
 	class                 string
 	command               string
 	tool                  string
+	output                string
 	ciTriggerLabelMatches bool
 	ciTriggerAfterPush    bool
+}
+
+func (p *agentRunProgress) recordDeliverableToolOutput(update AgentUpdate) {
+	key := deliverableToolKey(update)
+	invocation, ok := p.toolInvocations[key]
+	if !ok {
+		return
+	}
+	invocation.output = appendDeliverableDetail(invocation.output, update.Delta)
+	p.toolInvocations[key] = invocation
 }
 
 func (p *agentRunProgress) recordDeliverableToolStart(update AgentUpdate) {
@@ -3468,18 +3550,21 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	if invocation.class == "ci_trigger_label" || invocation.class == "push_ci_trigger_label" {
 		p.ciTriggerLabelValid = false
 	}
-	message := meaningfulDeliverableDetail(update.BackendErrorMessage)
-	body := meaningfulDeliverableDetail(update.BackendErrorBody)
+	message := meaningfulDeliverableDetail(invocation.output)
 	if message == "" {
+		message = meaningfulDeliverableDetail(update.BackendErrorMessage)
+	}
+	body := meaningfulDeliverableDetail(update.BackendErrorBody)
+	if message == "" && strings.TrimSpace(update.Delta) != strings.TrimSpace(invocation.command) {
 		message = meaningfulDeliverableDetail(update.Delta)
 	}
-	if body == "" && strings.HasPrefix(strings.TrimSpace(update.Delta), "{") {
+	if body == "" && strings.TrimSpace(update.Delta) != strings.TrimSpace(invocation.command) && strings.HasPrefix(strings.TrimSpace(update.Delta), "{") {
 		body = meaningfulDeliverableDetail(update.Delta)
 	}
 	p.deliverableFailures[failureClass] = &DeliverableCommandError{
 		OperationClass: failureClass,
 		Operation:      deliverableInvocationOperation(invocation),
-		Arguments:      truncateDeliverableDetail(invocation.command),
+		Arguments:      deliverableInvocationArguments(invocation),
 		Status:         strings.TrimSpace(update.Status),
 		Message:        truncateDeliverableDetail(message),
 		Body:           truncateDeliverableDetail(body),
@@ -3685,6 +3770,18 @@ func truncateDeliverableDetail(value string) string {
 		return value[len(value)-4096:]
 	}
 	return value
+}
+
+func appendDeliverableDetail(current string, delta string) string {
+	return truncateDeliverableDetail(current + delta)
+}
+
+func deliverableInvocationArguments(invocation deliverableToolInvocation) string {
+	command := strings.TrimSpace(invocation.command)
+	if json.Valid([]byte(command)) {
+		return truncateDeliverableDetail(command)
+	}
+	return deliverableInvocationOperation(invocation)
 }
 
 func ciTriggerLabelCommand(command string) bool {
@@ -4413,6 +4510,8 @@ func workerRunOutcome(err error, finalState string) string {
 		return "timed_out"
 	case errors.Is(err, ErrSessionTokenCeilingExceeded):
 		return FinalStateTokenCeilingExceeded
+	case errors.Is(err, ErrSessionBudgetProjectionExceeded):
+		return FinalStateBudgetProjectionExceeded
 	case errors.Is(err, ErrSessionMemoryCeilingExceeded):
 		return FinalStateMemoryCeilingExceeded
 	case errors.Is(err, ErrWorkspaceBranchHeld):
