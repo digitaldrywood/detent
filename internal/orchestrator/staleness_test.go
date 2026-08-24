@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -343,6 +344,99 @@ func TestStalenessDispatchableItemsUsesDispatchPlannerEligibility(t *testing.T) 
 	items := orch.stalenessDispatchableItems([]connector.Issue{unauthorized, authorized}, &state, now)
 	if len(items) != 1 || items[0].ID != authorized.ID {
 		t.Fatalf("dispatchable staleness items = %#v, want only authorized issue", items)
+	}
+}
+
+func TestRefreshStalenessWarningsAppliesAuthorizationPolicy(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)
+	enteredAt := now.Add(-72 * time.Hour)
+	issue := func(id string, authorized bool) connector.Issue {
+		labels := []string{"bug"}
+		if authorized {
+			labels = append(labels, "detent:cory")
+		}
+		return connector.Issue{
+			ID:             id,
+			Identifier:     "getparable/parable#" + id,
+			State:          "Blocked",
+			Labels:         labels,
+			StageUpdatedAt: &enteredAt,
+		}
+	}
+	tests := []struct {
+		name      string
+		issues    []connector.Issue
+		decisions []telemetry.SchedulerDecision
+		want      map[string]string
+	}{
+		{
+			name:   "out of scope lane aging is omitted",
+			issues: []connector.Issue{issue("1898", false)},
+			want:   map[string]string{},
+		},
+		{
+			name:   "authorization boundary warning survives",
+			issues: []connector.Issue{issue("2267", false)},
+			decisions: []telemetry.SchedulerDecision{
+				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-time.Hour)},
+				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-30 * time.Minute)},
+			},
+			want: map[string]string{"getparable/parable#2267": staleness.KindRepeatedDecision},
+		},
+		{
+			name: "count includes actionable and authorization boundary warnings only",
+			issues: []connector.Issue{
+				issue("1898", false),
+				issue("2200", false),
+				issue("2094", false),
+				issue("2271", false),
+				issue("2274", false),
+				issue("1967", true),
+				issue("2267", false),
+			},
+			decisions: []telemetry.SchedulerDecision{
+				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-time.Hour)},
+				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-30 * time.Minute)},
+			},
+			want: map[string]string{
+				"getparable/parable#2267": staleness.KindRepeatedDecision,
+				"getparable/parable#1967": staleness.KindLaneAging,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{
+				Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:cory"}}},
+				Staleness: staleness.Config{
+					Enabled:                true,
+					Lanes:                  []staleness.LaneThreshold{{State: "Blocked", Threshold: 48 * time.Hour}},
+					RepeatedDecisionCount:  2,
+					RepeatedDecisionWindow: 24 * time.Hour,
+				},
+			})
+			cfg.Project.ID = "parable"
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			state.BoardIssues = tt.issues
+			state.SchedulerDecisions = tt.decisions
+			for _, current := range tt.issues {
+				state.laneEntries[workflowLaneEntryKey(current)] = enteredAt
+			}
+
+			orch.refreshStalenessWarnings(t.Context(), &state, nil, now)
+
+			got := make(map[string]string, len(state.StalenessWarnings))
+			for _, warning := range state.StalenessWarnings {
+				got[warning.Warning.Identifier] = warning.Warning.Kind
+			}
+			if !maps.Equal(got, tt.want) {
+				t.Fatalf("warnings = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 

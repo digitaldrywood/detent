@@ -95,15 +95,18 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 	tests := []struct {
 		name       string
 		cause      string
+		wantCause  string
 		wantReason BlockedRecoveryReason
 	}{
 		{
-			name:       "resolved dependency has no generic error",
+			name:       "resolved dependency records missing cause",
+			wantCause:  "blocked, cause unrecorded",
 			wantReason: BlockedRecoveryReasonMissingPullRequest,
 		},
 		{
 			name:       "human attention cause stays actionable",
 			cause:      "pull request delivery needs human attention",
+			wantCause:  "pull request delivery needs human attention",
 			wantReason: BlockedRecoveryReasonHumanBlocker,
 		},
 	}
@@ -129,8 +132,8 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 			orch.setBlockedStatusIssue(&state, issue, time.Date(2026, 8, 18, 22, 30, 0, 0, time.UTC))
 
 			blocked := state.Blocked[issue.ID]
-			if blocked.Reason != tt.cause || blocked.RecoveryReason != string(tt.wantReason) {
-				t.Fatalf("stored cause = %q/%q, want %q/%q", blocked.Reason, blocked.RecoveryReason, tt.cause, tt.wantReason)
+			if blocked.Reason != tt.wantCause || blocked.RecoveryReason != string(tt.wantReason) {
+				t.Fatalf("stored cause = %q/%q, want %q/%q", blocked.Reason, blocked.RecoveryReason, tt.wantCause, tt.wantReason)
 			}
 			if blocked.Reason == "blocked by project status" {
 				t.Fatalf("stored generic project-status error: %#v", blocked)

@@ -10,6 +10,39 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
+func TestEmittedDecisionReasons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		reason       string
+		wantEmitted  bool
+		wantBoundary bool
+	}{
+		{name: "default benign reason", reason: scheduler.DecisionReasonAlreadyRunning, wantEmitted: true},
+		{name: "authorization boundary", reason: " AUTHORIZATION_SELECTOR_DECLINED ", wantEmitted: true, wantBoundary: true},
+		{name: "workspace branch hold", reason: scheduler.DecisionReasonWorkspaceBranchHeld, wantEmitted: true},
+		{name: "legacy mismatch", reason: "unauthorized"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := scheduler.IsEmittedDecisionReason(tt.reason); got != tt.wantEmitted {
+				t.Fatalf("IsEmittedDecisionReason(%q) = %t, want %t", tt.reason, got, tt.wantEmitted)
+			}
+			if got := scheduler.IsAuthorizationBoundaryDecisionReason(tt.reason); got != tt.wantBoundary {
+				t.Fatalf("IsAuthorizationBoundaryDecisionReason(%q) = %t, want %t", tt.reason, got, tt.wantBoundary)
+			}
+		})
+	}
+
+	reasons := scheduler.EmittedDecisionReasons()
+	reasons[0] = "mutated"
+	if scheduler.EmittedDecisionReasons()[0] == "mutated" {
+		t.Fatal("EmittedDecisionReasons() returned mutable package state")
+	}
+}
+
 func TestNewFromConfigSelectsMode(t *testing.T) {
 	t.Parallel()
 

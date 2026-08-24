@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -584,39 +585,39 @@ type dispatchableDecision struct {
 }
 
 const (
-	dispatchSkipInvalidCandidate          = "invalid_candidate"
-	dispatchSkipInactiveState             = "inactive_state"
-	dispatchSkipTerminalState             = "terminal_state"
-	dispatchSkipPullRequestHydration      = "pull_request_hydration_unavailable"
-	dispatchSkipAwaitingGate              = "awaiting_gate"
-	dispatchSkipArtifactGateWaitStatus    = "artifact_gate_wait_status"
-	dispatchSkipMergedPullRequest         = "merged_pull_request_reconciliation_pending"
-	dispatchSkipDuplicatePullRequest      = "duplicate_pull_request_work"
-	dispatchSkipAuthorizationSelector     = "authorization_selector_declined"
-	dispatchSkipOwnershipAssigneeRequired = "ownership_assignee_required"
-	dispatchSkipBlockedByDependency       = "blocked_by_dependency"
-	dispatchSkipAlreadyRunning            = "already_running"
-	dispatchSkipRetryPending              = "retry_pending"
-	dispatchSkipAlreadyClaimed            = "already_claimed"
-	dispatchSkipBlocked                   = "blocked"
-	dispatchSkipBudgetCooldown            = "budget_cooldown"
-	dispatchSkipBudgetHardHold            = "budget_hard_hold"
-	dispatchSkipLifetimeLimit             = "lifetime_limit"
-	dispatchSkipLocalSlotUnavailable      = "local_slot_unavailable"
-	dispatchSkipWorkerHostUnavailable     = "worker_host_unavailable"
-	dispatchSkipGlobalCapacityFull        = "global_capacity_full"
-	dispatchSkipHydrationFailed           = "hydrate_failed"
-	dispatchSkipDispatchBackoffCancelled  = "dispatch_backoff_cancelled"
-	dispatchSkipMergeFairnessReserved     = "merge_fairness_head_reserved"
-	dispatchSkipGitHubRESTCapacity        = "github_rest_capacity_paused"
-	dispatchSkipTrackerUnavailable        = "tracker_unavailable"
-	dispatchSkipCompletionDeferred        = "completion_deferred"
-	dispatchSkipForgeUnavailable          = "forge_unavailable"
-	dispatchSkipCIUnavailable             = "ci_unavailable"
-	dispatchSkipProjectFailureBreaker     = projectFailureBreakerDispatchPaused
-	dispatchSkipRateWindowBackpressure    = "provider_rate_window_backpressure"
-	dispatchSkipCurrentHeadCIWait         = "current_head_ci_wait"
-	dispatchSkipWorkspaceBranchHeld       = "workspace_branch_held"
+	dispatchSkipInvalidCandidate          = scheduler.DecisionReasonInvalidCandidate
+	dispatchSkipInactiveState             = scheduler.DecisionReasonInactiveState
+	dispatchSkipTerminalState             = scheduler.DecisionReasonTerminalState
+	dispatchSkipPullRequestHydration      = scheduler.DecisionReasonPullRequestHydrationUnavailable
+	dispatchSkipAwaitingGate              = scheduler.DecisionReasonAwaitingGate
+	dispatchSkipArtifactGateWaitStatus    = scheduler.DecisionReasonArtifactGateWaitStatus
+	dispatchSkipMergedPullRequest         = scheduler.DecisionReasonMergedPullRequestPending
+	dispatchSkipDuplicatePullRequest      = scheduler.DecisionReasonDuplicatePullRequestWork
+	dispatchSkipAuthorizationSelector     = scheduler.DecisionReasonAuthorizationSelectorDeclined
+	dispatchSkipOwnershipAssigneeRequired = scheduler.DecisionReasonOwnershipAssigneeRequired
+	dispatchSkipBlockedByDependency       = scheduler.DecisionReasonBlockedByDependency
+	dispatchSkipAlreadyRunning            = scheduler.DecisionReasonAlreadyRunning
+	dispatchSkipRetryPending              = scheduler.DecisionReasonRetryPending
+	dispatchSkipAlreadyClaimed            = scheduler.DecisionReasonAlreadyClaimed
+	dispatchSkipBlocked                   = scheduler.DecisionReasonBlocked
+	dispatchSkipBudgetCooldown            = scheduler.DecisionReasonBudgetCooldown
+	dispatchSkipBudgetHardHold            = scheduler.DecisionReasonBudgetHardHold
+	dispatchSkipLifetimeLimit             = scheduler.DecisionReasonLifetimeLimit
+	dispatchSkipLocalSlotUnavailable      = scheduler.DecisionReasonLocalSlotUnavailable
+	dispatchSkipWorkerHostUnavailable     = scheduler.DecisionReasonWorkerHostUnavailable
+	dispatchSkipGlobalCapacityFull        = scheduler.DecisionReasonGlobalCapacityFull
+	dispatchSkipHydrationFailed           = scheduler.DecisionReasonHydrateFailed
+	dispatchSkipDispatchBackoffCancelled  = scheduler.DecisionReasonDispatchBackoffCancelled
+	dispatchSkipMergeFairnessReserved     = scheduler.DecisionReasonMergeFairnessHeadReserved
+	dispatchSkipGitHubRESTCapacity        = scheduler.DecisionReasonGitHubRESTCapacityPaused
+	dispatchSkipTrackerUnavailable        = scheduler.DecisionReasonTrackerUnavailable
+	dispatchSkipCompletionDeferred        = scheduler.DecisionReasonCompletionDeferred
+	dispatchSkipForgeUnavailable          = scheduler.DecisionReasonForgeUnavailable
+	dispatchSkipCIUnavailable             = scheduler.DecisionReasonCIUnavailable
+	dispatchSkipProjectFailureBreaker     = scheduler.DecisionReasonProjectFailureBreakerPaused
+	dispatchSkipRateWindowBackpressure    = scheduler.DecisionReasonProviderRateWindowBackpressure
+	dispatchSkipCurrentHeadCIWait         = scheduler.DecisionReasonCurrentHeadCIWait
+	dispatchSkipWorkspaceBranchHeld       = scheduler.DecisionReasonWorkspaceBranchHeld
 )
 
 func (p dispatchPlanner) previewCurrentHeadCIWait(

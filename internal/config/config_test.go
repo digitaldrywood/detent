@@ -2294,12 +2294,12 @@ tracker:
 observability:
   staleness:
     repeated_decision_benign_reasons:
-      - planned_maintenance
+      - authorization_selector_declined
       - provider_rate_window_backpressure
 ---
 Prompt
 `,
-			want: []string{"planned_maintenance", "provider_rate_window_backpressure"},
+			want: []string{"authorization_selector_declined", "provider_rate_window_backpressure"},
 		},
 	}
 
@@ -2314,6 +2314,26 @@ Prompt
 				t.Fatalf("RepeatedDecisionBenignReasons = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStalenessRepeatedDecisionBenignReasonsRejectUnknownSchedulerReason(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.Kind = TrackerMemory
+	cfg.Observability.Staleness.RepeatedDecisionBenignReasons = []string{"unauthorized"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want scheduler reason mismatch")
+	}
+	for _, want := range []string{
+		`observability.staleness.repeated_decision_benign_reasons contains "unauthorized"`,
+		`authorization_selector_declined`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %q, want %q", err, want)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -541,6 +542,9 @@ func clearBlockedStatusIssue(state *State, issueID string) {
 func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue, now time.Time) {
 	if existing, ok := state.Blocked[issue.ID]; ok && existing.Source == BlockedSourceProjectStatus {
 		existing.Issue = mergeIssueTrackerFields(existing.Issue, issue)
+		if strings.TrimSpace(existing.Reason) == "" {
+			existing.Reason = blockedStatusReason(issue)
+		}
 		state.Blocked[issue.ID] = existing
 		return
 	}
@@ -565,5 +569,8 @@ func blockedFromDependency(blocked Blocked) bool {
 }
 
 func blockedStatusReason(issue connector.Issue) string {
-	return strings.TrimSpace(issue.BlockerReason)
+	if reason := strings.TrimSpace(issue.BlockerReason); reason != "" {
+		return reason
+	}
+	return staleness.ReasonBlockedCauseUnrecorded
 }
