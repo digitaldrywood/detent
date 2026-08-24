@@ -155,6 +155,12 @@ func (s *sqliteStore) ReconcileStalenessWarningStates(
 		return nil, fmt.Errorf("begin staleness warning reconciliation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM staleness_warning_states
+WHERE project_id = ?
+  AND (last_seen_at IS NULL OR last_seen_at < ?)`, projectID, inactiveTimestamp); err != nil {
+		return nil, fmt.Errorf("prune inactive staleness warning states: %w", err)
+	}
 	for _, warningID := range activeWarningIDs {
 		if _, err := tx.ExecContext(ctx, `
 UPDATE staleness_warning_states
@@ -162,12 +168,6 @@ SET last_seen_at = ?
 WHERE project_id = ? AND warning_id = ?`, observedTimestamp, projectID, warningID); err != nil {
 			return nil, fmt.Errorf("mark staleness warning %q observed: %w", warningID, err)
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-DELETE FROM staleness_warning_states
-WHERE project_id = ?
-  AND (last_seen_at IS NULL OR last_seen_at < ?)`, projectID, inactiveTimestamp); err != nil {
-		return nil, fmt.Errorf("prune inactive staleness warning states: %w", err)
 	}
 	states, err := listStalenessWarningStates(ctx, tx, projectID)
 	if err != nil {

@@ -58,7 +58,8 @@ func TestReconcileStalenessWarningStatesRetainsOnlyLiveEpisodes(t *testing.T) {
 		wantLastSeen   time.Time
 	}{
 		{name: "recently inactive survives transient absence", acknowledgedAt: now.Add(-time.Hour), wantState: true, wantLastSeen: now.Add(-time.Hour)},
-		{name: "continuously active refreshes last seen", acknowledgedAt: inactiveBefore.Add(-time.Second), active: []string{"warning-1"}, wantState: true, wantLastSeen: now},
+		{name: "recently active refreshes last seen", acknowledgedAt: inactiveBefore.Add(time.Second), active: []string{"warning-1"}, wantState: true, wantLastSeen: now},
+		{name: "expired active acknowledgement cannot be revived", acknowledgedAt: inactiveBefore.Add(-time.Second), active: []string{"warning-1"}, wantState: false},
 		{name: "stale inactive is pruned", acknowledgedAt: inactiveBefore.Add(-time.Second)},
 		{name: "stale recurring episode resurfaces", acknowledgedAt: inactiveBefore.Add(-time.Second), recur: true},
 	}

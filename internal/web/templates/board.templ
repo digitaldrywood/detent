@@ -118,6 +118,7 @@ templ boardAlertsBar(alerts []boardAlert) {
 			role="alert"
 			aria-live="polite"
 			data-board-alert-count={ strconv.Itoa(len(alerts)) }
+			data-board-alert-tone={ string(alerts[0].Tone) }
 			if boardAlertKindActive(alerts, boardAlertKindLastKnown) {
 				data-board-snapshot-stale="true"
 			}
@@ -134,10 +135,12 @@ templ boardAlertsBar(alerts []boardAlert) {
 				aria-controls="board-alerts-overlay"
 				aria-label={ boardAlertButtonLabel(alerts) }
 			>
-				@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
+				<span class="contents" data-board-alert-lead-glyph>
+					@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
+				</span>
 				<span class="shrink-0 font-medium" data-board-alert-count-label>{ boardCountLabel(len(alerts), "warning", "warnings") }</span>
 				<span class="hidden shrink-0 text-current/60 md:inline" aria-hidden="true">·</span>
-				<span class="hidden min-w-0 flex-1 truncate text-text md:inline">{ alerts[0].TerseSummary }</span>
+				<span class="hidden min-w-0 flex-1 truncate text-text md:inline" data-board-alert-lead-summary>{ alerts[0].TerseSummary }</span>
 				if len(alerts) > 1 {
 					<span class="shrink-0 font-medium" data-board-alert-overflow>{ "+" + strconv.Itoa(len(alerts)-1) }</span>
 				}
@@ -156,7 +159,9 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 	{{ dismissals := boardStalenessDismissals(alerts) }}
 	<div class="divide-y divide-line" data-board-alerts-overlay-content>
 		<header class="sticky top-0 z-10 flex h-10 items-center gap-2 border-b border-line bg-page px-3 text-sm">
-			@boardAlertGlyph(alerts[0], "size-4 shrink-0")
+			<span class="contents" data-board-alert-lead-glyph>
+				@boardAlertGlyph(alerts[0], "size-4 shrink-0")
+			</span>
 			<p class="min-w-0 flex-1 truncate font-medium text-text" data-board-alert-count-label>{ boardCountLabel(len(alerts), "warning", "warnings") }</p>
 			for _, dismissal := range dismissals {
 				<form
@@ -190,11 +195,16 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 					id={ alert.ID }
 					class="grid min-w-0 gap-2 px-4 py-3"
 					data-board-alert={ string(alert.Kind) }
+					data-board-alert-summary={ alert.TerseSummary }
+					data-board-alert-tone={ string(alert.Tone) }
 					if alert.StalenessWarningID != "" {
 						data-staleness-warning-id={ alert.StalenessWarningID }
 						data-staleness-project-id={ alert.StalenessProjectID }
 					}
 				>
+					<template data-board-alert-glyph-template>
+						@boardAlertGlyph(alert, "size-3.5 shrink-0")
+					</template>
 					<div class="flex min-w-0 items-start gap-3">
 						<div class="min-w-0 flex-1">
 							<p class="font-medium text-text">{ alert.TerseSummary }</p>
@@ -453,6 +463,42 @@ templ boardAlertScript() {
 				});
 			}
 
+			function syncLeadAlertRoot(root, lead, glyphTemplate) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert-lead-glyph]").forEach(function (glyph) {
+					glyph.replaceChildren(glyphTemplate.content.cloneNode(true));
+				});
+				root.querySelectorAll("[data-board-alert-lead-summary]").forEach(function (summary) {
+					summary.textContent = lead.dataset.boardAlertSummary || "";
+				});
+			}
+
+			function syncLeadAlert(bar, roots, lead, count) {
+				var glyphTemplate = lead.querySelector("template[data-board-alert-glyph-template]");
+				if (!(glyphTemplate instanceof HTMLTemplateElement)) return;
+				roots.forEach(function (root) {
+					syncLeadAlertRoot(root, lead, glyphTemplate);
+				});
+				var tones = {
+					err: ["border-err/40", "bg-err/10", "text-err"],
+					info: ["border-info/40", "bg-info/10", "text-info"],
+					warn: ["border-warn/40", "bg-warn/10", "text-warn"],
+				};
+				Object.values(tones).flat().forEach(function (className) {
+					bar.classList.remove(className);
+				});
+				var tone = lead.dataset.boardAlertTone || "warn";
+				(tones[tone] || tones.warn).forEach(function (className) {
+					bar.classList.add(className);
+				});
+				bar.dataset.boardAlertTone = tone;
+				var toggle = alertsToggle();
+				if (toggle) {
+					var countLabel = count + (count === 1 ? " board warning" : " board warnings");
+					toggle.setAttribute("aria-label", countLabel + ". Highest severity: " + (lead.dataset.boardAlertSummary || "") + ". Expand details.");
+				}
+			}
+
 			function settleStalenessDismissal(form) {
 				var projectID = form.dataset.stalenessProjectId || "";
 				var warningIDs = dismissedWarningIDs(form);
@@ -475,13 +521,17 @@ templ boardAlertScript() {
 				syncAlertCountRoot(bar, count);
 				syncAlertCountRoot(host, count);
 				if (template instanceof HTMLTemplateElement) syncAlertCountRoot(template.content, count);
+				var lead = countRoot.querySelector("[data-board-alert]");
+				if (lead) {
+					var leadRoots = [bar, host];
+					if (template instanceof HTMLTemplateElement) leadRoots.push(template.content);
+					syncLeadAlert(bar, leadRoots, lead, count);
+				}
 				var overflow = bar.querySelector("[data-board-alert-overflow]");
 				if (overflow) {
 					overflow.textContent = "+" + Math.max(0, count - 1);
 					overflow.hidden = count <= 1;
 				}
-				var toggle = alertsToggle();
-				if (toggle) toggle.setAttribute("aria-label", (toggle.getAttribute("aria-label") || "").replace(/^\d+ board warnings?/, count + (count === 1 ? " board warning" : " board warnings")));
 			}
 
 			document.addEventListener("click", function (event) {

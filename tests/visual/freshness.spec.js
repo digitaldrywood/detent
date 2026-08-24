@@ -248,11 +248,31 @@ test("dismiss updates both counts and stays gone through the next SSE morph", as
   const overlay = page.locator("body > #board-alerts-overlay");
   const warnings = overlay.locator('[data-board-alert="staleness-warning"]');
   const dismissedID = await warnings.first().getAttribute("data-staleness-warning-id");
+  const nextLead = warnings.nth(1);
+  const nextLeadSummary = await nextLead.getAttribute("data-board-alert-summary");
+  const nextLeadTone = await nextLead.getAttribute("data-board-alert-tone");
+  const nextLeadGlyph = await nextLead
+    .locator("template[data-board-alert-glyph-template]")
+    .evaluate((element) => element.innerHTML);
   await warnings.first().getByRole("button", { name: "Dismiss", exact: true }).click();
 
   await expect(bar).toHaveAttribute("data-board-alert-count", "19");
   await expect(bar.locator("[data-board-alert-count-label]")).toHaveText("19 warnings");
   await expect(overlay.locator("[data-board-alert-count-label]")).toHaveText("19 warnings");
+  await expect(bar).toHaveAttribute("data-board-alert-tone", nextLeadTone);
+  await expect(bar.locator("[data-board-alert-lead-summary]")).toHaveText(nextLeadSummary);
+  await expect(page.locator("#board-alerts-toggle")).toHaveAttribute(
+    "aria-label",
+    `19 board warnings. Highest severity: ${nextLeadSummary}. Expand details.`,
+  );
+  expect(
+    await bar.locator("[data-board-alert-lead-glyph]").evaluate((element) => element.innerHTML),
+  ).toBe(nextLeadGlyph);
+  expect(
+    await overlay
+      .locator("[data-board-alert-lead-glyph]")
+      .evaluate((element) => element.innerHTML),
+  ).toBe(nextLeadGlyph);
   await expect(warnings).toHaveCount(19);
   await expect(
     overlay.locator(`[data-staleness-warning-id="${dismissedID}"]`),
