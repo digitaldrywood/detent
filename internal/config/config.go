@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/retro"
+	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -147,29 +148,30 @@ type WorkflowOverlay struct {
 }
 
 type Config struct {
-	Identity         Identity           `yaml:"identity,omitempty"`
-	ActiveHours      activehours.Config `yaml:"active_hours,omitempty"`
-	Tracker          Tracker            `yaml:"tracker"`
-	Polling          Polling            `yaml:"polling"`
-	Workspace        Workspace          `yaml:"workspace"`
-	Workpad          Workpad            `yaml:"workpad,omitempty"`
-	Deliverable      Deliverable        `yaml:"deliverable,omitempty"`
-	Dependencies     Dependencies       `yaml:"dependencies,omitempty"`
-	Worker           Worker             `yaml:"worker"`
-	Agent            Agent              `yaml:"agent"`
-	Agents           Agents             `yaml:"agents"`
-	Codex            Codex              `yaml:"codex"`
-	Gate             gate.Config        `yaml:"gate"`
-	Plan             gate.PlanConfig    `yaml:"plan"`
-	Server           Server             `yaml:"server"`
-	Observability    Observability      `yaml:"observability"`
-	Budget           Budget             `yaml:"budget"`
-	Release          Release            `yaml:"release,omitempty"`
-	Hooks            Hooks              `yaml:"hooks"`
-	Intake           intake.Config      `yaml:"intake,omitempty"`
-	Retro            retro.Config       `yaml:"retro,omitempty"`
-	Routines         []Routine          `yaml:"routines,omitempty"`
-	BacklogAdmission BacklogAdmission   `yaml:"backlog_admission,omitempty"`
+	Identity          Identity             `yaml:"identity,omitempty"`
+	ActiveHours       activehours.Config   `yaml:"active_hours,omitempty"`
+	Tracker           Tracker              `yaml:"tracker"`
+	Polling           Polling              `yaml:"polling"`
+	Workspace         Workspace            `yaml:"workspace"`
+	Workpad           Workpad              `yaml:"workpad,omitempty"`
+	Deliverable       Deliverable          `yaml:"deliverable,omitempty"`
+	Dependencies      Dependencies         `yaml:"dependencies,omitempty"`
+	Worker            Worker               `yaml:"worker"`
+	Agent             Agent                `yaml:"agent"`
+	Agents            Agents               `yaml:"agents"`
+	Codex             Codex                `yaml:"codex"`
+	Gate              gate.Config          `yaml:"gate"`
+	Plan              gate.PlanConfig      `yaml:"plan"`
+	Server            Server               `yaml:"server"`
+	Observability     Observability        `yaml:"observability"`
+	Budget            Budget               `yaml:"budget"`
+	Release           Release              `yaml:"release,omitempty"`
+	Hooks             Hooks                `yaml:"hooks"`
+	ScheduleOwnership scheduleowner.Config `yaml:"schedule_ownership,omitempty"`
+	Intake            intake.Config        `yaml:"intake,omitempty"`
+	Retro             retro.Config         `yaml:"retro,omitempty"`
+	Routines          []Routine            `yaml:"routines,omitempty"`
+	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
 	configuredFields map[string]struct{}
 }
@@ -1502,6 +1504,14 @@ func Default() Config {
 			VersionBump:     "auto",
 		},
 		Budget: budget,
+		ScheduleOwnership: scheduleowner.Config{
+			Backend:             scheduleowner.BackendGitHubRef,
+			Branch:              scheduleowner.DefaultBranch,
+			LeaseSeconds:        scheduleowner.DefaultLeaseSeconds,
+			HeartbeatSeconds:    scheduleowner.DefaultHeartbeatSeconds,
+			RetrySeconds:        scheduleowner.DefaultRetrySeconds,
+			MaxClockSkewSeconds: scheduleowner.DefaultMaxClockSkewSeconds,
+		},
 		BacklogAdmission: BacklogAdmission{
 			Schedule:               DefaultBacklogAdmissionSchedule,
 			EffortFile:             BacklogAdmissionEffortFileWorkflow,
@@ -1570,6 +1580,12 @@ func (c *Config) Validate() error {
 	}
 	c.Budget.validate("budget", &problems)
 	c.Hooks.validate(&problems)
+	coordinationEndpoint := ""
+	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
+		coordinationEndpoint = c.Tracker.Endpoint
+	}
+	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
 	states := make([]string, 0, len(c.configuredWorkflowStates()))
 	for _, state := range c.configuredWorkflowStates() {
 		states = append(states, state)
@@ -1798,10 +1814,27 @@ func (c *Config) normalize() {
 	c.Server.Normalize()
 	c.Observability.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
+	coordinationEndpoint := ""
+	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
+		coordinationEndpoint = c.Tracker.Endpoint
+	}
+	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
 	c.Intake.Normalize()
 	c.Retro.Normalize()
 	c.Routines = NormalizeRoutines(c.Routines)
 	c.BacklogAdmission.Normalize()
+}
+
+func (c Config) SchedulersEnabled() bool {
+	if len(c.Routines) > 0 || c.BacklogAdmission.Enabled {
+		return true
+	}
+	for _, source := range c.Intake.Sources {
+		if source.Kind == intake.KindSchedule {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Config) validateTracker(problems *[]string) {

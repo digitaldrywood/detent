@@ -335,6 +335,10 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	if workflow.Config.SchedulersEnabled() {
+		setDoctorCurrentCheck("Project " + id + " schedule ownership")
+		checks = append(checks, checkDoctorScheduleOwnership(ctx, id, workflow.Config, deps))
+	}
 	setDoctorCurrentCheck("Project " + id + " capabilities")
 	checks = append(checks, checkDoctorCapabilities(project, workflow))
 	setDoctorCurrentCheck("Project " + id + " workflow source policy")

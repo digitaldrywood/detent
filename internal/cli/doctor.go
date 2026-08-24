@@ -262,6 +262,7 @@ type doctorDeps struct {
 	gitRemoteURL         func(context.Context, string) (string, error)
 	gitTracked           func(context.Context, string) (bool, error)
 	workflowSourcePolicy doctorWorkflowSourcePolicyFunc
+	scheduleOwnership    doctorScheduleOwnershipProbe
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
@@ -1183,6 +1184,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.workflowSourcePolicy == nil {
 		d.workflowSourcePolicy = defaults.workflowSourcePolicy
 	}
+	if d.scheduleOwnership == nil {
+		d.scheduleOwnership = defaults.scheduleOwnership
+	}
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
@@ -1231,6 +1235,7 @@ func defaultDoctorDeps() doctorDeps {
 		gitRemoteURL:         defaultGitRemoteURL,
 		gitTracked:           defaultGitTracked,
 		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,
+		scheduleOwnership:    defaultDoctorScheduleOwnership,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,

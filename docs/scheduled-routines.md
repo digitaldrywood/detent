@@ -2,6 +2,48 @@
 
 [Back to README](../README.md#documentation)
 
+## Shared schedule ownership
+
+Scheduled intake sources, maintenance routines, and backlog admission remain
+inert until the project commits a shared ownership backend. All Detent daemons
+configured for the same key contend for one project lease, and only its holder
+starts the three cron loops. Webhook intake and explicit `RunOnce` operations
+do not require the scheduler lease.
+
+```yaml
+schedule_ownership:
+  enabled: true
+  backend: github_ref
+  key: example/production
+  repository: example/detent-coordination
+  branch: detent-schedule-coordination
+  lease_seconds: 300
+  heartbeat_seconds: 60
+  retry_seconds: 15
+  max_clock_skew_seconds: 15
+```
+
+The `github_ref` backend stores lease and issue-creation records on the named
+coordination branch. It uses GitHub's expected-head commit check as a shared
+compare-and-swap boundary; the branch is created from the repository's default
+branch on first use. The credential must be able to read the repository and
+create commits on that branch. A dedicated coordination repository keeps these
+small state commits out of a product repository's normal branch history.
+
+`key` is the committed fleet-wide project identity and must be identical on
+every host. `instance_name` supplies the owner shown by `detent doctor`; Detent
+uses the hostname when it is omitted. The heartbeat renews before the holder's
+local safety deadline. A contender waits through the lease TTL plus the
+configured maximum clock skew before takeover, so failover is bounded without
+allowing clock drift to create two active holders. Changing ownership backend
+settings requires a Detent restart.
+
+Issue fingerprints use durable records on the same branch. A creator reserves
+the fingerprint before posting and records the resulting issue. If a create
+response becomes uncertain, successors reconcile the marker and do not issue a
+second POST. `detent doctor` fails when scheduled operations lack ownership,
+the backend is unreachable, or no active owner is renewing the project lease.
+
 ## Alert and Scheduled Intake
 
 GitHub projects can turn external events and repository scans into normal board
