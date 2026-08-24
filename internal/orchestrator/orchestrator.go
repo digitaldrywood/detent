@@ -250,6 +250,7 @@ type Orchestrator struct {
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
+	workspaceHoldInspector  runpkg.WorkspaceBranchHoldInspector
 	dailyBudgetStatus       runpkg.DailyBudgetStatusProvider
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
 	githubRESTBudgetProber  runpkg.GitHubRESTBudgetProber
@@ -420,6 +421,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if candidate, ok := runner.(runpkg.BlockedRecoveryInspector); ok {
 		blockedRecoveryInspector = candidate
 	}
+	var workspaceHoldInspector runpkg.WorkspaceBranchHoldInspector
+	if candidate, ok := runner.(runpkg.WorkspaceBranchHoldInspector); ok {
+		workspaceHoldInspector = candidate
+	}
 	var capacityStatus runpkg.CapacityStatusController
 	if candidate, ok := runner.(runpkg.CapacityStatusController); ok {
 		capacityStatus = candidate
@@ -586,6 +591,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,
+		workspaceHoldInspector:  workspaceHoldInspector,
 		dailyBudgetStatus:       dailyBudgetStatus,
 		issueBudgetStatus:       issueBudgetStatus,
 		githubRESTBudgetProber:  githubRESTBudgetProber,

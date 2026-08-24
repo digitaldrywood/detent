@@ -4083,6 +4083,9 @@ func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
 		gitWorkTree: func(context.Context, string) error {
 			return nil
 		},
+		gitWorktrees: func(context.Context, string) ([]doctorGitWorktree, error) {
+			return nil, nil
+		},
 		gitRemoteURL: func(context.Context, string) (string, error) {
 			return "git@github.com:digitaldrywood/detent.git", nil
 		},
@@ -6603,6 +6606,9 @@ func successfulDoctorDeps() doctorDeps {
 		},
 		gitWorkTree: func(context.Context, string) error {
 			return nil
+		},
+		gitWorktrees: func(context.Context, string) ([]doctorGitWorktree, error) {
+			return nil, nil
 		},
 		workflowSourcePolicy: func(_ context.Context, projectID string, _ globalconfig.Project, _ string, _ string) doctorCheck {
 			return doctorCheck{

@@ -1289,6 +1289,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
+		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
+			return RunResult{}, heldErr
+		}
 		classifiedErr := classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
 		return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, classifiedErr)
 	}
@@ -4412,6 +4415,8 @@ func workerRunOutcome(err error, finalState string) string {
 		return FinalStateTokenCeilingExceeded
 	case errors.Is(err, ErrSessionMemoryCeilingExceeded):
 		return FinalStateMemoryCeilingExceeded
+	case errors.Is(err, ErrWorkspaceBranchHeld):
+		return "deferred"
 	case err != nil:
 		return "failed"
 	case strings.EqualFold(strings.TrimSpace(finalState), FinalStateCompleted), strings.TrimSpace(finalState) == "":

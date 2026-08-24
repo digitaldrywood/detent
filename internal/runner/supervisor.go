@@ -157,7 +157,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				slog.Any("panic", recovered),
 			)
 		}
-		if IsTransientOverload(completion.Err) {
+		if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) {
 			completion.Retryable = true
 			completion.RetryAttempt = request.Attempt
 			completion.RetryDelay = s.OverloadRetryDelay()
@@ -181,6 +181,9 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 		level := slog.LevelDebug
 		if IsTransientOverload(completion.Err) {
 			attrs = append(attrs, "reason", "transient_overload")
+			level = slog.LevelInfo
+		} else if errors.Is(completion.Err, ErrWorkspaceBranchHeld) {
+			attrs = append(attrs, "reason", "workspace_branch_held")
 			level = slog.LevelInfo
 		} else if completion.Err != nil {
 			level = slog.LevelWarn

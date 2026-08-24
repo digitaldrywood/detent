@@ -71,6 +71,15 @@ type DeliverableStateProvider interface {
 	DeliverableState(context.Context, Info, Issue) (DeliverableState, error)
 }
 
+type BranchHoldProvider interface {
+	BranchHold(context.Context, Issue) (BranchHold, bool, error)
+}
+
+type BranchHold struct {
+	Branch string
+	Path   string
+}
+
 type IssueRecoveryStateProvider interface {
 	IssueRecoveryState(context.Context, Issue) (RecoveryState, error)
 }
@@ -246,6 +255,18 @@ type workspaceRemovalError struct {
 
 type worktreeCreationError struct {
 	err error
+}
+
+type BranchHeldError struct {
+	Branch string
+	Path   string
+}
+
+func (e *BranchHeldError) Error() string {
+	if e == nil {
+		return "branch held by another worktree"
+	}
+	return fmt.Sprintf("branch %q is held by worktree at %q", e.Branch, e.Path)
 }
 
 func (e *worktreeCreationError) Error() string {
@@ -545,6 +566,26 @@ func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (Recover
 	return l.RecoveryState(ctx, info, issue)
 }
 
+func (l *LocalGit) BranchHold(ctx context.Context, issue Issue) (BranchHold, bool, error) {
+	info, err := l.infoForIssue(issue)
+	if err != nil {
+		return BranchHold{}, false, err
+	}
+	if strings.TrimSpace(info.Branch) == "" {
+		return BranchHold{}, false, nil
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return BranchHold{}, false, err
+	}
+	defer release()
+	holder, held, err := l.branchWorktreePath(ctx, info.Branch, info.Path)
+	if err != nil || !held {
+		return BranchHold{}, held, err
+	}
+	return BranchHold{Branch: info.Branch, Path: holder}, true, nil
+}
+
 func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
 	key := info.Key
 	if key == "" {
@@ -713,6 +754,11 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 		if exists {
+			if holder, held, holdErr := l.branchWorktreePath(ctx, branch, path); holdErr != nil {
+				return holdErr
+			} else if held {
+				return &BranchHeldError{Branch: branch, Path: holder}
+			}
 			_, err = l.runGit(ctx, "worktree", "add", path, branch)
 			return err
 		}
@@ -724,6 +770,27 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, baseRef)
 		return err
 	})
+}
+
+func (l *LocalGit) branchWorktreePath(ctx context.Context, branch string, targetPath string) (string, bool, error) {
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", false, withCommandOutput(err)
+	}
+	wantRef := "refs/heads/" + strings.TrimSpace(branch)
+	targetPath = filepath.Clean(targetPath)
+	var worktreePath string
+	for _, field := range strings.Split(output, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			worktreePath = filepath.Clean(strings.TrimPrefix(field, "worktree "))
+		case strings.HasPrefix(field, "branch "):
+			if strings.TrimSpace(strings.TrimPrefix(field, "branch ")) == wantRef && worktreePath != targetPath {
+				return worktreePath, true, nil
+			}
+		}
+	}
+	return "", false, nil
 }
 
 func (l *LocalGit) addWorktreeWithPrune(ctx context.Context, add func() error) error {

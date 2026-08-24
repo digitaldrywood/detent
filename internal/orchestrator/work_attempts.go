@@ -93,6 +93,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		for index := len(recent) - 1; index >= 0; index-- {
 			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
 		}
+		o.recoverWorkspaceBranchHolds(ctx, state, recent, now)
 		o.recoverForgeAvailabilityWaits(ctx, state, recent, now)
 		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
 	}

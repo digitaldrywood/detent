@@ -102,6 +102,23 @@ func TestSupervisorDoesNotAdvanceRetryForCapacityError(t *testing.T) {
 	}
 }
 
+func TestSupervisorRetriesWorkspaceBranchHoldWithoutAdvancingAttempt(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(workspaceBranchHeldBackend{}, SupervisorConfig{OverloadRetryDelay: 45 * time.Second})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-held"}, Attempt: 7})
+	if !errors.Is(completion.Err, ErrWorkspaceBranchHeld) {
+		t.Fatalf("Err = %v, want ErrWorkspaceBranchHeld", completion.Err)
+	}
+	if !completion.Retryable || completion.RetryAttempt != 7 || completion.RetryDelay != 45*time.Second {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want same attempt after 45s", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+}
+
 func TestSupervisorDoesNotApplyGenericBackoffToGitHubRESTHeadroom(t *testing.T) {
 	t.Parallel()
 
@@ -571,6 +588,12 @@ type errorBackend struct{}
 
 func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{}, errors.New("runner failed")
+}
+
+type workspaceBranchHeldBackend struct{}
+
+func (workspaceBranchHeldBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, &WorkspaceBranchHeldError{Branch: "detent/held", WorktreePath: "/review/pr"}
 }
 
 type operatorStoppedBackend struct{}
