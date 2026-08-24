@@ -775,6 +775,17 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 	}
 }
 
+func TestLifetimeLimitDefaultsSeparateHistoricalRunaways(t *testing.T) {
+	t.Parallel()
+
+	if DefaultLifetimeSessionLimit != 120 {
+		t.Fatalf("DefaultLifetimeSessionLimit = %d, want 120", DefaultLifetimeSessionLimit)
+	}
+	if DefaultLifetimeTokenLimit != 750_000_000 {
+		t.Fatalf("DefaultLifetimeTokenLimit = %d, want 750000000", DefaultLifetimeTokenLimit)
+	}
+}
+
 func TestFailureBreakerConfiguration(t *testing.T) {
 	t.Parallel()
 

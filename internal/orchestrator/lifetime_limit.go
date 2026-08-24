@@ -28,6 +28,7 @@ type LifetimeUsageStore interface {
 
 type lifetimeLimitDecision struct {
 	Usage           store.TokenSpend
+	ProjectHistory  store.ProjectLifetimeUsage
 	SessionLimit    int64
 	TokenLimit      int64
 	SessionsReached bool
@@ -53,6 +54,8 @@ func (o *Orchestrator) enforceLifetimeLimits(ctx context.Context, state *State, 
 		return
 	}
 	state.ensureInitialized(o.cfg)
+	var projectHistory store.ProjectLifetimeUsage
+	projectHistoryLoaded := false
 	for _, issue := range issues {
 		if strings.TrimSpace(issue.ID) == "" || !stateIn(issue.State, o.cfg.ActiveStates) {
 			continue
@@ -74,8 +77,28 @@ func (o *Orchestrator) enforceLifetimeLimits(ctx context.Context, state *State, 
 		if !decision.reached() || o.lifetimeLimitOverride(issue) || o.lifetimeLimitRecoveryPermit(ctx, issue, usage) {
 			continue
 		}
+		if !projectHistoryLoaded {
+			projectHistory = o.projectLifetimeUsage(ctx)
+			projectHistoryLoaded = true
+		}
+		decision.ProjectHistory = projectHistory
 		o.parkLifetimeLimit(ctx, state, issue, decision, now)
 	}
+}
+
+func (o *Orchestrator) projectLifetimeUsage(ctx context.Context) store.ProjectLifetimeUsage {
+	historyStore, ok := o.lifetimeUsage.(store.ProjectLifetimeUsageStore)
+	if !ok {
+		return store.ProjectLifetimeUsage{}
+	}
+	history, err := historyStore.ProjectLifetimeUsage(ctx, o.workflowMetricsProjectID())
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("project lifetime usage lookup failed", "project_id", o.workflowMetricsProjectID(), "error", err)
+		}
+		return store.ProjectLifetimeUsage{}
+	}
+	return history
 }
 
 func (o *Orchestrator) lifetimeLimitsEnabled() bool {
@@ -224,6 +247,22 @@ func (o *Orchestrator) lifetimeLimitComment(issue connector.Issue, decision life
 	b.WriteString(strconv.FormatInt(decision.Usage.TotalTokens, 10))
 	b.WriteString(" / ")
 	b.WriteString(formatLifetimeLimit(decision.TokenLimit))
+	if decision.ProjectHistory.CompletedIssues > 0 {
+		b.WriteString("\n- project_session_context: ")
+		b.WriteString(strconv.FormatInt(decision.Usage.Sessions, 10))
+		b.WriteString(" sessions; project p95 is ")
+		b.WriteString(strconv.FormatInt(decision.ProjectHistory.P95Sessions, 10))
+		b.WriteString(" across ")
+		b.WriteString(strconv.FormatInt(decision.ProjectHistory.CompletedIssues, 10))
+		b.WriteString(" completed issues")
+		b.WriteString("\n- project_token_context: ")
+		b.WriteString(strconv.FormatInt(decision.Usage.TotalTokens, 10))
+		b.WriteString(" tokens; project p95 is ")
+		b.WriteString(strconv.FormatInt(decision.ProjectHistory.P95Tokens, 10))
+		b.WriteString(" across ")
+		b.WriteString(strconv.FormatInt(decision.ProjectHistory.CompletedIssues, 10))
+		b.WriteString(" completed issues")
+	}
 	b.WriteString("\n- cooldown_until: ")
 	b.WriteString(resumeAt.UTC().Format(time.RFC3339))
 	b.WriteString("\n\nAfter the cooldown, Detent permits one additional session before re-evaluating cumulative usage.")

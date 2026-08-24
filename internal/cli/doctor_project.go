@@ -360,6 +360,10 @@ func checkDoctorProjectWithProgress(
 	setDoctorCurrentCheck("Project " + id + " progress brake")
 	checks = append(checks, checkDoctorProgressBrake(id, workflow.Config))
 	if strings.TrimSpace(storePath) != "" {
+		setDoctorCurrentCheck("Project " + id + " lifetime limits")
+		checks = append(checks, checkDoctorLifetimeLimits(ctx, id, storePath, workflow.Config, deps))
+	}
+	if strings.TrimSpace(storePath) != "" {
 		setDoctorCurrentCheck("Project " + id + " historical throughput")
 		checks = append(checks, checkDoctorHistoricalThroughput(ctx, id, storePath, workflow.Config.Agent.MaxConcurrentAgents, deps)...)
 	}
