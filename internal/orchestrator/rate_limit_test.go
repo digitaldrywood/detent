@@ -1106,7 +1106,7 @@ func TestTickClearsStaleBlockedStatusWhenCandidateResumesBelowGitHubReserve(t *t
 	state.Running[issue.ID] = Running{Issue: issue, StartedAt: now.Add(-time.Minute)}
 	state.Blocked[issue.ID] = Blocked{
 		Issue:     blockedIssue,
-		Reason:    blockedStatusReason(blockedIssue),
+		Reason:    blockedStatusReason(blockedIssue, cfg.TerminalStates),
 		BlockedAt: now.Add(-time.Hour),
 		Source:    BlockedSourceProjectStatus,
 	}

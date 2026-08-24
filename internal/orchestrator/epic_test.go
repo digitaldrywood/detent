@@ -430,7 +430,7 @@ func TestTickFinalizesAffectedEpicWhenBlockedChildMovesToDone(t *testing.T) {
 	child := epicTestIssue("child-251", "Blocked", false, "Child 251", nil, "")
 	state.Blocked[child.ID] = Blocked{
 		Issue:     child,
-		Reason:    blockedStatusReason(child),
+		Reason:    blockedStatusReason(child, cfg.TerminalStates),
 		BlockedAt: now.Add(-time.Minute),
 		Source:    BlockedSourceProjectStatus,
 	}
