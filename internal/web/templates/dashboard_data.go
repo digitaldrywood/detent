@@ -5346,7 +5346,7 @@ func diagnosticsConditionRows(snapshot telemetry.Snapshot) []diagnosticsConditio
 			failure.ProjectID,
 			"Tracker refresh",
 			"Live tracker refresh failed",
-			strings.Trim(strings.TrimSpace(failure.Condition)+" · "+strings.TrimSpace(failure.LastError), " ·"),
+			refreshFailureDetail(failure),
 			diagnosticsConditionObservedAt(failure.LastErrorAt, time.Time{}),
 		))
 	}

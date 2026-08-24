@@ -72,6 +72,39 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "CI is unavailable.",
 		},
 		{
+			name: "fault staleness requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StalenessWarnings: []telemetry.StalenessWarning{{
+					ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "digitaldrywood/detent#1960",
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Fleet work needs attention.",
+		},
+		{
+			name: "diagnostic staleness stays nominal",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StalenessWarnings: []telemetry.StalenessWarning{{
+					ID: "diagnostic", Class: observability.ClassDiagnostic, ProjectID: "detent",
+				}},
+			},
+			wantKind:    primitives.KindOK,
+			wantVerdict: "All systems nominal.",
+		},
+		{
+			name: "review queue staleness stays nominal",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				StalenessWarnings: []telemetry.StalenessWarning{{
+					ID: "review", Class: observability.ClassReviewQueue, ProjectID: "detent", WaitingOnHuman: true,
+				}},
+			},
+			wantKind:    primitives.KindOK,
+			wantVerdict: "All systems nominal.",
+		},
+		{
 			name: "forge write unavailability requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -167,6 +200,44 @@ func TestHealthViewVerdicts(t *testing.T) {
 			}
 			if !view.CheckedAt.Equal(now) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
+			}
+		})
+	}
+}
+
+func TestHealthRowsIncludeOnlyFaultStaleness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		warning telemetry.StalenessWarning
+		want    bool
+	}{
+		{
+			name: "fault",
+			warning: telemetry.StalenessWarning{
+				ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "digitaldrywood/detent#1960", IssueURL: "https://github.com/digitaldrywood/detent/issues/1960", Detail: "operator action required",
+			},
+			want: true,
+		},
+		{name: "diagnostic", warning: telemetry.StalenessWarning{ID: "diagnostic", Class: observability.ClassDiagnostic}},
+		{name: "review queue", warning: telemetry.StalenessWarning{ID: "review", Class: observability.ClassReviewQueue, WaitingOnHuman: true}},
+		{name: "legacy diagnostic fallback", warning: telemetry.StalenessWarning{ID: "legacy-diagnostic"}},
+		{name: "legacy review fallback", warning: telemetry.StalenessWarning{ID: "legacy-review", WaitingOnHuman: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rows := healthStalenessRows(healthFaultStalenessWarnings([]telemetry.StalenessWarning{tt.warning}))
+			if got := len(rows) == 1; got != tt.want {
+				t.Fatalf("fault row present = %v, want %v: %#v", got, tt.want, rows)
+			}
+			if !tt.want {
+				return
+			}
+			if rows[0].Kind != primitives.KindErr || rows[0].Status != "Needs attention" || rows[0].Link != tt.warning.IssueURL {
+				t.Fatalf("fault row = %#v", rows[0])
 			}
 		})
 	}
@@ -480,6 +551,44 @@ func TestHealthRefreshRowsDegradeAtFailureThreshold(t *testing.T) {
 	view := healthViewFromDashboard(DashboardData{Snapshot: snapshot})
 	if view.Kind != primitives.KindErr || view.Verdict != "Tracker refresh failed." {
 		t.Fatalf("health verdict = (%q, %q)", view.Kind, view.Verdict)
+	}
+}
+
+func TestRefreshFailureDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		failure telemetry.RefreshFailure
+		want    []string
+	}{
+		{
+			name: "consecutive candidate failures",
+			failure: telemetry.RefreshFailure{
+				Source:        telemetry.RefreshSourceCandidates,
+				FailureStreak: 3,
+				Condition:     "GitHub candidate query",
+				LastError:     "status 503",
+			},
+			want: []string{"candidate fetch", "3 consecutive failures", "GitHub candidate query", "status 503"},
+		},
+		{
+			name:    "sourceless project failure",
+			failure: telemetry.RefreshFailure{LastError: "runtime unavailable"},
+			want:    []string{"runtime unavailable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := refreshFailureDetail(tt.failure)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("refreshFailureDetail() = %q, want %q", got, want)
+				}
+			}
+		})
 	}
 }
 

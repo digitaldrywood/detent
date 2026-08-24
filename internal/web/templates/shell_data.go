@@ -139,6 +139,9 @@ func appShellActiveNav(data DashboardShellData) string {
 }
 
 func appShellHealthKind(data DashboardShellData) primitives.Kind {
+	if refreshSnapshotFailed(data.Snapshot) {
+		return primitives.KindErr
+	}
 	if len(boardAlerts(data.Snapshot)) > 0 {
 		return primitives.KindErr
 	}

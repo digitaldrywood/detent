@@ -116,6 +116,23 @@ func refreshSourceDisplayName(name telemetry.RefreshSourceName) string {
 	}
 }
 
+func refreshFailureDetail(failure telemetry.RefreshFailure) string {
+	details := make([]string, 0, 4)
+	if failure.Source != "" {
+		details = append(details, refreshSourceDisplayName(failure.Source))
+	}
+	if failure.FailureStreak > 0 {
+		details = append(details, formatCount(failure.FailureStreak)+" consecutive failures")
+	}
+	if condition := strings.TrimSpace(failure.Condition); condition != "" {
+		details = append(details, condition)
+	}
+	if lastError := strings.TrimSpace(failure.LastError); lastError != "" {
+		details = append(details, lastError)
+	}
+	return strings.Join(details, " · ")
+}
+
 func healthRefreshRows(snapshot telemetry.Snapshot) []healthRow {
 	groups := map[string][]telemetry.RefreshSource{}
 	for _, source := range snapshot.Refresh.Sources {

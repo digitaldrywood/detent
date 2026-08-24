@@ -41,6 +41,7 @@ type healthRow struct {
 func healthViewFromDashboard(data DashboardData) healthView {
 	snapshot := data.Snapshot
 	dispatchFaults := healthFaultDispatchStalls(snapshot.DispatchStalls)
+	stalenessFaults := healthFaultStalenessWarnings(snapshot.StalenessWarnings)
 	backendFaults := healthFaultBackendOutages(snapshot.BackendOutages)
 	breakerFaults := actionableBoardFailureBreakers(snapshot.FailureBreakers)
 	recoveryFaults := healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt)
@@ -71,6 +72,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Kind = primitives.KindErr
 		view.Verdict = "CI is unavailable."
 		view.Detail = ciUnavailableHealthDetail(snapshot.CIUnavailable)
+		return view
+	}
+	if len(stalenessFaults) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Fleet work needs attention."
+		view.Detail = stalenessFaultHealthDetail(stalenessFaults)
 		return view
 	}
 	if len(snapshot.StrandedActiveIssues) > 0 {
@@ -123,6 +130,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 
 func healthFaultSnapshot(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	snapshot.FailureBreakers = actionableBoardFailureBreakers(snapshot.FailureBreakers)
+	snapshot.StalenessWarnings = healthFaultStalenessWarnings(snapshot.StalenessWarnings)
 	backendOutages := make([]telemetry.BackendOutage, 0, len(snapshot.BackendOutages))
 	for _, outage := range snapshot.BackendOutages {
 		if observability.BackendOutage(outage.Kind) == observability.ClassFault {
@@ -231,6 +239,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows = append(rows, healthTrackerUnavailableRows(snapshot.TrackerUnavailable)...)
 	rows = append(rows, healthForgeUnavailableRows(snapshot.ForgeUnavailable)...)
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
+	rows = append(rows, healthStalenessRows(healthFaultStalenessWarnings(snapshot.StalenessWarnings))...)
 	rows = append(rows, healthStrandedActiveRows(snapshot.StrandedActiveIssues)...)
 	rows = append(rows, healthDispatchRecoveryRows(healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt), snapshot.GeneratedAt)...)
 	rows = append(rows, healthRefreshFailureRows(snapshot.RefreshFailures())...)
@@ -243,6 +252,56 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthFaultStalenessWarnings(warnings []telemetry.StalenessWarning) []telemetry.StalenessWarning {
+	faults := make([]telemetry.StalenessWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		if stalenessConditionClass(warning) == observability.ClassFault {
+			faults = append(faults, warning)
+		}
+	}
+	return faults
+}
+
+func healthStalenessRows(warnings []telemetry.StalenessWarning) []healthRow {
+	rows := make([]healthRow, 0, len(warnings))
+	for _, warning := range warnings {
+		component := "Fleet fault"
+		if projectID := strings.TrimSpace(warning.ProjectID); projectID != "" {
+			component += " · " + projectID
+		}
+		detail := stalenessHealthTarget(warning) + " · " + strings.TrimSpace(warning.Detail)
+		if warning.AgeSeconds > 0 {
+			detail += " · " + formatDuration(float64(warning.AgeSeconds))
+		}
+		rows = append(rows, healthRow{
+			ID:        "health-staleness-" + boardCardSlug(warning.ID),
+			Component: component,
+			Kind:      primitives.KindErr,
+			Status:    "Needs attention",
+			Detail:    detail,
+			Link:      strings.TrimSpace(warning.IssueURL),
+			Resets:    "operator action",
+		})
+	}
+	return rows
+}
+
+func stalenessFaultHealthDetail(warnings []telemetry.StalenessWarning) string {
+	if len(warnings) == 1 {
+		return stalenessHealthTarget(warnings[0]) + " needs operator attention."
+	}
+	return formatCount(len(warnings)) + " fault-class conditions need operator attention."
+}
+
+func stalenessHealthTarget(warning telemetry.StalenessWarning) string {
+	for _, value := range []string{warning.Identifier, warning.IssueID, warning.ProjectID} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "fleet"
 }
 
 func healthFaultDispatchRecoveries(recoveries []telemetry.DispatchRecovery, observedAt time.Time) []telemetry.DispatchRecovery {
@@ -275,13 +334,12 @@ func healthRefreshFailureRows(failures []telemetry.RefreshFailure) []healthRow {
 	rows := make([]healthRow, 0, len(failures))
 	for index, failure := range failures {
 		projectID := diagnosticsConditionProject(failure.ProjectID)
-		detail := strings.Trim(strings.TrimSpace(failure.Condition)+" · "+strings.TrimSpace(failure.LastError), " ·")
 		rows = append(rows, healthRow{
 			ID:        "health-refresh-failure-" + boardAlertRowSlug(failure.ProjectID+string(failure.Source), index),
 			Component: "Tracker refresh · " + projectID,
 			Kind:      primitives.KindErr,
 			Status:    "Failed",
-			Detail:    detail,
+			Detail:    refreshFailureDetail(failure),
 			Resets:    "on successful refresh",
 			DetailAt:  diagnosticsConditionObservedAt(failure.LastErrorAt, time.Time{}),
 		})

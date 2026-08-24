@@ -449,14 +449,14 @@ templ boardAlertScript() {
 				});
 			}
 
-			function warningCountLabel(count) {
-				return count + (count === 1 ? " warning" : " warnings");
+			function faultCountLabel(count) {
+				return count + (count === 1 ? " fault" : " faults");
 			}
 
 			function syncAlertCountRoot(root, count) {
 				if (!root || typeof root.querySelectorAll !== "function") return;
 				root.querySelectorAll("[data-board-alert-count-label]").forEach(function (label) {
-					label.textContent = warningCountLabel(count);
+					label.textContent = faultCountLabel(count);
 				});
 			}
 
@@ -491,7 +491,7 @@ templ boardAlertScript() {
 				bar.dataset.boardAlertTone = tone;
 				var toggle = alertsToggle();
 				if (toggle) {
-					var countLabel = count + (count === 1 ? " board warning" : " board warnings");
+					var countLabel = count + (count === 1 ? " board fault" : " board faults");
 					toggle.setAttribute("aria-label", countLabel + ". Highest severity: " + (lead.dataset.boardAlertSummary || "") + ". Expand details.");
 				}
 			}
