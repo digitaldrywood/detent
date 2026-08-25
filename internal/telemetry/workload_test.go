@@ -216,6 +216,15 @@ func TestBoardWorkloadComplete(t *testing.T) {
 			projectID: "detent",
 			want:      true,
 		},
+		{
+			name: "missing project sections in declared fleet are incomplete",
+			snapshot: Snapshot{
+				Tracker:  SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Runtime:  SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Projects: []ProjectSnapshot{{Project: Project{ID: "detent"}}},
+			},
+			projectID: "detent",
+		},
 	}
 
 	for _, tt := range tests {

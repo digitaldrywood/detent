@@ -630,6 +630,8 @@ func publishSnapshotOnce(
 			lastErrorAt := now
 			merged = mergeSnapshot(merged, telemetry.Snapshot{
 				Project:      projectMetadata,
+				Tracker:      unknownSnapshotSection(),
+				Runtime:      unknownSnapshotSection(),
 				DashboardURL: cleanDashboardURL(dashboardURL),
 				Shutdown:     telemetry.Shutdown{Status: "running"},
 				Refresh: telemetry.Refresh{

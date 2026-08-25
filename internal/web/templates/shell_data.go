@@ -209,6 +209,7 @@ type appShellProject struct {
 	Active                     int
 	Waiting                    int
 	Blocked                    int
+	BoardWorkloadIncomplete    bool
 	Paused                     bool
 	Selected                   bool
 	ActiveHoursVisible         bool
@@ -227,16 +228,17 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 			continue
 		}
 		item := appShellProject{
-			ID:       id,
-			Name:     projectSmallMultipleName(project),
-			Href:     projectOpenPath(id),
-			Live:     project.Running > 0,
-			Todo:     project.BoardTodo,
-			Active:   project.BoardActive,
-			Waiting:  project.BoardWaiting,
-			Blocked:  project.BoardBlocked,
-			Paused:   project.Paused,
-			Selected: strings.TrimSpace(data.ProjectID) == id,
+			ID:                      id,
+			Name:                    projectSmallMultipleName(project),
+			Href:                    projectOpenPath(id),
+			Live:                    project.Running > 0,
+			Todo:                    project.BoardTodo,
+			Active:                  project.BoardActive,
+			Waiting:                 project.BoardWaiting,
+			Blocked:                 project.BoardBlocked,
+			BoardWorkloadIncomplete: project.BoardWorkloadIncomplete,
+			Paused:                  project.Paused,
+			Selected:                strings.TrimSpace(data.ProjectID) == id,
 		}
 		item.ActiveHoursVisible, item.ActiveHoursCozyLabel, item.ActiveHoursCompactLabel, item.ActiveHoursHelpDescription = appProjectActiveHoursIndicator(project)
 		item.ActiveHoursVisible = item.ActiveHoursVisible && !item.Paused
@@ -374,11 +376,21 @@ func appProjectDotKind(project appShellProject) primitives.Kind {
 
 func appProjectBreakdown(project appShellProject) string {
 	return strings.Join([]string{
-		strconv.Itoa(project.Todo) + " ready",
-		strconv.Itoa(project.Active) + " active",
-		strconv.Itoa(project.Waiting) + " waiting",
-		strconv.Itoa(project.Blocked) + " blocked",
+		workloadCountLabel(project.Todo, project.BoardWorkloadIncomplete) + " ready",
+		workloadCountLabel(project.Active, project.BoardWorkloadIncomplete) + " active",
+		workloadCountLabel(project.Waiting, project.BoardWorkloadIncomplete) + " waiting",
+		workloadCountLabel(project.Blocked, project.BoardWorkloadIncomplete) + " blocked",
 	}, " · ")
+}
+
+func workloadCountLabel(value int, incomplete bool) string {
+	if !incomplete {
+		return strconv.Itoa(value)
+	}
+	if value == 0 {
+		return "unknown"
+	}
+	return strconv.Itoa(value) + "+"
 }
 
 func appProjectStatus(project appShellProject) string {

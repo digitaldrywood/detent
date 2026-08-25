@@ -153,7 +153,9 @@ func boardWorkloadSections(snapshot Snapshot, projectID string) (SnapshotSection
 	if projectID != "" {
 		for _, project := range snapshot.Projects {
 			if strings.TrimSpace(project.Project.ID) == projectID {
-				return project.Tracker, project.Runtime, !project.Tracker.IsZero() || !project.Runtime.IsZero()
+				projectDeclared := !project.Tracker.IsZero() || !project.Runtime.IsZero()
+				fleetDeclared := !snapshot.Tracker.IsZero() || !snapshot.Runtime.IsZero()
+				return project.Tracker, project.Runtime, projectDeclared || fleetDeclared
 			}
 		}
 	}

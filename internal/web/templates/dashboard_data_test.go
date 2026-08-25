@@ -23,6 +23,39 @@ func TestWorkAttemptStatusClassTreatsDeliveredAsSuccessful(t *testing.T) {
 	}
 }
 
+func TestProjectWorkloadBreakdownMarksIncompleteCounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		project ProjectSmallMultiple
+		want    string
+	}{
+		{
+			name:    "complete counts are exact",
+			project: ProjectSmallMultiple{BoardTodo: 1, BoardActive: 2},
+			want:    "1 ready · 2 active · 0 waiting · 0 blocked",
+		},
+		{
+			name: "incomplete counts are lower bounds or unknown",
+			project: ProjectSmallMultiple{
+				BoardActive:             2,
+				BoardWorkloadIncomplete: true,
+			},
+			want: "unknown ready · 2+ active · unknown waiting · unknown blocked",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := projectWorkloadBreakdown(tt.project); got != tt.want {
+				t.Fatalf("projectWorkloadBreakdown() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDiagnosticsConditionRowsPreserveEveryConditionClass(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)

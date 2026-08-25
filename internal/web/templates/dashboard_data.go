@@ -1410,10 +1410,10 @@ func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
 
 func projectWorkloadBreakdown(project ProjectSmallMultiple) string {
 	return strings.Join([]string{
-		formatCount(project.BoardTodo) + " ready",
-		formatCount(project.BoardActive) + " active",
-		formatCount(project.BoardWaiting) + " waiting",
-		formatCount(project.BoardBlocked) + " blocked",
+		workloadCountLabel(project.BoardTodo, project.BoardWorkloadIncomplete) + " ready",
+		workloadCountLabel(project.BoardActive, project.BoardWorkloadIncomplete) + " active",
+		workloadCountLabel(project.BoardWaiting, project.BoardWorkloadIncomplete) + " waiting",
+		workloadCountLabel(project.BoardBlocked, project.BoardWorkloadIncomplete) + " blocked",
 	}, " · ")
 }
 
