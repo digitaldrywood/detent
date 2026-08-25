@@ -1,11 +1,14 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
@@ -127,13 +130,14 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
 	t.Parallel()
 
+	var logs bytes.Buffer
 	tracker := &dependencyAutoUnblockConnector{}
 	cfg := normalizeConfig(Config{
 		ActiveStates:   []string{"Todo", "In Progress", "Rework"},
 		ObservedStates: []string{"Blocked"},
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
-	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	state := newState(cfg)
 	issue := connector.Issue{
 		ID:         "issue-budget-projection",
@@ -156,6 +160,7 @@ func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
 			ObservedCostUSD:  40.25,
 			ProjectedCostUSD: 10.00,
 			Model:            "gpt-5.6-sol",
+			EstimateSource:   budget.EstimateSourceHistorical,
 		},
 		CompletedAt:  completedAt,
 		Retryable:    false,
@@ -173,7 +178,12 @@ func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
 	if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
 		t.Fatalf("state updates = %#v, want one Blocked transition", tracker.updates)
 	}
-	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "40.250000") || !strings.Contains(tracker.comments[0].body, "10.000000") {
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "40.250000") || !strings.Contains(tracker.comments[0].body, "10.000000") || !strings.Contains(tracker.comments[0].body, "historical") {
 		t.Fatalf("comments = %#v, want observed and projected cost", tracker.comments)
+	}
+	for _, want := range []string{"worker_budget_projection_ceiling_tripped", "estimate_source=historical"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 }

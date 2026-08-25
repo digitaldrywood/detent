@@ -2462,66 +2462,99 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	}
 }
 
-func TestRunnerRunStopsSessionWhenBudgetProjectionIsExceeded(t *testing.T) {
+func TestRunnerRunEnforcesOnlyHistoricalBudgetProjection(t *testing.T) {
 	t.Parallel()
 
 	startedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	agentBackend := &fakeCodexClient{updates: []AgentUpdate{
+	tests := []struct {
+		name             string
+		estimateSessions int64
+		wantError        bool
+		wantFinalState   string
+	}{
 		{
-			Type:   AgentUpdateTokenUsage,
-			Tokens: AgentTokenUsage{InputTokens: 5, TotalTokens: 5},
+			name:           "default estimate remains advisory",
+			wantFinalState: FinalStateCompleted,
 		},
 		{
-			Type:   AgentUpdateTokenUsage,
-			Tokens: AgentTokenUsage{InputTokens: 11, TotalTokens: 11},
+			name:             "historical estimate stops overspend",
+			estimateSessions: 5,
+			wantError:        true,
+			wantFinalState:   FinalStateBudgetProjectionExceeded,
 		},
-	}}
-	sessionStore := &fakeSessionStore{sessionID: 1943}
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}},
-			Prompt: "Work on {{ issue.identifier }}",
-		},
-		Workspace: &fakeWorkspaceBackend{
-			info: workspace.Info{Path: t.TempDir(), Key: "issue-1943", Branch: "detent/issue-1943"},
-		},
-		AgentBackend: agentBackend,
-		Store:        sessionStore,
-		Pricing: budget.PricingTable{
-			"gpt-budget": {USDPerInputToken: 0.01},
-		},
-		BudgetChecker: &fakeBudgetChecker{projection: &budget.Projection{
-			Estimate: budget.TokenEstimate{InputTokens: 10, TotalTokens: 10},
-			CostUSD:  0.10,
-		}},
-		Now: newFakeClock(
-			startedAt,
-			startedAt.Add(time.Second),
-			startedAt.Add(2*time.Second),
-			startedAt.Add(3*time.Second),
-			startedAt.Add(4*time.Second),
-		).Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
-		ID:            "issue-1943",
-		Identifier:    "digitaldrywood/detent#1943",
-		ModelOverride: "gpt-budget",
-	}})
-	if !errors.Is(err, ErrSessionBudgetProjectionExceeded) {
-		t.Fatalf("Run() error = %v, want ErrSessionBudgetProjectionExceeded", err)
-	}
-	if result.FinalState != FinalStateBudgetProjectionExceeded {
-		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateBudgetProjectionExceeded)
-	}
-	if agentBackend.calls != 1 {
-		t.Fatalf("backend calls = %d, want one stopped turn", agentBackend.calls)
-	}
-	if sessionStore.usage.CostUSD <= 0.10 || sessionStore.usage.ProjectedCostUSD == nil || *sessionStore.usage.ProjectedCostUSD != 0.10 {
-		t.Fatalf("UsageEvent = %#v, want recorded projection and crossing cost", sessionStore.usage)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			agentBackend := &fakeCodexClient{updates: []AgentUpdate{
+				{
+					Type:   AgentUpdateTokenUsage,
+					Tokens: AgentTokenUsage{InputTokens: 5, TotalTokens: 5},
+				},
+				{
+					Type:   AgentUpdateTokenUsage,
+					Tokens: AgentTokenUsage{InputTokens: 11, TotalTokens: 11},
+				},
+			}}
+			sessionStore := &fakeSessionStore{sessionID: 1943}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}},
+					Prompt: "Work on {{ issue.identifier }}",
+				},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: t.TempDir(), Key: "issue-1943", Branch: "detent/issue-1943"},
+				},
+				AgentBackend: agentBackend,
+				Store:        sessionStore,
+				Pricing: budget.PricingTable{
+					"gpt-budget": {USDPerInputToken: 0.01},
+				},
+				BudgetChecker: &fakeBudgetChecker{projection: &budget.Projection{
+					Estimate: budget.TokenEstimate{InputTokens: 10, TotalTokens: 10, Sessions: tt.estimateSessions},
+					CostUSD:  0.10,
+				}},
+				Now: newFakeClock(
+					startedAt,
+					startedAt.Add(time.Second),
+					startedAt.Add(2*time.Second),
+					startedAt.Add(3*time.Second),
+					startedAt.Add(4*time.Second),
+				).Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
+				ID:            "issue-1943",
+				Identifier:    "digitaldrywood/detent#1943",
+				ModelOverride: "gpt-budget",
+			}})
+			if got := errors.Is(err, ErrSessionBudgetProjectionExceeded); got != tt.wantError {
+				t.Fatalf("Run() projection error = %t, want %t: %v", got, tt.wantError, err)
+			}
+			if result.FinalState != tt.wantFinalState {
+				t.Fatalf("FinalState = %q, want %q", result.FinalState, tt.wantFinalState)
+			}
+			if agentBackend.calls != 1 {
+				t.Fatalf("backend calls = %d, want one turn", agentBackend.calls)
+			}
+			if sessionStore.usage.CostUSD <= 0.10 || sessionStore.usage.ProjectedCostUSD == nil || *sessionStore.usage.ProjectedCostUSD != 0.10 {
+				t.Fatalf("UsageEvent = %#v, want recorded projection and crossing cost", sessionStore.usage)
+			}
+			if sessionStore.usage.ProjectionOvershootUSD <= 0 {
+				t.Fatalf("ProjectionOvershootUSD = %.6f, want recorded overshoot", sessionStore.usage.ProjectionOvershootUSD)
+			}
+			if tt.wantError {
+				var projectionErr *SessionBudgetProjectionError
+				if !errors.As(err, &projectionErr) || projectionErr.EstimateSource != budget.EstimateSourceHistorical {
+					t.Fatalf("Run() error = %#v, want historical estimate source", err)
+				}
+			}
+		})
 	}
 }
 
@@ -3568,14 +3601,15 @@ func TestRunnerFinishSessionRecordsBudgetProjectionOvershoot(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		projectedCost float64
-		inputTokens   int64
-		wantOvershoot float64
-		wantWarning   bool
+		name           string
+		projectedCost  float64
+		inputTokens    int64
+		estimateSource budget.EstimateSource
+		wantOvershoot  float64
+		wantWarning    bool
 	}{
-		{name: "actual cost exceeds admitted projection", projectedCost: 0.10, inputTokens: 20, wantOvershoot: 0.10, wantWarning: true},
-		{name: "actual cost stays below admitted projection", projectedCost: 0.25, inputTokens: 20},
+		{name: "default projection overshoot remains observable", projectedCost: 0.10, inputTokens: 20, estimateSource: budget.EstimateSourceDefault, wantOvershoot: 0.10, wantWarning: true},
+		{name: "historical projection stays below estimate", projectedCost: 0.25, inputTokens: 20, estimateSource: budget.EstimateSourceHistorical},
 	}
 
 	for _, tt := range tests {
@@ -3604,7 +3638,7 @@ func TestRunnerFinishSessionRecordsBudgetProjectionOvershoot(t *testing.T) {
 				RunResult{
 					FinalState:       FinalStateCompleted,
 					Tokens:           TokenTotals{InputTokens: tt.inputTokens, TotalTokens: tt.inputTokens, RuntimeSeconds: 60},
-					budgetProjection: &dispatchBudgetProjection{CostUSD: tt.projectedCost},
+					budgetProjection: &dispatchBudgetProjection{CostUSD: tt.projectedCost, EstimateSource: tt.estimateSource},
 				},
 				"gpt-test",
 				"codex",
@@ -3626,7 +3660,7 @@ func TestRunnerFinishSessionRecordsBudgetProjectionOvershoot(t *testing.T) {
 				t.Fatalf("overshoot warning present = %t, want %t\n%s", gotWarning, tt.wantWarning, logs.String())
 			}
 			if tt.wantWarning {
-				for _, want := range []string{"projected_cost_usd=0.1", "actual_cost_usd=0.2", "projection_overshoot_usd=0.1"} {
+				for _, want := range []string{"estimate_source=default", "projected_cost_usd=0.1", "actual_cost_usd=0.2", "projection_overshoot_usd=0.1"} {
 					if !strings.Contains(logs.String(), want) {
 						t.Fatalf("overshoot warning missing %q:\n%s", want, logs.String())
 					}

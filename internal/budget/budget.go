@@ -60,6 +60,13 @@ type TokenEstimate struct {
 	Sessions          int64
 }
 
+type EstimateSource string
+
+const (
+	EstimateSourceDefault    EstimateSource = "default"
+	EstimateSourceHistorical EstimateSource = "historical"
+)
+
 type Decision struct {
 	Allowed    bool
 	Refusal    *Refusal
@@ -69,6 +76,13 @@ type Decision struct {
 type Projection struct {
 	Estimate TokenEstimate
 	CostUSD  float64
+}
+
+func (p Projection) EstimateSource() EstimateSource {
+	if p.Estimate.Sessions > 0 {
+		return EstimateSourceHistorical
+	}
+	return EstimateSourceDefault
 }
 
 type DailyStatus struct {

@@ -288,6 +288,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	detail string,
 	humanAction string,
 	eventName string,
+	eventAttrs ...any,
 ) bool {
 	if state == nil || event.Err == nil || strings.TrimSpace(cause) == "" {
 		return false
@@ -352,11 +353,13 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 		Event:   eventName,
 		Message: "parked " + issueLabel(issue) + ": " + detail,
 	})
-	telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, eventName, detail, o.runningLifecycleCorrelation(issue, running),
+	attrs := []any{
 		"cause", cause,
 		"human_action", humanAction,
 		"error", event.Err,
-	)
+	}
+	attrs = append(attrs, eventAttrs...)
+	telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, eventName, detail, o.runningLifecycleCorrelation(issue, running), attrs...)
 	return true
 }
 

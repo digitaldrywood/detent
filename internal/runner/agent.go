@@ -2159,7 +2159,10 @@ func runResultWithBudgetProjection(projection *budget.Projection) RunResult {
 	if projection == nil {
 		return RunResult{}
 	}
-	return RunResult{budgetProjection: &dispatchBudgetProjection{CostUSD: projection.CostUSD}}
+	return RunResult{budgetProjection: &dispatchBudgetProjection{
+		CostUSD:        projection.CostUSD,
+		EstimateSource: projection.EstimateSource(),
+	}}
 }
 
 func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *BudgetRefusal {
@@ -2882,6 +2885,7 @@ func (r *Runner) finishSession(
 			telemetry.WorkAttemptIDKey, workAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,
 			"model", usageModel,
+			"estimate_source", result.budgetProjection.EstimateSource,
 			"projected_cost_usd", *projectedCostUSD,
 			"actual_cost_usd", actualCostUSD,
 			"projection_overshoot_usd", projectionOvershootUSD,
@@ -3039,7 +3043,7 @@ func (r *Runner) enforceSessionBudgetProjection(
 	backendKind string,
 	update AgentUpdate,
 ) error {
-	if projection == nil || projection.CostUSD <= 0 || update.Type != AgentUpdateTokenUsage {
+	if projection == nil || projection.EstimateSource != budget.EstimateSourceHistorical || projection.CostUSD <= 0 || update.Type != AgentUpdateTokenUsage {
 		return nil
 	}
 	observedCostUSD := costOffsetUSD + r.usageCostUSD(
@@ -3056,6 +3060,7 @@ func (r *Runner) enforceSessionBudgetProjection(
 		ObservedCostUSD:  observedCostUSD,
 		ProjectedCostUSD: projection.CostUSD,
 		Model:            model,
+		EstimateSource:   projection.EstimateSource,
 	}
 }
 
