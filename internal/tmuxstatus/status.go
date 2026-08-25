@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -74,14 +75,31 @@ func newStatus(ctx context.Context, runner commandRunner, pane string, logger *s
 }
 
 type Counts struct {
-	Running int
-	Ready   int
-	Waiting int
-	Blocked int
+	Running    int
+	Ready      int
+	Waiting    int
+	Blocked    int
+	Incomplete bool
 }
 
 func Format(counts Counts) string {
-	return fmt.Sprintf("detent %dr/%dq/%dw/%db", counts.Running, counts.Ready, counts.Waiting, counts.Blocked)
+	return fmt.Sprintf(
+		"detent %dr/%sq/%sw/%sb",
+		counts.Running,
+		workloadCountLabel(counts.Ready, counts.Incomplete),
+		workloadCountLabel(counts.Waiting, counts.Incomplete),
+		workloadCountLabel(counts.Blocked, counts.Incomplete),
+	)
+}
+
+func workloadCountLabel(count int, incomplete bool) string {
+	if !incomplete {
+		return strconv.Itoa(count)
+	}
+	if count == 0 {
+		return "?"
+	}
+	return strconv.Itoa(count) + "+"
 }
 
 func (s *Status) Update(ctx context.Context, snapshot telemetry.Snapshot) error {
@@ -89,12 +107,13 @@ func (s *Status) Update(ctx context.Context, snapshot telemetry.Snapshot) error 
 		return nil
 	}
 	effective := snapshot.EffectiveCounts()
-	workload := telemetry.BoardWorkload(snapshot)
+	workload := telemetry.CurrentBoardWorkload(snapshot)
 	name := Format(Counts{
-		Running: effective.Running,
-		Ready:   workload.Todo,
-		Waiting: workload.Waiting,
-		Blocked: workload.Blocked,
+		Running:    effective.Running,
+		Ready:      workload.Todo,
+		Waiting:    workload.Waiting,
+		Blocked:    workload.Blocked,
+		Incomplete: !telemetry.BoardWorkloadComplete(snapshot),
 	})
 	if name == s.lastName {
 		currentName, err := s.runner.Output(ctx, "display-message", "-t", s.target, "-p", "#{window_name}")

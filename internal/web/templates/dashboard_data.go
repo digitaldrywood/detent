@@ -420,6 +420,7 @@ type ProjectSmallMultiple struct {
 	BoardActive               int
 	BoardWaiting              int
 	BoardBlocked              int
+	BoardWorkloadIncomplete   bool
 	Completed                 int
 	TotalTokens               int64
 	ThroughputTokensPerSecond float64
@@ -1324,8 +1325,8 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 			DotClass:     status.DotClass,
 			ProjectColor: projectColorForProject(project),
 			BadgeClass:   status.BadgeClass,
-			CountLabel:   formatCount(project.BoardLoad),
-			RunningLabel: formatCount(project.BoardLoad) + " board load",
+			CountLabel:   projectBoardWorkloadCountLabel(project),
+			RunningLabel: projectBoardWorkloadCountLabel(project) + " board load",
 			Breakdown:    projectWorkloadBreakdown(project),
 			DefaultIndex: len(items),
 			Active:       active,
@@ -1333,6 +1334,16 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 		})
 	}
 	return items
+}
+
+func projectBoardWorkloadCountLabel(project ProjectSmallMultiple) string {
+	if !project.BoardWorkloadIncomplete {
+		return formatCount(project.BoardLoad)
+	}
+	if project.BoardLoad == 0 {
+		return "unknown"
+	}
+	return formatCount(project.BoardLoad) + "+"
 }
 
 type projectStatusView struct {

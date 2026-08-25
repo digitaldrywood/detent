@@ -1528,6 +1528,77 @@ func TestBoardFiguresSeparateWaitingFromBlockedLane(t *testing.T) {
 	}
 }
 
+func TestBoardFiguresExposeIncompleteWorkloadProjection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		snapshot    telemetry.Snapshot
+		wantReady   string
+		wantWaiting string
+		wantBlocked string
+	}{
+		{
+			name: "complete projection ignores completed-only rows",
+			snapshot: telemetry.Snapshot{
+				Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				Completed: []telemetry.Completed{
+					{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}, FinalState: "completed"},
+					{Issue: telemetry.Issue{ID: "review", State: "Human Review"}, FinalState: "completed"},
+				},
+			},
+			wantReady:   "0",
+			wantWaiting: "0",
+			wantBlocked: "0",
+		},
+		{
+			name: "incomplete projection reports lower bound and unknown zeros",
+			snapshot: telemetry.Snapshot{
+				Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed},
+				Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				Completed: []telemetry.Completed{
+					{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}, FinalState: "completed"},
+					{Issue: telemetry.Issue{ID: "review", State: "Human Review"}, FinalState: "completed"},
+				},
+			},
+			wantReady:   "unknown",
+			wantWaiting: "unknown",
+			wantBlocked: "unknown",
+		},
+		{
+			name: "incomplete projection reports current rows as lower bounds",
+			snapshot: telemetry.Snapshot{
+				Tracker:     telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed},
+				Runtime:     telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				BoardIssues: []telemetry.Issue{{ID: "blocked", State: "Blocked"}},
+			},
+			wantReady:   "unknown",
+			wantWaiting: "unknown",
+			wantBlocked: "1+",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			byID := map[string]primitives.Figure{}
+			for _, figure := range boardFigures(tt.snapshot) {
+				byID[figure.ID] = figure
+			}
+			if got := byID["fig-ready"].Value; got != tt.wantReady {
+				t.Fatalf("ready figure = %q, want %q", got, tt.wantReady)
+			}
+			if got := byID["fig-waiting"].Value; got != tt.wantWaiting {
+				t.Fatalf("waiting figure = %q, want %q", got, tt.wantWaiting)
+			}
+			if got := byID["fig-blocked"].Value; got != tt.wantBlocked {
+				t.Fatalf("blocked figure = %q, want %q", got, tt.wantBlocked)
+			}
+		})
+	}
+}
+
 func TestBoardExceptionsRequireOptIn(t *testing.T) {
 	data := boardTestData()
 	if got := boardExceptions(data, true); len(got) != 0 {

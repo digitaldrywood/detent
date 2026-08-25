@@ -54,6 +54,8 @@ func TestFormat(t *testing.T) {
 		{name: "idle", want: "detent 0r/0q/0w/0b"},
 		{name: "active", counts: Counts{Running: 2, Ready: 1, Waiting: 4, Blocked: 3}, want: "detent 2r/1q/4w/3b"},
 		{name: "large counts stay compact", counts: Counts{Running: 120, Ready: 45, Waiting: 18, Blocked: 8}, want: "detent 120r/45q/18w/8b"},
+		{name: "incomplete zeros are unknown", counts: Counts{Running: 2, Incomplete: true}, want: "detent 2r/?q/?w/?b"},
+		{name: "incomplete counts are lower bounds", counts: Counts{Running: 2, Ready: 3, Blocked: 1, Incomplete: true}, want: "detent 2r/3+q/?w/1+b"},
 	}
 
 	for _, test := range tests {

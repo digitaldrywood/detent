@@ -1073,14 +1073,24 @@ func boardVisibilityKey(data DashboardData) string {
 }
 
 func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
-	workload := telemetry.BoardWorkload(snapshot)
+	workload := telemetry.CurrentBoardWorkload(snapshot)
 	return []primitives.Figure{
 		{ID: "fig-running", Value: runningCountLabel(snapshot), Label: "running"},
-		{ID: "fig-ready", Value: formatCount(workload.Todo), Label: "ready"},
-		{ID: "fig-waiting", Value: formatCount(workload.Waiting), Label: "waiting"},
-		{ID: "fig-blocked", Value: formatCount(workload.Blocked), Label: "blocked", Err: workload.Blocked > 0},
+		{ID: "fig-ready", Value: boardWorkloadCountLabel(snapshot, workload.Todo), Label: "ready"},
+		{ID: "fig-waiting", Value: boardWorkloadCountLabel(snapshot, workload.Waiting), Label: "waiting"},
+		{ID: "fig-blocked", Value: boardWorkloadCountLabel(snapshot, workload.Blocked), Label: "blocked", Err: workload.Blocked > 0},
 		{ID: "fig-completed", Value: formatCount(completedCount(snapshot)), Label: "completed"},
 	}
+}
+
+func boardWorkloadCountLabel(snapshot telemetry.Snapshot, count int) string {
+	if telemetry.BoardWorkloadComplete(snapshot) {
+		return formatCount(count)
+	}
+	if count == 0 {
+		return "unknown"
+	}
+	return formatCount(count) + "+"
 }
 
 func boardFiguresFromDashboard(data DashboardData) []primitives.Figure {

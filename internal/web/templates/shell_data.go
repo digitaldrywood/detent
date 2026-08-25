@@ -243,6 +243,8 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 		item.Initials = appProjectInitials(item.Name, item.ID)
 		if project.Paused {
 			item.Count = "paused"
+		} else if project.BoardWorkloadIncomplete {
+			item.Count = projectBoardWorkloadCountLabel(project)
 		} else if project.BoardLoad > 0 || project.BoardBlocked > 0 {
 			item.Count = strconv.Itoa(project.BoardLoad)
 		}

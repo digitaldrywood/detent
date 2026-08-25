@@ -613,13 +613,14 @@ func issueResponse(reference string, projectID string, snapshot telemetry.Snapsh
 }
 
 func countsResponse(snapshot telemetry.Snapshot) countsAPIResponse {
-	workload := telemetry.BoardWorkload(snapshot)
+	workload := telemetry.CurrentBoardWorkload(snapshot)
 	return countsAPIResponse{
 		Running:  len(snapshot.Running),
 		Retrying: len(snapshot.Queue),
 		Ready:    workload.Todo,
 		Waiting:  workload.Waiting,
 		Blocked:  workload.Blocked,
+		Complete: telemetry.BoardWorkloadComplete(snapshot),
 	}
 }
 
@@ -1481,11 +1482,12 @@ type boardAPIResponse struct {
 }
 
 type countsAPIResponse struct {
-	Running  int `json:"running"`
-	Retrying int `json:"retrying"`
-	Ready    int `json:"ready"`
-	Waiting  int `json:"waiting"`
-	Blocked  int `json:"blocked"`
+	Running  int  `json:"running"`
+	Retrying int  `json:"retrying"`
+	Ready    int  `json:"ready"`
+	Waiting  int  `json:"waiting"`
+	Blocked  int  `json:"blocked"`
+	Complete bool `json:"complete"`
 }
 
 type runningAPIResponse struct {
