@@ -284,6 +284,30 @@ func TestCheckerCheckDispatch(t *testing.T) {
 	}
 }
 
+func TestProjectionEstimateSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		sessions int64
+		want     EstimateSource
+	}{
+		{name: "default estimate has no sessions", want: EstimateSourceDefault},
+		{name: "historical estimate records sessions", sessions: 5, want: EstimateSourceHistorical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			projection := Projection{Estimate: TokenEstimate{Sessions: tt.sessions}}
+			if got := projection.EstimateSource(); got != tt.want {
+				t.Fatalf("EstimateSource() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckerDailyStatus(t *testing.T) {
 	t.Parallel()
 

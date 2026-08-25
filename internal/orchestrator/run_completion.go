@@ -411,9 +411,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			event,
 			running,
 			budgetProjectionCeilingFailureCause,
-			fmt.Sprintf("session cost %.6f USD exceeded the admitted projection %.6f USD", projectionErr.ObservedCostUSD, projectionErr.ProjectedCostUSD),
+			fmt.Sprintf("session cost %.6f USD exceeded the admitted projection %.6f USD using estimate source %q", projectionErr.ObservedCostUSD, projectionErr.ProjectedCostUSD, projectionErr.EstimateSource),
 			"inspect the preserved worktree and either narrow the task or adjust the budget policy before moving the issue to Rework",
 			"worker_budget_projection_ceiling_tripped",
+			"estimate_source", projectionErr.EstimateSource,
 		) {
 			return
 		}

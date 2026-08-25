@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -426,6 +427,7 @@ type SessionBudgetProjectionError struct {
 	ObservedCostUSD  float64
 	ProjectedCostUSD float64
 	Model            string
+	EstimateSource   budget.EstimateSource
 }
 
 type SessionMemoryCeilingError struct {
@@ -468,11 +470,12 @@ func (e *SessionBudgetProjectionError) Error() string {
 		return ErrSessionBudgetProjectionExceeded.Error()
 	}
 	return fmt.Sprintf(
-		"%s: observed_cost_usd=%.6f projected_cost_usd=%.6f model=%s",
+		"%s: observed_cost_usd=%.6f projected_cost_usd=%.6f model=%s estimate_source=%s",
 		ErrSessionBudgetProjectionExceeded,
 		e.ObservedCostUSD,
 		e.ProjectedCostUSD,
 		strings.TrimSpace(e.Model),
+		e.EstimateSource,
 	)
 }
 
@@ -621,7 +624,8 @@ type RunResult struct {
 }
 
 type dispatchBudgetProjection struct {
-	CostUSD float64
+	CostUSD        float64
+	EstimateSource budget.EstimateSource
 }
 
 type UsageUpdateHandler func(UsageUpdate) error

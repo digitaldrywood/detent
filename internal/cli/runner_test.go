@@ -389,6 +389,33 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 	if checker == nil || estimator == nil {
 		t.Fatalf("enabled guards = %T/%T, want checker and estimator", checker, estimator)
 	}
+
+	startedAt := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	for index, inputTokens := range []int64{10, 20, 30, 40, 50} {
+		sessionID, err := storeBackend.StartSession(ctx, store.SessionStart{
+			StartedAt: startedAt.Add(time.Duration(index) * time.Minute),
+			Model:     "gpt-history",
+		})
+		if err != nil {
+			t.Fatalf("StartSession() error = %v", err)
+		}
+		if err := storeBackend.FinishSession(ctx, sessionID, store.SessionFinish{
+			CompletedAt: startedAt.Add(time.Duration(index+1) * time.Minute),
+			InputTokens: inputTokens,
+			TotalTokens: inputTokens,
+			FinalState:  runnerpkg.FinalStateCompleted,
+			Model:       "gpt-history",
+		}); err != nil {
+			t.Fatalf("FinishSession() error = %v", err)
+		}
+	}
+	estimate, err := estimator.EstimateDispatch(ctx, "gpt-history")
+	if err != nil {
+		t.Fatalf("EstimateDispatch() error = %v", err)
+	}
+	if estimate.Sessions != 5 || estimate.InputTokens != 50 {
+		t.Fatalf("EstimateDispatch() = %#v, want five-session p90 input 50", estimate)
+	}
 }
 
 func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
