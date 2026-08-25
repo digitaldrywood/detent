@@ -107,8 +107,21 @@ func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
 
 func (s staleTODOScanner) trackedPaths(ctx context.Context) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = []string{"git", "-C", s.root, "ls-files", "--cached", "-z", "--", "."}
+	cmd.Args = []string{"git", "-C", s.root, "rev-parse", "--is-inside-work-tree"}
 	output, err := cmd.Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("validate stale TODO source root: %w; source root must be a Git worktree with git available", err)
+	}
+	if strings.TrimSpace(string(output)) != "true" {
+		return nil, errors.New("validate stale TODO source root: source root must be a Git worktree")
+	}
+
+	cmd = exec.CommandContext(ctx, "git")
+	cmd.Args = []string{"git", "-C", s.root, "ls-files", "--cached", "-z", "--", "."}
+	output, err = cmd.Output()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr

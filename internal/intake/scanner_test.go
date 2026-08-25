@@ -45,6 +45,17 @@ func TestStaleTODOScanner(t *testing.T) {
 			},
 			wantErr: "source root must be a Git worktree",
 		},
+		{
+			name: "bare repository returns actionable error",
+			setup: func(t *testing.T, root string) {
+				cmd := exec.CommandContext(t.Context(), "git")
+				cmd.Args = []string{"git", "-C", root, "init", "--bare", "--quiet"}
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git init --bare error = %v, output = %s", err, output)
+				}
+			},
+			wantErr: "source root must be a Git worktree",
+		},
 	}
 
 	for _, tt := range tests {
