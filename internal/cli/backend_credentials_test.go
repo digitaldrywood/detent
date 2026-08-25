@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 )
 
 func TestCodexCredentialPath(t *testing.T) {
@@ -153,5 +155,113 @@ func TestBackendCredentialFileWatcherRetriesMissingDirectory(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("credential watcher did not stop after cancellation")
+	}
+}
+
+func TestBackendCredentialReconciliationCoalescesRetryAttachmentAndFilesystemEvent(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte("new account"), 0o600); err != nil {
+		t.Fatalf("create credential file: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updates := make(chan configwatcher.FileUpdate[credentialFileStamp], 2)
+	notified := make(chan struct{}, 2)
+	timer := newControlledBackendCredentialWatchTimer()
+	done := make(chan bool, 1)
+	var lastStamp *credentialFileStamp
+	go func() {
+		done <- monitorBackendCredentialFile(
+			ctx,
+			path,
+			updates,
+			func(context.Context) { notified <- struct{}{} },
+			nil,
+			time.Hour,
+			time.Hour,
+			&lastStamp,
+			func(time.Duration) backendCredentialWatchTimer { return timer },
+		)
+	}()
+
+	timer.waitForReset(t)
+	updates <- configwatcher.FileUpdate[credentialFileStamp]{
+		Path:  path,
+		Value: credentialFileStamp{size: 1},
+	}
+	timer.waitForReset(t)
+	timer.fire(t)
+
+	select {
+	case <-notified:
+	case <-time.After(time.Second):
+		t.Fatal("credential creation while detached did not trigger notification")
+	}
+
+	updates <- configwatcher.FileUpdate[credentialFileStamp]{
+		Path:  path,
+		Value: credentialFileStamp{size: 2},
+	}
+	timer.waitForReset(t)
+	timer.fire(t)
+	select {
+	case <-notified:
+		t.Fatal("retry attachment and filesystem event triggered duplicate notifications")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case monitoring := <-done:
+		if monitoring {
+			t.Fatal("credential monitor requested retry after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("credential monitor did not stop after cancellation")
+	}
+}
+
+type controlledBackendCredentialWatchTimer struct {
+	ticks  chan time.Time
+	resets chan time.Duration
+}
+
+func newControlledBackendCredentialWatchTimer() *controlledBackendCredentialWatchTimer {
+	return &controlledBackendCredentialWatchTimer{
+		ticks:  make(chan time.Time, 1),
+		resets: make(chan time.Duration, 4),
+	}
+}
+
+func (t *controlledBackendCredentialWatchTimer) C() <-chan time.Time {
+	return t.ticks
+}
+
+func (t *controlledBackendCredentialWatchTimer) Reset(delay time.Duration) bool {
+	t.resets <- delay
+	return true
+}
+
+func (t *controlledBackendCredentialWatchTimer) Stop() bool {
+	return true
+}
+
+func (t *controlledBackendCredentialWatchTimer) waitForReset(testingT *testing.T) {
+	testingT.Helper()
+	select {
+	case <-t.resets:
+	case <-time.After(time.Second):
+		testingT.Fatal("timed out waiting for credential reconciliation reset")
+	}
+}
+
+func (t *controlledBackendCredentialWatchTimer) fire(testingT *testing.T) {
+	testingT.Helper()
+	select {
+	case t.ticks <- time.Now():
+	case <-time.After(time.Second):
+		testingT.Fatal("timed out firing credential reconciliation timer")
 	}
 }
