@@ -23,7 +23,10 @@ import (
 
 var codexHomeAssignmentPattern = regexp.MustCompile(`(?:^|[[:space:];])CODEX_HOME=(?:"([^"]*)"|'([^']*)'|([^[:space:];|&]+))`)
 
-const backendCredentialWatchRetryDelay = 5 * time.Second
+const (
+	backendCredentialWatchRetryDelay     = 5 * time.Second
+	backendCredentialWatchReconcileDelay = 150 * time.Millisecond
+)
 
 type backendCredentialTarget struct {
 	projectID project.ID
@@ -44,6 +47,28 @@ type credentialFileStamp struct {
 type backendCredentialWatchSet struct {
 	cancel context.CancelFunc
 	done   <-chan struct{}
+}
+
+type backendCredentialWatchTimer interface {
+	C() <-chan time.Time
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+type standardBackendCredentialWatchTimer struct {
+	timer *time.Timer
+}
+
+func (t *standardBackendCredentialWatchTimer) C() <-chan time.Time {
+	return t.timer.C
+}
+
+func (t *standardBackendCredentialWatchTimer) Reset(delay time.Duration) bool {
+	return t.timer.Reset(delay)
+}
+
+func (t *standardBackendCredentialWatchTimer) Stop() bool {
+	return t.timer.Stop()
 }
 
 func startBackendCredentialWatchers(
@@ -295,19 +320,24 @@ func startBackendCredentialFileWatcherWithRetry(
 				continue
 			}
 
-			if stamp, stampErr := readCredentialFileStamp(path); stampErr == nil {
-				if backendCredentialStampChanged(&lastStamp, stamp) && notify != nil {
-					notify(ctx)
-				}
-			} else if !errors.Is(stampErr, os.ErrNotExist) {
-				logger.Warn("read backend credential file metadata failed", "path", path, "error", stampErr)
-			}
 			if retrying {
 				logger.Info("backend credential file watcher attached", "path", path)
 			}
 			loggedWatchFailure = false
 
-			if !monitorBackendCredentialFile(ctx, path, updates, notify, logger, retryDelay, &lastStamp) {
+			if !monitorBackendCredentialFile(
+				ctx,
+				path,
+				updates,
+				notify,
+				logger,
+				retryDelay,
+				backendCredentialWatchReconcileDelay,
+				&lastStamp,
+				func(delay time.Duration) backendCredentialWatchTimer {
+					return &standardBackendCredentialWatchTimer{timer: time.NewTimer(delay)}
+				},
+			) {
 				return
 			}
 			retrying = true
@@ -327,10 +357,42 @@ func monitorBackendCredentialFile(
 	notify func(context.Context),
 	logger *slog.Logger,
 	pollInterval time.Duration,
+	reconcileDelay time.Duration,
 	lastStamp **credentialFileStamp,
+	newTimer func(time.Duration) backendCredentialWatchTimer,
 ) bool {
+	if reconcileDelay <= 0 {
+		reconcileDelay = backendCredentialWatchReconcileDelay
+	}
+	if newTimer == nil {
+		newTimer = func(delay time.Duration) backendCredentialWatchTimer {
+			return &standardBackendCredentialWatchTimer{timer: time.NewTimer(delay)}
+		}
+	}
 	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
+	reconcile := newTimer(reconcileDelay)
+	if !reconcile.Stop() {
+		<-reconcile.C()
+	}
+	defer reconcile.Stop()
+	var reconcileC <-chan time.Time
+	scheduleReconcile := func(reset bool) {
+		if reconcileC != nil {
+			if !reset {
+				return
+			}
+			if !reconcile.Stop() {
+				select {
+				case <-reconcile.C():
+				default:
+				}
+			}
+		}
+		reconcile.Reset(reconcileDelay)
+		reconcileC = reconcile.C()
+	}
+	scheduleReconcile(true)
 	for {
 		select {
 		case <-ctx.Done():
@@ -343,15 +405,32 @@ func monitorBackendCredentialFile(
 				logger.Warn("reload backend credential file metadata failed", "path", update.Path, "error", update.Err)
 				continue
 			}
-			if backendCredentialStampChanged(lastStamp, update.Value) && notify != nil {
-				notify(ctx)
-			}
+			scheduleReconcile(true)
 		case <-poll.C:
-			stamp, err := readCredentialFileStamp(path)
-			if err == nil && backendCredentialStampChanged(lastStamp, stamp) && notify != nil {
-				notify(ctx)
-			}
+			scheduleReconcile(false)
+		case <-reconcileC:
+			reconcileC = nil
+			reconcileBackendCredentialStamp(ctx, path, notify, logger, lastStamp)
 		}
+	}
+}
+
+func reconcileBackendCredentialStamp(
+	ctx context.Context,
+	path string,
+	notify func(context.Context),
+	logger *slog.Logger,
+	lastStamp **credentialFileStamp,
+) {
+	stamp, err := readCredentialFileStamp(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("read backend credential file metadata failed", "path", path, "error", err)
+		}
+		return
+	}
+	if backendCredentialStampChanged(lastStamp, stamp) && notify != nil {
+		notify(ctx)
 	}
 }
 
