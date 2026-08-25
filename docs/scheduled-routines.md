@@ -92,10 +92,12 @@ configured starting status and then enter the existing label, issue-field, or
 ProjectV2 gate pipeline. ProjectV2 intake also requires `tracker.repository` so
 Detent knows where to create the repository issue before adding it to the board.
 
-The built-in `stale-todos` scanner walks the project source root for TODO and
-FIXME entries while skipping generated/dependency trees such as `.git`,
-`node_modules`, `vendor`, `tmp`, `dist`, and `build`. Scanner schedules use
-standard five-field cron expressions.
+The built-in `stale-todos` scanner asks Git for tracked files beneath the
+project source root, then scans eligible regular files for TODO and FIXME
+entries. Untracked and gitignored files, including generated output, are not
+scanned. The source root must be inside a Git worktree and the `git` executable
+must be available; otherwise the scan returns an actionable error. Scanner
+schedules use standard five-field cron expressions.
 
 Host-local policy can override the workflow policy inside a project entry in
 `global.yaml` using the same `intake` shape. An explicit `sources: []` override

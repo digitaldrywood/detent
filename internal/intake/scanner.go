@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -41,34 +42,35 @@ func (scannerFactory) New(name string, root string) (Scanner, error) {
 }
 
 func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
+	paths, err := s.trackedPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	root := os.DirFS(s.root)
 	events := []Event{}
-	err := fs.WalkDir(root, ".", func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
-		if entry.IsDir() {
-			if path != "." && skippedDirectory(entry.Name()) {
-				return fs.SkipDir
-			}
-			return nil
+		if !scannablePath(path) {
+			continue
 		}
-		if !entry.Type().IsRegular() || !scannablePath(path) {
-			return nil
+
+		info, err := os.Lstat(filepath.Join(s.root, filepath.FromSlash(path)))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
-		info, err := entry.Info()
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("inspect tracked stale TODO file %q: %w", path, err)
 		}
-		if info.Size() > maxScannedFileBytes {
-			return nil
+		if !info.Mode().IsRegular() || info.Size() > maxScannedFileBytes {
+			continue
 		}
+
 		file, err := root.Open(path)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("open tracked stale TODO file %q: %w", path, err)
 		}
 		scanner := bufio.NewScanner(file)
 		scanner.Buffer(make([]byte, 64*1024), maxScannedFileBytes)
@@ -96,21 +98,29 @@ func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
 				},
 			})
 		}
-		return errors.Join(scanner.Err(), file.Close())
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walk stale TODO source: %w", err)
+		if err := errors.Join(scanner.Err(), file.Close()); err != nil {
+			return nil, fmt.Errorf("scan tracked stale TODO file %q: %w", path, err)
+		}
 	}
 	return events, nil
 }
 
-func skippedDirectory(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case ".git", ".detent", "node_modules", "vendor", "tmp", "dist", "build":
-		return true
-	default:
-		return false
+func (s staleTODOScanner) trackedPaths(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git")
+	cmd.Args = []string{"git", "-C", s.root, "ls-files", "--cached", "-z", "--", "."}
+	output, err := cmd.Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("list git-tracked files for stale TODO scan: %w; source root must be a Git worktree with git available", err)
 	}
+
+	paths := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
+	if len(paths) == 1 && paths[0] == "" {
+		return nil, nil
+	}
+	return paths, nil
 }
 
 func scannablePath(path string) bool {
