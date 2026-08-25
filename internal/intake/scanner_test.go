@@ -3,36 +3,100 @@ package intake
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestStaleTODOScannerFindsSourceTodosAndSkipsExcludedTrees(t *testing.T) {
-	t.Parallel()
+func TestStaleTODOScanner(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(*testing.T, string)
+		wantPaths []string
+		wantErr   string
+	}{
+		{
+			name: "Git worktree scans only tracked regular files",
+			setup: func(t *testing.T, root string) {
+				writeScannerTestFile(t, root, ".gitignore", ".next/\n")
+				writeScannerTestFile(t, root, "main.go", "package main\n\n// TODO: handle retries\n")
+				writeScannerTestFile(t, root, ".next/server/chunk.js", "// TODO: compiled vendor chunk\n")
+				writeScannerTestFile(t, root, "untracked.go", "// TODO: untracked source\n")
 
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\n// TODO: handle retries\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(main.go) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "vendor", "example"), 0o700); err != nil {
-		t.Fatalf("MkdirAll(vendor) error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "vendor", "example", "dep.go"), []byte("// TODO: vendored\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(dep.go) error = %v", err)
+				cmd := exec.CommandContext(t.Context(), "git")
+				cmd.Args = []string{"git", "-C", root, "init", "--quiet"}
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git init error = %v, output = %s", err, output)
+				}
+				cmd = exec.CommandContext(t.Context(), "git")
+				cmd.Args = []string{"git", "-C", root, "add", "--", ".gitignore", "main.go"}
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git add error = %v, output = %s", err, output)
+				}
+			},
+			wantPaths: []string{"main.go"},
+		},
+		{
+			name: "non-Git root returns actionable error",
+			setup: func(t *testing.T, root string) {
+				t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
+				writeScannerTestFile(t, root, "main.go", "// TODO: source without repository\n")
+			},
+			wantErr: "source root must be a Git worktree",
+		},
+		{
+			name: "bare repository returns actionable error",
+			setup: func(t *testing.T, root string) {
+				cmd := exec.CommandContext(t.Context(), "git")
+				cmd.Args = []string{"git", "-C", root, "init", "--bare", "--quiet"}
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git init --bare error = %v, output = %s", err, output)
+				}
+			},
+			wantErr: "source root must be a Git worktree",
+		},
 	}
 
-	scanner, err := DefaultScannerFactory().New("stale-todos", root)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			tt.setup(t, root)
+
+			scanner, err := DefaultScannerFactory().New("stale-todos", root)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			events, err := scanner.Scan(context.Background())
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Scan() error = %v, want error containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Scan() error = %v", err)
+			}
+
+			gotPaths := make([]string, 0, len(events))
+			for _, event := range events {
+				gotPaths = append(gotPaths, event.Fields["path"])
+			}
+			if strings.Join(gotPaths, ",") != strings.Join(tt.wantPaths, ",") {
+				t.Fatalf("event paths = %v, want %v", gotPaths, tt.wantPaths)
+			}
+		})
 	}
-	events, err := scanner.Scan(context.Background())
-	if err != nil {
-		t.Fatalf("Scan() error = %v", err)
+}
+
+func writeScannerTestFile(t *testing.T, root string, path string, contents string) {
+	t.Helper()
+
+	fullPath := filepath.Join(root, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(fullPath), err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("events = %#v, want one source TODO", events)
-	}
-	if events[0].Fields["path"] != "main.go" || events[0].Fields["line"] != "3" {
-		t.Fatalf("event location = %#v, want main.go:3", events[0].Fields)
+	if err := os.WriteFile(fullPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", fullPath, err)
 	}
 }
