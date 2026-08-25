@@ -23,6 +23,7 @@ func TestReconcileClosedCompletedIssueStatusesMovesNonTerminalStatesToDone(t *te
 			state := newState(orch.cfg)
 			now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
 			issue := statusReconcileIssue("issue-"+strings.ToLower(strings.ReplaceAll(stateName, " ", "-")), stateName, true, "completed")
+			state.Completed[issue.ID] = Completed{Issue: cloneIssue(issue), FinalState: FinalStateCompleted}
 
 			reconciled := orch.reconcileClosedCompletedIssueStatuses(context.Background(), &state, []connector.Issue{issue}, now)
 
@@ -31,6 +32,9 @@ func TestReconcileClosedCompletedIssueStatusesMovesNonTerminalStatesToDone(t *te
 			}
 			if _, ok := reconciled[issue.ID]; !ok {
 				t.Fatalf("reconciled[%q] missing", issue.ID)
+			}
+			if got := state.Completed[issue.ID]; got.Issue.State != "Done" || got.FinalState != FinalStateCompleted {
+				t.Fatalf("Completed[%q] state = (%q, %q), want Done/%s", issue.ID, got.Issue.State, got.FinalState, FinalStateCompleted)
 			}
 			if len(state.RecentEvents) != 1 {
 				t.Fatalf("RecentEvents len = %d, want 1", len(state.RecentEvents))

@@ -72,6 +72,73 @@ func TestProjectSmallMultiplesUseBoardWorkloadTaxonomy(t *testing.T) {
 	}
 }
 
+func TestCountsResponseMarksWorkloadCompleteness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     countsAPIResponse
+	}{
+		{
+			name: "complete projection excludes completed history",
+			snapshot: telemetry.Snapshot{
+				Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				Completed: []telemetry.Completed{{
+					Issue:      telemetry.Issue{ID: "blocked", State: "Blocked"},
+					FinalState: "completed",
+				}},
+			},
+			want: countsAPIResponse{Complete: true},
+		},
+		{
+			name: "incomplete projection excludes unsupported history",
+			snapshot: telemetry.Snapshot{
+				Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed},
+				Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+				Completed: []telemetry.Completed{{
+					Issue:      telemetry.Issue{ID: "blocked", State: "Blocked"},
+					FinalState: "completed",
+				}},
+			},
+			want: countsAPIResponse{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := countsResponse(tt.snapshot); got != tt.want {
+				t.Fatalf("countsResponse() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectSmallMultiplesMarkCompletedOnlyIncompleteWorkloadUnknown(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		Projects: []telemetry.ProjectSnapshot{{
+			Project: telemetry.Project{ID: "detent"},
+			Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed},
+			Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true},
+		}},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{ID: "review", ProjectID: "detent", State: "Human Review"},
+		}},
+	}
+
+	projects := projectSmallMultiplesFromSnapshot(snapshot)
+	if len(projects) != 1 {
+		t.Fatalf("projectSmallMultiplesFromSnapshot() len = %d, want 1", len(projects))
+	}
+	if projects[0].BoardLoad != 0 || !projects[0].BoardWorkloadIncomplete {
+		t.Fatalf("project workload = load %d incomplete %t, want 0/true", projects[0].BoardLoad, projects[0].BoardWorkloadIncomplete)
+	}
+}
+
 func TestApplyProjectBudgetSnapshot(t *testing.T) {
 	t.Parallel()
 

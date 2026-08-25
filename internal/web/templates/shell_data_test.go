@@ -479,6 +479,18 @@ func TestAppShellProjects(t *testing.T) {
 			wantPaused:    true,
 		},
 		{
+			name:          "incomplete load reports lower bound",
+			project:       ProjectSmallMultiple{ID: "partial", BoardLoad: 2, BoardActive: 2, BoardWorkloadIncomplete: true},
+			wantCount:     "2+",
+			wantBreakdown: "unknown ready · 2+ active · unknown waiting · unknown blocked",
+		},
+		{
+			name:          "incomplete empty load reports unknown",
+			project:       ProjectSmallMultiple{ID: "unknown", BoardWorkloadIncomplete: true},
+			wantCount:     "unknown",
+			wantBreakdown: "unknown ready · unknown active · unknown waiting · unknown blocked",
+		},
+		{
 			name:          "idle shows no badge",
 			project:       ProjectSmallMultiple{ID: "idle"},
 			wantBreakdown: "0 ready · 0 active · 0 waiting · 0 blocked",

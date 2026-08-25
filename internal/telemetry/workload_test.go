@@ -112,6 +112,30 @@ func TestBoardWorkload(t *testing.T) {
 			want: BoardWorkloadCounts{Load: 1, Active: 1},
 		},
 		{
+			name: "complete current projection excludes completed-only workload states",
+			snapshot: Snapshot{
+				Tracker: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Runtime: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Completed: []Completed{
+					{Issue: Issue{ID: "blocked", State: "Blocked"}, FinalState: "completed"},
+					{Issue: Issue{ID: "review", State: "Human Review"}, FinalState: "completed"},
+				},
+			},
+			want: BoardWorkloadCounts{},
+		},
+		{
+			name: "incomplete tracker retains completed-only workload lower bounds",
+			snapshot: Snapshot{
+				Tracker: SnapshotSection{Source: SnapshotSourceMixed},
+				Runtime: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Completed: []Completed{
+					{Issue: Issue{ID: "blocked", State: "Blocked"}, FinalState: "completed"},
+					{Issue: Issue{ID: "review", State: "Human Review"}, FinalState: "completed"},
+				},
+			},
+			want: BoardWorkloadCounts{Load: 1, Active: 1, Blocked: 1},
+		},
+		{
 			name: "review lane aliases count as active",
 			snapshot: Snapshot{BoardIssues: []Issue{
 				{ID: "review", State: "Review"},
@@ -141,6 +165,115 @@ func TestBoardWorkload(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("BoardWorkload() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoardWorkloadComplete(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		snapshot  Snapshot
+		projectID string
+		want      bool
+	}{
+		{name: "legacy snapshot", want: true},
+		{
+			name: "complete fleet projection",
+			snapshot: Snapshot{
+				Tracker: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Runtime: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+			},
+			want: true,
+		},
+		{
+			name: "incomplete tracker",
+			snapshot: Snapshot{
+				Tracker: SnapshotSection{Source: SnapshotSourceMixed},
+				Runtime: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+			},
+		},
+		{
+			name: "unknown runtime",
+			snapshot: Snapshot{
+				Tracker: SnapshotSection{Source: SnapshotSourceCached, Complete: true},
+				Runtime: SnapshotSection{Source: SnapshotSourceUnknown},
+			},
+		},
+		{
+			name: "project sections override incomplete fleet summary",
+			snapshot: Snapshot{
+				Tracker: SnapshotSection{Source: SnapshotSourceMixed},
+				Runtime: SnapshotSection{Source: SnapshotSourceMixed},
+				Projects: []ProjectSnapshot{{
+					Project: Project{ID: "detent"},
+					Tracker: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+					Runtime: SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				}},
+			},
+			projectID: "detent",
+			want:      true,
+		},
+		{
+			name: "missing project sections in declared fleet are incomplete",
+			snapshot: Snapshot{
+				Tracker:  SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Runtime:  SnapshotSection{Source: SnapshotSourceLive, Complete: true},
+				Projects: []ProjectSnapshot{{Project: Project{ID: "detent"}}},
+			},
+			projectID: "detent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := BoardWorkloadComplete(tt.snapshot)
+			if tt.projectID != "" {
+				got = BoardWorkloadCompleteForProject(tt.snapshot, tt.projectID)
+			}
+			if got != tt.want {
+				t.Fatalf("BoardWorkloadComplete() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCurrentBoardWorkloadExcludesCompletedHistory(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		snapshot Snapshot
+		want     BoardWorkloadCounts
+	}{
+		{
+			name: "completed-only states are not current",
+			snapshot: Snapshot{Completed: []Completed{
+				{Issue: Issue{ID: "blocked", State: "Blocked"}, FinalState: "completed"},
+				{Issue: Issue{ID: "review", State: "Human Review"}, FinalState: "completed"},
+			}},
+		},
+		{
+			name: "current rows remain visible",
+			snapshot: Snapshot{
+				BoardIssues: []Issue{{ID: "blocked", State: "Blocked"}, {ID: "review", State: "Human Review"}},
+				Completed: []Completed{
+					{Issue: Issue{ID: "blocked", State: "Blocked"}, FinalState: "completed"},
+					{Issue: Issue{ID: "review", State: "Human Review"}, FinalState: "completed"},
+				},
+			},
+			want: BoardWorkloadCounts{Load: 1, Active: 1, Blocked: 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CurrentBoardWorkload(tt.snapshot); got != tt.want {
+				t.Fatalf("CurrentBoardWorkload() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

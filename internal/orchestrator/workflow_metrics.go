@@ -243,6 +243,10 @@ func updateIssueStateSnapshots(state *State, issueID string, issue connector.Iss
 			updated,
 		)
 	}
+	if completed, ok := state.Completed[issueID]; ok {
+		completed.Issue = mergeIssueTrackerFields(completed.Issue, transitioned)
+		state.Completed[issueID] = completed
+	}
 }
 
 func applyIssueStateSnapshot(issue *connector.Issue, targetState string, at time.Time) {

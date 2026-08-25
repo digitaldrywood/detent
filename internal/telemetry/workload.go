@@ -14,11 +14,28 @@ type BoardWorkloadCounts struct {
 }
 
 func BoardWorkload(snapshot Snapshot) BoardWorkloadCounts {
-	return boardWorkload(snapshot, "")
+	return boardWorkload(snapshot, "", !boardWorkloadUsesCompleteProjection(snapshot, ""))
 }
 
 func BoardWorkloadForProject(snapshot Snapshot, projectID string) BoardWorkloadCounts {
-	return boardWorkload(snapshot, strings.TrimSpace(projectID))
+	projectID = strings.TrimSpace(projectID)
+	return boardWorkload(snapshot, projectID, !boardWorkloadUsesCompleteProjection(snapshot, projectID))
+}
+
+func CurrentBoardWorkload(snapshot Snapshot) BoardWorkloadCounts {
+	return boardWorkload(snapshot, "", false)
+}
+
+func CurrentBoardWorkloadForProject(snapshot Snapshot, projectID string) BoardWorkloadCounts {
+	return boardWorkload(snapshot, strings.TrimSpace(projectID), false)
+}
+
+func BoardWorkloadComplete(snapshot Snapshot) bool {
+	return boardWorkloadComplete(snapshot, "")
+}
+
+func BoardWorkloadCompleteForProject(snapshot Snapshot, projectID string) bool {
+	return boardWorkloadComplete(snapshot, strings.TrimSpace(projectID))
 }
 
 type boardWorkloadIssue struct {
@@ -27,7 +44,7 @@ type boardWorkloadIssue struct {
 	rank    int
 }
 
-func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
+func boardWorkload(snapshot Snapshot, projectID string, includeCompleted bool) BoardWorkloadCounts {
 	issues := map[string]boardWorkloadIssue{}
 	sequence := 0
 	add := func(issue Issue, fallback string, rank int, waiting bool) {
@@ -60,8 +77,10 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 		}
 	}
 
-	for _, row := range snapshot.Completed {
-		add(row.Issue, normalizedWorkloadState(row.FinalState), 5, false)
+	if includeCompleted {
+		for _, row := range snapshot.Completed {
+			add(row.Issue, normalizedWorkloadState(row.FinalState), 5, false)
+		}
 	}
 	for _, row := range snapshot.Queue {
 		add(row.Issue, "Todo", 10, false)
@@ -115,6 +134,32 @@ func boardWorkload(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 		}
 	}
 	return counts
+}
+
+func boardWorkloadComplete(snapshot Snapshot, projectID string) bool {
+	tracker, runtime, declared := boardWorkloadSections(snapshot, projectID)
+	if !declared {
+		return true
+	}
+	return tracker.Available() && tracker.Complete && runtime.Available() && runtime.Complete
+}
+
+func boardWorkloadUsesCompleteProjection(snapshot Snapshot, projectID string) bool {
+	_, _, declared := boardWorkloadSections(snapshot, projectID)
+	return declared && boardWorkloadComplete(snapshot, projectID)
+}
+
+func boardWorkloadSections(snapshot Snapshot, projectID string) (SnapshotSection, SnapshotSection, bool) {
+	if projectID != "" {
+		for _, project := range snapshot.Projects {
+			if strings.TrimSpace(project.Project.ID) == projectID {
+				projectDeclared := !project.Tracker.IsZero() || !project.Runtime.IsZero()
+				fleetDeclared := !snapshot.Tracker.IsZero() || !snapshot.Runtime.IsZero()
+				return project.Tracker, project.Runtime, projectDeclared || fleetDeclared
+			}
+		}
+	}
+	return snapshot.Tracker, snapshot.Runtime, !snapshot.Tracker.IsZero() || !snapshot.Runtime.IsZero()
 }
 
 func boardWorkloadProjectMatches(issue Issue, fallbackProjectID string, projectID string) bool {

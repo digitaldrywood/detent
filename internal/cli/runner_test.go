@@ -708,6 +708,33 @@ func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
 	}
 }
 
+func TestPublishSnapshotOnceMarksStateFailureSectionsUnknown(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, startRefreshProject(t, "alpha"))
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := publishSnapshotOnce(ctx, registry, nil, snapshotHub, &seq, nil, time.Now(), nil, nil, "", nil); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	snapshot, ok := snapshotHub.Latest()
+	if !ok || len(snapshot.Projects) != 1 {
+		t.Fatalf("snapshot = %#v, want one degraded project", snapshot)
+	}
+	projectSnapshot := snapshot.Projects[0]
+	if projectSnapshot.Tracker.Source != telemetry.SnapshotSourceUnknown || projectSnapshot.Runtime.Source != telemetry.SnapshotSourceUnknown {
+		t.Fatalf("project sections = tracker %#v runtime %#v, want unknown", projectSnapshot.Tracker, projectSnapshot.Runtime)
+	}
+	if telemetry.BoardWorkloadCompleteForProject(snapshot, "alpha") {
+		t.Fatal("BoardWorkloadCompleteForProject() = true, want false")
+	}
+}
+
 func TestPublishSnapshotOnceUsesLastKnownTrackerStateUntilHydration(t *testing.T) {
 	t.Parallel()
 
