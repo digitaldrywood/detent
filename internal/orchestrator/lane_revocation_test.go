@@ -253,16 +253,33 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 
 	now := time.Date(2026, 8, 18, 19, 20, 0, 0, time.UTC)
 	tests := []struct {
-		name           string
-		origin         provenance.Attribution
-		detentAuthored bool
-		wantReason     string
-		wantErrorClass string
-		wantOrigin     provenance.Origin
+		name            string
+		origin          provenance.Attribution
+		originCached    bool
+		transitionActor connector.IssueActor
+		detentAuthored  bool
+		wantReason      string
+		wantErrorClass  string
+		wantOrigin      provenance.Origin
 	}{
+		{
+			name:            "active agent move before provenance refresh",
+			transitionActor: connector.IssueActor{Login: "operator-token", Kind: "User"},
+			wantReason:      laneRevocationStateChanged,
+			wantErrorClass:  string(store.WorkAttemptTerminalLaneRevoked),
+			wantOrigin:      provenance.OriginAgent,
+		},
+		{
+			name:            "external automation actor overrides active agent fallback",
+			transitionActor: connector.IssueActor{Login: "external-bot", Kind: "Bot"},
+			wantReason:      laneRevocationStateChanged,
+			wantErrorClass:  string(store.WorkAttemptTerminalLaneRevoked),
+			wantOrigin:      provenance.OriginAutomation,
+		},
 		{
 			name:           "operator move keeps tracker revocation",
 			origin:         provenance.AttributionFromSource(provenance.SourceHumanSession, provenance.Actor{Login: "operator", Kind: "User"}),
+			originCached:   true,
 			wantReason:     laneRevocationStateChanged,
 			wantErrorClass: string(store.WorkAttemptTerminalLaneRevoked),
 			wantOrigin:     provenance.OriginHuman,
@@ -283,6 +300,7 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 			issue := laneRevocationIssue("issue-origin", "digitaldrywood/detent#1903", "Rework")
 			parked := cloneIssue(issue)
 			parked.State = "Human Review"
+			parked.StageUpdatedActor = tt.transitionActor
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
 			attempts := &recordingWorkAttemptStore{}
 			cfg := normalizeConfig(Config{
@@ -318,11 +336,11 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 				if err := orch.updateIssueStateByID(t.Context(), &state, issue.ID, issue, parked.State, now.Add(-time.Minute), "completed_active_review_transition"); err != nil {
 					t.Fatalf("record Detent lane transition: %v", err)
 				}
-			} else {
+			} else if tt.originCached {
 				state.laneProvenance[workflowLaneEntryKey(parked)] = tt.origin
 			}
 
-			orch.reconcileRunningIssues(t.Context(), &state, now)
+			orch.refreshActiveRuns(t.Context(), &state, now, githubBudgetReserveDecision{degraded: true})
 
 			if !errors.Is(context.Cause(runCtx), runpkg.ErrLaneRevoked) {
 				t.Fatalf("context cause = %v, want ErrLaneRevoked", context.Cause(runCtx))
@@ -369,13 +387,58 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 			if len(tracker.comments) != 1 {
 				t.Fatalf("comments = %#v, want discarded-work notice", tracker.comments)
 			}
-			for _, fragment := range []string{tt.wantReason, "output_tokens: 13422", "runtime_seconds: 397"} {
+			for _, fragment := range []string{tt.wantReason, "lane_change_origin: " + string(tt.wantOrigin), "output_tokens: 13422", "runtime_seconds: 397"} {
 				if !strings.Contains(tracker.comments[0].body, fragment) {
 					t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
 				}
 			}
 			if !hasLaneRevocationEvent(state.RecentEvents, "worker_lane_output_discarded") {
 				t.Fatalf("RecentEvents = %#v, want discarded output event", state.RecentEvents)
+			}
+		})
+	}
+}
+
+func TestLaneRevocationAttributionEvidencePrecedence(t *testing.T) {
+	t.Parallel()
+
+	issue := laneRevocationIssue("issue-attribution", "digitaldrywood/detent#1988", "Human Review")
+	human := provenance.AttributionFromSource(provenance.SourceHumanSession, provenance.Actor{Login: "operator", Kind: "User"})
+	indeterminate := provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
+	tests := []struct {
+		name            string
+		running         bool
+		cached          *provenance.Attribution
+		transitionActor connector.IssueActor
+		want            provenance.Origin
+	}{
+		{name: "active agent", running: true, transitionActor: connector.IssueActor{Login: "operator-token", Kind: "User"}, want: provenance.OriginAgent},
+		{name: "external automation", running: true, transitionActor: connector.IssueActor{Login: "external-bot", Kind: "Bot"}, want: provenance.OriginAutomation},
+		{name: "operator", running: true, cached: &human, want: provenance.OriginHuman},
+		{name: "missing evidence", want: provenance.OriginIndeterminate},
+		{name: "indeterminate cache does not hide active agent", running: true, cached: &indeterminate, want: provenance.OriginAgent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := State{
+				Running:        map[string]Running{},
+				laneProvenance: map[string]provenance.Attribution{},
+			}
+			if tt.running {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
+			if tt.cached != nil {
+				state.laneProvenance[workflowLaneEntryKey(issue)] = *tt.cached
+			}
+			observed := cloneIssue(issue)
+			observed.StageUpdatedActor = tt.transitionActor
+
+			got := laneRevocationAttribution(&state, observed)
+			if got.Origin != tt.want {
+				t.Fatalf("laneRevocationAttribution() = %#v, want origin %q", got, tt.want)
 			}
 		})
 	}

@@ -774,16 +774,20 @@ func workflowOriginForReason(reason string) provenance.Origin {
 }
 
 func observedLaneAttribution(state *State, issue connector.Issue, transitionActor connector.IssueActor) provenance.Attribution {
-	source := provenance.SourceTrackerObservation
-	if state != nil {
-		if _, ok := state.Running[strings.TrimSpace(issue.ID)]; ok {
-			source = provenance.SourceDetentAgentSession
-		}
-	}
-	return provenance.AttributionFromSource(source, provenance.Actor{
+	actor := provenance.Actor{
 		Login: transitionActor.Login,
 		Kind:  transitionActor.Kind,
-	})
+	}
+	attribution := provenance.AttributionFromSource(provenance.SourceTrackerObservation, actor)
+	if provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginAutomation {
+		return attribution
+	}
+	if state != nil {
+		if _, ok := state.Running[strings.TrimSpace(issue.ID)]; ok {
+			return provenance.AttributionFromSource(provenance.SourceDetentAgentSession, actor)
+		}
+	}
+	return attribution
 }
 
 func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {

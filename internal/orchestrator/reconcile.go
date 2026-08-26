@@ -439,6 +439,9 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	}
 	if refreshed.StageUpdatedAt != nil {
 		merged.StageUpdatedAt = refreshed.StageUpdatedAt
+		merged.StageUpdatedActor = refreshed.StageUpdatedActor
+	} else if strings.TrimSpace(refreshed.StageUpdatedActor.Login) != "" || strings.TrimSpace(refreshed.StageUpdatedActor.Kind) != "" {
+		merged.StageUpdatedActor = refreshed.StageUpdatedActor
 	}
 	if refreshed.ModelOverride != "" {
 		merged.ModelOverride = refreshed.ModelOverride
