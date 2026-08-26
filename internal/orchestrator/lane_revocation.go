@@ -67,8 +67,8 @@ func (o *Orchestrator) beginLaneRevocation(
 		now = o.clockNow().UTC()
 	}
 	fromState := strings.TrimSpace(running.Issue.State)
+	attribution := laneRevocationAttribution(state, refreshed)
 	running.Issue = mergeIssueTrackerFields(running.Issue, refreshed)
-	attribution := laneRevocationAttribution(state, running.Issue)
 	reason = laneRevocationReason(reason, attribution)
 	pending := &pendingLaneRevocation{
 		issue:       cloneIssue(running.Issue),
@@ -293,10 +293,13 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 func laneRevocationAttribution(state *State, issue connector.Issue) provenance.Attribution {
 	if state != nil {
 		if attribution, ok := state.laneProvenance[workflowLaneEntryKey(issue)]; ok {
-			return provenance.Prepare(attribution)
+			attribution = provenance.Prepare(attribution)
+			if provenance.NormalizeOrigin(attribution.Origin) != provenance.OriginIndeterminate {
+				return attribution
+			}
 		}
 	}
-	return provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
+	return observedLaneAttribution(state, issue, issue.StageUpdatedActor)
 }
 
 func laneRevocationReason(reason string, attribution provenance.Attribution) string {

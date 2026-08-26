@@ -960,6 +960,14 @@ func (o *Orchestrator) usageUpdateHandler(
 		if startupTimer != nil {
 			startupTimer.Stop()
 		}
+		if strings.TrimSpace(update.WorkerGitHubActor.Login) != "" {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case o.runUpdates <- runUpdate{issueID: issueID, usage: update}:
+				return nil
+			}
+		}
 
 		select {
 		case o.runUpdates <- runUpdate{issueID: issueID, usage: update}:
