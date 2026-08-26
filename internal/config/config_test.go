@@ -1480,6 +1480,7 @@ tracker:
 retro:
   enabled: true
   target_state: Backlog
+  allow_public_cross_project_details: true
 ---
 Prompt
 `))
@@ -1490,7 +1491,7 @@ Prompt
 		t.Fatalf("Validate() error = %v", err)
 	}
 	retro := workflow.Config.Retro
-	if !retro.Enabled || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
+	if !retro.Enabled || !retro.AllowPublicCrossProjectDetails || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
 		t.Fatalf("Retro = %#v", retro)
 	}
 }

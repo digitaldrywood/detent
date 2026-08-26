@@ -31,6 +31,8 @@ type Config struct {
 	SingleOccurrenceSeverity string   `yaml:"single_occurrence_severity,omitempty"`
 	FallbackThreshold        int      `yaml:"fallback_threshold,omitempty"`
 	ReceiptBaselineMultiple  float64  `yaml:"receipt_baseline_multiple,omitempty"`
+
+	AllowPublicCrossProjectDetails bool `yaml:"allow_public_cross_project_details,omitempty"`
 }
 
 func (c *Config) Normalize() {

@@ -799,6 +799,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `release.rerun_flaky_once` | `boolean` | `false` | No | release.flaky_check_names must not be empty when release.rerun_flaky_once is true |
 | `release.version_bump` | `string` | `"auto"` | No | must be auto |
 | `retro` | `object` | `see child fields` | No | None |
+| `retro.allow_public_cross_project_details` | `boolean` | `false` | No | None |
 | `retro.daily_issue_cap` | `integer` | `3 when configured` | No | must be greater than 0 |
 | `retro.enabled` | `boolean` | `false` | No | None |
 | `retro.fallback_threshold` | `integer` | `3 when configured` | No | must be at least 2 |

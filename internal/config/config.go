@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
+	"github.com/digitaldrywood/detent/internal/publication"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -215,6 +216,7 @@ type Tracker struct {
 	Authorization               selector.Selector     `yaml:"authorization,omitempty"`
 	LocalSQLite                 LocalSQLite           `yaml:"local_sqlite,omitempty"`
 	Issues                      []connector.Issue     `yaml:"issues"`
+	Publication                 publication.Policy    `yaml:"-"`
 
 	gitHubStatusSourceSet bool
 }

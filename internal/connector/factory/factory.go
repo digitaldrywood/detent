@@ -13,6 +13,7 @@ import (
 	linearconnector "github.com/digitaldrywood/detent/internal/connector/linear"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/publication"
 )
 
 var (
@@ -52,6 +53,7 @@ type Config struct {
 	PriorityMap                 map[string]*int
 	RequiredStatusChecks        []string
 	Logger                      *slog.Logger
+	Publication                 publication.Policy
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
@@ -105,6 +107,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			PriorityMap:                cfg.PriorityMap,
 			RequiredStatusChecks:       cfg.RequiredStatusChecks,
 			Logger:                     cfg.Logger,
+			Publication:                cfg.Publication,
 		})
 	case connector.BackendGitHubLocal:
 		var tokenSource githubconnector.TokenSource
@@ -151,6 +154,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				PriorityMap:                cfg.PriorityMap,
 				RequiredStatusChecks:       cfg.RequiredStatusChecks,
 				Logger:                     cfg.Logger,
+				Publication:                cfg.Publication,
 			},
 			Local:          localCfg,
 			Repository:     cfg.Repository,

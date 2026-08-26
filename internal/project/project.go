@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/publication"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
@@ -1762,6 +1763,15 @@ func buildRetroIssueStores(
 	}
 	productConfig := cfg
 	productConfig.Tracker.Repository = cfg.Retro.ProductRepository
+	productConfig.Tracker.Publication = publication.Policy{
+		DestinationRepository: cfg.Retro.ProductRepository,
+		Sources: []publication.Source{{
+			Repository: cfg.Tracker.Repository,
+			Workspaces: []string{cfg.Workspace.Root, cfg.Workspace.SourceRoot, cfg.Workspace.OutputRoot},
+			Logins:     []string{cfg.Identity.GitHubLogin},
+		}},
+		AllowPublicCrossProjectDetails: cfg.Retro.AllowPublicCrossProjectDetails,
+	}
 	productConnector, err := buildConnector(productConfig, connectorFactory)
 	if err != nil {
 		return nil, nil, nil, err
@@ -2021,6 +2031,7 @@ func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHub
 		StateMap:                    trackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 trackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		Publication:                 cfg.Tracker.Publication,
 	})
 }
 
