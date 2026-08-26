@@ -874,7 +874,7 @@ func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *St
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	return ok &&
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
-		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
+		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
 		strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped))
 }
 
@@ -894,7 +894,7 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	if !ok ||
 		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) ||
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) ||
 		entry.Metadata.BlockedRecovery == nil {
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
@@ -916,12 +916,13 @@ func (o *Orchestrator) currentBlockedRecoveryParkedAt(
 		}
 	}
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	parkedAt := workflowLaneTransitionAt(entry.Event)
 	if ok &&
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
-		blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) &&
+		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
 		entry.Metadata.BlockedRecovery != nil &&
-		!entry.Event.StartedAt.IsZero() {
-		return entry.Event.StartedAt.UTC(), true
+		!parkedAt.IsZero() {
+		return parkedAt, true
 	}
 	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
 		return issue.StageUpdatedAt.UTC(), true

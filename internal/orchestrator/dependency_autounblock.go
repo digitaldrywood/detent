@@ -113,6 +113,10 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			continue
 		}
 		hydrated, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
+		if dependencyAutoUnblockWorkpadHold(hydrated) {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", "workpad_status_not_blocked", nil, "")
+			continue
+		}
 		if reason := o.blockedCauseHoldReason(hydrated, state, nil, cfg, workpadCurrent); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, nil, "")
 			continue
@@ -166,6 +170,12 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func dependencyAutoUnblockWorkpadHold(issue connector.Issue) bool {
+	signal := issue.WorkpadSignal
+	return signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
+		strings.TrimSpace(signal.Status) != "" && strings.TrimSpace(signal.Status) != workpad.StatusBlocked
 }
 
 func (o *Orchestrator) autoPromoteBlockerIssues(
@@ -417,7 +427,7 @@ func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Conte
 		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
 			continue
 		}
-		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !blockedEntryMatchesCurrent(issue, event.StartedAt) {
+		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !workflowLaneEntryMatchesCurrent(issue, event) {
 			return false
 		}
 		currentIndex = index
@@ -1053,7 +1063,7 @@ func (o *Orchestrator) issueStickyBlockReason(ctx context.Context, state *State,
 		return ""
 	}
 	if normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) {
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return ""
 	}
 	if stickyBlockReason(entry.Event.Reason) {

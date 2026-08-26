@@ -440,18 +440,24 @@ func recordDependencyLaneEntry(
 	phase string,
 	reason string,
 	at time.Time,
+	metadata ...workflowLaneMetadata,
 ) {
 	t.Helper()
+	metadataJSON := ""
+	if len(metadata) > 0 {
+		metadataJSON = workflowLaneMetadataJSON(issue, metadata[0])
+	}
 	if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
-		ProjectID:  defaultWorkflowMetricsProjectID,
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		IssueURL:   issue.URL,
-		PhaseType:  store.WorkflowPhaseTypeLane,
-		PhaseName:  phase,
-		Reason:     reason,
-		Status:     "entered",
-		StartedAt:  at,
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    phase,
+		Reason:       reason,
+		Status:       "entered",
+		StartedAt:    at,
+		MetadataJSON: metadataJSON,
 	}); err != nil {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
@@ -774,6 +780,69 @@ func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
 	}
 	if len(tracker.comments) != 0 {
 		t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
+	}
+}
+
+func TestDependencyAutoUnblockHoldsCurrentNonDependencyParkAfterTrackerTimestampLag(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 25, 20, 13, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		reason        string
+		mutationAt    time.Time
+		workpadStatus string
+	}{
+		{name: "rework limit", reason: "rework_limit", mutationAt: parkedAt.Add(3 * time.Second)},
+		{name: "spend without pull request evidence", reason: spendProgressReason, mutationAt: parkedAt.Add(3 * time.Second)},
+		{name: "in progress workpad owns blocked cause", reason: "rework_limit", workpadStatus: workpad.StatusInProgress},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			waiting := dependencyAutoUnblockIssue("issue-current-non-dependency-park", blockedStatusState)
+			waiting.StageUpdatedAt = timePointer(parkedAt.Add(2 * time.Second))
+			waiting.BlockedBy = []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#415",
+				Source:     connector.BlockedRefSourceNative,
+			}}
+			waiting.PullRequest = &connector.PullRequest{Number: 2901}
+			if tt.workpadStatus != "" {
+				waiting.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: tt.workpadStatus}
+			}
+			blocker := dependencyAutoUnblockIssue("issue-415", "Done")
+			blocker.Identifier = "digitaldrywood/detent#415"
+			blocker.Closed = true
+			tracker := &dependencyAutoUnblockConnector{
+				stateIssues: []connector.Issue{waiting},
+				blockers:    []connector.Issue{blocker},
+			}
+			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+				Enabled:      true,
+				SourceStates: []string{blockedStatusState},
+				TargetState:  "Todo",
+				Readiness:    DependencyReadinessTerminalOrMerged,
+			})
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch.workflowMetrics = metrics
+			metadata := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Cause: tt.reason}}
+			if !tt.mutationAt.IsZero() {
+				metadata.TrackerMutationAt = tt.mutationAt.Format(time.RFC3339Nano)
+			}
+			recordDependencyLaneEntry(t, metrics, waiting, blockedStatusState, tt.reason, parkedAt, metadata)
+			state := newState(orch.cfg)
+
+			orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, parkedAt.Add(time.Minute))
+
+			if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want %s park held", tracker.updates, tt.reason)
+			}
+			if len(tracker.comments) != 0 {
+				t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
+			}
+		})
 	}
 }
 

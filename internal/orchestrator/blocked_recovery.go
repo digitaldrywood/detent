@@ -486,7 +486,7 @@ func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark,
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) || issue.Closed || reworkBreakerIssueHeld(issue, terminalStates) {
 		return false
 	}
-	if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(park.Event.StartedAt.Add(reworkBreakerStageUpdateSkew)) {
+	if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(workflowLaneTransitionAt(park.Event).Add(reworkBreakerStageUpdateSkew)) {
 		return false
 	}
 	pr := issue.PullRequest
