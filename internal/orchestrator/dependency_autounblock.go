@@ -113,7 +113,7 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			continue
 		}
 		hydrated, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
-		if dependencyAutoUnblockWorkpadHold(hydrated) {
+		if dependencyAutoUnblockWorkpadHold(hydrated, workpadCurrent) {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", "workpad_status_not_blocked", nil, "")
 			continue
 		}
@@ -172,9 +172,9 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	return transitioned
 }
 
-func dependencyAutoUnblockWorkpadHold(issue connector.Issue) bool {
+func dependencyAutoUnblockWorkpadHold(issue connector.Issue, current bool) bool {
 	signal := issue.WorkpadSignal
-	return signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
+	return current && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
 		strings.TrimSpace(signal.Status) != "" && strings.TrimSpace(signal.Status) != workpad.StatusBlocked
 }
 
@@ -397,8 +397,10 @@ func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
 	ctx context.Context,
 	issue connector.Issue,
 ) (connector.Issue, []connector.BlockedRef, bool) {
-	if !o.workpadBlockersMatchCurrentBlockedEntry(ctx, issue) {
-		return issue, nil, false
+	current := o.workpadSignalMatchesCurrentBlockedEntry(ctx, issue)
+	if !current || issue.WorkpadSignal == nil || strings.TrimSpace(issue.WorkpadSignal.Status) != workpad.StatusBlocked ||
+		len(issue.WorkpadSignal.Blockers) == 0 {
+		return issue, nil, current
 	}
 	refs := workpadDependencyRefs(issue)
 	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, refs)
@@ -407,13 +409,12 @@ func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
 	return issue, refs, true
 }
 
-func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Context, issue connector.Issue) bool {
+func (o *Orchestrator) workpadSignalMatchesCurrentBlockedEntry(ctx context.Context, issue connector.Issue) bool {
 	signal := issue.WorkpadSignal
-	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
-		strings.TrimSpace(signal.Status) != workpad.StatusBlocked || len(signal.Blockers) == 0 {
+	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured {
 		return false
 	}
-	commentAt, ok := workpadSignalCommentTime(issue, signal.CommentURL)
+	commentAt, ok := workpadSignalCommentTime(issue, signal)
 	if !ok {
 		return true
 	}
@@ -446,9 +447,15 @@ func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Conte
 	return true
 }
 
-func workpadSignalCommentTime(issue connector.Issue, commentURL string) (time.Time, bool) {
-	commentURL = strings.TrimSpace(commentURL)
+func workpadSignalCommentTime(issue connector.Issue, signal *workpad.Signal) (time.Time, bool) {
+	if signal == nil {
+		return time.Time{}, false
+	}
+	commentURL := strings.TrimSpace(signal.CommentURL)
 	if commentURL == "" {
+		if signal.RecordedAt != nil && !signal.RecordedAt.IsZero() {
+			return signal.RecordedAt.UTC(), true
+		}
 		return time.Time{}, false
 	}
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
@@ -463,6 +470,9 @@ func workpadSignalCommentTime(issue connector.Issue, commentURL string) (time.Ti
 			return comment.CreatedAt.UTC(), true
 		}
 		return time.Time{}, false
+	}
+	if signal.RecordedAt != nil && !signal.RecordedAt.IsZero() {
+		return signal.RecordedAt.UTC(), true
 	}
 	return time.Time{}, false
 }

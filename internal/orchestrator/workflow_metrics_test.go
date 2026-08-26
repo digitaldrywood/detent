@@ -589,18 +589,22 @@ func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
 
 	requestedAt := time.Date(2026, 8, 25, 20, 13, 0, 0, time.UTC)
 	trackerStageAt := requestedAt.Add(2 * time.Second)
-	mutationAt := requestedAt.Add(3 * time.Second)
+	responseAt := requestedAt.Add(3 * time.Second)
 	issue := connector.Issue{
 		ID:         "issue-mutation-confirmation",
 		Identifier: "digitaldrywood/detent#1987",
 		State:      "Human Review",
 	}
 	recorder := &autoPromoteWorkflowMetricsRecorder{}
+	tracker := &workflowMetricsConnector{
+		stateEnteredAt:      trackerStageAt,
+		stateEnteredAtFound: true,
+	}
 	orch := &Orchestrator{
 		cfg:             normalizeConfig(Config{}),
-		connector:       &workflowMetricsConnector{},
+		connector:       tracker,
 		workflowMetrics: recorder,
-		now:             func() time.Time { return mutationAt },
+		now:             func() time.Time { return responseAt },
 	}
 	state := newState(orch.cfg)
 	state.BoardIssues = []connector.Issue{cloneIssue(issue)}
@@ -625,8 +629,8 @@ func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
 	}
 	entered := events[1]
 	gotMetadata, ok := workflowLaneMetadataFromJSON(entered.MetadataJSON)
-	if !ok || gotMetadata.TrackerMutationAt != mutationAt.Format(time.RFC3339Nano) {
-		t.Fatalf("tracker mutation confirmation = %q, want %q", gotMetadata.TrackerMutationAt, mutationAt.Format(time.RFC3339Nano))
+	if !ok || gotMetadata.TrackerMutationAt != trackerStageAt.Format(time.RFC3339Nano) {
+		t.Fatalf("tracker mutation confirmation = %q, want tracker time %q instead of response time %q", gotMetadata.TrackerMutationAt, trackerStageAt.Format(time.RFC3339Nano), responseAt.Format(time.RFC3339Nano))
 	}
 
 	current := cloneIssue(issue)

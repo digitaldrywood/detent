@@ -846,6 +846,49 @@ func TestDependencyAutoUnblockHoldsCurrentNonDependencyParkAfterTrackerTimestamp
 	}
 }
 
+func TestDependencyAutoUnblockIgnoresNonBlockedWorkpadFromPriorLaneOccupancy(t *testing.T) {
+	t.Parallel()
+
+	blockedAt := time.Date(2026, 8, 25, 20, 13, 2, 0, time.UTC)
+	previousLaneAt := blockedAt.Add(-time.Hour)
+	workpadAt := previousLaneAt.Add(-time.Hour)
+	waiting := dependencyAutoUnblockIssue("issue-stale-workpad", blockedStatusState)
+	waiting.StageUpdatedAt = &blockedAt
+	waiting.BlockedBy = []connector.BlockedRef{{
+		Identifier: "digitaldrywood/detent#415",
+		Source:     connector.BlockedRefSourceNative,
+	}}
+	waiting.WorkpadSignal = &workpad.Signal{
+		Source:     workpad.SourceStructured,
+		Status:     workpad.StatusInProgress,
+		RecordedAt: &workpadAt,
+	}
+	blocker := dependencyAutoUnblockIssue("issue-415", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	blocker.Closed = true
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{blockedStatusState},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	recordDependencyLaneEntry(t, metrics, waiting, autoPromoteReworkState, "dispatch", previousLaneAt)
+	recordDependencyLaneEntry(t, metrics, waiting, blockedStatusState, "tracker_state_observed", blockedAt)
+	state := newState(orch.cfg)
+
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, blockedAt.Add(time.Minute))
+
+	if got, want := tracker.updates, []dependencyAutoUnblockUpdate{{issueID: waiting.ID, state: "Todo"}}; !slices.Equal(got, want) {
+		t.Fatalf("updates = %#v, want stale Workpad ignored and dependency park moved to Todo", got)
+	}
+}
+
 func TestTickAutoUnblocksDependencyParkNewerThanStickyHistory(t *testing.T) {
 	t.Parallel()
 
