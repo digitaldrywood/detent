@@ -34,6 +34,10 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		if !ok {
 			continue
 		}
+		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
+			normalizeState(completed.Issue.State) != normalizeState(issue.State) {
+			continue
+		}
 		targetState := completedActiveReviewTargetState(
 			issue,
 			completed.FinalState,
