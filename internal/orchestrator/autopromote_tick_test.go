@@ -584,6 +584,77 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 	}
 }
 
+func TestAutoPromoteDoesNotReconcileReworkBeforeCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 26, 18, 34, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-sticky-rework", []string{"bug"}, &connector.PullRequest{
+		Number:         2928,
+		URL:            "https://github.test/getparable/parable/pull/2928",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Rework"
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitReview,
+			Gate: gate.Config{
+				Kind:                   gate.KindCommand,
+				RequireAutomatedReview: new(false),
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+
+	tests := []struct {
+		name           string
+		completedState string
+		running        bool
+		wantTransition bool
+	}{
+		{name: "operator moved completed item to rework", completedState: "In Progress"},
+		{name: "rework worker is running", completedState: "In Progress", running: true},
+		{name: "rework worker completed", completedState: "Rework", wantTransition: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(cfg)
+			state.Completed[issue.ID] = Completed{
+				Issue:      promotedIssue(issue, tt.completedState, now.Add(-time.Hour)),
+				FinalState: FinalStateCompleted,
+			}
+			if tt.running {
+				state.Running[issue.ID] = Running{
+					Issue:               issue,
+					DispatchSourceState: "Rework",
+					StartedAt:           now.Add(-time.Minute),
+				}
+			}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			orch := &Orchestrator{
+				cfg:       cfg,
+				connector: tracker,
+				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+			_, transitioned := result.transitioned[issue.ID]
+			if transitioned != tt.wantTransition {
+				t.Fatalf("transitioned = %v, want %v", transitioned, tt.wantTransition)
+			}
+			if got := len(tracker.updates); got != boolInt(tt.wantTransition) {
+				t.Fatalf("updates = %#v, want transition %v", tracker.updates, tt.wantTransition)
+			}
+		})
+	}
+}
+
 func TestTickRoutesCompletedActiveArtifactToReview(t *testing.T) {
 	t.Parallel()
 
