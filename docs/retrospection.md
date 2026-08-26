@@ -29,6 +29,17 @@ such as completed-work re-dispatch or systemic capacity handling route to
 `target_state: Todo` can be used when a project explicitly wants findings to
 skip Backlog triage.
 
+When `product_repository` differs from the project tracker repository, Detent
+checks the destination repository visibility before creating or updating a
+finding. Public destinations, and destinations whose visibility cannot be
+resolved, receive stable opaque replacements for source repository references,
+branches, workspace paths, and contributor logins. Private destinations retain
+the original text. Set `allow_public_cross_project_details: true` only when the
+operator has explicitly approved publishing the source details verbatim.
+`detent doctor` warns about private-source/public-destination configurations,
+and `detent exposure [--project <id>]` performs a read-only scan for possible
+historical disclosures without editing existing issues.
+
 Detent files a finding after `min_occurrences`, or after one occurrence at or
 above `single_occurrence_severity`. `daily_issue_cap` limits newly created
 issues; recurrence updates to existing fingerprinted issues remain allowed.

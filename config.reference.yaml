@@ -1132,6 +1132,8 @@
 #   fallback_threshold: 3
 #   # retro.receipt_baseline_multiple | type: number | default: 4 when configured | required: No | validation: must be greater than 1
 #   receipt_baseline_multiple: 4
+#   # retro.allow_public_cross_project_details | type: boolean | default: false | required: No | validation: None
+#   allow_public_cross_project_details: false
 # # routines | type: list<object> | default: [] | required: No | validation: None
 # routines:
 #   -

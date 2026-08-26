@@ -137,6 +137,7 @@ Structured command objects:
 | `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
 | `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
+| `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"private/api","destination_repository":"public/detent","issue_number":42,"issue_url":"https://github.com/public/detent/issues/42","matched_identifier":"private/api"}],"warnings":[]}` |
 | `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
 | `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
 | `detent state [--project detent]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |

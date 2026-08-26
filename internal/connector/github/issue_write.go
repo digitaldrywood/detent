@@ -22,6 +22,8 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	var response struct {
 		NodeID string `json:"node_id"`
 	}
+	repository := ref.Owner + "/" + ref.Name
+	body = c.protectPublicationText(ctx, repository, body)
 	if err := c.client.REST(ctx, http.MethodPost, restIssueCommentsPath(ref), map[string]any{"body": body}, &response); err != nil {
 		return fmt.Errorf("create github comment: %w", err)
 	}
@@ -40,6 +42,8 @@ func (c *Connector) UpdateIssueBody(ctx context.Context, issueID string, body st
 	if !ok {
 		return ErrStatusUpdateFailed
 	}
+	repository := ref.Owner + "/" + ref.Name
+	body = c.protectPublicationText(ctx, repository, body)
 	var response restIssue
 	if err := c.client.REST(ctx, http.MethodPatch, restIssuePath(ref), map[string]any{
 		"body": body,
@@ -57,12 +61,13 @@ func (c *Connector) CreateIssue(ctx context.Context, draft connector.IssueDraft)
 	if !validPullRequestRepo(c.repository) {
 		return connector.Issue{}, ErrMissingRepository
 	}
-	title := strings.TrimSpace(draft.Title)
+	repository := c.repository.Owner + "/" + c.repository.Name
+	title := c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Title))
 	if title == "" {
 		return connector.Issue{}, ErrStatusUpdateFailed
 	}
 
-	body := strings.TrimSpace(draft.Body)
+	body := c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Body))
 	labels := normalizedIssueDraftLabels(draft.Labels)
 	payload := map[string]any{
 		"title": title,
@@ -100,6 +105,7 @@ func (c *Connector) CreatePullRequestComment(ctx context.Context, repository str
 		NodeID string `json:"node_id"`
 	}
 	ref := issueRef{Owner: owner, Name: name, Number: number}
+	body = c.protectPublicationText(ctx, repository, body)
 	if err := c.client.REST(ctx, http.MethodPost, restIssueCommentsPath(ref), map[string]any{"body": body}, &response); err != nil {
 		return fmt.Errorf("create github pull request comment: %w", err)
 	}

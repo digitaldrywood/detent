@@ -453,8 +453,12 @@ same server, thread, and turn; the correlated tool is a supported workflow
 deliverable mutation; and both its repository argument and the corresponding
 active work-item repository match the configured tuple. Pull-request mutations
 match the linked pull-request repository. Issue and Workpad mutations match the
-tracked issue repository, including when the linked pull request is in another
-repository. Pull-request and issue creation and updates use
+tracked issue repository and are accepted only when it is also the deliverable
+repository. Detent declines these direct Codex issue mutations when the linked
+pull request belongs to another repository because MCP elicitation cannot
+rewrite the already-pending arguments through the visibility-aware publication
+protector. Connector-backed issue writes remain available and apply that
+protector before sending content. Pull-request and issue creation and updates use
 `repository_full_name`; issue comment creation and updates use
 `repo_full_name`. Missing or ambiguous correlation, other mutation tools
 including `github.delete_issue`, and repository mismatches are declined.
@@ -799,6 +803,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `release.rerun_flaky_once` | `boolean` | `false` | No | release.flaky_check_names must not be empty when release.rerun_flaky_once is true |
 | `release.version_bump` | `string` | `"auto"` | No | must be auto |
 | `retro` | `object` | `see child fields` | No | None |
+| `retro.allow_public_cross_project_details` | `boolean` | `false` | No | None |
 | `retro.daily_issue_cap` | `integer` | `3 when configured` | No | must be greater than 0 |
 | `retro.enabled` | `boolean` | `false` | No | None |
 | `retro.fallback_threshold` | `integer` | `3 when configured` | No | must be at least 2 |

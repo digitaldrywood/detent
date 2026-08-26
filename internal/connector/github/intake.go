@@ -77,9 +77,10 @@ func (c *Connector) UpdateIntakeIssue(ctx context.Context, issueID string, draft
 	if !ok {
 		return intake.Issue{}, ErrStatusUpdateFailed
 	}
+	repository := ref.Owner + "/" + ref.Name
 	payload := map[string]any{
-		"title": strings.TrimSpace(draft.Title),
-		"body":  strings.TrimSpace(draft.Body),
+		"title": c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Title)),
+		"body":  c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Body)),
 	}
 	var response restIssue
 	if err := c.client.REST(ctx, http.MethodPatch, restIssuePath(ref), payload, &response); err != nil {

@@ -341,6 +341,10 @@ func checkDoctorProjectWithProgress(
 	}
 	setDoctorCurrentCheck("Project " + id + " capabilities")
 	checks = append(checks, checkDoctorCapabilities(project, workflow))
+	if len(doctorIssueFilingDestinations(workflow.Config)) > 0 {
+		setDoctorCurrentCheck("Project " + id + " public issue exposure")
+		checks = append(checks, checkDoctorPublicIssueExposure(ctx, id, workflow.Config, deps))
+	}
 	setDoctorCurrentCheck("Project " + id + " workflow source policy")
 	if sourcePolicyCheck, ok := checkDoctorWorkflowSourcePolicy(ctx, id, project, workflow.Config, projectSourceRoot(project, workflow.Config), deps); ok {
 		checks = append(checks, sourcePolicyCheck)

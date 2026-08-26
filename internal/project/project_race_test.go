@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/publication"
 )
 
 func TestHandleWorkflowUpdateDoesNotRaceWithPause(t *testing.T) {
@@ -150,13 +151,18 @@ func TestBuildRetroIssueStoresRoutesProductRepository(t *testing.T) {
 	cfg.Tracker.Repository = "example/project"
 	cfg.Retro.Enabled = true
 	cfg.Retro.ProductRepository = "digitaldrywood/detent"
+	cfg.Retro.AllowPublicCrossProjectDetails = true
+	cfg.Workspace.Root = "/srv/project/worktrees"
+	cfg.Identity.GitHubLogin = "private-user"
 	cfg.Retro.Normalize()
 	projectConnector := memory.New(memory.Config{Stateful: true})
 	productConnector := memory.New(memory.Config{Stateful: true})
 	var repositories []string
+	var productPolicy publication.Policy
 
 	projectIssues, productIssues, created, err := buildRetroIssueStores(cfg, projectConnector, func(candidate workflowconfig.Config) (connector.Connector, error) {
 		repositories = append(repositories, candidate.Tracker.Repository)
+		productPolicy = candidate.Tracker.Publication
 		return productConnector, nil
 	})
 	if err != nil {
@@ -170,6 +176,16 @@ func TestBuildRetroIssueStoresRoutesProductRepository(t *testing.T) {
 	}
 	if len(repositories) != 1 || repositories[0] != "digitaldrywood/detent" {
 		t.Fatalf("product repositories = %v, want digitaldrywood/detent", repositories)
+	}
+	if productPolicy.DestinationRepository != "digitaldrywood/detent" || len(productPolicy.Sources) != 1 {
+		t.Fatalf("product publication policy = %#v", productPolicy)
+	}
+	source := productPolicy.Sources[0]
+	if source.Repository != "example/project" || len(source.Workspaces) == 0 || source.Workspaces[0] != "/srv/project/worktrees" || len(source.Logins) != 1 || source.Logins[0] != "private-user" {
+		t.Fatalf("product publication source = %#v", source)
+	}
+	if !productPolicy.AllowPublicCrossProjectDetails {
+		t.Fatal("product publication override = false, want true")
 	}
 }
 

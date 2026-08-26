@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/publication"
 )
 
 const authenticateQuery = `
@@ -94,6 +95,8 @@ type Config struct {
 	Now                        func() time.Time
 	LookupEnv                  func(string) string
 	GHToken                    GHTokenFunc
+
+	Publication publication.Policy
 }
 
 type Connector struct {
@@ -126,6 +129,10 @@ type Connector struct {
 	writeMu            sync.Mutex
 	instanceLogin      string
 	projectURL         string
+
+	publication             publication.Policy
+	publicationMu           sync.Mutex
+	publicationVisibilities map[string]publication.Visibility
 }
 
 type RepositoryMergeSettings struct {
@@ -207,6 +214,8 @@ func NewConnector(cfg Config) (*Connector, error) {
 	}
 	repository, _ := pullRequestRepoFromName(cfg.Repository)
 
+	publicationPolicy := cfg.Publication
+	publicationPolicy.DestinationRepository = strings.TrimSpace(cfg.Repository)
 	return &Connector{
 		client:             client,
 		statusSource:       normalizeGitHubStatusSource(cfg.GitHubStatusSource),
@@ -232,6 +241,9 @@ func NewConnector(cfg Config) (*Connector, error) {
 		prDiffFingerprints: map[pullRequestDiffFingerprintCacheKey]string{},
 		logger:             logger,
 		now:                now,
+
+		publication:             publicationPolicy,
+		publicationVisibilities: map[string]publication.Visibility{},
 	}, nil
 }
 
