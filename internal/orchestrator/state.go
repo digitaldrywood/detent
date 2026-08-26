@@ -141,6 +141,7 @@ type Running struct {
 	SessionID                   string
 	DetentSessionID             int64
 	RuntimeIdentity             agentidentity.Identity
+	WorkerGitHubActor           connector.IssueActor
 	TurnCount                   int
 	LastEventAt                 time.Time
 	LastEvent                   string

@@ -779,15 +779,22 @@ func observedLaneAttribution(state *State, issue connector.Issue, transitionActo
 		Kind:  transitionActor.Kind,
 	}
 	attribution := provenance.AttributionFromSource(provenance.SourceTrackerObservation, actor)
-	if provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginAutomation {
-		return attribution
-	}
 	if state != nil {
-		if _, ok := state.Running[strings.TrimSpace(issue.ID)]; ok {
+		if running, ok := state.Running[strings.TrimSpace(issue.ID)]; ok {
+			if provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginAutomation &&
+				!sameTrackerActor(transitionActor, running.WorkerGitHubActor) {
+				return attribution
+			}
 			return provenance.AttributionFromSource(provenance.SourceDetentAgentSession, actor)
 		}
 	}
 	return attribution
+}
+
+func sameTrackerActor(left connector.IssueActor, right connector.IssueActor) bool {
+	leftLogin := strings.TrimSpace(left.Login)
+	rightLogin := strings.TrimSpace(right.Login)
+	return leftLogin != "" && rightLogin != "" && strings.EqualFold(leftLogin, rightLogin)
 }
 
 func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {

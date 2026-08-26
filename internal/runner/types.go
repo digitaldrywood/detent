@@ -523,6 +523,7 @@ type RunRequest struct {
 	MergePrecheck             *MergePrecheck
 	ForgeRetry                *ForgeRetry
 	sessionBrake              *sessionBrakeController
+	workerGitHubActor         connector.IssueActor
 	deliverableRecoveryBranch string
 	sessionTurnOffset         int
 }
@@ -659,6 +660,7 @@ type UsageUpdate struct {
 	LastMessageTruncation *runtimeoutput.Truncation
 	RecentEvents          []telemetry.ActivityEvent
 	RuntimeIdentity       agentidentity.Identity
+	WorkerGitHubActor     connector.IssueActor
 	WorkProductPushed     bool
 	Tokens                TokenTotals
 	DiffStats             DiffStats

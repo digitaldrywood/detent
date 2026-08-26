@@ -61,6 +61,8 @@ type workerGitHubPolicy struct {
 	Token                string
 	OrchestratorToken    string
 	CredentialIdentity   string
+	Principal            connector.IssueActor
+	PrincipalID          int64
 	RateLimitURL         string
 	GraphQLURL           string
 	MinRemaining         int64
@@ -443,19 +445,23 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 	if p.CredentialMode == "" {
 		p.CredentialMode = workerGitHubCredentialUnclassified
 	}
+	if p.PrincipalID <= 0 || strings.TrimSpace(p.Principal.Login) == "" {
+		principalID, principal, err := p.authenticatedPrincipal(ctx, p.Token)
+		if err != nil {
+			return workerGitHubPolicy{}, fmt.Errorf("%w: verify worker credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+		}
+		p.PrincipalID = principalID
+		p.Principal = principal
+	}
 	if p.CredentialMode == workerGitHubCredentialUnclassified && strings.TrimSpace(p.OrchestratorToken) == "" {
 		p.CredentialMode = workerGitHubCredentialDistinct
 	}
 	if p.CredentialMode == workerGitHubCredentialUnclassified {
-		workerID, err := p.authenticatedUserID(ctx, p.Token)
-		if err != nil {
-			return workerGitHubPolicy{}, fmt.Errorf("%w: verify worker credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
-		}
-		orchestratorID, err := p.authenticatedUserID(ctx, p.OrchestratorToken)
+		orchestratorID, _, err := p.authenticatedPrincipal(ctx, p.OrchestratorToken)
 		if err != nil {
 			return workerGitHubPolicy{}, fmt.Errorf("%w: verify orchestrator credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
 		}
-		if workerID == orchestratorID {
+		if p.PrincipalID == orchestratorID {
 			p.CredentialMode = workerGitHubCredentialShared
 		} else {
 			p.CredentialMode = workerGitHubCredentialDistinct
@@ -486,13 +492,13 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 	return p, nil
 }
 
-func (p workerGitHubPolicy) authenticatedUserID(ctx context.Context, token string) (int64, error) {
+func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token string) (int64, connector.IssueActor, error) {
 	ctx, cancel := p.probeContext(ctx)
 	defer cancel()
-	body := bytes.NewBufferString(`{"query":"query WorkerCredentialIdentity { viewer { databaseId } }"}`)
+	body := bytes.NewBufferString(`{"query":"query WorkerCredentialIdentity { viewer { databaseId login __typename } }"}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.GraphQLURL, body)
 	if err != nil {
-		return 0, err
+		return 0, connector.IssueActor{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -501,31 +507,36 @@ func (p workerGitHubPolicy) authenticatedUserID(ctx context.Context, token strin
 	req.Header.Set("User-Agent", "detent-worker-github-governor")
 	resp, err := p.HTTPClient.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, connector.IssueActor{}, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, workerGitHubRateLimitBodyMaxBytes))
 	if err != nil {
-		return 0, err
+		return 0, connector.IssueActor{}, err
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return 0, fmt.Errorf("github authenticated user graphql probe returned HTTP %d", resp.StatusCode)
+		return 0, connector.IssueActor{}, fmt.Errorf("github authenticated user graphql probe returned HTTP %d", resp.StatusCode)
 	}
 	var payload struct {
 		Data struct {
 			Viewer struct {
-				DatabaseID int64 `json:"databaseId"`
+				DatabaseID int64  `json:"databaseId"`
+				Login      string `json:"login"`
+				TypeName   string `json:"__typename"`
 			} `json:"viewer"`
 		} `json:"data"`
 		Errors []json.RawMessage `json:"errors"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return 0, fmt.Errorf("decode github authenticated user graphql probe: %w", err)
+		return 0, connector.IssueActor{}, fmt.Errorf("decode github authenticated user graphql probe: %w", err)
 	}
-	if len(payload.Errors) > 0 || payload.Data.Viewer.DatabaseID <= 0 {
-		return 0, errors.New("github authenticated user graphql probe omitted the user id")
+	if len(payload.Errors) > 0 || payload.Data.Viewer.DatabaseID <= 0 || strings.TrimSpace(payload.Data.Viewer.Login) == "" {
+		return 0, connector.IssueActor{}, errors.New("github authenticated user graphql probe omitted the principal identity")
 	}
-	return payload.Data.Viewer.DatabaseID, nil
+	return payload.Data.Viewer.DatabaseID, connector.IssueActor{
+		Login: strings.TrimSpace(payload.Data.Viewer.Login),
+		Kind:  strings.TrimSpace(payload.Data.Viewer.TypeName),
+	}, nil
 }
 
 func (p workerGitHubPolicy) probe(ctx context.Context) (workerGitHubBudget, error) {

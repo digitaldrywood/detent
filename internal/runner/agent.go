@@ -753,9 +753,10 @@ func (r *Runner) publishWorkspaceCreateStarted(req RunRequest) error {
 		Message: "workspace creation started",
 	}
 	return req.OnUsageUpdate(UsageUpdate{
-		LastEventAt:  at,
-		LastEvent:    event.Event,
-		RecentEvents: []telemetry.ActivityEvent{event},
+		LastEventAt:       at,
+		LastEvent:         event.Event,
+		RecentEvents:      []telemetry.ActivityEvent{event},
+		WorkerGitHubActor: req.workerGitHubActor,
 	})
 }
 
@@ -1286,6 +1287,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
 		return RunResult{}, err
 	}
+	req.workerGitHubActor = workerGitHub.Principal
 
 	runWorkspace := r.workspace
 	if req.Admission != nil {
@@ -4052,6 +4054,7 @@ func (r *Runner) publishRunUpdate(
 		LastMessageTruncation: runtimeoutput.CloneTruncation(progress.lastMessageTruncation),
 		RecentEvents:          progress.recentActivity(),
 		RuntimeIdentity:       result.RuntimeIdentity,
+		WorkerGitHubActor:     req.workerGitHubActor,
 		WorkProductPushed:     progress.pullRequestHeadPushed() || progress.pullRequestUpdated(),
 		Tokens:                result.Tokens,
 		RateLimits:            result.RateLimits,

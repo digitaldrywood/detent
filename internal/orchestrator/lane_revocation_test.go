@@ -257,6 +257,7 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 		origin          provenance.Attribution
 		originCached    bool
 		transitionActor connector.IssueActor
+		workerActor     connector.IssueActor
 		detentAuthored  bool
 		wantReason      string
 		wantErrorClass  string
@@ -270,8 +271,17 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 			wantOrigin:      provenance.OriginAgent,
 		},
 		{
+			name:            "active app worker move before provenance refresh",
+			transitionActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"},
+			workerActor:     connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"},
+			wantReason:      laneRevocationStateChanged,
+			wantErrorClass:  string(store.WorkAttemptTerminalLaneRevoked),
+			wantOrigin:      provenance.OriginAgent,
+		},
+		{
 			name:            "external automation actor overrides active agent fallback",
 			transitionActor: connector.IssueActor{Login: "external-bot", Kind: "Bot"},
+			workerActor:     connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"},
 			wantReason:      laneRevocationStateChanged,
 			wantErrorClass:  string(store.WorkAttemptTerminalLaneRevoked),
 			wantOrigin:      provenance.OriginAutomation,
@@ -320,11 +330,12 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 			state := newState(cfg)
 			runCtx, stop := context.WithCancelCause(context.Background())
 			state.Running[issue.ID] = Running{
-				Issue:         issue,
-				Attempt:       3,
-				WorkAttemptID: 1903,
-				Generation:    9,
-				StartedAt:     now.Add(-397 * time.Second),
+				Issue:             issue,
+				Attempt:           3,
+				WorkAttemptID:     1903,
+				Generation:        9,
+				StartedAt:         now.Add(-397 * time.Second),
+				WorkerGitHubActor: tt.workerActor,
 				Tokens: runpkg.TokenTotals{
 					OutputTokens:   13_422,
 					TotalTokens:    42_000,
@@ -410,10 +421,12 @@ func TestLaneRevocationAttributionEvidencePrecedence(t *testing.T) {
 		running         bool
 		cached          *provenance.Attribution
 		transitionActor connector.IssueActor
+		workerActor     connector.IssueActor
 		want            provenance.Origin
 	}{
 		{name: "active agent", running: true, transitionActor: connector.IssueActor{Login: "operator-token", Kind: "User"}, want: provenance.OriginAgent},
-		{name: "external automation", running: true, transitionActor: connector.IssueActor{Login: "external-bot", Kind: "Bot"}, want: provenance.OriginAutomation},
+		{name: "active app worker", running: true, transitionActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"}, workerActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"}, want: provenance.OriginAgent},
+		{name: "external automation", running: true, transitionActor: connector.IssueActor{Login: "external-bot", Kind: "Bot"}, workerActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"}, want: provenance.OriginAutomation},
 		{name: "operator", running: true, cached: &human, want: provenance.OriginHuman},
 		{name: "missing evidence", want: provenance.OriginIndeterminate},
 		{name: "indeterminate cache does not hide active agent", running: true, cached: &indeterminate, want: provenance.OriginAgent},
@@ -428,7 +441,7 @@ func TestLaneRevocationAttributionEvidencePrecedence(t *testing.T) {
 				laneProvenance: map[string]provenance.Attribution{},
 			}
 			if tt.running {
-				state.Running[issue.ID] = Running{Issue: issue}
+				state.Running[issue.ID] = Running{Issue: issue, WorkerGitHubActor: tt.workerActor}
 			}
 			if tt.cached != nil {
 				state.laneProvenance[workflowLaneEntryKey(issue)] = *tt.cached

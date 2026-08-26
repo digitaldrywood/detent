@@ -74,6 +74,8 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 				t.Fatalf("CredentialMode = %q, want %q", policy.CredentialMode, tt.wantMode)
 			}
 			if tt.wantMode == workerGitHubCredentialShared {
+				policy.Principal.Login = "detent-worker[bot]"
+				policy.PrincipalID = 42
 				classified, classifyErr := policy.classifyCredential(context.Background())
 				if classifyErr != nil {
 					t.Fatalf("classifyCredential() error = %v", classifyErr)
@@ -392,6 +394,9 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 			if classified.CredentialMode != tt.wantMode {
 				t.Fatalf("CredentialMode = %q, want %q", classified.CredentialMode, tt.wantMode)
 			}
+			if classified.Principal.Login != "detent-worker[bot]" {
+				t.Fatalf("Principal = %#v, want Detent worker bot", classified.Principal)
+			}
 			warning := strings.Contains(logs.String(), "worker github credential uses shared REST budget")
 			if warning != tt.wantWarning {
 				t.Fatalf("shared-budget warning present = %t, want %t: %q", warning, tt.wantWarning, logs.String())
@@ -419,9 +424,11 @@ func TestWorkerGitHubSharedReserveValidation(t *testing.T) {
 			policy := workerGitHubPolicy{
 				Enabled:           true,
 				CredentialMode:    tt.mode,
+				PrincipalID:       42,
 				MinRemaining:      tt.reserve,
 				OrchestratorFloor: 1000,
 			}
+			policy.Principal.Login = "detent-worker[bot]"
 			_, err := policy.classifyCredential(context.Background())
 			if got := errors.Is(err, ErrWorkerGitHubSharedReserve); got != tt.wantError {
 				t.Fatalf("classifyCredential() error = %v, shared reserve error=%t, want %t", err, got, tt.wantError)
@@ -500,7 +507,7 @@ func workerGitHubRateLimitServer(t *testing.T, remaining func(int64) int64) *htt
 		switch r.URL.Path {
 		case "/graphql":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":{"viewer":{"databaseId":42}}}`))
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`))
 		case "/rate_limit":
 			if r.Header.Get("Authorization") != "Bearer worker-token" {
 				t.Errorf("Authorization = %q, want worker bearer token", r.Header.Get("Authorization"))
@@ -528,11 +535,16 @@ func workerGitHubPrincipalServer(t *testing.T, orchestratorUserID int64) *httpte
 			return
 		}
 		userID := int64(42)
+		login := "detent-worker[bot]"
 		if r.Header.Get("Authorization") == "Bearer orchestrator-token" {
 			userID = orchestratorUserID
+			login = "detent-orchestrator[bot]"
+			if userID == 42 {
+				login = "detent-worker[bot]"
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":%d}}}`, userID)
+		_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":%d,"login":%q,"__typename":"Bot"}}}`, userID, login)
 	}))
 }
 

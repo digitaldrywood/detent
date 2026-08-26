@@ -44,6 +44,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if !event.usage.RuntimeIdentity.IsZero() {
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.usage.RuntimeIdentity)
 	}
+	if strings.TrimSpace(event.usage.WorkerGitHubActor.Login) != "" {
+		running.WorkerGitHubActor = event.usage.WorkerGitHubActor
+	}
 	if event.usage.TurnCount > 0 {
 		running.TurnCount = event.usage.TurnCount
 	}
