@@ -1394,15 +1394,16 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 		"requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call"}
 	}`
 	tests := []struct {
-		name           string
-		tool           string
-		arguments      string
-		wantAction     string
-		wantReason     string
-		wantRepository string
+		name             string
+		tool             string
+		arguments        string
+		sourceRepository string
+		wantAction       string
+		wantReason       string
+		wantRepository   string
 	}{
 		{
-			name:           "create issue matching repository",
+			name:           "create same project issue",
 			tool:           "github.create_issue",
 			arguments:      `{"repository_full_name":"acme/widgets","title":"Follow-up"}`,
 			wantAction:     "accept",
@@ -1410,7 +1411,7 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 			wantRepository: "acme/widgets",
 		},
 		{
-			name:           "add issue comment matching repository",
+			name:           "add same project issue comment",
 			tool:           "github.add_comment_to_issue",
 			arguments:      `{"repo_full_name":"acme/widgets","pr_number":18,"comment":"workpad"}`,
 			wantAction:     "accept",
@@ -1418,7 +1419,7 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 			wantRepository: "acme/widgets",
 		},
 		{
-			name:           "update issue comment matching repository",
+			name:           "update same project issue comment",
 			tool:           "github.update_issue_comment",
 			arguments:      `{"repo_full_name":"acme/widgets","comment_id":42,"comment":"updated workpad"}`,
 			wantAction:     "accept",
@@ -1426,12 +1427,48 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 			wantRepository: "acme/widgets",
 		},
 		{
-			name:           "update issue matching repository",
+			name:           "update same project issue",
 			tool:           "github.update_issue",
 			arguments:      `{"repository_full_name":"acme/widgets","issue_number":18,"labels":["detent:in-progress"]}`,
 			wantAction:     "accept",
 			wantReason:     "allowlisted_deliverable_tool",
 			wantRepository: "acme/widgets",
+		},
+		{
+			name:             "create cross project issue fails closed",
+			tool:             "github.create_issue",
+			arguments:        `{"repository_full_name":"acme/widgets","title":"Follow-up"}`,
+			sourceRepository: "acme/delivery",
+			wantAction:       "decline",
+			wantReason:       "cross_project_issue_publication_unsupported",
+			wantRepository:   "acme/widgets",
+		},
+		{
+			name:             "add cross project issue comment fails closed",
+			tool:             "github.add_comment_to_issue",
+			arguments:        `{"repo_full_name":"acme/widgets","pr_number":18,"comment":"workpad"}`,
+			sourceRepository: "acme/delivery",
+			wantAction:       "decline",
+			wantReason:       "cross_project_issue_publication_unsupported",
+			wantRepository:   "acme/widgets",
+		},
+		{
+			name:             "update cross project issue comment fails closed",
+			tool:             "github.update_issue_comment",
+			arguments:        `{"repo_full_name":"acme/widgets","comment_id":42,"comment":"updated workpad"}`,
+			sourceRepository: "acme/delivery",
+			wantAction:       "decline",
+			wantReason:       "cross_project_issue_publication_unsupported",
+			wantRepository:   "acme/widgets",
+		},
+		{
+			name:             "update cross project issue fails closed",
+			tool:             "github.update_issue",
+			arguments:        `{"repository_full_name":"acme/widgets","issue_number":18,"labels":["detent:in-progress"]}`,
+			sourceRepository: "acme/delivery",
+			wantAction:       "decline",
+			wantReason:       "cross_project_issue_publication_unsupported",
+			wantRepository:   "acme/widgets",
 		},
 		{
 			name:           "create issue mismatched repository",
@@ -1499,9 +1536,13 @@ func TestMCPElicitationResponseAllowsWorkflowDeliverableMutations(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			sourceRepository := tt.sourceRepository
+			if sourceRepository == "" {
+				sourceRepository = "acme/widgets"
+			}
 			state := newMCPElicitationState(MCPElicitationPolicy{
 				DeliverableKind: "pull_request",
-				Repository:      "acme/delivery",
+				Repository:      sourceRepository,
 				IssueRepository: "acme/widgets",
 				Allowlist: []MCPElicitationRule{{
 					Server: "codex_apps", Tool: tt.tool, Repository: "acme/widgets",

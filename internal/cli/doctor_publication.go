@@ -29,7 +29,7 @@ func checkDoctorPublicIssueExposure(ctx context.Context, projectID string, cfg w
 			Name:   name,
 			Status: doctorWarn,
 			Detail: fmt.Sprintf("source repository visibility for %s could not be determined: %v", sourceRepository, err),
-			Hint:   "Restore GitHub repository metadata access; Detent fails closed by redacting cross-project details when destination visibility is unknown.",
+			Hint:   "Restore GitHub repository metadata access; Detent fails closed by redacting connector writes or declining direct Codex issue tools when destination visibility is unknown.",
 		}
 	}
 	if !sourceInfo.Private && !strings.EqualFold(sourceInfo.Visibility, "private") && !strings.EqualFold(sourceInfo.Visibility, "internal") {
@@ -58,7 +58,7 @@ func checkDoctorPublicIssueExposure(ctx context.Context, projectID string, cfg w
 			Name:   name,
 			Status: doctorWarn,
 			Detail: "private source " + sourceRepository + " files into public destinations: " + strings.Join(risks, ", "),
-			Hint:   "Keep Detent redaction enabled, move issue filing to a private destination, or explicitly opt in only after reviewing the disclosure boundary.",
+			Hint:   "Keep Detent publication protection enabled, move issue filing to a private destination, or explicitly opt in only after reviewing the disclosure boundary.",
 		}
 	}
 	if len(unknown) > 0 {
@@ -66,7 +66,7 @@ func checkDoctorPublicIssueExposure(ctx context.Context, projectID string, cfg w
 			Name:   name,
 			Status: doctorWarn,
 			Detail: "destination visibility could not be determined for " + strings.Join(unknown, ", "),
-			Hint:   "Restore GitHub repository metadata access; Detent fails closed by redacting cross-project details for unknown destinations.",
+			Hint:   "Restore GitHub repository metadata access; Detent fails closed by redacting connector writes or declining direct Codex issue tools for unknown destinations.",
 		}
 	}
 	return doctorCheck{Name: name, Status: doctorOK, Detail: "private sources do not file into a configured public destination without redaction"}

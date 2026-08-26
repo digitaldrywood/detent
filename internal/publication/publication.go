@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type Visibility string
@@ -137,24 +138,27 @@ func redactWorkspace(text string, workspace string) string {
 	if workspace == "" {
 		return text
 	}
-	lowerText := strings.ToLower(text)
-	lowerWorkspace := strings.ToLower(workspace)
+	pattern := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(workspace))
 	for offset := 0; ; {
-		index := strings.Index(lowerText[offset:], lowerWorkspace)
-		if index < 0 {
+		match := pattern.FindStringIndex(text[offset:])
+		if match == nil {
 			return text
 		}
-		index += offset
-		if index > 0 && isIdentifierRune(rune(text[index-1])) {
-			offset = index + len(workspace)
+		index := offset + match[0]
+		matchEnd := offset + match[1]
+		if index > 0 && isIdentifierRune(previousRune(text, index)) {
+			offset = matchEnd
 			continue
 		}
-		end := index + len(workspace)
-		for end < len(text) && !unicode.IsSpace(rune(text[end])) && !strings.ContainsRune("`\"'<>)]},;", rune(text[end])) {
-			end++
+		end := matchEnd
+		for end < len(text) {
+			value, size := utf8.DecodeRuneInString(text[end:])
+			if unicode.IsSpace(value) || strings.ContainsRune("`\"'<>)]},;", value) {
+				break
+			}
+			end += size
 		}
 		text = text[:index] + "<workspace>" + text[end:]
-		lowerText = strings.ToLower(text)
 		offset = index + len("<workspace>")
 	}
 }
@@ -173,24 +177,27 @@ func replaceTokenPrefix(text string, prefix string, replacement string) string {
 	if prefix == "" {
 		return text
 	}
-	lowerText := strings.ToLower(text)
-	lowerPrefix := strings.ToLower(prefix)
+	pattern := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(prefix))
 	for offset := 0; ; {
-		index := strings.Index(lowerText[offset:], lowerPrefix)
-		if index < 0 {
+		match := pattern.FindStringIndex(text[offset:])
+		if match == nil {
 			return text
 		}
-		index += offset
-		if index > 0 && isIdentifierRune(rune(text[index-1])) {
-			offset = index + len(prefix)
+		index := offset + match[0]
+		matchEnd := offset + match[1]
+		if index > 0 && isIdentifierRune(previousRune(text, index)) {
+			offset = matchEnd
 			continue
 		}
-		end := index + len(prefix)
-		for end < len(text) && !unicode.IsSpace(rune(text[end])) && !strings.ContainsRune("`\"'<>)]},;", rune(text[end])) {
-			end++
+		end := matchEnd
+		for end < len(text) {
+			value, size := utf8.DecodeRuneInString(text[end:])
+			if unicode.IsSpace(value) || strings.ContainsRune("`\"'<>)]},;", value) {
+				break
+			}
+			end += size
 		}
 		text = text[:index] + replacement + text[end:]
-		lowerText = strings.ToLower(text)
 		offset = index + len(replacement)
 	}
 }
@@ -200,25 +207,33 @@ func replaceBoundedFold(text string, value string, replacement string) string {
 	if value == "" {
 		return text
 	}
-	lowerText := strings.ToLower(text)
-	lowerValue := strings.ToLower(value)
+	pattern := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(value))
 	for offset := 0; ; {
-		index := strings.Index(lowerText[offset:], lowerValue)
-		if index < 0 {
+		match := pattern.FindStringIndex(text[offset:])
+		if match == nil {
 			return text
 		}
-		index += offset
-		end := index + len(value)
-		leftBounded := index == 0 || !isIdentifierRune(rune(text[index-1]))
-		rightBounded := end == len(text) || !isIdentifierRune(rune(text[end]))
+		index := offset + match[0]
+		end := offset + match[1]
+		leftBounded := index == 0 || !isIdentifierRune(previousRune(text, index))
+		rightBounded := end == len(text) || !isIdentifierRune(nextRune(text, end))
 		if !leftBounded || !rightBounded {
 			offset = end
 			continue
 		}
 		text = text[:index] + replacement + text[end:]
-		lowerText = strings.ToLower(text)
 		offset = index + len(replacement)
 	}
+}
+
+func previousRune(text string, offset int) rune {
+	value, _ := utf8.DecodeLastRuneInString(text[:offset])
+	return value
+}
+
+func nextRune(text string, offset int) rune {
+	value, _ := utf8.DecodeRuneInString(text[offset:])
+	return value
 }
 
 func isIdentifierRune(value rune) bool {

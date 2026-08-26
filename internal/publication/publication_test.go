@@ -74,3 +74,23 @@ func TestProtect(t *testing.T) {
 		})
 	}
 }
+
+func TestProtectPreservesUnicodeByteOffsets(t *testing.T) {
+	t.Parallel()
+
+	policy := Policy{
+		DestinationRepository: "public/destination",
+		Visibility:            VisibilityPublic,
+		Sources: []Source{{
+			Repository: "private/source",
+			Workspaces: []string{"/srv/private/source"},
+			Branches:   []string{"feature/private-fix"},
+			Logins:     []string{"private-user"},
+		}},
+	}
+	original := "K private/source#42 /srv/private/source/worktree feature/private-fix @private-user"
+	want := "K project-A#1 <workspace> branch-A @contributor-A"
+	if got := Protect(original, policy); got != want {
+		t.Fatalf("Protect() = %q, want %q", got, want)
+	}
+}

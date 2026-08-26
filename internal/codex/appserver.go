@@ -1509,6 +1509,11 @@ func mcpElicitationResponse(params json.RawMessage, state *mcpElicitationState) 
 			decision.Reason = "repository_mismatch"
 			return decline()
 		}
+		if issuePublicationTool(call.Server, call.Tool) &&
+			!strings.EqualFold(repository, policy.Repository) {
+			decision.Reason = "cross_project_issue_publication_unsupported"
+			return decline()
+		}
 		decision.Action = "accept"
 		decision.Reason = "allowlisted_deliverable_tool"
 		return map[string]any{"action": "accept", "content": map[string]any{}}, decision
@@ -1517,6 +1522,18 @@ func mcpElicitationResponse(params json.RawMessage, state *mcpElicitationState) 
 	decision.Action = "accept"
 	decision.Reason = "supported_browser_tool_approval"
 	return map[string]any{"action": "accept", "content": map[string]any{}}, decision
+}
+
+func issuePublicationTool(server string, tool string) bool {
+	if server != "codex_apps" {
+		return false
+	}
+	switch tool {
+	case "github.add_comment_to_issue", "github.update_issue_comment", "github.create_issue", "github.update_issue":
+		return true
+	default:
+		return false
+	}
 }
 
 func deliverableMCPRepository(policy MCPElicitationPolicy, server string, tool string) (string, string, bool) {
