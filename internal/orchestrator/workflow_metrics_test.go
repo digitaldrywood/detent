@@ -584,6 +584,65 @@ func TestUpdateIssueStateByIDSkipsWorkflowMetricsForBlockedUpdate(t *testing.T) 
 	}
 }
 
+func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
+	t.Parallel()
+
+	requestedAt := time.Date(2026, 8, 25, 20, 13, 0, 0, time.UTC)
+	trackerStageAt := requestedAt.Add(2 * time.Second)
+	responseAt := requestedAt.Add(3 * time.Second)
+	issue := connector.Issue{
+		ID:         "issue-mutation-confirmation",
+		Identifier: "digitaldrywood/detent#1987",
+		State:      "Human Review",
+	}
+	recorder := &autoPromoteWorkflowMetricsRecorder{}
+	tracker := &workflowMetricsConnector{
+		stateEnteredAt:      trackerStageAt,
+		stateEnteredAtFound: true,
+	}
+	orch := &Orchestrator{
+		cfg:             normalizeConfig(Config{}),
+		connector:       tracker,
+		workflowMetrics: recorder,
+		now:             func() time.Time { return responseAt },
+	}
+	state := newState(orch.cfg)
+	state.BoardIssues = []connector.Issue{cloneIssue(issue)}
+	metadata := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Cause: "rework_limit"}}
+
+	if err := orch.updateIssueStateByIDWithMetadata(
+		t.Context(),
+		&state,
+		issue.ID,
+		issue,
+		blockedStatusState,
+		requestedAt,
+		"rework_limit",
+		metadata,
+	); err != nil {
+		t.Fatalf("updateIssueStateByIDWithMetadata() error = %v", err)
+	}
+
+	events := recorder.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("workflow events = %#v, want exit and entry", events)
+	}
+	entered := events[1]
+	gotMetadata, ok := workflowLaneMetadataFromJSON(entered.MetadataJSON)
+	if !ok || gotMetadata.TrackerMutationAt != trackerStageAt.Format(time.RFC3339Nano) {
+		t.Fatalf("tracker mutation confirmation = %q, want tracker time %q instead of response time %q", gotMetadata.TrackerMutationAt, trackerStageAt.Format(time.RFC3339Nano), responseAt.Format(time.RFC3339Nano))
+	}
+
+	current := cloneIssue(issue)
+	current.State = blockedStatusState
+	current.StageUpdatedAt = &trackerStageAt
+	state.BoardIssues = []connector.Issue{current}
+	orch.refreshCurrentLaneEntries(t.Context(), &state, requestedAt.Add(time.Minute))
+	if got := len(recorder.snapshot()); got != len(events) {
+		t.Fatalf("workflow event count after tracker reconciliation = %d, want %d", got, len(events))
+	}
+}
+
 func TestUpdateIssueStateByIDCapturesReworkLesson(t *testing.T) {
 	t.Parallel()
 

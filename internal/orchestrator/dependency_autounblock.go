@@ -113,6 +113,10 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			continue
 		}
 		hydrated, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
+		if dependencyAutoUnblockWorkpadHold(hydrated, workpadCurrent) {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", "workpad_status_not_blocked", nil, "")
+			continue
+		}
 		if reason := o.blockedCauseHoldReason(hydrated, state, nil, cfg, workpadCurrent); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, nil, "")
 			continue
@@ -166,6 +170,12 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func dependencyAutoUnblockWorkpadHold(issue connector.Issue, current bool) bool {
+	signal := issue.WorkpadSignal
+	return current && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
+		strings.TrimSpace(signal.Status) != "" && strings.TrimSpace(signal.Status) != workpad.StatusBlocked
 }
 
 func (o *Orchestrator) autoPromoteBlockerIssues(
@@ -387,8 +397,10 @@ func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
 	ctx context.Context,
 	issue connector.Issue,
 ) (connector.Issue, []connector.BlockedRef, bool) {
-	if !o.workpadBlockersMatchCurrentBlockedEntry(ctx, issue) {
-		return issue, nil, false
+	current := o.workpadSignalMatchesCurrentBlockedEntry(ctx, issue)
+	if !current || issue.WorkpadSignal == nil || strings.TrimSpace(issue.WorkpadSignal.Status) != workpad.StatusBlocked ||
+		len(issue.WorkpadSignal.Blockers) == 0 {
+		return issue, nil, current
 	}
 	refs := workpadDependencyRefs(issue)
 	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, refs)
@@ -397,13 +409,12 @@ func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
 	return issue, refs, true
 }
 
-func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Context, issue connector.Issue) bool {
+func (o *Orchestrator) workpadSignalMatchesCurrentBlockedEntry(ctx context.Context, issue connector.Issue) bool {
 	signal := issue.WorkpadSignal
-	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
-		strings.TrimSpace(signal.Status) != workpad.StatusBlocked || len(signal.Blockers) == 0 {
+	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured {
 		return false
 	}
-	commentAt, ok := workpadSignalCommentTime(issue, signal.CommentURL)
+	commentAt, ok := workpadSignalCommentTime(issue, signal)
 	if !ok {
 		return true
 	}
@@ -417,7 +428,7 @@ func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Conte
 		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
 			continue
 		}
-		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !blockedEntryMatchesCurrent(issue, event.StartedAt) {
+		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !workflowLaneEntryMatchesCurrent(issue, event) {
 			return false
 		}
 		currentIndex = index
@@ -436,9 +447,15 @@ func (o *Orchestrator) workpadBlockersMatchCurrentBlockedEntry(ctx context.Conte
 	return true
 }
 
-func workpadSignalCommentTime(issue connector.Issue, commentURL string) (time.Time, bool) {
-	commentURL = strings.TrimSpace(commentURL)
+func workpadSignalCommentTime(issue connector.Issue, signal *workpad.Signal) (time.Time, bool) {
+	if signal == nil {
+		return time.Time{}, false
+	}
+	commentURL := strings.TrimSpace(signal.CommentURL)
 	if commentURL == "" {
+		if signal.RecordedAt != nil && !signal.RecordedAt.IsZero() {
+			return signal.RecordedAt.UTC(), true
+		}
 		return time.Time{}, false
 	}
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
@@ -453,6 +470,9 @@ func workpadSignalCommentTime(issue connector.Issue, commentURL string) (time.Ti
 			return comment.CreatedAt.UTC(), true
 		}
 		return time.Time{}, false
+	}
+	if signal.RecordedAt != nil && !signal.RecordedAt.IsZero() {
+		return signal.RecordedAt.UTC(), true
 	}
 	return time.Time{}, false
 }
@@ -1053,7 +1073,7 @@ func (o *Orchestrator) issueStickyBlockReason(ctx context.Context, state *State,
 		return ""
 	}
 	if normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) {
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return ""
 	}
 	if stickyBlockReason(entry.Event.Reason) {

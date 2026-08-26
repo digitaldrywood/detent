@@ -41,6 +41,7 @@ type workflowLaneMetadata struct {
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
 	ReworkBreaker         *workflowLaneReworkBreakerMetadata         `json:"rework_breaker,omitempty"`
 	BlockedRecovery       *workflowLaneBlockedRecoveryMetadata       `json:"blocked_recovery,omitempty"`
+	TrackerMutationAt     string                                     `json:"tracker_mutation_at,omitempty"`
 	BlockedCauseStatus    string                                     `json:"blocked_cause_status,omitempty"`
 	ActionSignatures      []workflowLaneActionSignatureMetadata      `json:"action_signatures,omitempty"`
 	Provenance            provenance.Attribution                     `json:"provenance"`
@@ -173,6 +174,12 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		}
 		return err
 	}
+	if metadata.BlockedRecovery != nil {
+		mutationAt, ok := o.confirmTrackerStateTransition(ctx, issueID, issue, targetState)
+		if ok {
+			metadata.TrackerMutationAt = mutationAt.Format(time.RFC3339Nano)
+		}
+	}
 	if stateIn(targetState, o.cfg.TerminalStates) {
 		terminalIssue := cloneIssue(issue)
 		if strings.TrimSpace(terminalIssue.ID) == "" {
@@ -199,6 +206,45 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		o.captureReworkLesson(issue, at, reason)
 	}
 	return nil
+}
+
+func (o *Orchestrator) confirmTrackerStateTransition(
+	ctx context.Context,
+	issueID string,
+	issue connector.Issue,
+	targetState string,
+) (time.Time, bool) {
+	transitioned := cloneIssue(issue)
+	transitioned.ID = strings.TrimSpace(firstNonBlank(transitioned.ID, issueID))
+	transitioned.State = strings.TrimSpace(targetState)
+	transitioned.StageUpdatedAt = nil
+	transitioned.StageUpdatedActor = connector.IssueActor{}
+	if reader, ok := o.connector.(connector.IssueStateTransitionReader); ok && reader != nil {
+		transition, found, err := reader.IssueStateTransition(ctx, transitioned)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("tracker state transition confirmation failed", "issue_id", issueID, "target_state", targetState, "error", err)
+			}
+		} else if found && !transition.EnteredAt.IsZero() {
+			return transition.EnteredAt.UTC(), true
+		}
+	}
+
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("tracker state confirmation failed", "issue_id", issueID, "target_state", targetState, "error", err)
+		}
+		return time.Time{}, false
+	}
+	for _, current := range issues {
+		if !sameIssueIdentity(transitioned, current) || normalizeState(current.State) != normalizeState(targetState) ||
+			current.StageUpdatedAt == nil || current.StageUpdatedAt.IsZero() {
+			continue
+		}
+		return current.StageUpdatedAt.UTC(), true
+	}
+	return time.Time{}, false
 }
 
 func updateIssueStateSnapshots(state *State, issueID string, issue connector.Issue, targetState string, at time.Time) {
@@ -471,7 +517,7 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 		if !enteredAt.IsZero() {
 			next[laneKey] = enteredAt
 		}
-		if !eventBacked || trackerTransition.EnteredAt.After(latestEvent.StartedAt) {
+		if !eventBacked || trackerTransition.EnteredAt.After(workflowLaneTransitionAt(latestEvent)) {
 			o.recordObservedLaneEntry(ctx, issue, enteredAt, observedAttribution)
 			if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
 				observed := cloneIssue(issue)
@@ -752,6 +798,23 @@ func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {
 	return metadata, true
 }
 
+func workflowLaneTransitionAt(event store.WorkflowPhaseEvent) time.Time {
+	at := event.StartedAt.UTC()
+	metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+	if !ok || strings.TrimSpace(metadata.TrackerMutationAt) == "" {
+		return at
+	}
+	mutationAt, err := time.Parse(time.RFC3339Nano, metadata.TrackerMutationAt)
+	if err != nil || !mutationAt.After(at) {
+		return at
+	}
+	return mutationAt.UTC()
+}
+
+func workflowLaneEntryMatchesCurrent(issue connector.Issue, event store.WorkflowPhaseEvent) bool {
+	return blockedEntryMatchesCurrent(issue, workflowLaneTransitionAt(event))
+}
+
 func BlockedIssueHasCurrentRecoveryPredicate(
 	issue connector.Issue,
 	phaseName string,
@@ -759,11 +822,13 @@ func BlockedIssueHasCurrentRecoveryPredicate(
 	metadataJSON string,
 ) bool {
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) ||
-		normalizeState(phaseName) != normalizeState(blockedStatusState) ||
-		!blockedEntryMatchesCurrent(issue, enteredAt) {
+		normalizeState(phaseName) != normalizeState(blockedStatusState) {
 		return false
 	}
 	metadata, ok := workflowLaneMetadataFromJSON(metadataJSON)
+	if !workflowLaneEntryMatchesCurrent(issue, store.WorkflowPhaseEvent{StartedAt: enteredAt, MetadataJSON: metadataJSON}) {
+		return false
+	}
 	return ok &&
 		metadata.BlockedRecovery != nil &&
 		strings.TrimSpace(metadata.BlockedRecovery.Owner) != "" &&
