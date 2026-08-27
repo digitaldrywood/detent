@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -614,11 +615,6 @@ func blockedStatusRuntimeCause(state *State, issue connector.Issue) string {
 			return cause
 		}
 	}
-	if strings.TrimSpace(blocked.RecoveryAction) != "" {
-		if cause := strings.TrimSpace(blocked.RecoveryReason); blockedStatusCauseRecorded(cause) {
-			return cause
-		}
-	}
 	if blocked.Source != BlockedSourceProjectStatus {
 		if cause := strings.TrimSpace(blocked.Reason); blockedStatusCauseRecorded(cause) {
 			return cause
@@ -640,6 +636,9 @@ func blockedStatusTimelineCause(issue connector.Issue, events []store.WorkflowPh
 		return cause
 	}
 
+	if !blockedStatusDetentAuthoredLane(metadata) {
+		return ""
+	}
 	enteredAt := workflowLaneTransitionAt(entry).Add(-reworkBreakerStageUpdateSkew)
 	for index := len(events) - 1; index >= 0; index-- {
 		event := events[index]
@@ -658,6 +657,20 @@ func blockedStatusTimelineCause(issue connector.Issue, events []store.WorkflowPh
 		}
 	}
 	return ""
+}
+
+func blockedStatusDetentAuthoredLane(metadata workflowLaneMetadata) bool {
+	switch provenance.NormalizeOrigin(metadata.Provenance.Origin) {
+	case provenance.OriginDetent,
+		provenance.OriginAgent,
+		provenance.OriginRoutine,
+		provenance.OriginRetro,
+		provenance.OriginDependency,
+		provenance.OriginAdmission:
+		return true
+	default:
+		return false
+	}
 }
 
 func blockedStatusLaneCauseRecorded(reason string) bool {
