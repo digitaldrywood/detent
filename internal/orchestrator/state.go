@@ -163,6 +163,7 @@ type Running struct {
 	CompletionLane              string
 	CompletionWorkpadURL        string
 	CompletionAcceptedAt        time.Time
+	laneMutation                store.LaneMutationReceipt
 	StopDestination             string
 	StopPriorityOptions         []telemetry.StopRunPriorityOption
 	globalSlot                  scheduler.Slot

@@ -361,7 +361,7 @@ func (o *Orchestrator) applyPlanReviewDecision(
 	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) {
 		metadata = workflowLaneMetadataWithActionSignature(metadata, workflowActionPlanReviewRework, reworkSignature)
 	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "plan_review_decision", metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "plan_review_decision", metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"plan review transition failed",

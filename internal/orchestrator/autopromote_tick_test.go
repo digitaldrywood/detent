@@ -1061,6 +1061,7 @@ func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t 
 func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
 	now := time.Date(2026, 7, 9, 18, 50, 0, 0, time.UTC)
 	oldReview := now.Add(-10 * time.Minute)
 	issue := autoPromoteTickIssue("issue-running-gate-wait", []string{"bug"}, &connector.PullRequest{
@@ -1092,23 +1093,44 @@ func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
 	state := newState(cfg)
+	runtimeStore, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtimeStore.Close() })
+	attemptID, err := runtimeStore.StartWorkAttempt(ctx, store.WorkAttemptStart{
+		ProjectID:      defaultWorkflowMetricsProjectID,
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		WorkerType:     "agent",
+		Lane:           issue.State,
+		AttemptNumber:  1,
+		StartedAt:      now.Add(-time.Minute),
+		LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
 	state.Completed[issue.ID] = Completed{
 		Issue:       issue,
 		CompletedAt: now.Add(-5 * time.Minute),
 		FinalState:  FinalStateCompleted,
 	}
 	state.Running[issue.ID] = Running{
-		Issue:     issue,
-		StartedAt: now.Add(-time.Minute),
+		Issue:         issue,
+		WorkAttemptID: attemptID,
+		Generation:    1,
+		StartedAt:     now.Add(-time.Minute),
 	}
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 	orch := &Orchestrator{
-		cfg:       cfg,
-		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:           cfg,
+		connector:     tracker,
+		laneMutations: runtimeStore,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+	result := orch.autoPromoteHumanReviewIssues(ctx, &state, []connector.Issue{issue}, now)
 
 	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("updates = %#v, want %#v", got, want)

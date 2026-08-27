@@ -132,6 +132,7 @@ func (o *Orchestrator) handleSessionBrake(
 		completedAt,
 		brake.Reason,
 		metadata,
+		laneMutationRevokeWorker,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Error(

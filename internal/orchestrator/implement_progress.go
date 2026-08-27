@@ -919,7 +919,7 @@ func (o *Orchestrator) blockImplementProgress(
 	if predicate == blockedRecoveryPredicateManaged {
 		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"no progress limit state transition failed",

@@ -208,7 +208,7 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 	reasonCode := deliverableRecoveryReasonCode(lookup)
 	metadata.BlockedRecovery.HoldReason = reasonCode
 	metadata.BlockedRecovery.OperatorRemedy = humanAction
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, reason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, reason, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"deliverable recovery block transition failed",
@@ -306,7 +306,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	metadata.BlockedRecovery.HoldReason = cause
 	metadata.BlockedRecovery.OperatorRemedy = humanAction
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, cause, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, cause, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(eventName+" state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}

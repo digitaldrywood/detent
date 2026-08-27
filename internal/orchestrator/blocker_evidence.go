@@ -606,6 +606,7 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 		now,
 		workflowActionRecordedBlockerRecovery,
 		metadata,
+		laneMutationPreserveOwnership,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("recorded blocker recovery failed", "issue_id", issue.ID, "identifier", issue.Identifier, "target_state", targetState, "error", err)

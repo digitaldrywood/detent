@@ -430,6 +430,12 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 	if strings.TrimSpace(statusMessage) == "" {
 		statusMessage = string(terminalState)
 	}
+	if err := o.consumeAcceptedLaneMutationAtCompletion(ctx, state, running, completedAt); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("consume accepted lane mutation before work attempt completion failed", "attempt_id", running.WorkAttemptID, "issue_id", running.Issue.ID, "error", err)
+		}
+		return false
+	}
 	completion := store.WorkAttemptCompletion{
 		AttemptID:              running.WorkAttemptID,
 		CompletedAt:            completedAt,
@@ -457,6 +463,32 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 	}
 	o.applyWorkAttemptCompletionSnapshot(state, running, completion)
 	return true
+}
+
+func (o *Orchestrator) consumeAcceptedLaneMutationAtCompletion(
+	ctx context.Context,
+	state *State,
+	running Running,
+	completedAt time.Time,
+) error {
+	if state == nil {
+		return nil
+	}
+	issueID := strings.TrimSpace(running.Issue.ID)
+	current, ok := state.Running[issueID]
+	if !ok || current.WorkAttemptID != running.WorkAttemptID || current.Generation != running.Generation {
+		return nil
+	}
+	receipt := current.laneMutation
+	if receipt.ID <= 0 || receipt.Disposition != laneMutationAcceptCompletion {
+		return nil
+	}
+	if _, err := o.consumeLaneMutationReceipt(ctx, receipt, current, receipt.ToState, completedAt); err != nil {
+		return err
+	}
+	current.laneMutation = store.LaneMutationReceipt{}
+	state.Running[issueID] = current
+	return nil
 }
 
 func (o *Orchestrator) runningWorkAttemptHeartbeat(state *State, running Running, now time.Time) store.WorkAttemptHeartbeat {

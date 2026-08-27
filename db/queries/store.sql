@@ -755,6 +755,88 @@ INSERT INTO work_attempts (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
+-- name: CreateLaneMutationReceipt :one
+INSERT INTO lane_mutation_receipts (
+  project_id,
+  issue_id,
+  work_attempt_id,
+  generation,
+  disposition,
+  from_state,
+  to_state,
+  reason,
+  tracker_result,
+  requested_at
+)
+SELECT
+  sqlc.arg(project_id),
+  sqlc.arg(issue_id),
+  work_attempts.id,
+  sqlc.arg(generation),
+  sqlc.arg(disposition),
+  sqlc.arg(from_state),
+  sqlc.arg(to_state),
+  sqlc.arg(reason),
+  'prepared',
+  sqlc.arg(requested_at)
+FROM work_attempts
+WHERE work_attempts.id = sqlc.arg(work_attempt_id)
+  AND work_attempts.project_id = sqlc.arg(project_id)
+  AND COALESCE(work_attempts.issue_id, '') = sqlc.arg(issue_id)
+  AND work_attempts.status = 'active'
+  AND work_attempts.completed_at IS NULL
+RETURNING *;
+
+-- name: SupersedeLaneMutationReceipts :execrows
+UPDATE lane_mutation_receipts
+SET tracker_result = 'superseded',
+    resolved_at = sqlc.arg(superseded_at),
+    error_message = NULL
+WHERE project_id = sqlc.arg(project_id)
+  AND issue_id = sqlc.arg(issue_id)
+  AND work_attempt_id = sqlc.arg(work_attempt_id)
+  AND generation = sqlc.arg(generation)
+  AND id < sqlc.arg(newer_receipt_id)
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL;
+
+-- name: ResolveLaneMutationReceipt :execrows
+UPDATE lane_mutation_receipts
+SET tracker_result = sqlc.arg(tracker_result),
+    resolved_at = sqlc.arg(resolved_at),
+    error_message = NULLIF(sqlc.arg(error_message), '')
+WHERE id = sqlc.arg(id)
+  AND work_attempt_id = sqlc.arg(work_attempt_id)
+  AND generation = sqlc.arg(generation)
+  AND tracker_result = 'prepared'
+  AND consumed_at IS NULL;
+
+-- name: LaneMutationReceiptForOwner :one
+SELECT *
+FROM lane_mutation_receipts
+WHERE project_id = sqlc.arg(project_id)
+  AND issue_id = sqlc.arg(issue_id)
+  AND work_attempt_id = sqlc.arg(work_attempt_id)
+  AND generation = sqlc.arg(generation)
+  AND lower(trim(to_state)) = lower(trim(sqlc.arg(to_state)))
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL
+ORDER BY id DESC
+LIMIT 1;
+
+-- name: ConsumeLaneMutationReceipt :one
+UPDATE lane_mutation_receipts
+SET consumed_at = sqlc.arg(consumed_at)
+WHERE id = sqlc.arg(id)
+  AND project_id = sqlc.arg(project_id)
+  AND issue_id = sqlc.arg(issue_id)
+  AND work_attempt_id = sqlc.arg(work_attempt_id)
+  AND generation = sqlc.arg(generation)
+  AND lower(trim(to_state)) = lower(trim(sqlc.arg(to_state)))
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL
+RETURNING *;
+
 -- name: GetWorkAttempt :one
 SELECT *
 FROM work_attempts

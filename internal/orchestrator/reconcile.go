@@ -176,7 +176,7 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		if !closedCompletedIssueNeedsStatusReconciliation(issue, o.cfg.TerminalStates) {
 			continue
 		}
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled", laneMutationAcceptCompletion); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
@@ -293,7 +293,10 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 			if !pending.reapDone {
 				o.reapPendingLaneRevocation(ctx, state, pending)
 			}
-			if pending.completion != nil && pending.reapDone {
+			if pending.completion != nil && pending.reapDone && !pending.mutationRead {
+				o.consumePendingLaneRevocation(ctx, pending, pending.completion.CompletedAt)
+			}
+			if pending.completion != nil && pending.reapDone && pending.mutationRead {
 				o.finishLaneRevocation(ctx, state, pending)
 			}
 			continue
@@ -301,6 +304,26 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		mergeWorker := running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)
 		refreshedRunning := running
 		refreshedRunning.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
+		receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshedRunning.Issue.State)
+		if receiptErr != nil {
+			if o.logger != nil {
+				o.logger.Warn("running issue lane mutation receipt lookup failed", "issue_id", id, "error", receiptErr)
+			}
+			continue
+		}
+		if receiptFound {
+			if receipt.Disposition == laneMutationRevokeWorker {
+				o.beginLaneRevocationForMutation(ctx, state, running, refreshedRunning.Issue, now, receipt)
+				continue
+			}
+			refreshedRunning.laneMutation = receipt
+			state.Running[id] = refreshedRunning
+			if claimed, ok := state.Claimed[id]; ok {
+				claimed.Issue = cloneIssue(refreshedRunning.Issue)
+				state.Claimed[id] = claimed
+			}
+			continue
+		}
 		if mergeWorker && running.Generation == 0 {
 			var revoked bool
 			refreshedRunning, revoked = o.revokeRunningMergeIfIneligible(ctx, state, refreshedRunning, now)

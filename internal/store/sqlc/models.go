@@ -235,6 +235,23 @@ type IssueParkAcknowledgement struct {
 	AcknowledgedAt string         `json:"acknowledged_at"`
 }
 
+type LaneMutationReceipt struct {
+	ID            int64          `json:"id"`
+	ProjectID     string         `json:"project_id"`
+	IssueID       string         `json:"issue_id"`
+	WorkAttemptID int64          `json:"work_attempt_id"`
+	Generation    int64          `json:"generation"`
+	Disposition   string         `json:"disposition"`
+	FromState     string         `json:"from_state"`
+	ToState       string         `json:"to_state"`
+	Reason        string         `json:"reason"`
+	TrackerResult string         `json:"tracker_result"`
+	RequestedAt   string         `json:"requested_at"`
+	ResolvedAt    sql.NullString `json:"resolved_at"`
+	ConsumedAt    sql.NullString `json:"consumed_at"`
+	ErrorMessage  sql.NullString `json:"error_message"`
+}
+
 type MergeRequiredCheckStreak struct {
 	ProjectID                 string `json:"project_id"`
 	IssueID                   string `json:"issue_id"`

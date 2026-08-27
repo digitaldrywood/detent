@@ -827,7 +827,7 @@ func (o *Orchestrator) reconcileRepeatedFailureGitHubRESTBudgetPark(
 	}
 	targetState := o.repeatedFailureRecoveryTarget(evidence.TargetState)
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionGitHubRESTBudgetRecovery, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionGitHubRESTBudgetRecovery, metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionGitHubRESTBudgetRecovery, metadata, laneMutationPreserveOwnership); err != nil {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "transition_failed", &park, signature)
 		o.setGitHubRESTBudgetParkSurface(state, issue.ID, githubRESTBudgetStatusMessage("capacity recovered; lane transition failed", current))
 		return true, false

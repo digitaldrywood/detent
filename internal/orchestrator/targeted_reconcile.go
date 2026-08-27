@@ -61,6 +61,7 @@ func (o *Orchestrator) applyTargetedReconcile(
 		return
 	}
 
+	priorRunning, hadRunning := state.Running[strings.TrimSpace(result.Issue.ID)]
 	issue := mergeTargetedIssue(state, result.Issue, now)
 	visibleStates := append(append([]string(nil), o.cfg.ActiveStates...), o.cfg.ObservedStates...)
 	state.BoardIssues = reconcileTargetedIssueSlice(state.BoardIssues, issue, stateIn(issue.State, visibleStates))
@@ -76,6 +77,24 @@ func (o *Orchestrator) applyTargetedReconcile(
 
 	if running, ok := state.Running[issue.ID]; ok &&
 		(!stateIn(running.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates)) {
+		if hadRunning {
+			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, priorRunning, running.Issue.State)
+			if receiptErr != nil {
+				if o.logger != nil {
+					o.logger.Warn("targeted lane mutation receipt lookup failed", "issue_id", issue.ID, "error", receiptErr)
+				}
+				return
+			}
+			if receiptFound {
+				if receipt.Disposition == laneMutationRevokeWorker {
+					o.beginLaneRevocationForMutation(ctx, state, priorRunning, running.Issue, now, receipt)
+					return
+				}
+				running.laneMutation = receipt
+				state.Running[issue.ID] = running
+				return
+			}
+		}
 		if accepted, acceptedCompletion := o.acceptCurrentAttemptCompletionLane(ctx, state, running, running.Issue, now); acceptedCompletion {
 			state.Running[issue.ID] = accepted
 			return
@@ -84,7 +103,10 @@ func (o *Orchestrator) applyTargetedReconcile(
 			o.completeTerminalRunning(ctx, state, issue.ID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
 			return
 		}
-		o.beginLaneRevocation(ctx, state, running, running.Issue, now, laneRevocationStateChanged)
+		if hadRunning {
+			running = priorRunning
+		}
+		o.beginLaneRevocation(ctx, state, running, issue, now, laneRevocationStateChanged)
 	}
 }
 

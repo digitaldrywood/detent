@@ -104,6 +104,7 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 		completedAt,
 		mergeWorkerDurationExceededReason,
 		metadata,
+		laneMutationRevokeWorker,
 	)
 	if transitionErr != nil && o.logger != nil {
 		o.logger.Error(
@@ -211,6 +212,7 @@ func (o *Orchestrator) reconcileMergeDurationHolds(
 			now,
 			mergeWorkerDurationExceededReason,
 			workflowLaneMetadata{BlockedRecovery: blocked.Recovery},
+			laneMutationRevokeWorker,
 		); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(

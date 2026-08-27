@@ -587,7 +587,7 @@ func (o *Orchestrator) applyReworkBreakerAutoUnpark(
 		targetState = autoPromoteMergingState
 	}
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionReworkBreakerAutoUnpark, park.Signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, targetState, now, "rework_breaker_auto_unpark", metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, targetState, now, "rework_breaker_auto_unpark", metadata, laneMutationPreserveOwnership); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("rework breaker auto-unpark transition failed", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "error", err)
 		}
@@ -653,7 +653,7 @@ func (o *Orchestrator) applyBlockedRecovery(
 		targetState = autoPromoteReworkState
 	}
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "blocked_recovery", metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "blocked_recovery", metadata, laneMutationPreserveOwnership); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("blocked recovery transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "signature", signature, "error", err)
 		}

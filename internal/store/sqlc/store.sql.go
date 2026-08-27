@@ -262,6 +262,60 @@ func (q *Queries) CompletedIssueCycleRows(ctx context.Context) ([]CompletedIssue
 	return items, nil
 }
 
+const consumeLaneMutationReceipt = `-- name: ConsumeLaneMutationReceipt :one
+UPDATE lane_mutation_receipts
+SET consumed_at = ?1
+WHERE id = ?2
+  AND project_id = ?3
+  AND issue_id = ?4
+  AND work_attempt_id = ?5
+  AND generation = ?6
+  AND lower(trim(to_state)) = lower(trim(?7))
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL
+RETURNING id, project_id, issue_id, work_attempt_id, generation, disposition, from_state, to_state, reason, tracker_result, requested_at, resolved_at, consumed_at, error_message
+`
+
+type ConsumeLaneMutationReceiptParams struct {
+	ConsumedAt    sql.NullString `json:"consumed_at"`
+	ID            int64          `json:"id"`
+	ProjectID     string         `json:"project_id"`
+	IssueID       string         `json:"issue_id"`
+	WorkAttemptID int64          `json:"work_attempt_id"`
+	Generation    int64          `json:"generation"`
+	ToState       string         `json:"to_state"`
+}
+
+func (q *Queries) ConsumeLaneMutationReceipt(ctx context.Context, arg ConsumeLaneMutationReceiptParams) (LaneMutationReceipt, error) {
+	row := q.db.QueryRowContext(ctx, consumeLaneMutationReceipt,
+		arg.ConsumedAt,
+		arg.ID,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.WorkAttemptID,
+		arg.Generation,
+		arg.ToState,
+	)
+	var i LaneMutationReceipt
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.WorkAttemptID,
+		&i.Generation,
+		&i.Disposition,
+		&i.FromState,
+		&i.ToState,
+		&i.Reason,
+		&i.TrackerResult,
+		&i.RequestedAt,
+		&i.ResolvedAt,
+		&i.ConsumedAt,
+		&i.ErrorMessage,
+	)
+	return i, err
+}
+
 const consumeMagicLink = `-- name: ConsumeMagicLink :one
 UPDATE auth_magic_links
 SET used_at = ?1
@@ -634,6 +688,83 @@ func (q *Queries) CreateDetentRun(ctx context.Context, arg CreateDetentRunParams
 		&i.OutputTokens,
 		&i.TotalTokens,
 		&i.RuntimeSeconds,
+	)
+	return i, err
+}
+
+const createLaneMutationReceipt = `-- name: CreateLaneMutationReceipt :one
+INSERT INTO lane_mutation_receipts (
+  project_id,
+  issue_id,
+  work_attempt_id,
+  generation,
+  disposition,
+  from_state,
+  to_state,
+  reason,
+  tracker_result,
+  requested_at
+)
+SELECT
+  ?1,
+  ?2,
+  work_attempts.id,
+  ?3,
+  ?4,
+  ?5,
+  ?6,
+  ?7,
+  'prepared',
+  ?8
+FROM work_attempts
+WHERE work_attempts.id = ?9
+  AND work_attempts.project_id = ?1
+  AND COALESCE(work_attempts.issue_id, '') = ?2
+  AND work_attempts.status = 'active'
+  AND work_attempts.completed_at IS NULL
+RETURNING id, project_id, issue_id, work_attempt_id, generation, disposition, from_state, to_state, reason, tracker_result, requested_at, resolved_at, consumed_at, error_message
+`
+
+type CreateLaneMutationReceiptParams struct {
+	ProjectID     string `json:"project_id"`
+	IssueID       string `json:"issue_id"`
+	Generation    int64  `json:"generation"`
+	Disposition   string `json:"disposition"`
+	FromState     string `json:"from_state"`
+	ToState       string `json:"to_state"`
+	Reason        string `json:"reason"`
+	RequestedAt   string `json:"requested_at"`
+	WorkAttemptID int64  `json:"work_attempt_id"`
+}
+
+func (q *Queries) CreateLaneMutationReceipt(ctx context.Context, arg CreateLaneMutationReceiptParams) (LaneMutationReceipt, error) {
+	row := q.db.QueryRowContext(ctx, createLaneMutationReceipt,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Generation,
+		arg.Disposition,
+		arg.FromState,
+		arg.ToState,
+		arg.Reason,
+		arg.RequestedAt,
+		arg.WorkAttemptID,
+	)
+	var i LaneMutationReceipt
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.WorkAttemptID,
+		&i.Generation,
+		&i.Disposition,
+		&i.FromState,
+		&i.ToState,
+		&i.Reason,
+		&i.TrackerResult,
+		&i.RequestedAt,
+		&i.ResolvedAt,
+		&i.ConsumedAt,
+		&i.ErrorMessage,
 	)
 	return i, err
 }
@@ -2249,6 +2380,56 @@ func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkfl
 	return items, nil
 }
 
+const laneMutationReceiptForOwner = `-- name: LaneMutationReceiptForOwner :one
+SELECT id, project_id, issue_id, work_attempt_id, generation, disposition, from_state, to_state, reason, tracker_result, requested_at, resolved_at, consumed_at, error_message
+FROM lane_mutation_receipts
+WHERE project_id = ?1
+  AND issue_id = ?2
+  AND work_attempt_id = ?3
+  AND generation = ?4
+  AND lower(trim(to_state)) = lower(trim(?5))
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL
+ORDER BY id DESC
+LIMIT 1
+`
+
+type LaneMutationReceiptForOwnerParams struct {
+	ProjectID     string `json:"project_id"`
+	IssueID       string `json:"issue_id"`
+	WorkAttemptID int64  `json:"work_attempt_id"`
+	Generation    int64  `json:"generation"`
+	ToState       string `json:"to_state"`
+}
+
+func (q *Queries) LaneMutationReceiptForOwner(ctx context.Context, arg LaneMutationReceiptForOwnerParams) (LaneMutationReceipt, error) {
+	row := q.db.QueryRowContext(ctx, laneMutationReceiptForOwner,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.WorkAttemptID,
+		arg.Generation,
+		arg.ToState,
+	)
+	var i LaneMutationReceipt
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.WorkAttemptID,
+		&i.Generation,
+		&i.Disposition,
+		&i.FromState,
+		&i.ToState,
+		&i.Reason,
+		&i.TrackerResult,
+		&i.RequestedAt,
+		&i.ResolvedAt,
+		&i.ConsumedAt,
+		&i.ErrorMessage,
+	)
+	return i, err
+}
+
 const lifetimeTotals = `-- name: LifetimeTotals :one
 SELECT
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
@@ -3811,6 +3992,42 @@ func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActi
 	return items, nil
 }
 
+const resolveLaneMutationReceipt = `-- name: ResolveLaneMutationReceipt :execrows
+UPDATE lane_mutation_receipts
+SET tracker_result = ?1,
+    resolved_at = ?2,
+    error_message = NULLIF(?3, '')
+WHERE id = ?4
+  AND work_attempt_id = ?5
+  AND generation = ?6
+  AND tracker_result = 'prepared'
+  AND consumed_at IS NULL
+`
+
+type ResolveLaneMutationReceiptParams struct {
+	TrackerResult string         `json:"tracker_result"`
+	ResolvedAt    sql.NullString `json:"resolved_at"`
+	ErrorMessage  interface{}    `json:"error_message"`
+	ID            int64          `json:"id"`
+	WorkAttemptID int64          `json:"work_attempt_id"`
+	Generation    int64          `json:"generation"`
+}
+
+func (q *Queries) ResolveLaneMutationReceipt(ctx context.Context, arg ResolveLaneMutationReceiptParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, resolveLaneMutationReceipt,
+		arg.TrackerResult,
+		arg.ResolvedAt,
+		arg.ErrorMessage,
+		arg.ID,
+		arg.WorkAttemptID,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows
 UPDATE api_keys
 SET revoked_at = ?1
@@ -3844,6 +4061,44 @@ type SetAPIKeyExpiresAtParams struct {
 
 func (q *Queries) SetAPIKeyExpiresAt(ctx context.Context, arg SetAPIKeyExpiresAtParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setAPIKeyExpiresAt, arg.ExpiresAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const supersedeLaneMutationReceipts = `-- name: SupersedeLaneMutationReceipts :execrows
+UPDATE lane_mutation_receipts
+SET tracker_result = 'superseded',
+    resolved_at = ?1,
+    error_message = NULL
+WHERE project_id = ?2
+  AND issue_id = ?3
+  AND work_attempt_id = ?4
+  AND generation = ?5
+  AND id < ?6
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL
+`
+
+type SupersedeLaneMutationReceiptsParams struct {
+	SupersededAt   sql.NullString `json:"superseded_at"`
+	ProjectID      string         `json:"project_id"`
+	IssueID        string         `json:"issue_id"`
+	WorkAttemptID  int64          `json:"work_attempt_id"`
+	Generation     int64          `json:"generation"`
+	NewerReceiptID int64          `json:"newer_receipt_id"`
+}
+
+func (q *Queries) SupersedeLaneMutationReceipts(ctx context.Context, arg SupersedeLaneMutationReceiptsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, supersedeLaneMutationReceipts,
+		arg.SupersededAt,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.WorkAttemptID,
+		arg.Generation,
+		arg.NewerReceiptID,
+	)
 	if err != nil {
 		return 0, err
 	}

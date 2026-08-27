@@ -911,7 +911,7 @@ func (o *Orchestrator) applyStaleMergingPullRequestDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, decision.targetState, now, decision.reason); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, decision.targetState, now, decision.reason, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"stale_merging_pr_reconciliation_failed",
@@ -1782,7 +1782,7 @@ func (o *Orchestrator) applyStaleMergedPullRequestDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, string(decision.Reason)); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, string(decision.Reason), laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"stale_merged_pr_reconciliation_failed",
@@ -1893,7 +1893,7 @@ func (o *Orchestrator) applyStaleTodoPullRequestDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, string(decision.Reason)); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, string(decision.Reason), laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"stale_todo_pr_reconciliation_failed",
@@ -2731,6 +2731,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 
 	issueID := strings.TrimSpace(issue.ID)
 	transitionReason := string(decision.Reason)
+	disposition := laneMutationPreserveOwnership
 	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
 	metadata := workflowLaneMetadata{}
 	if decision.Action == AutoPromoteActionRework {
@@ -2750,6 +2751,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 			return false
 		}
 		if limit.Exceeded() {
+			disposition = laneMutationRevokeWorker
 			targetState = blockedStatusState
 			transitionReason = "rework_limit"
 			body = autoPromoteReworkLimitComment(summary, decision, displayStateName(issue.State), limit)
@@ -2767,7 +2769,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 		}
 	}
 
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, transitionReason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, transitionReason, metadata, disposition); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"auto promote transition failed",

@@ -464,7 +464,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	targetState := blockedCauseTargetState(issue, signals, park.TargetState)
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata, laneMutationPreserveOwnership); err != nil {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, currentFingerprint)
 		return false
 	}
@@ -617,6 +617,7 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 		now,
 		workflowActionBlockedReadyPRReconciliation,
 		metadata,
+		laneMutationPreserveOwnership,
 	); err != nil {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "ready_pr_reconciliation_transition_failed", &park, signature)
 		if o.logger != nil {
