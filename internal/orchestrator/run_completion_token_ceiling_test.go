@@ -99,7 +99,7 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 	if !stickyBlockReason(blocked.Reason) {
 		t.Fatalf("stickyBlockReason(%q) = false, want current token ceiling park to suppress dependency recovery", blocked.Reason)
 	}
-	orch.setBlockedStatusIssue(&state, connector.Issue{
+	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
 		Title:      issue.Title,

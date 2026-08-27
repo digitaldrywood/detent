@@ -992,7 +992,7 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 		if issue.StageUpdatedAt != nil {
 			blockedAt = issue.StageUpdatedAt.UTC()
 		}
-		o.setBlockedStatusIssue(state, issue, blockedAt)
+		o.setBlockedStatusIssue(ctx, state, issue, blockedAt)
 		entry, ok = state.Blocked[issue.ID]
 		if !ok {
 			return

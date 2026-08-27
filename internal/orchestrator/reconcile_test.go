@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
@@ -165,6 +166,176 @@ func TestReconcileRunningIssuesStopsWorkerOutsideActiveLane(t *testing.T) {
 	case <-runCtx.Done():
 	default:
 		t.Fatal("worker context remains active after the item moved to Blocked")
+	}
+}
+
+func TestTrackBlockedStatusIssuesResolvesCauseByPrecedence(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 8, 27, 9, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		issue           connector.Issue
+		runtimeCause    string
+		detentCause     string
+		revocationCause string
+		wantReason      string
+		wantOldAbsent   bool
+	}{
+		{
+			name: "live Detent park record",
+			issue: connector.Issue{
+				ID:            "issue-live-detent-park",
+				Identifier:    "digitaldrywood/detent#1994",
+				State:         blockedStatusState,
+				BlockerReason: "tracker fallback",
+			},
+			runtimeCause:  "session token ceiling exceeded",
+			wantReason:    "session token ceiling exceeded",
+			wantOldAbsent: true,
+		},
+		{
+			name: "persisted Detent park after restart",
+			issue: connector.Issue{
+				ID:            "issue-detent-park",
+				Identifier:    "digitaldrywood/detent#1995",
+				State:         blockedStatusState,
+				BlockerReason: "tracker fallback",
+				BlockedBy: []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1800",
+					State:      "In Progress",
+				}},
+			},
+			detentCause:   "rework_limit",
+			wantReason:    "rework_limit",
+			wantOldAbsent: true,
+		},
+		{
+			name: "tracker authored block",
+			issue: connector.Issue{
+				ID:            "issue-tracker-block",
+				Identifier:    "digitaldrywood/detent#1996",
+				State:         blockedStatusState,
+				BlockerReason: "waiting for operator approval",
+				BlockedBy: []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1800",
+					State:      "In Progress",
+				}},
+			},
+			wantReason: "waiting for operator approval",
+		},
+		{
+			name: "dependency block",
+			issue: connector.Issue{
+				ID:         "issue-dependency-block",
+				Identifier: "digitaldrywood/detent#1997",
+				State:      blockedStatusState,
+				BlockedBy: []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1800",
+					State:      "In Progress",
+				}},
+			},
+			wantReason: blockedReasonDependency,
+		},
+		{
+			name: "external block without tracker cause",
+			issue: connector.Issue{
+				ID:         "issue-external-block",
+				Identifier: "digitaldrywood/detent#1998",
+				State:      blockedStatusState,
+			},
+			wantReason:    "blocked outside Detent; no cause recorded by the tracker",
+			wantOldAbsent: true,
+		},
+		{
+			name: "lane revocation event",
+			issue: connector.Issue{
+				ID:         "issue-lane-revocation",
+				Identifier: "digitaldrywood/detent#1999",
+				State:      blockedStatusState,
+			},
+			revocationCause: "current tracker lane is not worker-owned",
+			wantReason:      "current tracker lane is not worker-owned",
+			wantOldAbsent:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			if tt.detentCause != "" {
+				metadata := workflowLaneMetadata{
+					BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Cause: tt.detentCause},
+				}
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID:    defaultWorkflowMetricsProjectID,
+					IssueID:      tt.issue.ID,
+					Identifier:   tt.issue.Identifier,
+					PhaseType:    store.WorkflowPhaseTypeLane,
+					PhaseName:    blockedStatusState,
+					Reason:       tt.detentCause,
+					Status:       "entered",
+					StartedAt:    parkedAt,
+					MetadataJSON: workflowLaneMetadataJSON(tt.issue, metadata),
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+				}
+			} else if tt.revocationCause != "" {
+				for _, event := range []store.WorkflowPhaseEvent{
+					{
+						ProjectID:  defaultWorkflowMetricsProjectID,
+						IssueID:    tt.issue.ID,
+						Identifier: tt.issue.Identifier,
+						PhaseType:  store.WorkflowPhaseTypeLane,
+						PhaseName:  blockedStatusState,
+						Reason:     "tracker_state_observed",
+						Status:     "entered",
+						StartedAt:  parkedAt,
+					},
+					{
+						ProjectID:  defaultWorkflowMetricsProjectID,
+						IssueID:    tt.issue.ID,
+						Identifier: tt.issue.Identifier,
+						PhaseType:  store.WorkflowPhaseTypeRecovery,
+						PhaseName:  "stale_completion_rejected",
+						Reason:     tt.revocationCause,
+						Status:     "rejected",
+						StartedAt:  parkedAt.Add(time.Second),
+						FinishedAt: parkedAt.Add(time.Second),
+					},
+				} {
+					if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), event); err != nil {
+						t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+					}
+				}
+			}
+
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done", "Cancelled"}})
+			orch := &Orchestrator{cfg: cfg, workflowMetrics: metrics}
+			state := newState(cfg)
+			if tt.runtimeCause != "" {
+				state.Blocked[tt.issue.ID] = Blocked{
+					Issue:     tt.issue,
+					Reason:    tt.runtimeCause,
+					Source:    BlockedSourceProjectStatus,
+					BlockedAt: parkedAt,
+					Recovery: &workflowLaneBlockedRecoveryMetadata{
+						Cause: "token_ceiling_circuit_breaker",
+					},
+				}
+			}
+			orch.trackBlockedStatusIssues(t.Context(), &state, []connector.Issue{tt.issue}, parkedAt.Add(time.Minute))
+
+			got := state.Snapshot(parkedAt.Add(2 * time.Minute)).Blocked
+			if len(got) != 1 || got[0].Error != tt.wantReason {
+				t.Fatalf("rendered blocked card = %#v, want reason %q", got, tt.wantReason)
+			}
+			if tt.wantOldAbsent && strings.Contains(got[0].Error, "cause unrecorded") {
+				t.Fatalf("rendered blocked card reason = %q, want recorded cause", got[0].Error)
+			}
+		})
 	}
 }
 

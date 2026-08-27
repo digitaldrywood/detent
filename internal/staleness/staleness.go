@@ -19,6 +19,7 @@ const (
 	KindRepeatedDecision         = "repeated_decision"
 	defaultWarningIDLength       = 16
 	ReasonBlockedCauseUnrecorded = "blocked, cause unrecorded"
+	ReasonBlockedOutsideDetent   = "blocked outside Detent; no cause recorded by the tracker"
 )
 
 type Config struct {

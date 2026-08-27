@@ -1657,7 +1657,8 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 }
 
 func boardBlockedWaiting(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, reason string) bool {
-	if strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedCauseUnrecorded) {
+	if strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedCauseUnrecorded) ||
+		strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedOutsideDetent) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(recoveryAction)) {

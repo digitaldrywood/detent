@@ -104,7 +104,7 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 			name:         "resolved dependency records missing cause",
 			blockedState: "Done",
 			trackerState: connector.BlockedRefTrackerStateClosed,
-			wantCause:    "blocked, cause unrecorded",
+			wantCause:    "blocked outside Detent; no cause recorded by the tracker",
 			wantReason:   BlockedRecoveryReasonMissingPullRequest,
 		},
 		{
@@ -142,7 +142,7 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 				}},
 			}
 
-			orch.setBlockedStatusIssue(&state, issue, time.Date(2026, 8, 18, 22, 30, 0, 0, time.UTC))
+			orch.setBlockedStatusIssue(t.Context(), &state, issue, time.Date(2026, 8, 18, 22, 30, 0, 0, time.UTC))
 
 			blocked := state.Blocked[issue.ID]
 			if blocked.Reason != tt.wantCause || blocked.RecoveryReason != string(tt.wantReason) {
@@ -195,12 +195,12 @@ func TestSetBlockedStatusIssueReplacesUnrecordedCause(t *testing.T) {
 			state := newState(cfg)
 			now := time.Date(2026, 8, 24, 16, 45, 0, 0, time.UTC)
 			issue := connector.Issue{ID: "issue-refresh", State: blockedStatusState}
-			orch.setBlockedStatusIssue(&state, issue, now)
+			orch.setBlockedStatusIssue(t.Context(), &state, issue, now)
 
 			refreshed := tt.refreshed
 			refreshed.ID = issue.ID
 			refreshed.State = blockedStatusState
-			orch.setBlockedStatusIssue(&state, refreshed, now.Add(time.Minute))
+			orch.setBlockedStatusIssue(t.Context(), &state, refreshed, now.Add(time.Minute))
 
 			blocked := state.Blocked[issue.ID]
 			if blocked.Reason != tt.wantCause || blocked.RecoveryReason != string(tt.wantRecovery) {

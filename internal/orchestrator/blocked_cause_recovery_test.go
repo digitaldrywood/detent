@@ -634,7 +634,7 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 			if _, ok := transitioned[issue.ID]; ok {
 				t.Fatalf("transitioned[%q] present for held park", issue.ID)
 			}
-			orch.trackBlockedStatusIssues(&state, []connector.Issue{issue}, observedAt.Add(time.Minute))
+			orch.trackBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, observedAt.Add(time.Minute))
 			blocked := state.Blocked[issue.ID]
 			if blocked.RecoveryAction != tt.wantAction || blocked.RecoveryReason != tt.wantReason {
 				t.Fatalf("blocked recovery = %q/%q, want %q/%q", blocked.RecoveryAction, blocked.RecoveryReason, tt.wantAction, tt.wantReason)
@@ -713,7 +713,7 @@ func TestBlockedCauseRecoveryUsesCurrentCauseAfterDependencyResolution(t *testin
 			}
 
 			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
-			orch.trackBlockedStatusIssues(&state, []connector.Issue{issue}, parkedAt.Add(2*time.Minute))
+			orch.trackBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(2*time.Minute))
 
 			blocked := state.Blocked[issue.ID]
 			if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != noCommitsToDeliverReason {
@@ -742,7 +742,7 @@ func TestBlockedCauseRecoveryNamesUnresolvedDependency(t *testing.T) {
 	state := newState(orch.cfg)
 
 	orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
-	orch.trackBlockedStatusIssues(&state, []connector.Issue{issue}, now.Add(time.Minute))
+	orch.trackBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
 
 	blocked := state.Blocked[issue.ID]
 	if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != "dependency_recovery" {
