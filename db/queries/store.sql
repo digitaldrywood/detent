@@ -787,6 +787,19 @@ WHERE work_attempts.id = sqlc.arg(work_attempt_id)
   AND work_attempts.completed_at IS NULL
 RETURNING *;
 
+-- name: SupersedeLaneMutationReceipts :execrows
+UPDATE lane_mutation_receipts
+SET tracker_result = 'superseded',
+    resolved_at = sqlc.arg(superseded_at),
+    error_message = NULL
+WHERE project_id = sqlc.arg(project_id)
+  AND issue_id = sqlc.arg(issue_id)
+  AND work_attempt_id = sqlc.arg(work_attempt_id)
+  AND generation = sqlc.arg(generation)
+  AND id < sqlc.arg(newer_receipt_id)
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL;
+
 -- name: ResolveLaneMutationReceipt :execrows
 UPDATE lane_mutation_receipts
 SET tracker_result = sqlc.arg(tracker_result),

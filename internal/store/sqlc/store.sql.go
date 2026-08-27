@@ -4067,6 +4067,44 @@ func (q *Queries) SetAPIKeyExpiresAt(ctx context.Context, arg SetAPIKeyExpiresAt
 	return result.RowsAffected()
 }
 
+const supersedeLaneMutationReceipts = `-- name: SupersedeLaneMutationReceipts :execrows
+UPDATE lane_mutation_receipts
+SET tracker_result = 'superseded',
+    resolved_at = ?1,
+    error_message = NULL
+WHERE project_id = ?2
+  AND issue_id = ?3
+  AND work_attempt_id = ?4
+  AND generation = ?5
+  AND id < ?6
+  AND tracker_result IN ('prepared', 'applied')
+  AND consumed_at IS NULL
+`
+
+type SupersedeLaneMutationReceiptsParams struct {
+	SupersededAt   sql.NullString `json:"superseded_at"`
+	ProjectID      string         `json:"project_id"`
+	IssueID        string         `json:"issue_id"`
+	WorkAttemptID  int64          `json:"work_attempt_id"`
+	Generation     int64          `json:"generation"`
+	NewerReceiptID int64          `json:"newer_receipt_id"`
+}
+
+func (q *Queries) SupersedeLaneMutationReceipts(ctx context.Context, arg SupersedeLaneMutationReceiptsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, supersedeLaneMutationReceipts,
+		arg.SupersededAt,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.WorkAttemptID,
+		arg.Generation,
+		arg.NewerReceiptID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const timeoutExpiredWorkAttempts = `-- name: TimeoutExpiredWorkAttempts :many
 UPDATE work_attempts
 SET status = ?,

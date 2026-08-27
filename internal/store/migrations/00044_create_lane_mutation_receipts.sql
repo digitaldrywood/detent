@@ -9,7 +9,7 @@ CREATE TABLE lane_mutation_receipts (
   from_state TEXT NOT NULL,
   to_state TEXT NOT NULL,
   reason TEXT NOT NULL,
-  tracker_result TEXT NOT NULL DEFAULT 'prepared' CHECK (tracker_result IN ('prepared', 'applied', 'blocked', 'failed')),
+  tracker_result TEXT NOT NULL DEFAULT 'prepared' CHECK (tracker_result IN ('prepared', 'applied', 'blocked', 'failed', 'superseded')),
   requested_at TEXT NOT NULL,
   resolved_at TEXT,
   consumed_at TEXT,

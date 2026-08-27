@@ -20,7 +20,15 @@ func (s *sqliteStore) BeginLaneMutation(ctx context.Context, attrs LaneMutationS
 	if err != nil {
 		return LaneMutationReceipt{}, err
 	}
-	receipt, err := s.queries.CreateLaneMutationReceipt(ctx, sqlc.CreateLaneMutationReceiptParams{
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return LaneMutationReceipt{}, fmt.Errorf("beginning lane mutation transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	queries := s.queries.WithTx(tx)
+	receipt, err := queries.CreateLaneMutationReceipt(ctx, sqlc.CreateLaneMutationReceiptParams{
 		ProjectID:     strings.TrimSpace(attrs.ProjectID),
 		IssueID:       strings.TrimSpace(attrs.IssueID),
 		Generation:    int64(attrs.Generation),
@@ -36,6 +44,19 @@ func (s *sqliteStore) BeginLaneMutation(ctx context.Context, attrs LaneMutationS
 			return LaneMutationReceipt{}, ErrNotFound
 		}
 		return LaneMutationReceipt{}, fmt.Errorf("beginning lane mutation: %w", err)
+	}
+	if _, err := queries.SupersedeLaneMutationReceipts(ctx, sqlc.SupersedeLaneMutationReceiptsParams{
+		SupersededAt:   sql.NullString{String: requestedAt, Valid: true},
+		ProjectID:      strings.TrimSpace(attrs.ProjectID),
+		IssueID:        strings.TrimSpace(attrs.IssueID),
+		WorkAttemptID:  attrs.WorkAttemptID,
+		Generation:     int64(attrs.Generation),
+		NewerReceiptID: receipt.ID,
+	}); err != nil {
+		return LaneMutationReceipt{}, fmt.Errorf("superseding lane mutation receipts: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return LaneMutationReceipt{}, fmt.Errorf("committing lane mutation: %w", err)
 	}
 	return laneMutationReceiptFromRow(receipt)
 }

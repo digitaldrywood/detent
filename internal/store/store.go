@@ -654,10 +654,11 @@ const (
 type LaneMutationTrackerResult string
 
 const (
-	LaneMutationTrackerPrepared LaneMutationTrackerResult = "prepared"
-	LaneMutationTrackerApplied  LaneMutationTrackerResult = "applied"
-	LaneMutationTrackerBlocked  LaneMutationTrackerResult = "blocked"
-	LaneMutationTrackerFailed   LaneMutationTrackerResult = "failed"
+	LaneMutationTrackerPrepared   LaneMutationTrackerResult = "prepared"
+	LaneMutationTrackerApplied    LaneMutationTrackerResult = "applied"
+	LaneMutationTrackerBlocked    LaneMutationTrackerResult = "blocked"
+	LaneMutationTrackerFailed     LaneMutationTrackerResult = "failed"
+	LaneMutationTrackerSuperseded LaneMutationTrackerResult = "superseded"
 )
 
 type LaneMutationReceipt struct {

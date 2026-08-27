@@ -284,3 +284,97 @@ func TestLaneMutationReceiptLifecycle(t *testing.T) {
 		t.Fatalf("second ConsumeLaneMutation() error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestNewLaneMutationReceiptSupersedesEarlierOwnerReceipts(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openTestStore(t, ctx)
+	now := time.Date(2026, 8, 27, 14, 0, 0, 0, time.UTC)
+	attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:      "detent",
+		IssueID:        "issue-1999",
+		Identifier:     "digitaldrywood/detent#1999",
+		WorkerType:     "agent",
+		Lane:           "In Progress",
+		StartedAt:      now.Add(-time.Minute),
+		LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+
+	first, err := backend.BeginLaneMutation(ctx, LaneMutationStart{
+		ProjectID:     "detent",
+		IssueID:       "issue-1999",
+		WorkAttemptID: attemptID,
+		Generation:    14,
+		Disposition:   LaneMutationPreserveOwnership,
+		FromState:     "In Progress",
+		ToState:       "Blocked",
+		Reason:        "first_write",
+		RequestedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("BeginLaneMutation(first) error = %v", err)
+	}
+	if err := backend.ResolveLaneMutation(ctx, LaneMutationResolution{
+		ReceiptID:     first.ID,
+		WorkAttemptID: attemptID,
+		Generation:    14,
+		TrackerResult: LaneMutationTrackerApplied,
+		ResolvedAt:    now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("ResolveLaneMutation(first) error = %v", err)
+	}
+
+	second, err := backend.BeginLaneMutation(ctx, LaneMutationStart{
+		ProjectID:     "detent",
+		IssueID:       "issue-1999",
+		WorkAttemptID: attemptID,
+		Generation:    14,
+		Disposition:   LaneMutationRevokeWorker,
+		FromState:     "Blocked",
+		ToState:       "Done",
+		Reason:        "second_write",
+		RequestedAt:   now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("BeginLaneMutation(second) error = %v", err)
+	}
+
+	if _, err := backend.LaneMutationReceipt(ctx, LaneMutationLookup{
+		ProjectID:     "detent",
+		IssueID:       "issue-1999",
+		WorkAttemptID: attemptID,
+		Generation:    14,
+		ToState:       "Blocked",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LaneMutationReceipt(first target) error = %v, want ErrNotFound", err)
+	}
+	recovered, err := backend.LaneMutationReceipt(ctx, LaneMutationLookup{
+		ProjectID:     "detent",
+		IssueID:       "issue-1999",
+		WorkAttemptID: attemptID,
+		Generation:    14,
+		ToState:       "Done",
+	})
+	if err != nil {
+		t.Fatalf("LaneMutationReceipt(second target) error = %v", err)
+	}
+	if recovered.ID != second.ID {
+		t.Fatalf("recovered receipt ID = %d, want %d", recovered.ID, second.ID)
+	}
+
+	sqliteBackend, ok := backend.(*sqliteStore)
+	if !ok {
+		t.Fatalf("Open() returned %T, want *sqliteStore", backend)
+	}
+	var trackerResult string
+	if err := sqliteBackend.db.QueryRowContext(ctx, "SELECT tracker_result FROM lane_mutation_receipts WHERE id = ?", first.ID).Scan(&trackerResult); err != nil {
+		t.Fatalf("query first tracker result: %v", err)
+	}
+	if trackerResult != string(LaneMutationTrackerSuperseded) {
+		t.Fatalf("first tracker result = %q, want %q", trackerResult, LaneMutationTrackerSuperseded)
+	}
+}
