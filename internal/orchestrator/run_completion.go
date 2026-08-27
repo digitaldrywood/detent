@@ -18,6 +18,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -1510,6 +1511,18 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 		return false
+	}
+	audit := o.securityAuditEvaluation(ctx, issue)
+	if gate.Effective(o.cfg.AutoPromote.Gate).SecurityAudit.Enabled && !audit.Allowed {
+		reason := "security_audit_" + audit.Reason
+		if audit.Reason == securityaudit.ReasonMissing || audit.Reason == securityaudit.ReasonStale {
+			o.startSecurityAuditStage(ctx, issue, event.CompletedAt)
+			running.Issue = issue
+			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, reason, errors.New(reason))
+			return true
+		}
+		o.reworkMergeWorkerResult(ctx, state, event, running, issue, reason, nil, "")
+		return true
 	}
 	merger, ok := o.connector.(connector.PullRequestMerger)
 	if !ok {

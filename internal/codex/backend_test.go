@@ -101,9 +101,9 @@ func TestToolTurnInstructions(t *testing.T) {
 			want: terminalWaitInstructions,
 		},
 		{
-			name:     "normal turn ignores tool override",
+			name:     "normal turn with override",
 			override: "Use a custom tool policy.",
-			want:     terminalWaitInstructions,
+			want:     "Use a custom tool policy.",
 		},
 		{
 			name:  "dynamic tool turn",

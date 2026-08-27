@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -67,6 +68,8 @@ var (
 	ErrWorkspaceBranchHeld             = errors.New("workspace branch held by worktree")
 	ErrAgentResumeUnsupported          = errors.New("agent backend does not support resume verification")
 	ErrDeliverableRecoveryExhausted    = errors.New("deliverable recovery exhausted")
+	ErrSubscriptionAuthRequired        = errors.New("ChatGPT subscription authentication is required")
+	ErrSecurityAuditToolUse            = errors.New("security audit attempted to use a tool")
 )
 
 type WorkspaceBranchHeldError struct {
@@ -210,6 +213,10 @@ type Validator interface {
 	Validate(context.Context, ValidatorRequest) (gate.ValidatorResult, error)
 }
 
+type SecurityAuditor interface {
+	Audit(context.Context, SecurityAuditRequest) (SecurityAuditExecution, error)
+}
+
 type WorkspaceReaper interface {
 	ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error)
 }
@@ -287,30 +294,31 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
-	Workspace             string
-	TempDir               string
-	Prompt                string
-	ToolInstructions      string
-	ReadOnly              bool
-	Model                 string
-	ModelProvider         string
-	ServiceTier           string
-	ReasoningEffort       string
-	Resume                AgentResume
-	MaxTurns              int
-	TurnTimeout           time.Duration
-	MaxDuration           time.Duration
-	ExtraWritableRoots    []string
-	DeliverableKind       string
-	DeliverableRepository string
-	IssueRepository       string
-	Environment           procgroup.Environment
-	MaxRSSBytes           uint64
-	RSSPollInterval       time.Duration
-	cacheStrategy         string
-	projectID             string
-	workerGitHub          workerGitHubPolicy
-	processRSS            func(context.Context, procgroup.Identity) (uint64, error)
+	Workspace               string
+	TempDir                 string
+	Prompt                  string
+	ToolInstructions        string
+	ReadOnly                bool
+	RequireSubscriptionAuth bool
+	Model                   string
+	ModelProvider           string
+	ServiceTier             string
+	ReasoningEffort         string
+	Resume                  AgentResume
+	MaxTurns                int
+	TurnTimeout             time.Duration
+	MaxDuration             time.Duration
+	ExtraWritableRoots      []string
+	DeliverableKind         string
+	DeliverableRepository   string
+	IssueRepository         string
+	Environment             procgroup.Environment
+	MaxRSSBytes             uint64
+	RSSPollInterval         time.Duration
+	cacheStrategy           string
+	projectID               string
+	workerGitHub            workerGitHubPolicy
+	processRSS              func(context.Context, procgroup.Identity) (uint64, error)
 }
 
 type AgentResume struct {
@@ -319,9 +327,10 @@ type AgentResume struct {
 }
 
 type AgentTurnResult struct {
-	ThreadID  string
-	TurnID    string
-	SessionID string
+	ThreadID           string
+	TurnID             string
+	SessionID          string
+	AuthenticationMode string
 }
 
 type AgentTurnCleanupError struct {
@@ -601,6 +610,25 @@ type ValidatorRequest struct {
 	SelectorContext  selector.Context
 	OnUsageUpdate    UsageUpdateHandler
 	OnActivityUpdate AgentActivityUpdateHandler
+}
+
+type SecurityAuditRequest struct {
+	Issue           connector.Issue
+	Snapshot        securityaudit.Snapshot
+	StartedAt       time.Time
+	SelectorContext selector.Context
+}
+
+type SecurityAuditExecution struct {
+	InvocationID       string
+	AuthenticationMode string
+	WorkerProcess      procgroup.Identity
+	ProviderThreadID   string
+	ProviderSessionID  string
+	Output             string
+	Result             securityaudit.Result
+	StartedAt          time.Time
+	CompletedAt        time.Time
 }
 
 type RunResult struct {

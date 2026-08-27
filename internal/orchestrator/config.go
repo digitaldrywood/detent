@@ -166,6 +166,10 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability, term
 
 func normalizeConfig(cfg Config) Config {
 	cfg.ForgeHost = forgeavailability.NormalizeHost(cfg.ForgeHost)
+	cfg.ServiceIdentity = strings.TrimSpace(cfg.ServiceIdentity)
+	if cfg.ServiceIdentity == "" && strings.TrimSpace(cfg.Project.ID) != "" {
+		cfg.ServiceIdentity = "detent:" + strings.TrimSpace(cfg.Project.ID)
+	}
 	cfg.BillingMode = strings.ToLower(strings.TrimSpace(cfg.BillingMode))
 	cfg.RateWindowPacing = cfg.RateWindowPacing.Normalized()
 	if cfg.BillingMode == "" {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -38,6 +39,7 @@ type AutoPromoteSummary struct {
 	FailedChecks                          []string
 	P1Findings                            []AutoPromoteFinding
 	Validator                             gate.ValidatorResult
+	SecurityAudit                         securityaudit.Evaluation
 	ArtifactStatus                        string
 	LastActivityAt                        *time.Time
 	CompletedFinalState                   string
@@ -86,6 +88,9 @@ const (
 	AutoPromoteReasonValidatorRework                 AutoPromoteReason = "validator_rework"
 	AutoPromoteReasonValidatorScoreBelowThreshold    AutoPromoteReason = "validator_score_below_threshold"
 	AutoPromoteReasonValidatorBlockedSeverity        AutoPromoteReason = "validator_blocked_severity"
+	AutoPromoteReasonSecurityAuditMissing            AutoPromoteReason = "security_audit_missing"
+	AutoPromoteReasonSecurityAuditFailed             AutoPromoteReason = "security_audit_failed"
+	AutoPromoteReasonSecurityAuditFindings           AutoPromoteReason = "security_audit_findings"
 	AutoPromoteReasonArtifactStatusMissing           AutoPromoteReason = "artifact_status_missing"
 	AutoPromoteReasonArtifactStatusWait              AutoPromoteReason = "artifact_status_wait"
 	AutoPromoteReasonArtifactStatusRework            AutoPromoteReason = "artifact_status_rework"
@@ -384,6 +389,7 @@ func gateSummary(summary AutoPromoteSummary) gate.Summary {
 		ReviewState:        summary.ReviewState,
 		P1Findings:         gateFindings(summary.P1Findings),
 		Validator:          summary.Validator,
+		SecurityAudit:      summary.SecurityAudit,
 		ArtifactStatus:     summary.ArtifactStatus,
 		LastActivityAt:     summary.LastActivityAt,
 	}
@@ -941,6 +947,12 @@ func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
 		return AutoPromoteReasonValidatorScoreBelowThreshold
 	case gate.ReasonValidatorBlockedSeverity:
 		return AutoPromoteReasonValidatorBlockedSeverity
+	case gate.ReasonSecurityAuditMissing:
+		return AutoPromoteReasonSecurityAuditMissing
+	case gate.ReasonSecurityAuditFailed:
+		return AutoPromoteReasonSecurityAuditFailed
+	case gate.ReasonSecurityAuditFindings:
+		return AutoPromoteReasonSecurityAuditFindings
 	case gate.ReasonArtifactStatusMissing:
 		return AutoPromoteReasonArtifactStatusMissing
 	case gate.ReasonArtifactStatusWait:

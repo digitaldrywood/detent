@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 func TestEffectiveSelectsGateDefaults(t *testing.T) {
@@ -136,6 +138,80 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			want.Artifact = effectiveArtifactConfig(want.Artifact)
 			if !configsEqual(got, want) {
 				t.Fatalf("Effective() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestEffectiveSecurityAuditDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := Effective(Config{SecurityAudit: SecurityAuditConfig{Enabled: true}}).SecurityAudit
+	if !cfg.Enabled || cfg.MaxAttempts != DefaultSecurityAuditMaxAttempts || cfg.TurnTimeoutMS != DefaultSecurityAuditTurnTimeoutMS {
+		t.Fatalf("SecurityAudit = %#v", cfg)
+	}
+	if cfg.MaxDiffBytes == nil || *cfg.MaxDiffBytes != securityaudit.DefaultMaxDiffBytes {
+		t.Fatalf("SecurityAudit.MaxDiffBytes = %v", cfg.MaxDiffBytes)
+	}
+	if !slices.Equal(cfg.BlockOn, []string{"p1", "p2"}) {
+		t.Fatalf("SecurityAudit.BlockOn = %#v", cfg.BlockOn)
+	}
+}
+
+func TestEvaluateSecurityAudit(t *testing.T) {
+	t.Parallel()
+
+	base := Summary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		ReviewState:    "COMMENTED",
+	}
+	cfg := Config{
+		SecurityAudit: SecurityAuditConfig{Enabled: true},
+	}
+
+	tests := []struct {
+		name       string
+		evaluation securityaudit.Evaluation
+		want       Decision
+	}{
+		{
+			name:       "missing waits",
+			evaluation: securityaudit.Evaluation{Reason: securityaudit.ReasonMissing},
+			want:       Decision{Action: ActionWait, Reason: ReasonSecurityAuditMissing},
+		},
+		{
+			name:       "metered reworks",
+			evaluation: securityaudit.Evaluation{Reason: securityaudit.ReasonMeteredAuth},
+			want:       Decision{Action: ActionRework, Reason: ReasonSecurityAuditFailed},
+		},
+		{
+			name: "finding reworks",
+			evaluation: securityaudit.Evaluation{
+				Reason:   securityaudit.ReasonUnresolvedFindings,
+				Findings: []securityaudit.Finding{{Severity: "p1", Body: "Bypass", Path: "auth.go", Line: 12}},
+			},
+			want: Decision{
+				Action:   ActionRework,
+				Reason:   ReasonSecurityAuditFindings,
+				Findings: []Finding{{Severity: "p1", Body: "Bypass", Path: "auth.go", Line: 12}},
+			},
+		},
+		{
+			name:       "trusted exact head continues",
+			evaluation: securityaudit.Evaluation{Allowed: true, Reason: securityaudit.ReasonReady},
+			want:       Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			summary := base
+			summary.SecurityAudit = tt.evaluation
+			got := Evaluate(cfg, nil, summary, time.Now(), EvaluationOptions{})
+			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {
+				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

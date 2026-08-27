@@ -257,6 +257,84 @@ func (c *Client) REST(ctx context.Context, method string, path string, body any,
 	return err
 }
 
+func (c *Client) RESTText(ctx context.Context, path, accept string, maxBytes int) (string, bool, error) {
+	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true)
+}
+
+func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept string, maxBytes int, allowTokenRefresh bool) (string, bool, error) {
+	if maxBytes <= 0 {
+		return "", false, errors.New("maximum response bytes must be positive")
+	}
+	token, err := c.tokenSource.Token(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false, ErrMissingToken
+	}
+	backoffKey := c.restSharedBackoffKey(token)
+	credentialIdentity := c.restCredentialIdentity(token)
+	c.rememberRESTBackoffKey(backoffKey)
+	now := time.Now()
+	if err := c.restBackoffError(backoffKey, now); err != nil {
+		return "", false, err
+	}
+	if err := c.restBudgetPolicyError(credentialIdentity, http.MethodGet, path, false, now); err != nil {
+		return "", false, err
+	}
+
+	url, err := c.restURL(path)
+	if err != nil {
+		return "", false, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", strings.TrimSpace(accept))
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+
+	family := restEndpointFamily(http.MethodGet, path)
+	trackerRead := restTrackerRead(http.MethodGet, family)
+	c.logRESTRequest(ctx, "github rest text request", http.MethodGet, path, family, false)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
+		}
+		return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.DebugContext(ctx, "github rest text response body close failed", "path", path, "endpoint_family", family, "error", err)
+		}
+	}()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	if err != nil {
+		return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
+	}
+	connector.ReportProgress(ctx)
+	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, receivedAt, false)
+	c.logRESTResponse(ctx, "github rest text response", http.MethodGet, path, family, resp.StatusCode)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		c.logRESTStatusError(ctx, http.MethodGet, path, family, resp.StatusCode, responseErr)
+		if c.refreshAfterAuthFailure(ctx, responseErr, allowTokenRefresh) {
+			return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, false)
+		}
+		return "", false, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), resp.StatusCode, responseErr)
+	}
+	truncated := len(raw) > maxBytes
+	if truncated {
+		raw = raw[:maxBytes]
+	}
+	return string(raw), truncated, nil
+}
+
 func (c *Client) restProbe(ctx context.Context, method string, path string, body any) (restProbeResult, error) {
 	return c.restProbeWithTokenRefresh(ctx, method, path, body, true)
 }

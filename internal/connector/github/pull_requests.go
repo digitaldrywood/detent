@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/citrigger"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 type issuePullRequestCandidate struct {
@@ -391,6 +392,50 @@ func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connec
 	fingerprint := pullRequestDiffFingerprint(files)
 	c.cachePullRequestDiffFingerprint(key, fingerprint)
 	return fingerprint, nil
+}
+
+func (c *Connector) SecurityAuditSnapshot(ctx context.Context, issue connector.Issue, maxDiffBytes int) (securityaudit.Snapshot, error) {
+	repo, number, ok := hydratedPullRequestRef(issue)
+	if !ok {
+		return securityaudit.Snapshot{}, errors.New("security audit snapshot requires a linked pull request")
+	}
+	if maxDiffBytes <= 0 {
+		maxDiffBytes = securityaudit.DefaultMaxDiffBytes
+	}
+
+	var before restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, restPullRequestPath(repo, number), nil, &before); err != nil {
+		return securityaudit.Snapshot{}, fmt.Errorf("fetch security audit pull request metadata: %w", err)
+	}
+	diff, truncated, err := c.client.RESTText(ctx, restPullRequestPath(repo, number), "application/vnd.github.diff", maxDiffBytes)
+	if err != nil {
+		return securityaudit.Snapshot{}, fmt.Errorf("fetch security audit pull request diff: %w", err)
+	}
+	var after restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, restPullRequestPath(repo, number), nil, &after); err != nil {
+		return securityaudit.Snapshot{}, fmt.Errorf("refresh security audit pull request metadata: %w", err)
+	}
+	if strings.TrimSpace(before.Base.SHA) == "" || strings.TrimSpace(before.Head.SHA) == "" ||
+		strings.TrimSpace(before.Base.SHA) != strings.TrimSpace(after.Base.SHA) ||
+		strings.TrimSpace(before.Head.SHA) != strings.TrimSpace(after.Head.SHA) {
+		return securityaudit.Snapshot{}, errors.New("security audit pull request head changed while collecting textual diff")
+	}
+	return securityaudit.Snapshot{
+		ProjectID:        "",
+		IssueID:          strings.TrimSpace(issue.ID),
+		Identifier:       strings.TrimSpace(issue.Identifier),
+		IssueURL:         strings.TrimSpace(issue.URL),
+		IssueTitle:       issue.Title,
+		IssueDescription: issue.Description,
+		Repository:       pullRequestRepoName(repo),
+		PRNumber:         number,
+		PRTitle:          before.Title,
+		PRBody:           restStringValue(before.Body),
+		BaseSHA:          strings.TrimSpace(before.Base.SHA),
+		HeadSHA:          strings.TrimSpace(before.Head.SHA),
+		Diff:             diff,
+		DiffTruncated:    truncated,
+	}, nil
 }
 
 func pullRequestDiffFingerprint(files []restPullRequestFile) string {

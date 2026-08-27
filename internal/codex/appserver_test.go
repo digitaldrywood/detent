@@ -461,6 +461,73 @@ func TestAppServerAccountReadsResolvedAuthentication(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnRequiresSubscriptionAuthenticationInSameTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		account      string
+		responses    []Message
+		wantErr      error
+		wantAuthMode string
+		wantMethods  []string
+	}{
+		{
+			name:    "ChatGPT subscription continues to review",
+			account: `{"account":{"type":"chatgpt","planType":"pro"},"requiresOpenaiAuth":true}`,
+			responses: []Message{
+				responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-audit"}}`),
+				responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn-audit"}}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-audit","turn":{"id":"turn-audit","status":"completed"}}`),
+			},
+			wantAuthMode: AuthenticationModeChatGPTSubscription,
+			wantMethods:  []string{"initialize", "initialized", "account/read", "thread/start", "turn/start"},
+		},
+		{
+			name:        "API key stops before thread start",
+			account:     `{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}`,
+			wantErr:     ErrSubscriptionAuthRequired,
+			wantMethods: []string{"initialize", "initialized", "account/read"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			messages := []Message{
+				responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+				responseMessage(t, accountReadRequestID, tt.account),
+			}
+			messages = append(messages, tt.responses...)
+			transport := newFakeAppServerTransport(messages)
+			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+			result, err := server.RunTurn(t.Context(), RunTurnRequest{
+				Workspace:               t.TempDir(),
+				Prompt:                  "Audit the supplied diff.",
+				Model:                   "gpt-test",
+				RequireSubscriptionAuth: true,
+			}, nil)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("RunTurn() error = %v, want %v", err, tt.wantErr)
+			}
+			if result.AuthenticationMode != tt.wantAuthMode {
+				t.Fatalf("AuthenticationMode = %q, want %q", result.AuthenticationMode, tt.wantAuthMode)
+			}
+			sent := transport.sentMessages()
+			methods := make([]string, 0, len(sent))
+			for _, message := range sent {
+				methods = append(methods, message.Method)
+			}
+			if !reflect.DeepEqual(methods, tt.wantMethods) {
+				t.Fatalf("sent methods = %#v, want %#v", methods, tt.wantMethods)
+			}
+		})
+	}
+}
+
 func TestAppServerRunTurnExecutesDynamicToolRequest(t *testing.T) {
 	t.Parallel()
 	transport := newFakeAppServerTransport([]Message{

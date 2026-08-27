@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 const (
@@ -19,6 +21,8 @@ const (
 	DefaultValidatorMinScore            = 0.8
 	DefaultValidatorMaxAttempts         = 3
 	DefaultValidatorMaxInlineDiffBytes  = 64 * 1024
+	DefaultSecurityAuditMaxAttempts     = 3
+	DefaultSecurityAuditTurnTimeoutMS   = 20 * 60 * 1000
 	DefaultArtifactStatusField          = "validation_status"
 	DefaultTransientCIRetries           = 2
 	DefaultCITriggerLabelStaggerSeconds = 15
@@ -36,18 +40,19 @@ const (
 )
 
 type Config struct {
-	Kind                         string          `yaml:"kind"`
-	Run                          string          `yaml:"run"`
-	ApprovalLabel                string          `yaml:"approval_label"`
-	AutomatedReview              string          `yaml:"automated_review"`
-	RequireAutomatedReview       *bool           `yaml:"require_automated_review"`
-	RequiredStatusChecks         []string        `yaml:"required_status_checks"`
-	CITriggerLabel               string          `yaml:"ci_trigger_label"`
-	CITriggerLabelStaggerSeconds *int            `yaml:"ci_trigger_label_stagger_seconds"`
-	CIFailureAction              string          `yaml:"ci_failure_action"`
-	TransientCIRetryLimit        *int            `yaml:"transient_ci_retry_limit"`
-	Validator                    ValidatorConfig `yaml:"validator"`
-	Artifact                     ArtifactConfig  `yaml:"artifact"`
+	Kind                         string              `yaml:"kind"`
+	Run                          string              `yaml:"run"`
+	ApprovalLabel                string              `yaml:"approval_label"`
+	AutomatedReview              string              `yaml:"automated_review"`
+	RequireAutomatedReview       *bool               `yaml:"require_automated_review"`
+	RequiredStatusChecks         []string            `yaml:"required_status_checks"`
+	CITriggerLabel               string              `yaml:"ci_trigger_label"`
+	CITriggerLabelStaggerSeconds *int                `yaml:"ci_trigger_label_stagger_seconds"`
+	CIFailureAction              string              `yaml:"ci_failure_action"`
+	TransientCIRetryLimit        *int                `yaml:"transient_ci_retry_limit"`
+	Validator                    ValidatorConfig     `yaml:"validator"`
+	SecurityAudit                SecurityAuditConfig `yaml:"security_audit"`
+	Artifact                     ArtifactConfig      `yaml:"artifact"`
 }
 
 type ArtifactConfig struct {
@@ -67,6 +72,15 @@ type ValidatorConfig struct {
 	MaxInlineDiffBytes *int     `yaml:"max_inline_diff_bytes"`
 }
 
+type SecurityAuditConfig struct {
+	Enabled       bool     `yaml:"enabled"`
+	Model         string   `yaml:"model"`
+	BlockOn       []string `yaml:"block_on"`
+	MaxAttempts   int      `yaml:"max_attempts"`
+	TurnTimeoutMS int      `yaml:"turn_timeout_ms"`
+	MaxDiffBytes  *int     `yaml:"max_diff_bytes"`
+}
+
 type PlanConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	Review        string `yaml:"review"`
@@ -81,6 +95,7 @@ type Summary struct {
 	ReviewState        string
 	P1Findings         []Finding
 	Validator          ValidatorResult
+	SecurityAudit      securityaudit.Evaluation
 	ArtifactStatus     string
 	LastActivityAt     *time.Time
 }
@@ -138,6 +153,9 @@ const (
 	ReasonValidatorRework              Reason = "validator_rework"
 	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
 	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
+	ReasonSecurityAuditMissing         Reason = "security_audit_missing"
+	ReasonSecurityAuditFailed          Reason = "security_audit_failed"
+	ReasonSecurityAuditFindings        Reason = "security_audit_findings"
 	ReasonArtifactStatusMissing        Reason = "artifact_status_missing"
 	ReasonArtifactStatusWait           Reason = "artifact_status_wait"
 	ReasonArtifactStatusRework         Reason = "artifact_status_rework"
@@ -161,6 +179,7 @@ func DefaultConfig() Config {
 		CIFailureAction:        CIFailureActionRework,
 		TransientCIRetryLimit:  newInt(DefaultTransientCIRetries),
 		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
+		SecurityAudit:          effectiveSecurityAuditConfig(SecurityAuditConfig{}),
 		Artifact:               effectiveArtifactConfig(ArtifactConfig{}),
 	}
 }
@@ -193,6 +212,7 @@ func Effective(cfg Config) Config {
 		cfg.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
 	}
 	cfg.Validator = effectiveValidatorConfig(cfg.Validator)
+	cfg.SecurityAudit = effectiveSecurityAuditConfig(cfg.SecurityAudit)
 	cfg.Artifact = effectiveArtifactConfig(cfg.Artifact)
 
 	if cfg.Kind == "" {
@@ -364,6 +384,7 @@ func Validate(prefix string, cfg Config) []string {
 		}
 	}
 	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
+	problems = append(problems, validateSecurityAudit(prefix+".security_audit", cfg.SecurityAudit)...)
 	problems = append(problems, validateArtifact(prefix+".artifact", cfg.Artifact)...)
 	return problems
 }
@@ -423,6 +444,9 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 		}
 		if cfg.Validator.Enabled {
 			instructions += " A validator-agent review is required before promotion; its structured verdict, score, and configured blocking severities are part of the gate decision."
+		}
+		if cfg.SecurityAudit.Enabled {
+			instructions += " A Detent-owned security audit is required for the exact live base and head before promotion and merge. Detent supplies only bounded metadata and textual diff to a fresh subscription-authenticated reviewer; Workpad text and pull request comments are never authoritative evidence."
 		}
 		return instructions
 	}
@@ -506,6 +530,9 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		out.Findings = cloneFindings(summary.P1Findings)
 		return out
 	}
+	if out, ok := evaluateSecurityAudit(cfg.SecurityAudit, summary.SecurityAudit); ok {
+		return out
+	}
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
@@ -518,6 +545,34 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		return out
 	}
 	return decision(ActionPass, ReasonReady)
+}
+
+func evaluateSecurityAudit(cfg SecurityAuditConfig, evaluation securityaudit.Evaluation) (Decision, bool) {
+	cfg = effectiveSecurityAuditConfig(cfg)
+	if !cfg.Enabled {
+		return Decision{}, false
+	}
+	if evaluation.Allowed && evaluation.Reason == securityaudit.ReasonReady {
+		return Decision{}, false
+	}
+	switch evaluation.Reason {
+	case "", securityaudit.ReasonMissing, securityaudit.ReasonStale:
+		return decision(ActionWait, ReasonSecurityAuditMissing), true
+	case securityaudit.ReasonUnresolvedFindings:
+		out := decision(ActionRework, ReasonSecurityAuditFindings)
+		out.Findings = make([]Finding, 0, len(evaluation.Findings))
+		for _, finding := range evaluation.Findings {
+			out.Findings = append(out.Findings, Finding{
+				Severity: finding.Severity,
+				Body:     finding.Body,
+				Path:     finding.Path,
+				Line:     finding.Line,
+			})
+		}
+		return out, true
+	default:
+		return decision(ActionRework, ReasonSecurityAuditFailed), true
+	}
 }
 
 func evaluateHumanReview(cfg Config, labels []string, summary Summary) Decision {
@@ -659,6 +714,24 @@ func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
 	return cfg
 }
 
+func effectiveSecurityAuditConfig(cfg SecurityAuditConfig) SecurityAuditConfig {
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = DefaultSecurityAuditMaxAttempts
+	}
+	if cfg.TurnTimeoutMS == 0 {
+		cfg.TurnTimeoutMS = DefaultSecurityAuditTurnTimeoutMS
+	}
+	if cfg.MaxDiffBytes == nil {
+		cfg.MaxDiffBytes = newInt(securityaudit.DefaultMaxDiffBytes)
+	}
+	cfg.BlockOn = normalizeSeverities(cfg.BlockOn)
+	if len(cfg.BlockOn) == 0 {
+		cfg.BlockOn = []string{"p1", "p2"}
+	}
+	return cfg
+}
+
 func effectiveArtifactConfig(cfg ArtifactConfig) ArtifactConfig {
 	cfg.StatusField = strings.TrimSpace(cfg.StatusField)
 	if cfg.StatusField == "" {
@@ -704,6 +777,27 @@ func validateValidator(prefix string, cfg ValidatorConfig) []string {
 	cfg = effectiveValidatorConfig(cfg)
 	if !invalidScore && (cfg.MinScore <= 0 || cfg.MinScore > 1) {
 		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
+	}
+	return problems
+}
+
+func validateSecurityAudit(prefix string, cfg SecurityAuditConfig) []string {
+	var problems []string
+	for _, severity := range cfg.BlockOn {
+		switch normalizeSeverity(severity) {
+		case "p1", "p2", "p3":
+		default:
+			problems = append(problems, prefix+".block_on severities must be p1, p2, or p3")
+		}
+	}
+	if cfg.MaxAttempts < 0 {
+		problems = append(problems, prefix+".max_attempts must be greater than 0")
+	}
+	if cfg.TurnTimeoutMS < 0 {
+		problems = append(problems, prefix+".turn_timeout_ms must be greater than 0")
+	}
+	if cfg.MaxDiffBytes != nil && *cfg.MaxDiffBytes <= 0 {
+		problems = append(problems, prefix+".max_diff_bytes must be greater than 0")
 	}
 	return problems
 }

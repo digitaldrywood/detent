@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/retro"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -61,6 +62,7 @@ type Store interface {
 	MergeRequiredCheckStore
 	OperatorStopStore
 	ValidatorMemoStore
+	SecurityAuditStore
 	RuntimeEvidenceStore
 	AgentResumeStore
 	OrphanSessionStore
@@ -211,6 +213,14 @@ type ValidatorMemoStore interface {
 	ValidatorVerdict(context.Context, ValidatorVerdictKey) (ValidatorVerdict, error)
 	ListValidatorVerdicts(context.Context, ValidatorVerdictQuery) ([]ValidatorVerdict, error)
 	MarkValidatorVerdictCommented(context.Context, ValidatorVerdictKey, time.Time) error
+}
+
+type SecurityAuditStore interface {
+	RecordSecurityAuditRun(context.Context, securityaudit.Run) (securityaudit.Run, error)
+	LatestSecurityAuditRun(context.Context, securityaudit.Key) (securityaudit.Run, error)
+	LatestSecurityAuditRunForPullRequest(context.Context, string, string, int) (securityaudit.Run, error)
+	RecordSecurityAuditDisposition(context.Context, securityaudit.Disposition) (securityaudit.Disposition, error)
+	ListSecurityAuditDispositions(context.Context, int64) ([]securityaudit.Disposition, error)
 }
 
 type RuntimeEvidenceStore interface {

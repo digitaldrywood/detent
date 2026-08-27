@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 type progressReporterContextKey struct{}
@@ -170,6 +172,10 @@ type PullRequestHeadLookup interface {
 
 type PullRequestDiffFingerprintReader interface {
 	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
+}
+
+type SecurityAuditSnapshotReader interface {
+	SecurityAuditSnapshot(context.Context, Issue, int) (securityaudit.Snapshot, error)
 }
 
 type PullRequestCheckRerunner interface {
