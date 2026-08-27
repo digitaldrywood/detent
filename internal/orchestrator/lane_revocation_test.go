@@ -113,6 +113,204 @@ func TestLaneRevocationPreservesTrackerDestination(t *testing.T) {
 	}
 }
 
+func TestLaneRevocationPreservesPushedWork(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 27, 10, 30, 0, 0, time.UTC)
+	issue := laneRevocationIssue("issue-delivered", "digitaldrywood/detent#1998", "In Progress")
+	issue.PullRequest = &connector.PullRequest{Number: 2001, HeadSHA: "abc123"}
+	parked := cloneIssue(issue)
+	parked.State = "Human Review"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
+	attempts := &recordingWorkAttemptStore{}
+	cfg := normalizeConfig(Config{
+		Project:        scheduler.ProjectCandidate{ID: "detent"},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review"},
+	})
+	orch := &Orchestrator{
+		cfg:                    cfg,
+		connector:              tracker,
+		workAttempts:           attempts,
+		pendingLaneRevocations: map[string]*pendingLaneRevocation{},
+		logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:                    func() time.Time { return now },
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		Attempt:       4,
+		WorkAttemptID: 1998,
+		Generation:    3,
+		StartedAt:     now.Add(-time.Hour),
+		Tokens:        runpkg.TokenTotals{OutputTokens: 2_000, TotalTokens: 8_000, RuntimeSeconds: 600},
+	}
+
+	orch.reconcileRunningIssues(t.Context(), &state, now)
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID: issue.ID,
+		Request: runpkg.RunRequest{Issue: issue, WorkAttemptID: 1998, Generation: 3},
+		Result: runpkg.RunResult{
+			FinalState:            runpkg.FinalStateLaneRevoked,
+			Output:                "pushed PR head",
+			TurnStarted:           true,
+			PullRequestHeadPushed: true,
+		},
+		CompletedAt: now.Add(time.Second),
+		Err:         runpkg.ErrLaneRevoked,
+	})
+
+	if len(attempts.completions) != 1 {
+		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
+	}
+	completion := attempts.completions[0]
+	if completion.TerminalState != store.WorkAttemptTerminalDelivered {
+		t.Fatalf("terminal state = %q, want delivered", completion.TerminalState)
+	}
+	if completion.SessionFinalState != "delivered" {
+		t.Fatalf("session final state = %q, want delivered", completion.SessionFinalState)
+	}
+	if !strings.Contains(completion.WorkerMetadataJSON, `"delivery_receipt":{"schema":1,"kind":"pushed_work_product"`) {
+		t.Fatalf("worker metadata = %s, want durable pushed-work receipt", completion.WorkerMetadataJSON)
+	}
+	if strings.Contains(completion.WorkerMetadataJSON, `"work_discarded":true`) {
+		t.Fatalf("worker metadata = %s, must not mark pushed work discarded", completion.WorkerMetadataJSON)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "work was pushed but finalization was rejected") {
+		t.Fatalf("comments = %#v, want pushed-work finalization notice", tracker.comments)
+	}
+	if hasLaneRevocationEvent(state.RecentEvents, "worker_lane_output_discarded") {
+		t.Fatalf("RecentEvents = %#v, must not report discarded output", state.RecentEvents)
+	}
+	if !hasLaneRevocationEvent(state.RecentEvents, "worker_lane_delivery_preserved") {
+		t.Fatalf("RecentEvents = %#v, want preserved delivery event", state.RecentEvents)
+	}
+}
+
+func TestLaneRevocationAccountsTokensAfterDurableCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 27, 20, 45, 0, 0, time.UTC)
+	issue := laneRevocationIssue("issue-completion-retry", "digitaldrywood/detent#1998", "In Progress")
+	parked := cloneIssue(issue)
+	parked.State = "Human Review"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
+	attempts := &recordingWorkAttemptStore{completionErrors: []error{errors.New("store unavailable")}}
+	cfg := normalizeConfig(Config{
+		Project:        scheduler.ProjectCandidate{ID: "detent"},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review"},
+	})
+	orch := &Orchestrator{
+		cfg:                    cfg,
+		connector:              tracker,
+		workAttempts:           attempts,
+		pendingLaneRevocations: map[string]*pendingLaneRevocation{},
+		logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:                    func() time.Time { return now },
+	}
+	state := newState(cfg)
+	state.TokenTotals = TokenTotals{InputTokens: 3, OutputTokens: 2, TotalTokens: 5, RuntimeSeconds: 1}
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		WorkAttemptID: 1998,
+		Generation:    4,
+		StartedAt:     now.Add(-time.Minute),
+		Tokens:        TokenTotals{InputTokens: 30, OutputTokens: 20, TotalTokens: 50, RuntimeSeconds: 10},
+	}
+
+	orch.reconcileRunningIssues(t.Context(), &state, now)
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		Request:     runpkg.RunRequest{Issue: issue, WorkAttemptID: 1998, Generation: 4},
+		CompletedAt: now.Add(time.Second),
+		Err:         runpkg.ErrLaneRevoked,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateLaneRevoked},
+	})
+
+	if got := state.TokenTotals.TotalTokens; got != 5 {
+		t.Fatalf("token total after failed completion = %d, want 5", got)
+	}
+	pending := orch.pendingLaneRevocations[issue.ID]
+	if pending == nil {
+		t.Fatal("pending lane revocation missing after failed completion")
+	}
+	orch.finishLaneRevocation(t.Context(), &state, pending)
+
+	if got := state.TokenTotals.TotalTokens; got != 55 {
+		t.Fatalf("token total after completion retry = %d, want 55", got)
+	}
+	if len(attempts.completions) != 2 {
+		t.Fatalf("work attempt completion calls = %d, want 2", len(attempts.completions))
+	}
+	if _, ok := orch.pendingLaneRevocations[issue.ID]; ok {
+		t.Fatal("pending lane revocation retained after successful retry")
+	}
+}
+
+func TestClassifyLaneRevocationDrivesAllOutcomeSurfaces(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		receipt       *laneRevocationDeliveryReceipt
+		workProduced  bool
+		wantClass     string
+		wantTerminal  store.WorkAttemptTerminalState
+		wantSession   string
+		wantEvent     string
+		wantComment   bool
+		wantDiscarded bool
+	}{
+		{
+			name:         "pushed work with rejected finalization",
+			receipt:      &laneRevocationDeliveryReceipt{Schema: 1, Kind: laneRevocationDeliveryReceiptKind},
+			workProduced: true,
+			wantClass:    laneRevocationDeliveredClassification,
+			wantTerminal: store.WorkAttemptTerminalDelivered,
+			wantSession:  "delivered",
+			wantEvent:    "worker_lane_delivery_preserved",
+			wantComment:  true,
+		},
+		{
+			name:          "genuinely unpushed work",
+			workProduced:  true,
+			wantClass:     laneRevocationDiscardedClassification,
+			wantTerminal:  store.WorkAttemptTerminalLaneRevoked,
+			wantSession:   runpkg.FinalStateLaneRevoked,
+			wantEvent:     "worker_lane_output_discarded",
+			wantComment:   true,
+			wantDiscarded: true,
+		},
+		{
+			name:         "revoked before work",
+			wantClass:    laneRevocationEmptyClassification,
+			wantTerminal: store.WorkAttemptTerminalLaneRevoked,
+			wantSession:  runpkg.FinalStateLaneRevoked,
+			wantEvent:    "worker_lane_revoked",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := classifyLaneRevocation(tt.receipt, tt.workProduced, laneRevocationStateChanged, provenance.OriginHuman)
+			if got.classification != tt.wantClass || got.terminalState != tt.wantTerminal || got.sessionFinalState != tt.wantSession {
+				t.Fatalf("classification = %#v, want class %q terminal %q session %q", got, tt.wantClass, tt.wantTerminal, tt.wantSession)
+			}
+			if got.activityEvent != tt.wantEvent || got.comment != tt.wantComment || got.workDiscarded != tt.wantDiscarded {
+				t.Fatalf("rendering outcome = %#v, want event %q comment %v discarded %v", got, tt.wantEvent, tt.wantComment, tt.wantDiscarded)
+			}
+			if got.terminalState == store.WorkAttemptTerminalDelivered {
+				if got.errorClass != "" || got.errorMessage != "" || strings.Contains(got.statusMessage, "discard") || strings.Contains(got.activityEvent, "discard") {
+					t.Fatalf("delivered outcome contains revoked/discarded surface: %#v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestCompletionLaneHandshakeClassifiesCurrentAttempt(t *testing.T) {
 	t.Parallel()
 

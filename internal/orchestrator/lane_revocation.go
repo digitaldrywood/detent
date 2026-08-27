@@ -22,7 +22,33 @@ const (
 	laneRevocationDetentStateChanged         = "detent_tracker_lane_changed"
 	laneRevocationDetentErrorClass           = "detent_lane_revoked"
 	laneRevocationCompletionFenceUnavailable = "completion_fence_unavailable"
+	laneRevocationDeliveredClassification    = "delivered_before_revocation"
+	laneRevocationDiscardedClassification    = "unpushed_work_discarded"
+	laneRevocationEmptyClassification        = "revoked_without_work"
+	laneRevocationDeliveryReceiptKind        = "pushed_work_product"
 )
+
+type laneRevocationDeliveryReceipt struct {
+	Schema     int       `json:"schema"`
+	Kind       string    `json:"kind"`
+	RecordedAt time.Time `json:"recorded_at"`
+	Source     string    `json:"source"`
+	PRNumber   int       `json:"pr_number,omitempty"`
+	PRHeadSHA  string    `json:"pr_head_sha,omitempty"`
+}
+
+type laneRevocationOutcome struct {
+	classification    string
+	terminalState     store.WorkAttemptTerminalState
+	sessionFinalState string
+	errorClass        string
+	errorMessage      string
+	phase             string
+	statusMessage     string
+	activityEvent     string
+	comment           bool
+	workDiscarded     bool
+}
 
 type pendingLaneRevocation struct {
 	issue         connector.Issue
@@ -259,48 +285,60 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 		tokens = running.Tokens
 	}
 	running.Tokens = tokens
-	workDiscarded := laneRevocationDiscardedWork(event, running, tokens)
-	errorClass := laneRevocationErrorClass(pending.reason, pending.origin)
-	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
-	state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-	o.recordProjectAttemptOutcome(
-		state,
-		event.IssueID,
-		completedAt,
-		store.WorkAttemptTerminalLaneRevoked,
-		runpkg.ErrLaneRevoked,
-		errorClass,
-		pending.reason,
-	)
-	o.completeDurableWorkAttemptWithMetadata(
+	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
+	receipt := laneRevocationReceipt(event, running, completedAt)
+	outcome := classifyLaneRevocation(receipt, laneRevocationProducedWork(event, running, tokens), pending.reason, pending.origin)
+	metadata := map[string]any{"lane_revocation": map[string]any{
+		"classification":  outcome.classification,
+		"generation":      pending.generation,
+		"from_state":      pending.fromState,
+		"to_state":        pending.toState,
+		"reason":          pending.reason,
+		"origin":          pending.origin,
+		"requested_at":    pending.requestedAt,
+		"reap_outcome":    pending.reapOutcome,
+		"work_discarded":  outcome.workDiscarded,
+		"output_tokens":   tokens.OutputTokens,
+		"total_tokens":    tokens.TotalTokens,
+		"runtime_seconds": tokens.RuntimeSeconds,
+		"turns":           running.TurnCount,
+		"files_changed":   running.DiffStats.FilesChanged,
+	}}
+	if receipt != nil {
+		metadata["delivery_receipt"] = receipt
+	}
+	attemptCompleted := o.completeDurableWorkAttemptWithSessionState(
 		ctx,
 		state,
 		running,
 		completedAt,
-		store.WorkAttemptTerminalLaneRevoked,
-		errorClass,
-		pending.reason,
-		"lane_revoked",
-		"worker stopped after leaving a worker-owned lane",
-		map[string]any{"lane_revocation": map[string]any{
-			"generation":      pending.generation,
-			"from_state":      pending.fromState,
-			"to_state":        pending.toState,
-			"reason":          pending.reason,
-			"origin":          pending.origin,
-			"requested_at":    pending.requestedAt,
-			"reap_outcome":    pending.reapOutcome,
-			"work_discarded":  workDiscarded,
-			"output_tokens":   tokens.OutputTokens,
-			"total_tokens":    tokens.TotalTokens,
-			"runtime_seconds": tokens.RuntimeSeconds,
-			"turns":           running.TurnCount,
-			"files_changed":   running.DiffStats.FilesChanged,
-		}},
+		outcome.terminalState,
+		outcome.sessionFinalState,
+		outcome.errorClass,
+		outcome.errorMessage,
+		outcome.phase,
+		outcome.statusMessage,
+		metadata,
 	)
-	if workDiscarded {
-		o.reportLaneRevocationDiscardedWork(ctx, state, pending, event, running, tokens)
+	if o.workAttempts != nil && running.WorkAttemptID > 0 && !attemptCompleted {
+		return
 	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
+	state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	attemptErr := error(nil)
+	if outcome.terminalState == store.WorkAttemptTerminalLaneRevoked {
+		attemptErr = runpkg.ErrLaneRevoked
+	}
+	o.recordProjectAttemptOutcome(
+		state,
+		event.IssueID,
+		completedAt,
+		outcome.terminalState,
+		attemptErr,
+		outcome.errorClass,
+		outcome.errorMessage,
+	)
+	o.reportLaneRevocationOutcome(ctx, state, pending, event, running, tokens, outcome)
 	delete(o.pendingLaneRevocations, event.IssueID)
 	delete(state.Running, event.IssueID)
 	delete(state.Claimed, event.IssueID)
@@ -372,7 +410,59 @@ func laneRevocationErrorClass(reason string, origin provenance.Origin) string {
 	return string(store.WorkAttemptTerminalLaneRevoked)
 }
 
-func laneRevocationDiscardedWork(event runpkg.Completion, running Running, tokens TokenTotals) bool {
+func laneRevocationReceipt(event runpkg.Completion, running Running, completedAt time.Time) *laneRevocationDeliveryReceipt {
+	if !running.WorkProductPushed {
+		return nil
+	}
+	source := "work_attempt"
+	if event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated {
+		source = "runner_result"
+	}
+	receipt := &laneRevocationDeliveryReceipt{
+		Schema:     1,
+		Kind:       laneRevocationDeliveryReceiptKind,
+		RecordedAt: completedAt,
+		Source:     source,
+	}
+	if running.Issue.PullRequest != nil {
+		receipt.PRNumber = running.Issue.PullRequest.Number
+		receipt.PRHeadSHA = strings.TrimSpace(running.Issue.PullRequest.HeadSHA)
+	}
+	return receipt
+}
+
+func classifyLaneRevocation(receipt *laneRevocationDeliveryReceipt, workProduced bool, reason string, origin provenance.Origin) laneRevocationOutcome {
+	if receipt != nil && receipt.Schema == 1 && receipt.Kind == laneRevocationDeliveryReceiptKind {
+		return laneRevocationOutcome{
+			classification:    laneRevocationDeliveredClassification,
+			terminalState:     store.WorkAttemptTerminalDelivered,
+			sessionFinalState: string(store.WorkAttemptTerminalDelivered),
+			phase:             "completed",
+			statusMessage:     "work was pushed but finalization was rejected",
+			activityEvent:     "worker_lane_delivery_preserved",
+			comment:           true,
+		}
+	}
+	outcome := laneRevocationOutcome{
+		classification:    laneRevocationEmptyClassification,
+		terminalState:     store.WorkAttemptTerminalLaneRevoked,
+		sessionFinalState: runpkg.FinalStateLaneRevoked,
+		errorClass:        laneRevocationErrorClass(reason, origin),
+		errorMessage:      strings.TrimSpace(reason),
+		phase:             "lane_revoked",
+		statusMessage:     "worker stopped after leaving a worker-owned lane",
+		activityEvent:     "worker_lane_revoked",
+	}
+	if workProduced {
+		outcome.classification = laneRevocationDiscardedClassification
+		outcome.activityEvent = "worker_lane_output_discarded"
+		outcome.comment = true
+		outcome.workDiscarded = true
+	}
+	return outcome
+}
+
+func laneRevocationProducedWork(event runpkg.Completion, running Running, tokens TokenTotals) bool {
 	return event.Result.TurnStarted ||
 		running.TurnCount > 0 ||
 		strings.TrimSpace(event.Result.Output) != "" ||
@@ -380,53 +470,67 @@ func laneRevocationDiscardedWork(event runpkg.Completion, running Running, token
 		tokens.OutputTokens > 0 ||
 		tokens.TotalTokens > 0 ||
 		diffStatsPresent(event.Result.DiffStats) ||
-		diffStatsPresent(running.DiffStats) ||
-		running.WorkProductPushed
+		diffStatsPresent(running.DiffStats)
 }
 
-func (o *Orchestrator) reportLaneRevocationDiscardedWork(
+func (o *Orchestrator) reportLaneRevocationOutcome(
 	ctx context.Context,
 	state *State,
 	pending *pendingLaneRevocation,
 	event runpkg.Completion,
 	running Running,
 	tokens TokenTotals,
+	outcome laneRevocationOutcome,
 ) {
 	at := event.CompletedAt.UTC()
 	if at.IsZero() {
 		at = o.clockNow().UTC()
 	}
 	origin := string(provenance.NormalizeOrigin(pending.origin))
+	message := "worker for " + issueLabel(running.Issue) + " was stopped after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
+	if outcome.terminalState == store.WorkAttemptTerminalDelivered {
+		message = "pushed work for " + issueLabel(running.Issue) + " was preserved after finalization was rejected by a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
+	} else if outcome.workDiscarded {
+		message = "unpushed worker output for " + issueLabel(running.Issue) + " was discarded after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      at,
-		Event:   "worker_lane_output_discarded",
-		Message: "worker output for " + issueLabel(running.Issue) + " was discarded after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState,
+		Event:   outcome.activityEvent,
+		Message: message,
 	})
-	if o.connector == nil {
+	if !outcome.comment || o.connector == nil {
 		return
 	}
-	body := laneRevocationDiscardedWorkComment(pending, event, running, tokens)
+	body := laneRevocationOutcomeComment(pending, event, running, tokens, outcome)
 	if err := o.connector.CreateComment(context.WithoutCancel(ctx), running.Issue.ID, body); err != nil {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      at,
-			Event:   "worker_lane_output_discard_notice_failed",
-			Message: "failed to report discarded worker output for " + issueLabel(running.Issue) + ": " + err.Error(),
+			Event:   "worker_lane_outcome_notice_failed",
+			Message: "failed to report lane-revocation outcome for " + issueLabel(running.Issue) + ": " + err.Error(),
 		})
 		if o.logger != nil {
-			o.logger.Warn("discarded worker output comment failed", "issue_id", running.Issue.ID, "identifier", running.Issue.Identifier, "error", err)
+			o.logger.Warn("lane revocation outcome comment failed", "issue_id", running.Issue.ID, "identifier", running.Issue.Identifier, "error", err)
 		}
 	}
 }
 
-func laneRevocationDiscardedWorkComment(
+func laneRevocationOutcomeComment(
 	pending *pendingLaneRevocation,
 	event runpkg.Completion,
 	running Running,
 	tokens TokenTotals,
+	outcome laneRevocationOutcome,
 ) string {
 	var b strings.Builder
-	b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. The session produced work that was not accepted by the completion fence.")
-	b.WriteString("\n\n- reason: worker_lane_revocation_output_discarded")
+	if outcome.terminalState == store.WorkAttemptTerminalDelivered {
+		b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. Your work was pushed but finalization was rejected; the pushed work remains available.")
+		b.WriteString("\n\n- reason: worker_lane_revocation_delivery_preserved")
+	} else {
+		b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. The session produced work that was not pushed and could not be delivered.")
+		b.WriteString("\n\n- reason: worker_lane_revocation_output_discarded")
+	}
+	b.WriteString("\n- classification: ")
+	b.WriteString(outcome.classification)
 	b.WriteString("\n- revocation_reason: ")
 	b.WriteString(pending.reason)
 	b.WriteString("\n- lane_change_origin: ")

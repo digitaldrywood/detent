@@ -4230,6 +4230,22 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 	return result.RowsAffected()
 }
 
+const updateCodexSessionFinalStateByWorkAttempt = `-- name: UpdateCodexSessionFinalStateByWorkAttempt :exec
+UPDATE codex_sessions
+SET final_state = ?1
+WHERE work_attempt_id = ?2
+`
+
+type UpdateCodexSessionFinalStateByWorkAttemptParams struct {
+	FinalState    sql.NullString `json:"final_state"`
+	WorkAttemptID sql.NullInt64  `json:"work_attempt_id"`
+}
+
+func (q *Queries) UpdateCodexSessionFinalStateByWorkAttempt(ctx context.Context, arg UpdateCodexSessionFinalStateByWorkAttemptParams) error {
+	_, err := q.db.ExecContext(ctx, updateCodexSessionFinalStateByWorkAttempt, arg.FinalState, arg.WorkAttemptID)
+	return err
+}
+
 const updateCodexSessionIdentity = `-- name: UpdateCodexSessionIdentity :execrows
 UPDATE codex_sessions
 SET agent_backend_id = COALESCE(?1, agent_backend_id),

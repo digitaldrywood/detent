@@ -104,6 +104,11 @@ SET completed_at = sqlc.arg(completed_at),
     skill_draft_proposed = sqlc.arg(skill_draft_proposed)
 WHERE id = sqlc.arg(id);
 
+-- name: UpdateCodexSessionFinalStateByWorkAttempt :exec
+UPDATE codex_sessions
+SET final_state = sqlc.arg(final_state)
+WHERE work_attempt_id = sqlc.arg(work_attempt_id);
+
 -- name: UpdateCodexSessionIdentity :execrows
 UPDATE codex_sessions
 SET agent_backend_id = COALESCE(sqlc.narg(agent_backend_id), agent_backend_id),

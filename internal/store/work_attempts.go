@@ -149,7 +149,20 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 		return err
 	}
 
-	rows, err := s.queries.CompleteWorkAttempt(ctx, sqlc.CompleteWorkAttemptParams{
+	queries := s.queries
+	var tx *sql.Tx
+	if strings.TrimSpace(attrs.SessionFinalState) != "" {
+		tx, err = s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin work attempt completion: %w", err)
+		}
+		defer func() {
+			_ = tx.Rollback()
+		}()
+		queries = queries.WithTx(tx)
+	}
+
+	rows, err := queries.CompleteWorkAttempt(ctx, sqlc.CompleteWorkAttemptParams{
 		Status:                 string(status),
 		TerminalState:          nullString(string(terminalState)),
 		CompletedAt:            sql.NullString{String: completedAt, Valid: true},
@@ -174,7 +187,22 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 	if err != nil {
 		return fmt.Errorf("completing work attempt: %w", err)
 	}
-	return requireAffected(rows, "work attempt", attrs.AttemptID)
+	if err := requireAffected(rows, "work attempt", attrs.AttemptID); err != nil {
+		return err
+	}
+	if tx == nil {
+		return nil
+	}
+	if err := queries.UpdateCodexSessionFinalStateByWorkAttempt(ctx, sqlc.UpdateCodexSessionFinalStateByWorkAttemptParams{
+		FinalState:    nullString(attrs.SessionFinalState),
+		WorkAttemptID: nullPositiveInt64(attrs.AttemptID),
+	}); err != nil {
+		return fmt.Errorf("updating work attempt session final state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit work attempt completion: %w", err)
+	}
+	return nil
 }
 
 func (s *sqliteStore) WorkAttempt(ctx context.Context, id int64) (WorkAttempt, error) {
