@@ -5464,7 +5464,7 @@ func TestHandleRunResultBlocksMergeWorkerAfterRepeatedInterruptedSessions(t *tes
 	if !ok || blocked.Issue.State != blockedStatusState {
 		t.Fatalf("Blocked[%q] = %#v, want Blocked issue", issue.ID, blocked)
 	}
-	orch.setBlockedStatusIssue(&state, connector.Issue{
+	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
 		Title:      issue.Title,

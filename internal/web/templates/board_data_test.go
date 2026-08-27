@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/observability"
+	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -1967,6 +1968,15 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 			wantText: "needs review - blocked, cause unrecorded",
 		},
 		{
+			name: "external block without tracker cause needs review",
+			card: projectKanbanCard{
+				BlockedSource: telemetry.BlockedSourceProjectStatus,
+				BlockedReason: staleness.ReasonBlockedOutsideDetent,
+			},
+			wantKind: primitives.KindErr,
+			wantText: "needs review - " + staleness.ReasonBlockedOutsideDetent,
+		},
+		{
 			name: "human delivery failure needs review",
 			card: projectKanbanCard{
 				BlockedSource:         telemetry.BlockedSourceProjectStatus,
@@ -1992,6 +2002,47 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 				t.Fatalf("boardCardExtra() exposed unnamed dependency: %q", text)
 			}
 		})
+	}
+}
+
+func TestBoardBlockedTimelineCauseRendersRecordedReason(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	blockedAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
+	cause := "current tracker lane is not worker-owned"
+	data.Snapshot.Blocked = []telemetry.Blocked{{
+		Issue: telemetry.Issue{
+			ID:         "issue-revoked-block",
+			Identifier: "digitaldrywood/detent#1995",
+			ProjectID:  "detent",
+			Title:      "Revoked worker lane",
+			State:      "Blocked",
+		},
+		Error:     cause,
+		Source:    telemetry.BlockedSourceProjectStatus,
+		BlockedAt: &blockedAt,
+	}}
+
+	view := boardViewFromDashboard(data)
+	var card boardCardView
+	for _, lane := range view.Lanes {
+		for _, candidate := range lane.Cards {
+			if candidate.IssueID == "issue-revoked-block" {
+				card = candidate
+			}
+		}
+	}
+	if card.IssueID == "" {
+		t.Fatalf("rendered board missing revoked Blocked card: %#v", view.Lanes)
+	}
+
+	html := renderBoardComponent(t, boardCardView2(card))
+	if !strings.Contains(html, cause) {
+		t.Fatalf("rendered blocked card missing timeline cause %q:\n%s", cause, html)
+	}
+	if strings.Contains(html, "cause unrecorded") {
+		t.Fatalf("rendered blocked card contradicted its timeline:\n%s", html)
 	}
 }
 

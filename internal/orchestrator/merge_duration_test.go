@@ -174,7 +174,7 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 		t.Fatalf("logs = %q, want WARN breach with progress marker", got)
 	}
 
-	orch.setBlockedStatusIssue(&state, connector.Issue{
+	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
 		ID:    issue.ID,
 		State: blockedStatusState,
 	}, completedAt.Add(time.Minute))
@@ -499,7 +499,7 @@ func TestMergeWorkerDurationTransitionFailureKeepsDispatchBlocked(t *testing.T) 
 		normalizeState(blocked.Issue.State) != normalizeState(autoPromoteMergingState) {
 		t.Fatalf("Blocked[%q] = %#v, want merge duration reconciliation hold", issue.ID, blocked)
 	}
-	orch.trackCandidateBlockedStatusIssues(&state, []connector.Issue{issue}, completedAt)
+	orch.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, completedAt)
 	if _, ok := state.Blocked[issue.ID]; !ok {
 		t.Fatalf("Blocked[%q] cleared by tracker hydration", issue.ID)
 	}

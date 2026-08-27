@@ -7,8 +7,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/staleness"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -498,14 +500,14 @@ func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.I
 	o.dispatchPlanner().trackBlockedCandidates(state, issues, now)
 }
 
-func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
+func (o *Orchestrator) trackBlockedStatusIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	seenBlocked := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
 		if issue.ID == "" {
 			continue
 		}
 		seenBlocked[issue.ID] = struct{}{}
-		o.setBlockedStatusIssue(state, issue, now)
+		o.setBlockedStatusIssue(ctx, state, issue, now)
 	}
 
 	for issueID, blocked := range state.Blocked {
@@ -518,7 +520,7 @@ func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector
 	}
 }
 
-func (o *Orchestrator) trackCandidateBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
+func (o *Orchestrator) trackCandidateBlockedStatusIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	blockedState := normalizeState(blockedStatusState)
 	for _, issue := range issues {
 		if issue.ID == "" {
@@ -532,7 +534,7 @@ func (o *Orchestrator) trackCandidateBlockedStatusIssues(state *State, issues []
 			clearBlockedStatusIssue(state, issue.ID)
 			continue
 		}
-		o.setBlockedStatusIssue(state, issue, now)
+		o.setBlockedStatusIssue(ctx, state, issue, now)
 	}
 }
 
@@ -542,13 +544,14 @@ func clearBlockedStatusIssue(state *State, issueID string) {
 	}
 }
 
-func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue, now time.Time) {
+func (o *Orchestrator) setBlockedStatusIssue(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
 	if existing, ok := state.Blocked[issue.ID]; ok && existing.Source == BlockedSourceProjectStatus {
 		existing.Issue = mergeIssueTrackerFields(existing.Issue, issue)
-		refreshedReason := blockedStatusReason(existing.Issue, o.cfg.TerminalStates)
-		if currentReason := strings.TrimSpace(existing.Reason); currentReason == "" ||
-			(strings.EqualFold(currentReason, staleness.ReasonBlockedCauseUnrecorded) &&
-				!strings.EqualFold(refreshedReason, staleness.ReasonBlockedCauseUnrecorded)) {
+		refreshedReason := o.reconciledBlockedStatusReason(ctx, state, existing.Issue)
+		currentReason := strings.TrimSpace(existing.Reason)
+		existing.Reason = refreshedReason
+		if existing.RecoveryAction == "" &&
+			(blockedStatusReasonUnknown(currentReason) && !blockedStatusReasonUnknown(refreshedReason)) {
 			recovery := evaluateBlockedRecovery(existing.Issue, normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
 				Enabled:      true,
 				SourceStates: []string{blockedStatusState},
@@ -568,7 +571,7 @@ func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue
 	}), o.cfg.TerminalStates)
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          cloneIssue(issue),
-		Reason:         blockedStatusReason(issue, o.cfg.TerminalStates),
+		Reason:         o.reconciledBlockedStatusReason(ctx, state, issue),
 		RecoveryReason: string(recovery.Reason),
 		RecoveryTarget: recovery.TargetState,
 		BlockedAt:      now,
@@ -581,12 +584,132 @@ func blockedFromDependency(blocked Blocked) bool {
 		(blocked.Source == "" && blocked.Reason == blockedReasonDependency)
 }
 
-func blockedStatusReason(issue connector.Issue, terminalStates []string) string {
+func (o *Orchestrator) reconciledBlockedStatusReason(ctx context.Context, state *State, issue connector.Issue) string {
+	detentCauses := []string{blockedStatusRuntimeCause(state, issue)}
+	if timeline, ok := o.issueWorkflowTimeline(ctx, issue); ok {
+		detentCauses = append(detentCauses, blockedStatusTimelineCause(issue, timeline.Events))
+	}
+	return blockedStatusReason(issue, o.cfg.TerminalStates, detentCauses...)
+}
+
+func blockedStatusRuntimeCause(state *State, issue connector.Issue) string {
+	if state == nil {
+		return ""
+	}
+	blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]
+	if !ok || !blockedEntryMatchesCurrent(issue, blocked.BlockedAt) {
+		return ""
+	}
+	detentOwned := blocked.Source != BlockedSourceProjectStatus ||
+		blocked.Recovery != nil || strings.TrimSpace(blocked.RecoveryAction) != ""
+	if detentOwned {
+		if cause := strings.TrimSpace(blocked.Reason); blockedStatusCauseRecorded(cause) {
+			return cause
+		}
+	}
+	if cause := blockedRecoveryMetadataCause(blocked.Recovery); blockedStatusCauseRecorded(cause) {
+		return cause
+	}
+	if blocked.Source == BlockedSourceOperatorStop {
+		if cause := firstNonBlank(blocked.StopReason, blocked.Reason); blockedStatusCauseRecorded(cause) {
+			return cause
+		}
+	}
+	if blocked.Source != BlockedSourceProjectStatus {
+		if cause := strings.TrimSpace(blocked.Reason); blockedStatusCauseRecorded(cause) {
+			return cause
+		}
+	}
+	return ""
+}
+
+func blockedStatusTimelineCause(issue connector.Issue, events []store.WorkflowPhaseEvent) string {
+	entry, ok := latestCurrentLaneEntry(events, blockedStatusState)
+	if !ok || !workflowLaneEntryMatchesCurrent(issue, entry) {
+		return ""
+	}
+	metadata, _ := workflowLaneMetadataFromJSON(entry.MetadataJSON)
+	if cause := blockedRecoveryMetadataCause(metadata.BlockedRecovery); blockedStatusCauseRecorded(cause) {
+		return cause
+	}
+	if cause := strings.TrimSpace(entry.Reason); blockedStatusLaneCauseRecorded(cause) {
+		return cause
+	}
+
+	if !blockedStatusDetentAuthoredLane(metadata) {
+		return ""
+	}
+	enteredAt := workflowLaneTransitionAt(entry).Add(-reworkBreakerStageUpdateSkew)
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeRecovery || !blockedStatusRecoveryCauseEvent(event.PhaseName) {
+			continue
+		}
+		eventAt := event.StartedAt
+		if event.FinishedAt.After(eventAt) {
+			eventAt = event.FinishedAt
+		}
+		if eventAt.Before(enteredAt) {
+			continue
+		}
+		if cause := strings.TrimSpace(event.Reason); blockedStatusCauseRecorded(cause) {
+			return cause
+		}
+	}
+	return ""
+}
+
+func blockedStatusDetentAuthoredLane(metadata workflowLaneMetadata) bool {
+	switch provenance.NormalizeOrigin(metadata.Provenance.Origin) {
+	case provenance.OriginDetent,
+		provenance.OriginAgent,
+		provenance.OriginRoutine,
+		provenance.OriginRetro,
+		provenance.OriginDependency,
+		provenance.OriginAdmission:
+		return true
+	default:
+		return false
+	}
+}
+
+func blockedStatusLaneCauseRecorded(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return blockedStatusCauseRecorded(reason) &&
+		!strings.EqualFold(reason, "tracker_state_observed") &&
+		!strings.EqualFold(reason, "state_transition")
+}
+
+func blockedStatusRecoveryCauseEvent(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "stale_completion_rejected" || strings.Contains(name, "park") || strings.Contains(name, "revok")
+}
+
+func blockedStatusCauseRecorded(reason string) bool {
+	return !blockedStatusReasonUnknown(reason)
+}
+
+func blockedStatusReasonUnknown(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == "" ||
+		strings.EqualFold(reason, staleness.ReasonBlockedCauseUnrecorded) ||
+		strings.EqualFold(reason, staleness.ReasonBlockedOutsideDetent)
+}
+
+// blockedStatusReason applies the operator-facing cause precedence: Detent's
+// current park record or event history, tracker reason, dependency refs, then
+// the explicit external-block fallback.
+func blockedStatusReason(issue connector.Issue, terminalStates []string, detentCauses ...string) string {
+	for _, reason := range detentCauses {
+		if reason = strings.TrimSpace(reason); blockedStatusCauseRecorded(reason) {
+			return reason
+		}
+	}
 	if reason := strings.TrimSpace(issue.BlockerReason); reason != "" {
 		return reason
 	}
 	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) {
 		return blockedReasonDependency
 	}
-	return staleness.ReasonBlockedCauseUnrecorded
+	return staleness.ReasonBlockedOutsideDetent
 }

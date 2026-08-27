@@ -960,9 +960,9 @@ func (o *Orchestrator) dispatchTickIssues(
 		if !transitions.blockedRefreshOK {
 			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previous.blockedStatusIssues)
 		}
-		o.trackBlockedStatusIssues(state, currentBlockedStatusIssues, now)
+		o.trackBlockedStatusIssues(ctx, state, currentBlockedStatusIssues, now)
 	} else {
-		o.trackCandidateBlockedStatusIssues(state, fetched.candidates, now)
+		o.trackCandidateBlockedStatusIssues(ctx, state, fetched.candidates, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
