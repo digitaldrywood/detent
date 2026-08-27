@@ -259,6 +259,7 @@ func TestServerOpenAPIRouteParity(t *testing.T) {
 		routeKey(http.MethodDelete, "/api/v1/projects/:project_id/budget/override"): "HTMX project budget panel",
 		routeKey(http.MethodGet, "/api/v1/keys/:id/rotate"):                         "HTML rotate dialog",
 		routeKey(http.MethodGet, "/api/v1/projects/:project_id/runs/:attempt/stop"): "HTML stop-run dialog",
+		routeKey(http.MethodGet, "/api/v1/ai-debug"):                                "private plain-text clipboard prompt",
 		routeKey(http.MethodGet, "/api/v1/board/card"):                              "HTMX board card",
 		routeKey(http.MethodGet, "/api/v1/board/card/core"):                         "HTMX board card core",
 		routeKey(http.MethodGet, "/api/v1/board/receipt"):                           "HTMX board receipt",

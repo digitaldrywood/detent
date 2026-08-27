@@ -396,6 +396,17 @@ FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?;
 
+-- name: ListIssueCodexSessions :many
+SELECT *
+FROM codex_sessions
+WHERE project_id = sqlc.arg(project_id)
+  AND (
+    (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+    OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+  )
+ORDER BY started_at, id;
+
 -- name: CompletedIssueCycleRows :many
 WITH issue_sessions AS (
   SELECT
@@ -923,6 +934,17 @@ WHERE completed_at IS NOT NULL
   )
 ORDER BY completed_at DESC, id DESC
 LIMIT sqlc.arg(result_limit);
+
+-- name: ListIssueWorkAttempts :many
+SELECT *
+FROM work_attempts
+WHERE project_id = sqlc.arg(project_id)
+  AND (
+    (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+    OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+  )
+ORDER BY started_at, id;
 
 -- name: ListPendingWorkAttemptCapacityReleases :many
 SELECT *

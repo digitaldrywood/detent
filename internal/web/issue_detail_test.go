@@ -66,6 +66,52 @@ func TestLocalBoardCardLinksToInternalIssueDetail(t *testing.T) {
 	}
 }
 
+func TestAIDebugPromptRoutesReturnSelfContainedScopes(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalIssueDetailTestServer(t)
+	tests := []struct {
+		name     string
+		path     string
+		want     []string
+		dontWant []string
+	}{
+		{
+			name: "issue",
+			path: "/api/v1/ai-debug?scope=issue&project=video&issue=wi-detail",
+			want: []string{"## Issue evidence", "## Project evidence", "## Fleet evidence", `"identifier": "wi-detail"`, `"cause": "No blocked cause is recorded."`, "Do not request tool access"},
+		},
+		{
+			name:     "project",
+			path:     "/api/v1/ai-debug?scope=project&project=video",
+			want:     []string{"## Project evidence", "## Fleet evidence", `"id": "video"`, "configuration_or_workflow_issue_destination_repository"},
+			dontWant: []string{"## Issue evidence"},
+		},
+		{
+			name:     "fleet",
+			path:     "/api/v1/ai-debug?scope=fleet",
+			want:     []string{"## Fleet evidence", `"scope": "fleet"`, "github_budgets_by_endpoint_family"},
+			dontWant: []string{"## Issue evidence", "## Project evidence"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := requestHTML(t, server.Handler(), http.MethodGet, tt.path, http.StatusOK)
+			for _, want := range tt.want {
+				if !strings.Contains(body, want) {
+					t.Fatalf("AI Debug prompt missing %q:\n%s", want, body)
+				}
+			}
+			for _, dontWant := range tt.dontWant {
+				if strings.Contains(body, dontWant) {
+					t.Fatalf("AI Debug prompt contains %q:\n%s", dontWant, body)
+				}
+			}
+		})
+	}
+}
+
 func newLocalIssueDetailTestServer(t *testing.T) *web.Server {
 	t.Helper()
 
@@ -155,6 +201,7 @@ func newLocalIssueDetailTestServer(t *testing.T) *web.Server {
 
 	deps := testDeps(t)
 	deps.Hub = snapshotHub
+	deps.Store = openWebTestStore(t)
 	deps.Registry = registry
 	deps.Connector = conn
 	server, err := web.NewServer(web.Config{

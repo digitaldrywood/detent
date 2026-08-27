@@ -34,6 +34,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
 			}
 			@dialog.Script()
+			@aiDebugScript()
 			@appShellScript()
 			@liveBehaviorScript()
 		</head>

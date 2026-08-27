@@ -60,6 +60,7 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 			@BoardCardSheetHeader(data, card)
 			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-4 py-4 overscroll-contain md:px-5" data-detail-sheet-scroll>
 				@BoardCardSheetCore(data, card, boardActions)
+				@aiDebugActionPanel(aiDebugIssuePath(projectID, issueIdentity))
 				if hasReceipt {
 					@BoardEfficiencyReceipt(receipt, true, "", "")
 				} else {

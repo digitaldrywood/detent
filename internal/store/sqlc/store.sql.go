@@ -3340,6 +3340,99 @@ func (q *Queries) ListIssueActivityEvents(ctx context.Context, arg ListIssueActi
 	return items, nil
 }
 
+const listIssueCodexSessions = `-- name: ListIssueCodexSessions :many
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason
+FROM codex_sessions
+WHERE project_id = ?1
+  AND (
+    (?2 != '' AND issue_id = ?2)
+    OR (?3 != '' AND identifier = ?3)
+    OR (?4 != '' AND issue_url = ?4)
+  )
+ORDER BY started_at, id
+`
+
+type ListIssueCodexSessionsParams struct {
+	ProjectID  sql.NullString `json:"project_id"`
+	IssueID    interface{}    `json:"issue_id"`
+	Identifier interface{}    `json:"identifier"`
+	IssueURL   interface{}    `json:"issue_url"`
+}
+
+func (q *Queries) ListIssueCodexSessions(ctx context.Context, arg ListIssueCodexSessionsParams) ([]CodexSession, error) {
+	rows, err := q.db.QueryContext(ctx, listIssueCodexSessions,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CodexSession{}
+	for rows.Next() {
+		var i CodexSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Turns,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.RuntimeSeconds,
+			&i.FinalState,
+			&i.Model,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
+			&i.RequestedModel,
+			&i.AgentBackendID,
+			&i.AgentBackendKind,
+			&i.AgentRole,
+			&i.ProviderThreadID,
+			&i.ProviderSessionID,
+			&i.ResumedFromSessionID,
+			&i.WorkAttemptID,
+			&i.AgentRoute,
+			&i.Provider,
+			&i.ProviderProvenance,
+			&i.RequestedModelProvenance,
+			&i.ModelProvenance,
+			&i.ReasoningEffort,
+			&i.ReasoningEffortProvenance,
+			&i.ServiceTier,
+			&i.ServiceTierProvenance,
+			&i.IdentityObservedAt,
+			&i.OrphanRecoveryOutcome,
+			&i.SkillDraftProposed,
+			&i.OrphanRecoveryFallbackReason,
+			&i.WorkerPid,
+			&i.WorkerPgid,
+			&i.WorkerStartedAt,
+			&i.WorkerReapedAt,
+			&i.WorkerReapOutcome,
+			&i.ProjectID,
+			&i.WorkerReapReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueSchedulerDecisions = `-- name: ListIssueSchedulerDecisions :many
 SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json
 FROM scheduler_decisions
@@ -3397,6 +3490,89 @@ func (q *Queries) ListIssueSchedulerDecisions(ctx context.Context, arg ListIssue
 			&i.CapacitySnapshotJson,
 			&i.GithubRateSnapshotJson,
 			&i.MetadataJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueWorkAttempts = `-- name: ListIssueWorkAttempts :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+FROM work_attempts
+WHERE project_id = ?1
+  AND (
+    (?2 != '' AND issue_id = ?2)
+    OR (?3 != '' AND identifier = ?3)
+    OR (?4 != '' AND issue_url = ?4)
+  )
+ORDER BY started_at, id
+`
+
+type ListIssueWorkAttemptsParams struct {
+	ProjectID  string      `json:"project_id"`
+	IssueID    interface{} `json:"issue_id"`
+	Identifier interface{} `json:"identifier"`
+	IssueURL   interface{} `json:"issue_url"`
+}
+
+func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAttemptsParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listIssueWorkAttempts,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
 		); err != nil {
 			return nil, err
 		}

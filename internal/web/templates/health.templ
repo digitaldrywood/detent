@@ -26,6 +26,10 @@ templ HealthSnapshotV2(data DashboardData) {
 	@failureBreakerBanner(faults)
 	@dispatchRecoveryBanner(faults)
 	@backendCapacityBanner(faults)
+	<div class="flex flex-none flex-wrap items-center gap-2 rounded-card border border-warn/40 bg-warn/5 px-3 py-2">
+		@aiDebugCopyButton(aiDebugFleetPath(), "inline-flex min-h-9 items-center gap-1.5 rounded-card border border-line bg-surface px-2.5 text-xs font-medium text-text hover:border-accent hover:text-accent")
+		@aiDebugPrivacyNotice("flex min-w-0 items-center gap-1.5 text-2xs leading-5 text-warn")
+	</div>
 	<p id="health-verdict" class="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 text-sm">
 		<span class={ healthVerdictGlyphClass(view.Kind) } aria-hidden="true">{ view.Kind.Glyph() }</span>
 		<span class="font-medium text-text">{ view.Verdict }</span>
