@@ -777,6 +777,7 @@ type WorkAttemptCompletion struct {
 	CompletedAt            time.Time
 	Status                 WorkAttemptStatus
 	TerminalState          WorkAttemptTerminalState
+	SessionFinalState      string
 	ErrorClass             string
 	ErrorMessage           string
 	Phase                  string

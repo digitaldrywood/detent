@@ -229,6 +229,145 @@ INSERT INTO codex_sessions (id, work_attempt_id, identifier, started_at, complet
 	}
 }
 
+func TestLaneRevocationDeliveryReceiptMigrationUpDown(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 44); err != nil {
+		t.Fatalf("goose.UpToContext(44) error = %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO work_attempts (
+  id, project_id, worker_type, status, started_at, completed_at,
+  terminal_state, error_class, error_message, phase, status_message, worker_metadata_json
+) VALUES
+  (4001, 'detent', 'implementation', 'terminal', '2026-08-27T08:00:00Z', '2026-08-27T09:00:00Z',
+   'lane_revoked', 'lane_revoked', 'tracker_lane_changed', 'lane_revoked', 'worker stopped after leaving a worker-owned lane',
+   '{"work_product_pushed":true,"pr_number":2001,"pr_head_sha":"abc123","lane_revocation":{"work_discarded":true}}'),
+  (4002, 'detent', 'implementation', 'terminal', '2026-08-27T08:00:00Z', '2026-08-27T09:00:00Z',
+   'lane_revoked', 'lane_revoked', 'tracker_lane_changed', 'lane_revoked', 'worker stopped after leaving a worker-owned lane',
+   '{"work_product_pushed":false,"lane_revocation":{"work_discarded":true}}'),
+  (4003, 'detent', 'implementation', 'terminal', '2026-08-27T08:00:00Z', '2026-08-27T09:00:00Z',
+   'lane_revoked', 'lane_revoked', 'operator_hold', 'lane_revoked', 'operator stopped the worker',
+   '{"work_product_pushed":true,"lane_revocation":{"work_discarded":true}}');
+INSERT INTO codex_sessions (id, work_attempt_id, identifier, started_at, completed_at, final_state) VALUES
+  (4101, 4001, 'digitaldrywood/detent#1998', '2026-08-27T08:00:00Z', '2026-08-27T09:00:00Z', 'lane_revoked'),
+  (4102, 4002, 'digitaldrywood/detent#1998', '2026-08-27T08:00:00Z', '2026-08-27T09:00:00Z', 'lane_revoked');
+`); err != nil {
+		t.Fatalf("seed post-migration lane revocations error = %v", err)
+	}
+
+	if err := goose.UpToContext(ctx, db, "migrations", 45); err != nil {
+		t.Fatalf("goose.UpToContext(45) error = %v", err)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 4001"); got != "delivered" {
+		t.Fatalf("pushed terminal state = %q, want delivered", got)
+	}
+	if got := queryString(t, db, "SELECT final_state FROM codex_sessions WHERE id = 4101"); got != "delivered" {
+		t.Fatalf("pushed session final state = %q, want delivered", got)
+	}
+	if got := queryString(t, db, "SELECT json_extract(worker_metadata_json, '$.delivery_receipt.kind') FROM work_attempts WHERE id = 4001"); got != "pushed_work_product" {
+		t.Fatalf("delivery receipt kind = %q, want pushed_work_product", got)
+	}
+	if got := queryInt(t, db, "SELECT json_extract(worker_metadata_json, '$.lane_revocation.work_discarded') FROM work_attempts WHERE id = 4001"); got != 0 {
+		t.Fatalf("pushed work_discarded = %d, want false", got)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 4002"); got != "lane_revoked" {
+		t.Fatalf("unpushed terminal state = %q, want lane_revoked", got)
+	}
+	if got := queryString(t, db, "SELECT final_state FROM codex_sessions WHERE id = 4102"); got != "lane_revoked" {
+		t.Fatalf("unpushed session final state = %q, want lane_revoked", got)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 4003"); got != "lane_revoked" {
+		t.Fatalf("operator hold terminal state = %q, want lane_revoked", got)
+	}
+
+	if err := goose.DownToContext(ctx, db, "migrations", 44); err != nil {
+		t.Fatalf("goose.DownToContext(44) error = %v", err)
+	}
+	if got := queryString(t, db, "SELECT terminal_state FROM work_attempts WHERE id = 4001"); got != "lane_revoked" {
+		t.Fatalf("restored pushed terminal state = %q, want lane_revoked", got)
+	}
+	if got := queryString(t, db, "SELECT final_state FROM codex_sessions WHERE id = 4101"); got != "lane_revoked" {
+		t.Fatalf("restored pushed session final state = %q, want lane_revoked", got)
+	}
+	if got := queryInt(t, db, "SELECT COUNT(*) FROM work_attempts WHERE json_extract(worker_metadata_json, '$.delivery_receipt.kind') IS NOT NULL"); got != 0 {
+		t.Fatalf("delivery receipts after down = %d, want 0", got)
+	}
+}
+
+func TestCompleteWorkAttemptFinalizesLinkedSessionOutcome(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openTestStore(t, ctx)
+	now := time.Date(2026, 8, 27, 11, 0, 0, 0, time.UTC)
+	attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:     "detent",
+		IssueID:       "issue-1998",
+		Identifier:    "digitaldrywood/detent#1998",
+		WorkerType:    "implementation",
+		AttemptNumber: 1,
+		StartedAt:     now.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+	sessionID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID: attemptID,
+		ProjectID:     "detent",
+		IssueID:       "issue-1998",
+		Identifier:    "digitaldrywood/detent#1998",
+		StartedAt:     now.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+		CompletedAt: now,
+		FinalState:  "lane_revoked",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+		AttemptID:         attemptID,
+		CompletedAt:       now,
+		TerminalState:     WorkAttemptTerminalDelivered,
+		SessionFinalState: "delivered",
+	}); err != nil {
+		t.Fatalf("CompleteWorkAttempt() error = %v", err)
+	}
+
+	session, err := backend.Queries().GetCodexSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetCodexSession() error = %v", err)
+	}
+	if session.FinalState.String != "delivered" {
+		t.Fatalf("session final_state = %q, want delivered", session.FinalState.String)
+	}
+}
+
 func TestCachedTokenTelemetryMigrationUpDown(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")

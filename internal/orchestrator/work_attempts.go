@@ -415,6 +415,22 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 	statusMessage string,
 	metadata map[string]any,
 ) bool {
+	return o.completeDurableWorkAttemptWithSessionState(ctx, state, running, completedAt, terminalState, "", errorClass, errorMessage, phase, statusMessage, metadata)
+}
+
+func (o *Orchestrator) completeDurableWorkAttemptWithSessionState(
+	ctx context.Context,
+	state *State,
+	running Running,
+	completedAt time.Time,
+	terminalState store.WorkAttemptTerminalState,
+	sessionFinalState string,
+	errorClass string,
+	errorMessage string,
+	phase string,
+	statusMessage string,
+	metadata map[string]any,
+) bool {
 	if o == nil || o.workAttempts == nil || running.WorkAttemptID <= 0 {
 		return false
 	}
@@ -441,6 +457,7 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 		CompletedAt:            completedAt,
 		Status:                 store.WorkAttemptStatusTerminal,
 		TerminalState:          terminalState,
+		SessionFinalState:      strings.TrimSpace(sessionFinalState),
 		ErrorClass:             strings.TrimSpace(errorClass),
 		ErrorMessage:           o.operatorText(errorMessage),
 		Phase:                  phase,

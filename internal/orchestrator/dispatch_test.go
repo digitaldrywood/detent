@@ -3641,6 +3641,7 @@ type recordingWorkAttemptStore struct {
 	starts                  []store.WorkAttemptStart
 	heartbeats              []store.WorkAttemptHeartbeat
 	completions             []store.WorkAttemptCompletion
+	completionErrors        []error
 	decisions               []store.SchedulerDecision
 	reclaimed               []store.WorkAttempt
 	recent                  []store.WorkAttempt
@@ -3689,6 +3690,11 @@ func (s *recordingWorkAttemptStore) RecordWorkAttemptHeartbeat(_ context.Context
 
 func (s *recordingWorkAttemptStore) CompleteWorkAttempt(_ context.Context, attrs store.WorkAttemptCompletion) error {
 	s.completions = append(s.completions, attrs)
+	if len(s.completionErrors) > 0 {
+		err := s.completionErrors[0]
+		s.completionErrors = s.completionErrors[1:]
+		return err
+	}
 	return nil
 }
 
