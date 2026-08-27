@@ -22,6 +22,7 @@ type StartupDispatchPacerConfig struct {
 
 type StartupDispatchPacer struct {
 	mu                 sync.Mutex
+	censusMu           sync.Mutex
 	maxStartsPerSecond int
 	jitter             time.Duration
 	rampStarts         int
@@ -80,8 +81,8 @@ func (p *StartupDispatchPacer) BeginStartup(host string) startupObservation {
 	if p == nil {
 		return observation
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.censusMu.Lock()
+	defer p.censusMu.Unlock()
 	p.activeByHost[host]++
 	p.startingByHost[host]++
 	return observation
@@ -91,8 +92,8 @@ func (o *dispatchStartupObservation) Ready() {
 	if o == nil || o.pacer == nil {
 		return
 	}
-	o.pacer.mu.Lock()
-	defer o.pacer.mu.Unlock()
+	o.pacer.censusMu.Lock()
+	defer o.pacer.censusMu.Unlock()
 	if o.ready || o.finished {
 		return
 	}
@@ -104,8 +105,8 @@ func (o *dispatchStartupObservation) Snapshot() startupHostSnapshot {
 	if o == nil || o.pacer == nil {
 		return startupHostSnapshot{}
 	}
-	o.pacer.mu.Lock()
-	defer o.pacer.mu.Unlock()
+	o.pacer.censusMu.Lock()
+	defer o.pacer.censusMu.Unlock()
 	return startupHostSnapshot{
 		concurrentStartups: o.pacer.startingByHost[o.host],
 		activeWorkers:      o.pacer.activeByHost[o.host],
@@ -116,8 +117,8 @@ func (o *dispatchStartupObservation) Finish() {
 	if o == nil || o.pacer == nil {
 		return
 	}
-	o.pacer.mu.Lock()
-	defer o.pacer.mu.Unlock()
+	o.pacer.censusMu.Lock()
+	defer o.pacer.censusMu.Unlock()
 	if o.finished {
 		return
 	}

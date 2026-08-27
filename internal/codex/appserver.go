@@ -778,8 +778,11 @@ func (s *AppServer) startThread(
 	onUpdate UpdateHandler,
 ) (threadID string, runtimeIdentity agentidentity.Identity, err error) {
 	startedAt := s.now()
+	startupComplete := false
 	defer func() {
-		err = startupStageError(err, "thread/start", startedAt, s.now(), s.readTimeout)
+		if !startupComplete {
+			err = startupStageError(err, "thread/start", startedAt, s.now(), s.readTimeout)
+		}
 	}()
 	params := map[string]any{
 		"cwd": req.Workspace,
@@ -827,6 +830,7 @@ func (s *AppServer) startThread(
 	if !identity.IsZero() {
 		update = runtimeIdentityUpdate("thread/start", response.Thread.ID, identity)
 	}
+	startupComplete = true
 	if err := emitUpdate(update, onUpdate); err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -841,8 +845,11 @@ func (s *AppServer) resumeThread(
 	onUpdate UpdateHandler,
 ) (resumedThreadID string, runtimeIdentity agentidentity.Identity, err error) {
 	startedAt := s.now()
+	startupComplete := false
 	defer func() {
-		err = startupStageError(err, "thread/resume", startedAt, s.now(), s.readTimeout)
+		if !startupComplete {
+			err = startupStageError(err, "thread/resume", startedAt, s.now(), s.readTimeout)
+		}
 	}()
 	params := map[string]any{
 		"threadId": threadID,
@@ -889,6 +896,7 @@ func (s *AppServer) resumeThread(
 	if !identity.IsZero() {
 		update = runtimeIdentityUpdate("thread/resume", response.Thread.ID, identity)
 	}
+	startupComplete = true
 	if err := emitUpdate(update, onUpdate); err != nil {
 		return "", agentidentity.Identity{}, err
 	}

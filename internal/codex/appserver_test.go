@@ -71,6 +71,55 @@ func TestAppServerStartupFailuresIdentifyStageAndDeadline(t *testing.T) {
 	}
 }
 
+func TestAppServerUpdateHandlerFailureIsNotStartupFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response Message
+		run      func(*AppServer, Transport, UpdateHandler) error
+	}{
+		{
+			name:     "thread start",
+			response: responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1"}}`),
+			run: func(server *AppServer, transport Transport, onUpdate UpdateHandler) error {
+				_, _, err := server.startThread(t.Context(), transport, RunTurnRequest{}, onUpdate)
+				return err
+			},
+		},
+		{
+			name:     "thread resume",
+			response: responseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-1"}}`),
+			run: func(server *AppServer, transport Transport, onUpdate UpdateHandler) error {
+				_, _, err := server.resumeThread(t.Context(), transport, RunTurnRequest{}, "thread-1", onUpdate)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transport := newFakeAppServerTransport([]Message{tt.response})
+			server, err := NewAppServer(staticTransportFactory{transport: transport})
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+			err = tt.run(server, transport, func(Update) error { return context.DeadlineExceeded })
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("startup call error = %v, want update handler deadline", err)
+			}
+			if _, ok := startupEvidence(err); ok {
+				t.Fatalf("startup evidence present on update handler error %v", err)
+			}
+			if details, ok := ClassifyCapacityError(err, nil, time.Now()); ok && details.Kind == backendcapacity.StartupTimeoutKind {
+				t.Fatalf("update handler error classified as startup timeout: %#v", details)
+			}
+		})
+	}
+}
+
 func TestAppServerStartupFailureRetainsProcessReadinessAndExit(t *testing.T) {
 	t.Parallel()
 

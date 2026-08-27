@@ -99,6 +99,50 @@ func TestStartupDispatchPacerTracksHostScopedStartupAndActiveCounts(t *testing.T
 	}
 }
 
+func TestStartupDispatchPacerCensusDoesNotWaitForPacingSleep(t *testing.T) {
+	t.Parallel()
+
+	sleeping := make(chan struct{})
+	release := make(chan struct{})
+	pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{
+		MaxStartsPerSecond: 1,
+		RampStarts:         2,
+		Sleep: func(context.Context, time.Duration) error {
+			close(sleeping)
+			<-release
+			return nil
+		},
+	})
+	if err := pacer.Wait(t.Context()); err != nil {
+		t.Fatalf("first Wait() error = %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- pacer.Wait(t.Context())
+	}()
+	<-sleeping
+
+	observation := pacer.BeginStartup("worker-a")
+	snapshotDone := make(chan startupHostSnapshot, 1)
+	go func() {
+		snapshotDone <- observation.Snapshot()
+	}()
+	select {
+	case got := <-snapshotDone:
+		if got.concurrentStartups != 1 || got.activeWorkers != 1 {
+			t.Fatalf("snapshot = %#v, want 1 startup and 1 active worker", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Snapshot() waited for pacing sleep")
+	}
+
+	close(release)
+	if err := <-waitDone; err != nil {
+		t.Fatalf("second Wait() error = %v", err)
+	}
+	observation.Finish()
+}
+
 func TestSupervisorPacesNormalDispatchBeforeRunningWorker(t *testing.T) {
 	t.Parallel()
 
