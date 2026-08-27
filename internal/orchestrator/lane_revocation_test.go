@@ -264,11 +264,11 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 		wantOrigin      provenance.Origin
 	}{
 		{
-			name:            "active agent move before provenance refresh",
+			name:            "active user move before provenance refresh",
 			transitionActor: connector.IssueActor{Login: "operator-token", Kind: "User"},
 			wantReason:      laneRevocationStateChanged,
 			wantErrorClass:  string(store.WorkAttemptTerminalLaneRevoked),
-			wantOrigin:      provenance.OriginAgent,
+			wantOrigin:      provenance.OriginIndeterminate,
 		},
 		{
 			name:            "active app worker move before provenance refresh",
@@ -344,9 +344,7 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 				stop: stop,
 			}
 			if tt.detentAuthored {
-				if err := orch.updateIssueStateByID(t.Context(), &state, issue.ID, issue, parked.State, now.Add(-time.Minute), "completed_active_review_transition"); err != nil {
-					t.Fatalf("record Detent lane transition: %v", err)
-				}
+				recordIssueStateMutationProvenance(&state, issue.ID, issue, parked.State, now.Add(-time.Minute), "completed_active_review_transition", workflowLaneMetadata{})
 			} else if tt.originCached {
 				state.laneProvenance[workflowLaneEntryKey(parked)] = tt.origin
 			}
@@ -424,12 +422,12 @@ func TestLaneRevocationAttributionEvidencePrecedence(t *testing.T) {
 		workerActor     connector.IssueActor
 		want            provenance.Origin
 	}{
-		{name: "active agent", running: true, transitionActor: connector.IssueActor{Login: "operator-token", Kind: "User"}, want: provenance.OriginAgent},
+		{name: "user actor during active run", running: true, transitionActor: connector.IssueActor{Login: "operator-token", Kind: "User"}, want: provenance.OriginIndeterminate},
 		{name: "active app worker", running: true, transitionActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"}, workerActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"}, want: provenance.OriginAgent},
 		{name: "external automation", running: true, transitionActor: connector.IssueActor{Login: "external-bot", Kind: "Bot"}, workerActor: connector.IssueActor{Login: "detent-worker[bot]", Kind: "Bot"}, want: provenance.OriginAutomation},
 		{name: "operator", running: true, cached: &human, want: provenance.OriginHuman},
 		{name: "missing evidence", want: provenance.OriginIndeterminate},
-		{name: "indeterminate cache does not hide active agent", running: true, cached: &indeterminate, want: provenance.OriginAgent},
+		{name: "indeterminate cache remains indeterminate during active run", running: true, cached: &indeterminate, want: provenance.OriginIndeterminate},
 	}
 
 	for _, tt := range tests {
@@ -522,6 +520,18 @@ func TestLaneChangeFinishRaceRejectsArtifactCompletion(t *testing.T) {
 	}
 	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalLaneRevoked {
 		t.Fatalf("work attempt completions = %#v, want lane_revoked", attempts.completions)
+	}
+	var metadata struct {
+		LaneRevocation struct {
+			FromState string `json:"from_state"`
+			ToState   string `json:"to_state"`
+		} `json:"lane_revocation"`
+	}
+	if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode lane revocation metadata: %v", err)
+	}
+	if metadata.LaneRevocation.FromState != "Production" || metadata.LaneRevocation.ToState != "Blocked" {
+		t.Fatalf("lane transition = %s -> %s, want Production -> Blocked", metadata.LaneRevocation.FromState, metadata.LaneRevocation.ToState)
 	}
 	if !hasLaneRevocationEvent(state.RecentEvents, "stale_worker_completion_rejected") {
 		t.Fatalf("RecentEvents = %#v, want stale completion rejection", state.RecentEvents)

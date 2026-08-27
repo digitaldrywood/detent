@@ -383,7 +383,7 @@ func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *ep
 
 func (o *Orchestrator) finalizeCompletedEpic(ctx context.Context, state *State, issue connector.Issue, children []connector.BlockedRef) {
 	if !stateIn(issue.State, o.cfg.TerminalStates) {
-		if err := o.updateIssueState(ctx, state, issue, doneStateName(o.cfg.TerminalStates), time.Now(), "epic_children_completed"); err != nil && o.logger != nil {
+		if err := o.updateIssueState(ctx, state, issue, doneStateName(o.cfg.TerminalStates), time.Now(), "epic_children_completed", laneMutationAcceptCompletion); err != nil && o.logger != nil {
 			o.logger.Warn("move completed epic to done failed", "issue_id", issue.ID, "error", err)
 		}
 	}

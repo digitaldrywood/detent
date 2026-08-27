@@ -112,8 +112,9 @@ func (o *Orchestrator) updateIssueState(
 	targetState string,
 	at time.Time,
 	reason string,
+	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByID(ctx, state, issue.ID, issue, targetState, at, reason)
+	return o.updateIssueStateByID(ctx, state, issue.ID, issue, targetState, at, reason, dispositions...)
 }
 
 func (o *Orchestrator) updateIssueStateByID(
@@ -124,8 +125,9 @@ func (o *Orchestrator) updateIssueStateByID(
 	targetState string,
 	at time.Time,
 	reason string,
+	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
+	return o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, at, reason, workflowLaneMetadata{}, dispositions...)
 }
 
 func (o *Orchestrator) updateIssueStateByIDWithMetadata(
@@ -137,8 +139,9 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 	at time.Time,
 	reason string,
 	metadata workflowLaneMetadata,
+	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, false)
+	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, false, dispositions...)
 }
 
 func (o *Orchestrator) updateIssueStateByIDStrictWithMetadata(
@@ -150,8 +153,9 @@ func (o *Orchestrator) updateIssueStateByIDStrictWithMetadata(
 	at time.Time,
 	reason string,
 	metadata workflowLaneMetadata,
+	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, true)
+	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, true, dispositions...)
 }
 
 func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
@@ -164,16 +168,25 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	reason string,
 	metadata workflowLaneMetadata,
 	strict bool,
+	dispositions ...laneMutationDisposition,
 ) error {
+	receipt, running, leased, err := o.prepareLaneMutation(ctx, state, issueID, issue, targetState, at, reason, dispositions)
+	if err != nil {
+		return err
+	}
 	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
 		if errors.Is(err, connector.ErrStateUpdateBlocked) && !strict {
+			if receiptErr := o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerBlocked, at, err); receiptErr != nil {
+				return receiptErr
+			}
 			if o.logger != nil {
 				o.logger.Debug("skip blocked issue state update", "issue_id", issueID, "target_state", targetState, "error", err)
 			}
 			return nil
 		}
-		return err
+		return errors.Join(err, o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerFailed, at, err))
 	}
+	receiptErr := o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerApplied, at, nil)
 	if metadata.BlockedRecovery != nil {
 		mutationAt, ok := o.confirmTrackerStateTransition(ctx, issueID, issue, targetState)
 		if ok {
@@ -205,7 +218,10 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) && normalizeState(issue.State) != normalizeState(targetState) {
 		o.captureReworkLesson(issue, at, reason)
 	}
-	return nil
+	if leased {
+		o.applyLaneMutationDisposition(ctx, state, running, receipt, issue, at)
+	}
+	return receiptErr
 }
 
 func (o *Orchestrator) confirmTrackerStateTransition(
@@ -781,11 +797,11 @@ func observedLaneAttribution(state *State, issue connector.Issue, transitionActo
 	attribution := provenance.AttributionFromSource(provenance.SourceTrackerObservation, actor)
 	if state != nil {
 		if running, ok := state.Running[strings.TrimSpace(issue.ID)]; ok {
-			if provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginAutomation &&
-				!sameTrackerActor(transitionActor, running.WorkerGitHubActor) {
-				return attribution
+			if provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginAutomation {
+				if sameTrackerActor(transitionActor, running.WorkerGitHubActor) {
+					return provenance.AttributionFromSource(provenance.SourceDetentAgentSession, actor)
+				}
 			}
-			return provenance.AttributionFromSource(provenance.SourceDetentAgentSession, actor)
 		}
 	}
 	return attribution

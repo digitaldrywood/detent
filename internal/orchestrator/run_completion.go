@@ -130,6 +130,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if running.Generation > 0 {
+		beforeRefresh := running
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
 			availabilityErr, unavailable := connector.AsTrackerAvailability(err)
@@ -143,19 +144,51 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 				return
 			}
 		} else {
+			receiptAccepted := false
+			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshed.State)
+			if receiptErr != nil {
+				o.rejectWorkerCompletion(ctx, state, event, running, "lane mutation receipt is unavailable", receiptErr)
+				return
+			}
+			if receiptFound {
+				running.laneMutation = receipt
+				consumed, consumeErr := o.consumeLaneMutationReceipt(ctx, receipt, running, refreshed.State, event.CompletedAt)
+				if consumeErr != nil {
+					o.rejectWorkerCompletion(ctx, state, event, running, "lane mutation receipt could not be consumed", consumeErr)
+					return
+				}
+				receipt = consumed
+				running.laneMutation = store.LaneMutationReceipt{}
+				switch receipt.Disposition {
+				case laneMutationPreserveOwnership:
+					receiptAccepted = true
+					if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
+						running.CompletionLane = strings.TrimSpace(refreshed.State)
+						running.CompletionAcceptedAt = event.CompletedAt.UTC()
+					}
+				case laneMutationAcceptCompletion:
+					receiptAccepted = true
+					running.CompletionLane = strings.TrimSpace(refreshed.State)
+					running.CompletionAcceptedAt = event.CompletedAt.UTC()
+				case laneMutationRevokeWorker:
+					o.beginLaneRevocationForMutation(ctx, state, beforeRefresh, refreshed, event.CompletedAt, receipt)
+					o.handleLaneRevocationCompletion(ctx, state, event, beforeRefresh)
+					return
+				}
+			}
 			running.Issue = refreshed
 			state.Running[event.IssueID] = running
 			if claimed, found := state.Claimed[event.IssueID]; found {
 				claimed.Issue = cloneIssue(refreshed)
 				state.Claimed[event.IssueID] = claimed
 			}
-			if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
+			if !receiptAccepted && (!stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates)) {
 				if accepted, ok := o.acceptCurrentAttemptCompletionLane(ctx, state, running, refreshed, event.CompletedAt); ok {
 					running = accepted
 				} else {
 					o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
-					o.beginLaneRevocation(ctx, state, running, refreshed, event.CompletedAt, laneRevocationStateChanged)
-					o.handleLaneRevocationCompletion(ctx, state, event, running)
+					o.beginLaneRevocation(ctx, state, beforeRefresh, refreshed, event.CompletedAt, laneRevocationStateChanged)
+					o.handleLaneRevocationCompletion(ctx, state, event, beforeRefresh)
 					return
 				}
 			}
@@ -936,7 +969,7 @@ func (o *Orchestrator) parkInstantFailure(
 		running.DiffStats,
 	)
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker", metadata); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker", metadata, laneMutationRevokeWorker); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"instant fail circuit breaker state transition failed",
@@ -1030,7 +1063,7 @@ func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
 		running.DiffStats,
 	)
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker", metadata); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker", metadata, laneMutationRevokeWorker); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"token ceiling circuit breaker state transition failed",
@@ -1218,7 +1251,7 @@ func (o *Orchestrator) parkRepeatedFailure(
 		applyGitHubRESTBudgetEvidence(metadata.BlockedRecovery, budgetEvidence)
 	}
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker", metadata); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker", metadata, laneMutationRevokeWorker); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"repeated failure circuit breaker state transition failed",
@@ -1499,7 +1532,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		activityAt := event.CompletedAt.UTC()
 		mergedIssue.PullRequest.ActivityAt = &activityAt
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge", laneMutationAcceptCompletion); err != nil {
 		running.Issue = mergedIssue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
 		return true
@@ -2171,7 +2204,7 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 ) {
 	issueID := strings.TrimSpace(event.IssueID)
 	running.Issue = issue
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason, laneMutationAcceptCompletion); err != nil {
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
 		return
 	}
@@ -2311,7 +2344,7 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 		autoPromoteReworkState,
 		running.DiffStats,
 	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, reason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, reason, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_block_failed",
@@ -2424,7 +2457,7 @@ func (o *Orchestrator) completePlanRunning(
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created", laneMutationAcceptCompletion); err != nil {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, "plan_transition_failed", err.Error())
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
@@ -2637,7 +2670,7 @@ func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context
 	if strings.TrimSpace(targetState) == "" {
 		return issue
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_running_done", laneMutationAcceptCompletion); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}

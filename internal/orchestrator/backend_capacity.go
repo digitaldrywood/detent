@@ -242,7 +242,7 @@ func (o *Orchestrator) restoreBackendCapacityIssueState(
 		return running
 	}
 	issue := cloneIssue(running.Issue)
-	if err := o.updateIssueState(ctx, state, issue, source, now, "backend_capacity_pause"); err != nil {
+	if err := o.updateIssueState(ctx, state, issue, source, now, "backend_capacity_pause", laneMutationAcceptCompletion); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("backend capacity state restore failed", "issue_id", issue.ID, "source_state", source, "error", err)
 		}
@@ -1117,7 +1117,7 @@ func (o *Orchestrator) applyBackendCapacityBlockedRecovery(
 	recovery BackendRecovery,
 	now time.Time,
 ) bool {
-	if err := o.updateIssueState(ctx, state, issue, targetState, now, "backend_capacity_recovered"); err != nil {
+	if err := o.updateIssueState(ctx, state, issue, targetState, now, "backend_capacity_recovered", laneMutationPreserveOwnership); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"backend capacity blocked recovery failed",

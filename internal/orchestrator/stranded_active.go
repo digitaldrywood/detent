@@ -103,6 +103,7 @@ func (o *Orchestrator) recoverStrandedActiveIssues(
 			now,
 			strandedActiveRecoveryReason,
 			workflowLaneMetadata{},
+			laneMutationRevokeWorker,
 		); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(

@@ -53,6 +53,7 @@ type Store interface {
 	WorkflowMetricsStore
 	ProvenanceStore
 	WorkAttemptStore
+	LaneMutationStore
 	ProjectDispatchStatusStore
 	HealthNotificationStateStore
 	StalenessWarningStore
@@ -155,6 +156,13 @@ type WorkAttemptStore interface {
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type LaneMutationStore interface {
+	BeginLaneMutation(context.Context, LaneMutationStart) (LaneMutationReceipt, error)
+	ResolveLaneMutation(context.Context, LaneMutationResolution) error
+	LaneMutationReceipt(context.Context, LaneMutationLookup) (LaneMutationReceipt, error)
+	ConsumeLaneMutation(context.Context, LaneMutationConsumption) (LaneMutationReceipt, error)
 }
 
 type ConcurrencyStore interface {
@@ -633,6 +641,79 @@ type WorkAttempt struct {
 	DetentSessionID        int64
 	ProviderSessionID      string
 	RuntimeIdentity        agentidentity.Identity
+}
+
+type LaneMutationDisposition string
+
+const (
+	LaneMutationPreserveOwnership LaneMutationDisposition = "preserve_ownership"
+	LaneMutationAcceptCompletion  LaneMutationDisposition = "accept_completion"
+	LaneMutationRevokeWorker      LaneMutationDisposition = "revoke_worker"
+)
+
+type LaneMutationTrackerResult string
+
+const (
+	LaneMutationTrackerPrepared LaneMutationTrackerResult = "prepared"
+	LaneMutationTrackerApplied  LaneMutationTrackerResult = "applied"
+	LaneMutationTrackerBlocked  LaneMutationTrackerResult = "blocked"
+	LaneMutationTrackerFailed   LaneMutationTrackerResult = "failed"
+)
+
+type LaneMutationReceipt struct {
+	ID            int64
+	ProjectID     string
+	IssueID       string
+	WorkAttemptID int64
+	Generation    uint64
+	Disposition   LaneMutationDisposition
+	FromState     string
+	ToState       string
+	Reason        string
+	TrackerResult LaneMutationTrackerResult
+	RequestedAt   time.Time
+	ResolvedAt    time.Time
+	ConsumedAt    time.Time
+	ErrorMessage  string
+}
+
+type LaneMutationStart struct {
+	ProjectID     string
+	IssueID       string
+	WorkAttemptID int64
+	Generation    uint64
+	Disposition   LaneMutationDisposition
+	FromState     string
+	ToState       string
+	Reason        string
+	RequestedAt   time.Time
+}
+
+type LaneMutationResolution struct {
+	ReceiptID     int64
+	WorkAttemptID int64
+	Generation    uint64
+	TrackerResult LaneMutationTrackerResult
+	ResolvedAt    time.Time
+	ErrorMessage  string
+}
+
+type LaneMutationLookup struct {
+	ProjectID     string
+	IssueID       string
+	WorkAttemptID int64
+	Generation    uint64
+	ToState       string
+}
+
+type LaneMutationConsumption struct {
+	ReceiptID     int64
+	ProjectID     string
+	IssueID       string
+	WorkAttemptID int64
+	Generation    uint64
+	ToState       string
+	ConsumedAt    time.Time
 }
 
 type WorkAttemptStart struct {

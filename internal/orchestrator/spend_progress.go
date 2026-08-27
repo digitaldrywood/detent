@@ -403,7 +403,7 @@ func (o *Orchestrator) blockSpendProgress(
 		autoPromoteReworkState,
 		DiffStats{},
 	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, spendProgressReason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, spendProgressReason, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("spend progress circuit breaker state transition failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
 		}

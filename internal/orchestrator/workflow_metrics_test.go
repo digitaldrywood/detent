@@ -290,7 +290,7 @@ func TestObservedLaneAttribution(t *testing.T) {
 		wantOrigin    provenance.Origin
 		wantInitiator provenance.Initiator
 	}{
-		{name: "active Detent agent using user token", state: &activeAgent, actor: operatorActor, wantOrigin: provenance.OriginAgent, wantInitiator: provenance.InitiatorDetentAgentSession},
+		{name: "active worker with user actor remains indeterminate", state: &activeAgent, actor: operatorActor, wantOrigin: provenance.OriginIndeterminate, wantInitiator: provenance.InitiatorIndeterminate},
 		{name: "unverified user actor", state: statePointer(newState(Config{})), actor: operatorActor, wantOrigin: provenance.OriginIndeterminate, wantInitiator: provenance.InitiatorIndeterminate},
 		{name: "external bot", state: statePointer(newState(Config{})), actor: connector.IssueActor{Login: "audit[bot]", Kind: "Bot"}, wantOrigin: provenance.OriginAutomation, wantInitiator: provenance.InitiatorExternalAutomation},
 		{name: "missing state and actor", wantOrigin: provenance.OriginIndeterminate, wantInitiator: provenance.InitiatorIndeterminate},

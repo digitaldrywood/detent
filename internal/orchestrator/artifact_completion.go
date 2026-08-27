@@ -322,7 +322,7 @@ func (o *Orchestrator) parkArtifactGateConvergence(
 		autoPromoteReworkState,
 		DiffStats{},
 	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, completedAt, artifactGateConvergenceReason, metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, completedAt, artifactGateConvergenceReason, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.WarnContext(ctx, "artifact gate convergence breaker state transition failed",
 				"issue_id", issue.ID,

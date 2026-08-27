@@ -166,6 +166,7 @@ type Dependencies struct {
 	Runner               Runner
 	WorkspaceReaper      WorkspaceReaper
 	WorkflowMetrics      WorkflowMetricsRecorder
+	LaneMutations        store.LaneMutationStore
 	Efficiency           efficiency.Recorder
 	LifecycleExporter    efficiency.LifecycleExporter
 	WorkAttempts         store.WorkAttemptStore
@@ -224,6 +225,7 @@ type Orchestrator struct {
 	cfg                     Config
 	connector               connector.Connector
 	workflowMetrics         WorkflowMetricsRecorder
+	laneMutations           store.LaneMutationStore
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter
 	workAttempts            store.WorkAttemptStore
@@ -480,6 +482,17 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			agentResume = candidate
 		}
 	}
+	laneMutations := deps.LaneMutations
+	if laneMutations == nil {
+		if candidate, ok := deps.WorkAttempts.(store.LaneMutationStore); ok {
+			laneMutations = candidate
+		}
+	}
+	if laneMutations == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.LaneMutationStore); ok {
+			laneMutations = candidate
+		}
+	}
 	progressSpend := deps.ProgressSpend
 	if progressSpend == nil {
 		if candidate, ok := deps.WorkflowMetrics.(store.ProgressSpendStore); ok {
@@ -561,6 +574,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		cfg:                     cfg,
 		connector:               deps.Connector,
 		workflowMetrics:         deps.WorkflowMetrics,
+		laneMutations:           laneMutations,
 		efficiency:              deps.Efficiency,
 		lifecycleExporter:       deps.LifecycleExporter,
 		workAttempts:            deps.WorkAttempts,

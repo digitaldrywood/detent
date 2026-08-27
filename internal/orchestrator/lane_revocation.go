@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -37,6 +38,8 @@ type pendingLaneRevocation struct {
 	reapOutcome   procgroup.TerminationOutcome
 	reapDone      bool
 	reapErr       error
+	mutation      store.LaneMutationReceipt
+	mutationRead  bool
 }
 
 func (o *Orchestrator) beginLaneRevocation(
@@ -47,6 +50,29 @@ func (o *Orchestrator) beginLaneRevocation(
 	now time.Time,
 	reason string,
 ) {
+	o.beginLaneRevocationWithMutation(ctx, state, running, refreshed, now, reason, store.LaneMutationReceipt{})
+}
+
+func (o *Orchestrator) beginLaneRevocationForMutation(
+	ctx context.Context,
+	state *State,
+	running Running,
+	refreshed connector.Issue,
+	now time.Time,
+	receipt store.LaneMutationReceipt,
+) {
+	o.beginLaneRevocationWithMutation(ctx, state, running, refreshed, now, receipt.Reason, receipt)
+}
+
+func (o *Orchestrator) beginLaneRevocationWithMutation(
+	ctx context.Context,
+	state *State,
+	running Running,
+	refreshed connector.Issue,
+	now time.Time,
+	reason string,
+	receipt store.LaneMutationReceipt,
+) {
 	issueID := strings.TrimSpace(running.Issue.ID)
 	if state == nil || issueID == "" {
 		return
@@ -55,7 +81,10 @@ func (o *Orchestrator) beginLaneRevocation(
 		if !pending.reapDone {
 			o.reapPendingLaneRevocation(ctx, state, pending)
 		}
-		if pending.completion != nil && pending.reapDone {
+		if pending.completion != nil && pending.reapDone && !pending.mutationRead {
+			o.consumePendingLaneRevocation(ctx, pending, pending.completion.CompletedAt)
+		}
+		if pending.completion != nil && pending.reapDone && pending.mutationRead {
 			o.finishLaneRevocation(ctx, state, pending)
 		}
 		return
@@ -68,17 +97,24 @@ func (o *Orchestrator) beginLaneRevocation(
 	}
 	fromState := strings.TrimSpace(running.Issue.State)
 	attribution := laneRevocationAttribution(state, refreshed)
+	if receipt.ID > 0 {
+		fromState = strings.TrimSpace(receipt.FromState)
+		attribution = provenance.AttributionFromSource(provenance.SourceDetentInstance, provenance.Actor{})
+		reason = strings.TrimSpace(receipt.Reason)
+	}
 	running.Issue = mergeIssueTrackerFields(running.Issue, refreshed)
 	reason = laneRevocationReason(reason, attribution)
 	pending := &pendingLaneRevocation{
-		issue:       cloneIssue(running.Issue),
-		fromState:   fromState,
-		toState:     strings.TrimSpace(running.Issue.State),
-		reason:      strings.TrimSpace(reason),
-		origin:      attribution.Origin,
-		requestedAt: now.UTC(),
-		generation:  running.Generation,
-		running:     running,
+		issue:        cloneIssue(running.Issue),
+		fromState:    fromState,
+		toState:      strings.TrimSpace(running.Issue.State),
+		reason:       strings.TrimSpace(reason),
+		origin:       attribution.Origin,
+		requestedAt:  now.UTC(),
+		generation:   running.Generation,
+		running:      running,
+		mutation:     receipt,
+		mutationRead: receipt.ID == 0,
 	}
 	o.pendingLaneRevocations[issueID] = pending
 	state.Running[issueID] = running
@@ -172,14 +208,33 @@ func (o *Orchestrator) handleLaneRevocationCompletion(
 	if !pending.reapDone {
 		o.reapPendingLaneRevocation(ctx, state, pending)
 	}
-	if pending.reapDone {
+	if pending.reapDone && !pending.mutationRead {
+		o.consumePendingLaneRevocation(ctx, pending, event.CompletedAt)
+	}
+	if pending.reapDone && pending.mutationRead {
 		o.finishLaneRevocation(ctx, state, pending)
 	}
 	return true
 }
 
+func (o *Orchestrator) consumePendingLaneRevocation(ctx context.Context, pending *pendingLaneRevocation, at time.Time) {
+	if pending == nil || pending.mutationRead || pending.mutation.ID <= 0 {
+		return
+	}
+	consumed, err := o.consumeLaneMutationReceipt(ctx, pending.mutation, pending.running, pending.toState, at)
+	if err != nil {
+		pending.reapErr = errors.Join(pending.reapErr, err)
+		if o.logger != nil {
+			o.logger.Warn("lane revocation receipt consumption failed", "issue_id", pending.issue.ID, "receipt_id", pending.mutation.ID, "error", err)
+		}
+		return
+	}
+	pending.mutation = consumed
+	pending.mutationRead = true
+}
+
 func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, pending *pendingLaneRevocation) {
-	if pending == nil || pending.completion == nil || !pending.reapDone {
+	if pending == nil || pending.completion == nil || !pending.reapDone || !pending.mutationRead {
 		return
 	}
 	event := *pending.completion
@@ -205,7 +260,7 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 	}
 	running.Tokens = tokens
 	workDiscarded := laneRevocationDiscardedWork(event, running, tokens)
-	errorClass := laneRevocationErrorClass(pending.reason)
+	errorClass := laneRevocationErrorClass(pending.reason, pending.origin)
 	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
 	state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	o.recordProjectAttemptOutcome(
@@ -310,8 +365,8 @@ func laneRevocationReason(reason string, attribution provenance.Attribution) str
 	return reason
 }
 
-func laneRevocationErrorClass(reason string) string {
-	if strings.TrimSpace(reason) == laneRevocationDetentStateChanged {
+func laneRevocationErrorClass(reason string, origin provenance.Origin) string {
+	if strings.TrimSpace(reason) == laneRevocationDetentStateChanged || provenance.NormalizeOrigin(origin) == provenance.OriginDetent {
 		return laneRevocationDetentErrorClass
 	}
 	return string(store.WorkAttemptTerminalLaneRevoked)

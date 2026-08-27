@@ -168,7 +168,7 @@ func (o *Orchestrator) parkLifetimeLimit(
 	metadata.BlockedRecovery.LifetimeTokenLimit = decision.TokenLimit
 
 	transitioned := false
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, now, lifetimeLimitReason, metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, now, lifetimeLimitReason, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Error("lifetime issue limit state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}
@@ -329,7 +329,7 @@ func (o *Orchestrator) reconcileLifetimeLimitPark(
 	}
 	signature := lifetimeLimitUsageSignature(usage)
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionLifetimeLimitRecovery, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionLifetimeLimitRecovery, metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionLifetimeLimitRecovery, metadata, laneMutationPreserveOwnership); err != nil {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "transition_failed", &park, signature)
 		return true, false
 	}
