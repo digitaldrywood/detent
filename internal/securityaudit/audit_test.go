@@ -138,6 +138,21 @@ func TestBuildPromptUsesTrustedInstructionsAndBoundedPayload(t *testing.T) {
 	}
 }
 
+func TestReviewerDigestBindsAllOperativeInstructions(t *testing.T) {
+	t.Parallel()
+
+	base := ReviewerDigest()
+	if got := reviewerDigest(trustedReviewerInstructions+" changed", trustedToolInstructions); got == base {
+		t.Fatal("reviewer instruction change did not alter digest")
+	}
+	if got := reviewerDigest(trustedReviewerInstructions, trustedToolInstructions+" changed"); got == base {
+		t.Fatal("tool instruction change did not alter digest")
+	}
+	if ToolInstructions() != trustedToolInstructions {
+		t.Fatalf("ToolInstructions() = %q", ToolInstructions())
+	}
+}
+
 func TestBuildPromptRejectsUnsafeSnapshots(t *testing.T) {
 	t.Parallel()
 	base := Snapshot{Repository: "owner/repo", PRNumber: 1, BaseSHA: "base", HeadSHA: "head", Diff: "patch"}

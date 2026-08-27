@@ -122,6 +122,12 @@ func (s *sqliteStore) RecordSecurityAuditDisposition(ctx context.Context, dispos
 	if disposition.AuditRunID <= 0 || strings.TrimSpace(disposition.FindingID) == "" || strings.TrimSpace(disposition.Status) == "" || strings.TrimSpace(disposition.Evidence) == "" || strings.TrimSpace(disposition.ServiceIdentity) == "" {
 		return securityaudit.Disposition{}, errors.New("audit_run_id, finding_id, status, evidence, and service_identity are required")
 	}
+	if !strings.EqualFold(strings.TrimSpace(disposition.Status), securityaudit.DispositionFalsePositive) {
+		return securityaudit.Disposition{}, errors.New("security audit disposition status must be false_positive")
+	}
+	if len(strings.TrimSpace(disposition.Evidence)) > securityaudit.MaxDispositionEvidenceBytes {
+		return securityaudit.Disposition{}, fmt.Errorf("security audit disposition evidence exceeds %d bytes", securityaudit.MaxDispositionEvidenceBytes)
+	}
 	recordedAt, err := requiredTimestamp("recorded_at", disposition.RecordedAt)
 	if err != nil {
 		return securityaudit.Disposition{}, err
@@ -129,7 +135,7 @@ func (s *sqliteStore) RecordSecurityAuditDisposition(ctx context.Context, dispos
 	id, err := s.queries.CreateSecurityAuditDisposition(ctx, sqlc.CreateSecurityAuditDispositionParams{
 		AuditRunID:      disposition.AuditRunID,
 		FindingID:       strings.TrimSpace(disposition.FindingID),
-		Status:          strings.TrimSpace(disposition.Status),
+		Status:          securityaudit.DispositionFalsePositive,
 		Evidence:        strings.TrimSpace(disposition.Evidence),
 		ServiceIdentity: strings.TrimSpace(disposition.ServiceIdentity),
 		RecordedAt:      recordedAt,

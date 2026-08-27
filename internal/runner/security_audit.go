@@ -17,8 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-const securityAuditToolInstructions = "You are running a Detent-owned security audit. Use no tools. Review only the bounded JSON metadata and textual diff in the user prompt. Do not inspect files, execute commands, access the network, or request approval. Return only the required JSON object."
-
 func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution SecurityAuditExecution, err error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -75,7 +73,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(ctx, backend, AgentTurnRequest{
 		Workspace:               auditWorkspace,
 		Prompt:                  prompt,
-		ToolInstructions:        securityAuditToolInstructions,
+		ToolInstructions:        securityaudit.ToolInstructions(),
 		ReadOnly:                true,
 		RequireSubscriptionAuth: true,
 		Model:                   selectedModel,

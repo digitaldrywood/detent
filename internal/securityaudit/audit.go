@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	ReviewerVersion = "1"
+	ReviewerVersion             = "1"
+	MaxDispositionEvidenceBytes = 16 * 1024
 
 	AuthenticationSubscription = "chatgpt_subscription"
 	AuthenticationRejected     = "non_subscription"
@@ -92,13 +93,13 @@ type Run struct {
 }
 
 type Disposition struct {
-	ID              int64
-	AuditRunID      int64
-	FindingID       string
-	Status          string
-	Evidence        string
-	ServiceIdentity string
-	RecordedAt      time.Time
+	ID              int64     `json:"id"`
+	AuditRunID      int64     `json:"audit_run_id"`
+	FindingID       string    `json:"finding_id"`
+	Status          string    `json:"status"`
+	Evidence        string    `json:"evidence"`
+	ServiceIdentity string    `json:"service_identity"`
+	RecordedAt      time.Time `json:"recorded_at"`
 }
 
 type Evaluation struct {
@@ -109,7 +110,20 @@ type Evaluation struct {
 }
 
 func ReviewerDigest() string {
-	sum := sha256.Sum256([]byte(trustedReviewerInstructions))
+	return reviewerDigest(trustedReviewerInstructions, trustedToolInstructions)
+}
+
+func ServiceIdentity(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ""
+	}
+	return "detent:" + projectID
+}
+
+func reviewerDigest(reviewerInstructions, toolInstructions string) string {
+	contract := "detent-security-audit-reviewer-v1\x00" + reviewerInstructions + "\x00" + toolInstructions
+	sum := sha256.Sum256([]byte(contract))
 	return hex.EncodeToString(sum[:])
 }
 

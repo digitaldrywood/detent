@@ -27,6 +27,8 @@ Return exactly one JSON object with this schema:
 
 Use verdict fail when any actionable finding exists. Do not wrap the JSON in Markdown.`
 
+const trustedToolInstructions = "You are running a Detent-owned security audit. Use no tools. Review only the bounded JSON metadata and textual diff in the user prompt. Do not inspect files, execute commands, access the network, or request approval. Return only the required JSON object."
+
 type Snapshot struct {
 	ProjectID        string
 	IssueID          string
@@ -96,6 +98,10 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 		return "", fmt.Errorf("encode security audit payload: %w", err)
 	}
 	return trustedReviewerInstructions + "\n\nAudit payload:\n" + string(raw), nil
+}
+
+func ToolInstructions() string {
+	return trustedToolInstructions
 }
 
 func ParseOutput(output string) (Result, error) {
