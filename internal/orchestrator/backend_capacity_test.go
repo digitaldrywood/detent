@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -306,6 +307,19 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 		Type:   backendcapacity.ErrorTypeTransientOverload,
 		Kind:   backendcapacity.StartupTimeoutKind,
 		Reason: "backend startup handshake timed out",
+		Startup: &backendcapacity.StartupEvidence{
+			Stage:              "thread/start",
+			ElapsedMS:          5001,
+			DeadlineMS:         5000,
+			WorkerHost:         "worker-a",
+			ConcurrentStartups: 3,
+			ActiveWorkers:      7,
+			Process: backendcapacity.StartupProcessEvidence{
+				Ready:        true,
+				ExitObserved: true,
+				ExitStatus:   "signal: killed",
+			},
+		},
 	}, context.DeadlineExceeded)
 
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
@@ -332,6 +346,15 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	completion := attempts.completions[0]
 	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "retrying after backend startup timeout" {
 		t.Fatalf("completion = %#v, want startup timeout telemetry", completion)
+	}
+	var metadata struct {
+		BackendStartup backendcapacity.StartupEvidence `json:"backend_startup"`
+	}
+	if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil {
+		t.Fatalf("unmarshal worker metadata: %v", err)
+	}
+	if metadata.BackendStartup.Stage != "thread/start" || metadata.BackendStartup.ElapsedMS != 5001 || metadata.BackendStartup.DeadlineMS != 5000 || metadata.BackendStartup.ConcurrentStartups != 3 || metadata.BackendStartup.ActiveWorkers != 7 || !metadata.BackendStartup.Process.Ready || !metadata.BackendStartup.Process.ExitObserved {
+		t.Fatalf("backend startup metadata = %#v, want durable stage, timing, host, and process evidence", metadata.BackendStartup)
 	}
 }
 

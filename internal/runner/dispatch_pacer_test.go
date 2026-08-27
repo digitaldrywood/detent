@@ -73,6 +73,32 @@ func TestStartupDispatchPacerRampsInitialStarts(t *testing.T) {
 	}
 }
 
+func TestStartupDispatchPacerTracksHostScopedStartupAndActiveCounts(t *testing.T) {
+	t.Parallel()
+
+	pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{})
+	first := pacer.BeginStartup("worker-a")
+	second := pacer.BeginStartup("worker-a")
+	other := pacer.BeginStartup("worker-b")
+
+	if got := second.Snapshot(); got.concurrentStartups != 2 || got.activeWorkers != 2 {
+		t.Fatalf("worker-a snapshot = %#v, want 2 startups and 2 active workers", got)
+	}
+	if got := other.Snapshot(); got.concurrentStartups != 1 || got.activeWorkers != 1 {
+		t.Fatalf("worker-b snapshot = %#v, want host-isolated counts", got)
+	}
+	first.Ready()
+	if got := second.Snapshot(); got.concurrentStartups != 1 || got.activeWorkers != 2 {
+		t.Fatalf("worker-a ready snapshot = %#v, want 1 startup and 2 active workers", got)
+	}
+	first.Finish()
+	second.Finish()
+	other.Finish()
+	if len(pacer.startingByHost) != 0 || len(pacer.activeByHost) != 0 {
+		t.Fatalf("finished census = startups %#v active %#v, want empty", pacer.startingByHost, pacer.activeByHost)
+	}
+}
+
 func TestSupervisorPacesNormalDispatchBeforeRunningWorker(t *testing.T) {
 	t.Parallel()
 

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
@@ -37,6 +38,10 @@ type localTransport struct {
 	cmd            *exec.Cmd
 	processGroupID int
 	workerProcess  procgroup.Identity
+	startedAt      time.Time
+	readyAt        time.Time
+	exitedAt       time.Time
+	exitStatus     string
 	stdin          io.WriteCloser
 	stdout         io.ReadCloser
 	stderr         io.ReadCloser
@@ -127,6 +132,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 			stderrWriter.Close(),
 		)
 	}
+	processStartedAt := time.Now().UTC()
 	if err := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); err != nil {
 		terminateErr := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
 		waitErr := cmd.Wait()
@@ -145,6 +151,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	transport := &localTransport{
 		cmd:            cmd,
 		processGroupID: procgroup.GroupID(cmd),
+		startedAt:      processStartedAt,
 		stdin:          stdin,
 		stdout:         stdout,
 		stderr:         stderr,
@@ -305,6 +312,38 @@ func (t *localTransport) WorkerProcess() procgroup.Identity {
 	return t.workerProcess
 }
 
+func (t *localTransport) MarkStartupReady(readyAt time.Time) {
+	t.waitMu.Lock()
+	defer t.waitMu.Unlock()
+	if t.readyAt.IsZero() {
+		t.readyAt = readyAt.UTC()
+	}
+}
+
+func (t *localTransport) StartupProcessEvidence() backendcapacity.StartupProcessEvidence {
+	t.waitMu.Lock()
+	defer t.waitMu.Unlock()
+	startedAt := t.startedAt
+	if !t.workerProcess.StartedAt.IsZero() {
+		startedAt = t.workerProcess.StartedAt.UTC()
+	}
+	evidence := backendcapacity.StartupProcessEvidence{
+		StartedAt:    timePointer(startedAt),
+		Ready:        !t.readyAt.IsZero(),
+		ReadyAt:      timePointer(t.readyAt),
+		ExitObserved: !t.exitedAt.IsZero(),
+		ExitedAt:     timePointer(t.exitedAt),
+		ExitStatus:   strings.TrimSpace(t.exitStatus),
+	}
+	if !startedAt.IsZero() && !t.readyAt.IsZero() {
+		evidence.ReadyAfterMS = max(t.readyAt.Sub(startedAt).Milliseconds(), 0)
+	}
+	if !startedAt.IsZero() && !t.exitedAt.IsZero() {
+		evidence.ExitAfterMS = max(t.exitedAt.Sub(startedAt).Milliseconds(), 0)
+	}
+	return evidence
+}
+
 func transportContextError(ctxErr error, operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ctxErr, operation, err)
 }
@@ -397,6 +436,10 @@ func (t *localTransport) wait() {
 	}
 	t.waitMu.Lock()
 	t.waitErr = err
+	t.exitedAt = time.Now().UTC()
+	if t.cmd != nil && t.cmd.ProcessState != nil {
+		t.exitStatus = t.cmd.ProcessState.String()
+	}
 	t.waitMu.Unlock()
 	close(t.done)
 }
@@ -530,4 +573,12 @@ func contextOrBackground(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	value = value.UTC()
+	return &value
 }

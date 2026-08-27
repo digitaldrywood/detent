@@ -26,6 +26,8 @@ type StartupDispatchPacer struct {
 	jitter             time.Duration
 	rampStarts         int
 	started            int
+	activeByHost       map[string]int
+	startingByHost     map[string]int
 	sleep              func(context.Context, time.Duration) error
 	randomJitter       func(time.Duration) time.Duration
 }
@@ -46,7 +48,92 @@ func NewStartupDispatchPacer(cfg StartupDispatchPacerConfig) *StartupDispatchPac
 		rampStarts:         cfg.RampStarts,
 		sleep:              cfg.Sleep,
 		randomJitter:       cfg.RandomJitter,
+		activeByHost:       make(map[string]int),
+		startingByHost:     make(map[string]int),
 	}
+}
+
+type startupHostSnapshot struct {
+	concurrentStartups int
+	activeWorkers      int
+}
+
+type startupObservation interface {
+	Ready()
+	Snapshot() startupHostSnapshot
+	Finish()
+}
+
+type startupCensus interface {
+	BeginStartup(string) startupObservation
+}
+
+type dispatchStartupObservation struct {
+	pacer    *StartupDispatchPacer
+	host     string
+	ready    bool
+	finished bool
+}
+
+func (p *StartupDispatchPacer) BeginStartup(host string) startupObservation {
+	observation := &dispatchStartupObservation{pacer: p, host: host}
+	if p == nil {
+		return observation
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.activeByHost[host]++
+	p.startingByHost[host]++
+	return observation
+}
+
+func (o *dispatchStartupObservation) Ready() {
+	if o == nil || o.pacer == nil {
+		return
+	}
+	o.pacer.mu.Lock()
+	defer o.pacer.mu.Unlock()
+	if o.ready || o.finished {
+		return
+	}
+	o.ready = true
+	decrementHostCount(o.pacer.startingByHost, o.host)
+}
+
+func (o *dispatchStartupObservation) Snapshot() startupHostSnapshot {
+	if o == nil || o.pacer == nil {
+		return startupHostSnapshot{}
+	}
+	o.pacer.mu.Lock()
+	defer o.pacer.mu.Unlock()
+	return startupHostSnapshot{
+		concurrentStartups: o.pacer.startingByHost[o.host],
+		activeWorkers:      o.pacer.activeByHost[o.host],
+	}
+}
+
+func (o *dispatchStartupObservation) Finish() {
+	if o == nil || o.pacer == nil {
+		return
+	}
+	o.pacer.mu.Lock()
+	defer o.pacer.mu.Unlock()
+	if o.finished {
+		return
+	}
+	o.finished = true
+	decrementHostCount(o.pacer.activeByHost, o.host)
+	if !o.ready {
+		decrementHostCount(o.pacer.startingByHost, o.host)
+	}
+}
+
+func decrementHostCount(counts map[string]int, host string) {
+	if counts[host] <= 1 {
+		delete(counts, host)
+		return
+	}
+	counts[host]--
 }
 
 func (p *StartupDispatchPacer) Wait(ctx context.Context) error {

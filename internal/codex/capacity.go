@@ -67,7 +67,8 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		return backendcapacity.Details{}, false
 	}
 	text := codexCapacityErrorText(err)
-	if codexStartupOperation(text) {
+	startup, hasStartupEvidence := startupEvidence(err)
+	if hasStartupEvidence || codexStartupOperation(text) {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
 			return backendcapacity.Details{
@@ -75,6 +76,7 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 				Kind:    backendcapacity.StartupTimeoutKind,
 				Reason:  "backend startup handshake timed out",
 				Trigger: boundedCapacityTrigger(text),
+				Startup: startupEvidencePointer(startup, hasStartupEvidence),
 			}, true
 		case errors.Is(err, io.EOF), strings.Contains(strings.ToLower(text), "process exited"), strings.Contains(strings.ToLower(text), "start codex app-server transport"):
 			return backendcapacity.Details{
@@ -82,6 +84,7 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 				Kind:    backendcapacity.StartupFailureKind,
 				Reason:  "backend startup handshake failed",
 				Trigger: boundedCapacityTrigger(text),
+				Startup: startupEvidencePointer(startup, hasStartupEvidence),
 			}, true
 		}
 	}
@@ -102,6 +105,13 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	}
 	details.Trigger = boundedCapacityTrigger(evidence)
 	return details, true
+}
+
+func startupEvidencePointer(evidence backendcapacity.StartupEvidence, ok bool) *backendcapacity.StartupEvidence {
+	if !ok {
+		return nil
+	}
+	return &evidence
 }
 
 func codexSubscriptionLimitText(text string) bool {
