@@ -73,6 +73,76 @@ func TestStartupDispatchPacerRampsInitialStarts(t *testing.T) {
 	}
 }
 
+func TestStartupDispatchPacerTracksHostScopedStartupAndActiveCounts(t *testing.T) {
+	t.Parallel()
+
+	pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{})
+	first := pacer.BeginStartup("worker-a")
+	second := pacer.BeginStartup("worker-a")
+	other := pacer.BeginStartup("worker-b")
+
+	if got := second.Snapshot(); got.concurrentStartups != 2 || got.activeWorkers != 2 {
+		t.Fatalf("worker-a snapshot = %#v, want 2 startups and 2 active workers", got)
+	}
+	if got := other.Snapshot(); got.concurrentStartups != 1 || got.activeWorkers != 1 {
+		t.Fatalf("worker-b snapshot = %#v, want host-isolated counts", got)
+	}
+	first.Ready()
+	if got := second.Snapshot(); got.concurrentStartups != 1 || got.activeWorkers != 2 {
+		t.Fatalf("worker-a ready snapshot = %#v, want 1 startup and 2 active workers", got)
+	}
+	first.Finish()
+	second.Finish()
+	other.Finish()
+	if len(pacer.startingByHost) != 0 || len(pacer.activeByHost) != 0 {
+		t.Fatalf("finished census = startups %#v active %#v, want empty", pacer.startingByHost, pacer.activeByHost)
+	}
+}
+
+func TestStartupDispatchPacerCensusDoesNotWaitForPacingSleep(t *testing.T) {
+	t.Parallel()
+
+	sleeping := make(chan struct{})
+	release := make(chan struct{})
+	pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{
+		MaxStartsPerSecond: 1,
+		RampStarts:         2,
+		Sleep: func(context.Context, time.Duration) error {
+			close(sleeping)
+			<-release
+			return nil
+		},
+	})
+	if err := pacer.Wait(t.Context()); err != nil {
+		t.Fatalf("first Wait() error = %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- pacer.Wait(t.Context())
+	}()
+	<-sleeping
+
+	observation := pacer.BeginStartup("worker-a")
+	snapshotDone := make(chan startupHostSnapshot, 1)
+	go func() {
+		snapshotDone <- observation.Snapshot()
+	}()
+	select {
+	case got := <-snapshotDone:
+		if got.concurrentStartups != 1 || got.activeWorkers != 1 {
+			t.Fatalf("snapshot = %#v, want 1 startup and 1 active worker", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Snapshot() waited for pacing sleep")
+	}
+
+	close(release)
+	if err := <-waitDone; err != nil {
+		t.Fatalf("second Wait() error = %v", err)
+	}
+	observation.Finish()
+}
+
 func TestSupervisorPacesNormalDispatchBeforeRunningWorker(t *testing.T) {
 	t.Parallel()
 

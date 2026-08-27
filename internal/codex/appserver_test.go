@@ -14,7 +14,139 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 )
+
+func TestAppServerStartupFailuresIdentifyStageAndDeadline(t *testing.T) {
+	t.Parallel()
+
+	const deadline = 5 * time.Millisecond
+	tests := []struct {
+		name  string
+		stage string
+		run   func(*AppServer, Transport) error
+	}{
+		{name: "initialize", stage: "initialize", run: func(server *AppServer, transport Transport) error {
+			return server.initialize(t.Context(), transport, nil)
+		}},
+		{name: "thread start", stage: "thread/start", run: func(server *AppServer, transport Transport) error {
+			_, _, err := server.startThread(t.Context(), transport, RunTurnRequest{}, nil)
+			return err
+		}},
+		{name: "thread resume", stage: "thread/resume", run: func(server *AppServer, transport Transport) error {
+			_, _, err := server.resumeThread(t.Context(), transport, RunTurnRequest{}, "thread-1", nil)
+			return err
+		}},
+		{name: "turn start", stage: "turn/start", run: func(server *AppServer, transport Transport) error {
+			_, err := server.startTurn(t.Context(), transport, RunTurnRequest{}, "thread-1", nil, nil)
+			return err
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transport := newBlockingAppServerTransport(nil)
+			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(deadline))
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+			err = tt.run(server, transport)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("startup error = %v, want deadline exceeded", err)
+			}
+			evidence, ok := startupEvidence(err)
+			if !ok {
+				t.Fatalf("startup evidence missing from %v", err)
+			}
+			if evidence.Stage != tt.stage || evidence.DeadlineMS != deadline.Milliseconds() || evidence.ElapsedMS < 1 {
+				t.Fatalf("startup evidence = %#v, want stage %q and deadline %s", evidence, tt.stage, deadline)
+			}
+			details, ok := ClassifyCapacityError(err, nil, time.Now())
+			if !ok || details.Kind != backendcapacity.StartupTimeoutKind || details.Startup == nil || details.Startup.Stage != tt.stage {
+				t.Fatalf("capacity details = %#v, want exact startup stage", details)
+			}
+		})
+	}
+}
+
+func TestAppServerUpdateHandlerFailureIsNotStartupFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response Message
+		run      func(*AppServer, Transport, UpdateHandler) error
+	}{
+		{
+			name:     "thread start",
+			response: responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1"}}`),
+			run: func(server *AppServer, transport Transport, onUpdate UpdateHandler) error {
+				_, _, err := server.startThread(t.Context(), transport, RunTurnRequest{}, onUpdate)
+				return err
+			},
+		},
+		{
+			name:     "thread resume",
+			response: responseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-1"}}`),
+			run: func(server *AppServer, transport Transport, onUpdate UpdateHandler) error {
+				_, _, err := server.resumeThread(t.Context(), transport, RunTurnRequest{}, "thread-1", onUpdate)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transport := newFakeAppServerTransport([]Message{tt.response})
+			server, err := NewAppServer(staticTransportFactory{transport: transport})
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+			err = tt.run(server, transport, func(Update) error { return context.DeadlineExceeded })
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("startup call error = %v, want update handler deadline", err)
+			}
+			if _, ok := startupEvidence(err); ok {
+				t.Fatalf("startup evidence present on update handler error %v", err)
+			}
+			if details, ok := ClassifyCapacityError(err, nil, time.Now()); ok && details.Kind == backendcapacity.StartupTimeoutKind {
+				t.Fatalf("update handler error classified as startup timeout: %#v", details)
+			}
+		})
+	}
+}
+
+func TestAppServerStartupFailureRetainsProcessReadinessAndExit(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	transport := &startupEvidenceTransport{
+		blockingAppServerTransport: newBlockingAppServerTransport([]Message{
+			responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+		}),
+		evidence: backendcapacity.StartupProcessEvidence{StartedAt: &startedAt},
+	}
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(5*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	_, err = server.RunTurn(t.Context(), RunTurnRequest{}, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunTurn() error = %v, want deadline exceeded", err)
+	}
+	evidence, ok := startupEvidence(err)
+	if !ok || evidence.Stage != "thread/start" {
+		t.Fatalf("startup evidence = %#v, %v", evidence, ok)
+	}
+	if !evidence.Process.Ready || evidence.Process.ReadyAt == nil || !evidence.Process.ExitObserved || evidence.Process.ExitedAt == nil || evidence.Process.ExitStatus != "closed after startup failure" {
+		t.Fatalf("process evidence = %#v, want ready and exit observations", evidence.Process)
+	}
+}
 
 func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	t.Parallel()
@@ -1890,6 +2022,28 @@ func (t *fakeAppServerTransport) sentMessages() []Message {
 
 type blockingAppServerTransport struct {
 	*fakeAppServerTransport
+}
+
+type startupEvidenceTransport struct {
+	*blockingAppServerTransport
+	evidence backendcapacity.StartupProcessEvidence
+}
+
+func (t *startupEvidenceTransport) MarkStartupReady(readyAt time.Time) {
+	t.evidence.Ready = true
+	t.evidence.ReadyAt = &readyAt
+}
+
+func (t *startupEvidenceTransport) Close(context.Context) error {
+	exitedAt := time.Now().UTC()
+	t.evidence.ExitObserved = true
+	t.evidence.ExitedAt = &exitedAt
+	t.evidence.ExitStatus = "closed after startup failure"
+	return nil
+}
+
+func (t *startupEvidenceTransport) StartupProcessEvidence() backendcapacity.StartupProcessEvidence {
+	return t.evidence
 }
 
 func newBlockingAppServerTransport(received []Message) *blockingAppServerTransport {

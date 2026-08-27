@@ -161,6 +161,7 @@ type AppServer struct {
 	logger           *slog.Logger
 	readTimeout      time.Duration
 	turnTimeout      time.Duration
+	now              func() time.Time
 }
 
 type AppServerOption func(*AppServer)
@@ -344,6 +345,7 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 		logger:      slog.Default(),
 		readTimeout: defaultReadTimeout,
 		turnTimeout: defaultTurnTimeout,
+		now:         time.Now,
 	}
 
 	for _, opt := range opts {
@@ -363,6 +365,9 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 	}
 	if server.turnTimeout <= 0 {
 		server.turnTimeout = defaultTurnTimeout
+	}
+	if server.now == nil {
+		server.now = time.Now
 	}
 
 	return server, nil
@@ -397,13 +402,15 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 
 	transport, err := s.transportFactory.NewTransport(ctx)
 	if err != nil {
-		return RunTurnResult{}, fmt.Errorf("start codex app-server transport: %w", err)
+		now := s.now()
+		return RunTurnResult{}, startupStageError(fmt.Errorf("start codex app-server transport: %w", err), "process/start", now, now, 0)
 	}
 	defer func() {
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
 		if closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
+		attachStartupProcessEvidence(err, transport)
 	}()
 
 	if identity := transportProcessIdentity(transport); identity != "" {
@@ -686,7 +693,11 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	return nil
 }
 
-func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdate UpdateHandler) error {
+func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdate UpdateHandler) (err error) {
+	startedAt := s.now()
+	defer func() {
+		err = startupStageError(err, "initialize", startedAt, s.now(), s.readTimeout)
+	}()
 	params := map[string]any{
 		"capabilities": map[string]any{
 			"experimentalApi": true,
@@ -700,6 +711,7 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, nil, nil, onUpdate); err != nil {
 		return err
 	}
+	markTransportReady(transport, s.now())
 
 	return transport.Send(ctx, Message{
 		Method: "initialized",
@@ -764,7 +776,14 @@ func (s *AppServer) startThread(
 	transport Transport,
 	req RunTurnRequest,
 	onUpdate UpdateHandler,
-) (string, agentidentity.Identity, error) {
+) (threadID string, runtimeIdentity agentidentity.Identity, err error) {
+	startedAt := s.now()
+	startupComplete := false
+	defer func() {
+		if !startupComplete {
+			err = startupStageError(err, "thread/start", startedAt, s.now(), s.readTimeout)
+		}
+	}()
 	params := map[string]any{
 		"cwd": req.Workspace,
 	}
@@ -811,6 +830,7 @@ func (s *AppServer) startThread(
 	if !identity.IsZero() {
 		update = runtimeIdentityUpdate("thread/start", response.Thread.ID, identity)
 	}
+	startupComplete = true
 	if err := emitUpdate(update, onUpdate); err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -823,7 +843,14 @@ func (s *AppServer) resumeThread(
 	req RunTurnRequest,
 	threadID string,
 	onUpdate UpdateHandler,
-) (string, agentidentity.Identity, error) {
+) (resumedThreadID string, runtimeIdentity agentidentity.Identity, err error) {
+	startedAt := s.now()
+	startupComplete := false
+	defer func() {
+		if !startupComplete {
+			err = startupStageError(err, "thread/resume", startedAt, s.now(), s.readTimeout)
+		}
+	}()
 	params := map[string]any{
 		"threadId": threadID,
 		"cwd":      req.Workspace,
@@ -869,6 +896,7 @@ func (s *AppServer) resumeThread(
 	if !identity.IsZero() {
 		update = runtimeIdentityUpdate("thread/resume", response.Thread.ID, identity)
 	}
+	startupComplete = true
 	if err := emitUpdate(update, onUpdate); err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -888,7 +916,11 @@ func (s *AppServer) startTurn(
 	threadID string,
 	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
-) (startTurnResult, error) {
+) (turn startTurnResult, err error) {
+	startedAt := s.now()
+	defer func() {
+		err = startupStageError(err, "turn/start", startedAt, s.now(), s.readTimeout)
+	}()
 	params := map[string]any{
 		"threadId": threadID,
 		"input": []map[string]any{
@@ -916,7 +948,6 @@ func (s *AppServer) startTurn(
 		return startTurnResult{}, err
 	}
 
-	turn := startTurnResult{}
 	trackTurnStarted := func(update Update) error {
 		if update.Type == UpdateTurnStarted {
 			turn.StartedEmitted = true

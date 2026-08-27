@@ -338,6 +338,28 @@ func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	}
 }
 
+func TestSupervisorAddsSharedHostCensusToStartupFailure(t *testing.T) {
+	t.Parallel()
+
+	pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{})
+	otherProject := pacer.BeginStartup("worker-a")
+	defer otherProject.Finish()
+	supervisor, err := NewSupervisor(startupFailureBackend{}, SupervisorConfig{DispatchPacer: pacer})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{WorkerHost: "worker-a"})
+	capacityErr, ok := backendcapacity.As(completion.Err)
+	if !ok || capacityErr.Details.Startup == nil {
+		t.Fatalf("completion error = %v, want startup capacity evidence", completion.Err)
+	}
+	evidence := capacityErr.Details.Startup
+	if evidence.WorkerHost != "worker-a" || evidence.ConcurrentStartups != 2 || evidence.ActiveWorkers != 2 {
+		t.Fatalf("startup evidence = %#v, want shared worker-a census", evidence)
+	}
+}
+
 func TestSupervisorLogsBackendErrorBodyForRunnerErrors(t *testing.T) {
 	t.Parallel()
 
@@ -674,6 +696,25 @@ type capacityBackend struct {
 }
 
 type transientOverloadBackend struct{}
+
+type startupFailureBackend struct{}
+
+func (startupFailureBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   backendcapacity.StartupTimeoutKind,
+			Reason: "backend startup handshake timed out",
+			Startup: &backendcapacity.StartupEvidence{
+				Stage:      "initialize",
+				ElapsedMS:  5000,
+				DeadlineMS: 5000,
+			},
+		},
+		context.DeadlineExceeded,
+	)
+}
 
 func (transientOverloadBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{}, backendcapacity.NewError(

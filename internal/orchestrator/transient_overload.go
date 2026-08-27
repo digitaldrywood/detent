@@ -65,7 +65,7 @@ func (o *Orchestrator) handleTransientOverload(
 		event.Err.Error(),
 		"waiting",
 		statusMessage,
-		nil,
+		startupFailureMetadata(overloadErr.Details),
 	)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
@@ -123,4 +123,11 @@ func (o *Orchestrator) handleTransientOverload(
 			"error", event.Err,
 		)
 	}
+}
+
+func startupFailureMetadata(details backendcapacity.Details) map[string]any {
+	if details.Startup == nil {
+		return nil
+	}
+	return map[string]any{"backend_startup": details.Startup}
 }

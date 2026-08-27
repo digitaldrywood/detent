@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -205,6 +206,20 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			return completion
 		}
 	}
+	var startup startupObservation
+	if census, ok := s.dispatchPacer.(startupCensus); ok {
+		startup = census.BeginStartup(request.WorkerHost)
+		defer startup.Finish()
+		usageHandler := request.OnUsageUpdate
+		if usageHandler != nil {
+			request.OnUsageUpdate = func(update UsageUpdate) error {
+				if update.TurnCount > 0 || update.LastEvent == string(AgentUpdateTurnStarted) {
+					startup.Ready()
+				}
+				return usageHandler(update)
+			}
+		}
+	}
 
 	result, err := s.backend.Run(ctx, request)
 	if cause := context.Cause(ctx); errors.Is(cause, ErrMergeWorkerStartupTimeout) ||
@@ -218,6 +233,10 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 		if errors.Is(cause, ErrLaneRevoked) {
 			result.FinalState = FinalStateLaneRevoked
 		}
+	}
+	if startup != nil {
+		snapshot := startup.Snapshot()
+		backendcapacity.SetStartupHostSnapshot(err, request.WorkerHost, snapshot.concurrentStartups, snapshot.activeWorkers)
 	}
 	completion.CompletedAt = s.now()
 	completion.Result = result
