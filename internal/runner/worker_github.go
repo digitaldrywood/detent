@@ -85,6 +85,48 @@ type workerGitHubBudget struct {
 	ObservedAt time.Time
 }
 
+type WorkerGitHubBudgetMonitorError struct {
+	CredentialIdentity string
+	Consumer           string
+	Operation          string
+	Err                error
+}
+
+func (e *WorkerGitHubBudgetMonitorError) Error() string {
+	if e == nil {
+		return ErrWorkerGitHubBudgetMonitor.Error()
+	}
+	message := ErrWorkerGitHubBudgetMonitor.Error()
+	if operation := strings.TrimSpace(e.Operation); operation != "" {
+		message += ": operation=" + operation
+	}
+	if consumer := strings.TrimSpace(e.Consumer); consumer != "" {
+		message += " consumer=" + consumer
+	}
+	if credential := strings.TrimSpace(e.CredentialIdentity); credential != "" {
+		message += " credential_identity=" + credential
+	}
+	if e.Err != nil {
+		message += ": " + e.Err.Error()
+	}
+	return message
+}
+
+func (e *WorkerGitHubBudgetMonitorError) Unwrap() []error {
+	if e == nil || e.Err == nil {
+		return []error{ErrWorkerGitHubBudgetMonitor}
+	}
+	return []error{ErrWorkerGitHubBudgetMonitor, e.Err}
+}
+
+func AsWorkerGitHubBudgetMonitorError(err error) (*WorkerGitHubBudgetMonitorError, bool) {
+	var monitorErr *WorkerGitHubBudgetMonitorError
+	if !errors.As(err, &monitorErr) || monitorErr == nil {
+		return nil, false
+	}
+	return monitorErr, true
+}
+
 func (r *Runner) workerGitHubPolicy(ctx context.Context, cfg config.Config, issueIdentifier string) (workerGitHubPolicy, error) {
 	policy, err := newWorkerGitHubPolicy(ctx, cfg, r.projectID, issueIdentifier, r.lookupEnv, nil, nil, r.logger)
 	if err != nil {
@@ -104,7 +146,7 @@ func (r *Runner) ProbeGitHubRESTBudget(ctx context.Context, issue connector.Issu
 	}
 	budget, err := policy.probe(ctx)
 	if err != nil {
-		return telemetry.RESTBudget{}, true, err
+		return telemetry.RESTBudget{}, true, policy.monitorError("recovery_probe", err)
 	}
 	return policy.restBudget(budget), true, nil
 }
@@ -378,10 +420,10 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 	policy = classified
 	budget, err := policy.probe(ctx)
 	if err != nil {
-		return ctx, func() error { return nil }, fmt.Errorf("%w: %w", ErrWorkerGitHubBudgetMonitor, err)
+		return ctx, func() error { return nil }, policy.monitorError("launch_probe", err)
 	}
 	if err := policy.observe(budget, onUpdate); err != nil {
-		return ctx, func() error { return nil }, err
+		return ctx, func() error { return nil }, policy.monitorError("launch_observation", err)
 	}
 	if err := policy.reserveError(budget); err != nil {
 		return ctx, func() error { return nil }, err
@@ -410,11 +452,11 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 			case <-poll:
 				budget, probeErr := policy.probe(governedCtx)
 				if probeErr != nil {
-					cancel(fmt.Errorf("%w: %w", ErrWorkerGitHubBudgetMonitor, probeErr))
+					cancel(policy.monitorError("periodic_probe", probeErr))
 					return
 				}
 				if observeErr := policy.observe(budget, onUpdate); observeErr != nil {
-					cancel(fmt.Errorf("%w: publish worker github budget: %w", ErrWorkerGitHubBudgetMonitor, observeErr))
+					cancel(policy.monitorError("periodic_observation", observeErr))
 					return
 				}
 				if reserveErr := policy.reserveError(budget); reserveErr != nil {
@@ -448,7 +490,7 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 	if p.PrincipalID <= 0 || strings.TrimSpace(p.Principal.Login) == "" {
 		principalID, principal, err := p.authenticatedPrincipal(ctx, p.Token)
 		if err != nil {
-			return workerGitHubPolicy{}, fmt.Errorf("%w: verify worker credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+			return workerGitHubPolicy{}, p.monitorError("credential_classification_worker", err)
 		}
 		p.PrincipalID = principalID
 		p.Principal = principal
@@ -459,7 +501,7 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 	if p.CredentialMode == workerGitHubCredentialUnclassified {
 		orchestratorID, _, err := p.authenticatedPrincipal(ctx, p.OrchestratorToken)
 		if err != nil {
-			return workerGitHubPolicy{}, fmt.Errorf("%w: verify orchestrator credential principal: %w", ErrWorkerGitHubBudgetMonitor, err)
+			return workerGitHubPolicy{}, p.monitorError("credential_classification_orchestrator", err)
 		}
 		if p.PrincipalID == orchestratorID {
 			p.CredentialMode = workerGitHubCredentialShared
@@ -676,4 +718,13 @@ func (p workerGitHubPolicy) budgetConsumer() string {
 		return telemetry.RESTConsumerSharedPool
 	}
 	return telemetry.RESTConsumerWorker
+}
+
+func (p workerGitHubPolicy) monitorError(operation string, err error) error {
+	return &WorkerGitHubBudgetMonitorError{
+		CredentialIdentity: strings.TrimSpace(p.CredentialIdentity),
+		Consumer:           p.budgetConsumer(),
+		Operation:          strings.TrimSpace(operation),
+		Err:                err,
+	}
 }

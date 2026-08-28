@@ -258,6 +258,7 @@ func cooperativeStopError(err error) bool {
 		errors.Is(err, ErrSessionMemoryCeilingExceeded) ||
 		errors.Is(err, ErrSessionTurnLimitExceeded) ||
 		errors.Is(err, ErrSessionNoProgress) ||
+		errors.Is(err, ErrWorkerGitHubBudgetMonitor) ||
 		IsDeliverableConfigurationError(err)
 }
 

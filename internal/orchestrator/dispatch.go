@@ -167,6 +167,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
+			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RetryMode = retry.RetryMode
@@ -175,6 +176,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
 			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
+			rescheduled.GitHubMonitor = retry.GitHubMonitor
+			rescheduled.GitHubCredential = retry.GitHubCredential
 			rescheduled.Wait = retry.Wait
 			rescheduled.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 			state.Retry[issue.ID] = rescheduled
@@ -312,6 +315,7 @@ const (
 	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
+	dispatchIssueFailureGitHubMonitor         = "worker_github_budget_monitor_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
 	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
@@ -404,6 +408,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	}
 	if forgeAvailabilityBlocks(state, issue, queuedRetry, o.cfg.ForgeHost, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
+	}
+	if workerGitHubMonitorBlocks(state, issue.ID, queuedRetry, now) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubMonitor}
 	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
@@ -655,6 +662,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		CapacityScope:       capacityScope,
 		CapacityProbe:       capacityProbeKey != "",
 		ForgeProbeHost:      reservedForgeProbeHost(state, issue.ID),
+		GitHubCredential:    reservedGitHubCredential(state, issue.ID),
 		ModelPermitExempt:   !modelPermitRequired,
 		StopDestination:     o.cfg.StopRunTargetState,
 		StopPriorityOptions: stopRunPriorityOptions(o.cfg.StopRunPriorityNames),

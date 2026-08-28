@@ -89,6 +89,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	o.trackRunningHeartbeat(state, running, state.Claimed[event.issueID], o.clockNow())
 	if event.usage.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
+		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 	}
 	if strings.TrimSpace(event.usage.SessionID) != "" || event.usage.TurnCount > 0 {
@@ -134,15 +135,19 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		beforeRefresh := running
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
-			availabilityErr, unavailable := connector.AsTrackerAvailability(err)
-			if unavailable && availabilityErr != nil {
-				o.deferTrackerUnavailableCompletion(ctx, state, event, running, availabilityErr)
-				return
-			} else {
+			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubBudgetMonitor) {
+				availabilityErr, unavailable := connector.AsTrackerAvailability(err)
+				if unavailable && availabilityErr != nil {
+					o.deferTrackerUnavailableCompletion(ctx, state, event, running, availabilityErr)
+					return
+				}
 				o.rejectWorkerCompletion(ctx, state, event, running, laneRevocationCompletionFenceUnavailable, err)
 				o.beginLaneRevocation(ctx, state, running, running.Issue, event.CompletedAt, laneRevocationCompletionFenceUnavailable)
 				o.handleLaneRevocationCompletion(ctx, state, event, running)
 				return
+			}
+			if o.logger != nil {
+				o.logger.Warn("worker GitHub monitor completion lane refresh unavailable; preserving monitor deferral", "issue_id", event.IssueID, "error", err)
 			}
 		} else {
 			receiptAccepted := false
@@ -226,6 +231,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	if o.handleGitHubMonitorCompletion(ctx, state, event, running) {
+		return
+	}
 	o.refreshEfficiencyReceipt(ctx, running.Issue, event.CompletedAt)
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
 		return

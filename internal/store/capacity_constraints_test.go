@@ -80,6 +80,12 @@ func TestCapacityConstraintReason(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:       "worker GitHub monitor unavailable",
+			waitReason: "worker_github_budget_monitor_unavailable",
+			want:       CapacityConstraintGitHubMonitor,
+			wantOK:     true,
+		},
+		{
 			name:       "CI unavailable",
 			waitReason: "ci_unavailable",
 			want:       CapacityConstraintCIUnavailable,
