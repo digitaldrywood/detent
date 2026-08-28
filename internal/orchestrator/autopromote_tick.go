@@ -458,8 +458,9 @@ func autoPromoteActiveGatePendingIssue(
 		return false
 	}
 	autoCfg = normalizeAutoPromoteConfig(autoCfg)
+	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completed.CompletionKind)
 	return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
-		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate))
+		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate), operationalCompletionAccepted)
 }
 
 func autoPromoteActiveGateTrackedIssue(

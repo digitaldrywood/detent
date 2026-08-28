@@ -17,11 +17,12 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		issue      connector.Issue
-		finalState string
-		cfg        AutoPromoteConfig
-		want       string
+		name           string
+		issue          connector.Issue
+		finalState     string
+		completionKind string
+		cfg            AutoPromoteConfig
+		want           string
 	}{
 		{
 			name:       "todo completed with open pull request advances to human review when disabled",
@@ -73,7 +74,8 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			want:       autoPromoteSourceState,
 		},
 		{
-			name: "operational rework completion advances to review",
+			name:           "operational rework completion advances to review",
+			completionKind: workpad.CompletionOperational,
 			issue: func() connector.Issue {
 				issue := completionTransitionIssue("Rework", "")
 				issue.Description = operationalCompletionAuthorizationBody()
@@ -88,6 +90,22 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 				Gate:    gate.Config{Kind: gate.KindCommand},
 			},
 			want: autoPromoteSourceState,
+		},
+		{
+			name: "unaccepted operational completion stays active",
+			issue: func() connector.Issue {
+				issue := completionTransitionIssue("In Progress", "")
+				issue.Description = operationalCompletionAuthorizationBody()
+				issue.Comments = []connector.IssueComment{{
+					Body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+				}}
+				return issue
+			}(),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindCommand},
+			},
 		},
 		{
 			name:       "artifact rework completed without pull request advances to configured review",
@@ -207,6 +225,7 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			got := completedActiveReviewTargetState(
 				tt.issue,
 				tt.finalState,
+				tt.completionKind,
 				activeStates,
 				terminalStates,
 				tt.cfg,
@@ -292,6 +311,49 @@ func TestAutoPromoteActiveGatePendingIssueIncludesCompletedArtifact(t *testing.T
 
 	if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
 		t.Fatal("completed artifact gate wait was not recognized without a pull request")
+	}
+}
+
+func TestAutoPromoteActiveGatePendingIssueRequiresAcceptedOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	issue := completionTransitionIssue("In Progress", "")
+	issue.Description = operationalCompletionAuthorizationBody()
+	issue.Comments = []connector.IssueComment{{
+		Body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+	}}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review", "Blocked"},
+		TerminalStates: []string{"Done", "Cancelled"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand},
+		},
+	})
+	tests := []struct {
+		name           string
+		completionKind string
+		want           bool
+	}{
+		{name: "current declaration without accepted attempt"},
+		{name: "accepted operational completion", completionKind: workpad.CompletionOperational, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(cfg)
+			state.Completed[issue.ID] = Completed{
+				Issue:          issue,
+				FinalState:     FinalStateCompleted,
+				CompletionKind: tt.completionKind,
+			}
+			if got := autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote); got != tt.want {
+				t.Fatalf("autoPromoteActiveGatePendingIssue() = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }
 

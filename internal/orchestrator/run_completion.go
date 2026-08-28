@@ -1463,7 +1463,12 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
-	if revocation, revoked := mergeRevocationForIssue(issue, o.cfg, true); revoked &&
+	if revocation, revoked := mergeRevocationForIssue(
+		issue,
+		o.cfg,
+		true,
+		autoPromoteOperationalCompletionAccepted(state, issue.ID),
+	); revoked &&
 		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
 		o.finishMergeRevocation(ctx, state, event, running, revocation)
 		return true
