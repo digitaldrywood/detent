@@ -434,6 +434,55 @@ func TestProcessGroupExited(t *testing.T) {
 	}
 }
 
+func TestConfirmProcessTargetExit(t *testing.T) {
+	inspectErr := errors.New("inspect failed")
+	tests := []struct {
+		name       string
+		members    []processGroupMember
+		inspectErr error
+		probeErr   error
+		wantProbe  bool
+		want       bool
+	}{
+		{name: "zombie-only process group", members: []processGroupMember{{state: "Z"}}, want: true},
+		{name: "live process group", members: []processGroupMember{{state: "S"}}},
+		{name: "exited empty process group", probeErr: syscall.ESRCH, wantProbe: true, want: true},
+		{name: "existing empty process group", wantProbe: true},
+		{name: "hidden live process group", probeErr: syscall.EPERM, wantProbe: true},
+		{name: "failed inspection of exited group", inspectErr: inspectErr, probeErr: syscall.ESRCH, wantProbe: true, want: true},
+		{name: "failed inspection of live group", inspectErr: inspectErr, wantProbe: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var probed bool
+			signal := func(pid int, groupID int, signal syscall.Signal) error {
+				if pid != 456 || groupID != 123 {
+					t.Fatalf("signal target = pid %d group %d, want pid 456 group 123", pid, groupID)
+				}
+				if signal != 0 {
+					t.Fatalf("signal = %v, want 0", signal)
+				}
+				probed = true
+				return tt.probeErr
+			}
+			inspect := func(processGroupID int) ([]processGroupMember, error) {
+				if processGroupID != 123 {
+					t.Fatalf("inspect process group = %d, want 123", processGroupID)
+				}
+				return tt.members, tt.inspectErr
+			}
+
+			if got := confirmProcessTargetExit(456, 123, signal, inspect); got != tt.want {
+				t.Fatalf("confirmProcessTargetExit() = %v, want %v", got, tt.want)
+			}
+			if probed != tt.wantProbe {
+				t.Fatalf("existence probe = %v, want %v", probed, tt.wantProbe)
+			}
+		})
+	}
+}
+
 func TestInspectAndTerminate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -539,12 +588,22 @@ func TestTerminateEscalatesSurvivingProcessGroup(t *testing.T) {
 }
 
 type startedProcess struct {
-	cmd           *exec.Cmd
-	wait          sync.Once
-	waitErr       error
-	groupMember   *exec.Cmd
-	memberWait    sync.Once
-	memberWaitErr error
+	cmd            *exec.Cmd
+	wait           sync.Once
+	waitDone       chan struct{}
+	waitErr        error
+	groupMember    *exec.Cmd
+	memberWait     sync.Once
+	memberWaitDone chan struct{}
+	memberWaitErr  error
+}
+
+func newStartedProcess(cmd *exec.Cmd) *startedProcess {
+	return &startedProcess{
+		cmd:            cmd,
+		waitDone:       make(chan struct{}),
+		memberWaitDone: make(chan struct{}),
+	}
 }
 
 func startSleep(t *testing.T) *startedProcess {
@@ -556,19 +615,27 @@ func startSleep(t *testing.T) *startedProcess {
 		t.Fatalf("Start() error = %v, want nil", err)
 	}
 
-	proc := &startedProcess{cmd: cmd}
+	proc := newStartedProcess(cmd)
+	pgid := GroupID(cmd)
 	t.Cleanup(func() {
-		if cmd.ProcessState == nil || (proc.groupMember != nil && proc.groupMember.ProcessState == nil) {
-			if err := TerminateTree(cmd, GroupID(cmd)); err != nil {
-				t.Fatalf("TerminateTree() cleanup error = %v, want nil", err)
-			}
-			if proc.groupMember != nil && proc.groupMember.ProcessState == nil {
-				_ = proc.groupMember.Process.Kill()
+		var terminateErr error
+		leaderExited := processWaitFinished(proc.waitDone)
+		memberExited := proc.groupMember == nil || processWaitFinished(proc.memberWaitDone)
+		if !leaderExited || !memberExited {
+			if err := TerminateTree(cmd, pgid); err != nil {
+				terminateErr = err
+				_ = cmd.Process.Kill()
+				if proc.groupMember != nil {
+					_ = proc.groupMember.Process.Kill()
+				}
 			}
 		}
 		_ = proc.Wait()
 		if proc.groupMember != nil {
 			_ = proc.WaitGroupMember()
+		}
+		if terminateErr != nil {
+			t.Fatalf("TerminateTree() cleanup error = %v, want nil", terminateErr)
 		}
 	})
 
@@ -619,7 +686,7 @@ func startIgnoringTerminationGroup(t *testing.T) *startedProcess {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	proc := &startedProcess{cmd: cmd}
+	proc := newStartedProcess(cmd)
 	pgid := GroupID(cmd)
 	member := exec.CommandContext(context.Background(), "sh", "-c", "trap '' TERM; : > \"$READY_PATH\"; exec sleep 30")
 	member.Env = append(os.Environ(), "READY_PATH="+memberReady)
@@ -655,6 +722,7 @@ func waitForProcessReadyFile(t *testing.T, path string) {
 func (p *startedProcess) Wait() error {
 	p.wait.Do(func() {
 		p.waitErr = p.cmd.Wait()
+		close(p.waitDone)
 	})
 	return p.waitErr
 }
@@ -662,8 +730,18 @@ func (p *startedProcess) Wait() error {
 func (p *startedProcess) WaitGroupMember() error {
 	p.memberWait.Do(func() {
 		p.memberWaitErr = p.groupMember.Wait()
+		close(p.memberWaitDone)
 	})
 	return p.memberWaitErr
+}
+
+func processWaitFinished(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 func startExitedCommand(t *testing.T) (*exec.Cmd, int) {
