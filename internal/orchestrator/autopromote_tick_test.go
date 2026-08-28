@@ -2353,6 +2353,28 @@ func TestLogAutoPromoteDecisionNamesPendingChecks(t *testing.T) {
 	}
 }
 
+func TestLogAutoPromoteDecisionIncludesOperationalCompletionKind(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	orch := &Orchestrator{
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+	orch.logAutoPromoteDecision(
+		autoPromoteTickIssue("issue-operational-log", []string{"operations"}, nil),
+		AutoPromoteDecision{
+			Action:              AutoPromoteActionComplete,
+			Reason:              AutoPromoteReasonOperationalCompletion,
+			OperationalEvidence: "Backfill verified.",
+		},
+		"Done",
+	)
+
+	if !strings.Contains(logs.String(), "completion_kind=operational") {
+		t.Fatalf("logs %q missing operational completion kind", logs.String())
+	}
+}
+
 func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	t.Parallel()
 
@@ -3882,6 +3904,9 @@ func TestStaleMergingOperationalCompletionReconcilesDone(t *testing.T) {
 
 			issue := autoPromoteTickIssue("issue-operational-merging", []string{"bug"}, nil)
 			issue.State = "Merging"
+			if tt.wantReason == string(AutoPromoteReasonOperationalCompletion) {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
 			issue.Comments = []connector.IssueComment{{
 				Body: tt.body,
 				URL:  "https://github.test/comment/operational-merging",
@@ -3923,10 +3948,11 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			"run_mode": runpkg.RunModeImplement,
 			implementProgressMetadataKey: implementProgressRecord{
 				Outcome:            string(store.WorkAttemptTerminalSuccess),
-				Reason:             implementProgressReasonNonDiff,
+				Reason:             implementOperationalCompletion,
 				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
 				WorkpadStatus:      workpad.StatusComplete,
-				ProgressKinds:      []string{"audit_artifact"},
+				ProgressKinds:      []string{"operational_completion"},
+				CompletionKind:     workpad.CompletionOperational,
 			},
 		}),
 	}
@@ -3946,7 +3972,7 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			}()},
 		},
 		{
-			name: "attempt without audit artifact",
+			name: "attempt without operational completion marker",
 			attempts: []store.WorkAttempt{func() store.WorkAttempt {
 				attempt := successfulAttempt
 				attempt.WorkerMetadataJSON = marshalWorkAttemptJSON(map[string]any{
@@ -3968,6 +3994,7 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 
 			issue := autoPromoteTickIssue("issue-operational-restart", []string{"bug"}, nil)
 			issue.State = "In Progress"
+			issue.Description = operationalCompletionAuthorizationBody()
 			issue.Comments = []connector.IssueComment{{
 				Body:      operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
 				URL:       "https://github.test/comment/operational-restart",
@@ -4035,10 +4062,11 @@ func TestReconcileStaleMergingOperationalCompletionWaitsForDurableAttempt(t *tes
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
 			"run_mode": runpkg.RunModeImplement,
 			implementProgressMetadataKey: implementProgressRecord{
-				Outcome:       string(store.WorkAttemptTerminalSuccess),
-				Reason:        implementProgressReasonNonDiff,
-				WorkpadStatus: workpad.StatusComplete,
-				ProgressKinds: []string{"audit_artifact"},
+				Outcome:        string(store.WorkAttemptTerminalSuccess),
+				Reason:         implementOperationalCompletion,
+				WorkpadStatus:  workpad.StatusComplete,
+				ProgressKinds:  []string{"operational_completion"},
+				CompletionKind: workpad.CompletionOperational,
 			},
 		}),
 	}
@@ -4057,6 +4085,7 @@ func TestReconcileStaleMergingOperationalCompletionWaitsForDurableAttempt(t *tes
 
 			issue := autoPromoteTickIssue("issue-operational-stale-merging", []string{"bug"}, nil)
 			issue.State = "Merging"
+			issue.Description = operationalCompletionAuthorizationBody()
 			issue.Comments = []connector.IssueComment{{
 				Body:      operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
 				URL:       "https://github.test/comment/operational-stale-merging",

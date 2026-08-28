@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
@@ -41,6 +42,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		targetState := completedActiveReviewTargetState(
 			issue,
 			completed.FinalState,
+			completed.CompletionKind,
 			o.cfg.ActiveStates,
 			o.cfg.TerminalStates,
 			cfg,
@@ -193,6 +195,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = completedFinalState
+	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue.ID)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
 	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
@@ -270,6 +273,7 @@ func (o *Orchestrator) logCompletedActiveAutoPromoteSameState(
 func completedActiveReviewTargetState(
 	issue connector.Issue,
 	finalState string,
+	completionKind string,
 	activeStates []string,
 	terminalStates []string,
 	cfg AutoPromoteConfig,
@@ -283,10 +287,11 @@ func completedActiveReviewTargetState(
 	case normalizeState(reviewState), normalizeState(autoPromoteMergingState):
 		return ""
 	}
-	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate)) {
+	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completionKind)
+	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate), operationalCompletionAccepted) {
 		return ""
 	}
-	if !completedActiveShouldEnterReview(issue, cfg) {
+	if !completedActiveShouldEnterReview(issue, cfg, operationalCompletionAccepted) {
 		return ""
 	}
 	if completedActiveFinalStateReviewEligible(finalState, reviewState) {
@@ -295,8 +300,8 @@ func completedActiveReviewTargetState(
 	return ""
 }
 
-func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig) bool {
-	if _, ok := operationalCompletionFromIssue(issue); ok {
+func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig, operationalCompletionAccepted bool) bool {
+	if operationalCompletionAccepted {
 		return true
 	}
 	if autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
@@ -340,8 +345,8 @@ func completedActiveFinalStateReviewEligible(finalState string, reviewState stri
 	}
 }
 
-func completedActiveIssueReadyForReview(issue connector.Issue, requirePullRequest bool) bool {
-	if _, ok := operationalCompletionFromIssue(issue); ok {
+func completedActiveIssueReadyForReview(issue connector.Issue, requirePullRequest bool, operationalCompletionAccepted bool) bool {
+	if operationalCompletionAccepted {
 		return true
 	}
 	if !requirePullRequest {
@@ -351,6 +356,14 @@ func completedActiveIssueReadyForReview(issue connector.Issue, requirePullReques
 		return false
 	}
 	return normalizePullRequestState(issue.PullRequest.State) == "open"
+}
+
+func completedOperationalCompletionAccepted(issue connector.Issue, completionKind string) bool {
+	if strings.TrimSpace(completionKind) != workpad.CompletionOperational {
+		return false
+	}
+	_, ok := operationalCompletionFromIssue(issue)
+	return ok
 }
 
 func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
@@ -374,6 +387,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 	if cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge {
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = completed.FinalState
+		summary.OperationalCompletionAccepted = strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational
 		summary.AutomatedReviewWaitExpired = true
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {

@@ -221,6 +221,7 @@ type Completed struct {
 	StartedAt       time.Time
 	CompletedAt     time.Time
 	FinalState      string
+	CompletionKind  string
 	Tokens          TokenTotals
 	MergeTiming     MergeTiming
 	RuntimeIdentity agentidentity.Identity

@@ -20,6 +20,7 @@ const (
 	implementProgressOutcomeNoProgress = "no_progress"
 	implementProgressReasonNonDiff     = "verifiable_non_diff_progress"
 	implementProgressReasonMixed       = "workspace_diff_and_verifiable_non_diff_progress"
+	implementOperationalCompletion     = "operational_completion"
 	implementDependencyDeferralReason  = "dependency_deferral"
 	implementMergedCompletionReason    = "merged_pull_request_completion"
 	noProgressLimitReason              = "no_progress_limit"
@@ -54,6 +55,7 @@ type implementCompletionProgressDecision struct {
 	DependencyBlockers     []implementDependencyBlocker
 	RejectedBlockerRefs    []string
 	ProgressKinds          []string
+	CompletionKind         string
 }
 
 type implementProgressRecord struct {
@@ -78,6 +80,7 @@ type implementProgressRecord struct {
 	DependencyBlockers     []implementDependencyBlocker      `json:"dependency_blockers,omitempty"`
 	RejectedBlockerRefs    []string                          `json:"rejected_blocker_refs,omitempty"`
 	ProgressKinds          []string                          `json:"progress_kinds,omitempty"`
+	CompletionKind         string                            `json:"completion_kind,omitempty"`
 }
 
 type implementProgressArtifactSnapshot struct {
@@ -86,6 +89,7 @@ type implementProgressArtifactSnapshot struct {
 	WorkpadRead    bool
 	WorkpadReason  string
 	WorkpadFields  map[string]string
+	CompletionKind string
 }
 
 type implementDependencyBlocker struct {
@@ -144,6 +148,17 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		if workpadCurrent {
 			decision.WorkpadStatus, decision.HumanAction = implementProgressBlockedHumanAction(issue)
 		}
+		operationalCompletionCandidate := false
+		if workpadCurrent && running.DispatchProgress.CompletionKind == workpad.CompletionOperational {
+			_, operationalCompletionCandidate = operationalCompletionFromIssue(issue)
+			if operationalCompletionCandidate && implementProgressOperationalWorkspaceClean(running.DiffStats) {
+				decision.WorkpadStatus = workpad.StatusComplete
+				decision.Reason = implementOperationalCompletion
+				decision.ProgressKinds = []string{"operational_completion"}
+				decision.CompletionKind = workpad.CompletionOperational
+				return decision
+			}
+		}
 		if workpadCurrent && implementProgressMergedCompletionCandidate(issue, running.DiffStats) &&
 			implementProgressLinkedPullRequest(issue) && issue.PullRequest == nil {
 			hydrator, ok := o.connector.(connector.PullRequestHydrator)
@@ -194,6 +209,16 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				decision.Block = true
 				return decision
 			}
+		}
+		if operationalCompletionCandidate && (running.DiffStats.UnpushedCommits > 0 || running.DiffStats.CommitsAhead > 0) {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = strandedUnpushedWorkReason
+			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
+			decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+			if decision.Block {
+				decision.BlockReason = strandedUnpushedWorkReason
+			}
+			return decision
 		}
 		if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
 			decision.Reason = deferReason
@@ -416,6 +441,9 @@ func implementProgressArtifactSnapshotFromIssue(issue connector.Issue, workpadRe
 		NativeBlockers: implementProgressBlockedRefIdentifiers(issue.BlockedBy),
 		WorkpadRead:    workpadRead,
 	}
+	if kind, found, err := workpad.CompletionAuthorizationFromIssueBody(issue.Description); err == nil && found {
+		snapshot.CompletionKind = kind
+	}
 	if !workpadRead {
 		return snapshot
 	}
@@ -474,6 +502,9 @@ func implementProgressHasNewString(current, previous []string) bool {
 
 func implementProgressFieldsAdvanced(previous, current map[string]string) bool {
 	for name, value := range current {
+		if name == workpad.FieldCompletionKind || name == workpad.FieldCompletionEvidence {
+			continue
+		}
 		if previousValue, ok := previous[name]; !ok || strings.TrimSpace(previousValue) != strings.TrimSpace(value) {
 			return true
 		}
@@ -741,6 +772,7 @@ func implementCompletionProgressMetadata(decision implementCompletionProgressDec
 		DependencyBlockers:     append([]implementDependencyBlocker(nil), decision.DependencyBlockers...),
 		RejectedBlockerRefs:    append([]string(nil), decision.RejectedBlockerRefs...),
 		ProgressKinds:          append([]string(nil), decision.ProgressKinds...),
+		CompletionKind:         strings.TrimSpace(decision.CompletionKind),
 	}
 	if decision.PreviousSignatureFound {
 		previous := implementProgressSignatureRecordFromSignature(decision.PreviousSignature)
@@ -792,6 +824,12 @@ func implementProgressDiffStatsClean(diffStats DiffStats) bool {
 		diffStats.FilesChanged == 0 &&
 		diffStats.AddedLines == 0 &&
 		diffStats.RemovedLines == 0
+}
+
+func implementProgressOperationalWorkspaceClean(diffStats DiffStats) bool {
+	return implementProgressDiffStatsClean(diffStats) &&
+		diffStats.UnpushedCommits == 0 &&
+		diffStats.CommitsAhead == 0
 }
 
 func implementProgressUnpushedClassification(diffStats DiffStats, pullRequest *connector.PullRequest) (bool, string) {

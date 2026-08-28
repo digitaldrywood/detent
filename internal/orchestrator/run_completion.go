@@ -645,6 +645,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		StartedAt:       running.StartedAt,
 		CompletedAt:     event.CompletedAt,
 		FinalState:      finalState,
+		CompletionKind:  strings.TrimSpace(progress.CompletionKind),
 		Tokens:          event.Result.Tokens,
 		RuntimeIdentity: running.RuntimeIdentity,
 	}
@@ -872,7 +873,8 @@ func resetWorkerFailureBreakers(state *State, issueID string) {
 }
 
 func implementCompletionHasDurableProgress(running Running, decision implementCompletionProgressDecision) bool {
-	if strings.TrimSpace(running.CompletionLane) != "" || implementProgressLinkedPullRequest(decision.Issue) {
+	if strings.TrimSpace(running.CompletionLane) != "" || implementProgressLinkedPullRequest(decision.Issue) ||
+		strings.TrimSpace(decision.CompletionKind) == workpad.CompletionOperational {
 		return true
 	}
 	for _, kind := range decision.ProgressKinds {
@@ -1461,7 +1463,12 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
-	if revocation, revoked := mergeRevocationForIssue(issue, o.cfg, true); revoked &&
+	if revocation, revoked := mergeRevocationForIssue(
+		issue,
+		o.cfg,
+		true,
+		autoPromoteOperationalCompletionAccepted(state, issue.ID),
+	); revoked &&
 		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
 		o.finishMergeRevocation(ctx, state, event, running, revocation)
 		return true

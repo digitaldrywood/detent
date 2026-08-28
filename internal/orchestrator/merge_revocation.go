@@ -65,7 +65,8 @@ func (o *Orchestrator) revokeRunningMergeIfIneligible(
 	if _, pending := o.pendingMergeRevocations[running.Issue.ID]; pending {
 		return running, true
 	}
-	if decision, revoked := mergeRevocationForIssue(running.Issue, o.cfg, false); revoked {
+	operationalCompletionAccepted := autoPromoteOperationalCompletionAccepted(state, running.Issue.ID)
+	if decision, revoked := mergeRevocationForIssue(running.Issue, o.cfg, false, operationalCompletionAccepted); revoked {
 		o.beginMergeRevocation(state, running, decision, now)
 		return running, true
 	}
@@ -87,22 +88,29 @@ func (o *Orchestrator) revokeRunningMergeIfIneligible(
 		return running, false
 	}
 	running.Issue = mergeIssueTrackerFields(running.Issue, refreshed)
-	if decision, revoked := mergeRevocationForIssue(running.Issue, o.cfg, true); revoked {
+	if decision, revoked := mergeRevocationForIssue(running.Issue, o.cfg, true, operationalCompletionAccepted); revoked {
 		o.beginMergeRevocation(state, running, decision, now)
 		return running, true
 	}
 	return running, false
 }
 
-func mergeRevocationForIssue(issue connector.Issue, cfg Config, checkPullRequest bool) (mergeRevocation, bool) {
+func mergeRevocationForIssue(
+	issue connector.Issue,
+	cfg Config,
+	checkPullRequest bool,
+	operationalCompletionAccepted bool,
+) (mergeRevocation, bool) {
 	if normalizeState(issue.State) != normalizeState(autoPromoteMergingState) {
 		return mergeRevocation{
 			issue:  cloneIssue(issue),
 			reason: mergeRevocationStateChanged,
 		}, true
 	}
-	if _, ok := operationalCompletionFromIssue(issue); ok {
-		return mergeRevocation{}, false
+	if operationalCompletionAccepted {
+		if _, ok := operationalCompletionFromIssue(issue); ok {
+			return mergeRevocation{}, false
+		}
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
 		return mergeRevocation{

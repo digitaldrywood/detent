@@ -56,6 +56,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		wantBlockReason    string
 		wantRejectedRef    string
 		wantProgressKinds  []string
+		wantCompletionKind string
 		workpadHumanAction string
 		workpadBlockerRef  string
 		runningWorkpadBody string
@@ -223,6 +224,51 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReason:      "completed_clean_diff_without_pull_request",
 			wantConsecutive: 1,
 			wantRetry:       true,
+		},
+		{
+			name: "preauthorized operational completion is deliverable progress",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         string(AutoPromoteReasonOperationalCompletion),
+			wantProgressKinds:  []string{"operational_completion"},
+			wantCompletionKind: workpad.CompletionOperational,
+			wantReview:         true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+		},
+		{
+			name: "operational completion with undelivered commits is stranded",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{UnpushedCommits: 1, CommitsAhead: 1, Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         strandedUnpushedWorkReason,
+			wantConsecutive:    1,
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+		},
+		{
+			name:               "undeclared operational assertion remains no progress",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "completed_clean_diff_without_pull_request",
+			wantConsecutive:    1,
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
 		},
 		{
 			name:              "first dependency deferral releases claim without tripping loop",
@@ -608,6 +654,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if record.BlockReason != tt.wantBlockReason {
 				t.Fatalf("block reason = %q, want %q", record.BlockReason, tt.wantBlockReason)
+			}
+			if record.CompletionKind != tt.wantCompletionKind {
+				t.Fatalf("completion kind = %q, want %q", record.CompletionKind, tt.wantCompletionKind)
 			}
 			if tt.wantProgressKinds != nil && !reflect.DeepEqual(record.ProgressKinds, tt.wantProgressKinds) {
 				t.Fatalf("progress kinds = %#v, want %#v", record.ProgressKinds, tt.wantProgressKinds)
@@ -1496,6 +1545,30 @@ func TestImplementProgressMergedCompletionQualification(t *testing.T) {
 	}
 }
 
+func TestImplementProgressOperationalWorkspaceClean(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		diffStats DiffStats
+		want      bool
+	}{
+		{name: "clean delivery", diffStats: DiffStats{Status: "clean"}, want: true},
+		{name: "workspace diff", diffStats: DiffStats{FilesChanged: 1, Status: "changed"}},
+		{name: "unpushed commit", diffStats: DiffStats{UnpushedCommits: 1, Status: "clean"}},
+		{name: "commit ahead", diffStats: DiffStats{CommitsAhead: 1, Status: "clean"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := implementProgressOperationalWorkspaceClean(tt.diffStats); got != tt.want {
+				t.Fatalf("implementProgressOperationalWorkspaceClean() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestImplementProgressBlockComment(t *testing.T) {
 	t.Parallel()
 
@@ -1632,6 +1705,7 @@ func TestImplementProgressArtifactKinds(t *testing.T) {
 		{name: "linked blocker", previous: implementProgressArtifactSnapshot{}, current: implementProgressArtifactSnapshot{NativeBlockers: []string{"blocker-id"}}, want: []string{"linked_blocker"}},
 		{name: "typed workpad predicate", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadReason: "missing_current_head_ci"}, want: []string{"workpad_predicate"}},
 		{name: "audit artifact", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadFields: map[string]string{"duplicate_groups": "23"}}, want: []string{"audit_artifact"}},
+		{name: "completion assertion is not an audit artifact", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadFields: map[string]string{workpad.FieldCompletionKind: workpad.CompletionOperational, workpad.FieldCompletionEvidence: "done"}}, want: []string{}},
 		{name: "unverified workpad is ignored", previous: implementProgressArtifactSnapshot{}, current: implementProgressArtifactSnapshot{WorkpadReason: "missing_current_head_ci", WorkpadFields: map[string]string{"duplicate_groups": "23"}}, want: []string{}},
 	}
 

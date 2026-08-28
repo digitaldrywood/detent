@@ -43,6 +43,7 @@ type AutoPromoteSummary struct {
 	ArtifactStatus                        string
 	LastActivityAt                        *time.Time
 	CompletedFinalState                   string
+	OperationalCompletionAccepted         bool
 	AutomatedReviewWaitExpired            bool
 }
 
@@ -153,7 +154,18 @@ func EvaluateAutoPromote(
 		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 		return decision
 	}
-	if completion, ok := operationalCompletionFromIssue(issue); ok {
+	if completion, ok := operationalCompletionFromIssue(issue); ok && summary.OperationalCompletionAccepted {
+		if gate.Effective(cfg.Gate).Kind == gate.KindHumanReview {
+			operationalSummary := summary
+			operationalSummary.PullRequestPresent = true
+			gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(operationalSummary), now, gate.EvaluationOptions{})
+			if gateDecision.Action != gate.ActionPass {
+				decision := autoPromoteDecision(autoPromoteActionFromGate(gateDecision.Action), autoPromoteReasonFromGate(gateDecision.Reason))
+				decision.OperationalEvidence = completion.evidence
+				autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
+				return decision
+			}
+		}
 		decision := autoPromoteDecision(AutoPromoteActionComplete, AutoPromoteReasonOperationalCompletion)
 		decision.OperationalEvidence = completion.evidence
 		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
@@ -200,6 +212,9 @@ type operationalCompletion struct {
 
 func operationalCompletionFromIssue(issue connector.Issue) (operationalCompletion, bool) {
 	if issue.PullRequest != nil || workAttemptPRNumber(issue) != nil {
+		return operationalCompletion{}, false
+	}
+	if !workpad.OperationalCompletionAuthorized(issue.Description) {
 		return operationalCompletion{}, false
 	}
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)

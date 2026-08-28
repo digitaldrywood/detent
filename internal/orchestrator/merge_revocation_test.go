@@ -194,7 +194,7 @@ func TestDraftMergeRevocationUsesConfiguredSourceState(t *testing.T) {
 		},
 	}
 
-	revocation, revoked := mergeRevocationForIssue(issue, cfg, true)
+	revocation, revoked := mergeRevocationForIssue(issue, cfg, true, false)
 	if !revoked {
 		t.Fatal("mergeRevocationForIssue() did not revoke a draft pull request")
 	}
@@ -208,14 +208,22 @@ func TestMergeRevocationDoesNotReportMissingPullRequestForOperationalCompletion(
 
 	cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{SourceState: "Human Review"}})
 	tests := []struct {
-		name        string
-		body        string
-		wantRevoked bool
-		wantReason  string
+		name                          string
+		body                          string
+		operationalCompletionAccepted bool
+		wantRevoked                   bool
+		wantReason                    string
 	}{
 		{
-			name: "declared operational completion",
-			body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			name:                          "accepted operational completion",
+			body:                          operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			operationalCompletionAccepted: true,
+		},
+		{
+			name:        "current declaration without accepted attempt",
+			body:        operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			wantRevoked: true,
+			wantReason:  mergeRevocationMissingPullRequest,
 		},
 		{
 			name:        "ordinary no diff completion",
@@ -230,13 +238,14 @@ func TestMergeRevocationDoesNotReportMissingPullRequestForOperationalCompletion(
 			t.Parallel()
 
 			issue := connector.Issue{
-				ID:    "issue-operational-merge",
-				State: "Merging",
+				ID:          "issue-operational-merge",
+				State:       "Merging",
+				Description: operationalCompletionAuthorizationBody(),
 				Comments: []connector.IssueComment{{
 					Body: tt.body,
 				}},
 			}
-			revocation, revoked := mergeRevocationForIssue(issue, cfg, true)
+			revocation, revoked := mergeRevocationForIssue(issue, cfg, true, tt.operationalCompletionAccepted)
 			if revoked != tt.wantRevoked || revocation.reason != tt.wantReason {
 				t.Fatalf("mergeRevocationForIssue() = %#v, %t; want revoked %t reason %q", revocation, revoked, tt.wantRevoked, tt.wantReason)
 			}

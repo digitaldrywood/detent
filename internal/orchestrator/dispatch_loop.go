@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const dispatchLoopDetectedReason = "dispatch_loop_detected"
@@ -110,6 +111,8 @@ func dispatchLoopCurrentAdvanced(
 		return implementProgressSignatureUsable(decision.CurrentSignature)
 	case implementMergedCompletionReason:
 		return true
+	case implementOperationalCompletion:
+		return strings.TrimSpace(decision.CompletionKind) == workpad.CompletionOperational
 	case "pull_request_hydrator_unavailable", "pull_request_hydration_failed", "pull_request_hydration_unavailable",
 		"attempt_history_lookup_failed", "workspace_diffstat_unavailable", "workspace_diffstat_unavailable_without_pull_request",
 		"workspace_diff_fingerprint_unavailable_without_pull_request", workspaceHeadUnavailableReason,
@@ -168,6 +171,8 @@ func dispatchLoopRecordAdvanced(record implementProgressRecord) bool {
 		return implementProgressSignatureUsable(record.CurrentSignature.signature())
 	case "signature_changed", implementMergedCompletionReason:
 		return true
+	case implementOperationalCompletion:
+		return strings.TrimSpace(record.CompletionKind) == workpad.CompletionOperational
 	default:
 		return false
 	}

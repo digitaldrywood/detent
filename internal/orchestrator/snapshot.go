@@ -532,6 +532,7 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 			}
 			summary := AutoPromoteSummaryFromIssue(issues[i])
 			summary.CompletedFinalState = autoPromoteCompletedFinalState(&s, issueID)
+			summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(&s, issueID)
 			summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(&s, issueID, s.AutoPromote, now)
 			decision = EvaluateAutoPromote(issues[i], summary, s.AutoPromote, now)
 		}
@@ -977,6 +978,7 @@ func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry
 			Outcome:               strings.TrimSpace(record.Outcome),
 			Reason:                strings.TrimSpace(record.Reason),
 			Kinds:                 append([]string(nil), record.ProgressKinds...),
+			CompletionKind:        strings.TrimSpace(record.CompletionKind),
 			ConsecutiveNoProgress: record.ConsecutiveNoProgress,
 			NoProgressLimit:       record.NoProgressLimit,
 		}

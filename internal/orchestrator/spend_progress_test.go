@@ -14,6 +14,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestEvaluateSpendProgress(t *testing.T) {
@@ -396,6 +397,8 @@ func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 		{name: "pull request update", decision: implementCompletionProgressDecision{Reason: "pull_request_created_or_updated"}, want: true, wantReason: "pull_request_created_or_updated"},
 		{name: "signature change", decision: implementCompletionProgressDecision{Reason: "signature_changed"}, want: true, wantReason: "signature_changed"},
 		{name: "merged completion", decision: implementCompletionProgressDecision{Reason: implementMergedCompletionReason}, want: true, wantReason: implementMergedCompletionReason},
+		{name: "operational reason without accepted kind", decision: implementCompletionProgressDecision{Reason: implementOperationalCompletion}},
+		{name: "operational completion", decision: implementCompletionProgressDecision{Reason: string(AutoPromoteReasonOperationalCompletion), CompletionKind: workpad.CompletionOperational}, want: true, wantReason: string(AutoPromoteReasonOperationalCompletion)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -406,6 +409,147 @@ func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 			}
 			if reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestOperationalCompletionSpendBreakerContract(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 26, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		authorized      bool
+		authorizedLate  bool
+		wantTerminal    store.WorkAttemptTerminalState
+		wantState       string
+		wantBlocked     bool
+		wantAccepted    bool
+		wantCompletion  string
+		wantSpendCase   string
+		wantAcceptedWhy string
+	}{
+		{
+			name:            "preauthorized operational completion bypasses no PR breaker",
+			authorized:      true,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantState:       "Done",
+			wantAccepted:    true,
+			wantCompletion:  workpad.CompletionOperational,
+			wantAcceptedWhy: string(AutoPromoteReasonOperationalCompletion),
+		},
+		{
+			name:          "undeclared operational assertion trips existing breaker",
+			wantTerminal:  store.WorkAttemptTerminalNoProgress,
+			wantState:     blockedStatusState,
+			wantBlocked:   true,
+			wantSpendCase: spendProgressCaseNoPR,
+		},
+		{
+			name:           "authorization added at completion trips existing breaker",
+			authorizedLate: true,
+			wantTerminal:   store.WorkAttemptTerminalNoProgress,
+			wantState:      blockedStatusState,
+			wantBlocked:    true,
+			wantSpendCase:  spendProgressCaseNoPR,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			createdAt := base.Add(-time.Hour)
+			recordedAt := base.Add(-time.Minute)
+			issue := implementProgressIssueWithoutPR()
+			issue.ID = "issue-operational"
+			issue.Identifier = "digitaldrywood/leadpipe#62"
+			issue.CreatedAt = &createdAt
+			if tt.authorized {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
+			issue.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("in_progress", "", nil)}}
+			refreshed := cloneIssue(issue)
+			if tt.authorizedLate {
+				refreshed.Description = operationalCompletionAuthorizationBody()
+			}
+			refreshed.Comments = []connector.IssueComment{{
+				Body:      operationalCompletionWorkpadBody("Classifier-v4 host backfill completed and verified."),
+				CreatedAt: &recordedAt,
+			}}
+			tracker := &implementProgressConnector{refreshed: refreshed}
+			attempts := &implementProgressAttemptStore{}
+			cfg := normalizeConfig(Config{
+				Project:              scheduler.ProjectCandidate{ID: "leadpipe"},
+				BillingMode:          "subscription",
+				NoProgressTokenLimit: 25_000_000,
+				AutoPromote: AutoPromoteConfig{
+					Enabled:         true,
+					NoProgressLimit: 0,
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates: []string{"Human Review", "Blocked"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				progressSpend: &spendProgressStore{result: store.IssueSpendSince{
+					TotalTokens: 25_604_036,
+					Sessions:    3,
+				}},
+			}
+			state := newState(cfg)
+			running := Running{
+				Issue:            issue,
+				Attempt:          3,
+				WorkAttemptID:    7187,
+				Mode:             runpkg.RunModeImplement,
+				StartedAt:        base.Add(-time.Minute),
+				DiffStats:        DiffStats{Status: "clean"},
+				DispatchProgress: implementProgressArtifactSnapshotFromIssue(issue, true),
+			}
+			state.Running[issue.ID] = running
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: running.StartedAt}
+
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result: runpkg.RunResult{
+					FinalState: FinalStateCompleted,
+					DiffStats:  DiffStats{Status: "clean"},
+				},
+			})
+			if tt.authorized {
+				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{refreshed}, base.Add(time.Second))
+			}
+
+			if len(attempts.completions) != 1 {
+				t.Fatalf("completions = %#v, want one", attempts.completions)
+			}
+			completion := attempts.completions[0]
+			if completion.TerminalState != tt.wantTerminal {
+				t.Fatalf("terminal state = %q, want %q", completion.TerminalState, tt.wantTerminal)
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
+				t.Fatalf("updates = %#v, want state %q", tracker.updates, tt.wantState)
+			}
+			if _, blocked := state.Blocked[issue.ID]; blocked != tt.wantBlocked {
+				t.Fatalf("blocked = %t, want %t", blocked, tt.wantBlocked)
+			}
+			progress := implementProgressRecordFromCompletion(t, completion)
+			if progress.CompletionKind != tt.wantCompletion {
+				t.Fatalf("completion kind = %q, want %q", progress.CompletionKind, tt.wantCompletion)
+			}
+			spend, ok := spendProgressRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: completion.WorkerMetadataJSON})
+			if !ok {
+				t.Fatal("spend progress metadata missing")
+			}
+			if spend.AcceptedStateChange != tt.wantAccepted || spend.AcceptedReason != tt.wantAcceptedWhy || spend.Case != tt.wantSpendCase {
+				t.Fatalf("spend progress = %#v", spend)
 			}
 		})
 	}
@@ -656,6 +800,8 @@ func TestSpendProgressAttemptAcceptedCompatibility(t *testing.T) {
 		{name: "native accepted record", record: map[string]any{spendProgressMetadataKey: spendProgressRecord{AcceptedStateChange: true}}, want: true},
 		{name: "legacy pull request change", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: "pull_request_created_or_updated"}}, want: true},
 		{name: "legacy signature change", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: "signature_changed"}}, want: true},
+		{name: "operational completion", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: implementOperationalCompletion, CompletionKind: workpad.CompletionOperational}}, want: true},
+		{name: "operational reason without accepted kind", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: implementOperationalCompletion}}},
 		{name: "unaccepted record", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: "unchanged_signature_clean_diff"}}},
 	}
 	for _, tt := range tests {

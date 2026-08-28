@@ -112,6 +112,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
+		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
@@ -180,6 +181,14 @@ func autoPromoteCompletedFinalState(state *State, issueID string) string {
 		return ""
 	}
 	return completed.FinalState
+}
+
+func autoPromoteOperationalCompletionAccepted(state *State, issueID string) bool {
+	if state == nil {
+		return false
+	}
+	completed, ok := state.Completed[strings.TrimSpace(issueID)]
+	return ok && strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational
 }
 
 func autoPromoteReviewWaitExpired(state *State, issueID string, cfg AutoPromoteConfig, now time.Time) bool {
@@ -354,7 +363,8 @@ func (o *Orchestrator) latestSuccessfulOperationalCompletionAttempt(
 			continue
 		}
 		if strings.TrimSpace(record.WorkpadStatus) != workpad.StatusComplete ||
-			!slices.Contains(record.ProgressKinds, "audit_artifact") {
+			strings.TrimSpace(record.CompletionKind) != workpad.CompletionOperational ||
+			!slices.Contains(record.ProgressKinds, "operational_completion") {
 			continue
 		}
 		return attempt, true, nil
@@ -421,11 +431,16 @@ func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connecto
 }
 
 func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttempt) Completed {
+	completionKind := ""
+	if record, ok := implementProgressRecordFromAttempt(attempt); ok {
+		completionKind = strings.TrimSpace(record.CompletionKind)
+	}
 	return Completed{
-		Issue:       cloneIssue(issue),
-		StartedAt:   attempt.StartedAt,
-		CompletedAt: attempt.CompletedAt,
-		FinalState:  FinalStateCompleted,
+		Issue:          cloneIssue(issue),
+		StartedAt:      attempt.StartedAt,
+		CompletedAt:    attempt.CompletedAt,
+		FinalState:     FinalStateCompleted,
+		CompletionKind: completionKind,
 	}
 }
 
@@ -443,8 +458,9 @@ func autoPromoteActiveGatePendingIssue(
 		return false
 	}
 	autoCfg = normalizeAutoPromoteConfig(autoCfg)
+	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completed.CompletionKind)
 	return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
-		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate))
+		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate), operationalCompletionAccepted)
 }
 
 func autoPromoteActiveGateTrackedIssue(
@@ -3074,7 +3090,10 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 
 func appendAutoPromoteWorkpadAttrs(attrs []any, decision AutoPromoteDecision) []any {
 	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
-		attrs = append(attrs, "operational_evidence", evidence)
+		attrs = append(attrs,
+			"completion_kind", workpad.CompletionOperational,
+			"operational_evidence", evidence,
+		)
 	}
 	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
 		attrs = append(attrs, "workpad_comment_url", url)
@@ -3187,6 +3206,8 @@ func autoPromoteComment(
 		b.WriteString(failedChecks)
 	}
 	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
+		b.WriteString("\n- completion_kind: ")
+		b.WriteString(workpad.CompletionOperational)
 		b.WriteString("\n- operational_evidence: ")
 		b.WriteString(evidence)
 	}

@@ -1419,7 +1419,11 @@ func boardCardCompletionProgress(progress telemetry.CompletionProgress) (string,
 	}
 	if len(labels) > 0 {
 		summary := "Last turn · " + strings.Join(labels, " + ")
-		return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindInfo
+		detail := summary
+		if completionKind := strings.TrimSpace(progress.CompletionKind); completionKind != "" {
+			detail += "; completion kind: " + completionKind
+		}
+		return summary, detail + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindInfo
 	}
 	return "", "", ""
 }

@@ -125,12 +125,12 @@ func TestStateSnapshotCarriesLatestCompletionProgress(t *testing.T) {
 			Status:             string(store.WorkAttemptStatusTerminal),
 			TerminalState:      string(store.WorkAttemptTerminalSuccess),
 			CompletedAt:        timePointer(now),
-			WorkerMetadataJSON: `{"completion_progress":{"outcome":"success","reason":"verifiable_non_diff_progress","progress_kinds":["audit_artifact"],"no_progress_limit":3}}`,
+			WorkerMetadataJSON: `{"completion_progress":{"outcome":"success","reason":"operational_completion","progress_kinds":["operational_completion"],"completion_kind":"operational","no_progress_limit":3}}`,
 		},
 	}
 
 	progress := state.Snapshot(now).BoardIssues[0].CompletionProgress
-	if progress.Outcome != "success" || progress.Reason != implementProgressReasonNonDiff || !reflect.DeepEqual(progress.Kinds, []string{"audit_artifact"}) {
+	if progress.Outcome != "success" || progress.Reason != implementOperationalCompletion || progress.CompletionKind != "operational" || !reflect.DeepEqual(progress.Kinds, []string{"operational_completion"}) {
 		t.Fatalf("CompletionProgress = %#v", progress)
 	}
 }
