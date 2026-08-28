@@ -1418,11 +1418,6 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	if workflow.Config.ScheduleOwnership != scheduleConfig {
 		return p.workflowReloadError("workflow reload validation failed", update.Path, errors.New("schedule_ownership changes require a Detent restart"))
 	}
-	if projectScheduleHealth != nil {
-		if err := projectScheduleHealth.Update(scheduleDefinitions(workflow.Config)); err != nil {
-			return p.workflowReloadError("workflow reload schedule liveness failed", update.Path, err)
-		}
-	}
 	admissionCriteria := workflowconfig.AdmissionCriteria{}
 	admissionEffortRubric := workflowconfig.AdmissionEffortRubric{}
 	if workflow.Config.BacklogAdmission.Enabled {
@@ -1547,6 +1542,11 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ScheduleRuns:       projectScheduleHealth,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow backlog admission reload failed", update.Path, err)
+		}
+	}
+	if projectScheduleHealth != nil {
+		if err := projectScheduleHealth.Update(scheduleDefinitions(workflow.Config)); err != nil {
+			return p.workflowReloadError("workflow reload schedule liveness failed", update.Path, err)
 		}
 	}
 
