@@ -819,6 +819,7 @@ func TestRunnerWorkAttemptErrorClass(t *testing.T) {
 		want string
 	}{
 		{name: "generic runner failure", err: errors.New("runner failed"), want: workAttemptErrorRunner},
+		{name: "post-push command failure", err: &runpkg.DeliverableCommandError{OperationClass: "post_push"}, want: workAttemptErrorPostPushCommand},
 		{name: "interrupted backend turn", err: backendStatusTestError{status: "interrupted"}, want: workAttemptErrorInterrupted},
 		{name: "failed backend turn", err: backendStatusTestError{status: "failed"}, want: workAttemptErrorRunner},
 	}

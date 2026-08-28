@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -125,6 +126,105 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 				t.Fatalf("persisted work_product_pushed = %v, want %v", got, tt.result.PullRequestHeadPushed)
 			}
 		})
+	}
+}
+
+func TestHandleRunResultPersistsPublishedPushCommandEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 15, 0, 0, 0, time.UTC)
+	issue := terminalRetryTestIssue("published-post-push-failure")
+	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+	attempts := &terminalRetryWorkAttemptStore{}
+	cfg := normalizeConfig(Config{
+		ActiveStates:          []string{"Todo", "In Progress"},
+		TerminalStates:        []string{"Done"},
+		MaxRetryBackoff:       time.Minute,
+		FailureRetryBaseDelay: time.Second,
+	})
+	orchestrator := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:         cloneIssue(issue),
+		Attempt:       1,
+		WorkAttemptID: 2029,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-time.Minute),
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+	exitCode := 19
+	command := "git push origin HEAD && exit 19"
+	targetRef := &runpkg.DeliverableTargetRefEvidence{
+		Remote:                     "origin",
+		Ref:                        "refs/heads/detent/published",
+		PostCommandLocalHeadSHA:    "new-head",
+		PostCommandRemoteHeadSHA:   "new-head",
+		PostCommandRemoteRefExists: true,
+		InitialObserved:            true,
+		PostCommandObserved:        true,
+		AdvancedToLocalHead:        true,
+	}
+	runErr := &runpkg.DeliverableCommandError{
+		OperationClass: "post_push",
+		Operation:      "post-push command",
+		Arguments:      "exit 19",
+		ItemID:         "push-item",
+		Command:        command,
+		Status:         "failed",
+		ExitCode:       &exitCode,
+		Message:        "later assertion failed",
+	}
+
+	orchestrator.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID: issue.ID,
+		Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState:            runpkg.FinalStateFailed,
+			PullRequestHeadPushed: true,
+			DeliverableCommands: []runpkg.DeliverableCommandEvidence{{
+				ItemID:         "push-item",
+				OperationClass: "post_push",
+				Operation:      "post-push command",
+				Command:        command,
+				Status:         "failed",
+				ExitCode:       &exitCode,
+				Outcome:        "published_post_push_failed",
+				TargetRef:      targetRef,
+			}},
+		},
+		Err:          runErr,
+		CompletedAt:  now,
+		RetryAttempt: 2,
+		RetryDelay:   time.Minute,
+	})
+
+	if len(attempts.completions) != 1 {
+		t.Fatalf("work attempt completions = %d, want one", len(attempts.completions))
+	}
+	completion := attempts.completions[0]
+	if completion.ErrorClass != workAttemptErrorPostPushCommand {
+		t.Fatalf("ErrorClass = %q, want %q", completion.ErrorClass, workAttemptErrorPostPushCommand)
+	}
+	var metadata struct {
+		WorkProductPushed   bool                                `json:"work_product_pushed"`
+		DeliverableCommands []runpkg.DeliverableCommandEvidence `json:"deliverable_commands"`
+	}
+	if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode worker metadata: %v", err)
+	}
+	if !metadata.WorkProductPushed || len(metadata.DeliverableCommands) != 1 {
+		t.Fatalf("worker metadata = %#v, want pushed command evidence", metadata)
+	}
+	persisted := metadata.DeliverableCommands[0]
+	if persisted.Command != command || persisted.ExitCode == nil || *persisted.ExitCode != exitCode || persisted.TargetRef == nil || !persisted.TargetRef.AdvancedToLocalHead {
+		t.Fatalf("persisted command evidence = %#v", persisted)
+	}
+	wantBreakerClass := projectFailureClassDeliverableCommand + ":post-push command"
+	if len(state.FailureBreaker.Failures[wantBreakerClass]) != 1 {
+		t.Fatalf("failure breaker classes = %#v, want %q", state.FailureBreaker.Failures, wantBreakerClass)
+	}
+	if len(state.FailureBreaker.Failures[projectFailureClassDeliverableCommand+":git push"]) != 0 {
+		t.Fatalf("published work charged to git push breaker: %#v", state.FailureBreaker.Failures)
 	}
 }
 

@@ -108,9 +108,42 @@ type DeliverableCommandError struct {
 	OperationClass string
 	Operation      string
 	Arguments      string
+	ItemID         string
+	Command        string
 	Status         string
+	ExitCode       *int
 	Message        string
 	Body           string
+	TargetRef      *DeliverableTargetRefEvidence
+}
+
+type DeliverableTargetRefEvidence struct {
+	Remote                     string `json:"remote"`
+	Ref                        string `json:"ref"`
+	InitialRemoteHeadSHA       string `json:"initial_remote_head_sha,omitempty"`
+	PostCommandLocalHeadSHA    string `json:"post_command_local_head_sha,omitempty"`
+	PostCommandRemoteHeadSHA   string `json:"post_command_remote_head_sha,omitempty"`
+	FinalLocalHeadSHA          string `json:"final_local_head_sha,omitempty"`
+	FinalRemoteHeadSHA         string `json:"final_remote_head_sha,omitempty"`
+	InitialRemoteRefExists     bool   `json:"initial_remote_ref_exists"`
+	PostCommandRemoteRefExists bool   `json:"post_command_remote_ref_exists"`
+	FinalRemoteRefExists       bool   `json:"final_remote_ref_exists"`
+	InitialObserved            bool   `json:"initial_observed"`
+	PostCommandObserved        bool   `json:"post_command_observed"`
+	FinalObserved              bool   `json:"final_observed"`
+	AdvancedToLocalHead        bool   `json:"advanced_to_local_head"`
+	CheckError                 string `json:"check_error,omitempty"`
+}
+
+type DeliverableCommandEvidence struct {
+	ItemID         string                        `json:"item_id,omitempty"`
+	OperationClass string                        `json:"operation_class"`
+	Operation      string                        `json:"operation"`
+	Command        string                        `json:"command,omitempty"`
+	Status         string                        `json:"status,omitempty"`
+	ExitCode       *int                          `json:"exit_code,omitempty"`
+	Outcome        string                        `json:"outcome"`
+	TargetRef      *DeliverableTargetRefEvidence `json:"target_ref,omitempty"`
 }
 
 func (e *DeliverableCommandError) Error() string {
@@ -127,6 +160,9 @@ func (e *DeliverableCommandError) Error() string {
 	}
 	if arguments := strings.TrimSpace(e.Arguments); arguments != "" && !strings.EqualFold(arguments, "null") {
 		parts = append(parts, "arguments="+arguments)
+	}
+	if e.ExitCode != nil {
+		parts = append(parts, fmt.Sprintf("exit_code=%d", *e.ExitCode))
 	}
 	if message := strings.TrimSpace(e.Message); message != "" && !strings.EqualFold(message, "null") {
 		parts = append(parts, "message="+message)
@@ -393,8 +429,10 @@ type AgentUpdate struct {
 	ProviderSessionID   string
 	ItemID              string
 	Tool                string
+	Command             string
 	Delta               string
 	Status              string
+	ExitCode            *int
 	Model               string
 	RuntimeIdentity     agentidentity.Identity
 	BackendErrorBody    string
@@ -646,6 +684,7 @@ type RunResult struct {
 	PullRequestHeadPushed   bool
 	CITriggerLabelReapplied bool
 	ForgeWriteCompleted     bool
+	DeliverableCommands     []DeliverableCommandEvidence
 	WorkspaceBranch         string
 	MergePrecheck           *MergePrecheck
 	MergeFallbackFindings   string

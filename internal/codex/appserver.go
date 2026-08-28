@@ -288,8 +288,10 @@ type Update struct {
 	TurnID              string
 	ItemID              string
 	Tool                string
+	Command             string
 	Delta               string
 	Status              string
+	ExitCode            *int
 	Model               string
 	RuntimeIdentity     agentidentity.Identity
 	BackendErrorBody    string
@@ -2005,6 +2007,7 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 			Command          string          `json:"command"`
 			Arguments        json.RawMessage `json:"arguments"`
 			Status           string          `json:"status"`
+			ExitCode         *int            `json:"exitCode"`
 			AggregatedOutput string          `json:"aggregatedOutput"`
 			Server           string          `json:"server"`
 			Tool             string          `json:"tool"`
@@ -2067,8 +2070,10 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		TurnID:              params.TurnID,
 		ItemID:              params.Item.ID,
 		Tool:                tool,
+		Command:             strings.TrimSpace(params.Item.Command),
 		Delta:               content,
 		Status:              params.Item.Status,
+		ExitCode:            params.Item.ExitCode,
 		BackendErrorBody:    errorBody,
 		BackendErrorMessage: errorMessage,
 		Payload:             rawPayload(msg),

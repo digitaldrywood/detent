@@ -15,6 +15,8 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 		params           string
 		wantType         UpdateType
 		wantTool         string
+		wantCommand      string
+		wantExitCode     *int
 		wantContent      string
 		wantErrorBody    string
 		wantErrorMessage string
@@ -28,7 +30,18 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"go test ./...","status":"inProgress","commandActions":[],"cwd":"/tmp"},"startedAtMs":1}`,
 			wantType:    UpdateToolStarted,
 			wantTool:    "commandExecution",
+			wantCommand: "go test ./...",
 			wantContent: "go test ./...",
+		},
+		{
+			name:         "failed command retains command and exit code",
+			method:       "item/completed",
+			params:       `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"git push origin HEAD && exit 19","status":"failed","exitCode":19,"aggregatedOutput":"branch updated; later assertion failed"}}`,
+			wantType:     UpdateToolCompleted,
+			wantTool:     "commandExecution",
+			wantCommand:  "git push origin HEAD && exit 19",
+			wantExitCode: intPointer(19),
+			wantContent:  "branch updated; later assertion failed",
 		},
 		{
 			name:        "command output streams",
@@ -113,6 +126,9 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 				update.BackendErrorBody != tt.wantErrorBody || (tt.wantMaxBytes == 0 && update.BackendErrorMessage != tt.wantErrorMessage) {
 				t.Fatalf("update = %#v, want type %q tool %q content %q", update, tt.wantType, tt.wantTool, tt.wantContent)
 			}
+			if update.Command != tt.wantCommand || !equalIntPointers(update.ExitCode, tt.wantExitCode) {
+				t.Fatalf("command evidence = command %q exit %#v, want command %q exit %#v", update.Command, update.ExitCode, tt.wantCommand, tt.wantExitCode)
+			}
 			if tt.contentFromError && update.Delta != update.BackendErrorMessage {
 				t.Fatalf("Delta = %q, want sanitized BackendErrorMessage %q", update.Delta, update.BackendErrorMessage)
 			}
@@ -134,4 +150,15 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+func equalIntPointers(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
