@@ -235,6 +235,15 @@ type IssueParkAcknowledgement struct {
 	AcknowledgedAt string         `json:"acknowledged_at"`
 }
 
+type IssueProgressCredit struct {
+	ProjectID  string         `json:"project_id"`
+	IssueKey   string         `json:"issue_key"`
+	IssueID    sql.NullString `json:"issue_id"`
+	Identifier sql.NullString `json:"identifier"`
+	IssueURL   sql.NullString `json:"issue_url"`
+	CreditedAt string         `json:"credited_at"`
+}
+
 type LaneMutationReceipt struct {
 	ID            int64          `json:"id"`
 	ProjectID     string         `json:"project_id"`

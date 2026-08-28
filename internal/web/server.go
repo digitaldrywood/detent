@@ -445,6 +445,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/issues/explanation", s.apiIssueParkAcknowledgement, apiMutateAuth, apiProjectWriteScope)
+	s.echo.POST("/api/v1/projects/:project_id/issues/progress-credit", s.apiIssueProgressCredit, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/acknowledge", s.apiStalenessWarningsAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge", s.apiStalenessWarningAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)

@@ -262,6 +262,43 @@ paths:
         "404": {$ref: "#/components/responses/Problem"}
         "409": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/issues/progress-credit:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    post:
+      operationId: creditIssueProgress
+      summary: Credit accepted progress for an issue
+      description: Resets spend-since-progress counters by recording an operator-approved baseline.
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/issues/progress-credit
+      parameters:
+        - in: query
+          name: reference
+          required: true
+          description: Issue ID, canonical identifier, issue URL, bare number, or hash-prefixed number.
+          schema: {type: string, minLength: 1}
+        - in: query
+          name: schema
+          description: Requested issue-resolution schema version. Omit to use the current version.
+          schema: {type: integer, enum: [3]}
+      responses:
+        "200":
+          description: Recorded issue progress credit.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IssueProgressCredit"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/staleness-warnings/acknowledge:
     parameters:
       - $ref: "#/components/parameters/ProjectID"
@@ -1138,6 +1175,15 @@ components:
         evidence:
           type: array
           items: {$ref: "#/components/schemas/IssueExplanationEvidence"}
+    IssueProgressCredit:
+      type: object
+      required: [project_id, credited_at]
+      properties:
+        project_id: {type: string}
+        issue_id: {type: string}
+        identifier: {type: string}
+        issue_url: {type: string, format: uri}
+        credited_at: {type: string, format: date-time}
     IssueParkSummary:
       type: object
       required: [attempt_count, park_count, acknowledged_park_sequence, causes, tokens]

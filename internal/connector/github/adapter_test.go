@@ -4024,6 +4024,25 @@ func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
 	}
 }
 
+func TestConnectorRefreshPullRequestReferenceCapturesClosingReference(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":42,"url":"https://github.com/example/repo/pull/42","state":"OPEN","updatedAt":"2026-08-28T00:38:50Z","repository":{"nameWithOwner":"example/repo"}}]}}]}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.RefreshPullRequestReference(t.Context(), connector.Issue{ID: "I_kw1", Identifier: "example/repo#1"})
+	if err != nil {
+		t.Fatalf("RefreshPullRequestReference() error = %v", err)
+	}
+	if got.PRNumber == nil || *got.PRNumber != 42 || got.PRRepository != "example/repo" {
+		t.Fatalf("pull request reference = (%v, %q), want (42, example/repo)", got.PRNumber, got.PRRepository)
+	}
+}
+
 func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	t.Parallel()
 
