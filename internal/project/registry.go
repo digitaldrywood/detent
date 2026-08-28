@@ -259,7 +259,7 @@ func projectHealth(trackedProject *Project) Health {
 			runtimeErr.At = workflowSource.ReloadFailedAt
 		}
 	}
-	if status == HealthStatusInitializing && runtimeErr.Message != "" {
+	if status != HealthStatusPaused && runtimeErr.Message != "" {
 		status = HealthStatusDegraded
 	}
 	return Health{

@@ -833,7 +833,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `schedule_ownership` | `object` | `see child fields` | No | None |
 | `schedule_ownership.backend` | `string` | `"github_ref"` | No | must be github_ref |
 | `schedule_ownership.branch` | `string` | `"detent-schedule-coordination"` | No | must be a valid branch name |
-| `schedule_ownership.enabled` | `boolean` | `false` | No | None |
+| `schedule_ownership.enabled` | `boolean` | `false` | No | must be true when scheduled work is configured; add a schedule_ownership block with enabled: true and a shared key |
 | `schedule_ownership.endpoint` | `string` | `none` | No | None |
 | `schedule_ownership.heartbeat_seconds` | `integer` | `60` | No | must be greater than zero<br>must leave more than twice max_clock_skew_seconds before lease expiry |
 | `schedule_ownership.key` | `string` | `none` | Conditional | is required when enabled is true |

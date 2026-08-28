@@ -1073,7 +1073,7 @@
 #   timeout_ms: 60000
 # # schedule_ownership | type: object | default: see child fields | required: No | validation: None
 # schedule_ownership:
-#   # schedule_ownership.enabled | type: boolean | default: false | required: No | validation: None
+#   # schedule_ownership.enabled | type: boolean | default: false | required: No | validation: must be true when scheduled work is configured; add a schedule_ownership block with enabled: true and a shared key
 #   enabled: false
 #   # schedule_ownership.backend | type: string | default: "github_ref" | required: No | validation: must be github_ref
 #   backend: "github_ref"

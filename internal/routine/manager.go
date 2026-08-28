@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -88,6 +89,7 @@ type Settings struct {
 	Runner       runner.Backend
 	Issues       IssueStore
 	Metrics      workflowmetrics.Recorder
+	ScheduleRuns schedulehealth.Recorder
 }
 
 type Manager struct {
@@ -251,7 +253,7 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 			return Result{}, nil
 		}
 	}
-	result, err := m.runOnce(ctx, settings, definition, scheduledFor)
+	result, err := m.runOnce(ctx, settings, definition, scheduledFor, scheduled)
 	baselineAt := scheduledFor
 	if completedAt := m.now(); completedAt.After(baselineAt) {
 		baselineAt = completedAt
@@ -267,7 +269,7 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 	return result, err
 }
 
-func (m *Manager) runOnce(ctx context.Context, settings Settings, definition config.Routine, scheduledFor time.Time) (result Result, runErr error) {
+func (m *Manager) runOnce(ctx context.Context, settings Settings, definition config.Routine, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
 	startedAt := m.now().UTC()
 	record := RunRecord{
 		ProjectID:    settings.ProjectID,
@@ -287,6 +289,17 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, definition con
 		}
 		if err := m.store.RecordRoutineRun(context.WithoutCancel(ctx), record); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record routine run: %w", err))
+		}
+		if scheduled && settings.ScheduleRuns != nil {
+			if err := settings.ScheduleRuns.RecordScheduledRun(context.WithoutCancel(ctx), schedulehealth.Run{
+				ScheduleID:   schedulehealth.RoutineID(definition.Name),
+				ScheduledFor: record.ScheduledFor,
+				StartedAt:    record.StartedAt,
+				CompletedAt:  record.CompletedAt,
+				Error:        record.Error,
+			}); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("record scheduled routine liveness: %w", err))
+			}
 		}
 	}()
 

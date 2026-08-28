@@ -16,6 +16,10 @@ tracker:
   api_key: token
   github_status_source: issue_field
   repository: digitaldrywood/detent
+schedule_ownership:
+  enabled: true
+  key: digitaldrywood/detent
+  repository: digitaldrywood/detent
 backlog_admission:
   enabled: true
   schedule: "15 4 * * 1"

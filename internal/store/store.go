@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/retro"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -69,6 +70,7 @@ type Store interface {
 	RetroStore
 	RoutineStore
 	AdmissionStore
+	schedulehealth.Store
 	efficiency.Recorder
 	efficiency.Reader
 	APIKeyStore

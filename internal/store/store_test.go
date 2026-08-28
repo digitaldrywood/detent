@@ -634,6 +634,9 @@ func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
 	if got := runtimeEvidenceTableCount(evidence.Tables, "workflow_phase_events"); got != 1 {
 		t.Fatalf("workflow_phase_events row count = %d, want 1", got)
 	}
+	if got := runtimeEvidenceTableCount(evidence.Tables, "scheduled_runs"); got != 0 {
+		t.Fatalf("scheduled_runs row count = %d, want 0", got)
+	}
 	if got := runtimeEvidenceTableCount(evidence.Tables, "api_keys"); got != 0 {
 		t.Fatalf("api_keys row count = %d, want 0", got)
 	}

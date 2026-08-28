@@ -112,3 +112,45 @@ func TestSchedulersEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestSchedulersRequireScheduleOwnership(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{
+			name: "routine",
+			mutate: func(cfg *Config) {
+				cfg.Routines = []Routine{{Name: "audit", Schedule: "0 * * * *", Prompt: "Inspect."}}
+			},
+		},
+		{
+			name: "backlog admission",
+			mutate: func(cfg *Config) {
+				cfg.BacklogAdmission.Enabled = true
+			},
+		},
+		{
+			name: "scheduled intake",
+			mutate: func(cfg *Config) {
+				cfg.Intake.Sources = []intake.Source{{Name: "todos", Kind: intake.KindSchedule, Cron: "0 * * * *", Scan: "stale-todos"}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = TrackerMemory
+			tt.mutate(&cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "schedule_ownership.enabled must be true") || !strings.Contains(err.Error(), "schedule_ownership block") {
+				t.Fatalf("Validate() error = %v, want actionable schedule_ownership requirement", err)
+			}
+		})
+	}
+}

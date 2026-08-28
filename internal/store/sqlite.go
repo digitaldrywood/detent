@@ -95,6 +95,7 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 		{name: "routine_runs", projectScoped: true},
 		{name: "backlog_admission_proposals", projectScoped: true},
 		{name: "backlog_admission_runs", projectScoped: true},
+		{name: "scheduled_runs", projectScoped: true},
 		{name: "health_notification_states"},
 		{name: "api_keys"},
 		{name: "api_usage_logs"},
@@ -1266,6 +1267,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_proposals WHERE project_id = ?", projectID)
 		case "backlog_admission_runs":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_runs WHERE project_id = ?", projectID)
+		case "scheduled_runs":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduled_runs WHERE project_id = ?", projectID)
 		default:
 			return 0, fmt.Errorf("unsupported project-scoped runtime table %q", tableName)
 		}
@@ -1303,6 +1306,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_proposals")
 		case "backlog_admission_runs":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_runs")
+		case "scheduled_runs":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduled_runs")
 		case "health_notification_states":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM health_notification_states")
 		case "api_keys":
