@@ -4795,6 +4795,79 @@ func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.
 	}
 }
 
+func TestConnectorSecurityAuditSnapshotUsesStableMetadataAndTextualDiff(t *testing.T) {
+	t.Parallel()
+
+	metadata := `{"number":42,"title":"Trusted audit","body":"Review this change","head":{"ref":"detent/audit","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"}}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", accept: "application/vnd.github.diff", body: "diff --git a/a.go b/a.go\n@@ -0,0 +1 @@\n+safe\ndiff --git a/z.go b/z.go\n@@ -1 +1 @@\n-old\n+new\n"},
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:           "issue-1",
+		Identifier:   "example/repo#1",
+		Title:        "Security issue",
+		Description:  "Acceptance criteria",
+		URL:          "https://github.test/example/repo/issues/1",
+		PRNumber:     &prNumber,
+		PRRepository: "example/repo",
+		PullRequest:  &connector.PullRequest{Number: prNumber},
+	}
+
+	snapshot, err := c.SecurityAuditSnapshot(t.Context(), issue, 4096)
+	if err != nil {
+		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
+	}
+	if snapshot.Repository != "example/repo" || snapshot.PRNumber != 42 || snapshot.BaseSHA != "base-sha" || snapshot.HeadSHA != "head-sha" || snapshot.DiffTruncated {
+		t.Fatalf("SecurityAuditSnapshot() = %#v", snapshot)
+	}
+	if !strings.Contains(snapshot.Diff, "diff --git a/a.go b/a.go") || !strings.Contains(snapshot.Diff, "+safe") {
+		t.Fatalf("SecurityAuditSnapshot().Diff = %q", snapshot.Diff)
+	}
+}
+
+func TestConnectorSecurityAuditSnapshotRejectsHeadChangeDuringCollection(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: `{"number":42,"head":{"sha":"old-head"},"base":{"sha":"base"}}`},
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", accept: "application/vnd.github.diff", body: "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+new\n"},
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: `{"number":42,"head":{"sha":"new-head"},"base":{"sha":"base"}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{Identifier: "example/repo#1", PRNumber: &prNumber, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42}}
+
+	if _, err := c.SecurityAuditSnapshot(t.Context(), issue, 4096); err == nil || !strings.Contains(err.Error(), "head changed") {
+		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
+	}
+}
+
+func TestConnectorSecurityAuditSnapshotMarksOversizedRawDiff(t *testing.T) {
+	t.Parallel()
+
+	metadata := `{"number":42,"head":{"sha":"head"},"base":{"sha":"base"}}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", accept: "application/vnd.github.diff", body: "12345"},
+		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{Identifier: "example/repo#1", PRNumber: &prNumber, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42}}
+
+	snapshot, err := c.SecurityAuditSnapshot(t.Context(), issue, 4)
+	if err != nil {
+		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
+	}
+	if snapshot.Diff != "1234" || !snapshot.DiffTruncated {
+		t.Fatalf("SecurityAuditSnapshot() diff = %q truncated=%t", snapshot.Diff, snapshot.DiffTruncated)
+	}
+}
+
 func TestConnectorHydratePullRequestNormalizesStaleSuccessfulWorkflowCheckRun(t *testing.T) {
 	t.Parallel()
 
@@ -6073,6 +6146,7 @@ type graphqlTestResponse struct {
 	status  int
 	method  string
 	path    string
+	accept  string
 	headers map[string]string
 	body    string
 	release <-chan struct{}
@@ -6134,6 +6208,9 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if response.path != "" && response.path != r.URL.RequestURI() {
 		s.t.Fatalf("path = %s, want %s", r.URL.RequestURI(), response.path)
+	}
+	if response.accept != "" && response.accept != r.Header.Get("Accept") {
+		s.t.Fatalf("accept = %s, want %s", r.Header.Get("Accept"), response.accept)
 	}
 
 	if response.release != nil {

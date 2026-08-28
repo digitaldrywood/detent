@@ -3,12 +3,14 @@ package codex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -81,22 +83,23 @@ func (b *AgentBackend) runTurn(
 	ctx = withWorkerEnvironment(ctx, req.Environment)
 	restricted := req.ReadOnly || len(tools) > 0
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
-		Workspace:             req.Workspace,
-		Prompt:                req.Prompt,
-		ResumeThreadID:        req.Resume.ThreadID,
-		DeveloperInstructions: toolTurnInstructions(tools, req.ToolInstructions),
-		ApprovalPolicy:        approvalPolicy(b.options.ApprovalPolicy, restricted),
-		MCPElicitationPolicy:  mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
-		ThreadSandbox:         threadSandbox(b.options.ThreadSandbox, restricted),
-		TurnSandboxPolicy:     turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
-		Model:                 req.Model,
-		ModelProvider:         req.ModelProvider,
-		ServiceTier:           req.ServiceTier,
-		ReasoningEffort:       req.ReasoningEffort,
-		TurnTimeout:           req.TurnTimeout,
-		StallTimeout:          b.options.StallTimeout,
-		DynamicTools:          tools,
-		ToolHandler:           toolHandler,
+		Workspace:               req.Workspace,
+		Prompt:                  req.Prompt,
+		ResumeThreadID:          req.Resume.ThreadID,
+		DeveloperInstructions:   toolTurnInstructions(tools, req.ToolInstructions),
+		ApprovalPolicy:          approvalPolicy(b.options.ApprovalPolicy, restricted),
+		MCPElicitationPolicy:    mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
+		ThreadSandbox:           threadSandbox(b.options.ThreadSandbox, restricted),
+		TurnSandboxPolicy:       turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
+		Model:                   req.Model,
+		ModelProvider:           req.ModelProvider,
+		ServiceTier:             req.ServiceTier,
+		ReasoningEffort:         req.ReasoningEffort,
+		TurnTimeout:             req.TurnTimeout,
+		StallTimeout:            b.options.StallTimeout,
+		DynamicTools:            tools,
+		ToolHandler:             toolHandler,
+		RequireSubscriptionAuth: req.RequireSubscriptionAuth,
 	}, func(update Update) error {
 		if onUpdate == nil {
 			return nil
@@ -104,19 +107,29 @@ func (b *AgentBackend) runTurn(
 		return onUpdate(agentUpdateFromCodex(update))
 	})
 	if err != nil {
+		if errors.Is(err, ErrSubscriptionAuthRequired) {
+			return runner.AgentTurnResult{
+				ThreadID:           result.ThreadID,
+				TurnID:             result.TurnID,
+				SessionID:          result.SessionID,
+				AuthenticationMode: securityaudit.AuthenticationRejected,
+			}, fmt.Errorf("%w: %w", runner.ErrSubscriptionAuthRequired, err)
+		}
 		if errors.Is(err, ErrTransportClose) && result.ThreadID != "" && result.TurnID != "" {
 			return runner.AgentTurnResult{
-				ThreadID:  result.ThreadID,
-				TurnID:    result.TurnID,
-				SessionID: result.SessionID,
+				ThreadID:           result.ThreadID,
+				TurnID:             result.TurnID,
+				SessionID:          result.SessionID,
+				AuthenticationMode: result.AuthenticationMode,
 			}, runner.NewAgentTurnCleanupError(err)
 		}
 		return runner.AgentTurnResult{}, err
 	}
 	return runner.AgentTurnResult{
-		ThreadID:  result.ThreadID,
-		TurnID:    result.TurnID,
-		SessionID: result.SessionID,
+		ThreadID:           result.ThreadID,
+		TurnID:             result.TurnID,
+		SessionID:          result.SessionID,
+		AuthenticationMode: result.AuthenticationMode,
 	}, nil
 }
 
@@ -154,11 +167,11 @@ func turnSandboxPolicy(threadSandbox string, configured any, roots []string, res
 }
 
 func toolTurnInstructions(tools []DynamicTool, override string) string {
-	if len(tools) == 0 {
-		return terminalWaitInstructions
-	}
 	if override = strings.TrimSpace(override); override != "" {
 		return override
+	}
+	if len(tools) == 0 {
+		return terminalWaitInstructions
 	}
 	return dynamicToolTurnInstructions
 }

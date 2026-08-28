@@ -895,6 +895,147 @@ func (q *Queries) CreateSchedulerDecision(ctx context.Context, arg CreateSchedul
 	return i, err
 }
 
+const createSecurityAuditDisposition = `-- name: CreateSecurityAuditDisposition :one
+INSERT INTO security_audit_dispositions (
+  audit_run_id,
+  finding_id,
+  status,
+  evidence,
+  service_identity,
+  recorded_at
+) VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id
+`
+
+type CreateSecurityAuditDispositionParams struct {
+	AuditRunID      int64  `json:"audit_run_id"`
+	FindingID       string `json:"finding_id"`
+	Status          string `json:"status"`
+	Evidence        string `json:"evidence"`
+	ServiceIdentity string `json:"service_identity"`
+	RecordedAt      string `json:"recorded_at"`
+}
+
+func (q *Queries) CreateSecurityAuditDisposition(ctx context.Context, arg CreateSecurityAuditDispositionParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createSecurityAuditDisposition,
+		arg.AuditRunID,
+		arg.FindingID,
+		arg.Status,
+		arg.Evidence,
+		arg.ServiceIdentity,
+		arg.RecordedAt,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createSecurityAuditRun = `-- name: CreateSecurityAuditRun :one
+INSERT INTO security_audit_runs (
+  invocation_id,
+  project_id,
+  issue_id,
+  identifier,
+  issue_url,
+  repository,
+  pr_number,
+  base_sha,
+  head_sha,
+  service_identity,
+  reviewer_version,
+  reviewer_digest,
+  authentication_mode,
+  worker_pid,
+  worker_pgid,
+  worker_started_at,
+  provider_thread_id,
+  provider_session_id,
+  exit_status,
+  failure,
+  output_digest,
+  output_bytes,
+  verdict,
+  summary,
+  findings_json,
+  attempt,
+  started_at,
+  completed_at,
+  recorded_at
+) VALUES (
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+)
+RETURNING id
+`
+
+type CreateSecurityAuditRunParams struct {
+	InvocationID       string         `json:"invocation_id"`
+	ProjectID          string         `json:"project_id"`
+	IssueID            string         `json:"issue_id"`
+	Identifier         string         `json:"identifier"`
+	IssueURL           string         `json:"issue_url"`
+	Repository         string         `json:"repository"`
+	PrNumber           int64          `json:"pr_number"`
+	BaseSha            string         `json:"base_sha"`
+	HeadSha            string         `json:"head_sha"`
+	ServiceIdentity    string         `json:"service_identity"`
+	ReviewerVersion    string         `json:"reviewer_version"`
+	ReviewerDigest     string         `json:"reviewer_digest"`
+	AuthenticationMode string         `json:"authentication_mode"`
+	WorkerPid          int64          `json:"worker_pid"`
+	WorkerPgid         int64          `json:"worker_pgid"`
+	WorkerStartedAt    sql.NullString `json:"worker_started_at"`
+	ProviderThreadID   string         `json:"provider_thread_id"`
+	ProviderSessionID  string         `json:"provider_session_id"`
+	ExitStatus         string         `json:"exit_status"`
+	Failure            string         `json:"failure"`
+	OutputDigest       string         `json:"output_digest"`
+	OutputBytes        int64          `json:"output_bytes"`
+	Verdict            string         `json:"verdict"`
+	Summary            string         `json:"summary"`
+	FindingsJson       string         `json:"findings_json"`
+	Attempt            int64          `json:"attempt"`
+	StartedAt          string         `json:"started_at"`
+	CompletedAt        string         `json:"completed_at"`
+	RecordedAt         string         `json:"recorded_at"`
+}
+
+func (q *Queries) CreateSecurityAuditRun(ctx context.Context, arg CreateSecurityAuditRunParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createSecurityAuditRun,
+		arg.InvocationID,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.Repository,
+		arg.PrNumber,
+		arg.BaseSha,
+		arg.HeadSha,
+		arg.ServiceIdentity,
+		arg.ReviewerVersion,
+		arg.ReviewerDigest,
+		arg.AuthenticationMode,
+		arg.WorkerPid,
+		arg.WorkerPgid,
+		arg.WorkerStartedAt,
+		arg.ProviderThreadID,
+		arg.ProviderSessionID,
+		arg.ExitStatus,
+		arg.Failure,
+		arg.OutputDigest,
+		arg.OutputBytes,
+		arg.Verdict,
+		arg.Summary,
+		arg.FindingsJson,
+		arg.Attempt,
+		arg.StartedAt,
+		arg.CompletedAt,
+		arg.RecordedAt,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createUsageEvent = `-- name: CreateUsageEvent :one
 INSERT INTO usage_events (
   project_id,
@@ -2430,6 +2571,124 @@ func (q *Queries) LaneMutationReceiptForOwner(ctx context.Context, arg LaneMutat
 	return i, err
 }
 
+const latestSecurityAuditRun = `-- name: LatestSecurityAuditRun :one
+SELECT id, invocation_id, project_id, issue_id, identifier, issue_url, repository, pr_number, base_sha, head_sha, service_identity, reviewer_version, reviewer_digest, authentication_mode, worker_pid, worker_pgid, worker_started_at, provider_thread_id, provider_session_id, exit_status, failure, output_digest, output_bytes, verdict, summary, findings_json, attempt, started_at, completed_at, recorded_at
+FROM security_audit_runs
+WHERE project_id = ?1
+  AND repository = ?2
+  AND pr_number = ?3
+  AND base_sha = ?4
+  AND head_sha = ?5
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1
+`
+
+type LatestSecurityAuditRunParams struct {
+	ProjectID  string `json:"project_id"`
+	Repository string `json:"repository"`
+	PrNumber   int64  `json:"pr_number"`
+	BaseSha    string `json:"base_sha"`
+	HeadSha    string `json:"head_sha"`
+}
+
+func (q *Queries) LatestSecurityAuditRun(ctx context.Context, arg LatestSecurityAuditRunParams) (SecurityAuditRun, error) {
+	row := q.db.QueryRowContext(ctx, latestSecurityAuditRun,
+		arg.ProjectID,
+		arg.Repository,
+		arg.PrNumber,
+		arg.BaseSha,
+		arg.HeadSha,
+	)
+	var i SecurityAuditRun
+	err := row.Scan(
+		&i.ID,
+		&i.InvocationID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.Repository,
+		&i.PrNumber,
+		&i.BaseSha,
+		&i.HeadSha,
+		&i.ServiceIdentity,
+		&i.ReviewerVersion,
+		&i.ReviewerDigest,
+		&i.AuthenticationMode,
+		&i.WorkerPid,
+		&i.WorkerPgid,
+		&i.WorkerStartedAt,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.ExitStatus,
+		&i.Failure,
+		&i.OutputDigest,
+		&i.OutputBytes,
+		&i.Verdict,
+		&i.Summary,
+		&i.FindingsJson,
+		&i.Attempt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.RecordedAt,
+	)
+	return i, err
+}
+
+const latestSecurityAuditRunForPullRequest = `-- name: LatestSecurityAuditRunForPullRequest :one
+SELECT id, invocation_id, project_id, issue_id, identifier, issue_url, repository, pr_number, base_sha, head_sha, service_identity, reviewer_version, reviewer_digest, authentication_mode, worker_pid, worker_pgid, worker_started_at, provider_thread_id, provider_session_id, exit_status, failure, output_digest, output_bytes, verdict, summary, findings_json, attempt, started_at, completed_at, recorded_at
+FROM security_audit_runs
+WHERE project_id = ?1
+  AND repository = ?2
+  AND pr_number = ?3
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1
+`
+
+type LatestSecurityAuditRunForPullRequestParams struct {
+	ProjectID  string `json:"project_id"`
+	Repository string `json:"repository"`
+	PrNumber   int64  `json:"pr_number"`
+}
+
+func (q *Queries) LatestSecurityAuditRunForPullRequest(ctx context.Context, arg LatestSecurityAuditRunForPullRequestParams) (SecurityAuditRun, error) {
+	row := q.db.QueryRowContext(ctx, latestSecurityAuditRunForPullRequest, arg.ProjectID, arg.Repository, arg.PrNumber)
+	var i SecurityAuditRun
+	err := row.Scan(
+		&i.ID,
+		&i.InvocationID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.Repository,
+		&i.PrNumber,
+		&i.BaseSha,
+		&i.HeadSha,
+		&i.ServiceIdentity,
+		&i.ReviewerVersion,
+		&i.ReviewerDigest,
+		&i.AuthenticationMode,
+		&i.WorkerPid,
+		&i.WorkerPgid,
+		&i.WorkerStartedAt,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.ExitStatus,
+		&i.Failure,
+		&i.OutputDigest,
+		&i.OutputBytes,
+		&i.Verdict,
+		&i.Summary,
+		&i.FindingsJson,
+		&i.Attempt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.RecordedAt,
+	)
+	return i, err
+}
+
 const lifetimeTotals = `-- name: LifetimeTotals :one
 SELECT
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
@@ -3584,6 +3843,44 @@ func (q *Queries) ListRecentTerminalWorkAttempts(ctx context.Context, arg ListRe
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSecurityAuditDispositions = `-- name: ListSecurityAuditDispositions :many
+SELECT id, audit_run_id, finding_id, status, evidence, service_identity, recorded_at
+FROM security_audit_dispositions
+WHERE audit_run_id = ?
+ORDER BY recorded_at, id
+`
+
+func (q *Queries) ListSecurityAuditDispositions(ctx context.Context, auditRunID int64) ([]SecurityAuditDisposition, error) {
+	rows, err := q.db.QueryContext(ctx, listSecurityAuditDispositions, auditRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SecurityAuditDisposition{}
+	for rows.Next() {
+		var i SecurityAuditDisposition
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuditRunID,
+			&i.FindingID,
+			&i.Status,
+			&i.Evidence,
+			&i.ServiceIdentity,
+			&i.RecordedAt,
 		); err != nil {
 			return nil, err
 		}

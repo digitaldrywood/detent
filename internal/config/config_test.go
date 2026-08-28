@@ -3005,6 +3005,47 @@ Prompt
 	}
 }
 
+func TestParseWorkflowGateSecurityAuditConfig(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: github_local
+  api_key: ghp_example
+  repository: digitaldrywood/detent
+  local_sqlite:
+    path: .detent/work-items.db
+gate:
+  kind: command
+  security_audit:
+    enabled: true
+    model: gpt-5-security
+    max_attempts: 4
+    turn_timeout_ms: 180000
+    max_diff_bytes: 131072
+    block_on: [p1, p2]
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	audit := workflow.Config.Gate.SecurityAudit
+	if !audit.Enabled || audit.Model != "gpt-5-security" || audit.MaxAttempts != 4 || audit.TurnTimeoutMS != 180000 {
+		t.Fatalf("Gate.SecurityAudit = %#v", audit)
+	}
+	if audit.MaxDiffBytes == nil || *audit.MaxDiffBytes != 131072 {
+		t.Fatalf("Gate.SecurityAudit.MaxDiffBytes = %v", audit.MaxDiffBytes)
+	}
+	if got := audit.BlockOn; !reflect.DeepEqual(got, []string{"p1", "p2"}) {
+		t.Fatalf("Gate.SecurityAudit.BlockOn = %#v", got)
+	}
+}
+
 func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
 	t.Parallel()
 

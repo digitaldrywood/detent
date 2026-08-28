@@ -11,6 +11,7 @@ import (
 	"maps"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +118,7 @@ type Dependencies struct {
 	BudgetGuardBuilder  BudgetGuardBuilder
 	Now                 func() time.Time
 	Logger              *slog.Logger
+	SecurityAuditRoot   string
 	AfterRunTimeout     time.Duration
 	MaxAgentRSSBytes    uint64
 	RSSPollInterval     time.Duration
@@ -145,6 +147,7 @@ type Runner struct {
 	enforcedBudgetKnown bool
 	now                 func() time.Time
 	logger              *slog.Logger
+	securityAuditRoot   string
 	afterRunTimeout     time.Duration
 	maxAgentRSSBytes    uint64
 	rssPollInterval     time.Duration
@@ -167,6 +170,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if strings.TrimSpace(deps.SecurityAuditRoot) == "" {
+		deps.SecurityAuditRoot = filepath.Join(os.TempDir(), "detent-security-audits")
 	}
 	if deps.AfterRunTimeout <= 0 {
 		deps.AfterRunTimeout = defaultAfterRunTimeout
@@ -236,6 +242,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		enforcedBudgetKnown: enforcedBudgetKnown,
 		now:                 deps.Now,
 		logger:              deps.Logger,
+		securityAuditRoot:   filepath.Clean(deps.SecurityAuditRoot),
 		afterRunTimeout:     deps.AfterRunTimeout,
 		maxAgentRSSBytes:    deps.MaxAgentRSSBytes,
 		rssPollInterval:     deps.RSSPollInterval,

@@ -18,9 +18,15 @@ type Runner = runner.Backend
 
 type Validator = runner.Validator
 
+type SecurityAuditor = runner.SecurityAuditor
+
 type RunRequest = runner.RunRequest
 
 type ValidatorRequest = runner.ValidatorRequest
+
+type SecurityAuditRequest = runner.SecurityAuditRequest
+
+type SecurityAuditExecution = runner.SecurityAuditExecution
 
 type RunResult = runner.RunResult
 

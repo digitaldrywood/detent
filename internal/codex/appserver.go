@@ -40,12 +40,15 @@ const (
 )
 
 var (
-	ErrResponseError   = errors.New("codex response error")
-	ErrInvalidResponse = errors.New("invalid codex response")
-	ErrStreamStalled   = errors.New("codex stream stalled")
-	ErrTurnFailed      = errors.New("codex turn failed")
-	ErrTransportClose  = errors.New("close codex app-server transport")
+	ErrResponseError            = errors.New("codex response error")
+	ErrInvalidResponse          = errors.New("invalid codex response")
+	ErrStreamStalled            = errors.New("codex stream stalled")
+	ErrTurnFailed               = errors.New("codex turn failed")
+	ErrTransportClose           = errors.New("close codex app-server transport")
+	ErrSubscriptionAuthRequired = errors.New("codex ChatGPT subscription authentication is required")
 )
+
+const AuthenticationModeChatGPTSubscription = "chatgpt_subscription"
 
 type ResponseError struct {
 	Request string
@@ -173,28 +176,30 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
-	Workspace             string
-	Prompt                string
-	ResumeThreadID        string
-	DeveloperInstructions string
-	ApprovalPolicy        any
-	MCPElicitationPolicy  MCPElicitationPolicy
-	ThreadSandbox         string
-	TurnSandboxPolicy     any
-	Model                 string
-	ModelProvider         string
-	ServiceTier           string
-	ReasoningEffort       string
-	TurnTimeout           time.Duration
-	StallTimeout          time.Duration
-	DynamicTools          []DynamicTool
-	ToolHandler           DynamicToolHandler
+	Workspace               string
+	Prompt                  string
+	ResumeThreadID          string
+	DeveloperInstructions   string
+	ApprovalPolicy          any
+	MCPElicitationPolicy    MCPElicitationPolicy
+	ThreadSandbox           string
+	TurnSandboxPolicy       any
+	Model                   string
+	ModelProvider           string
+	ServiceTier             string
+	ReasoningEffort         string
+	TurnTimeout             time.Duration
+	StallTimeout            time.Duration
+	DynamicTools            []DynamicTool
+	ToolHandler             DynamicToolHandler
+	RequireSubscriptionAuth bool
 }
 
 type RunTurnResult struct {
-	ThreadID  string
-	TurnID    string
-	SessionID string
+	ThreadID           string
+	TurnID             string
+	SessionID          string
+	AuthenticationMode string
 }
 
 type DynamicTool struct {
@@ -427,6 +432,17 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	if err := s.initialize(ctx, transport, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
+	authenticationMode := ""
+	if req.RequireSubscriptionAuth {
+		account, err := s.account(ctx, transport)
+		if err != nil {
+			return RunTurnResult{}, fmt.Errorf("verify codex subscription authentication: %w", err)
+		}
+		if !account.SubscriptionBased() {
+			return RunTurnResult{}, fmt.Errorf("%w: account_type=%s plan_type=%s", ErrSubscriptionAuthRequired, account.Type, account.PlanType)
+		}
+		authenticationMode = AuthenticationModeChatGPTSubscription
+	}
 
 	threadID := strings.TrimSpace(req.ResumeThreadID)
 	var runtimeIdentity agentidentity.Identity
@@ -473,9 +489,10 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	turnID := turn.ID
 
 	result = RunTurnResult{
-		ThreadID:  threadID,
-		TurnID:    turnID,
-		SessionID: threadID + "-" + turnID,
+		ThreadID:           threadID,
+		TurnID:             turnID,
+		SessionID:          threadID + "-" + turnID,
+		AuthenticationMode: authenticationMode,
 	}
 	if !turn.StartedEmitted {
 		startedIdentity := runtimeIdentity
@@ -539,6 +556,10 @@ func (s *AppServer) Account(ctx context.Context) (account Account, err error) {
 	if err := s.initialize(ctx, transport, nil); err != nil {
 		return Account{}, err
 	}
+	return s.account(ctx, transport)
+}
+
+func (s *AppServer) account(ctx context.Context, transport Transport) (account Account, err error) {
 	if err := sendRequest(ctx, transport, accountReadRequestID, "account/read", map[string]any{"refreshToken": false}); err != nil {
 		return Account{}, err
 	}

@@ -22,7 +22,7 @@
 #   windows: []
 # # tracker | type: object | default: see child fields | required: No | validation: intake.sources[].creates.status must name a configured tracker state; retro.target_state must name a configured tracker state
 # tracker:
-#   # tracker.kind | type: string | default: none | required: Yes | validation: backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it; backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift; intake.sources requires tracker.kind github; is required; must be one of github, github_local, linear, memory, local_sqlite; release.enabled requires tracker.kind github or github_local; tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite
+#   # tracker.kind | type: string | default: none | required: Yes | validation: backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it; backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift; gate.security_audit.enabled requires tracker.kind github or github_local; intake.sources requires tracker.kind github; is required; must be one of github, github_local, linear, memory, local_sqlite; release.enabled requires tracker.kind github or github_local; tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite
 #   kind: null
 #   # tracker.endpoint | type: string | default: "https://api.linear.app/graphql" for linear; "https://api.github.com/graphql" for github or github_local; unused otherwise | required: No | validation: None
 #   endpoint: null
@@ -904,6 +904,20 @@
 #     turn_timeout_ms: 0
 #     # gate.validator.max_inline_diff_bytes | type: integer | default: 65536 | required: No | validation: must be greater than or equal to 0
 #     max_inline_diff_bytes: 65536
+#   # gate.security_audit | type: object | default: see child fields | required: No | validation: None
+#   security_audit:
+#     # gate.security_audit.enabled | type: boolean | default: false | required: No | validation: requires tracker.kind github or github_local
+#     enabled: false
+#     # gate.security_audit.model | type: string | default: none | required: No | validation: None
+#     model: null
+#     # gate.security_audit.block_on | type: list<string> | default: ["p1","p2"] | required: No | validation: severities must be p1, p2, or p3
+#     block_on: ["p1","p2"]
+#     # gate.security_audit.max_attempts | type: integer | default: 3 | required: No | validation: must be greater than 0
+#     max_attempts: 3
+#     # gate.security_audit.turn_timeout_ms | type: integer | default: 1200000 | required: No | validation: must be greater than 0
+#     turn_timeout_ms: 1200000
+#     # gate.security_audit.max_diff_bytes | type: integer | default: 262144 | required: No | validation: must be greater than 0
+#     max_diff_bytes: 262144
 #   # gate.artifact | type: object | default: see child fields | required: No | validation: None
 #   artifact:
 #     # gate.artifact.status_field | type: string | default: "validation_status" | required: No | validation: None

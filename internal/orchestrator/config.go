@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/staleness"
 )
@@ -166,6 +167,10 @@ func stalenessConfigFromWorkflow(cfg workflowconfig.StalenessObservability, term
 
 func normalizeConfig(cfg Config) Config {
 	cfg.ForgeHost = forgeavailability.NormalizeHost(cfg.ForgeHost)
+	cfg.ServiceIdentity = strings.TrimSpace(cfg.ServiceIdentity)
+	if cfg.ServiceIdentity == "" && strings.TrimSpace(cfg.Project.ID) != "" {
+		cfg.ServiceIdentity = securityaudit.ServiceIdentity(cfg.Project.ID)
+	}
 	cfg.BillingMode = strings.ToLower(strings.TrimSpace(cfg.BillingMode))
 	cfg.RateWindowPacing = cfg.RateWindowPacing.Normalized()
 	if cfg.BillingMode == "" {

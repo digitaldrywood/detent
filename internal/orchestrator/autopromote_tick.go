@@ -109,10 +109,18 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 		}
 
+		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
+		summary.SecurityAudit = securityAudit
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
+			o.startSecurityAuditStage(ctx, issue, now)
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			continue
+		}
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
 			if !ok {

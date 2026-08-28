@@ -716,6 +716,13 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `gate.require_automated_review` | `boolean` | `true` | No | None |
 | `gate.required_status_checks` | `list<string>` | `[]` | No | None |
 | `gate.run` | `string` | `"make check"` | No | None |
+| `gate.security_audit` | `object` | `see child fields` | No | None |
+| `gate.security_audit.block_on` | `list<string>` | `["p1","p2"]` | No | severities must be p1, p2, or p3 |
+| `gate.security_audit.enabled` | `boolean` | `false` | No | requires tracker.kind github or github_local |
+| `gate.security_audit.max_attempts` | `integer` | `3` | No | must be greater than 0 |
+| `gate.security_audit.max_diff_bytes` | `integer` | `262144` | No | must be greater than 0 |
+| `gate.security_audit.model` | `string` | `none` | No | None |
+| `gate.security_audit.turn_timeout_ms` | `integer` | `1200000` | No | must be greater than 0 |
 | `gate.transient_ci_retry_limit` | `integer` | `2` | No | must be greater than or equal to 0 |
 | `gate.validator` | `object` | `see child fields` | No | None |
 | `gate.validator.block_on` | `list<string>` | `["p1"]` | No | None |
@@ -1061,7 +1068,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].url` | `string` | `none` | No | None |
 | `tracker.issues[].workpad_signal` | `mapping` | `none` | No | None |
-| `tracker.kind` | `string` | `none` | Yes | backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it<br>backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.kind` | `string` | `none` | Yes | backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it<br>backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>gate.security_audit.enabled requires tracker.kind github or github_local<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |
 | `tracker.local_sqlite.project_id` | `string` | `none` | No | None |

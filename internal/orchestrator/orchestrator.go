@@ -125,6 +125,7 @@ type Config struct {
 	GitHubGraphQLMinReserve       int64
 	GitHubRESTMinReserve          int64
 	ForgeHost                     string
+	ServiceIdentity               string
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
 	Lessons                       LessonCaptureConfig
@@ -176,6 +177,7 @@ type Dependencies struct {
 	AgentResume          store.AgentResumeStore
 	OrphanSessions       store.OrphanSessionStore
 	ValidatorMemo        store.ValidatorMemoStore
+	SecurityAudits       store.SecurityAuditStore
 	StalenessWarnings    store.StalenessWarningStore
 	Activity             *activity.Broker
 	Release              releasepkg.Coordinator
@@ -237,6 +239,7 @@ type Orchestrator struct {
 	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
 	validator               Validator
+	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
@@ -247,6 +250,10 @@ type Orchestrator struct {
 	validatorResults        map[string]validatorStageResult
 	validatorFailures       map[string]validatorStageFailure
 	validatorMemo           store.ValidatorMemoStore
+	securityAuditStore      store.SecurityAuditStore
+	securityAuditMu         sync.Mutex
+	securityAuditWG         sync.WaitGroup
+	securityAuditRuns       map[string]struct{}
 	stalenessWarningStore   store.StalenessWarningStore
 	activity                *activity.Broker
 	release                 releasepkg.Coordinator
@@ -413,6 +420,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if candidate, ok := runner.(Validator); ok {
 		validator = candidate
 	}
+	var securityAuditor SecurityAuditor
+	if candidate, ok := runner.(SecurityAuditor); ok {
+		securityAuditor = candidate
+	}
 	var capacityController runpkg.CapacityController
 	if candidate, ok := runner.(runpkg.CapacityController); ok {
 		capacityController = candidate
@@ -458,6 +469,12 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if validatorMemo == nil {
 		if candidate, ok := deps.WorkflowMetrics.(store.ValidatorMemoStore); ok {
 			validatorMemo = candidate
+		}
+	}
+	securityAuditStore := deps.SecurityAudits
+	if securityAuditStore == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.SecurityAuditStore); ok {
+			securityAuditStore = candidate
 		}
 	}
 	agentResume := deps.AgentResume
@@ -586,6 +603,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		orphanSessions:          orphanSessions,
 		supervisor:              supervisor,
 		validator:               validator,
+		securityAuditor:         securityAuditor,
 		reaper:                  reaper,
 		logger:                  logger,
 		globalDispatchGate:      deps.GlobalDispatchGate,
@@ -594,6 +612,8 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorResults:        map[string]validatorStageResult{},
 		validatorFailures:       map[string]validatorStageFailure{},
 		validatorMemo:           validatorMemo,
+		securityAuditStore:      securityAuditStore,
+		securityAuditRuns:       map[string]struct{}{},
 		stalenessWarningStore:   deps.StalenessWarnings,
 		activity:                deps.Activity,
 		release:                 deps.Release,
@@ -686,6 +706,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	state := newState(o.cfg)
 	defer o.validatorWG.Wait()
+	defer o.securityAuditWG.Wait()
 	defer o.releaseRunningSlots(&state)
 	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
 	if len(state.Running) > 0 {

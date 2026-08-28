@@ -257,6 +257,8 @@ type restAssignee struct {
 type restPullRequest struct {
 	NodeID         string     `json:"node_id"`
 	Number         int        `json:"number"`
+	Title          string     `json:"title"`
+	Body           *string    `json:"body"`
 	HTMLURL        string     `json:"html_url"`
 	State          string     `json:"state"`
 	MergeableState string     `json:"mergeable_state"`
@@ -273,6 +275,10 @@ type restPullRequestFile struct {
 	PreviousFilename string `json:"previous_filename"`
 	Status           string `json:"status"`
 	SHA              string `json:"sha"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Changes          int    `json:"changes"`
+	Patch            string `json:"patch"`
 }
 
 type restPullRequestMergeResponse struct {

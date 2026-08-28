@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -90,7 +91,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		if !status.Available {
 			continue
 		}
-
 		enqueueIssue := cloneIssue(candidate)
 		if enqueueIssue.PullRequest != nil && strings.TrimSpace(enqueueIssue.PullRequest.NodeID) == "" {
 			enqueueIssue.PullRequest.NodeID = strings.TrimSpace(status.PullRequestNodeID)
@@ -115,6 +115,9 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 
 func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	if gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled {
 		return false
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {

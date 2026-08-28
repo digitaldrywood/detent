@@ -343,6 +343,49 @@ type SchedulerDecision struct {
 	MetadataJson           string         `json:"metadata_json"`
 }
 
+type SecurityAuditDisposition struct {
+	ID              int64  `json:"id"`
+	AuditRunID      int64  `json:"audit_run_id"`
+	FindingID       string `json:"finding_id"`
+	Status          string `json:"status"`
+	Evidence        string `json:"evidence"`
+	ServiceIdentity string `json:"service_identity"`
+	RecordedAt      string `json:"recorded_at"`
+}
+
+type SecurityAuditRun struct {
+	ID                 int64          `json:"id"`
+	InvocationID       string         `json:"invocation_id"`
+	ProjectID          string         `json:"project_id"`
+	IssueID            string         `json:"issue_id"`
+	Identifier         string         `json:"identifier"`
+	IssueURL           string         `json:"issue_url"`
+	Repository         string         `json:"repository"`
+	PrNumber           int64          `json:"pr_number"`
+	BaseSha            string         `json:"base_sha"`
+	HeadSha            string         `json:"head_sha"`
+	ServiceIdentity    string         `json:"service_identity"`
+	ReviewerVersion    string         `json:"reviewer_version"`
+	ReviewerDigest     string         `json:"reviewer_digest"`
+	AuthenticationMode string         `json:"authentication_mode"`
+	WorkerPid          int64          `json:"worker_pid"`
+	WorkerPgid         int64          `json:"worker_pgid"`
+	WorkerStartedAt    sql.NullString `json:"worker_started_at"`
+	ProviderThreadID   string         `json:"provider_thread_id"`
+	ProviderSessionID  string         `json:"provider_session_id"`
+	ExitStatus         string         `json:"exit_status"`
+	Failure            string         `json:"failure"`
+	OutputDigest       string         `json:"output_digest"`
+	OutputBytes        int64          `json:"output_bytes"`
+	Verdict            string         `json:"verdict"`
+	Summary            string         `json:"summary"`
+	FindingsJson       string         `json:"findings_json"`
+	Attempt            int64          `json:"attempt"`
+	StartedAt          string         `json:"started_at"`
+	CompletedAt        string         `json:"completed_at"`
+	RecordedAt         string         `json:"recorded_at"`
+}
+
 type StalenessWarningState struct {
 	ProjectID      string         `json:"project_id"`
 	WarningID      string         `json:"warning_id"`

@@ -1470,3 +1470,76 @@ SELECT email, expires_at
 FROM auth_sessions
 WHERE token_hash = sqlc.arg(token_hash)
   AND expires_at > sqlc.arg(now);
+
+-- name: CreateSecurityAuditRun :one
+INSERT INTO security_audit_runs (
+  invocation_id,
+  project_id,
+  issue_id,
+  identifier,
+  issue_url,
+  repository,
+  pr_number,
+  base_sha,
+  head_sha,
+  service_identity,
+  reviewer_version,
+  reviewer_digest,
+  authentication_mode,
+  worker_pid,
+  worker_pgid,
+  worker_started_at,
+  provider_thread_id,
+  provider_session_id,
+  exit_status,
+  failure,
+  output_digest,
+  output_bytes,
+  verdict,
+  summary,
+  findings_json,
+  attempt,
+  started_at,
+  completed_at,
+  recorded_at
+) VALUES (
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+)
+RETURNING id;
+
+-- name: LatestSecurityAuditRun :one
+SELECT *
+FROM security_audit_runs
+WHERE project_id = sqlc.arg(project_id)
+  AND repository = sqlc.arg(repository)
+  AND pr_number = sqlc.arg(pr_number)
+  AND base_sha = sqlc.arg(base_sha)
+  AND head_sha = sqlc.arg(head_sha)
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1;
+
+-- name: LatestSecurityAuditRunForPullRequest :one
+SELECT *
+FROM security_audit_runs
+WHERE project_id = sqlc.arg(project_id)
+  AND repository = sqlc.arg(repository)
+  AND pr_number = sqlc.arg(pr_number)
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1;
+
+-- name: CreateSecurityAuditDisposition :one
+INSERT INTO security_audit_dispositions (
+  audit_run_id,
+  finding_id,
+  status,
+  evidence,
+  service_identity,
+  recorded_at
+) VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+-- name: ListSecurityAuditDispositions :many
+SELECT *
+FROM security_audit_dispositions
+WHERE audit_run_id = ?
+ORDER BY recorded_at, id;

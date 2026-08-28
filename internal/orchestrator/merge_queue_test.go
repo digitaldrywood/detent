@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -396,6 +397,18 @@ func TestNativeMergeQueueCandidate(t *testing.T) {
 				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNativeMergeQueueCandidateRejectsNonAtomicSecurityAuditGate(t *testing.T) {
+	t.Parallel()
+
+	issue := nativeMergeQueueTestIssue(402, "success")
+	cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+		SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
+	}}})
+	if nativeMergeQueueCandidate(issue, cfg) {
+		t.Fatal("nativeMergeQueueCandidate() = true, want programmatic exact-head merge")
 	}
 }
 

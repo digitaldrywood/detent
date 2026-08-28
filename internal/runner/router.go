@@ -15,12 +15,13 @@ var (
 )
 
 const (
-	RoleCode      = "code"
-	RolePlan      = "plan"
-	RoleRework    = "rework"
-	RoleMerge     = "merge"
-	RoleRoutine   = "routine"
-	RoleValidator = "validator"
+	RoleCode          = "code"
+	RolePlan          = "plan"
+	RoleRework        = "rework"
+	RoleMerge         = "merge"
+	RoleRoutine       = "routine"
+	RoleValidator     = "validator"
+	RoleSecurityAudit = "security_audit"
 )
 
 type Route struct {
