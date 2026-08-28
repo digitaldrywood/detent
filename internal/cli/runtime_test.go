@@ -9,7 +9,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -673,36 +675,90 @@ func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
 }
 
 func TestRuntimeGitHubTokenRefresherResolvesConfiguredGHSentinelWithoutActionsToken(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "actions-token")
-	fakeGHDir := t.TempDir()
-	writeFakeGHAuthToken(t, fakeGHDir)
-	t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tests := []struct {
+		name      string
+		expire    bool
+		wantToken string
+		wantErr   error
+	}{
+		{
+			name:      "command completes before deadline",
+			wantToken: "gh-token",
+		},
+		{
+			name:    "production deadline expires before command",
+			expire:  true,
+			wantErr: context.DeadlineExceeded,
+		},
+	}
 
-	workflowPath := filepath.Join(t.TempDir(), "workflow.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	globalState := newGlobalConfigState(globalconfig.Config{})
-	tokenState := newRuntimeGitHubTokenState("")
-	refresh := runtimeGitHubTokenRefresher(globalState, tokenState)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_TOKEN", "actions-token")
+			fakeGHDir := t.TempDir()
+			writeFakeGHAuthToken(t, fakeGHDir)
+			t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	globalState.set(globalconfig.Config{
-		GitHubToken: "gh",
-		Projects: []globalconfig.Project{{
-			ID:       "detent",
-			Workflow: workflowPath,
-			Workdir:  ".",
-		}},
-	})
-	got, err := refresh(context.Background())
-	if err != nil {
-		t.Fatalf("refresh() error = %v", err)
-	}
-	if got != "gh-token" {
-		t.Fatalf("refresh() = %q, want gh-token", got)
-	}
-	if tokenState.get() != "gh-token" {
-		t.Fatalf("runtime token state = %q, want gh-token", tokenState.get())
+			workflowPath := filepath.Join(t.TempDir(), "workflow.md")
+			if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			globalState := newGlobalConfigState(globalconfig.Config{})
+			tokenState := newRuntimeGitHubTokenState("")
+			commandContexts := newControlledRuntimeCommandContexts()
+			t.Cleanup(commandContexts.AllowCommand)
+			refresh := runtimeGitHubTokenRefresherWithCommandContext(globalState, tokenState, commandContexts.New)
+
+			globalState.set(globalconfig.Config{
+				GitHubToken: "gh",
+				Projects: []globalconfig.Project{{
+					ID:       "detent",
+					Workflow: workflowPath,
+					Workdir:  ".",
+				}},
+			})
+			type refreshResult struct {
+				token string
+				err   error
+			}
+			result := make(chan refreshResult, 1)
+			go func() {
+				token, err := refresh(context.Background())
+				result <- refreshResult{token: token, err: err}
+			}()
+
+			select {
+			case timeout := <-commandContexts.ready:
+				if timeout != runtimeCommandTimeout {
+					t.Fatalf("command timeout = %s, want %s", timeout, runtimeCommandTimeout)
+				}
+			case <-time.After(runtimeCommandTestDeadlockGuard):
+				t.Fatal("timed out waiting for command context")
+			}
+			if _, ok := commandContexts.commandContext.Deadline(); !ok {
+				t.Fatal("command context has no deadline")
+			}
+			if tt.expire {
+				commandContexts.Expire()
+			}
+			commandContexts.AllowCommand()
+
+			var got refreshResult
+			select {
+			case got = <-result:
+			case <-time.After(runtimeCommandTestDeadlockGuard):
+				t.Fatal("timed out waiting for token refresh")
+			}
+			if !errors.Is(got.err, tt.wantErr) {
+				t.Fatalf("refresh() error = %v, want %v", got.err, tt.wantErr)
+			}
+			if got.token != tt.wantToken {
+				t.Fatalf("refresh() = %q, want %q", got.token, tt.wantToken)
+			}
+			if tokenState.get() != tt.wantToken {
+				t.Fatalf("runtime token state = %q, want %q", tokenState.get(), tt.wantToken)
+			}
+		})
 	}
 }
 
@@ -808,6 +864,85 @@ func writeFakeGHAuthToken(t *testing.T, dir string) {
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", path, err)
 	}
+}
+
+const runtimeCommandTestDeadlockGuard = 30 * time.Second
+
+type controlledRuntimeCommandContexts struct {
+	ready          chan time.Duration
+	release        chan struct{}
+	releaseOnce    sync.Once
+	commandContext *controlledRuntimeCommandContext
+}
+
+func newControlledRuntimeCommandContexts() *controlledRuntimeCommandContexts {
+	return &controlledRuntimeCommandContexts{
+		ready:   make(chan time.Duration, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (c *controlledRuntimeCommandContexts) New(
+	ctx context.Context,
+	timeout time.Duration,
+) (context.Context, context.CancelFunc) {
+	commandContext := &controlledRuntimeCommandContext{
+		deadline: time.Now().Add(timeout),
+		done:     make(chan struct{}),
+		value:    ctx.Value,
+	}
+	c.commandContext = commandContext
+	c.ready <- timeout
+	<-c.release
+	return commandContext, func() {
+		commandContext.cancel(context.Canceled)
+	}
+}
+
+func (c *controlledRuntimeCommandContexts) Expire() {
+	c.commandContext.cancel(context.DeadlineExceeded)
+}
+
+func (c *controlledRuntimeCommandContexts) AllowCommand() {
+	c.releaseOnce.Do(func() {
+		close(c.release)
+	})
+}
+
+type controlledRuntimeCommandContext struct {
+	deadline time.Time
+	done     chan struct{}
+	value    func(any) any
+	once     sync.Once
+	mu       sync.RWMutex
+	err      error
+}
+
+func (c *controlledRuntimeCommandContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func (c *controlledRuntimeCommandContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *controlledRuntimeCommandContext) Err() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.err
+}
+
+func (c *controlledRuntimeCommandContext) Value(key any) any {
+	return c.value(key)
+}
+
+func (c *controlledRuntimeCommandContext) cancel(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
 }
 
 func mapLookup(values map[string]string) func(string) string {

@@ -204,11 +204,25 @@ func (r *globalConfigReloader) runtimeGitHubToken(ctx context.Context, cfg globa
 }
 
 func resolveGlobalRuntimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
+	return resolveGlobalRuntimeGitHubTokenWithCommandContext(ctx, cfg, context.WithTimeout)
+}
+
+func resolveGlobalRuntimeGitHubTokenWithCommandContext(
+	ctx context.Context,
+	cfg globalconfig.Config,
+	commandContext runtimeCommandContextFactory,
+) (string, error) {
 	deps := runtimeDeps{}.withDefaults()
 	if strings.TrimSpace(cfg.GitHubToken) != "" {
 		deps.lookupEnv = withoutRuntimeGitHubTokenEnv(deps.lookupEnv)
 		if githubTokenSentinel(cfg.GitHubToken) {
-			deps.ghAuthToken = defaultGHAuthTokenWithoutRuntimeEnv
+			deps.ghAuthToken = func(ctx context.Context) (string, error) {
+				return runGHAuthTokenWithCommandContext(
+					ctx,
+					environmentWithoutKeys([]string{"GITHUB_TOKEN"}),
+					commandContext,
+				)
+			}
 		}
 	}
 	token, _, err := resolveRuntimeGitHubToken(ctx, &cfg, deps)
