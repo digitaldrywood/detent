@@ -1080,6 +1080,153 @@ func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T
 	}
 }
 
+func TestDispatchableCompletedReworkGateWaitEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 18, 30, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tests := []struct {
+		name            string
+		prepareComplete func(*connector.Issue)
+		prepareCurrent  func(*connector.Issue)
+		wantDispatch    bool
+	}{
+		{name: "unchanged exact head remains waiting"},
+		{
+			name: "new pull request head permits dispatch",
+			prepareCurrent: func(issue *connector.Issue) {
+				issue.PullRequest.HeadSHA = "new-head"
+			},
+			wantDispatch: true,
+		},
+		{
+			name: "new failing check permits dispatch",
+			prepareCurrent: func(issue *connector.Issue) {
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
+			},
+			wantDispatch: true,
+		},
+		{
+			name: "new P1 review permits dispatch",
+			prepareCurrent: func(issue *connector.Issue) {
+				issue.PullRequest.CodexReviewState = "P1"
+				issue.PullRequest.CodexReviewFindings = []connector.PullRequestFinding{{Body: "Fix the race.", Path: "internal/orchestrator/run_completion.go", Line: 577}}
+			},
+			wantDispatch: true,
+		},
+		{
+			name: "cleared failing check remains waiting for promotion",
+			prepareComplete: func(issue *connector.Issue) {
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
+			},
+		},
+		{
+			name: "lane movement permits dispatch",
+			prepareCurrent: func(issue *connector.Issue) {
+				issue.State = "In Progress"
+			},
+			wantDispatch: true,
+		},
+		{
+			name: "later Rework entry permits dispatch",
+			prepareCurrent: func(issue *connector.Issue) {
+				enteredAt := now.Add(-time.Minute)
+				issue.StageUpdatedAt = &enteredAt
+			},
+			wantDispatch: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			completedIssue := dispatchTestIssueWithPullRequest("issue-rework-gate-wait", "Rework", "OPEN")
+			completedIssue.PullRequest.HeadSHA = "same-head"
+			completedIssue.PullRequest.MergeableState = "clean"
+			completedIssue.PullRequest.CIStatus = "success"
+			if tt.prepareComplete != nil {
+				tt.prepareComplete(&completedIssue)
+			}
+			currentIssue := cloneIssue(completedIssue)
+			if tt.prepareCurrent != nil {
+				tt.prepareCurrent(&currentIssue)
+			}
+			state := newState(cfg)
+			state.Completed[currentIssue.ID] = Completed{
+				Issue:          completedIssue,
+				CompletedAt:    now.Add(-2 * time.Minute),
+				FinalState:     FinalStateCompleted,
+				GateWaitReason: completedReworkGateWaitReason,
+			}
+
+			decision := newDispatchPlanner(cfg).dispatchableIssueDecision(currentIssue, &state, false, now, "")
+			if decision.dispatchable != tt.wantDispatch {
+				t.Fatalf("dispatchable = %v, want %v; reason = %q", decision.dispatchable, tt.wantDispatch, decision.reason)
+			}
+			if !tt.wantDispatch && decision.reason != dispatchSkipAwaitingGate {
+				t.Fatalf("reason = %q, want %q", decision.reason, dispatchSkipAwaitingGate)
+			}
+		})
+	}
+}
+
+func TestTargetedReconcilePreservesCompletedReworkGateWaitEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 19, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	completedIssue := dispatchTestIssueWithPullRequest("issue-rework-gate-refresh", "Rework", "OPEN")
+	completedIssue.PullRequest.HeadSHA = "completed-head"
+	completedIssue.PullRequest.MergeableState = "clean"
+	completedIssue.PullRequest.CIStatus = "success"
+	refreshedIssue := cloneIssue(completedIssue)
+	refreshedIssue.PullRequest.HeadSHA = "replacement-head"
+
+	state := newState(cfg)
+	state.Completed[completedIssue.ID] = Completed{
+		Issue:            cloneIssue(completedIssue),
+		CompletedAt:      now.Add(-2 * time.Minute),
+		FinalState:       FinalStateCompleted,
+		GateWaitReason:   completedReworkGateWaitReason,
+		gateWaitEvidence: completionGateWaitEvidence(completedReworkGateWaitReason, completedIssue),
+	}
+	orch := Orchestrator{cfg: cfg}
+	orch.updateTargetedIssueEntries(&state, refreshedIssue)
+
+	completed := state.Completed[completedIssue.ID]
+	if got := completed.Issue.PullRequest.HeadSHA; got != "replacement-head" {
+		t.Fatalf("Completed issue head = %q, want refreshed head", got)
+	}
+	if got := completed.gateWaitEvidence.PullRequest.HeadSHA; got != "completed-head" {
+		t.Fatalf("gate-wait evidence head = %q, want completion-time head", got)
+	}
+	if autoPromoteActiveGatePendingIssue(refreshedIssue, &state, cfg, cfg.AutoPromote) {
+		t.Fatal("replacement head remained pending the completed-head gate")
+	}
+	decision := newDispatchPlanner(cfg).dispatchableIssueDecision(refreshedIssue, &state, false, now, "")
+	if !decision.dispatchable {
+		t.Fatalf("replacement-head dispatch decision = %#v, want dispatchable", decision)
+	}
+}
+
 func TestDispatchableArtifactGateWaitStatus(t *testing.T) {
 	t.Parallel()
 

@@ -218,15 +218,17 @@ type Blocked struct {
 }
 
 type Completed struct {
-	Issue           connector.Issue
-	SessionID       string
-	StartedAt       time.Time
-	CompletedAt     time.Time
-	FinalState      string
-	CompletionKind  string
-	Tokens          TokenTotals
-	MergeTiming     MergeTiming
-	RuntimeIdentity agentidentity.Identity
+	Issue            connector.Issue
+	SessionID        string
+	StartedAt        time.Time
+	CompletedAt      time.Time
+	FinalState       string
+	CompletionKind   string
+	GateWaitReason   string
+	gateWaitEvidence connector.Issue
+	Tokens           TokenTotals
+	MergeTiming      MergeTiming
+	RuntimeIdentity  agentidentity.Identity
 }
 
 type MergeTiming struct {
@@ -508,6 +510,7 @@ func (s State) clone() State {
 	}
 	for id, completed := range s.Completed {
 		completed.Issue = cloneIssue(completed.Issue)
+		completed.gateWaitEvidence = cloneIssue(completed.gateWaitEvidence)
 		cloned.Completed[id] = completed
 	}
 	for id, retry := range s.Retry {

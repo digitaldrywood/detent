@@ -1060,6 +1060,212 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultDoesNotSupersedeReworkPullRequestUpdates(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 28, 19, 15, 0, 0, time.UTC)
+	completedIssue := implementProgressIssue("completed-head")
+	completedIssue.State = "Rework"
+	replacementIssue := cloneIssue(completedIssue)
+	replacementIssue.PullRequest.HeadSHA = "replacement-head"
+	signature := autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "completed-head"}
+	tests := []struct {
+		name   string
+		result runpkg.RunResult
+	}{
+		{
+			name:   "head push",
+			result: runpkg.RunResult{PullRequestHeadPushed: true},
+		},
+		{
+			name:   "pull request update",
+			result: runpkg.RunResult{PullRequestUpdated: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &implementProgressConnector{hydrated: replacementIssue}
+			attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{
+				successfulReworkGateWaitAttempt(base.Add(-2*time.Minute), completedIssue, signature, true),
+			}}
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:       true,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.Running[completedIssue.ID] = Running{
+				Issue:               completedIssue,
+				Attempt:             2,
+				WorkAttemptID:       42,
+				Mode:                runpkg.RunModeImplement,
+				DispatchSourceState: "Rework",
+				StartedAt:           base.Add(-time.Minute),
+				DiffStats:           DiffStats{Status: "clean"},
+			}
+			state.Claimed[completedIssue.ID] = Claimed{Issue: completedIssue, ClaimedAt: base.Add(-time.Minute)}
+
+			result := tt.result
+			result.FinalState = FinalStateCompleted
+			result.DiffStats = DiffStats{Status: "clean"}
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     completedIssue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result:      result,
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+				t.Fatalf("completions = %#v, want successful replacement-head completion", attempts.completions)
+			}
+			record := implementProgressRecordFromCompletion(t, attempts.completions[0])
+			if record.CurrentSignature.HeadSHA != "replacement-head" {
+				t.Fatalf("completion head = %q, want replacement-head", record.CurrentSignature.HeadSHA)
+			}
+			completed := state.Completed[completedIssue.ID]
+			if completed.gateWaitEvidence.PullRequest == nil || completed.gateWaitEvidence.PullRequest.HeadSHA != "replacement-head" {
+				t.Fatalf("gate-wait evidence = %#v, want replacement head", completed.gateWaitEvidence.PullRequest)
+			}
+		})
+	}
+}
+
+func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 28, 18, 0, 0, 0, time.UTC)
+	signature := autoPromoteReworkSignature{
+		PRNumber: 1070,
+		HeadSHA:  "same-head",
+	}
+	tests := []struct {
+		name          string
+		history       []store.WorkAttempt
+		completionErr error
+		wantReason    string
+		wantClaimed   bool
+		wantTerminal  store.WorkAttemptTerminalState
+	}{
+		{
+			name:         "first successful completion",
+			wantReason:   "first_completed_attempt",
+			wantTerminal: store.WorkAttemptTerminalSuccess,
+		},
+		{
+			name:         "successful completion with unchanged fingerprint",
+			history:      []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			wantReason:   "unchanged_signature_clean_diff",
+			wantTerminal: store.WorkAttemptTerminalSuccess,
+		},
+		{
+			name:          "persistence failure retains claim",
+			completionErr: errors.New("attempt store unavailable"),
+			wantReason:    "first_completed_attempt",
+			wantClaimed:   true,
+			wantTerminal:  store.WorkAttemptTerminalSuccess,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := implementProgressIssue("same-head")
+			issue.State = "Rework"
+			tracker := &implementProgressConnector{hydrated: issue}
+			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:         true,
+					GateWaitState:   autoPromoteGateWaitSource,
+					NoProgressLimit: 3,
+					Gate:            gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{
+				Issue:               issue,
+				Attempt:             2,
+				WorkAttemptID:       42,
+				Mode:                runpkg.RunModeImplement,
+				DispatchSourceState: "Rework",
+				StartedAt:           base.Add(-time.Minute),
+				DiffStats:           DiffStats{Status: "clean"},
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: base.Add(-time.Minute)}
+
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result: runpkg.RunResult{
+					FinalState: FinalStateCompleted,
+					DiffStats:  DiffStats{Status: "clean"},
+				},
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminal {
+				t.Fatalf("completions = %#v, want terminal %q", attempts.completions, tt.wantTerminal)
+			}
+			persisted := store.WorkAttempt{
+				TerminalState:      attempts.completions[0].TerminalState,
+				WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON,
+			}
+			record, ok := implementProgressRecordFromAttempt(persisted)
+			if !ok || record.Reason != tt.wantReason {
+				t.Fatalf("completion progress = %#v, want reason %q", record, tt.wantReason)
+			}
+			if reason := completionGateWaitReasonFromAttempt(persisted); reason != completedReworkGateWaitReason {
+				t.Fatalf("completion gate wait reason = %q, want %q", reason, completedReworkGateWaitReason)
+			}
+			completed, ok := state.Completed[issue.ID]
+			if !ok {
+				t.Fatalf("Completed[%q] missing after Rework gate-wait completion", issue.ID)
+			}
+			if completed.GateWaitReason != completedReworkGateWaitReason {
+				t.Fatalf("Completed[%q].GateWaitReason = %q, want %q", issue.ID, completed.GateWaitReason, completedReworkGateWaitReason)
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatalf("Retry[%q] present after Rework gate-wait completion", issue.ID)
+			}
+			_, claimed := state.Claimed[issue.ID]
+			if claimed != tt.wantClaimed {
+				t.Fatalf("Claimed[%q] present = %v, want %v", issue.ID, claimed, tt.wantClaimed)
+			}
+			if !tt.wantClaimed {
+				if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+					t.Fatal("Rework completion is not pending the source-lane gate")
+				}
+			}
+		})
+	}
+}
+
 func TestHandleRunResultCommentsOnObservedLaneTransition(t *testing.T) {
 	t.Parallel()
 

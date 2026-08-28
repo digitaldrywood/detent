@@ -586,6 +586,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
+	progress, gateWaitReason := completedReworkGateWaitProgress(running, progress, o.cfg, finalState)
 	running.Issue = progress.Issue
 	if terminalState == store.WorkAttemptTerminalSuccess && implementCompletionHasDurableProgress(running, progress) {
 		resetWorkerFailureBreakers(state, event.IssueID)
@@ -655,17 +656,20 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		spendProgressMetadata(spendProgress),
 		artifactGateConvergenceMetadata(artifactConvergence),
 		deliverableCommandEvidenceMetadata(event.Result),
+		completionGateWaitMetadata(gateWaitReason, progress.Issue),
 	))
 
 	state.Completed[event.IssueID] = Completed{
-		Issue:           cloneIssue(running.Issue),
-		SessionID:       running.SessionID,
-		StartedAt:       running.StartedAt,
-		CompletedAt:     event.CompletedAt,
-		FinalState:      finalState,
-		CompletionKind:  strings.TrimSpace(progress.CompletionKind),
-		Tokens:          event.Result.Tokens,
-		RuntimeIdentity: running.RuntimeIdentity,
+		Issue:            cloneIssue(running.Issue),
+		SessionID:        running.SessionID,
+		StartedAt:        running.StartedAt,
+		CompletedAt:      event.CompletedAt,
+		FinalState:       finalState,
+		CompletionKind:   strings.TrimSpace(progress.CompletionKind),
+		GateWaitReason:   gateWaitReason,
+		gateWaitEvidence: completionGateWaitEvidence(gateWaitReason, progress.Issue),
+		Tokens:           event.Result.Tokens,
+		RuntimeIdentity:  running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
@@ -691,6 +695,14 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if terminalState == store.WorkAttemptTerminalSuccess &&
 		autoPromoteActiveGatePendingIssue(running.Issue, state, o.cfg, o.cfg.AutoPromote) {
+		if gateWaitReason != "" && !attemptCompleted {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "rework_gate_wait_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after Rework gate-wait persistence failed",
+			})
+			return
+		}
 		o.finishCompletedGateWaitRun(ctx, state, running.Issue)
 		return
 	}
@@ -811,7 +823,10 @@ func (o *Orchestrator) completeRedundantGateWaitRun(
 	event runpkg.Completion,
 	running Running,
 ) bool {
-	if !autoPromoteActiveGateTrackedIssue(running.Issue, o.cfg, o.cfg.AutoPromote) {
+	if event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated {
+		return false
+	}
+	if !autoPromoteDurableGateWaitTrackedIssue(running.Issue, o.cfg, o.cfg.AutoPromote) {
 		return false
 	}
 	attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, running.Issue)
