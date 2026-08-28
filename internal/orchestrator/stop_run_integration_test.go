@@ -30,8 +30,9 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 		t.Fatalf("store.Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = runtimeStore.Close() })
+	completionStore := &operatorStopCompletionStore{Store: runtimeStore, completed: make(chan store.WorkflowPhaseEvent)}
 	gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}))
-	orch, err := orchestrator.New(orchestrator.Config{PollInterval: 5 * time.Millisecond, MaxConcurrentAgents: 2, MaxRetryBackoff: time.Hour, FailureRetryBaseDelay: time.Hour, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper, WorkAttempts: runtimeStore, WorkflowMetrics: runtimeStore, GlobalDispatchGate: gate})
+	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 2, MaxRetryBackoff: time.Hour, FailureRetryBaseDelay: time.Hour, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper, WorkAttempts: completionStore, WorkflowMetrics: completionStore, GlobalDispatchGate: gate})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)
 	}
@@ -47,11 +48,17 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	if result.Outcome != "pending" || result.Destination != "Blocked" || !result.CompletedAt.IsZero() {
 		t.Fatalf("StopRun() result = %#v, want pending Blocked acknowledgement", result)
 	}
-	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
-		_, stoppedRunning := state.Running[issue.ID]
-		_, otherRunning := state.Running[other.ID]
-		return !stoppedRunning && otherRunning
-	})
+	waitForOperatorStopCompletion(t, completionStore.completed, issue.ID)
+	state, err = orch.State(t.Context())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if _, stoppedRunning := state.Running[issue.ID]; stoppedRunning {
+		t.Fatalf("stopped issue %q remains active", issue.ID)
+	}
+	if _, otherRunning := state.Running[other.ID]; !otherRunning {
+		t.Fatalf("unrelated issue %q was interrupted", other.ID)
+	}
 	if _, retrying := state.Retry[issue.ID]; retrying {
 		t.Fatalf("Retry[%q] present after operator stop", issue.ID)
 	}
@@ -87,6 +94,9 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	tracker.mu.Lock()
 	tracker.candidates = append(tracker.candidates, third)
 	tracker.mu.Unlock()
+	if _, err := orch.RequestRefresh(t.Context()); err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
 	waitForOperatorStopRunnerIssue(t, runner.started, third.ID)
 	state, err = orch.State(t.Context())
 	if err != nil {
@@ -469,6 +479,27 @@ func (r *operatorStopBlockingRunner) Run(ctx context.Context, request orchestrat
 	return orchestrator.RunResult{}, ctx.Err()
 }
 
+type operatorStopCompletionStore struct {
+	store.Store
+	completed chan store.WorkflowPhaseEvent
+}
+
+func (s *operatorStopCompletionStore) RecordWorkflowPhaseEvent(ctx context.Context, event store.WorkflowPhaseEvent) (int64, error) {
+	eventID, err := s.Store.RecordWorkflowPhaseEvent(ctx, event)
+	if err != nil {
+		return eventID, err
+	}
+	if event.PhaseType != store.WorkflowPhaseTypeOperatorAction || event.PhaseName != "stop_run" {
+		return eventID, nil
+	}
+	select {
+	case s.completed <- event:
+		return eventID, nil
+	case <-ctx.Done():
+		return eventID, ctx.Err()
+	}
+}
+
 type operatorStopFailingConnector struct {
 	*fakeConnector
 	mu  sync.Mutex
@@ -549,6 +580,22 @@ func waitForOperatorStopRunnerIssue(t *testing.T, started <-chan orchestrator.Ru
 			}
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for runner issue %q", issueID)
+		}
+	}
+}
+
+func waitForOperatorStopCompletion(t *testing.T, completed <-chan store.WorkflowPhaseEvent, issueID string) {
+	t.Helper()
+	deadline := time.NewTimer(operatorStopIntegrationWaitTimeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case event := <-completed:
+			if event.IssueID == issueID && event.Status == "succeeded" {
+				return
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for operator stop completion for %q", issueID)
 		}
 	}
 }
