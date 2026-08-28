@@ -47,6 +47,7 @@ type Snapshot struct {
 	RateLimits              *RateLimits         `json:"rate_limits"`
 	TrackerUnavailable      []TrackerCondition  `json:"tracker_unavailable,omitempty"`
 	ForgeUnavailable        []ForgeCondition    `json:"forge_unavailable,omitempty"`
+	GitHubMonitors          []GitHubMonitor     `json:"worker_github_budget_monitor_unavailable,omitempty"`
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
@@ -232,6 +233,22 @@ type ForgeCondition struct {
 	ProbeAttempts   int       `json:"probe_attempts,omitempty"`
 	ProbeIssueID    string    `json:"probe_issue_id,omitempty"`
 	LastError       string    `json:"last_error,omitempty"`
+}
+
+type GitHubMonitor struct {
+	ProjectID          string    `json:"project_id,omitempty"`
+	CredentialIdentity string    `json:"credential_identity"`
+	Consumer           string    `json:"consumer"`
+	Operation          string    `json:"operation,omitempty"`
+	DetectedAt         time.Time `json:"detected_at"`
+	LastObservedAt     time.Time `json:"last_observed_at"`
+	NextProbeAt        time.Time `json:"next_probe_at"`
+	LastProbeAt        time.Time `json:"last_probe_at,omitzero"`
+	LastProbeResult    string    `json:"last_probe_result,omitempty"`
+	LastProbeDetail    string    `json:"last_probe_detail,omitempty"`
+	ProbeAttempts      int       `json:"probe_attempts,omitempty"`
+	ProbeIssueID       string    `json:"probe_issue_id,omitempty"`
+	LastError          string    `json:"last_error,omitempty"`
 }
 
 type AdmissionProposal struct {

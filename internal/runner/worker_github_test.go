@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -443,10 +445,12 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 	requestStarted := make(chan struct{}, 1)
 	cancelProbe := make(chan context.CancelFunc, 1)
 	policy := workerGitHubPolicy{
-		Enabled:      true,
-		Token:        "worker-token",
-		GraphQLURL:   "https://api.github.test/graphql",
-		RateLimitURL: "https://api.github.test/rate_limit",
+		Enabled:            true,
+		CredentialMode:     workerGitHubCredentialDistinct,
+		Token:              "worker-token",
+		CredentialIdentity: "github-rest:worker",
+		GraphQLURL:         "https://api.github.test/graphql",
+		RateLimitURL:       "https://api.github.test/rate_limit",
 		HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
 			requestStarted <- struct{}{}
 			<-request.Context().Done()
@@ -458,6 +462,7 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 			return probeCtx, cancel
 		},
 	}
+	preclassifyWorkerGitHubPolicy(&policy)
 	result := make(chan error, 1)
 	go func() {
 		_, _, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
@@ -481,8 +486,192 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 		if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, context.Canceled) {
 			t.Fatalf("startWorkerGitHubGovernor() error = %v, want bounded canceled probe", err)
 		}
+		monitorErr, ok := AsWorkerGitHubBudgetMonitorError(err)
+		if !ok || monitorErr.Operation != "launch_probe" || monitorErr.CredentialIdentity == "" {
+			t.Fatalf("monitor error = %#v, want credential-scoped launch probe", monitorErr)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("governor did not return after the probe context was canceled")
+	}
+}
+
+func TestWorkerGitHubMonitorErrorsCarryCredentialScope(t *testing.T) {
+	t.Parallel()
+
+	transportErr := errors.New("github transport unavailable")
+	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
+	t.Cleanup(server.Close)
+	tests := []struct {
+		name          string
+		wantOperation string
+		run           func() error
+	}{
+		{
+			name:          "launch probe",
+			wantOperation: "launch_probe",
+			run: func() error {
+				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+				preclassifyWorkerGitHubPolicy(&policy)
+				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					return nil, transportErr
+				})
+				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+				return err
+			},
+		},
+		{
+			name:          "launch observation",
+			wantOperation: "launch_observation",
+			run: func() error {
+				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+				preclassifyWorkerGitHubPolicy(&policy)
+				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, func(AgentUpdate) error {
+					return transportErr
+				})
+				return err
+			},
+		},
+		{
+			name:          "periodic probe",
+			wantOperation: "periodic_probe",
+			run: func() error {
+				poll := make(chan time.Time, 1)
+				var calls atomic.Int64
+				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+				preclassifyWorkerGitHubPolicy(&policy)
+				policy.Poll = poll
+				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					if calls.Add(1) > 1 {
+						return nil, transportErr
+					}
+					return workerGitHubRateLimitResponse(), nil
+				})
+				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+				if err != nil {
+					return err
+				}
+				poll <- time.Now()
+				<-governedCtx.Done()
+				return stop()
+			},
+		},
+		{
+			name:          "periodic observation",
+			wantOperation: "periodic_observation",
+			run: func() error {
+				poll := make(chan time.Time, 1)
+				var updates atomic.Int64
+				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+				preclassifyWorkerGitHubPolicy(&policy)
+				policy.Poll = poll
+				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, func(AgentUpdate) error {
+					if updates.Add(1) > 1 {
+						return transportErr
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				poll <- time.Now()
+				<-governedCtx.Done()
+				return stop()
+			},
+		},
+		{
+			name:          "worker credential classification",
+			wantOperation: "credential_classification_worker",
+			run: func() error {
+				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+				policy.CredentialMode = workerGitHubCredentialUnclassified
+				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					return nil, transportErr
+				})
+				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+				return err
+			},
+		},
+		{
+			name:          "orchestrator credential classification",
+			wantOperation: "credential_classification_orchestrator",
+			run: func() error {
+				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+				policy.CredentialMode = workerGitHubCredentialUnclassified
+				policy.OrchestratorToken = "orchestrator-token"
+				policy.HTTPClient = workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+					if request.Header.Get("Authorization") == "Bearer orchestrator-token" {
+						return nil, transportErr
+					}
+					return workerGitHubPrincipalResponse(), nil
+				})
+				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.run()
+			if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, transportErr) {
+				t.Fatalf("error = %v, want monitor and transport errors", err)
+			}
+			monitorErr, ok := AsWorkerGitHubBudgetMonitorError(err)
+			if !ok {
+				t.Fatalf("error = %T %v, want WorkerGitHubBudgetMonitorError", err, err)
+			}
+			if monitorErr.Operation != tt.wantOperation || monitorErr.CredentialIdentity != "github-rest:worker" || monitorErr.Consumer != telemetry.RESTConsumerWorker {
+				t.Fatalf("monitor error = %#v, want operation %q and worker credential scope", monitorErr, tt.wantOperation)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
+	t.Parallel()
+
+	poll := make(chan time.Time, 1)
+	var calls atomic.Int64
+	policy := workerGitHubPolicy{
+		Enabled:            true,
+		CredentialMode:     workerGitHubCredentialDistinct,
+		Token:              "worker-token",
+		CredentialIdentity: "github-rest:worker",
+		RateLimitURL:       "https://api.github.test/rate_limit",
+		GraphQLURL:         "https://api.github.test/graphql",
+		MinRemaining:       1000,
+		OrchestratorFloor:  1000,
+		Poll:               poll,
+		HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+			if calls.Add(1) > 1 {
+				return nil, errors.New("periodic DNS failure")
+			}
+			return workerGitHubRateLimitResponse(), nil
+		}),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	preclassifyWorkerGitHubPolicy(&policy)
+	backend := workerGitHubGovernorBackend{
+		policy: policy,
+		poll:   poll,
+		result: RunResult{FinalState: FinalStateFailed, TurnStarted: true, Tokens: TokenTotals{InputTokens: 2_000_000, OutputTokens: 1_000_000, TotalTokens: 3_000_000}},
+	}
+	supervisor, err := NewSupervisor(backend, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-2028"}, Attempt: 4})
+
+	monitorErr, ok := AsWorkerGitHubBudgetMonitorError(completion.Err)
+	if !ok || monitorErr.Operation != "periodic_probe" {
+		t.Fatalf("completion error = %#v, want periodic monitor failure", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("generic retry state = %v, %d, %s; want cooperative monitor stop", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if completion.Result.Tokens.TotalTokens != 3_000_000 {
+		t.Fatalf("tokens = %#v, want actual usage intact", completion.Result.Tokens)
 	}
 }
 
@@ -570,10 +759,51 @@ type workerGitHubCaptureBackend struct {
 	request AgentTurnRequest
 }
 
+type workerGitHubGovernorBackend struct {
+	policy workerGitHubPolicy
+	poll   chan<- time.Time
+	result RunResult
+}
+
 type workerGitHubHTTPClientFunc func(*http.Request) (*http.Response, error)
 
 func (f workerGitHubHTTPClientFunc) Do(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func (b workerGitHubGovernorBackend) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	governedCtx, stop, err := startWorkerGitHubGovernor(ctx, b.policy, nil)
+	if err != nil {
+		return b.result, err
+	}
+	b.poll <- time.Now()
+	<-governedCtx.Done()
+	cause := context.Cause(governedCtx)
+	_ = stop()
+	return b.result, cause
+}
+
+func workerGitHubRateLimitResponse() *http.Response {
+	resetAt := time.Now().Add(time.Hour).Unix()
+	body := fmt.Sprintf(`{"resources":{"core":{"limit":5000,"used":800,"remaining":4200,"reset":%d}}}`, resetAt)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func workerGitHubPrincipalResponse() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)),
+	}
+}
+
+func preclassifyWorkerGitHubPolicy(policy *workerGitHubPolicy) {
+	policy.PrincipalID = 42
+	policy.Principal.Login = "detent-worker[bot]"
 }
 
 func (b *workerGitHubCaptureBackend) RunTurn(_ context.Context, request AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {

@@ -21,6 +21,7 @@ const (
 	CapacityConstraintRateWindow         CapacityConstraintReason = "provider_rate_window_backpressure"
 	CapacityConstraintTrackerUnavailable CapacityConstraintReason = "tracker_unavailable"
 	CapacityConstraintForgeUnavailable   CapacityConstraintReason = "forge_unavailable"
+	CapacityConstraintGitHubMonitor      CapacityConstraintReason = "worker_github_budget_monitor_unavailable"
 	CapacityConstraintCIUnavailable      CapacityConstraintReason = "ci_unavailable"
 )
 
@@ -55,7 +56,7 @@ func QueryCapacityConstraintWaits(
 SELECT project_id, COALESCE(lane, ''), wait_reason, decision_at, capacity_snapshot_json
 FROM scheduler_decisions
 WHERE result = ?
-  AND wait_reason IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  AND wait_reason IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   AND decision_at >= ?`,
 		string(SchedulerDecisionResultSkipped),
 		poolCapacityWaitReason,
@@ -69,6 +70,7 @@ WHERE result = ?
 		string(CapacityConstraintRateWindow),
 		string(CapacityConstraintTrackerUnavailable),
 		string(CapacityConstraintForgeUnavailable),
+		string(CapacityConstraintGitHubMonitor),
 		string(CapacityConstraintCIUnavailable),
 		"local_slot_unavailable",
 		since,
@@ -172,6 +174,8 @@ func capacityConstraintReason(waitReason string, globalAvailable *int) (Capacity
 		return CapacityConstraintTrackerUnavailable, true
 	case string(CapacityConstraintForgeUnavailable):
 		return CapacityConstraintForgeUnavailable, true
+	case string(CapacityConstraintGitHubMonitor):
+		return CapacityConstraintGitHubMonitor, true
 	case string(CapacityConstraintCIUnavailable):
 		return CapacityConstraintCIUnavailable, true
 	default:
