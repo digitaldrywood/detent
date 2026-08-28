@@ -211,6 +211,50 @@ func TestIssueExplanationAPIAcknowledgesCurrentParkSequence(t *testing.T) {
 	}
 }
 
+func TestIssueExplanationAPICreditsAcceptedProgress(t *testing.T) {
+	t.Parallel()
+
+	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	creditedAt := time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC)
+	fake := &fakeIssueExplainer{result: explain.IssueExplanation{
+		Schema:   explain.SchemaVersion,
+		Identity: explain.Identity{ProjectID: "detent", IssueID: "issue-2015", Identifier: "digitaldrywood/detent#2015", IssueURL: "https://github.com/digitaldrywood/detent/issues/2015"},
+	}}
+	deps := testDeps(t)
+	deps.Store = backend
+	deps.IssueExplainer = fake
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
+		Now:          func() time.Time { return creditedAt },
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	path := "/api/v1/projects/detent/issues/progress-credit?reference=%232015&schema=3"
+	recorder := performJSON(t, server.Handler(), http.MethodPost, path, "", map[string]string{"Authorization": "Bearer detent_test_token"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var got store.IssueProgressCredit
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Identifier != "digitaldrywood/detent#2015" || !got.CreditedAt.Equal(creditedAt) {
+		t.Fatalf("response = %#v, want credited issue at %s", got, creditedAt)
+	}
+	persisted, err := backend.(store.ProgressCreditStore).IssueProgressCredit(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: "issue-2015"})
+	if err != nil {
+		t.Fatalf("IssueProgressCredit() error = %v", err)
+	}
+	if !persisted.CreditedAt.Equal(creditedAt) {
+		t.Fatalf("persisted credit = %#v, want %s", persisted, creditedAt)
+	}
+}
+
 type fakeIssueExplainer struct {
 	result      explain.IssueExplanation
 	err         error

@@ -54,6 +54,29 @@ func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
 	return c.JSON(http.StatusOK, explanation)
 }
 
+func (s *Server) apiIssueProgressCredit(c echo.Context) error {
+	explanation, ok, err := s.issueExplanation(c)
+	if !ok {
+		return err
+	}
+	credits, ok := s.store.(store.ProgressCreditStore)
+	if !ok {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue progress credit store is unavailable"))
+	}
+	identity := store.IssueIdentity{
+		ProjectID:  explanation.Identity.ProjectID,
+		IssueID:    explanation.Identity.IssueID,
+		Identifier: explanation.Identity.Identifier,
+		IssueURL:   explanation.Identity.IssueURL,
+	}
+	credit, err := credits.CreditIssueProgress(c.Request().Context(), identity, s.now().UTC())
+	if err != nil {
+		s.logger.Error("issue progress credit failed", slog.Any("error", err))
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue progress credit store is unavailable"))
+	}
+	return c.JSON(http.StatusOK, credit)
+}
+
 func (s *Server) issueExplanation(c echo.Context) (explain.IssueExplanation, bool, error) {
 	projectID := strings.TrimSpace(c.Param("project_id"))
 	reference := strings.TrimSpace(c.QueryParam("reference"))

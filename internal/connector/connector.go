@@ -166,6 +166,10 @@ type PullRequestHydrator interface {
 	HydratePullRequest(context.Context, Issue) (Issue, error)
 }
 
+type PullRequestReferenceRefresher interface {
+	RefreshPullRequestReference(context.Context, Issue) (Issue, error)
+}
+
 type PullRequestHeadLookup interface {
 	LookupPullRequestByHead(context.Context, string, string, string) (PullRequest, bool, error)
 }

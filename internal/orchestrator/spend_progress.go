@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -133,6 +134,15 @@ func (o *Orchestrator) evaluateSpendProgress(
 		return decision
 	}
 	decision.Since = spendProgressBaseline(running.Issue, attempts)
+	creditedAt, err := o.spendProgressCredit(ctx, running.Issue)
+	if err != nil {
+		decision.Warning = err.Error()
+		o.warnSpendProgress(running.Issue, "progress credit lookup failed", err)
+		return decision
+	}
+	if creditedAt.After(decision.Since) {
+		decision.Since = creditedAt
+	}
 	if decision.Since.IsZero() {
 		decision.Since = time.Unix(0, 0).UTC()
 	}
@@ -160,6 +170,30 @@ func (o *Orchestrator) evaluateSpendProgress(
 		decision.Block = true
 	}
 	return decision
+}
+
+func (o *Orchestrator) spendProgressCredit(ctx context.Context, issue connector.Issue) (time.Time, error) {
+	credits, ok := o.progressSpend.(store.ProgressCreditStore)
+	if !ok {
+		return time.Time{}, nil
+	}
+	credit, err := credits.IssueProgressCredit(ctx, store.IssueIdentity{
+		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading operator progress credit: %w", err)
+	}
+	return credit.CreditedAt.UTC(), nil
+}
+
+func (o *Orchestrator) spendProgressEnabled() bool {
+	return o != nil && (o.cfg.NoProgressTokenLimit > 0 || (!o.cfg.subscriptionBilling() && o.cfg.NoProgressSpendLimitUSD > 0))
 }
 
 func spendProgressTokenLimitReached(totalTokens int64, tokenLimit int64) bool {
@@ -253,14 +287,29 @@ func (o *Orchestrator) refreshSpendProgressIssue(ctx context.Context, issue conn
 		if o == nil || o.connector == nil || strings.TrimSpace(refreshed.ID) == "" {
 			return refreshed, "pull request evidence refresh unavailable"
 		}
-		issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{refreshed.ID})
-		if err != nil {
-			return refreshed, "pull request evidence refresh failed: " + err.Error()
-		}
-		for _, candidate := range issues {
-			if strings.TrimSpace(candidate.ID) == strings.TrimSpace(refreshed.ID) {
-				refreshed = mergeIssueTrackerFields(refreshed, candidate)
-				break
+		refresher, ok := o.connector.(connector.PullRequestReferenceRefresher)
+		if ok {
+			linked, err := refresher.RefreshPullRequestReference(ctx, refreshed)
+			if err != nil {
+				return refreshed, "pull request reference refresh failed: " + err.Error()
+			}
+			refreshed = mergeIssueTrackerFields(refreshed, linked)
+			if strings.TrimSpace(linked.PRRepository) != "" {
+				refreshed.PRRepository = strings.TrimSpace(linked.PRRepository)
+			}
+		} else {
+			issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{refreshed.ID})
+			if err != nil {
+				return refreshed, "pull request evidence refresh failed: " + err.Error()
+			}
+			for _, candidate := range issues {
+				if strings.TrimSpace(candidate.ID) == strings.TrimSpace(refreshed.ID) {
+					refreshed = mergeIssueTrackerFields(refreshed, candidate)
+					if strings.TrimSpace(candidate.PRRepository) != "" {
+						refreshed.PRRepository = strings.TrimSpace(candidate.PRRepository)
+					}
+					break
+				}
 			}
 		}
 	}
@@ -484,6 +533,7 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 	b.WriteString(decision.Case)
 	b.WriteString("\n- issue: ")
 	b.WriteString(issueLabel(issue))
+	b.WriteString("\n- pr_evidence_checked: issue PR linkage, hydrated PR metadata, and tracker closing references including Fixes #N")
 	b.WriteString("\n- billing_mode: ")
 	b.WriteString(decision.BillingMode)
 	b.WriteString("\n- blocked_by: ")

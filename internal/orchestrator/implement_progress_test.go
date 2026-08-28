@@ -1965,17 +1965,20 @@ func implementProgressRecordFromCompletion(t *testing.T, completion store.WorkAt
 }
 
 type implementProgressConnector struct {
-	hydrated         connector.Issue
-	refreshed        connector.Issue
-	hydrateErr       error
-	hydrateErrs      []error
-	refreshErr       error
-	hydrations       int
-	updates          []implementProgressUpdate
-	comments         []implementProgressComment
-	relabelStarted   chan autoPromoteTickRelabel
-	relabelRelease   chan struct{}
-	resolvedBlockers []connector.Issue
+	hydrated           connector.Issue
+	refreshed          connector.Issue
+	referenced         connector.Issue
+	hydrateErr         error
+	hydrateErrs        []error
+	refreshErr         error
+	referenceErr       error
+	hydrations         int
+	referenceRefreshes int
+	updates            []implementProgressUpdate
+	comments           []implementProgressComment
+	relabelStarted     chan autoPromoteTickRelabel
+	relabelRelease     chan struct{}
+	resolvedBlockers   []connector.Issue
 }
 
 type implementProgressUpdate struct {
@@ -2008,6 +2011,17 @@ func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []st
 		return nil, nil
 	}
 	return []connector.Issue{cloneIssue(c.refreshed)}, nil
+}
+
+func (c *implementProgressConnector) RefreshPullRequestReference(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	c.referenceRefreshes++
+	if c.referenceErr != nil {
+		return connector.Issue{}, c.referenceErr
+	}
+	if strings.TrimSpace(c.referenced.ID) == "" {
+		return cloneIssue(issue), nil
+	}
+	return cloneIssue(c.referenced), nil
 }
 
 func (c *implementProgressConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {

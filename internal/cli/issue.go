@@ -12,24 +12,27 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func newIssueCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
 	var explainIssue bool
 	var acknowledgeParks bool
+	var creditProgress bool
 	var projectID string
 	cmd := &cobra.Command{
 		Use:   "issue <ref>",
 		Short: "Inspect an issue through the running Detent service",
-		Long:  "Inspect or acknowledge an issue through the running Detent service. Issue operations use bounded HTTP requests and never open the runtime database or contact the tracker directly.",
+		Long:  "Inspect, acknowledge parks, or credit accepted progress through the running Detent service. Issue operations use bounded HTTP requests and never open the runtime database or contact the tracker directly.",
 		Example: strings.TrimSpace(`detent issue '#1643' --explain --project detent
 detent issue digitaldrywood/detent#1643 --explain --project detent --format json
 	detent issue https://github.com/digitaldrywood/detent/issues/1643 --explain --project detent | jq '.current_lane'
-	detent issue '#1643' --acknowledge-parks --project detent`),
+	detent issue '#1643' --acknowledge-parks --project detent
+	detent issue '#1643' --credit-progress --project detent`),
 		Args: ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if explainIssue == acknowledgeParks {
-				return NewValidationError("exactly one issue operation is required", "Use either --explain or --acknowledge-parks.", nil)
+			if issueOperationCount(explainIssue, acknowledgeParks, creditProgress) != 1 {
+				return NewValidationError("exactly one issue operation is required", "Use --explain, --acknowledge-parks, or --credit-progress.", nil)
 			}
 			if strings.TrimSpace(projectID) == "" {
 				return NewValidationError("--project is required", "Pass the Detent project ID that owns the issue, for example --project detent.", nil)
@@ -41,6 +44,15 @@ detent issue digitaldrywood/detent#1643 --explain --project detent --format json
 			client, err := newDashboardReadClient(cmd.Context(), derefString(configPath), derefString(host), derefInt(port, -1), flagChanged(cmd, "port"), opts)
 			if err != nil {
 				return err
+			}
+			if creditProgress {
+				credit, err := client.CreditIssueProgress(cmd.Context(), projectID, args[0])
+				if err != nil {
+					return classifyDashboardReadError(err)
+				}
+				return out.Write(func(writer io.Writer) error {
+					return writeIssueProgressCreditPretty(writer, credit)
+				}, credit)
 			}
 			var result explain.IssueExplanation
 			if acknowledgeParks {
@@ -58,8 +70,31 @@ detent issue digitaldrywood/detent#1643 --explain --project detent --format json
 	}
 	cmd.Flags().BoolVar(&explainIssue, "explain", false, "show the versioned issue explanation read model")
 	cmd.Flags().BoolVar(&acknowledgeParks, "acknowledge-parks", false, "acknowledge the issue's current park sequence")
+	cmd.Flags().BoolVar(&creditProgress, "credit-progress", false, "reset spend-since-progress counters for this issue")
 	cmd.Flags().StringVar(&projectID, "project", "", "Detent project ID that owns the issue (required)")
 	return cmd
+}
+
+func issueOperationCount(operations ...bool) int {
+	count := 0
+	for _, enabled := range operations {
+		if enabled {
+			count++
+		}
+	}
+	return count
+}
+
+func writeIssueProgressCreditPretty(writer io.Writer, credit store.IssueProgressCredit) error {
+	identity := credit.Identifier
+	if identity == "" {
+		identity = credit.IssueID
+	}
+	if identity == "" {
+		identity = credit.IssueURL
+	}
+	_, err := fmt.Fprintf(writer, "Credited accepted progress for %s at %s\n", identity, credit.CreditedAt.UTC().Format(time.RFC3339))
+	return err
 }
 
 func classifyDashboardReadError(err error) error {

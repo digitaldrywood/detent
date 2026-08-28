@@ -134,10 +134,14 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 }
 
 func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue) error {
-	return c.attachLabelIssuePullRequestReferencesWithState(ctx, issues, false)
+	return c.attachIssuePullRequestReferences(ctx, issues, true, false)
 }
 
 func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.Context, issues []connector.Issue, includeState bool) error {
+	return c.attachIssuePullRequestReferences(ctx, issues, true, includeState)
+}
+
+func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues []connector.Issue, includeLabelTransition bool, includeState bool) error {
 	indexesByID := make(map[string][]int, len(issues))
 	ids := make([]string, 0, len(issues))
 	for index, issue := range issues {
@@ -185,10 +189,12 @@ func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.C
 
 		for batchIndex, id := range batch {
 			node := nodesByID[id]
-			for _, index := range indexesByID[id] {
-				if transition, ok := currentLabelTransition(node.TimelineItems.Nodes, c.statusLabelForState(issues[index].State)); ok {
-					issues[index].StageUpdatedAt = &transition.EnteredAt
-					issues[index].StageUpdatedActor = transition.Actor
+			if includeLabelTransition {
+				for _, index := range indexesByID[id] {
+					if transition, ok := currentLabelTransition(node.TimelineItems.Nodes, c.statusLabelForState(issues[index].State)); ok {
+						issues[index].StageUpdatedAt = &transition.EnteredAt
+						issues[index].StageUpdatedActor = transition.Actor
+					}
 				}
 			}
 			needsPullRequest := false
@@ -241,6 +247,14 @@ func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.C
 		}
 	}
 	return nil
+}
+
+func (c *Connector) RefreshPullRequestReference(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	issues := []connector.Issue{issue}
+	if err := c.attachIssuePullRequestReferences(ctx, issues, false, false); err != nil {
+		return issue, fmt.Errorf("refresh github issue pull request reference: %w", err)
+	}
+	return issues[0], nil
 }
 
 func currentLabelTransition(events []timelineItem, labelName string) (connector.IssueStateTransition, bool) {

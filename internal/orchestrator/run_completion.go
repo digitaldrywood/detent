@@ -374,7 +374,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		spendProgress := spendProgressDecision{}
 		if !mergeWorkerIssue(running.Issue) {
 			evidenceWarning := ""
-			if !pushEvidenceRefreshed && (implementProgressLinkedPullRequest(running.Issue) || event.Result.PullRequestUpdated) {
+			if !pushEvidenceRefreshed && o.spendProgressEnabled() {
 				running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
 			}
 			spendProgress = o.evaluateSpendProgress(ctx, running, event.CompletedAt, false, "")
@@ -595,8 +595,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, forceReapply)
 	}
 	o.commentObservedLaneTransition(ctx, dispatchedIssue, running.Issue, event.CompletedAt)
+	evidenceWarning := ""
+	if o.spendProgressEnabled() && !implementProgressLinkedPullRequest(running.Issue) {
+		running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
+	}
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
+	if evidenceWarning != "" {
+		spendProgress.Warning = evidenceWarning
+		spendProgress.Block = false
+	}
 	if progress.Warning != "" && strings.HasPrefix(progress.Reason, "pull_request_hydrat") {
 		spendProgress.Warning = progress.Warning
 		spendProgress.Block = false

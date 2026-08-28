@@ -53,6 +53,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		wantSpendCalls   int
 		wantHistoryCalls int
 		wantSince        time.Time
+		creditAt         time.Time
 	}{
 		{name: "disabled avoids tracking", limit: 0, spend: store.IssueSpendSince{CostUSD: 100}, wantLimit: 0, wantSpendCalls: 0, wantHistoryCalls: 0},
 		{name: "normal three retry sessions stay below default", limit: 3, spend: store.IssueSpendSince{CostUSD: 2.7, Sessions: 3}, wantLimit: 3, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
@@ -64,6 +65,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		{name: "subscription token breaker stays below threshold", billingMode: "subscription", tokenLimit: 25_000_000, spend: store.IssueSpendSince{TotalTokens: 24_999_999, Sessions: 3}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "July telemetry replay", limit: 5, spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 5}, wantBlock: true, wantBlockedBy: "usd", wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "old sessions reset after accepted change", limit: 5, spend: store.IssueSpendSince{CostUSD: 1.25, Sessions: 1}, history: []store.WorkAttempt{acceptedAttempt}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: acceptedAt},
+		{name: "operator credit resets old sessions", limit: 5, spend: store.IssueSpendSince{CostUSD: 1.25, Sessions: 1}, creditAt: base.Add(-5 * time.Minute), wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: base.Add(-5 * time.Minute)},
 		{name: "current accepted change resets without spend lookup", limit: 5, spend: store.IssueSpendSince{CostUSD: 100}, accepted: true, acceptedReason: "signature_changed", wantAccepted: true, wantReason: "signature_changed", wantLimit: 5, wantSpendCalls: 0, wantHistoryCalls: 0, wantSince: base},
 		{
 			name:  "dirty to clean pull request resets spend",
@@ -154,6 +156,9 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			t.Parallel()
 
 			spend := &spendProgressStore{result: tt.spend}
+			if !tt.creditAt.IsZero() {
+				spend.credit = store.IssueProgressCredit{CreditedAt: tt.creditAt}
+			}
 			attempts := &implementProgressAttemptStore{history: tt.history}
 			billingMode := tt.billingMode
 			if billingMode == "" {
@@ -271,7 +276,7 @@ func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
 				Case:      spendProgressCaseNoPR,
 				BlockedBy: "usd",
 			},
-			wantContains: []string{"resource consumption continued without any PR evidence", "case: spend_without_pr_evidence", "Shrink the task"},
+			wantContains: []string{"resource consumption continued without any PR evidence", "case: spend_without_pr_evidence", "pr_evidence_checked: issue PR linkage, hydrated PR metadata, and tracker closing references including Fixes #N", "Shrink the task"},
 		},
 		{
 			name: "static PR evidence",
@@ -282,7 +287,7 @@ func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
 				BlockedBy:     "usd",
 				PRFingerprint: &spendProgressPRFingerprint{Number: 214, HeadSHA: "same-head", MergeableState: "dirty", CIStatus: "failure"},
 			},
-			wantContains: []string{"resource consumption continued while a linked PR existed but could not merge", "case: spend_with_static_pr_evidence", "merge-train capacity", "pr_head_sha: same-head"},
+			wantContains: []string{"resource consumption continued while a linked PR existed but could not merge", "case: spend_with_static_pr_evidence", "pr_evidence_checked: issue PR linkage, hydrated PR metadata, and tracker closing references including Fixes #N", "merge-train capacity", "pr_head_sha: same-head"},
 		},
 	}
 	for _, tt := range tests {
@@ -311,8 +316,10 @@ func TestRefreshSpendProgressIssue(t *testing.T) {
 	linkedIssue := spendProgressIssueWithPR("head", "dirty", "failure")
 	linkedIssue.ID = baseIssue.ID
 	linkedIssue.Identifier = baseIssue.Identifier
+	linkedIssue.PRRepository = "digitaldrywood/detent"
 	degradedIssue := cloneIssue(linkedIssue)
 	degradedIssue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+	fallbackTracker := &implementProgressConnector{refreshed: linkedIssue, hydrated: linkedIssue}
 
 	tests := []struct {
 		name        string
@@ -323,13 +330,25 @@ func TestRefreshSpendProgressIssue(t *testing.T) {
 		wantHead    string
 	}{
 		{name: "missing connector", orch: &Orchestrator{}, issue: baseIssue, wantWarning: "refresh unavailable"},
-		{name: "refresh failure", orch: &Orchestrator{connector: &implementProgressConnector{refreshErr: errors.New("github unavailable")}}, issue: baseIssue, wantWarning: "refresh failed"},
+		{name: "reference refresh failure", orch: &Orchestrator{connector: &implementProgressConnector{referenceErr: errors.New("github unavailable")}}, issue: baseIssue, wantWarning: "reference refresh failed"},
+		{name: "fallback refresh failure", orch: &Orchestrator{connector: connectorOnly{Connector: &implementProgressConnector{refreshErr: errors.New("github unavailable")}}}, issue: baseIssue, wantWarning: "evidence refresh failed"},
 		{name: "refresh confirms no PR", orch: &Orchestrator{connector: &implementProgressConnector{refreshed: baseIssue}}, issue: baseIssue},
 		{
-			name: "refresh discovers and hydrates PR",
+			name: "fallback refresh discovers and hydrates PR",
+			orch: &Orchestrator{connector: spendProgressHydratingConnector{
+				Connector: fallbackTracker,
+				hydrator:  fallbackTracker,
+			}},
+			issue:    baseIssue,
+			wantPR:   true,
+			wantHead: "head",
+		},
+		{
+			name: "closing reference discovers and hydrates PR",
 			orch: &Orchestrator{connector: &implementProgressConnector{
-				refreshed: linkedIssue,
-				hydrated:  linkedIssue,
+				refreshed:  baseIssue,
+				referenced: linkedIssue,
+				hydrated:   linkedIssue,
 			}},
 			issue:    baseIssue,
 			wantPR:   true,
@@ -373,12 +392,24 @@ func TestRefreshSpendProgressIssue(t *testing.T) {
 			if tt.wantHead != "" && issue.PullRequest.HeadSHA != tt.wantHead {
 				t.Fatalf("head = %q, want %q", issue.PullRequest.HeadSHA, tt.wantHead)
 			}
+			if tt.wantPR && issue.PRRepository == "" {
+				t.Fatal("PRRepository is empty")
+			}
 		})
 	}
 }
 
 type connectorOnly struct {
 	connector.Connector
+}
+
+type spendProgressHydratingConnector struct {
+	connector.Connector
+	hydrator connector.PullRequestHydrator
+}
+
+func (c spendProgressHydratingConnector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	return c.hydrator.HydratePullRequest(ctx, issue)
 }
 
 func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
@@ -711,6 +742,76 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultDiscoversWorkerOpenedPRBeforeWorkerError(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	createdAt := base.Add(-8 * 24 * time.Hour)
+	runningIssue := implementProgressIssueWithoutPR()
+	runningIssue.CreatedAt = &createdAt
+	linkedIssue := spendProgressIssueWithPR("new-head", "dirty", "pending")
+	linkedIssue.ID = runningIssue.ID
+	linkedIssue.Identifier = runningIssue.Identifier
+	linkedIssue.PRRepository = "digitaldrywood/detent"
+	linkedIssue.Title = runningIssue.Title
+	linkedIssue.State = runningIssue.State
+	linkedIssue.URL = runningIssue.URL
+	linkedIssue.CreatedAt = runningIssue.CreatedAt
+	tracker := &implementProgressConnector{
+		refreshed:  runningIssue,
+		referenced: linkedIssue,
+		hydrated:   linkedIssue,
+	}
+	attempts := &implementProgressAttemptStore{}
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "detent"},
+		BillingMode:          "subscription",
+		NoProgressTokenLimit: 25_000_000,
+		ActiveStates:         []string{"In Progress"},
+		ObservedStates:       []string{"Blocked"},
+		TerminalStates:       []string{"Done"},
+	})
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     tracker,
+		workAttempts:  attempts,
+		progressSpend: &spendProgressStore{result: store.IssueSpendSince{TotalTokens: 46_465_472, Sessions: 4}},
+	}
+	state := newState(cfg)
+	running := Running{
+		Issue:               runningIssue,
+		Attempt:             4,
+		WorkAttemptID:       42,
+		Mode:                runpkg.RunModeImplement,
+		StartedAt:           base.Add(-10 * time.Minute),
+		DispatchSourceState: "Rework",
+		DispatchTargetState: "In Progress",
+	}
+	state.Running[runningIssue.ID] = running
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: running.StartedAt}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: base,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Err:         errors.New("session token ceiling exceeded"),
+	})
+
+	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present after linked PR discovery", runningIssue.ID)
+	}
+	if tracker.referenceRefreshes != 1 || tracker.hydrations != 1 {
+		t.Fatalf("reference refreshes = %d, hydrations = %d, want 1 each", tracker.referenceRefreshes, tracker.hydrations)
+	}
+	if len(attempts.completions) != 1 {
+		t.Fatalf("completions = %#v, want one", attempts.completions)
+	}
+	record, ok := spendProgressRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON})
+	if !ok || !record.AcceptedStateChange || record.AcceptedReason != "pull_request_created" {
+		t.Fatalf("spend metadata = %#v, ok=%t", record, ok)
+	}
+}
+
 func TestSpendProgressUSDMessagesLabelNotionalValue(t *testing.T) {
 	t.Parallel()
 
@@ -767,6 +868,7 @@ func TestEvaluateSpendProgressFailsOpen(t *testing.T) {
 	}{
 		{name: "missing spend store", attempts: &implementProgressAttemptStore{}, missing: true, want: "progress usage store unavailable"},
 		{name: "history lookup failure", attempts: &implementProgressAttemptStore{historyErr: errors.New("history unavailable")}, spend: &spendProgressStore{}, want: "history unavailable"},
+		{name: "credit lookup failure", attempts: &implementProgressAttemptStore{}, spend: &spendProgressStore{creditErr: errors.New("credit unavailable")}, want: "credit unavailable"},
 		{name: "spend lookup failure", attempts: &implementProgressAttemptStore{}, spend: &spendProgressStore{err: errors.New("spend unavailable")}, want: "spend unavailable"},
 	}
 	for _, tt := range tests {
@@ -819,14 +921,36 @@ func TestSpendProgressAttemptAcceptedCompatibility(t *testing.T) {
 }
 
 type spendProgressStore struct {
-	result store.IssueSpendSince
-	err    error
-	query  store.IssueSpendSinceQuery
-	calls  int
+	result    store.IssueSpendSince
+	err       error
+	query     store.IssueSpendSinceQuery
+	calls     int
+	credit    store.IssueProgressCredit
+	creditErr error
 }
 
 func (s *spendProgressStore) IssueSpendSince(_ context.Context, query store.IssueSpendSinceQuery) (store.IssueSpendSince, error) {
 	s.calls++
 	s.query = query
 	return s.result, s.err
+}
+
+func (s *spendProgressStore) CreditIssueProgress(_ context.Context, identity store.IssueIdentity, at time.Time) (store.IssueProgressCredit, error) {
+	return store.IssueProgressCredit{
+		ProjectID:  identity.ProjectID,
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+		CreditedAt: at,
+	}, s.creditErr
+}
+
+func (s *spendProgressStore) IssueProgressCredit(context.Context, store.IssueIdentity) (store.IssueProgressCredit, error) {
+	if s.creditErr != nil {
+		return store.IssueProgressCredit{}, s.creditErr
+	}
+	if s.credit.CreditedAt.IsZero() {
+		return store.IssueProgressCredit{}, store.ErrNotFound
+	}
+	return s.credit, nil
 }

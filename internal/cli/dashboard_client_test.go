@@ -19,6 +19,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
@@ -180,6 +181,36 @@ func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
 	got, err := dashboardClientForServer(t, server, "").AcknowledgeIssueParks(t.Context(), "detent", "#1643")
 	if err != nil {
 		t.Fatalf("AcknowledgeIssueParks() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("result = %#v, want %#v", got, want)
+	}
+}
+
+func TestDashboardReadClientCreditsIssueProgress(t *testing.T) {
+	t.Parallel()
+
+	want := store.IssueProgressCredit{
+		ProjectID:  "detent",
+		IssueID:    "issue-2015",
+		Identifier: "digitaldrywood/detent#2015",
+		CreditedAt: time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/projects/detent/issues/progress-credit" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if got := request.URL.Query().Get("reference"); got != "#2015" {
+			t.Errorf("reference = %q", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(want)
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := dashboardClientForServer(t, server, "").CreditIssueProgress(t.Context(), "detent", "#2015")
+	if err != nil {
+		t.Fatalf("CreditIssueProgress() error = %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("result = %#v, want %#v", got, want)
@@ -542,6 +573,77 @@ func TestIssueCommandOutputAndScoping(t *testing.T) {
 	}
 }
 
+func TestIssueCommandCreditsProgress(t *testing.T) {
+	t.Parallel()
+
+	credit := store.IssueProgressCredit{
+		ProjectID:  "detent",
+		IssueID:    "issue-2015",
+		Identifier: "digitaldrywood/detent#2015",
+		CreditedAt: time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC),
+	}
+	tests := []struct {
+		name      string
+		stdoutTTY bool
+	}{
+		{name: "pretty", stdoutTTY: true},
+		{name: "json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodPost || request.URL.Path != "/api/v1/projects/detent/issues/progress-credit" {
+					t.Errorf("request = %s %s", request.Method, request.URL.Path)
+				}
+				_ = json.NewEncoder(writer).Encode(credit)
+			}))
+			t.Cleanup(server.Close)
+			parsed, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			port, err := strconv.Atoi(parsed.Port())
+			if err != nil {
+				t.Fatalf("Atoi() error = %v", err)
+			}
+			opts := dashboardClientOptions(server.Client().Do, "", "")
+			opts.read = func(string) (globalconfig.Config, error) {
+				return globalconfig.Config{Port: &port}, nil
+			}
+			configPath := "/config/global.yaml"
+			host := parsed.Hostname()
+			cmd := newIssueCommand(&configPath, &host, &port, opts)
+			cmd.SilenceUsage = true
+			cmd.SetContext(withCommandOutputOptions(t.Context(), commandOutputOptions{
+				lookupEnv: opts.lookupEnv,
+				stdoutTTY: func() bool { return tt.stdoutTTY },
+			}))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"#2015", "--credit-progress", "--project", "detent"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if tt.stdoutTTY {
+				if want := "Credited accepted progress for digitaldrywood/detent#2015 at 2026-08-28T12:34:56Z"; !strings.Contains(stdout.String(), want) {
+					t.Fatalf("stdout = %q, want containing %q", stdout.String(), want)
+				}
+				return
+			}
+			var got store.IssueProgressCredit
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v; stdout = %s", err, stdout.String())
+			}
+			if !reflect.DeepEqual(got, credit) {
+				t.Fatalf("JSON result = %#v, want %#v", got, credit)
+			}
+		})
+	}
+}
+
 func TestIssueCommandHelpCoversScopingAndJSON(t *testing.T) {
 	t.Parallel()
 
@@ -553,7 +655,7 @@ func TestIssueCommandHelpCoversScopingAndJSON(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	for _, want := range []string{"detent issue '#1643' --explain --project detent", "--format json", "--project string", "running Detent service"} {
+	for _, want := range []string{"detent issue '#1643' --explain --project detent", "--credit-progress", "--format json", "--project string", "running Detent service"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, stdout.String())
 		}

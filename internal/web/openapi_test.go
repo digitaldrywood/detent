@@ -99,6 +99,28 @@ func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
 	assertOpenAPISchemaVersion(t, responseSchema.Value.Enum)
 }
 
+func TestServerOpenAPIIssueProgressCredit(t *testing.T) {
+	t.Parallel()
+
+	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	document := parseOpenAPI(t, requestOpenAPI(t, httpServer.URL))
+
+	path := document.Paths.Find("/api/v1/projects/{project_id}/issues/progress-credit")
+	if path == nil || path.Post == nil {
+		t.Fatal("OpenAPI issue progress credit operation is missing")
+	}
+	response := path.Post.Responses.Value("200")
+	if response == nil || response.Value == nil {
+		t.Fatal("OpenAPI issue progress credit response is missing")
+	}
+	schema := response.Value.Content.Get("application/json").Schema
+	if schema == nil || schema.Ref != "#/components/schemas/IssueProgressCredit" {
+		t.Fatalf("OpenAPI issue progress credit schema = %#v", schema)
+	}
+}
+
 func assertOpenAPISchemaVersion(t *testing.T, values []any) {
 	t.Helper()
 	want := strconv.Itoa(explain.SchemaVersion)

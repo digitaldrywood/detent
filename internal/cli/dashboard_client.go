@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 const (
@@ -142,6 +143,34 @@ func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string
 
 func (c *DashboardReadClient) AcknowledgeIssueParks(ctx context.Context, projectID string, reference string) (explain.IssueExplanation, error) {
 	return c.issueExplanation(ctx, http.MethodPost, projectID, reference)
+}
+
+func (c *DashboardReadClient) CreditIssueProgress(ctx context.Context, projectID string, reference string) (store.IssueProgressCredit, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return store.IssueProgressCredit{}, err
+	}
+	projectID = strings.TrimSpace(projectID)
+	reference = strings.TrimSpace(reference)
+	if projectID == "" || reference == "" {
+		return store.IssueProgressCredit{}, ValidationError("--project and issue reference are required")
+	}
+	if c == nil || c.baseURL == nil {
+		return store.IssueProgressCredit{}, errors.New("dashboard API client is not configured")
+	}
+	requestURL := *c.baseURL
+	requestURL.Path = "/api/v1/projects/" + projectID + "/issues/progress-credit"
+	requestURL.RawPath = "/api/v1/projects/" + url.PathEscape(projectID) + "/issues/progress-credit"
+	query := requestURL.Query()
+	query.Set("reference", reference)
+	query.Set("schema", strconv.Itoa(explain.SchemaVersion))
+	requestURL.RawQuery = query.Encode()
+
+	var result store.IssueProgressCredit
+	_, err := c.requestJSON(ctx, http.MethodPost, requestURL, &result)
+	return result, err
 }
 
 func (c *DashboardReadClient) issueExplanation(ctx context.Context, method string, projectID string, reference string) (explain.IssueExplanation, error) {
