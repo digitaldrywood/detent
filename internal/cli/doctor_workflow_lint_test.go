@@ -586,7 +586,7 @@ func TestCheckDoctorWorkflowRuntimeLintFindsWaitDeadlockAndCeilingDeaths(t *test
 	db := openDoctorWorkflowLintDB(t)
 	insertSchedulerDecision := func(at time.Time) {
 		t.Helper()
-		if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			"alpha", "digitaldrywood/detent#1174", "Todo", "skipped", "artifact_gate_wait_status", 0, at.Format(time.RFC3339Nano)); err != nil {
 			t.Fatalf("insert scheduler decision: %v", err)
 		}
@@ -600,13 +600,13 @@ func TestCheckDoctorWorkflowRuntimeLintFindsWaitDeadlockAndCeilingDeaths(t *test
 			totalTokens = int64(16_100_000 + index*100_000)
 			errorMessage = fmt.Sprintf("session token ceiling exceeded: total_tokens=%d ceiling_tokens=16000000 source=max_session_tokens", totalTokens)
 		}
-		if _, err := db.Exec(`INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
 			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), errorMessage, fmt.Sprintf(`{"total_tokens":%d}`, totalTokens)); err != nil {
 			t.Fatalf("insert work attempt: %v", err)
 		}
 	}
 	for index := range 10 {
-		if _, err := db.Exec(`INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, '', ?)`,
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, '', ?)`,
 			"alpha", "merge", now.Add(-time.Duration(index)*time.Minute).Format(time.RFC3339Nano), `{"total_tokens":25000000}`); err != nil {
 			t.Fatalf("insert merge work attempt: %v", err)
 		}
@@ -708,7 +708,7 @@ func TestDoctorWaitStatusIncidentsPreservesContinuousWaitSemantics(t *testing.T)
 
 			db := openDoctorWorkflowLintDB(t)
 			for _, decision := range tt.decisions {
-				if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 					decision.project, "digitaldrywood/detent#1878", decision.lane, decision.result, decision.reason, decision.attempt, decision.at.Format(time.RFC3339Nano)); err != nil {
 					t.Fatalf("insert scheduler decision: %v", err)
 				}
@@ -742,7 +742,7 @@ func TestDoctorWaitStatusIncidentsQueryUsesBoundedPlan(t *testing.T) {
 	t.Parallel()
 
 	db := openDoctorWorkflowLintDB(t)
-	if _, err := db.Exec(`CREATE INDEX scheduler_decisions_project_at_idx ON scheduler_decisions(project_id, decision_at DESC, id DESC)`); err != nil {
+	if _, err := db.ExecContext(t.Context(), `CREATE INDEX scheduler_decisions_project_at_idx ON scheduler_decisions(project_id, decision_at DESC, id DESC)`); err != nil {
 		t.Fatalf("create scheduler decision index: %v", err)
 	}
 	cutoff := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
@@ -783,20 +783,20 @@ func TestCheckDoctorWorkflowRuntimeLintCleanHistoryIsQuiet(t *testing.T) {
 
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
 	db := openDoctorWorkflowLintDB(t)
-	if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		"alpha", "digitaldrywood/detent#1", "Todo", "skipped", "artifact_gate_wait_status", 0, now.Add(-20*time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("insert scheduler decision: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		"alpha", "digitaldrywood/detent#1", "In Progress", "selected", "", 1, now.Add(-10*time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("insert scheduler reset decision: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		"alpha", "digitaldrywood/detent#1", "Todo", "skipped", "artifact_gate_wait_status", 0, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("insert current scheduler decision: %v", err)
 	}
 	for index := range 5 {
-		if _, err := db.Exec(`INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, '', ?)`,
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, '', ?)`,
 			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), `{"total_tokens":12000000}`); err != nil {
 			t.Fatalf("insert work attempt: %v", err)
 		}
@@ -825,7 +825,7 @@ func TestCheckDoctorWorkflowRuntimeLintTracksWaitIncidentAcrossLaneChange(t *tes
 		{lane: "Todo", at: now.Add(-20 * time.Minute)},
 		{lane: "In Progress", at: now.Add(-time.Minute)},
 	} {
-		if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			"alpha", "digitaldrywood/detent#1174", decision.lane, "skipped", "artifact_gate_wait_status", 0, decision.at.Format(time.RFC3339Nano)); err != nil {
 			t.Fatalf("insert scheduler decision: %v", err)
 		}
@@ -863,7 +863,7 @@ func TestCheckDoctorWorkflowRuntimeLintIgnoresDeathsBelowRaisedCap(t *testing.T)
 		} else if index == 2 {
 			totalTokens = 40_000_000
 		}
-		if _, err := db.Exec(`INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
 			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), errorMessage, fmt.Sprintf(`{"total_tokens":%d}`, totalTokens)); err != nil {
 			t.Fatalf("insert work attempt: %v", err)
 		}
@@ -934,7 +934,7 @@ func openDoctorWorkflowLintDB(t *testing.T) *sql.DB {
 )`,
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatalf("create workflow lint table: %v", err)
 		}
 	}

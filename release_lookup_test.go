@@ -83,7 +83,7 @@ func TestResolveReleaseTag(t *testing.T) {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 
-			cmd := exec.Command("bash", "./scripts/resolve-release-tag.sh")
+			cmd := exec.CommandContext(t.Context(), "bash", "./scripts/resolve-release-tag.sh")
 			cmd.Env = append(os.Environ(),
 				"DETENT_RELEASE_LOOKUP_GH="+ghPath,
 				"DETENT_RELEASE_LOOKUP_SLEEP="+sleepPath,

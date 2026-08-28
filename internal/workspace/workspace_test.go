@@ -1784,7 +1784,7 @@ func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
 				runGit(t, source, "add", "README.md")
 				runGit(t, source, "commit", "-m", "source change")
 
-				cmd := exec.Command("git", "-C", workspace, "merge", "main")
+				cmd := exec.CommandContext(t.Context(), "git", "-C", workspace, "merge", "main")
 				output, err := cmd.CombinedOutput()
 				if err == nil {
 					t.Fatalf("git merge succeeded, want conflict:\n%s", output)
@@ -2498,7 +2498,7 @@ func linkedWorktreeGitDir(t *testing.T, workspacePath string) string {
 func branchExists(t *testing.T, dir string, branch string) bool {
 	t.Helper()
 
-	cmd := exec.Command("git", "-C", dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd := exec.CommandContext(t.Context(), "git", "-C", dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	err := cmd.Run()
 	if err == nil {
 		return true
@@ -2514,7 +2514,7 @@ func branchExists(t *testing.T, dir string, branch string) bool {
 func runCommand(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(t.Context(), name, args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {

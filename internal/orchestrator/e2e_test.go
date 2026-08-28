@@ -292,7 +292,7 @@ func e2eRunGit(t *testing.T, dir string, args ...string) string {
 func e2eRunCommand(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(t.Context(), name, args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {

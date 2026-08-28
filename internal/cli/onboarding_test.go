@@ -1938,7 +1938,7 @@ func runGitOutput(t *testing.T, dir string, args ...string) string {
 	if strings.TrimSpace(dir) != "" {
 		commandArgs = append([]string{"-C", dir}, args...)
 	}
-	cmd := exec.Command("git", commandArgs...)
+	cmd := exec.CommandContext(t.Context(), "git", commandArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s error = %v\n%s", strings.Join(args, " "), err, output)

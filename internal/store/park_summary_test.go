@@ -122,7 +122,7 @@ func TestParkSummaryAggregatesCausesAndTokenBreakdown(t *testing.T) {
 	insertParkAttempt(t, db, first, "terminal", "failure", "", `{"brake_cause":"per_issue_max_usd"}`)
 	insertParkAttempt(t, db, last, "terminal", "failure", "", `{"brake_cause":"per_issue_max_usd"}`)
 	insertParkAttempt(t, db, last.Add(time.Second), "terminal", "no_progress", "no_progress_limit", `{}`)
-	if _, err := db.db.Exec(`INSERT INTO usage_events (
+	if _, err := db.db.ExecContext(t.Context(), `INSERT INTO usage_events (
 project_id, issue_id, identifier, model, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
 total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
 ) VALUES ('detent', 'issue-6', 'digitaldrywood/detent.build#6', 'gpt', 100, 80, 20, 10, 130, 1, ?, ?, '2026-08-12', 'success')`, first.Format(time.RFC3339Nano), last.Format(time.RFC3339Nano)); err != nil {
@@ -284,7 +284,7 @@ func insertParkAttempt(t *testing.T, db *sqliteStore, at time.Time, status, term
 	if !at.IsZero() {
 		completed = at.Format(time.RFC3339Nano)
 	}
-	if _, err := db.db.Exec(`INSERT INTO work_attempts (
+	if _, err := db.db.ExecContext(t.Context(), `INSERT INTO work_attempts (
 project_id, issue_id, identifier, issue_url, worker_type, attempt_number, status, started_at, completed_at,
 terminal_state, error_class, worker_metadata_json
 ) VALUES ('detent', 'issue-6', 'digitaldrywood/detent.build#6', 'https://github.com/digitaldrywood/detent.build/issues/6', 'codex', 1, ?, ?, ?, ?, ?, ?)`, status, time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC).Format(time.RFC3339Nano), completed, terminalState, errorClass, metadata); err != nil {
@@ -294,7 +294,7 @@ terminal_state, error_class, worker_metadata_json
 
 func insertParkAttemptIdentity(t *testing.T, db *sqliteStore, at time.Time, issueID, identifier, issueURL string) {
 	t.Helper()
-	if _, err := db.db.Exec(`INSERT INTO work_attempts (
+	if _, err := db.db.ExecContext(t.Context(), `INSERT INTO work_attempts (
 project_id, issue_id, identifier, issue_url, worker_type, attempt_number, status, started_at, completed_at,
 terminal_state, worker_metadata_json
 ) VALUES ('detent', NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 'codex', 1, 'terminal', ?, ?, 'no_progress', '{}')`,
@@ -305,7 +305,7 @@ terminal_state, worker_metadata_json
 
 func insertParkTransition(t *testing.T, db *sqliteStore, at time.Time, reason, metadata string) {
 	t.Helper()
-	if _, err := db.db.Exec(`INSERT INTO workflow_phase_events (
+	if _, err := db.db.ExecContext(t.Context(), `INSERT INTO workflow_phase_events (
 project_id, issue_id, identifier, issue_url, phase_type, phase_name, reason, status, started_at, event_day, metadata_json
 ) VALUES ('detent', 'issue-6', 'digitaldrywood/detent.build#6', 'https://github.com/digitaldrywood/detent.build/issues/6', 'lane', 'Blocked', ?, 'entered', ?, '2026-08-12', ?)`, reason, at.Format(time.RFC3339Nano), metadata); err != nil {
 		t.Fatalf("insert workflow transition: %v", err)

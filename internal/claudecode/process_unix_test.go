@@ -105,7 +105,7 @@ func TestClaudeCodeDeadParentHelper(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command("sleep", "3600")
+	cmd := exec.CommandContext(t.Context(), "sleep", "3600")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

@@ -3387,7 +3387,7 @@ func queryString(t *testing.T, db *sql.DB, query string) string {
 	t.Helper()
 
 	var value string
-	if err := db.QueryRow(query).Scan(&value); err != nil {
+	if err := db.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
 		t.Fatalf("querying %q: %v", query, err)
 	}
 	return value
@@ -3397,7 +3397,7 @@ func queryInt(t *testing.T, db *sql.DB, query string) int64 {
 	t.Helper()
 
 	var value int64
-	if err := db.QueryRow(query).Scan(&value); err != nil {
+	if err := db.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
 		t.Fatalf("querying %q: %v", query, err)
 	}
 	return value
@@ -3422,7 +3422,7 @@ func assertColumnAbsent(t *testing.T, db *sql.DB, table string, column string) {
 func assertIndexPresent(t *testing.T, db *sql.DB, index string) {
 	t.Helper()
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
 		t.Fatalf("query index %q error = %v", index, err)
 	}
 	if count != 1 {
@@ -3433,7 +3433,7 @@ func assertIndexPresent(t *testing.T, db *sql.DB, index string) {
 func assertIndexAbsent(t *testing.T, db *sql.DB, index string) {
 	t.Helper()
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
 		t.Fatalf("query index %q error = %v", index, err)
 	}
 	if count != 0 {
@@ -3445,7 +3445,7 @@ func columnCount(t *testing.T, db *sql.DB, table string, column string) int64 {
 	t.Helper()
 
 	var count int64
-	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", tableIdentifier(t, table), column).Scan(&count); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", tableIdentifier(t, table), column).Scan(&count); err != nil {
 		t.Fatalf("querying %s.%s column: %v", table, column, err)
 	}
 	return count

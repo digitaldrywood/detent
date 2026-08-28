@@ -331,7 +331,7 @@ func runDoctorWorkflowSourceGit(t *testing.T, dir string, args ...string) string
 	t.Helper()
 
 	gitArgs := append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)
-	cmd := exec.Command("git", gitArgs...)
+	cmd := exec.CommandContext(t.Context(), "git", gitArgs...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {

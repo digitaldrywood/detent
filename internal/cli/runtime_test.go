@@ -784,7 +784,7 @@ func runRuntimeWorkflowGit(t *testing.T, repo string, args ...string) string {
 func runRuntimeWorkflowCommand(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(t.Context(), name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

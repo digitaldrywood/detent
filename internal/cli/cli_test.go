@@ -2019,7 +2019,7 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 func runCLITestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -19,7 +19,7 @@ func TestAcquireExcludesAnotherProcessAndReleases(t *testing.T) {
 		t.Fatalf("Acquire() error = %v", err)
 	}
 
-	command := exec.Command(os.Args[0], "-test.run=^TestAcquireHelperProcess$")
+	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAcquireHelperProcess$")
 	command.Env = append(os.Environ(), "DETENT_INSTANCE_LOCK_HELPER="+path)
 	output, err := command.CombinedOutput()
 	if err != nil {

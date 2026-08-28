@@ -247,7 +247,7 @@ func TestDoctorOrphanRecoveryTelemetryUsesTwentyFourHourWindow(t *testing.T) {
 		`INSERT INTO codex_sessions (work_attempt_id, started_at, final_state) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-25 hours'), 'orphaned')`,
 		`INSERT INTO codex_sessions (work_attempt_id, started_at, final_state, orphan_recovery_outcome, input_tokens, cached_input_tokens) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'), 'completed', 'resumed', 1000, 850)`,
 	} {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatalf("Exec(%q) error = %v", statement, err)
 		}
 	}

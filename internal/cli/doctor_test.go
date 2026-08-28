@@ -3089,7 +3089,7 @@ func TestCheckDoctorBlockedRecoveryWarnsOnlyWithoutCurrentPredicate(t *testing.T
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
-	if _, err := db.Exec(`
+	if _, err := db.ExecContext(t.Context(), `
 CREATE TABLE workflow_phase_events (
   id INTEGER PRIMARY KEY,
   issue_id TEXT,
@@ -3118,7 +3118,7 @@ CREATE TABLE workflow_phase_events (
 		{issue: current, at: currentAt},
 		{issue: stale, at: currentAt},
 	} {
-		if _, err := db.Exec(
+		if _, err := db.ExecContext(t.Context(),
 			`INSERT INTO workflow_phase_events (issue_id, identifier, issue_url, phase_type, phase_name, status, started_at, metadata_json) VALUES (?, ?, ?, 'lane', 'Blocked', 'entered', ?, ?)`,
 			row.issue.ID,
 			row.issue.Identifier,
@@ -4928,11 +4928,11 @@ func TestCheckDoctorDailyBudgetAccuracy(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sql.Open() error = %v", err)
 			}
-			if _, err := db.Exec(tt.schema); err != nil {
+			if _, err := db.ExecContext(t.Context(), tt.schema); err != nil {
 				t.Fatalf("create schema error = %v", err)
 			}
 			if tt.seed != "" {
-				if _, err := db.Exec(tt.seed); err != nil {
+				if _, err := db.ExecContext(t.Context(), tt.seed); err != nil {
 					t.Fatalf("seed session error = %v", err)
 				}
 			}
@@ -6682,7 +6682,8 @@ func (b *synchronizedBuffer) String() string {
 func occupiedDoctorPort(t *testing.T, host string, statusCode int, body string) int {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		t.Fatalf("Listen(%q) error = %v", host, err)
 	}
