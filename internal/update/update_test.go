@@ -417,26 +417,70 @@ func TestGitHubClientDownloadRejectsOversize(t *testing.T) {
 func TestGitHubClientDownloadHonorsHTTPTimeout(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		time.Sleep(100 * time.Millisecond)
-		_, _ = w.Write([]byte("late"))
-	}))
-	t.Cleanup(server.Close)
-
-	httpClient := server.Client()
-	httpClient.Timeout = 10 * time.Millisecond
+	readStarted := make(chan struct{}, 1)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: &contextBlockingBody{
+					done:        request.Context().Done(),
+					contextErr:  request.Context().Err,
+					readStarted: readStarted,
+				},
+				Header: make(http.Header),
+			}, nil
+		}),
+		Timeout: 100 * time.Millisecond,
+	}
 	client := NewGitHubClient(GitHubClientConfig{HTTPClient: httpClient})
-	_, err := client.Download(context.Background(), server.URL)
-	if err == nil {
-		t.Fatal("Download() error = nil, want timeout")
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.Download(context.Background(), "https://example.test/release")
+		result <- err
+	}()
+
+	select {
+	case <-readStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Download() did not start reading the response body")
 	}
-	if !strings.Contains(err.Error(), "timeout") && !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Download() error = %v, want timeout", err)
+
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("Download() error = nil, want timeout")
+		}
+		if !strings.Contains(err.Error(), "timeout") && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Download() error = %v, want timeout", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Download() did not return after the HTTP client timeout")
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type contextBlockingBody struct {
+	done        <-chan struct{}
+	contextErr  func() error
+	readStarted chan<- struct{}
+}
+
+func (b *contextBlockingBody) Read([]byte) (int, error) {
+	select {
+	case b.readStarted <- struct{}{}:
+	default:
+	}
+	<-b.done
+	return 0, b.contextErr()
+}
+
+func (*contextBlockingBody) Close() error {
+	return nil
 }
 
 func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testing.T) {
