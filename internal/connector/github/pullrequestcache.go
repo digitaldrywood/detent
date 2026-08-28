@@ -185,6 +185,21 @@ func (c *pullRequestStatusCache) Get(repo pullRequestRepo, number int, headSHA s
 	return pullRequestStatus{}, false
 }
 
+func (c *pullRequestStatusCache) Peek(repo pullRequestRepo, number int, headSHA string) (pullRequestStatus, bool) {
+	key, ok := newPullRequestStatusCacheKey(repo, number, headSHA)
+	if !ok {
+		return pullRequestStatus{}, false
+	}
+
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok {
+		return pullRequestStatus{}, false
+	}
+	return clonePullRequestStatus(entry.status), true
+}
+
 func (c *pullRequestStatusCache) Set(repo pullRequestRepo, number int, headSHA string, status pullRequestStatus) {
 	key, ok := newPullRequestStatusCacheKey(repo, number, headSHA)
 	if !ok {

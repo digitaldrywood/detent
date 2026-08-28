@@ -52,6 +52,26 @@ func (c *Client) storeRESTConditionalEntry(method string, path string, headers h
 	c.mu.Unlock()
 }
 
+func (c *Client) deleteRESTConditionalEntriesForEndpoint(method string, path string) {
+	if c == nil {
+		return
+	}
+	methodPrefix := strings.ToUpper(strings.TrimSpace(method)) + " "
+	endpointPath := strings.TrimSpace(path)
+	if queryIndex := strings.IndexByte(endpointPath, '?'); queryIndex >= 0 {
+		endpointPath = endpointPath[:queryIndex]
+	}
+	exactKey := methodPrefix + endpointPath
+	queryPrefix := exactKey + "?"
+	c.mu.Lock()
+	for key := range c.restCache {
+		if key == exactKey || strings.HasPrefix(key, queryPrefix) {
+			delete(c.restCache, key)
+		}
+	}
+	c.mu.Unlock()
+}
+
 func (c *Client) evictOldestRESTConditionalEntryLocked() {
 	oldestKey := ""
 	oldestAt := time.Time{}
