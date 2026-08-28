@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -89,6 +90,7 @@ type Settings struct {
 	ProjectCandidate   scheduler.ProjectCandidate
 	TerminalStates     []string
 	ReworkState        string
+	ScheduleRuns       schedulehealth.Recorder
 }
 
 type Result struct {
@@ -270,7 +272,7 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 			return newResult(), nil
 		}
 	}
-	result, err := m.runOnce(ctx, settings, scheduledFor)
+	result, err := m.runOnce(ctx, settings, scheduledFor, scheduled)
 	completedAt := m.now()
 	m.mu.Lock()
 	if completedAt.After(m.baseline) {
@@ -283,7 +285,7 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 	return result, err
 }
 
-func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor time.Time) (result Result, runErr error) {
+func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
 	result = newResult()
 	result.ProjectID = strings.TrimSpace(settings.ProjectID)
 	startedAt := m.now().UTC()
@@ -319,6 +321,17 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		}
 		if err := m.store.RecordAdmissionRun(context.WithoutCancel(ctx), record); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record backlog admission run: %w", err))
+		}
+		if scheduled && settings.ScheduleRuns != nil {
+			if err := settings.ScheduleRuns.RecordScheduledRun(context.WithoutCancel(ctx), schedulehealth.Run{
+				ScheduleID:   schedulehealth.AdmissionID,
+				ScheduledFor: record.ScheduledFor,
+				StartedAt:    record.StartedAt,
+				CompletedAt:  record.CompletedAt,
+				Error:        record.Error,
+			}); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("record backlog admission liveness: %w", err))
+			}
 		}
 	}()
 

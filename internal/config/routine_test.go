@@ -12,6 +12,10 @@ func TestParseWorkflowRoutines(t *testing.T) {
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
   kind: memory
+schedule_ownership:
+  enabled: true
+  key: example/routines
+  repository: example/coordination
 routines:
   - name: Dependency-Audit
     schedule: "0 3 * * 1"
@@ -48,6 +52,10 @@ func TestParseWorkflowRoutineLimitDefaults(t *testing.T) {
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
   kind: memory
+schedule_ownership:
+  enabled: true
+  key: example/routines
+  repository: example/coordination
 routines:
   - name: audit
     schedule: "0 * * * *"

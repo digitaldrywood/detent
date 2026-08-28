@@ -309,6 +309,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		RetroStore:         runtimeStore,
 		RoutineStore:       runtimeStore,
 		AdmissionStore:     runtimeStore,
+		ScheduleRuns:       runtimeStore,
 		Activity:           activityBroker,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,

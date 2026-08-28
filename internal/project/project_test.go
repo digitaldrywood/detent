@@ -20,10 +20,13 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
+	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -134,10 +137,16 @@ func TestNewConfiguresScheduledRoutines(t *testing.T) {
 	t.Parallel()
 	workflowCfg := workflowConfig("memory")
 	workflowCfg.Routines = []workflowconfig.Routine{{Name: "dependency-audit", Schedule: "0 3 * * 1", Prompt: "Inspect configured dependency criteria."}}
+	configureTestScheduleOwnership(&workflowCfg)
+	coordinationStore := &projectCoordinationStore{}
+	scheduleRuns := &projectScheduledRunStore{}
 	got, err := project.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg},
-	}, project.Dependencies{Runner: orchestrator.FakeRunner{}, RoutineStore: &projectRoutineStore{}})
+	}, project.Dependencies{
+		Runner: orchestrator.FakeRunner{}, RoutineStore: &projectRoutineStore{},
+		ScheduleStore: coordinationStore, ScheduleRuns: scheduleRuns,
+	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -171,6 +180,7 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 	workflowCfg.BacklogAdmission.CriteriaSection = "Admission criteria"
 	workflowCfg.BacklogAdmission.RequireEffort = true
 	workflowCfg.BacklogAdmission.EffortSection = "Issue effort selection"
+	configureTestScheduleOwnership(&workflowCfg)
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{
@@ -190,6 +200,8 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 	}, project.Dependencies{
 		Runner:         orchestrator.FakeRunner{},
 		AdmissionStore: runtimeStore,
+		ScheduleStore:  &projectCoordinationStore{},
+		ScheduleRuns:   runtimeStore,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -197,6 +209,104 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 	t.Cleanup(func() { _ = got.Close() })
 	if got.Admission() == nil || !got.Admission().Enabled() {
 		t.Fatalf("Admission() = %#v, want enabled manager", got.Admission())
+	}
+}
+
+func TestProjectWithDisabledSchedulersDoesNotAcquireOwnership(t *testing.T) {
+	t.Parallel()
+
+	workflowCfg := workflowConfig("memory")
+	configureTestScheduleOwnership(&workflowCfg)
+	coordinationStore := &projectCoordinationStore{}
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg},
+	}, project.Dependencies{
+		Runner: orchestrator.FakeRunner{}, ScheduleStore: coordinationStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := got.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := got.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if got := coordinationStore.Calls(); got != 0 {
+		t.Fatalf("coordination calls = %d, want 0", got)
+	}
+}
+
+func TestProjectAcquiresScheduleOwnershipAfterWorkflowReloadEnablesSchedulers(t *testing.T) {
+	t.Parallel()
+
+	updates := make(chan configwatcher.Update, 1)
+	workflowCfg := workflowConfig("memory")
+	configureTestScheduleOwnership(&workflowCfg)
+	coordinationStore := &projectCoordinationStore{}
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent", Workflow: "workflow.md"},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "disabled"},
+	}, project.Dependencies{
+		Runner: blockingRunner{}, RoutineStore: &projectRoutineStore{},
+		ScheduleStore: coordinationStore, ScheduleRuns: &projectScheduledRunStore{},
+		WorkflowWatcherFactory: func(string) (project.WorkflowWatcher, error) {
+			return fakeWorkflowWatcher{updates: updates}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := got.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = got.Stop(context.Background()) })
+	waitForWorkflowWatcherArmed(t, got)
+	if calls := coordinationStore.Calls(); calls != 0 {
+		t.Fatalf("coordination calls before enabling schedules = %d, want 0", calls)
+	}
+
+	reloaded := workflowCfg
+	reloaded.Routines = []workflowconfig.Routine{{Name: "audit", Schedule: "* * * * *", Prompt: "Inspect."}}
+	updates <- configwatcher.Update{Workflow: workflowconfig.Workflow{Config: reloaded, Prompt: "enabled"}}
+	waitForWorkflowPrompt(t, got, "enabled")
+	waitForCoordinationCalls(t, coordinationStore, 1)
+}
+
+func TestScheduleOwnershipAcquisitionFailureDegradesRunningProject(t *testing.T) {
+	t.Parallel()
+
+	workflowCfg := workflowConfig("memory")
+	workflowCfg.Routines = []workflowconfig.Routine{{Name: "audit", Schedule: "* * * * *", Prompt: "Inspect."}}
+	configureTestScheduleOwnership(&workflowCfg)
+	coordinationStore := &failingProjectCoordinationStore{called: make(chan struct{})}
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg},
+	}, project.Dependencies{
+		Runner: orchestrator.FakeRunner{}, RoutineStore: &projectRoutineStore{},
+		ScheduleStore: coordinationStore, ScheduleRuns: &projectScheduledRunStore{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := got.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = got.Stop(context.Background()) })
+	select {
+	case <-coordinationStore.called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for schedule ownership acquisition")
+	}
+	registry := project.NewRegistry()
+	if err := registry.Set(got); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	health := registry.Health()
+	if len(health) != 1 || health[0].Status != project.HealthStatusDegraded || !strings.Contains(health[0].LastError, "coordination unavailable") {
+		t.Fatalf("Registry.Health() = %#v, want persistent schedule ownership fault", health)
 	}
 }
 
@@ -1353,6 +1463,85 @@ func workflowConfig(kind string) workflowconfig.Config {
 	return cfg
 }
 
+func configureTestScheduleOwnership(cfg *workflowconfig.Config) {
+	cfg.ScheduleOwnership = scheduleowner.Config{
+		Enabled: true, Backend: scheduleowner.BackendGitHubRef, Key: "example/detent",
+		Repository: "example/coordination", Branch: scheduleowner.DefaultBranch,
+		LeaseSeconds: scheduleowner.DefaultLeaseSeconds, HeartbeatSeconds: scheduleowner.DefaultHeartbeatSeconds,
+		RetrySeconds: scheduleowner.DefaultRetrySeconds, MaxClockSkewSeconds: scheduleowner.DefaultMaxClockSkewSeconds,
+	}
+}
+
+type projectCoordinationStore struct {
+	mu      sync.Mutex
+	calls   int
+	record  coordination.Record
+	version int
+}
+
+func (s *projectCoordinationStore) Get(context.Context, string) (coordination.Record, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	return s.record, s.record.Version != "", nil
+}
+
+func (s *projectCoordinationStore) CompareAndSwap(_ context.Context, _ string, expected string, value []byte) (coordination.Record, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.record.Version != expected {
+		return coordination.Record{}, false, nil
+	}
+	s.version++
+	s.record = coordination.Record{Value: append([]byte(nil), value...), Version: fmt.Sprintf("v%d", s.version), ModifiedAt: time.Now().UTC()}
+	return s.record, true, nil
+}
+
+func (s *projectCoordinationStore) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+type projectScheduledRunStore struct {
+	mu   sync.Mutex
+	runs []schedulehealth.Run
+}
+
+type failingProjectCoordinationStore struct {
+	once   sync.Once
+	called chan struct{}
+}
+
+func (s *failingProjectCoordinationStore) Get(context.Context, string) (coordination.Record, bool, error) {
+	s.once.Do(func() { close(s.called) })
+	return coordination.Record{}, false, errors.New("coordination unavailable")
+}
+
+func (s *failingProjectCoordinationStore) CompareAndSwap(context.Context, string, string, []byte) (coordination.Record, bool, error) {
+	return coordination.Record{}, false, errors.New("coordination unavailable")
+}
+
+func (s *projectScheduledRunStore) LatestScheduledRun(_ context.Context, projectID string, scheduleID string) (schedulehealth.Run, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := len(s.runs) - 1; index >= 0; index-- {
+		run := s.runs[index]
+		if run.ProjectID == projectID && run.ScheduleID == scheduleID {
+			return run, true, nil
+		}
+	}
+	return schedulehealth.Run{}, false, nil
+}
+
+func (s *projectScheduledRunStore) RecordScheduledRun(_ context.Context, run schedulehealth.Run) error {
+	s.mu.Lock()
+	s.runs = append(s.runs, run)
+	s.mu.Unlock()
+	return nil
+}
+
 type blockingRunner struct{}
 
 type projectRoutineStore struct {
@@ -1649,6 +1838,24 @@ func waitForWorkflowPrompt(t *testing.T, got *project.Project, want string) {
 		case <-ticker.C:
 		case <-deadline:
 			t.Fatalf("timed out waiting for workflow prompt %q, got %q", want, got.Workflow().Prompt)
+		}
+	}
+}
+
+func waitForCoordinationCalls(t *testing.T, store *projectCoordinationStore, minimum int) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(time.Second)
+	for {
+		if calls := store.Calls(); calls >= minimum {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d coordination calls; got %d", minimum, store.Calls())
 		}
 	}
 }

@@ -329,6 +329,16 @@ type RoutineRun struct {
 	LimitedCount      int64          `json:"limited_count"`
 }
 
+type ScheduledRun struct {
+	ID           int64          `json:"id"`
+	ProjectID    string         `json:"project_id"`
+	ScheduleID   string         `json:"schedule_id"`
+	ScheduledFor string         `json:"scheduled_for"`
+	StartedAt    string         `json:"started_at"`
+	CompletedAt  string         `json:"completed_at"`
+	Error        sql.NullString `json:"error"`
+}
+
 type SchedulerDecision struct {
 	ID                     int64          `json:"id"`
 	ProjectID              string         `json:"project_id"`

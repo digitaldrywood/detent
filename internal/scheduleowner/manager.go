@@ -35,6 +35,7 @@ type Dependencies struct {
 	Token  func() (string, error)
 	Closer io.Closer
 	Logger *slog.Logger
+	State  func(error)
 }
 
 type Lease struct {
@@ -63,6 +64,7 @@ type Manager struct {
 	token  func() (string, error)
 	closer io.Closer
 	logger *slog.Logger
+	state  func(error)
 }
 
 type leaseState struct {
@@ -109,6 +111,7 @@ func New(config Config, owner string, store coordination.Store, deps Dependencie
 		token:  token,
 		closer: deps.Closer,
 		logger: logger,
+		state:  deps.State,
 	}, nil
 }
 
@@ -226,6 +229,7 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context) error) err
 	for ctx.Err() == nil {
 		lease, acquired, err := m.Acquire(ctx)
 		if err != nil {
+			m.reportState(fmt.Errorf("schedule ownership acquisition failed: %w", err))
 			m.logger.WarnContext(ctx, "schedule ownership acquisition failed", "owner", m.owner, "key", m.config.Key, "error", err)
 			if waitErr := m.wait(ctx, m.config.RetryInterval()); waitErr != nil {
 				return nil
@@ -233,17 +237,20 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context) error) err
 			continue
 		}
 		if !acquired {
+			m.reportState(nil)
 			if waitErr := m.wait(ctx, m.config.RetryInterval()); waitErr != nil {
 				return nil
 			}
 			continue
 		}
+		m.reportState(nil)
 		m.logger.InfoContext(ctx, "schedule ownership acquired", "owner", lease.Owner, "key", m.config.Key, "generation", lease.Generation)
 		err = m.hold(ctx, lease, work)
 		if ctx.Err() != nil {
 			return nil
 		}
 		if errors.Is(err, ErrLeaseLost) {
+			m.reportState(err)
 			m.logger.WarnContext(ctx, "schedule ownership lost", "owner", lease.Owner, "key", m.config.Key, "generation", lease.Generation)
 			if waitErr := m.wait(ctx, m.config.RetryInterval()); waitErr != nil {
 				return nil
@@ -253,6 +260,12 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context) error) err
 		return err
 	}
 	return nil
+}
+
+func (m *Manager) reportState(err error) {
+	if m != nil && m.state != nil {
+		m.state(err)
+	}
 }
 
 func (m *Manager) hold(ctx context.Context, lease Lease, work func(context.Context) error) error {

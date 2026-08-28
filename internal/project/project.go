@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -146,6 +147,7 @@ type Dependencies struct {
 	AdmissionStore            store.AdmissionStore
 	ScheduleStore             coordination.Store
 	ScheduleOwner             string
+	ScheduleRuns              schedulehealth.Store
 }
 
 type Project struct {
@@ -170,6 +172,9 @@ type Project struct {
 	scheduleOwner             *scheduleowner.Manager
 	issueCoordinator          *scheduleowner.IssueCoordinator
 	scheduleConfig            scheduleowner.Config
+	scheduleHealth            *schedulehealth.Monitor
+	scheduleFault             *scheduleFaultState
+	scheduleUpdates           chan struct{}
 	retroProduct              connector.Connector
 	events                    *hub.Hub[Event]
 	logger                    *slog.Logger
@@ -186,6 +191,33 @@ type Project struct {
 	closed          bool
 	lifecycleEvents bool
 	workflowSource  WorkflowSourceStatus
+}
+
+type scheduleFaultState struct {
+	mu         sync.Mutex
+	runtimeErr RuntimeError
+}
+
+func (s *scheduleFaultState) record(err error, at time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		s.runtimeErr = RuntimeError{}
+		return
+	}
+	s.runtimeErr = RuntimeError{Message: err.Error(), At: at.UTC()}
+}
+
+func (s *scheduleFaultState) current() RuntimeError {
+	if s == nil {
+		return RuntimeError{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runtimeErr
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
@@ -235,7 +267,21 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	projectScheduleOwner, issueCoordinator, scheduleConfig, err := buildScheduleOwnership(workflow.Config, deps, logger)
+	scheduleFault := &scheduleFaultState{}
+	scheduleHealth, err := schedulehealth.New(string(id), scheduleDefinitions(workflow.Config), deps.ScheduleRuns, schedulehealth.Dependencies{
+		OnFault: func(err error, at time.Time) {
+			scheduleFault.record(err, at)
+		},
+		OnHealthy: func() {
+			scheduleFault.record(nil, time.Time{})
+		},
+	})
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create project schedule liveness: %w", err), closeConnector(projectConnector))
+	}
+	projectScheduleOwner, issueCoordinator, scheduleConfig, err := buildScheduleOwnership(workflow.Config, deps, logger, func(err error) {
+		scheduleFault.record(err, time.Now().UTC())
+	})
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project schedule ownership: %w", err), closeConnector(projectConnector))
 	}
@@ -249,6 +295,8 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}()
 	intakeDependencies := deps.IntakeDependencies
 	intakeDependencies.Root = intakeRoot(cfg.Project, workflow.Config)
+	intakeDependencies.ProjectID = string(id)
+	intakeDependencies.ScheduleRuns = scheduleHealth
 	if intakeDependencies.Logger == nil {
 		intakeDependencies.Logger = logger
 	}
@@ -282,6 +330,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Runner:       deps.Runner,
 		Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator),
 		Metrics:      deps.WorkflowMetrics,
+		ScheduleRuns: scheduleHealth,
 	}, deps.RoutineStore, logger, nil)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project routine: %w", err), closeConnector(retroProductConnector))
@@ -318,6 +367,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		ProjectCandidate:   projectSchedulerCandidate(cfg.Project, workflow.Config),
 		TerminalStates:     workflow.Config.Tracker.TerminalStates,
 		ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
+		ScheduleRuns:       scheduleHealth,
 	}, deps.AdmissionStore, logger, nil)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
@@ -396,6 +446,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		scheduleOwner:             projectScheduleOwner,
 		issueCoordinator:          issueCoordinator,
 		scheduleConfig:            scheduleConfig,
+		scheduleHealth:            scheduleHealth,
+		scheduleFault:             scheduleFault,
+		scheduleUpdates:           make(chan struct{}, 1),
 		retroProduct:              retroProductConnector,
 		events:                    projectEvents,
 		logger:                    logger,
@@ -561,9 +614,13 @@ func (p *Project) RuntimeError() RuntimeError {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.runtimeErr
+	runtimeErr := p.runtimeErr
+	scheduleFault := p.scheduleFault
+	p.mu.Unlock()
+	if runtimeErr.Message != "" {
+		return runtimeErr
+	}
+	return scheduleFault.current()
 }
 
 func (p *Project) Running() bool {
@@ -982,25 +1039,102 @@ func (p *Project) startRetro(ctx context.Context) <-chan struct{} {
 }
 
 func (p *Project) startSchedules(ctx context.Context) <-chan struct{} {
-	p.mu.Lock()
-	owner := p.scheduleOwner
-	schedulersEnabled := p.workflow.Config.SchedulersEnabled()
-	p.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if owner == nil {
-			if schedulersEnabled {
-				p.logger.Error("project schedules disabled because schedule ownership is not configured", "project_id", p.id)
+		for ctx.Err() == nil {
+			owner, enabled := p.scheduleState()
+			if !enabled {
+				select {
+				case <-ctx.Done():
+					return
+				case <-p.scheduleUpdates:
+					continue
+				}
 			}
-			<-ctx.Done()
-			return
-		}
-		if err := owner.Run(ctx, p.runOwnedSchedules); err != nil && ctx.Err() == nil {
+			if owner == nil {
+				err := errors.New("project schedules disabled because schedule_ownership is not configured")
+				p.scheduleFault.record(err, time.Now().UTC())
+				p.logger.Error("project schedules disabled because schedule ownership is not configured", "project_id", p.id)
+				select {
+				case <-ctx.Done():
+					return
+				case <-p.scheduleUpdates:
+					continue
+				}
+			}
+			disabled, err := p.runSchedulesUntilDisabled(ctx, owner)
+			if ctx.Err() != nil {
+				return
+			}
+			if disabled {
+				p.scheduleFault.record(nil, time.Time{})
+				continue
+			}
+			if err == nil {
+				err = errors.New("project schedules stopped unexpectedly")
+			}
+			p.scheduleFault.record(err, time.Now().UTC())
 			p.logger.Error("project schedules stopped", "project_id", p.id, "error", err)
+			return
 		}
 	}()
 	return done
+}
+
+func (p *Project) scheduleState() (*scheduleowner.Manager, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.scheduleOwner, p.workflow.Config.SchedulersEnabled()
+}
+
+func (p *Project) runSchedulesUntilDisabled(ctx context.Context, owner *scheduleowner.Manager) (bool, error) {
+	ownedCtx, cancel := context.WithCancel(ctx)
+	ownerDone := make(chan error, 1)
+	go func() {
+		ownerDone <- owner.Run(ownedCtx, p.runOwnedSchedules)
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-ownerDone
+			return false, nil
+		case <-p.scheduleUpdates:
+			_, enabled := p.scheduleState()
+			if enabled {
+				continue
+			}
+			cancel()
+			return true, <-ownerDone
+		case err := <-ownerDone:
+			cancel()
+			return false, err
+		}
+	}
+}
+
+func (p *Project) signalScheduleUpdate() {
+	select {
+	case p.scheduleUpdates <- struct{}{}:
+	default:
+	}
+}
+
+func scheduleDefinitions(cfg workflowconfig.Config) []schedulehealth.Definition {
+	definitions := make([]schedulehealth.Definition, 0, len(cfg.Routines)+len(cfg.Intake.Sources)+1)
+	for _, definition := range cfg.Routines {
+		definitions = append(definitions, schedulehealth.Definition{ID: schedulehealth.RoutineID(definition.Name), Schedule: definition.Schedule})
+	}
+	if cfg.BacklogAdmission.Enabled {
+		definitions = append(definitions, schedulehealth.Definition{ID: schedulehealth.AdmissionID, Schedule: cfg.BacklogAdmission.Schedule})
+	}
+	for _, source := range cfg.Intake.Sources {
+		if source.Kind == intake.KindSchedule {
+			definitions = append(definitions, schedulehealth.Definition{ID: schedulehealth.IntakeID(source.Name), Schedule: source.Cron})
+		}
+	}
+	return definitions
 }
 
 func (p *Project) runOwnedSchedules(ctx context.Context) error {
@@ -1008,8 +1142,12 @@ func (p *Project) runOwnedSchedules(ctx context.Context) error {
 	intakeManager := p.intake
 	routineManager := p.routine
 	admissionManager := p.admission
+	scheduleHealth := p.scheduleHealth
 	p.mu.Unlock()
 	group, runCtx := errgroup.WithContext(ctx)
+	if scheduleHealth != nil {
+		group.Go(func() error { return scheduleHealth.Run(runCtx) })
+	}
 	if intakeManager != nil {
 		group.Go(func() error { return intakeManager.Run(runCtx) })
 	}
@@ -1262,6 +1400,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	projectRetro := p.retro
 	projectRoutine := p.routine
 	projectAdmission := p.admission
+	projectScheduleHealth := p.scheduleHealth
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
@@ -1379,6 +1518,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Runner:       runner,
 			Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator),
 			Metrics:      p.orchDeps.WorkflowMetrics,
+			ScheduleRuns: projectScheduleHealth,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow routine reload failed", update.Path, err)
 		}
@@ -1399,8 +1539,14 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ProjectCandidate:   projectSchedulerCandidate(projectConfig, workflow.Config),
 			TerminalStates:     workflow.Config.Tracker.TerminalStates,
 			ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
+			ScheduleRuns:       projectScheduleHealth,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow backlog admission reload failed", update.Path, err)
+		}
+	}
+	if projectScheduleHealth != nil {
+		if err := projectScheduleHealth.Update(scheduleDefinitions(workflow.Config)); err != nil {
+			return p.workflowReloadError("workflow reload schedule liveness failed", update.Path, err)
 		}
 	}
 
@@ -1429,6 +1575,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	publishEvents := p.lifecycleEvents
 	id := p.id
 	p.mu.Unlock()
+	p.signalScheduleUpdate()
 	if previousRetroProduct != retroProductConnector {
 		if err := closeConnector(previousRetroProduct); err != nil {
 			p.logger.Warn("close previous retro product connector failed", "project_id", p.id, "error", err)
@@ -1633,6 +1780,7 @@ func buildScheduleOwnership(
 	cfg workflowconfig.Config,
 	deps Dependencies,
 	logger *slog.Logger,
+	state func(error),
 ) (*scheduleowner.Manager, *scheduleowner.IssueCoordinator, scheduleowner.Config, error) {
 	coordinationEndpoint := ""
 	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
@@ -1698,7 +1846,7 @@ func buildScheduleOwnership(
 		owner = hostname
 		owner = strings.TrimSpace(owner)
 	}
-	manager, err := scheduleowner.New(ownership, owner, coordinationStore, scheduleowner.Dependencies{Closer: coordinationCloser, Logger: logger})
+	manager, err := scheduleowner.New(ownership, owner, coordinationStore, scheduleowner.Dependencies{Closer: coordinationCloser, Logger: logger, State: state})
 	if err != nil {
 		if coordinationCloser != nil {
 			return nil, nil, ownership, errors.Join(err, coordinationCloser.Close())

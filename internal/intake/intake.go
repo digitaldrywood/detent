@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
 )
 
 var (
@@ -83,6 +85,8 @@ type Dependencies struct {
 	ScannerFactory ScannerFactory
 	Logger         *slog.Logger
 	Now            func() time.Time
+	ProjectID      string
+	ScheduleRuns   schedulehealth.Recorder
 }
 
 type Result struct {
@@ -119,6 +123,8 @@ type Manager struct {
 	now            func() time.Time
 	issues         map[string]Issue
 	updates        chan struct{}
+	projectID      string
+	scheduleRuns   schedulehealth.Recorder
 }
 
 const pendingStateMarker = "<!-- detent-intake-state:pending -->"
@@ -148,6 +154,8 @@ func New(cfg Config, store IssueStore, deps Dependencies) (*Manager, error) {
 		now:            now,
 		issues:         map[string]Issue{},
 		updates:        make(chan struct{}, 1),
+		projectID:      strings.TrimSpace(deps.ProjectID),
+		scheduleRuns:   deps.ScheduleRuns,
 	}
 	if err := manager.Update(cfg, store, deps.Root); err != nil {
 		return nil, err
@@ -312,11 +320,32 @@ func (m *Manager) Run(ctx context.Context) error {
 		case <-timer.C:
 		}
 		for _, name := range due.names {
-			if _, err := m.RunScheduled(ctx, name); err != nil && ctx.Err() == nil {
-				m.logger.ErrorContext(ctx, "scheduled intake failed", "source", name, "error", err)
+			startedAt := m.now().UTC()
+			_, runErr := m.RunScheduled(ctx, name)
+			completedAt := m.now().UTC()
+			if m.scheduleRuns != nil {
+				recordErr := m.scheduleRuns.RecordScheduledRun(context.WithoutCancel(ctx), schedulehealth.Run{
+					ProjectID:    m.projectID,
+					ScheduleID:   schedulehealth.IntakeID(name),
+					ScheduledFor: due.at.UTC(),
+					StartedAt:    startedAt,
+					CompletedAt:  completedAt,
+					Error:        errorString(runErr),
+				})
+				runErr = errors.Join(runErr, recordErr)
+			}
+			if runErr != nil && ctx.Err() == nil {
+				m.logger.ErrorContext(ctx, "scheduled intake failed", "source", name, "error", runErr)
 			}
 		}
 	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 type scheduledDue struct {

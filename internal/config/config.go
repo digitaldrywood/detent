@@ -1624,6 +1624,9 @@ func (c *Config) Validate() error {
 	}
 	c.BacklogAdmission.Normalize()
 	problems = append(problems, c.BacklogAdmission.Validate("backlog_admission", states, c.Tracker)...)
+	if c.SchedulersEnabled() && !c.ScheduleOwnership.Enabled {
+		problems = append(problems, "schedule_ownership.enabled must be true when scheduled work is configured; add a schedule_ownership block with enabled: true and a shared key")
+	}
 
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}

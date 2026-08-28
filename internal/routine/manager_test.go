@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -123,6 +124,30 @@ func TestManagerNextScheduledUsesRuntimeTimezoneAfterRestart(t *testing.T) {
 	want := time.Date(2026, time.July, 17, 10, 0, 0, 0, location)
 	if !scheduled || name != "hourly" || !next.Equal(want) || next.Location() != location {
 		t.Fatalf("nextScheduled() = %s (%s), %q, %t; want %s (%s)", next, next.Location(), name, scheduled, want, location)
+	}
+}
+
+func TestManagerScheduledRunRecordsLiveness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
+	recorder := &routineScheduleRecorder{}
+	manager, err := New(Settings{
+		ProjectID: "detent",
+		Definitions: []config.Routine{{
+			Name: "audit", Schedule: "* * * * *", Prompt: "Inspect.",
+		}},
+		Runner: fakeRunner{}, Issues: &fakeIssueStore{}, ScheduleRuns: recorder,
+	}, &fakeStore{}, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scheduledFor := now.Add(time.Minute)
+	if _, err := manager.runNamed(t.Context(), "audit", scheduledFor, true); err != nil {
+		t.Fatalf("runNamed() error = %v", err)
+	}
+	if len(recorder.runs) != 1 || recorder.runs[0].ScheduleID != schedulehealth.RoutineID("audit") || !recorder.runs[0].ScheduledFor.Equal(scheduledFor) {
+		t.Fatalf("scheduled runs = %#v, want audit run at %s", recorder.runs, scheduledFor)
 	}
 }
 
@@ -554,6 +579,15 @@ type fakeStore struct {
 	trackedIssues []IssueRecord
 	closedIssues  map[string]bool
 	recordErr     error
+}
+
+type routineScheduleRecorder struct {
+	runs []schedulehealth.Run
+}
+
+func (r *routineScheduleRecorder) RecordScheduledRun(_ context.Context, run schedulehealth.Run) error {
+	r.runs = append(r.runs, run)
+	return nil
 }
 
 func (s *fakeStore) LatestRoutineRun(_ context.Context, projectID string, routineName string) (RunRecord, bool, error) {
