@@ -1060,6 +1060,127 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 28, 18, 0, 0, 0, time.UTC)
+	signature := autoPromoteReworkSignature{
+		PRNumber: 1070,
+		HeadSHA:  "same-head",
+	}
+	tests := []struct {
+		name          string
+		history       []store.WorkAttempt
+		completionErr error
+		wantReason    string
+		wantClaimed   bool
+		wantTerminal  store.WorkAttemptTerminalState
+	}{
+		{
+			name:         "first successful completion",
+			wantReason:   "first_completed_attempt",
+			wantTerminal: store.WorkAttemptTerminalSuccess,
+		},
+		{
+			name:         "successful completion with unchanged fingerprint",
+			history:      []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			wantReason:   "unchanged_signature_clean_diff",
+			wantTerminal: store.WorkAttemptTerminalSuccess,
+		},
+		{
+			name:          "persistence failure retains claim",
+			completionErr: errors.New("attempt store unavailable"),
+			wantReason:    "first_completed_attempt",
+			wantClaimed:   true,
+			wantTerminal:  store.WorkAttemptTerminalSuccess,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := implementProgressIssue("same-head")
+			issue.State = "Rework"
+			tracker := &implementProgressConnector{hydrated: issue}
+			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:         true,
+					GateWaitState:   autoPromoteGateWaitSource,
+					NoProgressLimit: 3,
+					Gate:            gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{
+				Issue:               issue,
+				Attempt:             2,
+				WorkAttemptID:       42,
+				Mode:                runpkg.RunModeImplement,
+				DispatchSourceState: "Rework",
+				StartedAt:           base.Add(-time.Minute),
+				DiffStats:           DiffStats{Status: "clean"},
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: base.Add(-time.Minute)}
+
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result: runpkg.RunResult{
+					FinalState: FinalStateCompleted,
+					DiffStats:  DiffStats{Status: "clean"},
+				},
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminal {
+				t.Fatalf("completions = %#v, want terminal %q", attempts.completions, tt.wantTerminal)
+			}
+			persisted := store.WorkAttempt{
+				TerminalState:      attempts.completions[0].TerminalState,
+				WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON,
+			}
+			record, ok := implementProgressRecordFromAttempt(persisted)
+			if !ok || record.Reason != tt.wantReason {
+				t.Fatalf("completion progress = %#v, want reason %q", record, tt.wantReason)
+			}
+			if reason := completionGateWaitReasonFromAttempt(persisted); reason != completedReworkGateWaitReason {
+				t.Fatalf("completion gate wait reason = %q, want %q", reason, completedReworkGateWaitReason)
+			}
+			completed, ok := state.Completed[issue.ID]
+			if !ok {
+				t.Fatalf("Completed[%q] missing after Rework gate-wait completion", issue.ID)
+			}
+			if completed.GateWaitReason != completedReworkGateWaitReason {
+				t.Fatalf("Completed[%q].GateWaitReason = %q, want %q", issue.ID, completed.GateWaitReason, completedReworkGateWaitReason)
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatalf("Retry[%q] present after Rework gate-wait completion", issue.ID)
+			}
+			_, claimed := state.Claimed[issue.ID]
+			if claimed != tt.wantClaimed {
+				t.Fatalf("Claimed[%q] present = %v, want %v", issue.ID, claimed, tt.wantClaimed)
+			}
+			if !tt.wantClaimed {
+				if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+					t.Fatal("Rework completion is not pending the source-lane gate")
+				}
+			}
+		})
+	}
+}
+
 func TestHandleRunResultCommentsOnObservedLaneTransition(t *testing.T) {
 	t.Parallel()
 

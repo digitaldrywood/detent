@@ -467,6 +467,7 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 	tests := []struct {
 		name                 string
 		issue                connector.Issue
+		gateWaitReason       string
 		wantUpdates          []autoPromoteTickUpdate
 		wantCommentFragments []string
 	}{
@@ -489,6 +490,30 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				"Auto-promoted this issue from In Progress to Merging.",
 				"reason: ready",
 				"https://github.test/digitaldrywood/detent/pull/142",
+			},
+		},
+		{
+			name: "promotes completed Rework gate wait directly to merging",
+			issue: func() connector.Issue {
+				issue := autoPromoteTickIssue("issue-rework-ready", []string{"bug"}, &connector.PullRequest{
+					Number:                 2030,
+					URL:                    "https://github.test/digitaldrywood/detent/pull/2030",
+					State:                  "OPEN",
+					HeadSHA:                "same-head",
+					MergeableState:         "clean",
+					CIStatus:               "success",
+					CodexReviewState:       "COMMENTED",
+					CodexReviewSubmittedAt: &oldReview,
+				})
+				issue.State = "Rework"
+				return issue
+			}(),
+			gateWaitReason: completedReworkGateWaitReason,
+			wantUpdates:    []autoPromoteTickUpdate{{issueID: "issue-rework-ready", state: "Merging"}},
+			wantCommentFragments: []string{
+				"Auto-promoted this issue from Rework to Merging.",
+				"reason: ready",
+				"https://github.test/digitaldrywood/detent/pull/2030",
 			},
 		},
 		{
@@ -552,8 +577,9 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 			})
 			state := newState(cfg)
 			state.Completed[tt.issue.ID] = Completed{
-				Issue:      tt.issue,
-				FinalState: FinalStateCompleted,
+				Issue:          tt.issue,
+				FinalState:     FinalStateCompleted,
+				GateWaitReason: tt.gateWaitReason,
 			}
 			mergingSlot := dispatchTestIssue(tt.issue.ID+"-merging-slot", "Merging")
 			state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
@@ -1055,6 +1081,151 @@ func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t 
 				t.Fatalf("latestSuccessfulGateWaitAttempt() ID = %d, want %d", attempt.ID, tt.wantID)
 			}
 		})
+	}
+}
+
+func TestRestoreDurableReworkGateWaitCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 18, 45, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tests := []struct {
+		name             string
+		recordedFailures []string
+		prepareIssue     func(*connector.Issue)
+		includeMarker    bool
+		wantRestore      bool
+	}{
+		{name: "restores unchanged exact head", includeMarker: true, wantRestore: true},
+		{
+			name:          "head movement invalidates completion",
+			includeMarker: true,
+			prepareIssue: func(issue *connector.Issue) {
+				issue.PullRequest.HeadSHA = "new-head"
+			},
+		},
+		{
+			name:          "new failing check invalidates completion",
+			includeMarker: true,
+			prepareIssue: func(issue *connector.Issue) {
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
+			},
+		},
+		{
+			name:          "new merge conflict invalidates completion",
+			includeMarker: true,
+			prepareIssue: func(issue *connector.Issue) {
+				issue.PullRequest.MergeableState = "dirty"
+			},
+		},
+		{
+			name:             "cleared failing check retains completion",
+			recordedFailures: []string{"Test"},
+			includeMarker:    true,
+			wantRestore:      true,
+		},
+		{
+			name:          "new P1 review invalidates completion",
+			includeMarker: true,
+			prepareIssue: func(issue *connector.Issue) {
+				submittedAt := now.Add(-time.Minute)
+				issue.PullRequest.CodexReviewState = "P1"
+				issue.PullRequest.CodexReviewSubmittedAt = &submittedAt
+				issue.PullRequest.CodexReviewFindings = []connector.PullRequestFinding{{Body: "Fix the race."}}
+			},
+		},
+		{
+			name:          "later Rework entry invalidates completion",
+			includeMarker: true,
+			prepareIssue: func(issue *connector.Issue) {
+				enteredAt := now.Add(-time.Minute)
+				issue.StageUpdatedAt = &enteredAt
+			},
+		},
+		{name: "ordinary success without marker is not restored"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTickIssue("issue-rework-gate-restart", []string{"bug"}, &connector.PullRequest{
+				Number:         2030,
+				State:          "OPEN",
+				HeadSHA:        "same-head",
+				MergeableState: "clean",
+				CIStatus:       "success",
+			})
+			issue.State = "Rework"
+			recordedIssue := cloneIssue(issue)
+			if tt.prepareIssue != nil {
+				tt.prepareIssue(&issue)
+			}
+			signature := autoPromoteReworkSignature{PRNumber: 2030, HeadSHA: "same-head", FailedChecks: tt.recordedFailures}
+			attempt := successfulReworkGateWaitAttempt(now.Add(-2*time.Minute), recordedIssue, signature, tt.includeMarker)
+			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{attempt}}
+			orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
+			state := newState(cfg)
+
+			orch.restoreDurableGateWaitCompletions(t.Context(), &state, []connector.Issue{issue})
+
+			completed, restored := state.Completed[issue.ID]
+			if restored != tt.wantRestore {
+				t.Fatalf("Completed[%q] present = %v, want %v", issue.ID, restored, tt.wantRestore)
+			}
+			if !tt.wantRestore {
+				return
+			}
+			if completed.GateWaitReason != completedReworkGateWaitReason {
+				t.Fatalf("GateWaitReason = %q, want %q", completed.GateWaitReason, completedReworkGateWaitReason)
+			}
+			decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, now, "")
+			if decision.dispatchable || decision.reason != dispatchSkipAwaitingGate {
+				t.Fatalf("dispatch decision = %#v, want awaiting gate", decision)
+			}
+		})
+	}
+}
+
+func successfulReworkGateWaitAttempt(
+	completedAt time.Time,
+	issue connector.Issue,
+	signature autoPromoteReworkSignature,
+	includeMarker bool,
+) store.WorkAttempt {
+	prNumber := signature.PRNumber
+	metadata := implementCompletionProgressMetadata(implementCompletionProgressDecision{
+		Outcome:            store.WorkAttemptTerminalSuccess,
+		Reason:             "unchanged_signature_clean_diff",
+		CurrentSignature:   signature,
+		WorkspaceDiffStats: DiffStats{Status: "clean"},
+		TrackerState:       "Rework",
+	})
+	if includeMarker {
+		metadata = mergeWorkAttemptMetadata(metadata, completionGateWaitMetadata(completedReworkGateWaitReason, issue))
+	}
+	return store.WorkAttempt{
+		ID:                 2030,
+		ProjectID:          "detent",
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		IssueURL:           issue.URL,
+		PRNumber:           &prNumber,
+		WorkerType:         "agent",
+		Lane:               "Rework",
+		Status:             store.WorkAttemptStatusTerminal,
+		StartedAt:          completedAt.Add(-time.Minute),
+		CompletedAt:        completedAt,
+		TerminalState:      store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(metadata),
 	}
 }
 
