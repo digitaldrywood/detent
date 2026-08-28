@@ -239,3 +239,39 @@ func TestClientRESTConditionalCacheIsBounded(t *testing.T) {
 		t.Fatalf("conditional cache size = %d, want %d", got, restConditionalCacheMaxEntries)
 	}
 }
+
+func TestClientDeleteRESTConditionalEntriesForEndpointRemovesEveryPage(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github.test/graphql",
+		TokenSource: StaticTokenSource("test-token"),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	headers := http.Header{"Etag": []string{`"value"`}}
+	endpoint := "/repos/example/repo/commits/head-sha/check-runs"
+	paths := []string{
+		endpoint,
+		endpoint + "?per_page=100",
+		endpoint + "?per_page=100&page=2",
+		endpoint + "?page=3&per_page=100",
+	}
+	for _, path := range paths {
+		client.storeRESTConditionalEntry(http.MethodGet, path, headers, []byte(`{}`))
+	}
+	unrelated := "/repos/example/repo/commits/other-sha/check-runs?per_page=100"
+	client.storeRESTConditionalEntry(http.MethodGet, unrelated, headers, []byte(`{}`))
+
+	client.deleteRESTConditionalEntriesForEndpoint(http.MethodGet, endpoint+"?per_page=100")
+
+	for _, path := range paths {
+		if _, ok := client.restConditionalEntry(http.MethodGet, path); ok {
+			t.Fatalf("conditional entry %q still exists", path)
+		}
+	}
+	if _, ok := client.restConditionalEntry(http.MethodGet, unrelated); !ok {
+		t.Fatalf("unrelated conditional entry %q was removed", unrelated)
+	}
+}

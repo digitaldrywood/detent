@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2151,6 +2152,136 @@ func TestConnectorFetchFreshIssuesByStatesRechecksPullRequestStatusForPromotion(
 		if count != 2 {
 			t.Fatalf("%s request count = %d, want fresh status fetch each call; requests = %#v", pattern, count, requests)
 		}
+	}
+}
+
+func TestConnectorFreshPullRequestStatusReconcilesDeletedChecks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		secondCheckState int
+		wantError        bool
+		wantCIStatus     string
+		wantPublishedCI  string
+		wantRunning      []string
+	}{
+		{
+			name:            "authoritative snapshot removes deleted pending check",
+			wantCIStatus:    "success",
+			wantPublishedCI: "pass",
+		},
+		{
+			name:             "failed snapshot retains pending check",
+			secondCheckState: http.StatusServiceUnavailable,
+			wantError:        true,
+			wantCIStatus:     "pending",
+			wantPublishedCI:  "pending",
+			wantRunning:      []string{"Request Codex security review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var checkRunPageOneRequests atomic.Int64
+			var checkRunPageTwoRequests atomic.Int64
+			var logs bytes.Buffer
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.RequestURI() {
+				case "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100":
+					if checkRunPageOneRequests.Add(1) == 1 {
+						w.Header().Set("ETag", `"checks-page-1-v1"`)
+						w.Header().Set("Link", `<`+server.URL+`/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100&page=2>; rel="next"`)
+						_, _ = w.Write([]byte(`{"check_runs":[{"id":2,"name":"Unit tests","status":"completed","conclusion":"success"}]}`))
+						return
+					}
+					if tt.secondCheckState != 0 {
+						w.WriteHeader(tt.secondCheckState)
+						_, _ = w.Write([]byte(`{"message":"temporary upstream failure"}`))
+						return
+					}
+					if r.Header.Get("If-None-Match") != "" {
+						w.WriteHeader(http.StatusNotModified)
+						return
+					}
+					w.Header().Set("ETag", `"checks-page-1-v2"`)
+					w.Header().Set("Link", `<`+server.URL+`/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100&page=2>; rel="next"`)
+					_, _ = w.Write([]byte(`{"check_runs":[{"id":2,"name":"Unit tests","status":"completed","conclusion":"success"}]}`))
+				case "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100&page=2":
+					if checkRunPageTwoRequests.Add(1) == 1 {
+						w.Header().Set("ETag", `"checks-page-2-v1"`)
+						_, _ = w.Write([]byte(`{"check_runs":[{"id":1,"name":"Request Codex security review","status":"queued"}]}`))
+						return
+					}
+					if r.Header.Get("If-None-Match") != "" {
+						w.WriteHeader(http.StatusNotModified)
+						return
+					}
+					w.Header().Set("ETag", `"checks-page-2-v2"`)
+					_, _ = w.Write([]byte(`{"check_runs":[]}`))
+				case "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100",
+					"/repos/digitaldrywood/detent/pulls/2028/reviews?per_page=100":
+					_, _ = w.Write([]byte(`[]`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"message":"not found"}`))
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			githubConnector, err := NewConnector(Config{
+				Endpoint:   server.URL,
+				APIKey:     "token",
+				HTTPClient: server.Client(),
+				Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewConnector() error = %v", err)
+			}
+			pullRequest := pullRequestNode{Number: 2028, HeadSHA: "head-current"}
+			repo := pullRequestRepo{Owner: "digitaldrywood", Name: "detent"}
+
+			if err := githubConnector.populatePullRequestStatus(context.Background(), repo, &pullRequest, false); err != nil {
+				t.Fatalf("populatePullRequestStatus() first error = %v", err)
+			}
+			if pullRequest.CI.State != "pending" || !slices.Equal(pullRequest.CI.RunningChecks, []string{"Request Codex security review"}) {
+				t.Fatalf("first CI = %#v, want pending security review", pullRequest.CI)
+			}
+
+			err = githubConnector.populatePullRequestStatus(context.Background(), repo, &pullRequest, false)
+			if tt.wantError && err == nil {
+				t.Fatal("populatePullRequestStatus() second error = nil, want error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("populatePullRequestStatus() second error = %v", err)
+			}
+			if pullRequest.CI.State != tt.wantCIStatus {
+				t.Fatalf("second CI state = %q, want %q", pullRequest.CI.State, tt.wantCIStatus)
+			}
+			if !slices.Equal(pullRequest.CI.RunningChecks, tt.wantRunning) {
+				t.Fatalf("second RunningChecks = %#v, want %#v", pullRequest.CI.RunningChecks, tt.wantRunning)
+			}
+			issue := connector.Issue{}
+			attachPullRequestToIssue(&issue, repo, pullRequest)
+			if issue.PullRequest.CIStatus != tt.wantPublishedCI || !slices.Equal(issue.PullRequest.RunningChecks, tt.wantRunning) {
+				t.Fatalf("published PullRequest = %#v, want CI %q and running %#v", issue.PullRequest, tt.wantPublishedCI, tt.wantRunning)
+			}
+			if tt.secondCheckState == 0 {
+				for _, fragment := range []string{
+					"github pull request checks reconciled",
+					"request_purpose=reconcile_current_head_checks",
+					`removed_running_checks="[Request Codex security review]"`,
+				} {
+					if !strings.Contains(logs.String(), fragment) {
+						t.Fatalf("logs missing %q:\n%s", fragment, logs.String())
+					}
+				}
+			}
+		})
 	}
 }
 

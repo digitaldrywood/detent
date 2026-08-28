@@ -1041,6 +1041,10 @@ func samePullRequestRepo(left pullRequestRepo, right pullRequestRepo) bool {
 }
 
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, useStatusCache bool) error {
+	previousStatus, hadPreviousStatus := pullRequestStatus{}, false
+	if c.pullRequests != nil {
+		previousStatus, hadPreviousStatus = c.pullRequests.Peek(repo, pullRequest.Number, pullRequest.HeadSHA)
+	}
 	if useStatusCache && c.pullRequests != nil {
 		if status, ok := c.pullRequests.Get(repo, pullRequest.Number, pullRequest.HeadSHA); ok {
 			c.logPullRequestCache(ctx, repo, pullRequest, true, false, "")
@@ -1053,6 +1057,7 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	status := pullRequestStatus{}
 	checksUnavailable := false
 	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
+		c.deletePullRequestCIConditionalEntries(repo, pullRequest.HeadSHA)
 		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -1067,6 +1072,9 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 			}
 		} else {
 			status.ci = ci
+			if hadPreviousStatus {
+				c.logPullRequestCheckReconciliation(ctx, repo, pullRequest, previousStatus.ci, ci)
+			}
 		}
 	}
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
@@ -1084,6 +1092,60 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	}
 	applyPullRequestStatus(pullRequest, status)
 	return nil
+}
+
+func (c *Connector) deletePullRequestCIConditionalEntries(repo pullRequestRepo, headSHA string) {
+	if c == nil || c.client == nil {
+		return
+	}
+	c.client.deleteRESTConditionalEntriesForEndpoint(http.MethodGet, restCommitCheckRunsPath(repo, headSHA))
+	c.client.deleteRESTConditionalEntriesForEndpoint(http.MethodGet, restCommitStatusesPath(repo, headSHA))
+}
+
+func (c *Connector) logPullRequestCheckReconciliation(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, previous pullRequestCI, current pullRequestCI) {
+	if c == nil || c.logger == nil || pullRequest == nil {
+		return
+	}
+	currentNames := make(map[string]struct{}, len(current.Checks))
+	for _, check := range current.Checks {
+		if name := strings.TrimSpace(check.Name); name != "" {
+			currentNames[name] = struct{}{}
+		}
+	}
+	removedChecks := make([]string, 0)
+	for _, check := range previous.Checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := currentNames[name]; !ok {
+			removedChecks = append(removedChecks, name)
+		}
+	}
+	removedChecks = uniqueNonBlank(removedChecks)
+	if len(removedChecks) == 0 {
+		return
+	}
+	removedNames := make(map[string]struct{}, len(removedChecks))
+	for _, name := range removedChecks {
+		removedNames[name] = struct{}{}
+	}
+	removedRunningChecks := make([]string, 0)
+	for _, name := range previous.RunningChecks {
+		if _, ok := removedNames[name]; ok {
+			removedRunningChecks = append(removedRunningChecks, name)
+		}
+	}
+	c.logger.InfoContext(ctx, "github pull request checks reconciled",
+		"endpoint_family", "check runs",
+		"request_purpose", "reconcile_current_head_checks",
+		"repository", pullRequestRepoName(repo),
+		"pr_number", pullRequest.Number,
+		"head_sha", strings.TrimSpace(pullRequest.HeadSHA),
+		"authoritative_check_count", len(current.Checks),
+		"removed_checks", removedChecks,
+		"removed_running_checks", uniqueNonBlank(removedRunningChecks),
+	)
 }
 
 func (c *Connector) applyCachedPullRequestStatusAfterThrottle(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, state pullRequestHydrationState) bool {
