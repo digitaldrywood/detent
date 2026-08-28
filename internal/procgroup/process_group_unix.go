@@ -247,13 +247,19 @@ func Terminate(ctx context.Context, identity Identity, grace time.Duration) (Ter
 		}
 		return "", err
 	}
-	if waitForProcessTargetExit(ctx, identity.PID, groupID, grace) {
+	if waitForProcessTargetExit(ctx, identity.PID, groupID, grace) ||
+		confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
 		return TerminationOutcomeTerminated, nil
 	}
 	if err := signalProcessTarget(identity.PID, groupID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return "", err
+		if !errors.Is(err, syscall.EPERM) ||
+			!confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
+			return "", err
+		}
+		return TerminationOutcomeKilled, nil
 	}
-	if !waitForProcessTargetExit(context.Background(), identity.PID, groupID, grace) {
+	if !waitForProcessTargetExit(context.Background(), identity.PID, groupID, grace) &&
+		!confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
 		return "", fmt.Errorf("process group %d remained alive after SIGKILL", groupID)
 	}
 	return TerminationOutcomeKilled, nil
@@ -379,6 +385,21 @@ func signalProcessTarget(pid int, groupID int, signal syscall.Signal) error {
 func processTargetAlive(pid int, groupID int) bool {
 	err := signalProcessTarget(pid, groupID, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func confirmProcessTargetExit(
+	pid int,
+	groupID int,
+	signal func(int, int, syscall.Signal) error,
+	inspect func(int) ([]processGroupMember, error),
+) bool {
+	if groupID > 0 {
+		members, err := inspect(groupID)
+		if err == nil && len(members) > 0 {
+			return processGroupExited(members)
+		}
+	}
+	return errors.Is(signal(pid, groupID, 0), syscall.ESRCH)
 }
 
 func waitForProcessTargetExit(ctx context.Context, pid int, groupID int, grace time.Duration) bool {
