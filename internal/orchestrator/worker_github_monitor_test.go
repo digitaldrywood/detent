@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -354,6 +355,94 @@ func TestWorkerGitHubMonitorDeferredCanaryUsesBoundedBackoff(t *testing.T) {
 	wantNextProbeAt := releasedAt.Add(backendCapacityProbeDelayForAttempt(1))
 	if condition.ProbeIssueID != "" || !condition.NextProbeAt.Equal(wantNextProbeAt) || condition.LastProbeResult != "deferred" {
 		t.Fatalf("released condition = %#v, want bounded canary backoff until %s", condition, wantNextProbeAt)
+	}
+}
+
+func TestWorkerGitHubMonitorCompletionSettlesBackendCapacityCanary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
+	credential := "github-rest:shared-worker"
+	issue := dispatchTestIssue("issue-capacity-canary", "In Progress")
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+	orch := &Orchestrator{cfg: cfg, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	state.BackendOutages[scope.Key()] = BackendOutage{
+		Scope: scope, ResumeAt: now.Add(time.Hour), ProbeIssueID: issue.ID, ProbeAttempts: 1,
+	}
+	running := Running{Issue: issue, CapacityScope: scope, CapacityProbe: true}
+	event := runpkg.Completion{
+		IssueID: issue.ID, CompletedAt: now,
+		Err: &runpkg.WorkerGitHubBudgetMonitorError{
+			CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool,
+			Operation: "launch_probe", Err: errors.New("api.github.com unavailable"),
+		},
+	}
+
+	if handled := orch.handleGitHubMonitorCompletion(t.Context(), &state, event, running); !handled {
+		t.Fatal("handleGitHubMonitorCompletion() handled = false")
+	}
+
+	outage := state.BackendOutages[scope.Key()]
+	if outage.ProbeIssueID != "" || outage.LastProbeResult != "failed" || outage.NextProbeAt.IsZero() {
+		t.Fatalf("backend outage = %#v, want launch canary released and deferred", outage)
+	}
+}
+
+func TestWorkerGitHubMonitorCanaryReleasedByEarlierCompletionHandlers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 29, 0, 15, 0, 0, time.UTC)
+	credential := "github-rest:shared-worker"
+	issue := dispatchTestIssue("issue-monitor-canary", "In Progress")
+	tests := []struct {
+		name   string
+		setup  func(*Orchestrator)
+		handle func(*Orchestrator, *State, runpkg.Completion, Running) bool
+	}{
+		{
+			name: "operator stop",
+			setup: func(orch *Orchestrator) {
+				orch.pendingStops = map[string]*pendingStopRun{issue.ID: {}}
+			},
+			handle: func(orch *Orchestrator, state *State, event runpkg.Completion, running Running) bool {
+				return orch.handleOperatorStopCompletion(t.Context(), state, event, running)
+			},
+		},
+		{
+			name: "lane revocation",
+			setup: func(orch *Orchestrator) {
+				orch.pendingLaneRevocations = map[string]*pendingLaneRevocation{
+					issue.ID: {issue: issue, reason: laneRevocationStateChanged, reapDone: true},
+				}
+			},
+			handle: func(orch *Orchestrator, state *State, event runpkg.Completion, running Running) bool {
+				return orch.handleLaneRevocationCompletion(t.Context(), state, event, running)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{})
+			orch := &Orchestrator{cfg: cfg, now: func() time.Time { return now }}
+			tt.setup(orch)
+			state := newState(cfg)
+			state.GitHubMonitors[credential] = GitHubMonitor{
+				CredentialIdentity: credential, ProbeIssueID: issue.ID, ProbeAttempts: 1,
+			}
+			if handled := tt.handle(orch, &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now}, Running{Issue: issue}); !handled {
+				t.Fatal("completion handled = false")
+			}
+			condition := state.GitHubMonitors[credential]
+			wantNextProbeAt := now.Add(backendCapacityProbeDelayForAttempt(1))
+			if condition.ProbeIssueID != "" || condition.LastProbeResult != "deferred" || !condition.NextProbeAt.Equal(wantNextProbeAt) {
+				t.Fatalf("condition = %#v, want canary released until %s", condition, wantNextProbeAt)
+			}
+		})
 	}
 }
 

@@ -114,6 +114,11 @@ func (o *Orchestrator) handleGitHubMonitorCompletion(
 	}
 	condition := o.registerGitHubMonitor(state, failure, running, event.CompletedAt)
 	o.finishForgeAvailabilityProbe(state, event, running)
+	if event.Result.TurnStarted {
+		o.recoverBackendCapacity(state, running, condition.LastObservedAt)
+	} else {
+		o.deferBackendCapacityProbe(state, running, condition.LastObservedAt, event.Err)
+	}
 	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	o.completeDurableWorkAttemptWithMetadata(

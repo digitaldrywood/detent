@@ -226,6 +226,11 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 	if !ok {
 		return false
 	}
+	completedAt := event.CompletedAt.UTC()
+	if completedAt.IsZero() {
+		completedAt = o.clockNow().UTC()
+	}
+	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "operator stop completion", completedAt)
 	pending.completion = &event
 	pending.running = running
 	if pending.reapErr != nil || !pending.reapDone {

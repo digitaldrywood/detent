@@ -228,6 +228,11 @@ func (o *Orchestrator) handleLaneRevocationCompletion(
 	if !ok {
 		return false
 	}
+	completedAt := event.CompletedAt.UTC()
+	if completedAt.IsZero() {
+		completedAt = o.clockNow().UTC()
+	}
+	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", pending.reason, completedAt)
 	pending.running = running
 	pending.running.Issue = cloneIssue(pending.issue)
 	pending.completion = &event
