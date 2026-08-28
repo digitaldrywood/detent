@@ -2037,6 +2037,7 @@ func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.
 	base := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	events := []UsageEvent{
 		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 9, TotalTokens: 900, StartedAt: base.Add(-time.Minute), FinishedAt: base, Outcome: "completed"},
+		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 40, TotalTokens: 4_000, StartedAt: base.Add(-time.Minute), FinishedAt: base.Add(5 * time.Minute), Outcome: "completed"},
 		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 1.25, TotalTokens: 125, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
 		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 2.5, TotalTokens: 250, StartedAt: base.Add(3 * time.Minute), FinishedAt: base.Add(4 * time.Minute), Outcome: "completed"},
 		{ProjectID: "detent", IssueID: "other", Identifier: "gopherguides/gopher-ai#999", CostUSD: 20, TotalTokens: 2_000, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},

@@ -2332,7 +2332,7 @@ SELECT
   CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at
 FROM usage_events
 WHERE project_id = ?1
-  AND finished_at > ?2
+  AND started_at > ?2
   AND (
     (?3 != '' AND COALESCE(issue_id, '') = ?3)
     OR (?4 != '' AND COALESCE(identifier, '') = ?4)

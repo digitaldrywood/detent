@@ -627,7 +627,7 @@ SELECT
   CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at
 FROM usage_events
 WHERE project_id = sqlc.arg(project_id)
-  AND finished_at > sqlc.arg(since)
+  AND started_at > sqlc.arg(since)
   AND (
     (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
     OR (sqlc.arg(identifier) != '' AND COALESCE(identifier, '') = sqlc.arg(identifier))
