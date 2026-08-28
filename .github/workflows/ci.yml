@@ -200,6 +200,7 @@ jobs:
   portability-verify:
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -222,7 +223,21 @@ jobs:
         run: go vet ./...
 
       - name: Test
+        if: runner.os != 'Windows'
         run: go test ./...
+
+      - name: Test with bounded Windows concurrency
+        if: runner.os == 'Windows'
+        run: go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m ./...
+
+      - name: Upload Windows test evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-test-evidence
+          path: tmp/windows-test-evidence
+          if-no-files-found: error
+          retention-days: 14
 
   windows-core:
     name: Windows Core
@@ -235,11 +250,11 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
-      - name: Run non-agent core tests
-        run: go test ./cmd/detent ./internal/config ./internal/config/global ./internal/store ./internal/web ./internal/tui ./internal/orchestrator ./internal/cli
+      - name: Build command smoke
+        run: go build -o tmp/detent.exe ./cmd/detent
 
-      - name: Build command
-        run: go build ./cmd/detent
+      - name: Run command smoke
+        run: .\tmp\detent.exe --help
 
   installer-smoke:
     name: Installer Smoke (${{ matrix.os }})

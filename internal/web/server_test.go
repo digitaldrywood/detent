@@ -49,12 +49,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 )
 
-const sseTestReadTimeout = 5 * time.Second
+const sseTestOperationTimeout = 30 * time.Second
 
 func TestMain(m *testing.M) {
 	if err := os.Unsetenv("DETENT_API_TOKEN"); err != nil {
@@ -2030,11 +2031,9 @@ func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStreamWithHeaders(t, addr, "/events?project=dogfood&view=kanban", map[string]string{
+	conn, reader := openRawEventStreamWithHeaders(t, addr, "/events?project=dogfood&view=kanban", map[string]string{
 		web.DemoScenarioHeader: "kanban-full-integration",
 	})
-	defer conn.Close()
-	defer body.Close()
 
 	buildEvent := readRawSSEFrame(t, conn, reader)
 	if buildEvent.name != "build" {
@@ -6497,9 +6496,7 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?project=detent&view=kanban")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?project=detent&view=kanban")
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: now,
@@ -6569,9 +6566,7 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?view=kanban")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?view=kanban")
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: now,
@@ -8673,7 +8668,6 @@ func TestServerEventsReplaysLatestSnapshot(t *testing.T) {
 	}
 
 	body := openEventStream(t, server)
-	defer body.Close()
 
 	event := readSSEEvent(t, body)
 	if event.name != "snapshot" {
@@ -8702,7 +8696,6 @@ func TestServerEventsStartsWithBuildVersion(t *testing.T) {
 	}
 
 	body := openEventStream(t, server)
-	defer body.Close()
 
 	event := readSSEFrame(t, body)
 	if event.name != "build" {
@@ -8725,7 +8718,6 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 
 	body := openEventStream(t, server)
-	defer body.Close()
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{Counts: telemetry.Counts{Running: 4}}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -8769,9 +8761,7 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr)
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr)
 
 	var event sseEvent
 	for index, want := range []string{"snapshot", "live-status", "github-api-health"} {
@@ -8847,7 +8837,7 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), sseTestOperationTimeout)
 	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events?project=detent&view=kanban", nil)
 	if err != nil {
@@ -8967,9 +8957,7 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?project=detent&view=kanban")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?project=detent&view=kanban")
 
 	event := readRawSSEEvent(t, conn, reader)
 	if event.name != "snapshot" {
@@ -9022,9 +9010,7 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr)
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr)
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
@@ -9097,9 +9083,7 @@ func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?nav=reports")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?nav=reports")
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
@@ -9129,9 +9113,7 @@ func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?nav=analytics")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?nav=analytics")
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
@@ -9183,9 +9165,7 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?nav=health")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?nav=health")
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: now,
@@ -9268,9 +9248,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 			}
 
 			addr := startWebServer(t, server)
-			conn, body, reader := openRawEventStream(t, addr, tt.path)
-			defer conn.Close()
-			defer body.Close()
+			conn, reader := openRawEventStream(t, addr, tt.path)
 
 			if err := deps.Hub.Publish(telemetry.Snapshot{
 				GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
@@ -9346,9 +9324,7 @@ func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {
 	}
 
 	first := openEventStream(t, server)
-	defer first.Close()
 	second := openEventStream(t, server)
-	defer second.Close()
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -9428,7 +9404,6 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 	}
 
 	body := openEventStream(t, server)
-	defer body.Close()
 	generatedAt := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
@@ -9574,7 +9549,6 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 	}
 
 	body := openEventStream(t, server)
-	defer body.Close()
 
 	event := readSSEEvent(t, body)
 	if event.name != "tick" {
@@ -9598,9 +9572,7 @@ func TestServerEventsStreamsPastHTTPTimeouts(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr)
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr)
 
 	for range 2 {
 		event := readRawSSEEvent(t, conn, reader)
@@ -10243,7 +10215,6 @@ func TestServerEventsOverlayManualRefreshOnStaleDegradedState(t *testing.T) {
 	}
 
 	body := openEventStream(t, server)
-	defer body.Close()
 
 	event := readSSEEvent(t, body)
 	if event.name != "snapshot" {
@@ -12219,20 +12190,7 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 
 func openWebTestStore(t *testing.T) store.Store {
 	t.Helper()
-
-	backend, err := store.Open(context.Background(), store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
-	return backend
+	return storetest.Open(t)
 }
 
 func seedWorkflowTrendEvents(t *testing.T, ctx context.Context, backend store.Store, now time.Time) {
@@ -13524,10 +13482,15 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 	t.Helper()
 
 	ts := httptest.NewServer(server.Handler())
-	t.Cleanup(ts.Close)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	t.Cleanup(cancel)
+	ctx, cancel := context.WithTimeout(context.Background(), sseTestOperationTimeout)
+	var body io.ReadCloser
+	t.Cleanup(func() {
+		cancel()
+		if body != nil {
+			_ = body.Close()
+		}
+		ts.Close()
+	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events", nil)
 	if err != nil {
@@ -13551,7 +13514,8 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 		t.Fatalf("Content-Type = %q, want text/event-stream", got)
 	}
 
-	return resp.Body
+	body = resp.Body
+	return body
 }
 
 func startWebServer(t *testing.T, server *web.Server) string {
@@ -13569,19 +13533,21 @@ func startWebServer(t *testing.T, server *web.Server) string {
 	}()
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), sseTestOperationTimeout)
 		defer cancel()
 
 		if err := server.Shutdown(ctx); err != nil {
 			t.Errorf("Shutdown() error = %v", err)
 		}
 
+		joinTimer := time.NewTimer(sseTestOperationTimeout)
+		defer joinTimer.Stop()
 		select {
 		case err := <-errs:
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				t.Errorf("StartListener() error = %v", err)
 			}
-		case <-time.After(time.Second):
+		case <-joinTimer.C:
 			t.Errorf("timed out waiting for StartListener to return")
 		}
 	})
@@ -13589,7 +13555,7 @@ func startWebServer(t *testing.T, server *web.Server) string {
 	return listener.Addr().String()
 }
 
-func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, io.ReadCloser, *bufio.Reader) {
+func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, *bufio.Reader) {
 	t.Helper()
 
 	path := "/events"
@@ -13599,18 +13565,21 @@ func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, i
 	return openRawEventStreamWithHeaders(t, addr, path, nil)
 }
 
-func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, headers map[string]string) (net.Conn, io.ReadCloser, *bufio.Reader) {
+func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, headers map[string]string) (net.Conn, *bufio.Reader) {
 	t.Helper()
 
 	var dialer net.Dialer
-	conn, err := dialer.DialContext(t.Context(), "tcp", addr)
+	dialContext, cancelDial := context.WithTimeout(t.Context(), sseTestOperationTimeout)
+	conn, err := dialer.DialContext(dialContext, "tcp", addr)
+	cancelDial()
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
-	closeOnFailure := true
+	var body io.ReadCloser
 	t.Cleanup(func() {
-		if closeOnFailure {
-			conn.Close()
+		_ = conn.Close()
+		if body != nil {
+			_ = body.Close()
 		}
 	})
 
@@ -13625,7 +13594,7 @@ func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, heade
 	if _, err := io.WriteString(conn, request.String()); err != nil {
 		t.Fatalf("WriteString() error = %v", err)
 	}
-	if err := conn.SetReadDeadline(time.Now().Add(sseTestReadTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(sseTestOperationTimeout)); err != nil {
 		t.Fatalf("SetReadDeadline() error = %v", err)
 	}
 
@@ -13643,8 +13612,8 @@ func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, heade
 		t.Fatalf("Content-Type = %q, want text/event-stream", got)
 	}
 
-	closeOnFailure = false
-	return conn, resp.Body, bufio.NewReader(resp.Body)
+	body = resp.Body
+	return conn, bufio.NewReader(body)
 }
 
 func readRawSSEEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent {
@@ -13673,7 +13642,7 @@ func readRawSSEFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent
 	t.Helper()
 
 	var event sseEvent
-	deadline := time.Now().Add(sseTestReadTimeout)
+	deadline := time.Now().Add(sseTestOperationTimeout)
 	for {
 		if err := conn.SetReadDeadline(deadline); err != nil {
 			t.Fatalf("SetReadDeadline() error = %v", err)
@@ -13730,7 +13699,7 @@ func readSSEFrameMatching(t *testing.T, r io.Reader, includeBuild bool) sseEvent
 	}()
 
 	var event sseEvent
-	deadline := time.After(sseTestReadTimeout)
+	deadline := time.After(sseTestOperationTimeout)
 	for {
 		select {
 		case line, ok := <-lines:

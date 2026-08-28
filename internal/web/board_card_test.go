@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -217,34 +218,21 @@ func TestAPIBoardSessionAttachBackfillsAndFollows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	httpServer := httptest.NewServer(server.Handler())
-	t.Cleanup(httpServer.Close)
+	withBoardSSEStream(t, server.Handler(), "/api/v1/board/session/events?project=detent&issue=issue-1156", func(reader *bufio.Reader, closeStream func()) {
+		if data := readBoardSSEData(t, reader); !strings.Contains(data, "backfill output") {
+			t.Fatalf("backfill SSE = %q", data)
+		}
+		if got := broker.SubscriberCount(activity.Key{ProjectID: "detent", IssueID: issue.ID}); got != 1 {
+			t.Fatalf("SubscriberCount() = %d, want 1", got)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/board/session/events?project=detent&issue=issue-1156", nil)
-	if err != nil {
-		t.Fatalf("NewRequestWithContext() error = %v", err)
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("Do() error = %v", err)
-	}
-	t.Cleanup(func() { _ = response.Body.Close() })
-	reader := bufio.NewReader(response.Body)
-	if data := readBoardSSEData(t, reader); !strings.Contains(data, "backfill output") {
-		t.Fatalf("backfill SSE = %q", data)
-	}
-	if got := broker.SubscriberCount(activity.Key{ProjectID: "detent", IssueID: issue.ID}); got != 1 {
-		t.Fatalf("SubscriberCount() = %d, want 1", got)
-	}
-
-	broker.Publish(activity.Key{ProjectID: "detent", IssueID: issue.ID}, activity.Event{DetentSessionID: 7, Kind: "assistant", Title: "Agent", Content: "live output"})
-	if data := readBoardSSEData(t, reader); !strings.Contains(data, "live output") {
-		t.Fatalf("live SSE = %q", data)
-	}
-	cancel()
-	_ = response.Body.Close()
-	waitForBoardSubscriberCount(t, broker, activity.Key{ProjectID: "detent", IssueID: issue.ID}, 0)
+		broker.Publish(activity.Key{ProjectID: "detent", IssueID: issue.ID}, activity.Event{DetentSessionID: 7, Kind: "assistant", Title: "Agent", Content: "live output"})
+		if data := readBoardSSEData(t, reader); !strings.Contains(data, "live output") {
+			t.Fatalf("live SSE = %q", data)
+		}
+		closeStream()
+		waitForBoardSubscriberCount(t, broker, activity.Key{ProjectID: "detent", IssueID: issue.ID}, 0)
+	})
 }
 
 func TestAPIBoardActivityStreamShowsDispatchSkipWithinTick(t *testing.T) {
@@ -261,36 +249,23 @@ func TestAPIBoardActivityStreamShowsDispatchSkipWithinTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	httpServer := httptest.NewServer(server.Handler())
-	t.Cleanup(httpServer.Close)
+	withBoardSSEStream(t, server.Handler(), "/api/v1/board/activity/events?project=detent&issue=issue-1156", func(reader *bufio.Reader, _ func()) {
+		_ = readBoardSSEData(t, reader)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	t.Cleanup(cancel)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/board/activity/events?project=detent&issue=issue-1156", nil)
-	if err != nil {
-		t.Fatalf("NewRequestWithContext() error = %v", err)
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("Do() error = %v", err)
-	}
-	t.Cleanup(func() { _ = response.Body.Close() })
-	reader := bufio.NewReader(response.Body)
-	_ = readBoardSSEData(t, reader)
-
-	if _, err := backend.RecordSchedulerDecision(ctx, store.SchedulerDecision{
-		ProjectID:  "detent",
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		Result:     store.SchedulerDecisionResultSkipped,
-		Reason:     "artifact_gate_wait_status",
-		DecisionAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("RecordSchedulerDecision() error = %v", err)
-	}
-	if data := readBoardSSEData(t, reader); !strings.Contains(data, "artifact_gate_wait_status") || !strings.Contains(data, "Dispatch skipped") {
-		t.Fatalf("activity SSE = %q", data)
-	}
+		if _, err := backend.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{
+			ProjectID:  "detent",
+			IssueID:    issue.ID,
+			Identifier: issue.Identifier,
+			Result:     store.SchedulerDecisionResultSkipped,
+			Reason:     "artifact_gate_wait_status",
+			DecisionAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("RecordSchedulerDecision() error = %v", err)
+		}
+		if data := readBoardSSEData(t, reader); !strings.Contains(data, "artifact_gate_wait_status") || !strings.Contains(data, "Dispatch skipped") {
+			t.Fatalf("activity SSE = %q", data)
+		}
+	})
 }
 
 func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
@@ -376,6 +351,42 @@ func liveSessionElementID(t *testing.T, body string) string {
 		t.Fatalf("live session element id unterminated:\n%s", body)
 	}
 	return body[start : start+end]
+}
+
+func withBoardSSEStream(t *testing.T, handler http.Handler, path string, run func(*bufio.Reader, func())) {
+	t.Helper()
+
+	httpServer := httptest.NewServer(handler)
+	ctx, cancel := context.WithTimeout(t.Context(), sseTestOperationTimeout)
+	var response *http.Response
+	var closeOnce sync.Once
+	closeStream := func() {
+		closeOnce.Do(func() {
+			cancel()
+			if response != nil {
+				_ = response.Body.Close()
+			}
+		})
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+path, nil)
+	if err != nil {
+		cancel()
+		httpServer.Close()
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		cancel()
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		httpServer.Close()
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer httpServer.Close()
+	defer response.Body.Close()
+	defer cancel()
+	run(bufio.NewReader(response.Body), closeStream)
 }
 
 func readBoardSSEData(t *testing.T, reader *bufio.Reader) string {

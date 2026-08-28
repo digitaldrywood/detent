@@ -225,10 +225,15 @@ func TestAgentBackendEnforcesConfiguredStallTimeout(t *testing.T) {
 		t.Fatalf("NewAgentBackend() error = %v", err)
 	}
 
-	_, err = backend.RunTurn(context.Background(), runner.AgentTurnRequest{
-		Workspace: "/tmp/detent-workspace",
-		Prompt:    "stall",
-	}, nil)
+	factory := newControlledTimeoutFactory()
+	server.timeoutContext = factory.context
+	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, ErrStreamStalled, func() error {
+		_, runErr := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+			Workspace: "/tmp/detent-workspace",
+			Prompt:    "stall",
+		}, nil)
+		return runErr
+	})
 	if !errors.Is(err, ErrStreamStalled) {
 		t.Fatalf("RunTurn() error = %v, want configured ErrStreamStalled", err)
 	}

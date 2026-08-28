@@ -53,9 +53,7 @@ func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 	addr := startWebServer(t, server)
-	conn, body, reader := openRawEventStream(t, addr, "/events?view=board")
-	defer conn.Close()
-	defer body.Close()
+	conn, reader := openRawEventStream(t, addr, "/events?view=board")
 
 	initial := readRawSSEEventNamed(t, conn, reader, "snapshot")
 	if !strings.Contains(initial.data, "detent#1") || !strings.Contains(initial.data, `data-board-alert-count="2"`) {
