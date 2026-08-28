@@ -209,7 +209,7 @@ agents:
           - WebFetch
         include_partial_messages: true
         turn_timeout_ms: 60000
-        stall_timeout_ms: 10000
+        stall_timeout_ms: 0
         shell: sh
         extra_args:
           - --custom
@@ -238,7 +238,9 @@ Prompt {{ issue.identifier }}
 		t.Fatalf("buildRunner() error = %v", err)
 	}
 
-	result, err := run.Run(context.Background(), runnerpkg.RunRequest{
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	result, err := run.Run(ctx, runnerpkg.RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-833",
 			Identifier: "digitaldrywood/detent#833",

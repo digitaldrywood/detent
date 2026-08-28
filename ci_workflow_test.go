@@ -52,7 +52,7 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 	},
 	{
 		name:     "Portability Verify (windows-latest)",
-		budget:   "8m",
+		budget:   "45m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
 		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "go test ./..."},

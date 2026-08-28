@@ -132,16 +132,19 @@ Required PR merge checks, branch protection/rulesets, and
 - `Test Coverage` - budget: `4m`
 - `Browser Visual` - budget: `5m`
 - `Portability Verify (macos-latest)` - budget: `8m`
-- `Portability Verify (windows-latest)` - budget: `8m`
+- `Portability Verify (windows-latest)` - budget: `45m`
 - `Windows Core` - budget: `4m`
 - `Installer Smoke (ubuntu-latest)` - budget: `6m`
 - `Installer Smoke (windows-latest)` - budget: `6m`
 - `GoReleaser Snapshot` - budget: `8m`
 
 The required portability checks are limited to build, vet, and the non-race
-test suite so each platform stays within its `8m` merge-path budget. Repeated
-race loops, the full race suite on macOS and Windows, and the Windows SQLite
-artifact lifecycle stress loop run nightly and on manual dispatch in
+test suite. Windows runs packages sequentially with four-way test parallelism
+inside a `45m` job budget and retains per-package JSON evidence plus a failure
+classification summary. `Windows Core` owns only the command smoke, so no Go
+package has two required Windows test owners. Repeated race loops, the full
+race suite on macOS and Windows, and the Windows SQLite artifact lifecycle
+stress loop run nightly and on manual dispatch in
 `.github/workflows/portability-stress.yml`. That workflow has a `45m` ceiling;
 failures are surfaced as failed `Portability Stress` workflow runs with the
 failing command output in the job log.

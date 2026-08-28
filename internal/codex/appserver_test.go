@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,7 +53,17 @@ func TestAppServerStartupFailuresIdentifyStageAndDeadline(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewAppServer() error = %v", err)
 			}
-			err = tt.run(server, transport)
+			factory := newControlledTimeoutFactory()
+			server.timeoutContext = factory.context
+			now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+			server.now = func() time.Time {
+				current := now
+				now = now.Add(deadline)
+				return current
+			}
+			err = runWithTimeoutExpiration(t, factory, deadline, nil, func() error {
+				return tt.run(server, transport)
+			})
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("startup error = %v, want deadline exceeded", err)
 			}
@@ -134,8 +145,19 @@ func TestAppServerStartupFailureRetainsProcessReadinessAndExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
+	factory := newControlledTimeoutFactory()
+	server.timeoutContext = factory.context
+	now := startedAt
+	server.now = func() time.Time {
+		current := now
+		now = now.Add(5 * time.Millisecond)
+		return current
+	}
 
-	_, err = server.RunTurn(t.Context(), RunTurnRequest{}, nil)
+	err = runWithTimeoutExpiration(t, factory, 5*time.Millisecond, nil, func() error {
+		_, runErr := server.RunTurn(t.Context(), RunTurnRequest{}, nil)
+		return runErr
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("RunTurn() error = %v, want deadline exceeded", err)
 	}
@@ -1063,12 +1085,16 @@ func TestAppServerRunTurnRequestTurnTimeoutOverridesDefault(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	startedAt := time.Now()
-	_, err = server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace:   "/tmp/detent-workspace",
-		Prompt:      "timeout",
-		TurnTimeout: 10 * time.Millisecond,
-	}, nil)
+	factory := newControlledTimeoutFactory()
+	server.timeoutContext = factory.context
+	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, nil, func() error {
+		_, runErr := server.RunTurn(context.Background(), RunTurnRequest{
+			Workspace:   "/tmp/detent-workspace",
+			Prompt:      "timeout",
+			TurnTimeout: 10 * time.Millisecond,
+		}, nil)
+		return runErr
+	})
 	if err == nil {
 		t.Fatal("RunTurn() error = nil, want request timeout")
 	}
@@ -1077,9 +1103,6 @@ func TestAppServerRunTurnRequestTurnTimeoutOverridesDefault(t *testing.T) {
 	}
 	if errors.Is(err, ErrStreamStalled) {
 		t.Fatalf("RunTurn() error = %v, want disabled stall timeout", err)
-	}
-	if elapsed := time.Since(startedAt); elapsed > time.Second {
-		t.Fatalf("RunTurn() elapsed = %v, want request timeout instead of default", elapsed)
 	}
 }
 
@@ -1100,20 +1123,21 @@ func TestAppServerRunTurnEnforcesStallTimeout(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	startedAt := time.Now()
-	_, err = server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace:    "/tmp/detent-workspace",
-		Prompt:       "stall",
-		StallTimeout: 10 * time.Millisecond,
-	}, nil)
+	factory := newControlledTimeoutFactory()
+	server.timeoutContext = factory.context
+	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, ErrStreamStalled, func() error {
+		_, runErr := server.RunTurn(context.Background(), RunTurnRequest{
+			Workspace:    "/tmp/detent-workspace",
+			Prompt:       "stall",
+			StallTimeout: 10 * time.Millisecond,
+		}, nil)
+		return runErr
+	})
 	if !errors.Is(err, ErrStreamStalled) {
 		t.Fatalf("RunTurn() error = %v, want ErrStreamStalled", err)
 	}
 	if !strings.Contains(err.Error(), "after 10ms") {
 		t.Fatalf("RunTurn() error = %v, want configured stall duration", err)
-	}
-	if elapsed := time.Since(startedAt); elapsed > time.Second {
-		t.Fatalf("RunTurn() elapsed = %v, want stall timeout instead of turn timeout", elapsed)
 	}
 }
 
@@ -1225,7 +1249,23 @@ func TestReceiveTurnMessageTimeoutSelection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			transport := newBlockingAppServerTransport(nil)
-			_, err := receiveTurnMessage(tt.context(), transport, tt.turnTimeout, tt.stallTimeout)
+			factory := newControlledTimeoutFactory()
+			run := func() error {
+				_, err := receiveTurnMessage(tt.context(), transport, tt.turnTimeout, tt.stallTimeout, factory.context)
+				return err
+			}
+			var err error
+			if errors.Is(tt.want, context.Canceled) {
+				err = run()
+			} else {
+				timeout := tt.turnTimeout
+				var cause error
+				if tt.stallTimeout > 0 && (tt.turnTimeout <= 0 || tt.stallTimeout <= tt.turnTimeout) {
+					timeout = tt.stallTimeout
+					cause = ErrStreamStalled
+				}
+				err = runWithTimeoutExpiration(t, factory, timeout, cause, run)
+			}
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("receiveTurnMessage() error = %v, want %v", err, tt.want)
 			}
@@ -2091,6 +2131,22 @@ type blockingAppServerTransport struct {
 	*fakeAppServerTransport
 }
 
+type controlledTimeoutFactory struct {
+	active chan *controlledTimeoutContext
+}
+
+type controlledTimeoutContext struct {
+	duration        time.Duration
+	configuredCause error
+	deadline        time.Time
+	done            chan struct{}
+	factory         *controlledTimeoutFactory
+	activeOnce      sync.Once
+	once            sync.Once
+	mu              sync.Mutex
+	err             error
+}
+
 type startupEvidenceTransport struct {
 	*blockingAppServerTransport
 	evidence backendcapacity.StartupProcessEvidence
@@ -2117,11 +2173,122 @@ func newBlockingAppServerTransport(received []Message) *blockingAppServerTranspo
 	return &blockingAppServerTransport{fakeAppServerTransport: newFakeAppServerTransport(received)}
 }
 
+func newControlledTimeoutFactory() *controlledTimeoutFactory {
+	return &controlledTimeoutFactory{active: make(chan *controlledTimeoutContext, 64)}
+}
+
+func (f *controlledTimeoutFactory) context(parent context.Context, duration time.Duration, cause error) (context.Context, context.CancelFunc) {
+	controlled := &controlledTimeoutContext{
+		duration:        duration,
+		configuredCause: cause,
+		deadline:        time.Now().Add(duration),
+		done:            make(chan struct{}),
+		factory:         f,
+	}
+	go func() {
+		select {
+		case <-parent.Done():
+			controlled.expire(parent.Err())
+		case <-controlled.Done():
+		}
+	}()
+	return controlled, func() { controlled.expire(context.Canceled) }
+}
+
+func (c *controlledTimeoutContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func (c *controlledTimeoutContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *controlledTimeoutContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *controlledTimeoutContext) Value(any) any {
+	return nil
+}
+
+func (c *controlledTimeoutContext) expire(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+
+func (c *controlledTimeoutContext) activate() {
+	c.activeOnce.Do(func() { c.factory.active <- c })
+}
+
+func runWithTimeoutExpiration(
+	t *testing.T,
+	factory *controlledTimeoutFactory,
+	duration time.Duration,
+	cause error,
+	run func() error,
+) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- run() }()
+	controlled := waitForControlledTimeout(t, factory, duration, cause)
+	if controlled.configuredCause != nil {
+		controlled.expire(controlled.configuredCause)
+	} else {
+		controlled.expire(context.DeadlineExceeded)
+	}
+
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		t.Fatal("timed out waiting for operation after controlled timeout")
+		return nil
+	}
+}
+
+func waitForControlledTimeout(
+	t *testing.T,
+	factory *controlledTimeoutFactory,
+	duration time.Duration,
+	cause error,
+) *controlledTimeoutContext {
+	t.Helper()
+
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case controlled := <-factory.active:
+			if controlled.duration != duration {
+				continue
+			}
+			if cause == nil && controlled.configuredCause == nil || cause != nil && errors.Is(controlled.configuredCause, cause) {
+				return controlled
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for controlled timeout %s", duration)
+			return nil
+		}
+	}
+}
+
 func (t *blockingAppServerTransport) Receive(ctx context.Context) (Message, error) {
 	if len(t.received) > 0 {
 		msg := t.received[0]
 		t.received = t.received[1:]
 		return msg, nil
+	}
+	if controlled, ok := ctx.(*controlledTimeoutContext); ok {
+		controlled.activate()
 	}
 	<-ctx.Done()
 	return Message{}, ctx.Err()

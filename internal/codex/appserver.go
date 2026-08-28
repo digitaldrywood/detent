@@ -165,9 +165,12 @@ type AppServer struct {
 	readTimeout      time.Duration
 	turnTimeout      time.Duration
 	now              func() time.Time
+	timeoutContext   timeoutContextFactory
 }
 
 type AppServerOption func(*AppServer)
+
+type timeoutContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
 type ClientInfo struct {
 	Name    string `json:"name"`
@@ -351,6 +354,12 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 		readTimeout: defaultReadTimeout,
 		turnTimeout: defaultTurnTimeout,
 		now:         time.Now,
+		timeoutContext: func(ctx context.Context, timeout time.Duration, cause error) (context.Context, context.CancelFunc) {
+			if cause != nil {
+				return context.WithTimeoutCause(ctx, timeout, cause)
+			}
+			return context.WithTimeout(ctx, timeout)
+		},
 	}
 
 	for _, opt := range opts {
@@ -373,6 +382,9 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 	}
 	if server.now == nil {
 		server.now = time.Now
+	}
+	if server.timeoutContext == nil {
+		return nil, errors.New("timeout context factory is nil")
 	}
 
 	return server, nil
@@ -1070,7 +1082,7 @@ func (s *AppServer) awaitResponse(
 	onUpdate UpdateHandler,
 ) (json.RawMessage, error) {
 	for {
-		msg, err := receiveWithTimeout(ctx, transport, s.readTimeout)
+		msg, err := receiveWithTimeout(ctx, transport, s.readTimeout, s.timeoutContext)
 		if err != nil {
 			return nil, fmt.Errorf("wait for %s response: %w", requestName(requestID), err)
 		}
@@ -1123,7 +1135,7 @@ func (s *AppServer) streamTurn(
 	onUpdate UpdateHandler,
 ) error {
 	for {
-		msg, err := receiveTurnMessage(ctx, transport, turnTimeout, stallTimeout)
+		msg, err := receiveTurnMessage(ctx, transport, turnTimeout, stallTimeout, s.timeoutContext)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
 		}
@@ -1168,13 +1180,14 @@ func receiveTurnMessage(
 	transport Transport,
 	turnTimeout time.Duration,
 	stallTimeout time.Duration,
+	timeoutContext timeoutContextFactory,
 ) (Message, error) {
 	if stallTimeout <= 0 || turnTimeout > 0 && turnTimeout < stallTimeout {
-		return receiveWithTimeout(ctx, transport, turnTimeout)
+		return receiveWithTimeout(ctx, transport, turnTimeout, timeoutContext)
 	}
 
 	stallErr := fmt.Errorf("%w after %s", ErrStreamStalled, stallTimeout)
-	receiveCtx, cancel := context.WithTimeoutCause(contextOrBackground(ctx), stallTimeout, stallErr)
+	receiveCtx, cancel := timeoutContext(contextOrBackground(ctx), stallTimeout, stallErr)
 	defer cancel()
 
 	msg, err := transport.Receive(receiveCtx)
@@ -2433,13 +2446,13 @@ func (p *creditsSnapshotPayload) credits() *CreditsSnapshot {
 	}
 }
 
-func receiveWithTimeout(ctx context.Context, transport Transport, timeout time.Duration) (Message, error) {
+func receiveWithTimeout(ctx context.Context, transport Transport, timeout time.Duration, timeoutContext timeoutContextFactory) (Message, error) {
 	ctx = contextOrBackground(ctx)
 	if timeout <= 0 {
 		return transport.Receive(ctx)
 	}
 
-	receiveCtx, cancel := context.WithTimeout(ctx, timeout)
+	receiveCtx, cancel := timeoutContext(ctx, timeout, nil)
 	defer cancel()
 	return transport.Receive(receiveCtx)
 }

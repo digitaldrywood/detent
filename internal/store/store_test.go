@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3198,9 +3200,17 @@ func TestBusyTimeoutMillis(t *testing.T) {
 func openTestStore(t *testing.T, ctx context.Context) Store {
 	t.Helper()
 
+	database, err := migratedTestDatabase()
+	if err != nil {
+		t.Fatalf("build migrated store fixture: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "detent.db")
+	if err := os.WriteFile(path, database, 0o600); err != nil {
+		t.Fatalf("write migrated store fixture: %v", err)
+	}
 	backend, err := Open(ctx, Config{
 		Backend: BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
+		Path:    path,
 	})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -3212,6 +3222,26 @@ func openTestStore(t *testing.T, ctx context.Context) Store {
 	})
 	return backend
 }
+
+var migratedTestDatabase = sync.OnceValues(func() (_ []byte, returnErr error) {
+	dir, err := os.MkdirTemp("", "detent-store-test-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, os.RemoveAll(dir))
+	}()
+
+	path := filepath.Join(dir, "detent.db")
+	backend, err := Open(context.Background(), Config{Backend: BackendSQLite, Path: path})
+	if err != nil {
+		return nil, err
+	}
+	if err := backend.Close(); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
 
 type cycleSessionSeed struct {
 	IssueID     string
