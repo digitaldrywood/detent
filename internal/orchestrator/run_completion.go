@@ -660,15 +660,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	))
 
 	state.Completed[event.IssueID] = Completed{
-		Issue:           cloneIssue(running.Issue),
-		SessionID:       running.SessionID,
-		StartedAt:       running.StartedAt,
-		CompletedAt:     event.CompletedAt,
-		FinalState:      finalState,
-		CompletionKind:  strings.TrimSpace(progress.CompletionKind),
-		GateWaitReason:  gateWaitReason,
-		Tokens:          event.Result.Tokens,
-		RuntimeIdentity: running.RuntimeIdentity,
+		Issue:            cloneIssue(running.Issue),
+		SessionID:        running.SessionID,
+		StartedAt:        running.StartedAt,
+		CompletedAt:      event.CompletedAt,
+		FinalState:       finalState,
+		CompletionKind:   strings.TrimSpace(progress.CompletionKind),
+		GateWaitReason:   gateWaitReason,
+		gateWaitEvidence: completionGateWaitEvidence(gateWaitReason, progress.Issue),
+		Tokens:           event.Result.Tokens,
+		RuntimeIdentity:  running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
@@ -822,6 +823,9 @@ func (o *Orchestrator) completeRedundantGateWaitRun(
 	event runpkg.Completion,
 	running Running,
 ) bool {
+	if event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated {
+		return false
+	}
 	if !autoPromoteDurableGateWaitTrackedIssue(running.Issue, o.cfg, o.cfg.AutoPromote) {
 		return false
 	}

@@ -1179,6 +1179,54 @@ func TestDispatchableCompletedReworkGateWaitEvidence(t *testing.T) {
 	}
 }
 
+func TestTargetedReconcilePreservesCompletedReworkGateWaitEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 19, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	completedIssue := dispatchTestIssueWithPullRequest("issue-rework-gate-refresh", "Rework", "OPEN")
+	completedIssue.PullRequest.HeadSHA = "completed-head"
+	completedIssue.PullRequest.MergeableState = "clean"
+	completedIssue.PullRequest.CIStatus = "success"
+	refreshedIssue := cloneIssue(completedIssue)
+	refreshedIssue.PullRequest.HeadSHA = "replacement-head"
+
+	state := newState(cfg)
+	state.Completed[completedIssue.ID] = Completed{
+		Issue:            cloneIssue(completedIssue),
+		CompletedAt:      now.Add(-2 * time.Minute),
+		FinalState:       FinalStateCompleted,
+		GateWaitReason:   completedReworkGateWaitReason,
+		gateWaitEvidence: completionGateWaitEvidence(completedReworkGateWaitReason, completedIssue),
+	}
+	orch := Orchestrator{cfg: cfg}
+	orch.updateTargetedIssueEntries(&state, refreshedIssue)
+
+	completed := state.Completed[completedIssue.ID]
+	if got := completed.Issue.PullRequest.HeadSHA; got != "replacement-head" {
+		t.Fatalf("Completed issue head = %q, want refreshed head", got)
+	}
+	if got := completed.gateWaitEvidence.PullRequest.HeadSHA; got != "completed-head" {
+		t.Fatalf("gate-wait evidence head = %q, want completion-time head", got)
+	}
+	if autoPromoteActiveGatePendingIssue(refreshedIssue, &state, cfg, cfg.AutoPromote) {
+		t.Fatal("replacement head remained pending the completed-head gate")
+	}
+	decision := newDispatchPlanner(cfg).dispatchableIssueDecision(refreshedIssue, &state, false, now, "")
+	if !decision.dispatchable {
+		t.Fatalf("replacement-head dispatch decision = %#v, want dispatchable", decision)
+	}
+}
+
 func TestDispatchableArtifactGateWaitStatus(t *testing.T) {
 	t.Parallel()
 

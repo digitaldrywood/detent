@@ -1060,6 +1060,91 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultDoesNotSupersedeReworkPullRequestUpdates(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 28, 19, 15, 0, 0, time.UTC)
+	completedIssue := implementProgressIssue("completed-head")
+	completedIssue.State = "Rework"
+	replacementIssue := cloneIssue(completedIssue)
+	replacementIssue.PullRequest.HeadSHA = "replacement-head"
+	signature := autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "completed-head"}
+	tests := []struct {
+		name   string
+		result runpkg.RunResult
+	}{
+		{
+			name:   "head push",
+			result: runpkg.RunResult{PullRequestHeadPushed: true},
+		},
+		{
+			name:   "pull request update",
+			result: runpkg.RunResult{PullRequestUpdated: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &implementProgressConnector{hydrated: replacementIssue}
+			attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{
+				successfulReworkGateWaitAttempt(base.Add(-2*time.Minute), completedIssue, signature, true),
+			}}
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:       true,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.Running[completedIssue.ID] = Running{
+				Issue:               completedIssue,
+				Attempt:             2,
+				WorkAttemptID:       42,
+				Mode:                runpkg.RunModeImplement,
+				DispatchSourceState: "Rework",
+				StartedAt:           base.Add(-time.Minute),
+				DiffStats:           DiffStats{Status: "clean"},
+			}
+			state.Claimed[completedIssue.ID] = Claimed{Issue: completedIssue, ClaimedAt: base.Add(-time.Minute)}
+
+			result := tt.result
+			result.FinalState = FinalStateCompleted
+			result.DiffStats = DiffStats{Status: "clean"}
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     completedIssue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result:      result,
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+				t.Fatalf("completions = %#v, want successful replacement-head completion", attempts.completions)
+			}
+			record := implementProgressRecordFromCompletion(t, attempts.completions[0])
+			if record.CurrentSignature.HeadSHA != "replacement-head" {
+				t.Fatalf("completion head = %q, want replacement-head", record.CurrentSignature.HeadSHA)
+			}
+			completed := state.Completed[completedIssue.ID]
+			if completed.gateWaitEvidence.PullRequest == nil || completed.gateWaitEvidence.PullRequest.HeadSHA != "replacement-head" {
+				t.Fatalf("gate-wait evidence = %#v, want replacement head", completed.gateWaitEvidence.PullRequest)
+			}
+		})
+	}
+}
+
 func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
 	t.Parallel()
 

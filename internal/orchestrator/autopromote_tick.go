@@ -473,14 +473,23 @@ func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttem
 	if record, ok := implementProgressRecordFromAttempt(attempt); ok {
 		completionKind = strings.TrimSpace(record.CompletionKind)
 	}
+	gateWaitReason := completionGateWaitReasonFromAttempt(attempt)
 	return Completed{
-		Issue:          cloneIssue(issue),
-		StartedAt:      attempt.StartedAt,
-		CompletedAt:    attempt.CompletedAt,
-		FinalState:     FinalStateCompleted,
-		CompletionKind: completionKind,
-		GateWaitReason: completionGateWaitReasonFromAttempt(attempt),
+		Issue:            cloneIssue(issue),
+		StartedAt:        attempt.StartedAt,
+		CompletedAt:      attempt.CompletedAt,
+		FinalState:       FinalStateCompleted,
+		CompletionKind:   completionKind,
+		GateWaitReason:   gateWaitReason,
+		gateWaitEvidence: completionGateWaitEvidence(gateWaitReason, issue),
 	}
+}
+
+func completionGateWaitEvidence(reason string, issue connector.Issue) connector.Issue {
+	if strings.TrimSpace(reason) != completedReworkGateWaitReason {
+		return connector.Issue{}
+	}
+	return cloneIssue(issue)
 }
 
 func completedReworkGateWaitProgress(
@@ -614,7 +623,10 @@ func autoPromoteCompletedReworkGateWaitCurrent(
 }
 
 func completedReworkGateWaitEvidenceCurrent(completed Completed, issue connector.Issue) bool {
-	previous := completed.Issue
+	previous := completed.gateWaitEvidence
+	if strings.TrimSpace(previous.ID) == "" {
+		previous = completed.Issue
+	}
 	if normalizeState(previous.State) != normalizeState(issue.State) ||
 		previous.PullRequest == nil || issue.PullRequest == nil ||
 		pullRequestNumber(previous) != pullRequestNumber(issue) ||
