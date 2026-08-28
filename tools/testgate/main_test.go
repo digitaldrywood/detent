@@ -63,6 +63,51 @@ func TestPackageResultClassifiesFailures(t *testing.T) {
 	}
 }
 
+func TestPackageResultRecordsPackageSkip(t *testing.T) {
+	t.Parallel()
+
+	result := packageResult{Outcome: "running", testTimeouts: make(map[string]bool)}
+	result.apply(testEvent{Action: "skip", Elapsed: 0.25})
+
+	if result.Outcome != "skip" || result.Elapsed != 0.25 {
+		t.Fatalf("result = %#v, want skipped package with elapsed time", result)
+	}
+}
+
+func TestEvidenceCollectorRetainsBuildEventsWithFailedPackage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	collector := newEvidenceCollector(dir, io.Discard, io.Discard)
+	buildPath := "example.com/project/pkg [example.com/project/pkg.test]"
+	lines := []string{
+		`{"ImportPath":"` + buildPath + `","Action":"build-output","Output":"pkg_test.go:12:2: undefined: missing\\n"}`,
+		`{"ImportPath":"` + buildPath + `","Action":"build-fail"}`,
+		`{"Action":"fail","Package":"example.com/project/pkg","FailedBuild":"` + buildPath + `"}`,
+	}
+	if err := collector.collect(strings.NewReader(strings.Join(lines, "\n") + "\n")); err != nil {
+		t.Fatalf("collect() error = %v", err)
+	}
+	if err := collector.close(); err != nil {
+		t.Fatalf("close() error = %v", err)
+	}
+
+	summary := collector.summary(4, 10*time.Minute)
+	if len(summary.Packages) != 1 {
+		t.Fatalf("packages len = %d, want 1", len(summary.Packages))
+	}
+	result := summary.Packages[0]
+	data, err := os.ReadFile(filepath.Join(dir, result.EvidenceFile))
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", result.EvidenceFile, err)
+	}
+	for _, want := range []string{"undefined: missing", "build-fail", `"FailedBuild"`} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("package evidence missing %q: %s", want, data)
+		}
+	}
+}
+
 func TestEvidenceCollectorRetainsPerPackageJSON(t *testing.T) {
 	t.Parallel()
 

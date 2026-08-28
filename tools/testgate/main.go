@@ -18,11 +18,13 @@ import (
 )
 
 type testEvent struct {
-	Action  string  `json:"Action"`
-	Package string  `json:"Package"`
-	Test    string  `json:"Test"`
-	Output  string  `json:"Output"`
-	Elapsed float64 `json:"Elapsed"`
+	Action      string  `json:"Action"`
+	Package     string  `json:"Package"`
+	ImportPath  string  `json:"ImportPath"`
+	FailedBuild string  `json:"FailedBuild"`
+	Test        string  `json:"Test"`
+	Output      string  `json:"Output"`
+	Elapsed     float64 `json:"Elapsed"`
 }
 
 type packageResult struct {
@@ -45,12 +47,13 @@ type gateSummary struct {
 }
 
 type evidenceCollector struct {
-	dir       string
-	combined  io.Writer
-	console   io.Writer
-	files     map[string]*os.File
-	results   map[string]*packageResult
-	closeErrs []error
+	dir        string
+	combined   io.Writer
+	console    io.Writer
+	files      map[string]*os.File
+	results    map[string]*packageResult
+	buildLines map[string][][]byte
+	closeErrs  []error
 }
 
 func main() {
@@ -146,11 +149,12 @@ func runGoTest(ctx context.Context, packages []string, parallel int, timeout tim
 
 func newEvidenceCollector(dir string, combined, console io.Writer) *evidenceCollector {
 	return &evidenceCollector{
-		dir:      dir,
-		combined: combined,
-		console:  console,
-		files:    make(map[string]*os.File),
-		results:  make(map[string]*packageResult),
+		dir:        dir,
+		combined:   combined,
+		console:    console,
+		files:      make(map[string]*os.File),
+		results:    make(map[string]*packageResult),
+		buildLines: make(map[string][][]byte),
 	}
 }
 
@@ -174,7 +178,14 @@ func (c *evidenceCollector) collectLine(line []byte) error {
 	}
 
 	var event testEvent
-	if err := json.Unmarshal(line, &event); err != nil || event.Package == "" {
+	if err := json.Unmarshal(line, &event); err != nil {
+		return nil
+	}
+	if event.ImportPath != "" {
+		c.buildLines[event.ImportPath] = append(c.buildLines[event.ImportPath], line)
+		return nil
+	}
+	if event.Package == "" {
 		return nil
 	}
 	result := c.result(event.Package)
@@ -182,10 +193,26 @@ func (c *evidenceCollector) collectLine(line []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := c.flushBuildLines(event.FailedBuild, file); err != nil {
+		return err
+	}
 	if _, err := file.Write(append(line, '\n')); err != nil {
 		return err
 	}
 	result.apply(event)
+	return nil
+}
+
+func (c *evidenceCollector) flushBuildLines(importPath string, file io.Writer) error {
+	if importPath == "" {
+		return nil
+	}
+	for _, line := range c.buildLines[importPath] {
+		if _, err := file.Write(append(line, '\n')); err != nil {
+			return err
+		}
+	}
+	delete(c.buildLines, importPath)
 	return nil
 }
 
@@ -243,8 +270,8 @@ func (c *evidenceCollector) summary(parallel int, timeout time.Duration) gateSum
 }
 
 func (r *packageResult) apply(event testEvent) {
-	if event.Action == "pass" && event.Test == "" {
-		r.Outcome = "pass"
+	if (event.Action == "pass" || event.Action == "skip") && event.Test == "" {
+		r.Outcome = event.Action
 		r.Elapsed = event.Elapsed
 	}
 	if event.Action == "fail" {
