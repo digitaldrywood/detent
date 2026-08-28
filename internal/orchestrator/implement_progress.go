@@ -148,9 +148,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		if workpadCurrent {
 			decision.WorkpadStatus, decision.HumanAction = implementProgressBlockedHumanAction(issue)
 		}
-		if workpadCurrent && running.DispatchProgress.CompletionKind == workpad.CompletionOperational &&
-			implementProgressDiffStatsClean(running.DiffStats) {
-			if _, ok := operationalCompletionFromIssue(issue); ok {
+		operationalCompletionCandidate := false
+		if workpadCurrent && running.DispatchProgress.CompletionKind == workpad.CompletionOperational {
+			_, operationalCompletionCandidate = operationalCompletionFromIssue(issue)
+			if operationalCompletionCandidate && implementProgressOperationalWorkspaceClean(running.DiffStats) {
 				decision.WorkpadStatus = workpad.StatusComplete
 				decision.Reason = implementOperationalCompletion
 				decision.ProgressKinds = []string{"operational_completion"}
@@ -208,6 +209,16 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				decision.Block = true
 				return decision
 			}
+		}
+		if operationalCompletionCandidate && (running.DiffStats.UnpushedCommits > 0 || running.DiffStats.CommitsAhead > 0) {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = strandedUnpushedWorkReason
+			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
+			decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+			if decision.Block {
+				decision.BlockReason = strandedUnpushedWorkReason
+			}
+			return decision
 		}
 		if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
 			decision.Reason = deferReason
@@ -813,6 +824,12 @@ func implementProgressDiffStatsClean(diffStats DiffStats) bool {
 		diffStats.FilesChanged == 0 &&
 		diffStats.AddedLines == 0 &&
 		diffStats.RemovedLines == 0
+}
+
+func implementProgressOperationalWorkspaceClean(diffStats DiffStats) bool {
+	return implementProgressDiffStatsClean(diffStats) &&
+		diffStats.UnpushedCommits == 0 &&
+		diffStats.CommitsAhead == 0
 }
 
 func implementProgressUnpushedClassification(diffStats DiffStats, pullRequest *connector.PullRequest) (bool, string) {

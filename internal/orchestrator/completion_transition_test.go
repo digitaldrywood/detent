@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestCompletedActiveReviewTargetState(t *testing.T) {
@@ -409,9 +410,10 @@ func TestTransitionCompletedActiveIssuesCompletesOperationalWorkWithoutPullReque
 	orch := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 	state.Completed[issue.ID] = Completed{
-		Issue:       issue,
-		CompletedAt: now.Add(-time.Minute),
-		FinalState:  FinalStateCompleted,
+		Issue:          issue,
+		CompletedAt:    now.Add(-time.Minute),
+		FinalState:     FinalStateCompleted,
+		CompletionKind: workpad.CompletionOperational,
 	}
 
 	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)

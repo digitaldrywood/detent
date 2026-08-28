@@ -645,6 +645,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		StartedAt:       running.StartedAt,
 		CompletedAt:     event.CompletedAt,
 		FinalState:      finalState,
+		CompletionKind:  strings.TrimSpace(progress.CompletionKind),
 		Tokens:          event.Result.Tokens,
 		RuntimeIdentity: running.RuntimeIdentity,
 	}

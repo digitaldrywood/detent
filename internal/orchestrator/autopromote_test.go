@@ -706,6 +706,7 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 		name         string
 		body         string
 		authorized   bool
+		accepted     bool
 		pullRequest  *connector.PullRequest
 		wantAction   AutoPromoteAction
 		wantReason   AutoPromoteReason
@@ -715,9 +716,17 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 			name:         "declared operational completion",
 			body:         operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
 			authorized:   true,
+			accepted:     true,
 			wantAction:   AutoPromoteActionComplete,
 			wantReason:   AutoPromoteReasonOperationalCompletion,
 			wantEvidence: "Runner service is healthy and accepting jobs.",
+		},
+		{
+			name:       "authorization without accepted attempt",
+			body:       operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			authorized: true,
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
 		},
 		{
 			name:       "undeclared operational assertion",
@@ -741,6 +750,7 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 			name:        "operational declaration with pull request placeholder",
 			body:        operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
 			authorized:  true,
+			accepted:    true,
 			pullRequest: &connector.PullRequest{HydrationUnavailableReason: "rate_limited"},
 			wantAction:  AutoPromoteActionSkip,
 			wantReason:  AutoPromoteReasonPullRequestHydrationUnavailable,
@@ -762,6 +772,7 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 			}}
 			got := EvaluateAutoPromote(issue, AutoPromoteSummary{
 				PullRequestHydrationUnavailableReason: pullRequestHydrationUnavailableReason(tt.pullRequest),
+				OperationalCompletionAccepted:         tt.accepted,
 			}, cfg, time.Now())
 
 			if got.Action != tt.wantAction {
@@ -800,7 +811,7 @@ func TestEvaluateAutoPromoteOperationalCompletionHonorsHumanReview(t *testing.T)
 			issue.Description = operationalCompletionAuthorizationBody()
 			issue.PullRequest = nil
 			issue.Comments = []connector.IssueComment{{Body: operationalCompletionWorkpadBody("Backfill verified.")}}
-			decision := EvaluateAutoPromote(issue, AutoPromoteSummary{}, AutoPromoteConfig{
+			decision := EvaluateAutoPromote(issue, AutoPromoteSummary{OperationalCompletionAccepted: true}, AutoPromoteConfig{
 				Enabled:        true,
 				TerminalStates: []string{"Done"},
 				Gate:           gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},

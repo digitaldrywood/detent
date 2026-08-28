@@ -532,6 +532,7 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 			}
 			summary := AutoPromoteSummaryFromIssue(issues[i])
 			summary.CompletedFinalState = autoPromoteCompletedFinalState(&s, issueID)
+			summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(&s, issueID)
 			summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(&s, issueID, s.AutoPromote, now)
 			decision = EvaluateAutoPromote(issues[i], summary, s.AutoPromote, now)
 		}

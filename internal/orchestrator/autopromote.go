@@ -43,6 +43,7 @@ type AutoPromoteSummary struct {
 	ArtifactStatus                        string
 	LastActivityAt                        *time.Time
 	CompletedFinalState                   string
+	OperationalCompletionAccepted         bool
 	AutomatedReviewWaitExpired            bool
 }
 
@@ -153,7 +154,7 @@ func EvaluateAutoPromote(
 		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 		return decision
 	}
-	if completion, ok := operationalCompletionFromIssue(issue); ok {
+	if completion, ok := operationalCompletionFromIssue(issue); ok && summary.OperationalCompletionAccepted {
 		if gate.Effective(cfg.Gate).Kind == gate.KindHumanReview {
 			operationalSummary := summary
 			operationalSummary.PullRequestPresent = true

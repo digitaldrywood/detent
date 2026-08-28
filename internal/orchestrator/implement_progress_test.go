@@ -243,6 +243,22 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
 		},
 		{
+			name: "operational completion with undelivered commits is stranded",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{UnpushedCommits: 1, CommitsAhead: 1, Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         strandedUnpushedWorkReason,
+			wantConsecutive:    1,
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+		},
+		{
 			name:               "undeclared operational assertion remains no progress",
 			runningIssue:       implementProgressIssueWithoutPR(),
 			diffStats:          DiffStats{Status: "clean"},
@@ -1524,6 +1540,30 @@ func TestImplementProgressMergedCompletionQualification(t *testing.T) {
 			}
 			if got := implementProgressMergedCompletion(issue, diffStats); got != tt.qualifies {
 				t.Fatalf("implementProgressMergedCompletion() = %t, want %t", got, tt.qualifies)
+			}
+		})
+	}
+}
+
+func TestImplementProgressOperationalWorkspaceClean(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		diffStats DiffStats
+		want      bool
+	}{
+		{name: "clean delivery", diffStats: DiffStats{Status: "clean"}, want: true},
+		{name: "workspace diff", diffStats: DiffStats{FilesChanged: 1, Status: "changed"}},
+		{name: "unpushed commit", diffStats: DiffStats{UnpushedCommits: 1, Status: "clean"}},
+		{name: "commit ahead", diffStats: DiffStats{CommitsAhead: 1, Status: "clean"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := implementProgressOperationalWorkspaceClean(tt.diffStats); got != tt.want {
+				t.Fatalf("implementProgressOperationalWorkspaceClean() = %t, want %t", got, tt.want)
 			}
 		})
 	}

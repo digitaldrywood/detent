@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
@@ -193,6 +194,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = completedFinalState
+	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue.ID)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
 	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
@@ -374,6 +376,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 	if cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge {
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = completed.FinalState
+		summary.OperationalCompletionAccepted = strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational
 		summary.AutomatedReviewWaitExpired = true
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {

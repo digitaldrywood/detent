@@ -421,6 +421,7 @@ func TestOperationalCompletionSpendBreakerContract(t *testing.T) {
 	tests := []struct {
 		name            string
 		authorized      bool
+		authorizedLate  bool
 		wantTerminal    store.WorkAttemptTerminalState
 		wantState       string
 		wantBlocked     bool
@@ -445,6 +446,14 @@ func TestOperationalCompletionSpendBreakerContract(t *testing.T) {
 			wantBlocked:   true,
 			wantSpendCase: spendProgressCaseNoPR,
 		},
+		{
+			name:           "authorization added at completion trips existing breaker",
+			authorizedLate: true,
+			wantTerminal:   store.WorkAttemptTerminalNoProgress,
+			wantState:      blockedStatusState,
+			wantBlocked:    true,
+			wantSpendCase:  spendProgressCaseNoPR,
+		},
 	}
 
 	for _, tt := range tests {
@@ -462,6 +471,9 @@ func TestOperationalCompletionSpendBreakerContract(t *testing.T) {
 			}
 			issue.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("in_progress", "", nil)}}
 			refreshed := cloneIssue(issue)
+			if tt.authorizedLate {
+				refreshed.Description = operationalCompletionAuthorizationBody()
+			}
 			refreshed.Comments = []connector.IssueComment{{
 				Body:      operationalCompletionWorkpadBody("Classifier-v4 host backfill completed and verified."),
 				CreatedAt: &recordedAt,
