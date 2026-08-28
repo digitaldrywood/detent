@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -779,6 +780,55 @@ func TestRunAgentTurnCapturesTargetRefAtFailedCommandCompletion(t *testing.T) {
 	}
 }
 
+func TestDeliverableCommandEvidenceSummarizesCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "authenticated push URL",
+			command: "git push https://user:secret@example.com/acme/repository.git HEAD",
+			want:    "git push",
+		},
+		{
+			name:    "compound command",
+			command: "TOKEN=secret gh auth status && git push origin HEAD && test $TOKEN = secret",
+			want:    "<redacted> && git push && <redacted>",
+		},
+		{
+			name:    "non-push command",
+			command: "gh pr create --body secret",
+			want:    "<redacted>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			exitCode := 1
+			evidence := deliverableCommandEvidenceFromError(&DeliverableCommandError{
+				OperationClass: "push",
+				Operation:      "git push",
+				Command:        tt.command,
+				ExitCode:       &exitCode,
+			})
+			if len(evidence) != 1 {
+				t.Fatalf("evidence count = %d, want 1", len(evidence))
+			}
+			if got := evidence[0].Command; got != tt.want {
+				t.Fatalf("Command = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(evidence[0].Command, "secret") {
+				t.Fatalf("Command = %q, contains secret", evidence[0].Command)
+			}
+		})
+	}
+}
+
 func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 	t.Parallel()
 
@@ -888,6 +938,7 @@ func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 			if err := os.MkdirAll(wrapperDir, 0o700); err != nil {
 				t.Fatalf("create wrapper directory: %v", err)
 			}
+			wrapperPath := filepath.Join(wrapperDir, "git")
 			wrapper := `#!/bin/sh
 if [ "$#" -eq 3 ] && [ "$1" = "push" ] && [ "$2" = "origin" ] && [ "$3" = "$DETENT_TEST_PUSH_REF" ]; then
   "$DETENT_REAL_GIT" "$@"
@@ -903,15 +954,37 @@ if [ "$#" -eq 3 ] && [ "$1" = "push" ] && [ "$2" = "origin" ] && [ "$3" = "$DETE
 fi
 exec "$DETENT_REAL_GIT" "$@"
 `
-			if err := os.WriteFile(filepath.Join(wrapperDir, "git"), []byte(wrapper), 0o700); err != nil {
+			if runtime.GOOS == "windows" {
+				wrapperPath = filepath.Join(wrapperDir, "git.cmd")
+				wrapper = `@echo off
+"%DETENT_REAL_GIT%" %*
+if errorlevel 1 exit /b %errorlevel%
+if "%DETENT_TEST_PUSH_WRAPPER_FAIL%"=="1" (
+  >&2 echo detent injected postcondition failure
+  exit /b 23
+)
+exit /b 0
+`
+			}
+			if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o700); err != nil {
 				t.Fatalf("write git wrapper: %v", err)
 			}
 
 			command := "git push origin " + pushRef
+			actualCommand := command
 			if tt.laterFailure {
 				command += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
+				actualCommand = command
 			}
-			cmd := exec.CommandContext(t.Context(), "sh", "-c", command)
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				if tt.laterFailure {
+					actualCommand = "git push origin " + pushRef + " && echo later assertion failed 1>&2 && exit /b 19"
+				}
+				cmd = exec.CommandContext(t.Context(), "cmd.exe", "/d", "/s", "/c", actualCommand)
+			} else {
+				cmd = exec.CommandContext(t.Context(), "sh", "-c", actualCommand)
+			}
 			cmd.Dir = workspacePath
 			wrapperFailure := "0"
 			if tt.wrapperFailure {
@@ -981,8 +1054,12 @@ exec "$DETENT_REAL_GIT" "$@"
 				t.Fatalf("DeliverableCommands = %#v, want one", got.result.DeliverableCommands)
 			}
 			evidence := got.result.DeliverableCommands[0]
-			if evidence.Command != command || evidence.ExitCode == nil || *evidence.ExitCode != tt.wantExitCode || evidence.Outcome != tt.wantOutcome {
-				t.Fatalf("command evidence = %#v, want command %q exit %d outcome %q", evidence, command, tt.wantExitCode, tt.wantOutcome)
+			wantCommand := "git push"
+			if tt.laterFailure {
+				wantCommand += " && <redacted> && <redacted>"
+			}
+			if evidence.Command != wantCommand || evidence.ExitCode == nil || *evidence.ExitCode != tt.wantExitCode || evidence.Outcome != tt.wantOutcome {
+				t.Fatalf("command evidence = %#v, want command %q exit %d outcome %q", evidence, wantCommand, tt.wantExitCode, tt.wantOutcome)
 			}
 			if evidence.TargetRef == nil || evidence.TargetRef.AdvancedToLocalHead != tt.wantAdvancedToLocal {
 				t.Fatalf("target ref evidence = %#v, want advanced=%v", evidence.TargetRef, tt.wantAdvancedToLocal)

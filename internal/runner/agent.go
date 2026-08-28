@@ -1910,7 +1910,7 @@ func (r *Runner) reconcileFailedPushPublication(
 			postPushErr := *deliverableErr
 			postPushErr.OperationClass = "post_push"
 			postPushErr.Operation = "post-push command"
-			postPushErr.Arguments = truncateDeliverableDetail(laterCommand)
+			postPushErr.Arguments = summarizeDeliverableCommand(laterCommand)
 			reconciled = append(reconciled, &postPushErr)
 			outcome = "published_post_push_failed"
 			reconciliationOutcome = outcome
@@ -2084,7 +2084,7 @@ func deliverableCommandEvidenceFromError(err error) []DeliverableCommandEvidence
 			ItemID:         strings.TrimSpace(deliverableErr.ItemID),
 			OperationClass: strings.TrimSpace(deliverableErr.OperationClass),
 			Operation:      strings.TrimSpace(deliverableErr.Operation),
-			Command:        strings.TrimSpace(deliverableErr.Command),
+			Command:        summarizeDeliverableCommand(deliverableErr.Command),
 			Status:         strings.TrimSpace(deliverableErr.Status),
 			ExitCode:       cloneIntPointer(deliverableErr.ExitCode),
 			Outcome:        "failed",
@@ -2092,6 +2092,19 @@ func deliverableCommandEvidenceFromError(err error) []DeliverableCommandEvidence
 		})
 	}
 	return evidence
+}
+
+func summarizeDeliverableCommand(command string) string {
+	segments := shellCommandSegments(command)
+	summary := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if gitPushCommand(segment) {
+			summary = append(summary, "git push")
+			continue
+		}
+		summary = append(summary, "<redacted>")
+	}
+	return strings.Join(summary, " && ")
 }
 
 func cloneIntPointer(value *int) *int {
