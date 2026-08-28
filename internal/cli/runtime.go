@@ -100,6 +100,8 @@ type runtimeDeps struct {
 	loadWorkflow func(string) (workflowconfig.Workflow, error)
 }
 
+type runtimeCommandContextFactory func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+
 func newRuntimeGitHubTokenState(value string) *runtimeGitHubTokenState {
 	state := &runtimeGitHubTokenState{}
 	state.set(value)
@@ -486,8 +488,16 @@ func runtimeGlobalGitHubToken(token RuntimeSecret) string {
 }
 
 func runtimeGitHubTokenRefresher(globalState *globalConfigState, tokenState *runtimeGitHubTokenState) func(context.Context) (string, error) {
+	return runtimeGitHubTokenRefresherWithCommandContext(globalState, tokenState, context.WithTimeout)
+}
+
+func runtimeGitHubTokenRefresherWithCommandContext(
+	globalState *globalConfigState,
+	tokenState *runtimeGitHubTokenState,
+	commandContext runtimeCommandContextFactory,
+) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		resolved, err := resolveGlobalRuntimeGitHubToken(ctx, globalState.get())
+		resolved, err := resolveGlobalRuntimeGitHubTokenWithCommandContext(ctx, globalState.get(), commandContext)
 		if err != nil {
 			return "", err
 		}
@@ -564,11 +574,15 @@ func defaultGHAuthToken(ctx context.Context) (string, error) {
 	return runGHAuthToken(ctx, nil)
 }
 
-func defaultGHAuthTokenWithoutRuntimeEnv(ctx context.Context) (string, error) {
-	return runGHAuthToken(ctx, environmentWithoutKeys([]string{"GITHUB_TOKEN"}))
+func runGHAuthToken(ctx context.Context, env []string) (string, error) {
+	return runGHAuthTokenWithCommandContext(ctx, env, context.WithTimeout)
 }
 
-func runGHAuthToken(ctx context.Context, env []string) (string, error) {
+func runGHAuthTokenWithCommandContext(
+	ctx context.Context,
+	env []string,
+	commandContext runtimeCommandContextFactory,
+) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -577,7 +591,7 @@ func runGHAuthToken(ctx context.Context, env []string) (string, error) {
 		return "", errors.New("gh was not found on PATH")
 	}
 
-	commandCtx, cancel := context.WithTimeout(ctx, runtimeCommandTimeout)
+	commandCtx, cancel := commandContext(ctx, runtimeCommandTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(commandCtx, path, "auth", "token") // #nosec G204 -- gh path is PATH-resolved and arguments are fixed.
