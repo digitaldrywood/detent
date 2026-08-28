@@ -23,6 +23,18 @@ a title/body fingerprint, so the proposal's own comment cannot create a
 duplicate. Unanswered proposals expire; an issue demoted after acceptance is
 not proposed again.
 
+Before starting the read-only analyst, Detent declines issues that do not
+describe one completable deliverable. Strong tracker, intake, study, or
+research self-identification and predominantly cross-issue task lists are
+declined only when the body has no explicit completion contract such as a
+Deliverable, Acceptance criteria, Definition of done, Expected behavior, or
+What good looks like section. Add `<!-- detent:no-dispatch -->` to the body for
+a deterministic operator opt-out regardless of those headings. A decline stays
+in the current source state and receives one explanatory comment. Detent stores
+the title/body fingerprint and skips unchanged declines on later passes; a
+title or body edit creates a new fingerprint and makes the issue eligible for
+evaluation again.
+
 `require_effort` is off by default, preserving admission behavior for existing
 projects. When enabled, `effort_section` must identify a separate project-owned
 rubric in `effort_file`. The file defaults to `WORKFLOW.md`; set it to

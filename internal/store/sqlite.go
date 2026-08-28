@@ -94,6 +94,7 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 		{name: "retro_runs", projectScoped: true},
 		{name: "routine_runs", projectScoped: true},
 		{name: "backlog_admission_proposals", projectScoped: true},
+		{name: "backlog_admission_declines", projectScoped: true},
 		{name: "backlog_admission_runs", projectScoped: true},
 		{name: "scheduled_runs", projectScoped: true},
 		{name: "health_notification_states"},
@@ -1265,6 +1266,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM routine_runs WHERE project_id = ?", projectID)
 		case "backlog_admission_proposals":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_proposals WHERE project_id = ?", projectID)
+		case "backlog_admission_declines":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_declines WHERE project_id = ?", projectID)
 		case "backlog_admission_runs":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_runs WHERE project_id = ?", projectID)
 		case "scheduled_runs":
@@ -1304,6 +1307,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM routine_runs")
 		case "backlog_admission_proposals":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_proposals")
+		case "backlog_admission_declines":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_declines")
 		case "backlog_admission_runs":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_runs")
 		case "scheduled_runs":

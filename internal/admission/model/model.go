@@ -46,6 +46,19 @@ type Finding struct {
 	Rationale      string `json:"rationale"`
 }
 
+type Decline struct {
+	ID              string
+	ProjectID       string
+	IssueID         string
+	IssueIdentifier string
+	IssueURL        string
+	Fingerprint     string
+	Reason          string
+	Detail          string
+	CreatedAt       time.Time
+	CommentedAt     time.Time
+}
+
 type RunRecord struct {
 	ProjectID       string
 	ScheduledFor    time.Time

@@ -167,6 +167,201 @@ func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
 	}
 }
 
+func TestManagerDeclinesNonDeliverableCandidatesBeforeRunningAgent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issues := []connector.Issue{
+		admissionIssueFixture("tracker", "PA-10", 1, now),
+		admissionIssueFixture("intake", "PA-1728", 1, now.Add(time.Minute)),
+		admissionIssueFixture("checklist", "PA-1817", 1, now.Add(2*time.Minute)),
+		admissionIssueFixture("optout", "PA-1818", 1, now.Add(3*time.Minute)),
+		admissionIssueFixture("actionable", "PA-1819", 1, now.Add(4*time.Minute)),
+	}
+	issues[0].Title = "PyroApex Platform Architecture — Master Tracker"
+	issues[0].Description = "Coordinates the platform work across linked issues."
+	issues[1].Title = "POS wave 1 field-test findings — Creswood + Jurassic (intake)"
+	issues[1].Description = "Collect findings here before creating implementation issues."
+	issues[2].Title = "POS follow-up work"
+	issues[2].Description = "- [ ] #1701\n- [ ] #1702\n- [ ] digitaldrywood/pyroapex#1703"
+	issues[3].Description = "<!-- detent:no-dispatch -->\nOperator-owned planning record."
+
+	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.MaxProposalsPerRun = 10
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if got, want := agent.candidateIDs, [][]string{{"actionable"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agent candidates = %#v, want %#v", got, want)
+	}
+	if result.Skipped["non_deliverable"] != 4 || len(result.Proposals) != 1 {
+		t.Fatalf("result = %#v, want four declines and one proposal", result)
+	}
+	second, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	if agent.calls != 1 || second.Skipped["non_deliverable"] != 4 {
+		t.Fatalf("second result = %#v, runner calls = %d, want persisted declines", second, agent.calls)
+	}
+	for _, issue := range issues[:4] {
+		comments, err := tracker.FetchIssueComments(t.Context(), issue)
+		if err != nil {
+			t.Fatalf("FetchIssueComments(%s) error = %v", issue.Identifier, err)
+		}
+		if len(comments) != 1 || !strings.Contains(comments[0].Body, "Detent backlog admission declined") {
+			t.Fatalf("comments for %s = %#v, want one decline explanation", issue.Identifier, comments)
+		}
+	}
+}
+
+func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "PA-1818", 1, now)
+	issue.Description = admissionOptOutMarker + "\nOperator-owned planning record."
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
+
+	first, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("first RunOnce() error = %v", err)
+	}
+	if first.Skipped["non_deliverable"] != 1 || agent.calls != 0 {
+		t.Fatalf("first result = %#v, runner calls = %d", first, agent.calls)
+	}
+	if err := tracker.UpdateIssueBody(t.Context(), issue.ID, "## Acceptance criteria\n\n- Implement the bounded fix and add a regression test."); err != nil {
+		t.Fatalf("UpdateIssueBody() error = %v", err)
+	}
+	second, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	if got, want := agent.candidateIDs, [][]string{{issue.ID}}; !reflect.DeepEqual(got, want) || len(second.Proposals) != 1 {
+		t.Fatalf("agent candidates = %#v, result = %#v, want edited issue proposed", got, second)
+	}
+}
+
+func TestManagerDoesNotDuplicateDeclineCommentAfterStoreMarkFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "PA-1818", 1, now)
+	issue.Description = admissionOptOutMarker
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	backend := &faultAdmissionStore{
+		Store:                 openManagerTestStore(t),
+		declineCommentMarkErr: errors.New("mark decline comment"),
+	}
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
+
+	if _, err := manager.RunOnce(t.Context()); err == nil || !strings.Contains(err.Error(), "mark decline comment") {
+		t.Fatalf("first RunOnce() error = %v, want mark failure", err)
+	}
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	comments, err := tracker.FetchIssueComments(t.Context(), issue)
+	if err != nil {
+		t.Fatalf("FetchIssueComments() error = %v", err)
+	}
+	if len(comments) != 1 || agent.calls != 0 {
+		t.Fatalf("comments = %#v, runner calls = %d, want one comment and no agent run", comments, agent.calls)
+	}
+}
+
+func TestManagerDeclineSupersedesAcceptedOpenProposal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "PA-10", 1, now)
+	issue.Title = "PyroApex Platform Architecture — Master Tracker"
+	issue.Description = "Coordinates platform issues."
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	decisionAt := now.Add(time.Minute)
+	issue.Comments = []connector.IssueComment{{
+		ID:               "accept-1",
+		Body:             admissionAcceptCommand(proposal.ID),
+		AuthorLogin:      "operator",
+		AuthorKind:       "User",
+		AuthorAuthorized: true,
+		CreatedAt:        &decisionAt,
+	}}
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now.Add(2 * time.Minute) }})
+	backend := openManagerTestStore(t)
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now.Add(2 * time.Minute) })
+
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalSuperseded || history[0].ResolutionReason != admissionResolutionNonDeliverable {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	for _, event := range tracker.Events() {
+		if event.Kind == memory.EventKindStateUpdate {
+			t.Fatalf("declined issue changed state: %#v", event)
+		}
+	}
+}
+
+func TestManagerAdmissionDeclinePersistenceBoundaries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "PA-10", 1, now)
+	classification := nonDeliverableClassification{reason: admissionDeclineTracker, detail: "tracker without a completion contract"}
+	base := openManagerTestStore(t)
+	backend := &faultAdmissionStore{Store: base}
+	manager := &Manager{store: backend, now: func() time.Time { return now }}
+	settings := Settings{ProjectID: "detent"}
+
+	first, created, err := manager.createAdmissionDecline(t.Context(), settings, issue, classification, now)
+	if err != nil || !created {
+		t.Fatalf("first createAdmissionDecline() = %#v, %t, %v", first, created, err)
+	}
+	second, created, err := manager.createAdmissionDecline(t.Context(), settings, issue, classification, now)
+	if err != nil || created || second.ID != first.ID {
+		t.Fatalf("second createAdmissionDecline() = %#v, %t, %v", second, created, err)
+	}
+
+	backend.declineReadErr = errors.New("read decline")
+	if _, _, err := manager.createAdmissionDecline(t.Context(), settings, issue, classification, now); err == nil || !strings.Contains(err.Error(), "read decline") {
+		t.Fatalf("read-error createAdmissionDecline() error = %v", err)
+	}
+	backend.declineMissing = true
+	if _, _, err := manager.createAdmissionDecline(t.Context(), settings, issue, classification, now); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("missing createAdmissionDecline() error = %v", err)
+	}
+	backend.createDeclineErr = errors.New("create decline")
+	issue.ID = "issue-2"
+	if _, _, err := manager.createAdmissionDecline(t.Context(), settings, issue, classification, now); err == nil || !strings.Contains(err.Error(), "create decline") {
+		t.Fatalf("create-error createAdmissionDecline() error = %v", err)
+	}
+
+	issuesWithoutReader := &admissionIssueStoreWithoutCommentReader{IssueStore: memory.New(memory.Config{})}
+	if _, err := manager.ensureAdmissionDeclineComment(t.Context(), issuesWithoutReader, issue, first, false, true); err == nil || !strings.Contains(err.Error(), "comment reader") {
+		t.Fatalf("ensureAdmissionDeclineComment() error = %v, want missing reader", err)
+	}
+	if comment := admissionDeclineComment(first, ""); !strings.Contains(comment, "current untracked state") {
+		t.Fatalf("admissionDeclineComment() = %q, want untracked state", comment)
+	}
+}
+
 func TestManagerRecordsCandidateReaderTruncation(t *testing.T) {
 	t.Parallel()
 
@@ -2781,13 +2976,48 @@ func (g *capacityGate) Release(scheduler.Slot) error {
 
 type faultAdmissionStore struct {
 	Store
-	expireErr           error
-	refreshErr          error
-	recordErr           error
-	latestErr           error
-	targetTransitionErr error
-	latest              admissionmodel.RunRecord
-	latestOK            bool
+	expireErr             error
+	refreshErr            error
+	recordErr             error
+	latestErr             error
+	targetTransitionErr   error
+	declineCommentMarkErr error
+	createDeclineErr      error
+	declineReadErr        error
+	declineMissing        bool
+	latest                admissionmodel.RunRecord
+	latestOK              bool
+}
+
+type admissionIssueStoreWithoutCommentReader struct {
+	IssueStore
+}
+
+func (s *faultAdmissionStore) CreateAdmissionDecline(ctx context.Context, decline admissionmodel.Decline) (bool, error) {
+	if s.createDeclineErr != nil {
+		err := s.createDeclineErr
+		s.createDeclineErr = nil
+		return false, err
+	}
+	return s.Store.CreateAdmissionDecline(ctx, decline)
+}
+
+func (s *faultAdmissionStore) AdmissionDecline(
+	ctx context.Context,
+	projectID string,
+	issueID string,
+	fingerprint string,
+) (admissionmodel.Decline, bool, error) {
+	if s.declineReadErr != nil {
+		err := s.declineReadErr
+		s.declineReadErr = nil
+		return admissionmodel.Decline{}, false, err
+	}
+	if s.declineMissing {
+		s.declineMissing = false
+		return admissionmodel.Decline{}, false, nil
+	}
+	return s.Store.AdmissionDecline(ctx, projectID, issueID, fingerprint)
 }
 
 func (s *faultAdmissionStore) ExpireAdmissionProposals(ctx context.Context, projectID string, cutoff time.Time) (int, error) {
@@ -2826,6 +3056,15 @@ func (s *faultAdmissionStore) AdmissionTargetTransitions(
 		return nil, s.targetTransitionErr
 	}
 	return s.Store.AdmissionTargetTransitions(ctx, query)
+}
+
+func (s *faultAdmissionStore) MarkAdmissionDeclineCommented(ctx context.Context, id string, at time.Time) error {
+	if s.declineCommentMarkErr != nil {
+		err := s.declineCommentMarkErr
+		s.declineCommentMarkErr = nil
+		return err
+	}
+	return s.Store.MarkAdmissionDeclineCommented(ctx, id, at)
 }
 
 type boundaryBudgetRunner struct {
@@ -3214,6 +3453,90 @@ func TestIssueFingerprintIgnoresAuditCommentMetadata(t *testing.T) {
 	issue.Description += " changed"
 	if issueFingerprint(issue) == after {
 		t.Fatal("fingerprint did not change after body edit")
+	}
+}
+
+func TestClassifyNonDeliverable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		title      string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "master tracker title",
+			title:      "PyroApex Platform Architecture — Master Tracker",
+			body:       "Coordinates work across linked issues.",
+			wantReason: admissionDeclineTracker,
+		},
+		{
+			name:       "parenthesized intake title",
+			title:      "POS field-test findings (intake)",
+			body:       "Collect findings before implementation issues are filed.",
+			wantReason: admissionDeclineIntake,
+		},
+		{
+			name:       "body self-identifies study artifact",
+			title:      "POS parity",
+			body:       "This issue is a study artifact for later implementation work.",
+			wantReason: admissionDeclineStudy,
+		},
+		{
+			name:       "body metadata identifies research artifact",
+			title:      "POS parity",
+			body:       "Type: research",
+			wantReason: admissionDeclineResearch,
+		},
+		{
+			name:       "linked issue checklist",
+			title:      "Follow-up work",
+			body:       "- [ ] #1\n- [x] owner/repo#2\n- [ ] https://github.com/owner/repo/issues/3",
+			wantReason: admissionDeclineLinkedChecklist,
+		},
+		{
+			name:       "operator marker overrides completion contract",
+			title:      "Bounded work",
+			body:       admissionOptOutMarker + "\n## Acceptance criteria\n\n- Complete the work.",
+			wantReason: admissionDeclineExplicitOptOut,
+		},
+		{
+			name:  "tracker with explicit completion contract fails open",
+			title: "Dependency tracker",
+			body:  "## Deliverable\n\nGenerate and publish one dependency inventory.",
+		},
+		{
+			name:  "inline deliverable fails open",
+			title: "Research (study)",
+			body:  "Deliverable: publish one bounded comparison.",
+		},
+		{
+			name:  "linked checklist under acceptance criteria fails open",
+			title: "Bounded cleanup",
+			body:  "## Acceptance criteria\n\n- [ ] Close #1\n- [ ] Close #2\n- [ ] Close #3",
+		},
+		{
+			name:  "actionable research implementation",
+			title: "Implement research ingestion",
+			body:  "Add the endpoint and regression tests.",
+		},
+		{
+			name:  "short linked checklist",
+			title: "Follow-up",
+			body:  "- [ ] #1\n- [ ] #2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, declined := classifyNonDeliverable(connector.Issue{Title: tt.title, Description: tt.body})
+			if declined != (tt.wantReason != "") || got.reason != tt.wantReason {
+				t.Fatalf("classifyNonDeliverable() = %#v, %t, want reason %q", got, declined, tt.wantReason)
+			}
+		})
 	}
 }
 

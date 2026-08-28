@@ -270,6 +270,9 @@ type RoutineStore interface {
 
 type AdmissionStore interface {
 	CreateAdmissionProposal(context.Context, admissionmodel.Proposal) (bool, error)
+	CreateAdmissionDecline(context.Context, admissionmodel.Decline) (bool, error)
+	AdmissionDecline(context.Context, string, string, string) (admissionmodel.Decline, bool, error)
+	MarkAdmissionDeclineCommented(context.Context, string, time.Time) error
 	OpenAdmissionProposals(context.Context, string, int) ([]admissionmodel.Proposal, error)
 	AdmissionProposalHistory(context.Context, string, string) ([]admissionmodel.Proposal, error)
 	CountOpenAdmissionProposals(context.Context, string) (int, error)

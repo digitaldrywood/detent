@@ -293,6 +293,13 @@ the run ledger instead of making the bounded result look complete. A run defers
 instead of queueing when project or fleet capacity is unavailable or its agent
 would exceed the configured daily budget.
 
+Before an admission agent runs, Detent declines tracker, intake, study, and
+research artifacts without an explicit completion contract, plus bodies that
+are predominantly cross-issue task lists. The body marker
+`<!-- detent:no-dispatch -->` is the deterministic operator escape hatch.
+Declines remain in their source state, receive one explanation, and are skipped
+until a title or body edit changes their stored fingerprint.
+
 Criteria live in one named section of the shared `WORKFLOW.md`, never
 `WORKFLOW.local.md`. Heading matching is case-insensitive, accepts ATX headings
 at any level and Setext headings, and includes nested subsections until the next

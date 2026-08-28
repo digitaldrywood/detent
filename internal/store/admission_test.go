@@ -78,6 +78,52 @@ func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestAdmissionDeclineLifecycleAndProposalSupersession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openAdmissionTestStore(t, ctx)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	proposal := admissionTestProposal("proposal-1", "old-fingerprint", now.Add(-time.Minute))
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	decline := admissionmodel.Decline{
+		ID:              "decline-1",
+		ProjectID:       proposal.ProjectID,
+		IssueID:         proposal.IssueID,
+		IssueIdentifier: proposal.IssueIdentifier,
+		IssueURL:        proposal.IssueURL,
+		Fingerprint:     "declined-fingerprint",
+		Reason:          "tracker",
+		Detail:          "the issue is a tracker without a completion contract",
+		CreatedAt:       now,
+	}
+	created, err := backend.CreateAdmissionDecline(ctx, decline)
+	if err != nil || !created {
+		t.Fatalf("CreateAdmissionDecline() = %t, %v", created, err)
+	}
+	created, err = backend.CreateAdmissionDecline(ctx, decline)
+	if err != nil || created {
+		t.Fatalf("duplicate CreateAdmissionDecline() = %t, %v", created, err)
+	}
+	got, found, err := backend.AdmissionDecline(ctx, decline.ProjectID, decline.IssueID, decline.Fingerprint)
+	if err != nil || !found || got.ID != decline.ID || got.Reason != decline.Reason || !got.CommentedAt.IsZero() {
+		t.Fatalf("AdmissionDecline() = %#v, %t, %v", got, found, err)
+	}
+	if err := backend.MarkAdmissionDeclineCommented(ctx, decline.ID, now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkAdmissionDeclineCommented() error = %v", err)
+	}
+	got, found, err = backend.AdmissionDecline(ctx, decline.ProjectID, decline.IssueID, decline.Fingerprint)
+	if err != nil || !found || !got.CommentedAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("commented AdmissionDecline() = %#v, %t, %v", got, found, err)
+	}
+	history, err := backend.AdmissionProposalHistory(ctx, proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalSuperseded || history[0].ResolutionReason != admissionResolutionNonDeliverable {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+}
+
 func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 	t.Parallel()
 

@@ -307,6 +307,11 @@ define the allowed recommendations. Detent writes a recommended `detent-agent`
 block before the admission transition only when the issue has no existing
 block; the default remains disabled for compatibility.
 
+Admission screens out non-deliverable tracker and intake artifacts before the
+agent run. Add `<!-- detent:no-dispatch -->` to an issue body for a deterministic
+operator opt-out. The decline remains in the configured source state, is
+commented once, and is reconsidered only after the title or body changes.
+
 When enabled, admission defaults to `*/15 * * * *`, which limits normal
 candidate wait time to 15 minutes. An every-30-minute schedule implies up to 30
 minutes of latency, an hourly schedule up to one hour, and a daily schedule up
