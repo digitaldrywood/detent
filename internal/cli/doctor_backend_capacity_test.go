@@ -24,7 +24,7 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE work_attempts (
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE work_attempts (
 		project_id TEXT NOT NULL,
 		identifier TEXT,
 		issue_id TEXT,
@@ -47,7 +47,7 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(t.Context(),
 		`INSERT INTO work_attempts (project_id, identifier, issue_id, capacity_snapshot_json, error_class, completed_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		"detent", "digitaldrywood/detent#1142", "issue-1142", string(snapshot), "backend_capacity", now.Format(time.RFC3339Nano),
 	); err != nil {
@@ -103,7 +103,7 @@ func TestDoctorOverloadRetryCount(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE work_attempts (
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE work_attempts (
 		project_id TEXT NOT NULL,
 		error_class TEXT,
 		completed_at TEXT
@@ -122,7 +122,7 @@ func TestDoctorOverloadRetryCount(t *testing.T) {
 		{projectID: "detent", errorClass: "backend_capacity", completed: now.Add(-10 * time.Minute)},
 	}
 	for _, row := range rows {
-		if _, err := db.Exec(
+		if _, err := db.ExecContext(t.Context(),
 			`INSERT INTO work_attempts (project_id, error_class, completed_at) VALUES (?, ?, ?)`,
 			row.projectID,
 			row.errorClass,

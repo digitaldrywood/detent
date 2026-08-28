@@ -9626,7 +9626,8 @@ func TestServerReadHeaderTimeoutDropsStalledHeaders(t *testing.T) {
 	}
 
 	addr := startWebServer(t, server)
-	conn, err := net.Dial("tcp", addr)
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
@@ -13556,7 +13557,8 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 func startWebServer(t *testing.T, server *web.Server) string {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
@@ -13600,7 +13602,8 @@ func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, i
 func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, headers map[string]string) (net.Conn, io.ReadCloser, *bufio.Reader) {
 	t.Helper()
 
-	conn, err := net.Dial("tcp", addr)
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}

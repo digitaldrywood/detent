@@ -28,7 +28,7 @@ func TestCheckDoctorArtifactGateConvergence(t *testing.T) {
 			t.Errorf("db.Close() error = %v", err)
 		}
 	})
-	if _, err := db.Exec(`CREATE TABLE work_attempts (
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE work_attempts (
   id INTEGER PRIMARY KEY,
   project_id TEXT NOT NULL,
   issue_id TEXT,
@@ -95,7 +95,7 @@ func insertDoctorArtifactGateAttempt(
 ) {
 	t.Helper()
 	metadata := `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"recut","completion_status":"recut","unchanged":true,"consecutive_unchanged":` + strconv.Itoa(consecutive) + `,"limit":3,"tripped":` + strconv.FormatBool(tripped) + `}}`
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(t.Context(),
 		`INSERT INTO work_attempts (project_id, issue_id, identifier, terminal_state, completed_at, worker_metadata_json) VALUES (?, ?, ?, 'success', ?, ?)`,
 		projectID,
 		issueID,

@@ -276,7 +276,7 @@ func assertTokenHashedAtRest(t *testing.T, path string, rawToken string) {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
 	var stored string
-	if err := db.QueryRow("SELECT token_hash FROM auth_magic_links ORDER BY id DESC LIMIT 1").Scan(&stored); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT token_hash FROM auth_magic_links ORDER BY id DESC LIMIT 1").Scan(&stored); err != nil {
 		t.Fatalf("query token hash error = %v", err)
 	}
 	sum := sha256.Sum256([]byte(rawToken))

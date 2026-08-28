@@ -231,7 +231,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}()
 	}
 
-	listener, displayURL, err := listenForBoot(cfg)
+	listener, displayURL, err := listenForBoot(runCtx, cfg)
 	if err != nil {
 		return fmt.Errorf("bind Detent web listener %s: %w", serverAddr(cfg), err)
 	}
@@ -756,7 +756,7 @@ func syncGlobalDispatchProjects(
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {
 	logger := slog.Default()
-	listener, displayURL, err := listenForBoot(cfg)
+	listener, displayURL, err := listenForBoot(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -1940,8 +1940,9 @@ func unbracketIPv6Host(host string) string {
 	return unbracketed
 }
 
-func listenForBoot(cfg BootConfig) (net.Listener, string, error) {
-	listener, err := net.Listen("tcp", serverAddr(cfg))
+func listenForBoot(ctx context.Context, cfg BootConfig) (net.Listener, string, error) {
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp", serverAddr(cfg))
 	if err != nil {
 		return nil, "", err
 	}

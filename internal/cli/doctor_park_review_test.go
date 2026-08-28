@@ -112,7 +112,7 @@ func insertDoctorIssueParks(t *testing.T, path, issueID, identifier string, offs
 	defer func() { _ = db.Close() }()
 	for index := range count {
 		at := time.Date(2026, 8, 9, 16+offset+index, 0, 0, 0, time.UTC)
-		if _, err := db.Exec(`INSERT INTO work_attempts (
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (
 project_id, issue_id, identifier, worker_type, attempt_number, status, started_at, completed_at, terminal_state, error_class
 ) VALUES ('detent', ?, ?, 'codex', ?, 'terminal', ?, ?, 'no_progress', 'no_progress_limit')`, issueID, identifier, offset+index+1, at.Add(-time.Minute).Format(time.RFC3339Nano), at.Format(time.RFC3339Nano)); err != nil {
 			t.Fatalf("insert park %d: %v", index, err)

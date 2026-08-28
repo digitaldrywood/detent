@@ -46,8 +46,8 @@ after a source-clean rebase, noisy status polling, uncached tool install, and
 duplicated non-blocking post-merge work are optimization targets.
 
 The repository CI caches the project-pinned golangci-lint binary and only builds
-it with `go install` on cache miss. The official prebuilt action was evaluated,
-but the prebuilt `v2.1.6` binary targets an older Go toolchain than this repo and
-newer prebuilt lint releases change the enforced lint set. `GoReleaser Snapshot`
-now runs on pull requests, `main`, release tags, nightly schedule, and manual
-dispatch so packaging signal is available before and after merge.
+it with `go install` on cache miss. CI builds golangci-lint `v2.9.0` with the
+repository Go toolchain so analyzer behavior and toolchain provenance stay
+aligned. `GoReleaser Snapshot` runs on pull requests, `main`, release tags,
+nightly schedule, and manual dispatch so packaging signal is available before
+and after merge.

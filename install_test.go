@@ -661,7 +661,8 @@ func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time
 func reservePort(t *testing.T) int {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
@@ -677,7 +678,7 @@ func reservePort(t *testing.T) int {
 func startDetentServer(t *testing.T, binary string, workdir string, env []string, port int) func() {
 	t.Helper()
 
-	cmd := exec.Command(binary, "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+	cmd := exec.CommandContext(t.Context(), binary, "--host", "127.0.0.1", "--port", strconv.Itoa(port))
 	cmd.Dir = workdir
 	cmd.Env = env
 
@@ -932,7 +933,7 @@ func assertInstalledVersionMetadata(t *testing.T, binary string, root string, en
 func gitOutput(t *testing.T, root string, args ...string) (string, bool) {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {

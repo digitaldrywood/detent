@@ -23,7 +23,7 @@ func TestConfigure(t *testing.T) {
 	}{
 		{
 			name: "fresh command",
-			cmd:  exec.Command("true"),
+			cmd:  exec.CommandContext(t.Context(), "true"),
 		},
 		{
 			name: "existing syscall attributes",
@@ -75,7 +75,7 @@ func TestGroupID(t *testing.T) {
 		{
 			name: "nil process",
 			cmd: func(*testing.T) *exec.Cmd {
-				return exec.Command("true")
+				return exec.CommandContext(t.Context(), "true")
 			},
 			want: func(t *testing.T, _ *exec.Cmd, got int) {
 				if got != 0 {

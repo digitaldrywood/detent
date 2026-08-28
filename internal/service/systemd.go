@@ -161,9 +161,10 @@ func (m *systemdManager) systemctlArgs(args ...string) []string {
 }
 
 func systemdUnit(cfg Config) string {
-	execStart := systemdQuote(cfg.BinaryPath)
+	execStartParts := make([]string, 0, len(cfg.Arguments)+1)
+	execStartParts = append(execStartParts, systemdQuote(cfg.BinaryPath))
 	for _, argument := range cfg.Arguments {
-		execStart += " " + systemdQuote(argument)
+		execStartParts = append(execStartParts, systemdQuote(argument))
 	}
 	return strings.Join([]string{
 		"[Unit]",
@@ -174,7 +175,7 @@ func systemdUnit(cfg Config) string {
 		"[Service]",
 		"Type=simple",
 		"Environment=\"PATH=" + systemdEscape(cfg.Path) + "\"",
-		"ExecStart=" + execStart,
+		"ExecStart=" + strings.Join(execStartParts, " "),
 		"Restart=on-failure",
 		"RestartSec=5",
 		"KillMode=control-group",

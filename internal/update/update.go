@@ -1057,7 +1057,7 @@ func escapeBatchValue(value string) string {
 }
 
 func startProcess(command string, args []string) error {
-	return exec.Command(command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
+	return exec.CommandContext(context.Background(), command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 }
 
 func runCommand(ctx context.Context, command string, args []string, stdout io.Writer, stderr io.Writer) error {

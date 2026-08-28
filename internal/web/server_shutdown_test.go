@@ -44,7 +44,8 @@ func TestServerShutdownDrainsAsyncWritesAfterActiveHandlers(t *testing.T) {
 		return c.NoContent(http.StatusAccepted)
 	})
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}

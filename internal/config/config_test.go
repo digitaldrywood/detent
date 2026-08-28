@@ -1599,7 +1599,7 @@ func TestValidateGitHubIssueFieldRequiresRepository(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
 		t.Fatalf("Validate() error = %v, want repository requirement", err)
 	}
-	if err != nil && strings.Contains(err.Error(), "tracker.project_slug") {
+	if strings.Contains(err.Error(), "tracker.project_slug") {
 		t.Fatalf("Validate() error = %v, want no project_slug requirement in issue_field mode", err)
 	}
 }
@@ -1618,7 +1618,7 @@ func TestValidateGitHubLabelRequiresRepository(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
 		t.Fatalf("Validate() error = %v, want repository requirement", err)
 	}
-	if err != nil && strings.Contains(err.Error(), "tracker.project_slug") {
+	if strings.Contains(err.Error(), "tracker.project_slug") {
 		t.Fatalf("Validate() error = %v, want no project_slug requirement in label mode", err)
 	}
 }

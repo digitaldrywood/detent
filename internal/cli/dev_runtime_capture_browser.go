@@ -60,7 +60,7 @@ func startDemoCaptureBrowser(ctx context.Context, cfg demoCaptureConfig) (*demoC
 	if err != nil {
 		return nil, err
 	}
-	port, err := freeDemoCaptureTCPPort()
+	port, err := freeDemoCaptureTCPPort(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -177,8 +177,9 @@ func executableDemoCaptureFile(path string) bool {
 	return !info.IsDir()
 }
 
-func freeDemoCaptureTCPPort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func freeDemoCaptureTCPPort(ctx context.Context) (int, error) {
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, fmt.Errorf("reserve browser debug port: %w", err)
 	}
