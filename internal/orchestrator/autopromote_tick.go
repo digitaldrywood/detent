@@ -354,7 +354,8 @@ func (o *Orchestrator) latestSuccessfulOperationalCompletionAttempt(
 			continue
 		}
 		if strings.TrimSpace(record.WorkpadStatus) != workpad.StatusComplete ||
-			!slices.Contains(record.ProgressKinds, "audit_artifact") {
+			strings.TrimSpace(record.CompletionKind) != workpad.CompletionOperational ||
+			!slices.Contains(record.ProgressKinds, "operational_completion") {
 			continue
 		}
 		return attempt, true, nil
@@ -3074,7 +3075,10 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 
 func appendAutoPromoteWorkpadAttrs(attrs []any, decision AutoPromoteDecision) []any {
 	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
-		attrs = append(attrs, "operational_evidence", evidence)
+		attrs = append(attrs,
+			"completion_kind", workpad.CompletionOperational,
+			"operational_evidence", evidence,
+		)
 	}
 	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
 		attrs = append(attrs, "workpad_comment_url", url)
@@ -3187,6 +3191,8 @@ func autoPromoteComment(
 		b.WriteString(failedChecks)
 	}
 	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
+		b.WriteString("\n- completion_kind: ")
+		b.WriteString(workpad.CompletionOperational)
 		b.WriteString("\n- operational_evidence: ")
 		b.WriteString(evidence)
 	}

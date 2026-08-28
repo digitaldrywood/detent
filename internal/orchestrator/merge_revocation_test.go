@@ -230,8 +230,9 @@ func TestMergeRevocationDoesNotReportMissingPullRequestForOperationalCompletion(
 			t.Parallel()
 
 			issue := connector.Issue{
-				ID:    "issue-operational-merge",
-				State: "Merging",
+				ID:          "issue-operational-merge",
+				State:       "Merging",
+				Description: operationalCompletionAuthorizationBody(),
 				Comments: []connector.IssueComment{{
 					Body: tt.body,
 				}},

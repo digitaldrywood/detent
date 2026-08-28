@@ -97,3 +97,40 @@ Also update the state-specific instructions:
 For `tracker.kind: github_local`, keep GitHub issues read-only unless a human
 explicitly authorizes upstream metadata writes. The local Workpad still needs
 the same `detent-status` block.
+
+## Operational completion without a pull request
+
+An issue author may opt an issue into operational completion by putting this
+block in the issue body before the worker is dispatched:
+
+```detent-completion
+schema: 1
+completion_kind: operational
+```
+
+This contract is for authorized host or service work whose intended result has
+no repository diff and no pull request. The completing worker must leave a
+clean workspace and declare the matching kind and concrete verification
+evidence in the final Workpad status block:
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_kind: operational
+  completion_evidence: "what changed on the host and how it was verified"
+blockers: []
+human_action: null
+```
+
+Detent snapshots the issue-body authorization at dispatch. Adding the
+authorization only at completion time is not accepted. An undeclared or
+invalid operational assertion follows the ordinary pull-request gate and the
+existing no-progress breaker. A valid declaration is recorded as
+`operational_completion`, including its completion kind in the work-attempt
+journal and dashboard, and can advance without a linked pull request. Projects
+using a human-review gate still require that approval before Done.
+
+Add both blocks to the project's `WORKFLOW.md` guidance. `detent doctor` warns
+when an active or observed issue opts into operational completion but the
+workflow prompt does not mention this contract.

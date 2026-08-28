@@ -94,6 +94,11 @@ type statusBlockYAML struct {
 	Fields      map[string]string `yaml:"fields"`
 }
 
+type completionAuthorizationYAML struct {
+	Schema         int    `yaml:"schema"`
+	CompletionKind string `yaml:"completion_kind"`
+}
+
 type blockerYAML struct {
 	Ref             string         `yaml:"ref"`
 	Reason          string         `yaml:"reason"`
@@ -151,6 +156,72 @@ func LastStatusBlock(body string) (string, bool) {
 		trimmed := strings.TrimSpace(line)
 		if !inFence {
 			char, length, ok := statusFenceOpening(trimmed)
+			if !ok {
+				continue
+			}
+			inFence = true
+			fenceChar = char
+			fenceLen = length
+			lines = lines[:0]
+			continue
+		}
+		if statusFenceClosing(trimmed, fenceChar, fenceLen) {
+			last = strings.Join(lines, "\n")
+			found = true
+			inFence = false
+			continue
+		}
+		lines = append(lines, line)
+	}
+
+	return last, found
+}
+
+func CompletionAuthorizationFromIssueBody(body string) (string, bool, error) {
+	content, found := lastCompletionAuthorizationBlock(body)
+	if !found {
+		return "", false, nil
+	}
+
+	var raw completionAuthorizationYAML
+	decoder := yaml.NewDecoder(strings.NewReader(content))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&raw); err != nil {
+		return "", true, fmt.Errorf("parse detent-completion YAML: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return "", true, errors.New("parse detent-completion YAML: multiple YAML documents are not supported")
+	} else if !errors.Is(err, io.EOF) {
+		return "", true, errors.New("parse detent-completion YAML: multiple YAML documents are not supported")
+	}
+	if raw.Schema != 1 {
+		return "", true, errors.New("detent-completion schema must be 1")
+	}
+	kind := normalizeToken(raw.CompletionKind)
+	if kind != CompletionOperational {
+		return "", true, fmt.Errorf("completion_kind %q must be operational", strings.TrimSpace(raw.CompletionKind))
+	}
+	return kind, true, nil
+}
+
+func OperationalCompletionAuthorized(body string) bool {
+	kind, found, err := CompletionAuthorizationFromIssueBody(body)
+	return err == nil && found && kind == CompletionOperational
+}
+
+func lastCompletionAuthorizationBlock(body string) (string, bool) {
+	var last string
+	found := false
+	inFence := false
+	fenceChar := byte(0)
+	fenceLen := 0
+	lines := []string{}
+
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inFence {
+			char, length, ok := namedFenceOpening(trimmed, "detent-completion")
 			if !ok {
 				continue
 			}
@@ -592,6 +663,10 @@ func ContentHash(content string) string {
 }
 
 func statusFenceOpening(line string) (byte, int, bool) {
+	return namedFenceOpening(line, "detent-status")
+}
+
+func namedFenceOpening(line string, name string) (byte, int, bool) {
 	if len(line) < 3 || (line[0] != '`' && line[0] != '~') {
 		return 0, 0, false
 	}
@@ -604,7 +679,7 @@ func statusFenceOpening(line string) (byte, int, bool) {
 		return 0, 0, false
 	}
 	fields := strings.Fields(strings.TrimSpace(line[length:]))
-	if len(fields) == 0 || fields[0] != "detent-status" {
+	if len(fields) == 0 || fields[0] != name {
 		return 0, 0, false
 	}
 	return char, length, true

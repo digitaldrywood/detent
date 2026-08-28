@@ -705,6 +705,7 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 	tests := []struct {
 		name         string
 		body         string
+		authorized   bool
 		pullRequest  *connector.PullRequest
 		wantAction   AutoPromoteAction
 		wantReason   AutoPromoteReason
@@ -713,9 +714,16 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 		{
 			name:         "declared operational completion",
 			body:         operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			authorized:   true,
 			wantAction:   AutoPromoteActionComplete,
 			wantReason:   AutoPromoteReasonOperationalCompletion,
 			wantEvidence: "Runner service is healthy and accepting jobs.",
+		},
+		{
+			name:       "undeclared operational assertion",
+			body:       operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
 		},
 		{
 			name:       "ordinary no diff completion",
@@ -732,6 +740,7 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 		{
 			name:        "operational declaration with pull request placeholder",
 			body:        operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			authorized:  true,
 			pullRequest: &connector.PullRequest{HydrationUnavailableReason: "rate_limited"},
 			wantAction:  AutoPromoteActionSkip,
 			wantReason:  AutoPromoteReasonPullRequestHydrationUnavailable,
@@ -743,6 +752,9 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 			t.Parallel()
 
 			issue := autoPromoteTestIssue("issue-operational-completion", nil)
+			if tt.authorized {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
 			issue.PullRequest = tt.pullRequest
 			issue.Comments = []connector.IssueComment{{
 				Body: tt.body,
@@ -763,6 +775,39 @@ func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 			}
 			if tt.wantAction == AutoPromoteActionComplete && got.WorkpadCommentURL != "https://github.test/comment/operational-completion" {
 				t.Fatalf("WorkpadCommentURL = %q", got.WorkpadCommentURL)
+			}
+		})
+	}
+}
+
+func TestEvaluateAutoPromoteOperationalCompletionHonorsHumanReview(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		labels     []string
+		wantAction AutoPromoteAction
+		wantReason AutoPromoteReason
+	}{
+		{name: "awaits approval", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonHumanApprovalMissing},
+		{name: "approved completion", labels: []string{"approved-by-human"}, wantAction: AutoPromoteActionComplete, wantReason: AutoPromoteReasonOperationalCompletion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-operational-human-review", tt.labels)
+			issue.Description = operationalCompletionAuthorizationBody()
+			issue.PullRequest = nil
+			issue.Comments = []connector.IssueComment{{Body: operationalCompletionWorkpadBody("Backfill verified.")}}
+			decision := EvaluateAutoPromote(issue, AutoPromoteSummary{}, AutoPromoteConfig{
+				Enabled:        true,
+				TerminalStates: []string{"Done"},
+				Gate:           gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},
+			}, time.Now())
+
+			if decision.Action != tt.wantAction || decision.Reason != tt.wantReason {
+				t.Fatalf("decision = %#v, want action %q reason %q", decision, tt.wantAction, tt.wantReason)
 			}
 		})
 	}

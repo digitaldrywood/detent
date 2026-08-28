@@ -392,6 +392,8 @@ func checkDoctorProjectWithProgress(
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		setDoctorCurrentCheck("Project " + id + " issue agent models")
 		checks = append(checks, checkDoctorIssueAgentModels(ctx, id, project, workflow.Config, deps))
+		setDoctorCurrentCheck("Project " + id + " operational completion")
+		checks = append(checks, checkDoctorOperationalCompletion(ctx, id, workflow.Config, workflow.Prompt, deps))
 		setDoctorCurrentCheck("Project " + id + " authorization eligibility")
 		checks = append(checks, checkDoctorAuthorizationEligibility(ctx, id, project, workflow.Config, deps))
 		setDoctorCurrentCheck("Project " + id + " ownership eligibility")

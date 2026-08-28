@@ -99,6 +99,11 @@ func TestBoardCardRendersCompletionProgressClassification(t *testing.T) {
 			want:     []string{"Last turn · audit artifact", "verifiable_non_diff_progress"},
 		},
 		{
+			name:     "operational completion",
+			progress: telemetry.CompletionProgress{Outcome: "success", Reason: "operational_completion", Kinds: []string{"operational_completion"}, CompletionKind: "operational"},
+			want:     []string{"Last turn · operational completion", "completion kind: operational", "operational_completion"},
+		},
+		{
 			name:     "prose-only no progress",
 			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "completed_clean_diff_without_pull_request", ConsecutiveNoProgress: 2, NoProgressLimit: 3},
 			want:     []string{"Last turn · no progress 2/3", "completed_clean_diff_without_pull_request"},

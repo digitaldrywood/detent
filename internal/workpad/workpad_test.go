@@ -315,6 +315,76 @@ func TestOperationalCompletion(t *testing.T) {
 	}
 }
 
+func TestCompletionAuthorizationFromIssueBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		body      string
+		wantKind  string
+		wantFound bool
+		wantError string
+	}{
+		{
+			name:      "operational completion authorized",
+			body:      "## Completion contract\n\n```detent-completion\nschema: 1\ncompletion_kind: operational\n```",
+			wantKind:  CompletionOperational,
+			wantFound: true,
+		},
+		{
+			name:      "last authorization wins",
+			body:      "```detent-completion\nschema: 1\ncompletion_kind: unsupported\n```\n\n```detent-completion\nschema: 1\ncompletion_kind: operational\n```",
+			wantKind:  CompletionOperational,
+			wantFound: true,
+		},
+		{name: "ordinary issue body"},
+		{
+			name:      "unsupported completion kind",
+			body:      "```detent-completion\nschema: 1\ncompletion_kind: repository\n```",
+			wantFound: true,
+			wantError: `completion_kind "repository" must be operational`,
+		},
+		{
+			name:      "unknown field",
+			body:      "```detent-completion\nschema: 1\ncompletion_kind: operational\nextra: nope\n```",
+			wantFound: true,
+			wantError: "field extra not found",
+		},
+		{
+			name:      "wrong schema",
+			body:      "```detent-completion\nschema: 2\ncompletion_kind: operational\n```",
+			wantFound: true,
+			wantError: "schema must be 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			kind, found, err := CompletionAuthorizationFromIssueBody(tt.body)
+			if found != tt.wantFound {
+				t.Fatalf("found = %t, want %t", found, tt.wantFound)
+			}
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CompletionAuthorizationFromIssueBody() error = %v", err)
+			}
+			if kind != tt.wantKind {
+				t.Fatalf("kind = %q, want %q", kind, tt.wantKind)
+			}
+			if got := OperationalCompletionAuthorized(tt.body); got != (tt.wantKind == CompletionOperational) {
+				t.Fatalf("OperationalCompletionAuthorized() = %t", got)
+			}
+		})
+	}
+}
+
 func TestParseRef(t *testing.T) {
 	t.Parallel()
 

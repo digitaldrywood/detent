@@ -15,6 +15,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -305,6 +306,8 @@ func spendProgressAttemptAccepted(attempt store.WorkAttempt) bool {
 	switch strings.TrimSpace(record.Reason) {
 	case "pull_request_created_or_updated", "signature_changed":
 		return true
+	case implementOperationalCompletion:
+		return strings.TrimSpace(record.CompletionKind) == workpad.CompletionOperational
 	default:
 		return false
 	}
@@ -377,6 +380,11 @@ func implementAcceptedStateChange(_ Running, decision implementCompletionProgres
 	switch strings.TrimSpace(decision.Reason) {
 	case "pull_request_created_or_updated", "signature_changed", implementMergedCompletionReason:
 		return true, decision.Reason
+	case implementOperationalCompletion:
+		if strings.TrimSpace(decision.CompletionKind) == workpad.CompletionOperational {
+			return true, decision.Reason
+		}
+		return false, ""
 	default:
 		return false, ""
 	}

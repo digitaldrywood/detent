@@ -872,7 +872,8 @@ func resetWorkerFailureBreakers(state *State, issueID string) {
 }
 
 func implementCompletionHasDurableProgress(running Running, decision implementCompletionProgressDecision) bool {
-	if strings.TrimSpace(running.CompletionLane) != "" || implementProgressLinkedPullRequest(decision.Issue) {
+	if strings.TrimSpace(running.CompletionLane) != "" || implementProgressLinkedPullRequest(decision.Issue) ||
+		strings.TrimSpace(decision.CompletionKind) == workpad.CompletionOperational {
 		return true
 	}
 	for _, kind := range decision.ProgressKinds {

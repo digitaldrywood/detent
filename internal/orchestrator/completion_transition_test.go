@@ -75,6 +75,7 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			name: "operational rework completion advances to review",
 			issue: func() connector.Issue {
 				issue := completionTransitionIssue("Rework", "")
+				issue.Description = operationalCompletionAuthorizationBody()
 				issue.Comments = []connector.IssueComment{{
 					Body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
 				}}
@@ -391,6 +392,7 @@ func TestTransitionCompletedActiveIssuesCompletesOperationalWorkWithoutPullReque
 
 	now := time.Date(2026, 8, 18, 18, 0, 0, 0, time.UTC)
 	issue := completionTransitionIssue("In Progress", "")
+	issue.Description = operationalCompletionAuthorizationBody()
 	issue.Comments = []connector.IssueComment{{
 		Body: operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
 		URL:  "https://github.test/comment/operational-completion",
@@ -432,6 +434,7 @@ func TestTransitionCompletedActiveIssuesCompletesOperationalWorkWithoutPullReque
 	for _, fragment := range []string{
 		"Completed this issue operationally",
 		"reason: operational_completion",
+		"completion_kind: operational",
 		"operational_evidence: Runner service is healthy and accepting jobs.",
 		"workpad_comment: https://github.test/comment/operational-completion",
 	} {
@@ -862,6 +865,13 @@ func operationalCompletionWorkpadBody(evidence string) string {
 		"  completion_evidence: \"" + evidence + "\"\n" +
 		"blockers: []\n" +
 		"human_action: null\n" +
+		"```"
+}
+
+func operationalCompletionAuthorizationBody() string {
+	return "## Completion contract\n\n```detent-completion\n" +
+		"schema: 1\n" +
+		"completion_kind: operational\n" +
 		"```"
 }
 
