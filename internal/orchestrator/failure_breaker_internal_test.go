@@ -59,6 +59,17 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			want:          projectFailureClassDeliverableCommand + ":codex_apps/github.create_pull_request",
 		},
 		{
+			name: "published push later failure has distinct class",
+			err: &runpkg.DeliverableCommandError{
+				OperationClass: "post_push",
+				Operation:      "post-push command",
+				Status:         "failed",
+			},
+			terminalState: store.WorkAttemptTerminalFailure,
+			errorClass:    workAttemptErrorPostPushCommand,
+			want:          projectFailureClassDeliverableCommand + ":post-push command",
+		},
+		{
 			name:          "backend body is hashed",
 			err:           failureBreakerBackendError{body: `{"code":"overloaded"}`},
 			terminalState: store.WorkAttemptTerminalFailure,

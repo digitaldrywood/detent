@@ -94,6 +94,10 @@ type RecoveryState struct {
 
 type DeliverableState struct {
 	CommitsAhead       int
+	Remote             string
+	RemoteRef          string
+	LocalHeadSHA       string
+	RemoteHeadSHA      string
 	RemoteBranchExists bool
 }
 

@@ -563,14 +563,13 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			wantErr: "push rejected",
 		},
 		{
-			name: "combined label failure preserves changed push delivery",
+			name: "combined label failure requires target ref evidence",
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "branch pushed; ci-trigger-label: HTTP 500"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
-			wantErr:                   "HTTP 500",
-			wantPullRequestHeadPushed: true,
+			wantErr: "HTTP 500",
 		},
 		{
 			name: "later non-gate label requires configured label reapplication",
@@ -630,6 +629,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				workspace.Issue{},
 				config.Agent{},
 				"ci:ready",
+				nil,
 				time.Now(),
 				0,
 				agentidentity.Identity{},
@@ -694,6 +694,303 @@ func TestAgentRunProgressUsesStreamedCommandErrorInsteadOfCommandPayload(t *test
 	}
 	if strings.Contains(err.Error(), "workspace instructions must not be logged") {
 		t.Fatalf("deliverable error leaked command payload: %v", err)
+	}
+}
+
+func TestCommandAfterLastGitPush(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "bare push", command: "git push origin HEAD"},
+		{name: "later assertion", command: "git push origin HEAD && test remote = local", want: "test remote = local"},
+		{name: "quoted separator", command: `printf '%s' 'before; still before' && git push origin HEAD`},
+		{name: "multiple later commands", command: "git push origin HEAD\nprintf verified\nexit 19", want: "printf verified && exit 19"},
+		{name: "last push controls", command: "git push origin HEAD && printf first && git push origin HEAD && false", want: "false"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := commandAfterLastGitPush(tt.command); got != tt.want {
+				t.Fatalf("commandAfterLastGitPush() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunAgentTurnCapturesTargetRefAtFailedCommandCompletion(t *testing.T) {
+	t.Parallel()
+
+	exitCode := 19
+	command := "git push origin HEAD && exit 19"
+	observerCalls := 0
+	runner := &Runner{
+		now:    time.Now,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	execution := runner.runAgentTurn(
+		t.Context(),
+		&toolUpdateAgentBackend{updates: []AgentUpdate{
+			{Type: AgentUpdateToolStarted, ItemID: "push-item", Tool: "commandExecution", Command: command, Delta: command},
+			{Type: AgentUpdateToolCompleted, ItemID: "push-item", Tool: "commandExecution", Command: command, Status: "failed", ExitCode: &exitCode, Delta: "later assertion failed"},
+			{Type: AgentUpdateTurnCompleted, Status: "completed"},
+		}},
+		AgentTurnRequest{},
+		RunRequest{Issue: connector.Issue{ID: "issue-2029", Identifier: "digitaldrywood/detent#2029"}},
+		workspace.Info{},
+		workspace.Issue{},
+		config.Agent{},
+		"",
+		func(context.Context) *DeliverableTargetRefEvidence {
+			observerCalls++
+			return &DeliverableTargetRefEvidence{
+				Remote:                     "origin",
+				Ref:                        "refs/heads/detent/published",
+				PostCommandLocalHeadSHA:    "new-head",
+				PostCommandRemoteHeadSHA:   "new-head",
+				PostCommandRemoteRefExists: true,
+				InitialObserved:            true,
+				PostCommandObserved:        true,
+				AdvancedToLocalHead:        true,
+			}
+		},
+		time.Now(),
+		0,
+		agentidentity.Identity{},
+		nil,
+		0,
+		"",
+		"",
+	)
+
+	if observerCalls != 1 {
+		t.Fatalf("target ref observer calls = %d, want 1", observerCalls)
+	}
+	var deliverableErr *DeliverableCommandError
+	if !errors.As(execution.err, &deliverableErr) || deliverableErr.TargetRef == nil || !deliverableErr.TargetRef.AdvancedToLocalHead {
+		t.Fatalf("deliverable error target evidence = %#v", execution.err)
+	}
+	if len(execution.result.DeliverableCommands) != 1 || execution.result.DeliverableCommands[0].TargetRef == nil || !execution.result.DeliverableCommands[0].TargetRef.AdvancedToLocalHead {
+		t.Fatalf("run result command evidence = %#v", execution.result.DeliverableCommands)
+	}
+}
+
+func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
+	t.Parallel()
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("resolve git: %v", err)
+	}
+	tests := []struct {
+		name                string
+		prepublish          bool
+		wrapperFailure      bool
+		laterFailure        bool
+		laterLocalChange    bool
+		wantPublished       bool
+		wantErrorClass      string
+		wantOutcome         string
+		wantExitCode        int
+		wantAdvancedToLocal bool
+	}{
+		{
+			name:                "published bare push clears failed item",
+			wrapperFailure:      true,
+			wantPublished:       true,
+			wantOutcome:         "published",
+			wantExitCode:        23,
+			wantAdvancedToLocal: true,
+		},
+		{
+			name:                "published compound push retains later failure",
+			laterFailure:        true,
+			wantPublished:       true,
+			wantErrorClass:      "post_push",
+			wantOutcome:         "published_post_push_failed",
+			wantExitCode:        19,
+			wantAdvancedToLocal: true,
+		},
+		{
+			name:           "preexisting exact head does not prove advancement",
+			prepublish:     true,
+			wrapperFailure: true,
+			wantErrorClass: "push",
+			wantOutcome:    "failed",
+			wantExitCode:   23,
+		},
+		{
+			name:             "post-command remote does not match final local head",
+			wrapperFailure:   true,
+			laterLocalChange: true,
+			wantErrorClass:   "push",
+			wantOutcome:      "failed",
+			wantExitCode:     23,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureRoot := t.TempDir()
+			remote := filepath.Join(fixtureRoot, "remote.git")
+			runRunnerGit(t, fixtureRoot, "init", "--bare", remote)
+			source := filepath.Join(fixtureRoot, "source")
+			if err := os.MkdirAll(source, 0o700); err != nil {
+				t.Fatalf("create source: %v", err)
+			}
+			runRunnerGit(t, source, "init", "-b", "main")
+			runRunnerGit(t, source, "config", "user.name", "Test User")
+			runRunnerGit(t, source, "config", "user.email", "test@example.com")
+			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("source\n"), 0o600); err != nil {
+				t.Fatalf("write source: %v", err)
+			}
+			runRunnerGit(t, source, "add", "README.md")
+			runRunnerGit(t, source, "commit", "-m", "test: initialize source")
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+			workspacePath := filepath.Join(fixtureRoot, "workspace")
+			runRunnerGit(t, fixtureRoot, "clone", remote, workspacePath)
+			runRunnerGit(t, workspacePath, "config", "user.name", "Test User")
+			runRunnerGit(t, workspacePath, "config", "user.email", "test@example.com")
+			branch := "detent/failed-push-" + strings.ReplaceAll(tt.name, " ", "-")
+			runRunnerGit(t, workspacePath, "checkout", "-b", branch)
+			if err := os.WriteFile(filepath.Join(workspacePath, "delivered.txt"), []byte(tt.name+"\n"), 0o600); err != nil {
+				t.Fatalf("write delivered work: %v", err)
+			}
+			runRunnerGit(t, workspacePath, "add", "delivered.txt")
+			runRunnerGit(t, workspacePath, "commit", "-m", "test: add delivered work")
+			pushRef := "HEAD:refs/heads/" + branch
+			if tt.prepublish {
+				runRunnerGit(t, workspacePath, "push", "origin", pushRef)
+			}
+
+			workspaceBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+				Root: fixtureRoot, SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			info := workspace.Info{Path: workspacePath, Branch: branch}
+			baseSHA := strings.TrimSpace(runRunnerGit(t, workspacePath, "rev-parse", "origin/main"))
+			workspaceIssue := workspace.Issue{ID: "issue-2029", Identifier: "digitaldrywood/detent#2029", BranchName: branch, BaseRef: baseSHA}
+			runner := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			initial := runner.observeWorkspaceDeliverableState(workspaceBackend, t.Context(), info, workspaceIssue, "initial")
+
+			wrapperDir := filepath.Join(t.TempDir(), "bin")
+			if err := os.MkdirAll(wrapperDir, 0o700); err != nil {
+				t.Fatalf("create wrapper directory: %v", err)
+			}
+			wrapper := `#!/bin/sh
+if [ "$#" -eq 3 ] && [ "$1" = "push" ] && [ "$2" = "origin" ] && [ "$3" = "$DETENT_TEST_PUSH_REF" ]; then
+  "$DETENT_REAL_GIT" "$@"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    exit "$status"
+  fi
+  if [ "$DETENT_TEST_PUSH_WRAPPER_FAIL" = "1" ]; then
+    printf '%s\n' 'detent injected postcondition failure' >&2
+    exit 23
+  fi
+  exit 0
+fi
+exec "$DETENT_REAL_GIT" "$@"
+`
+			if err := os.WriteFile(filepath.Join(wrapperDir, "git"), []byte(wrapper), 0o700); err != nil {
+				t.Fatalf("write git wrapper: %v", err)
+			}
+
+			command := "git push origin " + pushRef
+			if tt.laterFailure {
+				command += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
+			}
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", command)
+			cmd.Dir = workspacePath
+			wrapperFailure := "0"
+			if tt.wrapperFailure {
+				wrapperFailure = "1"
+			}
+			cmd.Env = append(os.Environ(),
+				"PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"DETENT_REAL_GIT="+realGit,
+				"DETENT_TEST_PUSH_REF="+pushRef,
+				"DETENT_TEST_PUSH_WRAPPER_FAIL="+wrapperFailure,
+			)
+			output, commandErr := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(commandErr, &exitErr) {
+				t.Fatalf("command error = %v, want ExitError; output=%s", commandErr, output)
+			}
+			exitCode := exitErr.ExitCode()
+			if exitCode != tt.wantExitCode {
+				t.Fatalf("exit code = %d, want %d; output=%s", exitCode, tt.wantExitCode, output)
+			}
+			if tt.wrapperFailure && !strings.Contains(string(output), "detent injected postcondition failure") {
+				t.Fatalf("command output = %q, want fault injection marker", output)
+			}
+			deliverableErr := &DeliverableCommandError{
+				OperationClass: "push",
+				Operation:      "git push",
+				Arguments:      "git push",
+				ItemID:         "push-item",
+				Command:        command,
+				Status:         "failed",
+				ExitCode:       &exitCode,
+				Message:        strings.TrimSpace(string(output)),
+			}
+			postCommand := runner.observeWorkspaceDeliverableState(workspaceBackend, t.Context(), info, workspaceIssue, "post_command")
+			deliverableErr.TargetRef = deliverableTargetRefEvidence(branch, initial, postCommand)
+			if tt.laterLocalChange {
+				if err := os.WriteFile(filepath.Join(workspacePath, "later-local.txt"), []byte("later local head\n"), 0o600); err != nil {
+					t.Fatalf("write later local work: %v", err)
+				}
+				runRunnerGit(t, workspacePath, "add", "later-local.txt")
+				runRunnerGit(t, workspacePath, "commit", "-m", "test: advance final local head")
+			}
+			execution := agentTurnExecution{
+				err: deliverableErr,
+				result: RunResult{
+					FinalState:          FinalStateFailed,
+					DeliverableCommands: deliverableCommandEvidenceFromError(deliverableErr),
+				},
+			}
+			got := runner.reconcileFailedPushPublication(
+				t.Context(), workspaceBackend, info, workspaceIssue, initial, execution,
+				RunRequest{Issue: connector.Issue{ID: workspaceIssue.ID, Identifier: workspaceIssue.Identifier}, WorkAttemptID: 2029},
+			)
+
+			if got.result.PullRequestHeadPushed != tt.wantPublished {
+				t.Fatalf("PullRequestHeadPushed = %v, want %v", got.result.PullRequestHeadPushed, tt.wantPublished)
+			}
+			var gotDeliverableErr *DeliverableCommandError
+			if tt.wantErrorClass == "" {
+				if got.err != nil {
+					t.Fatalf("reconciled error = %v, want nil", got.err)
+				}
+			} else if !errors.As(got.err, &gotDeliverableErr) || gotDeliverableErr.OperationClass != tt.wantErrorClass {
+				t.Fatalf("reconciled error = %#v, want class %q", got.err, tt.wantErrorClass)
+			}
+			if len(got.result.DeliverableCommands) != 1 {
+				t.Fatalf("DeliverableCommands = %#v, want one", got.result.DeliverableCommands)
+			}
+			evidence := got.result.DeliverableCommands[0]
+			if evidence.Command != command || evidence.ExitCode == nil || *evidence.ExitCode != tt.wantExitCode || evidence.Outcome != tt.wantOutcome {
+				t.Fatalf("command evidence = %#v, want command %q exit %d outcome %q", evidence, command, tt.wantExitCode, tt.wantOutcome)
+			}
+			if evidence.TargetRef == nil || evidence.TargetRef.AdvancedToLocalHead != tt.wantAdvancedToLocal {
+				t.Fatalf("target ref evidence = %#v, want advanced=%v", evidence.TargetRef, tt.wantAdvancedToLocal)
+			}
+			if tt.wantPublished && evidence.TargetRef.PostCommandRemoteHeadSHA != evidence.TargetRef.PostCommandLocalHeadSHA {
+				t.Fatalf("post-command heads = remote %q local %q, want exact match", evidence.TargetRef.PostCommandRemoteHeadSHA, evidence.TargetRef.PostCommandLocalHeadSHA)
+			}
+		})
 	}
 }
 
@@ -1008,6 +1305,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				workspace.Issue{ID: "issue-1305", Identifier: "digitaldrywood/detent#1305"},
 				config.Agent{},
 				"",
+				nil,
 				time.Now(),
 				0,
 				agentidentity.Identity{},

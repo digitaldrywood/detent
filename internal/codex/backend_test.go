@@ -202,6 +202,24 @@ func TestAgentUpdateFromCodexCarriesCumulativeAndLastTokenUsage(t *testing.T) {
 	}
 }
 
+func TestAgentUpdateFromCodexCarriesCommandCompletionEvidence(t *testing.T) {
+	t.Parallel()
+
+	exitCode := 19
+	update := agentUpdateFromCodex(Update{
+		Type:     UpdateToolCompleted,
+		ItemID:   "push-item",
+		Tool:     "commandExecution",
+		Command:  "git push origin HEAD && exit 19",
+		Status:   "failed",
+		ExitCode: &exitCode,
+	})
+
+	if update.Command != "git push origin HEAD && exit 19" || update.ExitCode == nil || *update.ExitCode != exitCode {
+		t.Fatalf("command completion evidence = command %q exit %#v", update.Command, update.ExitCode)
+	}
+}
+
 func TestAgentBackendEnforcesConfiguredStallTimeout(t *testing.T) {
 	t.Parallel()
 

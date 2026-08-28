@@ -430,6 +430,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
 			progressMetadata,
 			spendProgressMetadata(spendProgress),
+			deliverableCommandEvidenceMetadata(event.Result),
 		))
 		attempt := event.RetryAttempt
 		if attempt < 1 {
@@ -653,6 +654,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		implementCompletionProgressMetadata(progress),
 		spendProgressMetadata(spendProgress),
 		artifactGateConvergenceMetadata(artifactConvergence),
+		deliverableCommandEvidenceMetadata(event.Result),
 	))
 
 	state.Completed[event.IssueID] = Completed{
@@ -732,6 +734,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, "", running.WorkerHost)
+}
+
+func deliverableCommandEvidenceMetadata(result runpkg.RunResult) map[string]any {
+	if len(result.DeliverableCommands) == 0 {
+		return nil
+	}
+	return map[string]any{"deliverable_commands": result.DeliverableCommands}
 }
 
 func (o *Orchestrator) handleWorkspacePreparationFailure(

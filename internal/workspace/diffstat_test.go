@@ -292,6 +292,18 @@ func TestLocalGitDeliverableState(t *testing.T) {
 			if got.CommitsAhead != tt.wantCommitsAhead || got.RemoteBranchExists != tt.wantRemoteBranch {
 				t.Fatalf("DeliverableState() = %+v, want commits ahead=%d remote branch=%t", got, tt.wantCommitsAhead, tt.wantRemoteBranch)
 			}
+			localHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if got.Remote != "origin" || got.RemoteRef != "refs/heads/"+info.Branch || got.LocalHeadSHA != localHead {
+				t.Fatalf("DeliverableState() ref evidence = %+v, want origin refs/heads/%s local %s", got, info.Branch, localHead)
+			}
+			if tt.wantRemoteBranch {
+				remoteFields := strings.Fields(runGit(t, info.Path, "ls-remote", "origin", "refs/heads/"+info.Branch))
+				if len(remoteFields) < 1 || got.RemoteHeadSHA != remoteFields[0] {
+					t.Fatalf("DeliverableState().RemoteHeadSHA = %q, want ls-remote fields %v", got.RemoteHeadSHA, remoteFields)
+				}
+			} else if got.RemoteHeadSHA != "" {
+				t.Fatalf("DeliverableState().RemoteHeadSHA = %q, want empty", got.RemoteHeadSHA)
+			}
 		})
 	}
 }

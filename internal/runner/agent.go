@@ -999,6 +999,7 @@ func (r *Runner) runAgentTurn(
 	workspaceIssue workspace.Issue,
 	agentConfig config.Agent,
 	ciTriggerLabel string,
+	targetRefObserver func(context.Context) *DeliverableTargetRefEvidence,
 	runStartedAt time.Time,
 	detentSessionID int64,
 	initialIdentity agentidentity.Identity,
@@ -1061,6 +1062,11 @@ func (r *Runner) runAgentTurn(
 			}
 		}
 		progress.apply(update, eventAt)
+		if targetRefObserver != nil && update.Type == AgentUpdateToolCompleted && failedAgentToolStatus(update.Status) {
+			if deliverableErr := progress.deliverableFailure(update.ItemID, "push"); deliverableErr != nil {
+				deliverableErr.TargetRef = cloneDeliverableTargetRefEvidence(targetRefObserver(updateCtx))
+			}
+		}
 		if err := r.publishRunUpdate(updateCtx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID); err != nil {
 			return err
 		}
@@ -1110,6 +1116,7 @@ func (r *Runner) runAgentTurn(
 			result.FinalState = FinalStateFailed
 		}
 	}
+	result.DeliverableCommands = deliverableCommandEvidenceFromError(turnErr)
 	cleanupErr := agentTurnCleanupError(turnErr, turnResult)
 	if cleanupErr != nil {
 		turnErr = nil
@@ -1371,8 +1378,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	var recoveryState *workspace.RecoveryState
+	initialDeliverableState := workspaceDeliverableStateObservation{}
+	var targetRefObserver func(context.Context) *DeliverableTargetRefEvidence
 	if mode == RunModeImplement {
 		recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+		initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue, "initial")
+		targetRefObserver = func(observerCtx context.Context) *DeliverableTargetRefEvidence {
+			postCommand := r.observeWorkspaceDeliverableState(runWorkspace, observerCtx, info, workspaceIssue, "post_command")
+			return deliverableTargetRefEvidence(info.Branch, initialDeliverableState, postCommand)
+		}
 	}
 	promptOptions := PromptOptions{
 		Attempt:              &attempt,
@@ -1600,7 +1614,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			turnRequest.ToolInstructions = admissionToolInstructions
 		}
 	}
-	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity, budgetProjection, 0, sessionModel, backendConfig.Kind)
+	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, runtimeIdentity, budgetProjection, 0, sessionModel, backendConfig.Kind)
 	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
@@ -1626,7 +1640,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.logger.Warn("clear agent session resume state failed", "detent_session_id", sessionID, "issue_id", req.Issue.ID, "error", updateErr)
 		}
 		resumeState = store.AgentResumeState{}
-		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity, budgetProjection, 0, sessionModel, backendConfig.Kind)
+		if targetRefObserver != nil {
+			initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, sessionCtx, info, workspaceIssue, "resume_fallback_initial")
+		}
+		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, runtimeIdentity, budgetProjection, 0, sessionModel, backendConfig.Kind)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
@@ -1636,6 +1653,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if req.ForgeRetry != nil && req.ForgeRetry.WorkProductPushed {
 		execution.result.PullRequestHeadPushed = true
+	}
+	if mode == RunModeImplement {
+		execution = r.reconcileFailedPushPublication(sessionCtx, runWorkspace, info, workspaceIssue, initialDeliverableState, execution, req)
 	}
 	turns := int64(max(execution.turnCount, 1))
 	if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
@@ -1659,7 +1679,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		recoveryRunRequest.deliverableRecoveryBranch = branch
 		recoveryRunRequest.sessionTurnOffset = execution.turnCount
 		budgetCostOffsetUSD := r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
-		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, execution.result.RuntimeIdentity, budgetProjection, budgetCostOffsetUSD, sessionModel, backendConfig.Kind)
+		if targetRefObserver != nil {
+			initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, sessionCtx, info, workspaceIssue, "deliverable_recovery_initial")
+		}
+		recovery := r.runAgentTurn(sessionCtx, backend, recoveryRequest, recoveryRunRequest, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, execution.result.RuntimeIdentity, budgetProjection, budgetCostOffsetUSD, sessionModel, backendConfig.Kind)
 		recovery.err = sessionBrake.wrapTurnLimit(ctx, recovery.err)
 		recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
@@ -1833,6 +1856,104 @@ func recoverablePullRequestDeliverable(execution agentTurnExecution) (*Deliverab
 	return pullRequestDeliverableFailure(execution.err)
 }
 
+func (r *Runner) reconcileFailedPushPublication(
+	ctx context.Context,
+	backend workspace.Backend,
+	info workspace.Info,
+	issue workspace.Issue,
+	initial workspaceDeliverableStateObservation,
+	execution agentTurnExecution,
+	req RunRequest,
+) agentTurnExecution {
+	errorsFound, onlyDeliverableErrors := deliverableCommandErrors(execution.err)
+	var pushErrors []*DeliverableCommandError
+	for _, deliverableErr := range errorsFound {
+		if deliverableErr != nil && deliverableErr.OperationClass == "push" {
+			pushErrors = append(pushErrors, deliverableErr)
+		}
+	}
+	if len(pushErrors) == 0 {
+		return execution
+	}
+
+	targetRef := cloneDeliverableTargetRefEvidence(pushErrors[0].TargetRef)
+	if targetRef == nil {
+		targetRef = deliverableTargetRefEvidence(info.Branch, initial, workspaceDeliverableStateObservation{})
+	}
+	finalState := r.observeWorkspaceDeliverableState(backend, ctx, info, issue, "final_command_reconciliation")
+	targetRef = finalizeDeliverableTargetRefEvidence(targetRef, finalState)
+	if len(execution.result.DeliverableCommands) == 0 {
+		execution.result.DeliverableCommands = deliverableCommandEvidenceFromError(execution.err)
+	}
+	for index := range execution.result.DeliverableCommands {
+		if execution.result.DeliverableCommands[index].OperationClass == "push" {
+			execution.result.DeliverableCommands[index].TargetRef = cloneDeliverableTargetRefEvidence(targetRef)
+		}
+	}
+	if !targetRef.AdvancedToLocalHead || !onlyDeliverableErrors {
+		return execution
+	}
+
+	reconciled := make([]error, 0, len(errorsFound))
+	reconciliationOutcome := "published"
+	for _, deliverableErr := range errorsFound {
+		if deliverableErr == nil {
+			continue
+		}
+		if deliverableErr.OperationClass != "push" {
+			reconciled = append(reconciled, deliverableErr)
+			continue
+		}
+		laterCommand := commandAfterLastGitPush(deliverableErr.Command)
+		outcome := "published"
+		if laterCommand != "" && (deliverableErr.ExitCode == nil || *deliverableErr.ExitCode != 0) {
+			postPushErr := *deliverableErr
+			postPushErr.OperationClass = "post_push"
+			postPushErr.Operation = "post-push command"
+			postPushErr.Arguments = truncateDeliverableDetail(laterCommand)
+			reconciled = append(reconciled, &postPushErr)
+			outcome = "published_post_push_failed"
+			reconciliationOutcome = outcome
+		}
+		for index := range execution.result.DeliverableCommands {
+			evidence := &execution.result.DeliverableCommands[index]
+			if evidence.ItemID != deliverableErr.ItemID || evidence.OperationClass != "push" {
+				continue
+			}
+			evidence.Outcome = outcome
+			if outcome == "published_post_push_failed" {
+				evidence.OperationClass = "post_push"
+				evidence.Operation = "post-push command"
+			}
+		}
+	}
+
+	execution.err = errors.Join(reconciled...)
+	execution.result.PullRequestHeadPushed = true
+	execution.result.ForgeWriteCompleted = true
+	if execution.err == nil {
+		execution.result.FinalState = FinalStateCompleted
+	} else {
+		execution.result.FinalState = finalStateForTurnError(execution.err)
+	}
+	attrs := []any{
+		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+		"workspace_branch", strings.TrimSpace(info.Branch),
+		"remote", targetRef.Remote,
+		"target_ref", targetRef.Ref,
+		"initial_remote_head_sha", targetRef.InitialRemoteHeadSHA,
+		"post_command_remote_head_sha", targetRef.PostCommandRemoteHeadSHA,
+		"post_command_local_head_sha", targetRef.PostCommandLocalHeadSHA,
+		"command_item_id", strings.TrimSpace(pushErrors[0].ItemID),
+		"outcome", reconciliationOutcome,
+	}
+	if pushErrors[0].ExitCode != nil {
+		attrs = append(attrs, "exit_code", *pushErrors[0].ExitCode)
+	}
+	r.logWorkerEventLevel(slog.LevelInfo, req.Issue, "worker_push_publication_reconciled", attrs...)
+	return execution
+}
+
 func classifyForgeDeliverableError(err error, fallbackHost string, workProductPushed bool) error {
 	if err == nil {
 		return nil
@@ -1950,6 +2071,35 @@ func deliverableCommandErrors(err error) ([]*DeliverableCommandError, bool) {
 		return false
 	}
 	return result, visit(err)
+}
+
+func deliverableCommandEvidenceFromError(err error) []DeliverableCommandEvidence {
+	errorsFound, _ := deliverableCommandErrors(err)
+	evidence := make([]DeliverableCommandEvidence, 0, len(errorsFound))
+	for _, deliverableErr := range errorsFound {
+		if deliverableErr == nil {
+			continue
+		}
+		evidence = append(evidence, DeliverableCommandEvidence{
+			ItemID:         strings.TrimSpace(deliverableErr.ItemID),
+			OperationClass: strings.TrimSpace(deliverableErr.OperationClass),
+			Operation:      strings.TrimSpace(deliverableErr.Operation),
+			Command:        strings.TrimSpace(deliverableErr.Command),
+			Status:         strings.TrimSpace(deliverableErr.Status),
+			ExitCode:       cloneIntPointer(deliverableErr.ExitCode),
+			Outcome:        "failed",
+			TargetRef:      cloneDeliverableTargetRefEvidence(deliverableErr.TargetRef),
+		})
+	}
+	return evidence
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func deliverableRecoveryPrompt(branch string, repository string, deliverableErr *DeliverableCommandError) string {
@@ -2104,22 +2254,139 @@ func (r *Runner) workspaceDeliverableState(
 	info workspace.Info,
 	issue workspace.Issue,
 ) *workspace.DeliverableState {
+	observation := r.observeWorkspaceDeliverableState(backend, ctx, info, issue, "deliverable_recovery")
+	if !observation.observed {
+		return nil
+	}
+	state := observation.state
+	return &state
+}
+
+type workspaceDeliverableStateObservation struct {
+	state     workspace.DeliverableState
+	supported bool
+	observed  bool
+	err       string
+}
+
+func (r *Runner) observeWorkspaceDeliverableState(
+	backend workspace.Backend,
+	ctx context.Context,
+	info workspace.Info,
+	issue workspace.Issue,
+	phase string,
+) workspaceDeliverableStateObservation {
 	provider, ok := backend.(workspace.DeliverableStateProvider)
 	if !ok {
-		return nil
+		return workspaceDeliverableStateObservation{}
 	}
 	state, err := provider.DeliverableState(ctx, info, issue)
 	if err == nil {
-		return &state
+		return workspaceDeliverableStateObservation{state: state, supported: true, observed: true}
 	}
 	r.logger.Warn(
 		"workspace deliverable state failed",
 		slog.String("issue_id", issue.ID),
 		slog.String("issue_identifier", issue.Identifier),
 		slog.String("workspace_path", info.Path),
+		slog.String("phase", strings.TrimSpace(phase)),
 		slog.String("error", err.Error()),
 	)
-	return nil
+	return workspaceDeliverableStateObservation{supported: true, err: err.Error()}
+}
+
+func deliverableTargetRefEvidence(branch string, initial workspaceDeliverableStateObservation, postCommand workspaceDeliverableStateObservation) *DeliverableTargetRefEvidence {
+	evidence := &DeliverableTargetRefEvidence{
+		Remote:              "origin",
+		Ref:                 "refs/heads/" + strings.TrimSpace(branch),
+		InitialObserved:     initial.observed,
+		PostCommandObserved: postCommand.observed,
+	}
+	if initial.observed {
+		evidence.Remote = firstNonBlankString(initial.state.Remote, evidence.Remote)
+		evidence.Ref = firstNonBlankString(initial.state.RemoteRef, evidence.Ref)
+		evidence.InitialRemoteHeadSHA = strings.TrimSpace(initial.state.RemoteHeadSHA)
+		evidence.InitialRemoteRefExists = initial.state.RemoteBranchExists
+	}
+	if postCommand.observed {
+		evidence.Remote = firstNonBlankString(postCommand.state.Remote, evidence.Remote)
+		evidence.Ref = firstNonBlankString(postCommand.state.RemoteRef, evidence.Ref)
+		evidence.PostCommandLocalHeadSHA = strings.TrimSpace(postCommand.state.LocalHeadSHA)
+		evidence.PostCommandRemoteHeadSHA = strings.TrimSpace(postCommand.state.RemoteHeadSHA)
+		evidence.PostCommandRemoteRefExists = postCommand.state.RemoteBranchExists
+	}
+	errorsFound := make([]string, 0, 2)
+	if initial.err != "" {
+		errorsFound = append(errorsFound, "initial: "+initial.err)
+	} else if !initial.supported {
+		errorsFound = append(errorsFound, "initial: workspace backend does not provide deliverable state")
+	}
+	if postCommand.err != "" {
+		errorsFound = append(errorsFound, "post-command: "+postCommand.err)
+	} else if !postCommand.supported {
+		errorsFound = append(errorsFound, "post-command: workspace backend does not provide deliverable state")
+	}
+	evidence.CheckError = strings.Join(errorsFound, "; ")
+	evidence.AdvancedToLocalHead = evidence.InitialObserved &&
+		evidence.PostCommandObserved &&
+		evidence.PostCommandRemoteRefExists &&
+		evidence.PostCommandLocalHeadSHA != "" &&
+		evidence.PostCommandRemoteHeadSHA == evidence.PostCommandLocalHeadSHA &&
+		(!evidence.InitialRemoteRefExists || evidence.InitialRemoteHeadSHA != evidence.PostCommandRemoteHeadSHA)
+	return evidence
+}
+
+func finalizeDeliverableTargetRefEvidence(evidence *DeliverableTargetRefEvidence, finalState workspaceDeliverableStateObservation) *DeliverableTargetRefEvidence {
+	evidence = cloneDeliverableTargetRefEvidence(evidence)
+	if evidence == nil {
+		evidence = &DeliverableTargetRefEvidence{}
+	}
+	evidence.FinalObserved = finalState.observed
+	if finalState.observed {
+		evidence.FinalLocalHeadSHA = strings.TrimSpace(finalState.state.LocalHeadSHA)
+		evidence.FinalRemoteHeadSHA = strings.TrimSpace(finalState.state.RemoteHeadSHA)
+		evidence.FinalRemoteRefExists = finalState.state.RemoteBranchExists
+	}
+	finalError := ""
+	if finalState.err != "" {
+		finalError = "final: " + finalState.err
+	} else if !finalState.supported {
+		finalError = "final: workspace backend does not provide deliverable state"
+	}
+	evidence.CheckError = strings.Join(nonBlankStrings(evidence.CheckError, finalError), "; ")
+	evidence.AdvancedToLocalHead = evidence.AdvancedToLocalHead &&
+		evidence.FinalObserved &&
+		evidence.FinalRemoteRefExists &&
+		evidence.FinalLocalHeadSHA == evidence.PostCommandRemoteHeadSHA &&
+		evidence.FinalRemoteHeadSHA == evidence.PostCommandRemoteHeadSHA
+	return evidence
+}
+
+func cloneDeliverableTargetRefEvidence(evidence *DeliverableTargetRefEvidence) *DeliverableTargetRefEvidence {
+	if evidence == nil {
+		return nil
+	}
+	clone := *evidence
+	return &clone
+}
+
+func firstNonBlankString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nonBlankStrings(values ...string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func applyDeliverableState(diffStats *DiffStats, state *workspace.DeliverableState) {
@@ -3492,7 +3759,11 @@ func (p *agentRunProgress) recordDeliverableToolOutput(update AgentUpdate) {
 }
 
 func (p *agentRunProgress) recordDeliverableToolStart(update AgentUpdate) {
-	invocation := newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
+	command := strings.TrimSpace(update.Command)
+	if command == "" {
+		command = update.Delta
+	}
+	invocation := newDeliverableToolInvocation(update.Tool, command, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
 	if invocation.class == "" {
 		return
 	}
@@ -3503,7 +3774,11 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	key := deliverableToolKey(update)
 	invocation, ok := p.toolInvocations[key]
 	if !ok {
-		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
+		command := strings.TrimSpace(update.Command)
+		if command == "" {
+			command = update.Delta
+		}
+		invocation = newDeliverableToolInvocation(update.Tool, command, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
 	}
 	if invocation.class == "" {
 		return
@@ -3553,9 +3828,6 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	failureClass := invocation.class
 	if invocation.class == "push_ci_trigger_label" {
 		failureClass = "push"
-		if combinedPushMayHaveChanged(update, invocation.command) {
-			p.successfulPushes++
-		}
 	}
 	if invocation.class == "pull_request_lookup" {
 		failureClass = "pull_request"
@@ -3579,7 +3851,10 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		OperationClass: failureClass,
 		Operation:      deliverableInvocationOperation(invocation),
 		Arguments:      deliverableInvocationArguments(invocation),
+		ItemID:         strings.TrimSpace(update.ItemID),
+		Command:        strings.TrimSpace(invocation.command),
 		Status:         strings.TrimSpace(update.Status),
+		ExitCode:       cloneIntPointer(update.ExitCode),
 		Message:        truncateDeliverableDetail(message),
 		Body:           truncateDeliverableDetail(body),
 	}
@@ -3587,6 +3862,14 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 
 func (p *agentRunProgress) pullRequestUpdated() bool {
 	return p.deliverableSuccesses["pull_request"]
+}
+
+func (p *agentRunProgress) deliverableFailure(itemID string, class string) *DeliverableCommandError {
+	var deliverableErr *DeliverableCommandError
+	if !errors.As(p.deliverableFailures[strings.TrimSpace(class)], &deliverableErr) || deliverableErr == nil || strings.TrimSpace(deliverableErr.ItemID) != strings.TrimSpace(itemID) {
+		return nil
+	}
+	return deliverableErr
 }
 
 func (p *agentRunProgress) pullRequestHeadPushed() bool {
@@ -3877,32 +4160,77 @@ func gitPushChanged(update AgentUpdate, command string) bool {
 	return !strings.Contains(output, "everything up-to-date") && !strings.Contains(output, "everything up to date")
 }
 
-func combinedPushMayHaveChanged(update AgentUpdate, command string) bool {
-	if !gitPushChanged(update, command) {
-		return false
-	}
-	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
-	for _, failure := range []string{
-		"failed to push",
-		"push rejected",
-		"remote rejected",
-		"[rejected]",
-		"authentication failed",
-		"permission denied",
-		"repository not found",
-		"could not read from remote repository",
-		"could not resolve host",
-		"unable to access",
-	} {
-		if strings.Contains(output, failure) {
-			return false
-		}
-	}
-	return true
-}
-
 func gitPushCommand(command string) bool {
 	return gitPushCommandCount(command) > 0
+}
+
+func commandAfterLastGitPush(command string) string {
+	segments := shellCommandSegments(command)
+	lastPush := -1
+	for index, segment := range segments {
+		if gitPushCommand(segment) {
+			lastPush = index
+		}
+	}
+	if lastPush < 0 || lastPush == len(segments)-1 {
+		return ""
+	}
+	return strings.Join(segments[lastPush+1:], " && ")
+}
+
+func shellCommandSegments(command string) []string {
+	segments := make([]string, 0, 4)
+	start := 0
+	quote := byte(0)
+	escaped := false
+	appendSegment := func(end int) {
+		if segment := strings.TrimSpace(command[start:end]); segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	for index := 0; index < len(command); index++ {
+		current := command[index]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if current == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if current == quote {
+				quote = 0
+			}
+			continue
+		}
+		if current == '\'' || current == '"' {
+			quote = current
+			continue
+		}
+		separatorLength := 0
+		switch current {
+		case ';', '\n':
+			separatorLength = 1
+		case '&':
+			if index+1 < len(command) && command[index+1] == '&' {
+				separatorLength = 2
+			}
+		case '|':
+			separatorLength = 1
+			if index+1 < len(command) && command[index+1] == '|' {
+				separatorLength = 2
+			}
+		}
+		if separatorLength == 0 {
+			continue
+		}
+		appendSegment(index)
+		index += separatorLength - 1
+		start = index + 1
+	}
+	appendSegment(len(command))
+	return segments
 }
 
 func gitPushCommandCount(command string) int {

@@ -23,6 +23,7 @@ const (
 	maxRecentSchedulerDecisions     = 500
 	workAttemptErrorRunner          = "runner_error"
 	workAttemptErrorInterrupted     = "runner_interrupted"
+	workAttemptErrorPostPushCommand = "post_push_command_failure"
 	workAttemptErrorWorkspace       = "workspace_preparation"
 	workAttemptErrorStartTransition = "start_state_transition_failed"
 	workAttemptErrorMergeIncomplete = "merge_worker_terminal_state_missing"
@@ -1098,6 +1099,10 @@ func terminalStateForRun(err error, finalState string) store.WorkAttemptTerminal
 }
 
 func runnerWorkAttemptErrorClass(err error) string {
+	var deliverableErr *runpkg.DeliverableCommandError
+	if errors.As(err, &deliverableErr) && deliverableErr != nil && deliverableErr.OperationClass == "post_push" {
+		return workAttemptErrorPostPushCommand
+	}
 	var statusCarrier interface {
 		BackendErrorStatus() string
 	}
