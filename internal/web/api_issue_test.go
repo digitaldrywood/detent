@@ -102,6 +102,41 @@ func TestAPIIssuePrecedenceAndScope(t *testing.T) {
 	}
 }
 
+func TestAPIIssueSurfacesRetryLimitAttemptError(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{
+		ID:         "issue-2052",
+		Identifier: "digitaldrywood/detent#2052",
+		Number:     2052,
+		ProjectID:  "detent",
+		State:      "Blocked",
+	}
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{Blocked: []telemetry.Blocked{{
+		Issue:        issue,
+		Error:        "terminal_attempt_retry_limit",
+		AttemptError: "custom backend rejected --lease-ttl",
+	}}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	payload := requestJSON(t, server, http.MethodGet, "/api/v1/issue-2052", http.StatusOK)
+	if payload["last_error"] != "custom backend rejected --lease-ttl" {
+		t.Fatalf("last_error = %#v, want parked-attempt evidence", payload["last_error"])
+	}
+	blocked := payload["blocked"].(map[string]any)
+	if blocked["error"] != "terminal_attempt_retry_limit" || blocked["attempt_error"] != "custom backend rejected --lease-ttl" {
+		t.Fatalf("blocked = %#v, want structured cause alongside attempt evidence", blocked)
+	}
+}
+
 func TestAPIIssueSurfacesWorkpadBlockerResolution(t *testing.T) {
 	t.Parallel()
 

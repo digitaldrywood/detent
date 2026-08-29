@@ -56,6 +56,39 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 	}
 }
 
+func TestBoardDetailSheetShowsRetryLimitAttemptError(t *testing.T) {
+	t.Parallel()
+
+	card := projectKanbanCard{
+		IssueID:     "issue-2052",
+		IssueNumber: "#2052",
+		Identifier:  "digitaldrywood/detent#2052",
+		ProjectID:   "detent",
+		Title:       "Retry limit evidence",
+		Stage:       "Blocked",
+	}
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot: telemetry.Snapshot{Blocked: []telemetry.Blocked{{
+			Issue: telemetry.Issue{
+				ID:         card.IssueID,
+				Identifier: card.Identifier,
+				ProjectID:  card.ProjectID,
+				State:      card.Stage,
+			},
+			Error:        "terminal_attempt_retry_limit",
+			AttemptError: "custom backend rejected --lease-ttl",
+		}}},
+	}
+
+	html := renderBoardComponent(t, BoardCardSheet(data, card, false, false, KanbanConversationData{}, BoardActivityData{}, BoardSessionData{}))
+	for _, want := range []string{"terminal_attempt_retry_limit", "last attempt", "custom backend rejected --lease-ttl"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("detail sheet missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardCardRendersCumulativeParkSummary(t *testing.T) {
 	t.Parallel()
 

@@ -570,9 +570,11 @@ func clearBlockedStatusIssue(state *State, issueID string) {
 func (o *Orchestrator) setBlockedStatusIssue(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
 	if existing, ok := state.Blocked[issue.ID]; ok && existing.Source == BlockedSourceProjectStatus {
 		existing.Issue = mergeIssueTrackerFields(existing.Issue, issue)
-		refreshedReason := o.reconciledBlockedStatusReason(ctx, state, existing.Issue)
+		refreshedReason, attemptError, workAttemptID := o.reconciledBlockedStatusDetails(ctx, state, existing.Issue)
 		currentReason := strings.TrimSpace(existing.Reason)
 		existing.Reason = refreshedReason
+		existing.AttemptError = attemptError
+		existing.WorkAttemptID = workAttemptID
 		if existing.RecoveryAction == "" &&
 			(blockedStatusReasonUnknown(currentReason) && !blockedStatusReasonUnknown(refreshedReason)) {
 			recovery := evaluateBlockedRecovery(existing.Issue, normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
@@ -592,13 +594,16 @@ func (o *Orchestrator) setBlockedStatusIssue(ctx context.Context, state *State, 
 		SourceStates: []string{blockedStatusState},
 		TargetState:  autoPromoteReworkState,
 	}), o.cfg.TerminalStates)
+	reason, attemptError, workAttemptID := o.reconciledBlockedStatusDetails(ctx, state, issue)
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          cloneIssue(issue),
-		Reason:         o.reconciledBlockedStatusReason(ctx, state, issue),
+		Reason:         reason,
+		AttemptError:   attemptError,
 		RecoveryReason: string(recovery.Reason),
 		RecoveryTarget: recovery.TargetState,
 		BlockedAt:      now,
 		Source:         BlockedSourceProjectStatus,
+		WorkAttemptID:  workAttemptID,
 	}
 }
 
@@ -607,12 +612,28 @@ func blockedFromDependency(blocked Blocked) bool {
 		(blocked.Source == "" && blocked.Reason == blockedReasonDependency)
 }
 
-func (o *Orchestrator) reconciledBlockedStatusReason(ctx context.Context, state *State, issue connector.Issue) string {
+func (o *Orchestrator) reconciledBlockedStatusDetails(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+) (string, string, int64) {
 	detentCauses := []string{blockedStatusRuntimeCause(state, issue)}
+	attemptError := ""
+	workAttemptID := int64(0)
+	if state != nil {
+		if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blockedEntryMatchesCurrent(issue, blocked.BlockedAt) {
+			attemptError = strings.TrimSpace(blocked.AttemptError)
+			workAttemptID = blocked.WorkAttemptID
+		}
+	}
 	if timeline, ok := o.issueWorkflowTimeline(ctx, issue); ok {
 		detentCauses = append(detentCauses, blockedStatusTimelineCause(issue, timeline.Events))
+		if durableError, durableAttemptID := blockedStatusTimelineAttemptEvidence(issue, timeline.Events); durableError != "" {
+			attemptError = durableError
+			workAttemptID = durableAttemptID
+		}
 	}
-	return blockedStatusReason(issue, o.cfg.TerminalStates, detentCauses...)
+	return blockedStatusReason(issue, o.cfg.TerminalStates, detentCauses...), attemptError, workAttemptID
 }
 
 func blockedStatusRuntimeCause(state *State, issue connector.Issue) string {
@@ -680,6 +701,18 @@ func blockedStatusTimelineCause(issue connector.Issue, events []store.WorkflowPh
 		}
 	}
 	return ""
+}
+
+func blockedStatusTimelineAttemptEvidence(issue connector.Issue, events []store.WorkflowPhaseEvent) (string, int64) {
+	entry, ok := latestCurrentLaneEntry(events, blockedStatusState)
+	if !ok || !workflowLaneEntryMatchesCurrent(issue, entry) {
+		return "", 0
+	}
+	metadata, _ := workflowLaneMetadataFromJSON(entry.MetadataJSON)
+	if metadata.BlockedRecovery == nil {
+		return "", 0
+	}
+	return strings.TrimSpace(metadata.BlockedRecovery.AttemptError), metadata.BlockedRecovery.WorkAttemptID
 }
 
 func blockedStatusDetentAuthoredLane(metadata workflowLaneMetadata) bool {

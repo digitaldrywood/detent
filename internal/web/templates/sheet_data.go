@@ -118,7 +118,7 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 				SessionID:       strings.TrimSpace(blocked.SessionID),
 				LastEvent:       strings.TrimSpace(blocked.LastEvent),
 				Message:         strings.TrimSpace(blocked.LastMessage),
-				Error:           strings.TrimSpace(blocked.Error),
+				Error:           blockedSessionError(blocked),
 				RuntimeIdentity: card.RuntimeIdentity,
 			}
 			return session
@@ -133,6 +133,18 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 		}
 	}
 	return sheetSession{}
+}
+
+func blockedSessionError(blocked telemetry.Blocked) string {
+	cause := strings.TrimSpace(blocked.Error)
+	attemptError := strings.TrimSpace(blocked.AttemptError)
+	if cause == "" {
+		return attemptError
+	}
+	if attemptError == "" {
+		return cause
+	}
+	return cause + " — last attempt: " + attemptError
 }
 
 func findEfficiencyReceipt(receipts []efficiency.Receipt, issue telemetry.Issue) (efficiency.Receipt, bool) {

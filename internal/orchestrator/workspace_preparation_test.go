@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,9 @@ func TestWorkspacePreparationRetriesAreBoundedAndPreserveFailureBreakers(t *test
 			if !ok || blocked.Reason != workspacePreparationRetryLimitCause || blocked.Recovery == nil || blocked.RecoveryReason != blockedRecoveryPredicateFingerprintChange {
 				t.Fatalf("Blocked[%q] = %#v, want durable fingerprint-recovery park", issue.ID, blocked)
 			}
+			if blocked.AttemptError != tt.err.Error() || blocked.WorkAttemptID != retryLimit {
+				t.Fatalf("Blocked[%q] attempt evidence = %q/%d, want %q/%d", issue.ID, blocked.AttemptError, blocked.WorkAttemptID, tt.err.Error(), retryLimit)
+			}
 			if _, ok := state.Retry[issue.ID]; ok {
 				t.Fatalf("Retry[%q] present after workspace preparation retry limit", issue.ID)
 			}
@@ -103,6 +107,9 @@ func TestWorkspacePreparationRetriesAreBoundedAndPreserveFailureBreakers(t *test
 			}
 			if event, ok := recentStateEvent(state, workspacePreparationRetryLimitEvent); !ok || event.Message == "" {
 				t.Fatalf("RecentEvents = %#v, want workspace preparation limit event", state.RecentEvents)
+			}
+			if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], tt.err.Error()) {
+				t.Fatalf("retry-limit comments = %#v, want latest workspace-preparation error", tracker.comments)
 			}
 		})
 	}

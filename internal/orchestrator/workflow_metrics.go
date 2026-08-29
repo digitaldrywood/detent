@@ -89,6 +89,9 @@ type workflowLaneBlockedRecoveryMetadata struct {
 	LifetimeTokens          int64  `json:"lifetime_tokens,omitempty"`
 	LifetimeSessionLimit    int64  `json:"lifetime_session_limit,omitempty"`
 	LifetimeTokenLimit      int64  `json:"lifetime_token_limit,omitempty"`
+	WorkAttemptID           int64  `json:"work_attempt_id,omitempty"`
+	AttemptNumber           int    `json:"attempt_number,omitempty"`
+	AttemptError            string `json:"attempt_error,omitempty"`
 }
 
 func (m workflowLaneBlockedRecoveryMetadata) intentResumable() bool {

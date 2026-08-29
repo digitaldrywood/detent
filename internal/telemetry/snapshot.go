@@ -1324,6 +1324,7 @@ type Blocked struct {
 	WorkspacePath           string               `json:"workspace_path,omitempty"`
 	SessionID               string               `json:"session_id,omitempty"`
 	Error                   string               `json:"error,omitempty"`
+	AttemptError            string               `json:"attempt_error,omitempty"`
 	Source                  BlockedSource        `json:"source,omitempty"`
 	RecoveryAction          string               `json:"recovery_action,omitempty"`
 	RecoveryReason          string               `json:"recovery_reason,omitempty"`

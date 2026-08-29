@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -23,6 +24,7 @@ const (
 	workspacePreparationRetryLimitEvent         = "workspace_preparation_retry_limit_reached"
 	terminalAttemptRetryHistoryUnavailableEvent = "terminal_attempt_retry_history_unavailable"
 	workspaceRetryHistoryUnavailableEvent       = "workspace_preparation_retry_history_unavailable"
+	retryCycleAttemptErrorMaxBytes              = 4096
 )
 
 func (o *Orchestrator) demoteTerminalAttemptRetry(
@@ -44,12 +46,12 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 		return issue, false, false
 	}
 	if durable {
-		count, known := o.consecutiveRetryCycleCount(ctx, state, issue, retryCause, at)
+		count, latest, known := o.consecutiveRetryCycleCount(ctx, state, issue, retryCause, at)
 		switch {
 		case !known:
 			o.recordRetryCycleHistoryUnavailable(state, issue, retryCause, at)
 		case count >= consecutiveRetryCycleLimit:
-			parked, ok := o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, at)
+			parked, ok := o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, latest, at)
 			if ok {
 				return parked, true, true
 			}
@@ -112,19 +114,23 @@ func (o *Orchestrator) consecutiveRetryCycleCount(
 	issue connector.Issue,
 	cause string,
 	at time.Time,
-) (int, bool) {
+) (int, telemetry.WorkAttempt, bool) {
 	attempts, ok := o.recentIssueTerminalAttempts(ctx, state, issue, consecutiveRetryCycleLimit, at)
 	if !ok {
-		return 0, false
+		return 0, telemetry.WorkAttempt{}, false
 	}
 	count := 0
+	latest := telemetry.WorkAttempt{}
 	for _, attempt := range attempts {
 		if !retryCycleAttemptMatches(attempt, cause) {
 			break
 		}
+		if count == 0 {
+			latest = attempt
+		}
 		count++
 	}
-	return count, true
+	return count, latest, true
 }
 
 func (o *Orchestrator) recentIssueTerminalAttempts(
@@ -224,6 +230,7 @@ func (o *Orchestrator) parkRetryCycleLimit(
 	diffStats DiffStats,
 	cause string,
 	count int,
+	latest telemetry.WorkAttempt,
 	at time.Time,
 ) (connector.Issue, bool) {
 	if o == nil || o.connector == nil || state == nil {
@@ -239,6 +246,10 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		"Todo",
 		diffStats,
 	)
+	attemptError := retryCycleAttemptError(o, latest)
+	metadata.BlockedRecovery.WorkAttemptID = latest.AttemptID
+	metadata.BlockedRecovery.AttemptNumber = latest.AttemptNumber
+	metadata.BlockedRecovery.AttemptError = attemptError
 	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, at, cause, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Error("retry cycle limit state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "target_state", targetState, "error", err)
@@ -263,16 +274,12 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		RecoveryTarget: metadata.BlockedRecovery.TargetState,
 		BlockedAt:      at,
 		Source:         BlockedSourceProjectStatus,
+		AttemptError:   attemptError,
+		WorkAttemptID:  latest.AttemptID,
 		Recovery:       metadata.BlockedRecovery,
 	}
 	if o.connector != nil {
-		comment := fmt.Sprintf(
-			"Detent stopped retrying %s after %d consecutive %s attempts. The issue is parked in `%s` until its recovery fingerprint changes.",
-			issueLabel(issue),
-			count,
-			retryCycleDescription(cause),
-			targetState,
-		)
+		comment := retryCycleLimitComment(issue, cause, count, targetState, latest, attemptError)
 		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
 			o.logger.Warn("retry cycle limit comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "error", err)
 		}
@@ -292,6 +299,39 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		)
 	}
 	return issue, true
+}
+
+func retryCycleAttemptError(o *Orchestrator, attempt telemetry.WorkAttempt) string {
+	value := strings.TrimSpace(attempt.ErrorMessage)
+	if o != nil {
+		value = o.operatorText(value)
+	}
+	return runtimeoutput.Truncate(value, retryCycleAttemptErrorMaxBytes).Value
+}
+
+func retryCycleLimitComment(
+	issue connector.Issue,
+	cause string,
+	count int,
+	targetState string,
+	attempt telemetry.WorkAttempt,
+	attemptError string,
+) string {
+	comment := fmt.Sprintf(
+		"Detent stopped retrying %s after %d consecutive %s attempts. The issue is parked in `%s` until its recovery fingerprint changes.",
+		issueLabel(issue),
+		count,
+		retryCycleDescription(cause),
+		targetState,
+	)
+	if attemptError == "" {
+		return comment
+	}
+	attemptNumber := attempt.AttemptNumber
+	if attemptNumber <= 0 && attempt.AttemptID > 0 {
+		attemptNumber = int(attempt.AttemptID)
+	}
+	return fmt.Sprintf("%s\n\n- latest_attempt: %d\n- last_error:\n\n```text\n%s\n```", comment, attemptNumber, attemptError)
 }
 
 func retryCycleDescription(cause string) string {

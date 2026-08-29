@@ -605,7 +605,7 @@ func issueResponse(reference string, projectID string, snapshot telemetry.Snapsh
 		payload.Workspace = workspaceResponse(blocked.WorkspacePath, blocked.WorkerHost)
 		payload.Blocked = blockedIssueResponse(blocked)
 		payload.RecentEvents = recentEvents(blocked.LastEventAt, blocked.LastEvent, blocked.LastMessage)
-		payload.LastError = optionalString(blocked.Error)
+		payload.LastError = optionalString(blockedLastError(blocked))
 		return payload, nil
 	}
 
@@ -709,6 +709,7 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 			BudgetAlert:             false,
 			State:                   entry.State,
 			Error:                   optionalString(entry.Error),
+			AttemptError:            optionalString(entry.AttemptError),
 			Source:                  string(entry.Source),
 			RecoveryAction:          optionalString(entry.RecoveryAction),
 			RecoveryReason:          optionalString(entry.RecoveryReason),
@@ -807,6 +808,7 @@ func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 		SessionID:               optionalString(entry.SessionID),
 		State:                   entry.State,
 		Error:                   optionalString(entry.Error),
+		AttemptError:            optionalString(entry.AttemptError),
 		Source:                  string(entry.Source),
 		RecoveryAction:          optionalString(entry.RecoveryAction),
 		RecoveryReason:          optionalString(entry.RecoveryReason),
@@ -823,6 +825,13 @@ func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 		LastMessage:             optionalString(entry.LastMessage),
 		LastEventAt:             timestampStringPtr(entry.LastEventAt),
 	}
+}
+
+func blockedLastError(entry telemetry.Blocked) string {
+	if attemptError := strings.TrimSpace(entry.AttemptError); attemptError != "" {
+		return attemptError
+	}
+	return strings.TrimSpace(entry.Error)
 }
 
 func recentEvents(at *time.Time, event string, message string) []recentEventAPIResponse {
@@ -1560,6 +1569,7 @@ type blockedAPIResponse struct {
 	BudgetAlert             bool                           `json:"budget_alert?"`
 	State                   string                         `json:"state"`
 	Error                   *string                        `json:"error"`
+	AttemptError            *string                        `json:"attempt_error"`
 	Source                  string                         `json:"source,omitempty"`
 	RecoveryAction          *string                        `json:"recovery_action"`
 	RecoveryReason          *string                        `json:"recovery_reason"`
@@ -1828,6 +1838,7 @@ type blockedIssueAPIResponse struct {
 	SessionID               *string                        `json:"session_id"`
 	State                   string                         `json:"state"`
 	Error                   *string                        `json:"error"`
+	AttemptError            *string                        `json:"attempt_error"`
 	Source                  string                         `json:"source,omitempty"`
 	RecoveryAction          *string                        `json:"recovery_action"`
 	RecoveryReason          *string                        `json:"recovery_reason"`

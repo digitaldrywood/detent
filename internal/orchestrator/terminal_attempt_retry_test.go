@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -243,6 +245,8 @@ func TestHandleRunResultParksTerminalRetryAtDurableLimit(t *testing.T) {
 		FailureRetryBaseDelay: time.Second,
 	})
 	o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	o.workflowMetrics = metrics
 	state := newState(cfg)
 
 	for attempt := 1; attempt <= consecutiveRetryCycleLimit; attempt++ {
@@ -265,7 +269,7 @@ func TestHandleRunResultParksTerminalRetryAtDurableLimit(t *testing.T) {
 		o.handleRunResult(t.Context(), &state, runpkg.Completion{
 			IssueID:      issue.ID,
 			Request:      runpkg.RunRequest{Mode: runpkg.RunModePlan},
-			Err:          errors.New("runner failed before producing work"),
+			Err:          fmt.Errorf("runner failed on attempt %d before producing work", attempt),
 			CompletedAt:  completedAt,
 			RetryAttempt: attempt + 1,
 			RetryDelay:   time.Second,
@@ -282,11 +286,60 @@ func TestHandleRunResultParksTerminalRetryAtDurableLimit(t *testing.T) {
 	if !ok || blocked.Reason != terminalAttemptRetryLimitCause || blocked.Recovery == nil {
 		t.Fatalf("Blocked[%q] = %#v, want terminal retry limit park", issue.ID, blocked)
 	}
+	wantError := "runner failed on attempt 3 before producing work"
+	if blocked.AttemptError != wantError || blocked.WorkAttemptID != 3 {
+		t.Fatalf("Blocked[%q] attempt evidence = %q/%d, want %q/3", issue.ID, blocked.AttemptError, blocked.WorkAttemptID, wantError)
+	}
+	if blocked.Recovery.AttemptError != wantError || blocked.Recovery.WorkAttemptID != 3 {
+		t.Fatalf("Blocked[%q].Recovery attempt evidence = %q/%d, want %q/3", issue.ID, blocked.Recovery.AttemptError, blocked.Recovery.WorkAttemptID, wantError)
+	}
 	if _, ok := state.Retry[issue.ID]; ok {
 		t.Fatalf("Retry[%q] present after durable terminal retry limit", issue.ID)
 	}
 	if len(attempts.completions) != consecutiveRetryCycleLimit {
 		t.Fatalf("work attempt completions = %d, want %d", len(attempts.completions), consecutiveRetryCycleLimit)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], wantError) {
+		t.Fatalf("retry-limit comments = %#v, want latest parked-attempt error", tracker.comments)
+	}
+
+	hydratedIssue := cloneIssue(issue)
+	hydratedIssue.State = blockedStatusState
+	parkedAt := now.Add(consecutiveRetryCycleLimit * time.Minute)
+	hydratedIssue.StageUpdatedAt = &parkedAt
+	restarted := &Orchestrator{cfg: cfg, workflowMetrics: metrics}
+	restartedState := newState(cfg)
+	restarted.setBlockedStatusIssue(t.Context(), &restartedState, hydratedIssue, parkedAt.Add(time.Minute))
+	restartedBlocked := restartedState.Blocked[issue.ID]
+	if restartedBlocked.Reason != terminalAttemptRetryLimitCause || restartedBlocked.AttemptError != wantError || restartedBlocked.WorkAttemptID != 3 {
+		t.Fatalf("restarted Blocked[%q] = %#v, want durable cause and attempt evidence", issue.ID, restartedBlocked)
+	}
+	snapshot := blockedSnapshots(restartedState.Blocked, nil, parkedAt.Add(time.Minute), nil)
+	if len(snapshot) != 1 || snapshot[0].Error != terminalAttemptRetryLimitCause || snapshot[0].AttemptError != wantError || snapshot[0].WorkAttemptID != 3 {
+		t.Fatalf("restarted blocked snapshot = %#v, want durable cause and attempt evidence", snapshot)
+	}
+}
+
+func TestRetryCycleAttemptErrorIsBoundedByOutputPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configMax int
+		wantMax   int
+	}{
+		{name: "configured output policy", configMax: len(runtimeoutput.Marker) + 32, wantMax: len(runtimeoutput.Marker) + 32},
+		{name: "retry evidence hard limit", wantMax: retryCycleAttemptErrorMaxBytes},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			orchestrator := &Orchestrator{cfg: Config{OutputTruncationMaxBytes: tt.configMax}}
+			got := retryCycleAttemptError(orchestrator, telemetry.WorkAttempt{ErrorMessage: strings.Repeat("sensitive diagnostic ", 1000)})
+			if len(got) > tt.wantMax || !strings.Contains(got, runtimeoutput.Marker) {
+				t.Fatalf("retryCycleAttemptError() bytes = %d, want <= %d with truncation marker", len(got), tt.wantMax)
+			}
+		})
 	}
 }
 
