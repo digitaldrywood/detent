@@ -283,6 +283,56 @@ func TestManagerAppliesCandidateCapBeforeDeclineSideEffects(t *testing.T) {
 	}
 }
 
+func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	wantErr := errors.New("decline store failure")
+	tests := []struct {
+		name      string
+		configure func(*faultAdmissionStore)
+	}{
+		{
+			name: "read decline",
+			configure: func(backend *faultAdmissionStore) {
+				backend.declineReadErr = wantErr
+			},
+		},
+		{
+			name: "create decline",
+			configure: func(backend *faultAdmissionStore) {
+				backend.createDeclineErr = wantErr
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := admissionIssueFixture("tracker", "PA-10", 1, now)
+			issue.Title += " — Tracker"
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			backend := &faultAdmissionStore{Store: openManagerTestStore(t)}
+			tt.configure(backend)
+			manager := &Manager{store: backend}
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
+
+			_, _, _, err := manager.unproposedCandidates(
+				t.Context(),
+				settings,
+				[]connector.Issue{issue},
+				map[string]int{},
+				1,
+				now,
+				1,
+			)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("unproposedCandidates() error = %v, want %v", err, wantErr)
+			}
+		})
+	}
+}
+
 func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
 	t.Parallel()
 
