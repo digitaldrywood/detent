@@ -102,6 +102,38 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkerCredentialBlockerError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{name: "reported missing authentication", message: "Blocked by missing GitHub authentication.\n\n`gh issue view` and `gh pr view` fail.", want: true},
+		{name: "credential detail after generic blocker heading", message: "Blocked.\n\nGitHub authentication is unavailable, so `gh issue view` fails.", want: true},
+		{name: "reported disabled credential policy", message: "Work is blocked: GitHub credential injection is disabled for this worker.", want: true},
+		{name: "reported git credential failure", message: "Blocked because git push failed: could not read username for HTTPS remote.", want: true},
+		{name: "successful fix mentioning incident", message: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
+		{name: "unrelated blocker", message: "Blocked by an ambiguous product decision."},
+		{name: "unrelated authentication blocker", message: "Blocked because authentication is required for the private package registry."},
+		{name: "credential diagnosis without blocker", message: "GitHub authentication was missing, so I configured the worker and completed the change."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := workerCredentialBlockerError(tt.message)
+			if (err != nil) != tt.want {
+				t.Fatalf("workerCredentialBlockerError() = %v, want error %t", err, tt.want)
+			}
+			if err != nil && !IsDeliverableConfigurationError(err) {
+				t.Fatalf("IsDeliverableConfigurationError(%v) = false, want true", err)
+			}
+		})
+	}
+}
+
 func TestNewWorkerGitHubPolicyUsesGitHubEndpointForNonGitHubTracker(t *testing.T) {
 	t.Parallel()
 

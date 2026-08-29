@@ -3576,6 +3576,70 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 	}
 }
 
+func TestRunnerClassifiesReportedCredentialBlocker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		priorOutput string
+		output      string
+		wantError   bool
+	}{
+		{name: "credential blocker", output: "Blocked by missing GitHub authentication.\n\n`gh issue view` and `gh pr view` fail.", wantError: true},
+		{name: "credential detail after generic blocker heading", output: "Blocked.\n\nGitHub authentication is unavailable, so `gh issue view` fails.", wantError: true},
+		{name: "completed credential fix", output: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
+		{name: "earlier blocker followed by success", priorOutput: "Blocked by missing GitHub authentication.", output: "Configured the worker credential and completed the requested change."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspaceBackend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}
+			updates := make([]AgentUpdate, 0, 2)
+			if tt.priorOutput != "" {
+				updates = append(updates, AgentUpdate{
+					Type:   AgentUpdateMessageDelta,
+					ItemID: "prior-message",
+					Delta:  tt.priorOutput,
+				})
+			}
+			updates = append(updates, AgentUpdate{
+				Type:   AgentUpdateMessageDelta,
+				ItemID: "final-message",
+				Delta:  tt.output,
+			})
+			agentBackend := &fakeCodexClient{updates: updates}
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Default()},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
+				ID:         "issue-2020",
+				Identifier: "digitaldrywood/detent#2020",
+				State:      "Rework",
+			}})
+			if (runErr != nil) != tt.wantError {
+				t.Fatalf("Run() error = %v, want error %t", runErr, tt.wantError)
+			}
+			if tt.wantError {
+				if !IsDeliverableConfigurationError(runErr) {
+					t.Fatalf("IsDeliverableConfigurationError(%v) = false, want true", runErr)
+				}
+				if result.FinalState != FinalStateFailed {
+					t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateFailed)
+				}
+			} else if result.FinalState != FinalStateCompleted {
+				t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
+			}
+		})
+	}
+}
+
 func TestRunnerMergeFallbackModelPermit(t *testing.T) {
 	t.Parallel()
 
