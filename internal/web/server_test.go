@@ -142,6 +142,68 @@ func TestNewServerConfiguresHTTPTimeouts(t *testing.T) {
 	}
 }
 
+func TestHealthReportsStartupLifecycle(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		transition    func(*web.StartupLifecycle)
+		wantHTTP      int
+		wantStatus    string
+		wantReady     bool
+		wantLifecycle web.StartupLifecycleState
+	}{
+		{
+			name:          "starting",
+			transition:    func(*web.StartupLifecycle) {},
+			wantHTTP:      http.StatusServiceUnavailable,
+			wantStatus:    "not_ready",
+			wantLifecycle: web.StartupLifecycleStarting,
+		},
+		{
+			name:          "ready",
+			transition:    (*web.StartupLifecycle).MarkReady,
+			wantHTTP:      http.StatusOK,
+			wantStatus:    "ok",
+			wantReady:     true,
+			wantLifecycle: web.StartupLifecycleReady,
+		},
+		{
+			name:          "failed",
+			transition:    (*web.StartupLifecycle).MarkFailed,
+			wantHTTP:      http.StatusServiceUnavailable,
+			wantStatus:    "not_ready",
+			wantLifecycle: web.StartupLifecycleFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lifecycle := web.NewStartupLifecycle()
+			tt.transition(lifecycle)
+			deps := testDeps(t)
+			deps.StartupLifecycle = lifecycle
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			payload := requestJSON(t, server, http.MethodGet, "/health", tt.wantHTTP)
+			if got := payload["status"]; got != tt.wantStatus {
+				t.Fatalf("status = %#v, want %q", got, tt.wantStatus)
+			}
+			if got := payload["ready"]; got != tt.wantReady {
+				t.Fatalf("ready = %#v, want %t", got, tt.wantReady)
+			}
+			if got := payload["lifecycle"]; got != string(tt.wantLifecycle) {
+				t.Fatalf("lifecycle = %#v, want %q", got, tt.wantLifecycle)
+			}
+		})
+	}
+}
+
 func TestServerRoutes(t *testing.T) {
 	t.Parallel()
 

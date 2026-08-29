@@ -54,6 +54,7 @@ type Dependencies struct {
 	Store               store.Store
 	Registry            *project.Registry
 	Connector           connector.Connector
+	StartupLifecycle    *StartupLifecycle
 	Refresher           Refresher
 	OperatorMoves       OperatorMoveReconciler
 	Recovery            WorkAttemptRecovery
@@ -86,6 +87,44 @@ const (
 	ModeRunning    Mode = "running"
 	ModeOnboarding Mode = "onboarding"
 )
+
+type StartupLifecycleState string
+
+const (
+	StartupLifecycleStarting StartupLifecycleState = "starting"
+	StartupLifecycleReady    StartupLifecycleState = "ready"
+	StartupLifecycleFailed   StartupLifecycleState = "failed"
+)
+
+type StartupLifecycle struct {
+	state atomic.Uint32
+}
+
+func NewStartupLifecycle() *StartupLifecycle {
+	return &StartupLifecycle{}
+}
+
+func (l *StartupLifecycle) State() StartupLifecycleState {
+	if l == nil {
+		return StartupLifecycleReady
+	}
+	switch l.state.Load() {
+	case 0:
+		return StartupLifecycleStarting
+	case 1:
+		return StartupLifecycleReady
+	default:
+		return StartupLifecycleFailed
+	}
+}
+
+func (l *StartupLifecycle) MarkReady() {
+	l.state.Store(1)
+}
+
+func (l *StartupLifecycle) MarkFailed() {
+	l.state.Store(2)
+}
 
 const (
 	defaultHTTPReadHeaderTimeout = 5 * time.Second
@@ -134,6 +173,7 @@ type Server struct {
 	store               store.Store
 	registry            *project.Registry
 	connector           connector.Connector
+	startupLifecycle    *StartupLifecycle
 	refresher           Refresher
 	operatorMoves       OperatorMoveReconciler
 	recovery            WorkAttemptRecovery
@@ -251,6 +291,11 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	if observeProcesses == nil {
 		observeProcesses = procgroup.Observe
 	}
+	startupLifecycle := deps.StartupLifecycle
+	if startupLifecycle == nil {
+		startupLifecycle = NewStartupLifecycle()
+		startupLifecycle.MarkReady()
+	}
 
 	server := &Server{
 		echo:                e,
@@ -258,6 +303,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		store:               deps.Store,
 		registry:            deps.Registry,
 		connector:           deps.Connector,
+		startupLifecycle:    startupLifecycle,
 		refresher:           deps.Refresher,
 		operatorMoves:       deps.OperatorMoves,
 		recovery:            deps.Recovery,
@@ -1120,6 +1166,7 @@ func (s *Server) health(c echo.Context) error {
 	if _, _, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	}
+	lifecycle := s.startupLifecycle.State()
 	status := "ok"
 	now := s.now().UTC()
 	sessionsRemaining := 0
@@ -1224,8 +1271,16 @@ func (s *Server) health(c echo.Context) error {
 		}
 	}
 	updateStatus.State = updateStatus.DisplayState(now)
-	return c.JSON(http.StatusOK, healthResponse{
+	httpStatus := http.StatusOK
+	ready := lifecycle == StartupLifecycleReady
+	if !ready {
+		httpStatus = http.StatusServiceUnavailable
+		status = "not_ready"
+	}
+	return c.JSON(httpStatus, healthResponse{
 		Status:                 status,
+		Ready:                  ready,
+		Lifecycle:              lifecycle,
 		Version:                s.build.Version,
 		Commit:                 s.build.Commit,
 		ProjectStatus:          projectStatus,
@@ -1708,6 +1763,8 @@ func (s *Server) connectorName() string {
 
 type healthResponse struct {
 	Status                 string                           `json:"status"`
+	Ready                  bool                             `json:"ready"`
+	Lifecycle              StartupLifecycleState            `json:"lifecycle"`
 	Version                string                           `json:"version"`
 	Commit                 string                           `json:"commit"`
 	ProjectStatus          string                           `json:"project_status"`

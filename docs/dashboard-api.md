@@ -194,7 +194,7 @@ Useful endpoints:
 | `/projects/<id>/diagnostics` | Project health, board flow, and telemetry diagnostics. |
 | `/settings` | Fleet settings and configuration summary. |
 | `/reports` | Usage reports for spend, tokens, projects, issues, PRs, and models. |
-| `/health` | Server health and configured dependency checks. |
+| `/health` | Server health, startup readiness, and configured dependency checks. |
 | `/events` | Server-sent dashboard updates. Use `?view=kanban` for the fleet board and `?project=<id>&view=kanban` for a project board. |
 | `/api/v1/openapi.yaml` | Public OpenAPI 3 catalog for the stable JSON API. HTML, HTMX, and SSE routes are excluded. |
 | `/api/v1/state` | JSON telemetry snapshot. |
@@ -218,6 +218,13 @@ object reports `behind_by_seconds`, each project reports
 `stale_after_seconds` expands with the observed multi-project sweep and includes
 headroom. A refresh becomes `degraded` only after that window is exceeded or a
 refresh source reaches its failure threshold.
+`/health` returns HTTP `503` with `status: "not_ready"`, `ready: false`, and a
+`lifecycle` of `starting` until running-mode startup succeeds. A fatal startup
+changes `lifecycle` to `failed` before serving stops. Other dashboard and API
+routes remain available during startup for diagnostics. After startup,
+`ready: true` and `lifecycle: "ready"` distinguish process readiness from
+project degradation and other operational health details.
+
 `/health` also reports `snapshot_generated_at`, `snapshot_age_seconds`, the
 current refresh object, per-project `tick_liveness`, and
 `orphaned_agent_processes` with process and session counts, total RSS, age, and

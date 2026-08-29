@@ -1037,8 +1037,38 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 	if !strings.Contains(body, `"running":0`) {
 		t.Fatalf("startup snapshot body missing zero running count:\n%s", body)
 	}
+	healthRequest, err := http.NewRequestWithContext(t.Context(), http.MethodGet, baseURL+"/health", nil)
+	if err != nil {
+		t.Fatalf("create GET /health request error = %v", err)
+	}
+	healthResponse, err := (&http.Client{Timeout: time.Second}).Do(healthRequest)
+	if err != nil {
+		t.Fatalf("GET /health error = %v", err)
+	}
+	healthBody, readErr := io.ReadAll(healthResponse.Body)
+	closeErr := healthResponse.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read /health response error = %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close /health response error = %v", closeErr)
+	}
+	if healthResponse.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /health status = %d, want %d; body = %s", healthResponse.StatusCode, http.StatusServiceUnavailable, healthBody)
+	}
+	for _, want := range []string{`"status":"not_ready"`, `"ready":false`, `"lifecycle":"starting"`} {
+		if !strings.Contains(string(healthBody), want) {
+			t.Fatalf("startup health response missing %q:\n%s", want, healthBody)
+		}
+	}
 
 	close(provisionRelease)
+	healthBody = []byte(waitForDashboard(t, baseURL+"/health", done))
+	for _, want := range []string{`"status":"ok"`, `"ready":true`, `"lifecycle":"ready"`} {
+		if !strings.Contains(string(healthBody), want) {
+			t.Fatalf("ready health response missing %q:\n%s", want, healthBody)
+		}
+	}
 	cancel()
 	select {
 	case err := <-done:
