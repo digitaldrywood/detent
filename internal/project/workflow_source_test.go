@@ -1,13 +1,19 @@
 package project
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +21,148 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
+
+const (
+	workflowGitHelperModeEnv     = "DETENT_WORKFLOW_GIT_HELPER_MODE"
+	workflowGitHelperAddressEnv  = "DETENT_WORKFLOW_GIT_HELPER_ADDRESS"
+	workflowGitHelperExitCodeEnv = "DETENT_WORKFLOW_GIT_HELPER_EXIT_CODE"
+)
+
+func TestMain(m *testing.M) {
+	switch os.Getenv(workflowGitHelperModeEnv) {
+	case "git":
+		os.Exit(runWorkflowGitParentHelper())
+	case "descendant":
+		os.Exit(runWorkflowGitDescendantHelper())
+	default:
+		os.Exit(m.Run())
+	}
+}
+
+func TestRunWorkflowGitBoundsInheritedOutputPipe(t *testing.T) {
+	binDir := installWorkflowGitHelper(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(workflowGitHelperModeEnv, "git")
+
+	tests := []struct {
+		name          string
+		exitCode      int
+		wantWaitDelay bool
+	}{
+		{name: "successful process", wantWaitDelay: true},
+		{name: "failed process", exitCode: 23},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+			if err != nil {
+				t.Fatalf("ListenTCP() error = %v", err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			if err := listener.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatalf("SetDeadline() error = %v", err)
+			}
+			t.Setenv(workflowGitHelperAddressEnv, listener.Addr().String())
+			t.Setenv(workflowGitHelperExitCodeEnv, strconv.Itoa(tt.exitCode))
+
+			type result struct {
+				output []byte
+				err    error
+			}
+			results := make(chan result, 1)
+			runDone := make(chan struct{})
+			go func() {
+				defer close(runDone)
+				output, err := runWorkflowGit(t.Context(), t.TempDir(), "show", "HEAD:WORKFLOW.md")
+				results <- result{output: output, err: err}
+			}()
+
+			type acceptedConnection struct {
+				connection *net.TCPConn
+				err        error
+			}
+			accepted := make(chan acceptedConnection, 1)
+			go func() {
+				connection, err := listener.AcceptTCP()
+				accepted <- acceptedConnection{connection: connection, err: err}
+			}()
+			var connection *net.TCPConn
+			select {
+			case acceptResult := <-accepted:
+				if acceptResult.err != nil {
+					t.Fatalf("AcceptTCP() error = %v", acceptResult.err)
+				}
+				connection = acceptResult.connection
+			case earlyResult := <-results:
+				t.Fatalf("runWorkflowGit() returned before helper readiness: output = %q, error = %v", earlyResult.output, earlyResult.err)
+			}
+			defer connection.Close()
+			if err := connection.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatalf("SetDeadline() error = %v", err)
+			}
+			reader := bufio.NewReader(connection)
+			pidLine, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read helper PID: %v", err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(pidLine))
+			if err != nil {
+				t.Fatalf("parse helper PID %q: %v", pidLine, err)
+			}
+			t.Cleanup(func() {
+				if !t.Failed() {
+					return
+				}
+				terminateWorkflowGitHelper(t, pid)
+				select {
+				case <-runDone:
+				case <-time.After(5 * time.Second):
+					t.Error("runWorkflowGit() goroutine did not stop after helper termination")
+				}
+			})
+
+			var got result
+			select {
+			case got = <-results:
+			case <-time.After(5 * time.Second):
+				t.Fatal("runWorkflowGit() did not return after the Git process exited with an inherited output pipe")
+			}
+
+			if _, err := connection.Write([]byte{1}); err != nil {
+				t.Fatalf("release helper descendant: %v", err)
+			}
+			done, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("wait for helper descendant: %v", err)
+			}
+			if strings.TrimSpace(done) != "done" {
+				t.Fatalf("helper completion = %q, want done", done)
+			}
+			waitForWorkflowGitHelperExit(t, pid)
+
+			if got.err == nil {
+				t.Fatal("runWorkflowGit() error = nil, want bounded pipe error")
+			}
+			if tt.wantWaitDelay && !errors.Is(got.err, exec.ErrWaitDelay) {
+				t.Fatalf("runWorkflowGit() error = %v, want %v", got.err, exec.ErrWaitDelay)
+			}
+			if tt.exitCode != 0 {
+				var exitErr *exec.ExitError
+				if !errors.As(got.err, &exitErr) || exitErr.ExitCode() != tt.exitCode {
+					t.Fatalf("runWorkflowGit() error = %v, want exit code %d", got.err, tt.exitCode)
+				}
+			}
+			if !strings.Contains(got.err.Error(), "workflow git stdout") || !strings.Contains(got.err.Error(), "workflow git stderr") {
+				t.Fatalf("runWorkflowGit() error = %q, want captured stdout and stderr", got.err)
+			}
+			if got.output != nil {
+				t.Fatalf("runWorkflowGit() output = %q, want nil on error", got.output)
+			}
+		})
+	}
+}
 
 func TestLoadWorkflowUsesWorkingTreeWhenWorkflowRefUnset(t *testing.T) {
 	t.Parallel()
@@ -409,4 +556,152 @@ func runWorkflowSourceCommand(t *testing.T, dir string, name string, args ...str
 		t.Fatalf("%s %s error = %v\n%s", name, strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+func installWorkflowGitHelper(t *testing.T) string {
+	t.Helper()
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("Executable() error = %v", err)
+	}
+	binDir := t.TempDir()
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	destination := filepath.Join(binDir, name)
+	if runtime.GOOS != "windows" {
+		if err := os.Link(executable, destination); err == nil {
+			return binDir
+		}
+	}
+
+	source, err := os.Open(executable)
+	if err != nil {
+		t.Fatalf("Open(%s) error = %v", executable, err)
+	}
+	defer source.Close()
+	target, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+	if err != nil {
+		t.Fatalf("OpenFile(%s) error = %v", destination, err)
+	}
+	if _, err := io.Copy(target, source); err != nil {
+		_ = target.Close()
+		t.Fatalf("copy helper executable: %v", err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatalf("close helper executable: %v", err)
+	}
+	return binDir
+}
+
+func runWorkflowGitParentHelper() int {
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^$")
+	cmd.Env = replaceWorkflowGitHelperMode(os.Environ(), "descendant")
+	readiness, err := cmd.StdoutPipe()
+	if err != nil {
+		return 2
+	}
+	cmd.Stderr = os.Stderr
+	procgroup.Configure(context.Background(), cmd)
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 3
+	}
+	ready, err := bufio.NewReader(readiness).ReadString('\n')
+	if err != nil || strings.TrimSpace(ready) != "ready" {
+		_ = procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
+		return 4
+	}
+	fmt.Fprintln(os.Stdout, "workflow git stdout")
+	fmt.Fprintln(os.Stderr, "workflow git stderr")
+	exitCode, err := strconv.Atoi(os.Getenv(workflowGitHelperExitCodeEnv))
+	if err != nil {
+		return 5
+	}
+	return exitCode
+}
+
+func replaceWorkflowGitHelperMode(environment []string, mode string) []string {
+	updated := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, workflowGitHelperModeEnv+"=") {
+			updated = append(updated, entry)
+		}
+	}
+	return append(updated, workflowGitHelperModeEnv+"="+mode)
+}
+
+func runWorkflowGitDescendantHelper() int {
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	connection, err := dialer.DialContext(context.Background(), "tcp", os.Getenv(workflowGitHelperAddressEnv))
+	if err != nil {
+		return 6
+	}
+	defer connection.Close()
+	if _, err := fmt.Fprintf(connection, "%d\n", os.Getpid()); err != nil {
+		return 7
+	}
+	if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
+		return 8
+	}
+	var release [1]byte
+	if _, err := io.ReadFull(connection, release[:]); err != nil {
+		return 9
+	}
+	if err := os.Stderr.Close(); err != nil {
+		return 10
+	}
+	if _, err := fmt.Fprintln(connection, "done"); err != nil {
+		return 11
+	}
+	return 0
+}
+
+func terminateWorkflowGitHelper(t *testing.T, pid int) {
+	t.Helper()
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Errorf("FindProcess(%d) error = %v", pid, err)
+		return
+	}
+	if err := procgroup.TerminateTree(&exec.Cmd{Process: process}, pid); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("terminate helper process tree %d: %v", pid, err)
+	}
+}
+
+func waitForWorkflowGitHelperExit(t *testing.T, pid int) {
+	t.Helper()
+
+	if runtime.GOOS != "windows" {
+		return
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return
+		}
+		t.Fatalf("FindProcess(%d) error = %v", pid, err)
+	}
+	waited := make(chan error, 1)
+	go func() {
+		_, err := process.Wait()
+		waited <- err
+	}()
+	select {
+	case err := <-waited:
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("wait for helper process %d: %v", pid, err)
+		}
+	case <-time.After(5 * time.Second):
+		terminateWorkflowGitHelper(t, pid)
+		select {
+		case <-waited:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("helper process %d did not stop after termination", pid)
+		}
+		t.Fatalf("helper process %d did not exit after release", pid)
+	}
 }
