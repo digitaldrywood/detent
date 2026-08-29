@@ -304,10 +304,7 @@ func TestScheduleOwnershipAcquisitionFailureDegradesRunningProject(t *testing.T)
 	if err := registry.Set(got); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
-	health := registry.Health()
-	if len(health) != 1 || health[0].Status != project.HealthStatusDegraded || !strings.Contains(health[0].LastError, "coordination unavailable") {
-		t.Fatalf("Registry.Health() = %#v, want persistent schedule ownership fault", health)
-	}
+	waitForScheduleOwnershipFault(t, registry)
 }
 
 func TestNewLeavesBacklogAdmissionDisabledByDefault(t *testing.T) {
@@ -1856,6 +1853,25 @@ func waitForCoordinationCalls(t *testing.T, store *projectCoordinationStore, min
 		case <-ticker.C:
 		case <-deadline:
 			t.Fatalf("timed out waiting for %d coordination calls; got %d", minimum, store.Calls())
+		}
+	}
+}
+
+func waitForScheduleOwnershipFault(t *testing.T, registry *project.Registry) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(10 * time.Second)
+	for {
+		health := registry.Health()
+		if len(health) == 1 && health[0].Status == project.HealthStatusDegraded && strings.Contains(health[0].LastError, "coordination unavailable") {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("Registry.Health() = %#v, want persistent schedule ownership fault", health)
 		}
 	}
 }
