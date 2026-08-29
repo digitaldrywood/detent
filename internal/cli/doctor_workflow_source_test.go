@@ -139,6 +139,137 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorWorkflowRefDrift(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workflowRef  string
+		mutate       func(*testing.T, string)
+		wantFinding  bool
+		wantStatus   doctorStatus
+		wantDetail   []string
+		unwantDetail []string
+	}{
+		{
+			name:        "config keys differ",
+			workflowRef: "origin/main",
+			mutate: func(t *testing.T, repo string) {
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\nagent:\n  max_turns: 99\n")
+			},
+			wantFinding: true,
+			wantStatus:  doctorWarn,
+			wantDetail:  []string{"working-tree project definition differs", "detent.yaml keys differ: agent.max_turns"},
+		},
+		{
+			name:        "workflow prompt differs",
+			workflowRef: "origin/main",
+			mutate: func(t *testing.T, repo string) {
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "WORKFLOW.md"), "Updated agent direction.\n")
+			},
+			wantFinding: true,
+			wantStatus:  doctorWarn,
+			wantDetail:  []string{"WORKFLOW.md prompt differs"},
+		},
+		{
+			name:        "validation outcome differs",
+			workflowRef: "origin/main",
+			mutate:      writeDoctorWorkflowSourceValidationDrift,
+			wantFinding: true,
+			wantStatus:  doctorFail,
+			wantDetail: []string{
+				"detent.yaml keys differ: schedule_ownership.enabled, schedule_ownership.key, schedule_ownership.repository",
+				"working-tree configuration passes validation while ref-backed configuration fails",
+				"schedule_ownership.enabled must be true",
+			},
+		},
+		{
+			name:        "working tree matches ref",
+			workflowRef: "origin/main",
+			wantFinding: false,
+		},
+		{
+			name:        "workflow ref is not configured",
+			wantFinding: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo, _ := initDoctorWorkflowSourceRepository(t)
+			if tt.mutate != nil {
+				tt.mutate(t, repo)
+			}
+			project := globalconfig.Project{
+				ID:          "alpha",
+				Workflow:    filepath.Join(repo, "WORKFLOW.md"),
+				WorkflowRef: tt.workflowRef,
+				Workdir:     repo,
+			}
+			effectiveWorkflow, err := loadDoctorProjectWorkflowUncached(context.Background(), project, doctorDeps{loadWorkflow: workflowconfig.LoadWorkflow})
+			if err != nil {
+				t.Fatalf("loadDoctorProjectWorkflowUncached() error = %v", err)
+			}
+			effectiveValidationErr := effectiveWorkflow.Config.Validate()
+
+			check, found := checkDoctorWorkflowRefDrift(
+				context.Background(),
+				"alpha",
+				project,
+				repo,
+				effectiveValidationErr,
+				RuntimeSecret{},
+				doctorDeps{loadWorkflow: workflowconfig.LoadWorkflow},
+			)
+			if found != tt.wantFinding {
+				t.Fatalf("checkDoctorWorkflowRefDrift() found = %t, want %t; check = %#v", found, tt.wantFinding, check)
+			}
+			if !found {
+				return
+			}
+			if check.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s; detail = %q", check.Status, tt.wantStatus, check.Detail)
+			}
+			revision := runDoctorWorkflowSourceGit(t, repo, "rev-parse", "origin/main")
+			wantRevision := "workflow_ref origin/main at " + doctorShortRevision(revision)
+			if !strings.Contains(check.Detail, wantRevision) {
+				t.Fatalf("Detail = %q, want containing %q", check.Detail, wantRevision)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+				}
+			}
+			for _, unwanted := range tt.unwantDetail {
+				if strings.Contains(check.Detail, unwanted) {
+					t.Fatalf("Detail = %q, want not containing %q", check.Detail, unwanted)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorProjectReportsWorkflowRefDriftWhenEffectiveConfigIsInvalid(t *testing.T) {
+	t.Parallel()
+
+	repo, _ := initDoctorWorkflowSourceRepository(t)
+	writeDoctorWorkflowSourceValidationDrift(t, repo)
+	project := globalconfig.Project{
+		ID:          "alpha",
+		Workflow:    filepath.Join(repo, "WORKFLOW.md"),
+		WorkflowRef: "origin/main",
+		Workdir:     repo,
+	}
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+
+	checks := checkDoctorProject(context.Background(), project, deps, RuntimeSecret{}, false)
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow", doctorFail, "schedule_ownership.enabled must be true")
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow ref drift", doctorFail, "working-tree configuration passes validation")
+}
+
 func TestCheckDoctorWorkflowSourcePolicyUsesGitHubDefaultBranch(t *testing.T) {
 	t.Parallel()
 
@@ -286,6 +417,18 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	runDoctorWorkflowSourceGit(t, repo, "config", "user.name", "Detent Test")
 	runDoctorWorkflowSourceGit(t, repo, "config", "user.email", "detent@example.com")
 	return repo, remote
+}
+
+func writeDoctorWorkflowSourceValidationDrift(t *testing.T, repo string) {
+	t.Helper()
+
+	invalid := "schema: 1\ntracker:\n  kind: github\n  api_key: token\n  github_status_source: label\n  repository: example/issues\nroutines:\n  - name: audit\n    schedule: 0 * * * *\n    prompt: Inspect.\n"
+	writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), invalid)
+	runDoctorWorkflowSourceGit(t, repo, "add", "detent.yaml")
+	runDoctorWorkflowSourceGit(t, repo, "commit", "-m", "add scheduled routine")
+	runDoctorWorkflowSourceGit(t, repo, "push", "origin", "main")
+	valid := invalid + "schedule_ownership:\n  enabled: true\n  key: example/production\n  repository: example/coordination\n"
+	writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), valid)
 }
 
 func cleanupDoctorWorkflowSourceRepository(t *testing.T, root string) {

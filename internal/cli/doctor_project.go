@@ -271,16 +271,31 @@ func checkDoctorProjectWithProgress(
 		workflow.Config.Identity = identity
 	}
 	workflow.Config.ActiveHours = projectpkg.EffectiveActiveHours(project, workflow.Config.ActiveHours)
-	if err := workflow.Config.Validate(); err != nil {
-		return []doctorCheck{
+	validationErr := workflow.Config.Validate()
+	workflowRefDriftCheck, workflowRefDrift := checkDoctorWorkflowRefDrift(
+		ctx,
+		id,
+		project,
+		projectSourceRoot(project, workflow.Config),
+		validationErr,
+		githubToken,
+		deps,
+	)
+	if validationErr != nil {
+		failedChecks := []doctorCheck{
 			{
 				Name:              workflowCheckName,
 				Status:            doctorFail,
-				Detail:            fmt.Sprintf("%s: %v", project.Workflow, err),
+				Detail:            fmt.Sprintf("%s: %v", project.Workflow, validationErr),
 				Hint:              "Fix invalid Detent configuration in detent.yaml or legacy WORKFLOW.md frontmatter.",
 				ProjectDefinition: doctorProjectDefinition(id, workflow.Definition),
 			},
-			{
+		}
+		if workflowRefDrift {
+			failedChecks = append(failedChecks, workflowRefDriftCheck)
+		}
+		return append(failedChecks,
+			doctorCheck{
 				Name:   "Project " + id + " source repo",
 				Status: doctorWarn,
 				Detail: "skipped because WORKFLOW.md is invalid",
@@ -288,7 +303,7 @@ func checkDoctorProjectWithProgress(
 			},
 			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md is invalid"),
 			checkDoctorFollowupGuidanceUnavailable(id, "WORKFLOW.md is invalid"),
-		}
+		)
 	}
 	if pauseCheck, ok := checkDoctorProjectPause(ctx, id, project, workflow.Config, deps); ok {
 		checks = append(checks, pauseCheck)
@@ -348,6 +363,9 @@ func checkDoctorProjectWithProgress(
 	setDoctorCurrentCheck("Project " + id + " workflow source policy")
 	if sourcePolicyCheck, ok := checkDoctorWorkflowSourcePolicy(ctx, id, project, workflow.Config, projectSourceRoot(project, workflow.Config), deps); ok {
 		checks = append(checks, sourcePolicyCheck)
+	}
+	if workflowRefDrift {
+		checks = append(checks, workflowRefDriftCheck)
 	}
 	setDoctorCurrentCheck("Project " + id + " local workflow overlay")
 	if overlayCheck, ok := checkDoctorLocalWorkflowOverlay(ctx, id, workflow, deps); ok {
