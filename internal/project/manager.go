@@ -234,42 +234,45 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.running = true
 
 	projects := make([]*Project, 0, len(m.cfg.Projects))
-	registered := make([]ID, 0, len(m.cfg.Projects))
+	rollbackIDs := make([]ID, 0, len(m.cfg.Projects))
 	for _, cfg := range m.cfg.Projects {
 		id, project, err := m.createProjectLocked(cfg)
 		if err != nil {
 			if m.handleInitialCreationFailureLocked(ctx, cfg, err) {
+				if errors.Is(err, ErrProjectDefinition) {
+					rollbackIDs = append(rollbackIDs, normalizeProjectID(ID(cfg.ID)))
+				}
 				continue
 			}
-			for _, registeredID := range registered {
-				m.registry.Delete(registeredID)
+			for _, rollbackID := range rollbackIDs {
+				m.registry.Delete(rollbackID)
 			}
 			m.running = false
 			m.mu.Unlock()
 			return errors.Join(err, closeProjectSlice(ctx, projects))
 		}
 		if _, ok := m.registry.Get(id); ok {
-			for _, registeredID := range registered {
-				m.registry.Delete(registeredID)
+			for _, rollbackID := range rollbackIDs {
+				m.registry.Delete(rollbackID)
 			}
 			m.running = false
 			m.mu.Unlock()
 			return errors.Join(ErrProjectExists, project.close(ctx, false), closeProjectSlice(ctx, projects))
 		}
 		if err := m.registry.Set(project); err != nil {
-			for _, registeredID := range registered {
-				m.registry.Delete(registeredID)
+			for _, rollbackID := range rollbackIDs {
+				m.registry.Delete(rollbackID)
 			}
 			m.running = false
 			m.mu.Unlock()
 			return errors.Join(err, project.close(ctx, false), closeProjectSlice(ctx, projects))
 		}
-		registered = append(registered, id)
+		rollbackIDs = append(rollbackIDs, id)
 		projects = append(projects, project)
 	}
 	if err := validatePauseExitReferences(projects); err != nil {
-		for _, registeredID := range registered {
-			m.registry.Delete(registeredID)
+		for _, rollbackID := range rollbackIDs {
+			m.registry.Delete(rollbackID)
 		}
 		m.running = false
 		m.mu.Unlock()
@@ -280,7 +283,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	started, err := m.startInitialProjects(ctx, projects, startup)
 	if err != nil {
-		return errors.Join(err, m.rollbackInitialStart(ctx, registered, projects, started))
+		return errors.Join(err, m.rollbackInitialStart(ctx, rollbackIDs, projects, started))
 	}
 	if len(started) > 0 {
 		m.mu.Lock()
@@ -871,7 +874,7 @@ func (m *Manager) startInitialProjects(
 
 func (m *Manager) rollbackInitialStart(
 	ctx context.Context,
-	registered []ID,
+	rollbackIDs []ID,
 	projects []*Project,
 	started []startedProject,
 ) error {
@@ -887,7 +890,7 @@ func (m *Manager) rollbackInitialStart(
 	defer m.mu.Unlock()
 
 	if cleanupCtx.Err() == nil {
-		for _, id := range registered {
+		for _, id := range rollbackIDs {
 			m.registry.Delete(id)
 		}
 	}

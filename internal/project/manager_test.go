@@ -486,6 +486,36 @@ func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
 	}
 }
 
+func TestManagerStartRollsBackPendingProjectDefinitionFailure(t *testing.T) {
+	t.Parallel()
+
+	factoryErr := errors.New("fatal project factory failure")
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "invalid", Weight: 1},
+			{ID: "fatal", Weight: 1},
+		},
+	}, project.ManagerDependencies{
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "invalid" {
+				cfg.Workflow = filepath.Join(t.TempDir(), "missing-workflow.md")
+				return project.Load(cfg, project.Dependencies{})
+			}
+			return nil, factoryErr
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if err := manager.Start(t.Context()); !errors.Is(err, factoryErr) {
+		t.Fatalf("Start() error = %v, want %v", err, factoryErr)
+	}
+	if _, ok := manager.Registry().Pending("invalid"); ok {
+		t.Fatal("Registry().Pending(invalid) ok = true after startup rollback")
+	}
+}
+
 func TestManagerReconcileRemovesPendingConnectorRetry(t *testing.T) {
 	t.Parallel()
 
