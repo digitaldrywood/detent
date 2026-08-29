@@ -21,6 +21,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestShutdownControllerQueuesRequests(t *testing.T) {
@@ -1121,7 +1122,7 @@ func TestRunWithShutdownGracefulResultPrecedesServeCleanupError(t *testing.T) {
 func TestRunStartupAndServeForcedResultPrecedesStartupAuthError(t *testing.T) {
 	t.Parallel()
 
-	err := runStartupAndServe(context.Background(), func(ctx context.Context) error {
+	err := runStartupAndServe(context.Background(), web.NewStartupLifecycle(), func(ctx context.Context) error {
 		<-ctx.Done()
 		cause := fmt.Errorf("resolve github_token via gh auth token: %w", errors.New("context deadline exceeded"))
 		return GitHubAuthError(cause)
@@ -1134,6 +1135,31 @@ func TestRunStartupAndServeForcedResultPrecedesStartupAuthError(t *testing.T) {
 	}
 	if got := ClassifyError(err).Slug; got != errorCodeShutdownForced {
 		t.Fatalf("ClassifyError() = %q, want %q", got, errorCodeShutdownForced)
+	}
+}
+
+func TestRunStartupAndServeMarksFailedBeforeCancelingServe(t *testing.T) {
+	t.Parallel()
+
+	lifecycle := web.NewStartupLifecycle()
+	serveStarted := make(chan struct{})
+	observed := make(chan web.StartupLifecycleState, 1)
+	startupErr := errors.New("startup failed")
+	err := runStartupAndServe(context.Background(), lifecycle, func(context.Context) error {
+		<-serveStarted
+		return startupErr
+	}, func(ctx context.Context) error {
+		close(serveStarted)
+		<-ctx.Done()
+		observed <- lifecycle.State()
+		return ctx.Err()
+	})
+
+	if !errors.Is(err, startupErr) {
+		t.Fatalf("runStartupAndServe() error = %v, want %v", err, startupErr)
+	}
+	if got := <-observed; got != web.StartupLifecycleFailed {
+		t.Fatalf("lifecycle at serve cancellation = %q, want %q", got, web.StartupLifecycleFailed)
 	}
 }
 

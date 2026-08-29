@@ -185,7 +185,7 @@ complete, annotated reference instance to compare against as you work.
 
    ```sh
    detent doctor --port 0 --allow-write-probes
-   curl -fsS http://127.0.0.1:4000/health | jq -e '.status == "ok" and .mode == "running"'
+   curl -fsS http://127.0.0.1:4000/health | jq -e '.status == "ok" and .mode == "running" and .ready and .lifecycle == "ready"'
    ```
 
 9. **Start Detent and confirm the dashboard:**

@@ -448,6 +448,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	resourceWorkers.Go(func() {
 		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
 	})
+	startupLifecycle := web.NewStartupLifecycle()
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
@@ -472,6 +473,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Store:               runtimeStore,
 		Registry:            manager.Registry(),
 		Connector:           firstConnector(manager),
+		StartupLifecycle:    startupLifecycle,
 		Refresher:           refresherForRegistry(manager.Registry()),
 		OperatorMoves:       registryRefresher{registry: manager.Registry()},
 		Recovery:            recoveryForRegistry(manager.Registry()),
@@ -562,11 +564,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		listenerOwned = false
 		if cfg.Shutdown == nil {
-			return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+			return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
 				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, nil, nil, nil)
 			})
 		}
-		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+		return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
 				Controller:        cfg.Shutdown,
 				Registry:          manager.Registry(),
@@ -596,11 +598,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	listenerOwned = false
 	if cfg.Shutdown == nil {
-		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+		return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
 			return serve(ctx, server, listener)
 		})
 	}
-	return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+	return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
 		return runWithShutdown(ctx, runningShutdownConfig{
 			Controller:  cfg.Shutdown,
 			Registry:    manager.Registry(),
@@ -842,6 +844,7 @@ type startupServeResult struct {
 
 func runStartupAndServe(
 	ctx context.Context,
+	lifecycle *web.StartupLifecycle,
 	startup func(context.Context) error,
 	serveApp func(context.Context) error,
 ) error {
@@ -864,6 +867,7 @@ func runStartupAndServe(
 		result := <-results
 		switch result.name {
 		case "startup":
+			completeStartupLifecycle(lifecycle, result.err)
 			if result.err != nil {
 				cancel()
 				serveResult := <-results
@@ -881,6 +885,7 @@ func runStartupAndServe(
 			cancel()
 			if !startupDone {
 				startupResult := <-results
+				completeStartupLifecycle(lifecycle, startupResult.err)
 				if primaryShutdownError(result.err) {
 					logSecondaryShutdownError("startup", result.err, startupResult.err)
 					return result.err
@@ -895,6 +900,17 @@ func runStartupAndServe(
 			return result.err
 		}
 	}
+}
+
+func completeStartupLifecycle(lifecycle *web.StartupLifecycle, err error) {
+	if lifecycle == nil {
+		return
+	}
+	if err != nil {
+		lifecycle.MarkFailed()
+		return
+	}
+	lifecycle.MarkReady()
 }
 
 func primaryShutdownError(err error) bool {

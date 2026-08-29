@@ -207,7 +207,7 @@ read-only; do not pass `--allow-write-probes` before Phase 2.5:
 
 ```sh
 detent doctor --port 0
-curl -fsS http://127.0.0.1:<port>/health | jq -e '.status == "ok"'
+curl -fsS http://127.0.0.1:<port>/health | jq -e '.status == "ok" and .ready and .lifecycle == "ready"'
 curl -fsS http://127.0.0.1:<port>/api/v1/state
 ```
 
@@ -3173,7 +3173,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    ss -ltnp | rg ':<port>|detent'
-   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running"'
+   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running" and .ready and .lifecycle == "ready"'
    curl -fsS http://<dashboard-check-host>:<port>/api/v1/state
    ```
 
@@ -3351,7 +3351,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    detent doctor --port 0 --allow-write-probes
-   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running"'
+   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running" and .ready and .lifecycle == "ready"'
    ```
 
 3. **Reload the runtime that needs the change.** Detent watches the active
