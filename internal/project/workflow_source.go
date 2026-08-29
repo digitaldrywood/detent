@@ -23,6 +23,8 @@ var (
 	errUnsafeWorkflowPath     = errors.New("workflow path must stay inside the source root")
 )
 
+const workflowGitWaitDelay = time.Second
+
 type workflowGitRefSource struct {
 	sourceRoot string
 	ref        string
@@ -277,6 +279,7 @@ func (s workflowGitRefSource) displayPath() string {
 
 func runWorkflowGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...) // #nosec G204 -- workflow refs and paths are operator config and are passed as git arguments, not shell.
+	cmd.WaitDelay = workflowGitWaitDelay
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git -C %s %s: %w\n%s", dir, strings.Join(args, " "), err, output)
