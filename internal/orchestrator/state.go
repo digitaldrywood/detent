@@ -195,6 +195,7 @@ const (
 type Blocked struct {
 	Issue                   connector.Issue
 	Reason                  string
+	AttemptError            string
 	RecoveryAction          string
 	RecoveryReason          string
 	RecoveryTarget          string

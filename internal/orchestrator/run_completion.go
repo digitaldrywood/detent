@@ -782,7 +782,7 @@ func (o *Orchestrator) handleWorkspacePreparationFailure(
 		nil,
 	)
 	if attemptCompleted {
-		count, known := o.consecutiveRetryCycleCount(ctx, state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
+		count, latest, known := o.consecutiveRetryCycleCount(ctx, state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
 		switch {
 		case !known:
 			o.recordRetryCycleHistoryUnavailable(state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
@@ -795,6 +795,7 @@ func (o *Orchestrator) handleWorkspacePreparationFailure(
 				running.DiffStats,
 				workspacePreparationRetryLimitCause,
 				count,
+				latest,
 				event.CompletedAt,
 			); parked {
 				return

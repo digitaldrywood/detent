@@ -889,6 +889,7 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 		item := telemetry.Blocked{
 			Issue:                   issue,
 			Error:                   entry.Reason,
+			AttemptError:            entry.AttemptError,
 			Source:                  entry.Source,
 			RecoveryAction:          entry.RecoveryAction,
 			RecoveryReason:          entry.RecoveryReason,
