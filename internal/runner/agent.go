@@ -1114,6 +1114,9 @@ func (r *Runner) runAgentTurn(
 		if deliverableErr := progress.deliverableError(); deliverableErr != nil {
 			turnErr = deliverableErr
 			result.FinalState = FinalStateFailed
+		} else if credentialErr := workerCredentialBlockerError(progress.finalMessage()); credentialErr != nil {
+			turnErr = credentialErr
+			result.FinalState = FinalStateFailed
 		}
 	}
 	result.DeliverableCommands = deliverableCommandEvidenceFromError(turnErr)
@@ -1992,24 +1995,96 @@ func IsDeliverableConfigurationError(err error) bool {
 		if deliverableErr == nil {
 			continue
 		}
-		detail := strings.ToLower(strings.TrimSpace(deliverableErr.Message + "\n" + deliverableErr.Body))
-		for _, phrase := range []string{
-			"gh auth login",
-			"populate gh_token",
-			"not logged into any github hosts",
-			"no credentials provided",
-			"bad credentials",
-			"authentication failed",
-			"authentication required",
-			"could not read username",
-			"permission denied (publickey)",
-			"github token is not configured",
-			"gh_token environment variable is empty",
-			"executable file not found",
-		} {
-			if strings.Contains(detail, phrase) {
-				return true
-			}
+		if deliverableCredentialFailureDetail(deliverableErr.Message + "\n" + deliverableErr.Body) {
+			return true
+		}
+	}
+	return false
+}
+
+func workerCredentialBlockerError(message string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	firstLine, _, _ := strings.Cut(message, "\n")
+	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
+	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
+	if !blocked || !workerGitHubCredentialFailureDetail(message) {
+		return nil
+	}
+	return &DeliverableCommandError{
+		OperationClass: "pull_request",
+		Operation:      "read GitHub issue and pull request",
+		Status:         "blocked",
+		Message:        truncateDeliverableDetail(firstLine),
+		Body:           truncateDeliverableDetail(message),
+	}
+}
+
+func workerGitHubCredentialFailureDetail(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	if !githubCredentialFailureDetail(detail) {
+		return false
+	}
+	for _, marker := range []string{
+		"github",
+		"gh auth",
+		"gh issue",
+		"gh pr",
+		"gh api",
+		"git clone",
+		"git fetch",
+		"git push",
+		"could not read username",
+		"permission denied (publickey)",
+	} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func deliverableCredentialFailureDetail(detail string) bool {
+	if githubCredentialFailureDetail(detail) {
+		return true
+	}
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	for _, phrase := range []string{
+		"executable file not found",
+	} {
+		if strings.Contains(detail, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func githubCredentialFailureDetail(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	for _, phrase := range []string{
+		"gh auth login",
+		"populate gh_token",
+		"not logged into any github hosts",
+		"no credentials provided",
+		"bad credentials",
+		"authentication failed",
+		"authentication required",
+		"could not read username",
+		"permission denied (publickey)",
+		"github token is not configured",
+		"gh_token environment variable is empty",
+		"missing github authentication",
+		"missing github credentials",
+		"github authentication is unavailable",
+		"github credentials are unavailable",
+		"github credential injection is disabled",
+		"github credential policy is disabled",
+		"github_credential_policy: isolated_disabled",
+	} {
+		if strings.Contains(detail, phrase) {
+			return true
 		}
 	}
 	return false
@@ -4371,6 +4446,15 @@ func (p *agentRunProgress) outputText() string {
 		}
 	}
 	return out.String()
+}
+
+func (p *agentRunProgress) finalMessage() string {
+	for index := len(p.messageOrder) - 1; index >= 0; index-- {
+		if message := p.messages[p.messageOrder[index]]; message != nil {
+			return message.String()
+		}
+	}
+	return ""
 }
 
 func (r *Runner) publishRunUpdate(
