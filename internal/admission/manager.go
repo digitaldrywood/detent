@@ -414,20 +414,21 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		readerFiltered["author"] > 0,
 	)
 	sortCandidates(candidates, settings)
-	candidates, commentsRemaining, err = m.unproposedCandidates(
+	var truncatedCandidates int
+	candidates, commentsRemaining, truncatedCandidates, err = m.unproposedCandidates(
 		ctx,
 		settings,
 		candidates,
 		result.Skipped,
 		commentsRemaining,
 		startedAt,
+		settings.Config.MaxCandidatesPerRun,
 	)
 	if err != nil {
 		return result, err
 	}
-	if len(candidates) > settings.Config.MaxCandidatesPerRun {
-		result.Truncated["candidates"] = len(candidates) - settings.Config.MaxCandidatesPerRun
-		candidates = candidates[:settings.Config.MaxCandidatesPerRun]
+	if truncatedCandidates > 0 {
+		result.Truncated["candidates"] = truncatedCandidates
 	}
 	result.Candidates = len(candidates)
 	if len(candidates) == 0 {
@@ -842,12 +843,15 @@ func (m *Manager) unproposedCandidates(
 	skipped map[string]int,
 	commentsRemaining int,
 	at time.Time,
-) ([]connector.Issue, int, error) {
-	out := make([]connector.Issue, 0, len(candidates))
+	candidateLimit int,
+) ([]connector.Issue, int, int, error) {
+	out := make([]connector.Issue, 0, min(len(candidates), candidateLimit))
+	processed := 0
+	truncated := 0
 	for _, candidate := range candidates {
 		history, err := m.store.AdmissionProposalHistory(ctx, settings.ProjectID, candidate.ID)
 		if err != nil {
-			return nil, commentsRemaining, err
+			return nil, commentsRemaining, truncated, err
 		}
 		fingerprint := issueFingerprint(candidate)
 		suppress := false
@@ -868,7 +872,7 @@ func (m *Manager) unproposedCandidates(
 		}
 		decline, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, candidate.ID, fingerprint)
 		if err != nil {
-			return nil, commentsRemaining, err
+			return nil, commentsRemaining, truncated, err
 		}
 		var classification nonDeliverableClassification
 		classified := false
@@ -876,26 +880,39 @@ func (m *Manager) unproposedCandidates(
 			classification, classified = classifyNonDeliverable(candidate)
 		}
 		if !found && !classified {
+			if processed >= candidateLimit {
+				truncated++
+				continue
+			}
+			processed++
 			out = append(out, candidate)
 			continue
 		}
+		skipped["non_deliverable"]++
+		if found && !decline.CommentedAt.IsZero() {
+			continue
+		}
+		if processed >= candidateLimit {
+			truncated++
+			continue
+		}
+		processed++
 		created := false
 		if !found {
 			decline, created, err = m.createAdmissionDecline(ctx, settings, candidate, classification, at)
 			if err != nil {
-				return nil, commentsRemaining, err
+				return nil, commentsRemaining, truncated, err
 			}
 		}
 		commented, err := m.ensureAdmissionDeclineComment(ctx, settings.Issues, candidate, decline, created, commentsRemaining > 0)
 		if err != nil {
-			return nil, commentsRemaining, err
+			return nil, commentsRemaining, truncated, err
 		}
 		if commented {
 			commentsRemaining--
 		}
-		skipped["non_deliverable"]++
 	}
-	return out, commentsRemaining, nil
+	return out, commentsRemaining, truncated, nil
 }
 
 type nonDeliverableClassification struct {

@@ -221,6 +221,68 @@ func TestManagerDeclinesNonDeliverableCandidatesBeforeRunningAgent(t *testing.T)
 	}
 }
 
+func TestManagerAppliesCandidateCapBeforeDeclineSideEffects(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issues := make([]connector.Issue, 4)
+	for index := range issues {
+		issues[index] = admissionIssueFixture(
+			"tracker-"+strconv.Itoa(index),
+			"PA-"+strconv.Itoa(index),
+			index+1,
+			now.Add(time.Duration(index)*time.Minute),
+		)
+		issues[index].Title += " — Tracker"
+	}
+	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.MaxCandidatesPerRun = 2
+	settings.Config.MaxProposalsPerRun = 10
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	tests := []struct {
+		name          string
+		wantDeclines  int
+		wantTruncated int
+	}{
+		{name: "first pass", wantDeclines: 2, wantTruncated: 2},
+		{name: "second pass", wantDeclines: 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := manager.RunOnce(t.Context())
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if result.Skipped["non_deliverable"] != len(issues) || result.Truncated["candidates"] != tt.wantTruncated {
+				t.Fatalf("result = %#v, want %d truncated candidates", result, tt.wantTruncated)
+			}
+			declines := 0
+			comments := 0
+			for _, issue := range issues {
+				_, found, err := backend.AdmissionDecline(t.Context(), settings.ProjectID, issue.ID, issueFingerprint(issue))
+				if err != nil {
+					t.Fatalf("AdmissionDecline(%s) error = %v", issue.ID, err)
+				}
+				if found {
+					declines++
+				}
+				issueComments, err := tracker.FetchIssueComments(t.Context(), issue)
+				if err != nil {
+					t.Fatalf("FetchIssueComments(%s) error = %v", issue.ID, err)
+				}
+				comments += len(issueComments)
+			}
+			if declines != tt.wantDeclines || comments != tt.wantDeclines || agent.calls != 0 {
+				t.Fatalf("declines = %d, comments = %d, runner calls = %d, want %d capped declines", declines, comments, agent.calls, tt.wantDeclines)
+			}
+		})
+	}
+}
+
 func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
 	t.Parallel()
 
