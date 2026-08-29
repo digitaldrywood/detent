@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -391,6 +392,97 @@ func TestManagerKeepsPermanentConnectorFactoryFailureTerminal(t *testing.T) {
 	case delay := <-retryStarted:
 		t.Fatalf("retry scheduled for permanent failure with delay %v", delay)
 	default:
+	}
+}
+
+func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		invalidProject func(*testing.T, globalconfig.Project, project.Dependencies) (*project.Project, error)
+		wantError      string
+	}{
+		{
+			name: "load",
+			invalidProject: func(t *testing.T, cfg globalconfig.Project, deps project.Dependencies) (*project.Project, error) {
+				t.Helper()
+				cfg.Workflow = filepath.Join(t.TempDir(), "missing-workflow.md")
+				return project.Load(cfg, deps)
+			},
+			wantError: "missing-workflow.md",
+		},
+		{
+			name: "validation",
+			invalidProject: func(t *testing.T, cfg globalconfig.Project, deps project.Dependencies) (*project.Project, error) {
+				t.Helper()
+				workflowCfg := workflowConfig("memory")
+				workflowCfg.Routines = []workflowconfig.Routine{{
+					Name: "audit", Schedule: "0 3 * * 1", Prompt: "Inspect.",
+				}}
+				return project.New(project.Config{
+					Project:  cfg,
+					Workflow: workflowconfig.Workflow{Config: workflowCfg},
+				}, deps)
+			},
+			wantError: "schedule_ownership.enabled must be true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			events := hub.New[project.Event](hub.WithBuffer(4))
+			coordinationStore := &projectCoordinationStore{}
+			manager, err := project.NewManager(project.ManagerConfig{
+				Projects: []globalconfig.Project{
+					{ID: "invalid", Weight: 1},
+					{ID: "valid", Weight: 1},
+				},
+			}, project.ManagerDependencies{
+				Events: events,
+				ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+					if cfg.ID == "invalid" {
+						return tt.invalidProject(t, cfg, project.Dependencies{
+							Events: events, Runner: blockingRunner{},
+							RoutineStore: &projectRoutineStore{}, ScheduleStore: coordinationStore,
+						})
+					}
+					return newManagerTestProject(t, cfg, events)
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+
+			if err := manager.Start(t.Context()); err != nil {
+				t.Fatalf("Start() error = %v, want isolated project degradation", err)
+			}
+			if _, ok := manager.Registry().Get("invalid"); ok {
+				t.Fatal("Registry().Get(invalid) ok = true, want no constructed runtime")
+			}
+			health, ok := manager.Registry().Pending("invalid")
+			if !ok {
+				t.Fatal("Registry().Pending(invalid) ok = false, want terminal degraded state")
+			}
+			if health.Status != project.HealthStatusDegraded || !health.RetryStopped || !health.NextRetryAt.IsZero() {
+				t.Fatalf("pending health = %#v, want terminal degraded state", health)
+			}
+			if !strings.Contains(health.LastError, tt.wantError) {
+				t.Fatalf("LastError = %q, want containing %q", health.LastError, tt.wantError)
+			}
+			valid, ok := manager.Registry().Get("valid")
+			if !ok || !valid.Running() {
+				t.Fatalf("Registry().Get(valid) = %#v, %t, want running project", valid, ok)
+			}
+			if calls := coordinationStore.Calls(); calls != 0 {
+				t.Fatalf("schedule ownership coordination calls = %d, want 0", calls)
+			}
+			if err := valid.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+		})
 	}
 }
 

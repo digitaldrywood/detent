@@ -984,7 +984,8 @@ func (m *Manager) handleInitialCreationFailureLocked(
 	cfg globalconfig.Project,
 	err error,
 ) bool {
-	if !errors.Is(err, ErrConnectorCreation) {
+	isConnectorFailure := errors.Is(err, ErrConnectorCreation)
+	if !isConnectorFailure && !errors.Is(err, ErrProjectDefinition) {
 		return false
 	}
 
@@ -993,7 +994,7 @@ func (m *Manager) handleInitialCreationFailureLocked(
 		return false
 	}
 	cfg.ID = string(id)
-	if !connector.IsRetryable(err) {
+	if !isConnectorFailure || !connector.IsRetryable(err) {
 		runtimeErr := RuntimeError{Message: err.Error(), At: m.nowUTC(), Terminal: true}
 		if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
 			return false
