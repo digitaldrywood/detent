@@ -46,6 +46,7 @@ import (
 var (
 	ErrAlreadyRunning      = errors.New("project already running")
 	ErrConnectorCreation   = errors.New("project connector creation failed")
+	ErrProjectDefinition   = errors.New("project definition failed")
 	ErrMissingConnector    = errors.New("project connector is required")
 	ErrMissingOrchestrator = errors.New("project orchestrator is required")
 	ErrMissingProject      = errors.New("project is required")
@@ -101,6 +102,22 @@ type WorkflowSourceStatus struct {
 type Config struct {
 	Project  globalconfig.Project
 	Workflow workflowconfig.Workflow
+}
+
+type projectDefinitionError struct {
+	err error
+}
+
+func (e projectDefinitionError) Error() string {
+	return e.err.Error()
+}
+
+func (e projectDefinitionError) Unwrap() error {
+	return e.err
+}
+
+func (e projectDefinitionError) Is(target error) bool {
+	return target == ErrProjectDefinition
 }
 
 type ConnectorFactory func(workflowconfig.Config) (connector.Connector, error)
@@ -223,7 +240,7 @@ func (s *scheduleFaultState) current() RuntimeError {
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
 	workflow, err := LoadWorkflow(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("load project workflow: %w", err)
+		return nil, projectDefinitionError{err: fmt.Errorf("load project workflow: %w", err)}
 	}
 
 	return New(Config{Project: cfg, Workflow: workflow}, deps)
@@ -240,10 +257,10 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, deps.GitHubToken)
 	if err := workflow.Config.Validate(); err != nil {
-		return nil, fmt.Errorf("validate project workflow: %w", err)
+		return nil, projectDefinitionError{err: fmt.Errorf("validate project workflow: %w", err)}
 	}
 	if err := workflowconfig.ValidateWorkflowAdmission(workflow); err != nil {
-		return nil, fmt.Errorf("validate project workflow: %w", err)
+		return nil, projectDefinitionError{err: fmt.Errorf("validate project workflow: %w", err)}
 	}
 
 	connectorFactory := resolveConnectorFactory(deps)
