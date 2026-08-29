@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,20 +42,33 @@ const (
 	admissionResolutionSourceStateChanged  = "source_state_changed_before_acceptance"
 	admissionResolutionAutoAdmitIneligible = "candidate_became_ineligible_before_auto_admit"
 	admissionResolutionEffortUnavailable   = "effort_recommendation_unavailable"
+	admissionResolutionNonDeliverable      = "non_deliverable_declined"
+	admissionOptOutMarker                  = "<!-- detent:no-dispatch -->"
+	admissionDeclineExplicitOptOut         = "explicit_opt_out"
+	admissionDeclineTracker                = "tracker"
+	admissionDeclineIntake                 = "intake"
+	admissionDeclineStudy                  = "study"
+	admissionDeclineResearch               = "research"
+	admissionDeclineLinkedChecklist        = "linked_issue_checklist"
 	maxRationaleSize                       = 16 * 1024
 	maxEffortRationaleSize                 = 2 * 1024
 )
 
 var (
-	ErrMissingStore      = errors.New("backlog admission store is required")
-	ErrMissingIssueStore = errors.New("backlog admission issue store is required")
-	ErrMissingRunner     = errors.New("backlog admission runner is required")
-	ErrInvalidProposal   = errors.New("backlog admission proposal is invalid")
-	ErrInvalidOutput     = errors.New("backlog admission agent output is invalid")
+	ErrMissingStore       = errors.New("backlog admission store is required")
+	ErrMissingIssueStore  = errors.New("backlog admission issue store is required")
+	ErrMissingRunner      = errors.New("backlog admission runner is required")
+	ErrInvalidProposal    = errors.New("backlog admission proposal is invalid")
+	ErrInvalidOutput      = errors.New("backlog admission agent output is invalid")
+	artifactTitlePattern  = regexp.MustCompile(`(?i)(?:\(\s*(tracker|intake|study|research)\s*\)|\[\s*(tracker|intake|study|research)\s*\]|(?:^|[—–:]|\s-\s)\s*(master\s+tracker|tracker|intake|study|research)(?:\s+(?:issue|artifact))?)\s*$`)
+	issueReferencePattern = regexp.MustCompile(`(?i)(?:[a-z0-9_.-]+/[a-z0-9_.-]+)?#\d+|https://github\.com/[a-z0-9_.-]+/[a-z0-9_.-]+/issues/\d+`)
 )
 
 type Store interface {
 	CreateAdmissionProposal(context.Context, admissionmodel.Proposal) (bool, error)
+	CreateAdmissionDecline(context.Context, admissionmodel.Decline) (bool, error)
+	AdmissionDecline(context.Context, string, string, string) (admissionmodel.Decline, bool, error)
+	MarkAdmissionDeclineCommented(context.Context, string, time.Time) error
 	OpenAdmissionProposals(context.Context, string, int) ([]admissionmodel.Proposal, error)
 	AdmissionProposalHistory(context.Context, string, string) ([]admissionmodel.Proposal, error)
 	CountOpenAdmissionProposals(context.Context, string) (int, error)
@@ -400,13 +414,21 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		readerFiltered["author"] > 0,
 	)
 	sortCandidates(candidates, settings)
-	candidates, err = m.unproposedCandidates(ctx, settings, candidates, result.Skipped)
+	var truncatedCandidates int
+	candidates, commentsRemaining, truncatedCandidates, err = m.unproposedCandidates(
+		ctx,
+		settings,
+		candidates,
+		result.Skipped,
+		commentsRemaining,
+		startedAt,
+		settings.Config.MaxCandidatesPerRun,
+	)
 	if err != nil {
 		return result, err
 	}
-	if len(candidates) > settings.Config.MaxCandidatesPerRun {
-		result.Truncated["candidates"] = len(candidates) - settings.Config.MaxCandidatesPerRun
-		candidates = candidates[:settings.Config.MaxCandidatesPerRun]
+	if truncatedCandidates > 0 {
+		result.Truncated["candidates"] = truncatedCandidates
 	}
 	result.Candidates = len(candidates)
 	if len(candidates) == 0 {
@@ -576,6 +598,27 @@ func (m *Manager) reconcileOpenProposals(
 				return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
 			}
 			commentsByIssue[proposal.IssueID] = comments
+		}
+		if classification, declined := classifyNonDeliverable(issue); declined {
+			decline, created, err := m.createAdmissionDecline(ctx, settings, issue, classification, at)
+			if err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			commented, err := m.ensureAdmissionDeclineComment(
+				ctx,
+				settings.Issues,
+				issue,
+				decline,
+				created,
+				commentsRemaining > 0,
+			)
+			if err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			if commented {
+				commentsRemaining--
+			}
+			continue
 		}
 		decision, decided, err := proposalDecision(ctx, settings.Issues, issue, proposal, comments)
 		if err != nil {
@@ -798,12 +841,17 @@ func (m *Manager) unproposedCandidates(
 	settings Settings,
 	candidates []connector.Issue,
 	skipped map[string]int,
-) ([]connector.Issue, error) {
-	out := make([]connector.Issue, 0, len(candidates))
+	commentsRemaining int,
+	at time.Time,
+	candidateLimit int,
+) ([]connector.Issue, int, int, error) {
+	out := make([]connector.Issue, 0, min(len(candidates), candidateLimit))
+	processed := 0
+	truncated := 0
 	for _, candidate := range candidates {
 		history, err := m.store.AdmissionProposalHistory(ctx, settings.ProjectID, candidate.ID)
 		if err != nil {
-			return nil, err
+			return nil, commentsRemaining, truncated, err
 		}
 		fingerprint := issueFingerprint(candidate)
 		suppress := false
@@ -819,11 +867,273 @@ func (m *Manager) unproposedCandidates(
 				break
 			}
 		}
-		if !suppress {
+		if suppress {
+			continue
+		}
+		decline, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, candidate.ID, fingerprint)
+		if err != nil {
+			return nil, commentsRemaining, truncated, err
+		}
+		var classification nonDeliverableClassification
+		classified := false
+		if !found {
+			classification, classified = classifyNonDeliverable(candidate)
+		}
+		if !found && !classified {
+			if processed >= candidateLimit {
+				truncated++
+				continue
+			}
+			processed++
 			out = append(out, candidate)
+			continue
+		}
+		skipped["non_deliverable"]++
+		if found && !decline.CommentedAt.IsZero() {
+			continue
+		}
+		if processed >= candidateLimit {
+			truncated++
+			continue
+		}
+		processed++
+		created := false
+		if !found {
+			decline, created, err = m.createAdmissionDecline(ctx, settings, candidate, classification, at)
+			if err != nil {
+				return nil, commentsRemaining, truncated, err
+			}
+		}
+		commented, err := m.ensureAdmissionDeclineComment(ctx, settings.Issues, candidate, decline, created, commentsRemaining > 0)
+		if err != nil {
+			return nil, commentsRemaining, truncated, err
+		}
+		if commented {
+			commentsRemaining--
 		}
 	}
-	return out, nil
+	return out, commentsRemaining, truncated, nil
+}
+
+type nonDeliverableClassification struct {
+	reason string
+	detail string
+}
+
+func (m *Manager) createAdmissionDecline(
+	ctx context.Context,
+	settings Settings,
+	issue connector.Issue,
+	classification nonDeliverableClassification,
+	at time.Time,
+) (admissionmodel.Decline, bool, error) {
+	fingerprint := issueFingerprint(issue)
+	decline := admissionmodel.Decline{
+		ID:              admissionDeclineID(settings.ProjectID, issue.ID, fingerprint),
+		ProjectID:       settings.ProjectID,
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		IssueURL:        issue.URL,
+		Fingerprint:     fingerprint,
+		Reason:          classification.reason,
+		Detail:          classification.detail,
+		CreatedAt:       at,
+	}
+	created, err := m.store.CreateAdmissionDecline(ctx, decline)
+	if err != nil {
+		return admissionmodel.Decline{}, false, err
+	}
+	if created {
+		return decline, true, nil
+	}
+	existing, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, issue.ID, fingerprint)
+	if err != nil {
+		return admissionmodel.Decline{}, false, err
+	}
+	if !found {
+		return admissionmodel.Decline{}, false, errors.New("created backlog admission decline is unavailable")
+	}
+	return existing, false, nil
+}
+
+func (m *Manager) ensureAdmissionDeclineComment(
+	ctx context.Context,
+	issues IssueStore,
+	issue connector.Issue,
+	decline admissionmodel.Decline,
+	created bool,
+	allowed bool,
+) (bool, error) {
+	if !decline.CommentedAt.IsZero() || !allowed {
+		return false, nil
+	}
+	if !created {
+		reader, ok := issues.(connector.IssueCommentReader)
+		if !ok {
+			return false, errors.New("backlog admission issue comment reader is required")
+		}
+		comments, err := reader.FetchIssueComments(ctx, issue)
+		if err != nil {
+			return false, fmt.Errorf("read backlog admission decline comments: %w", err)
+		}
+		marker := admissionDeclineCommentMarker(decline.ID)
+		for _, comment := range comments {
+			if strings.Contains(comment.Body, marker) {
+				if err := m.store.MarkAdmissionDeclineCommented(ctx, decline.ID, m.now().UTC()); err != nil {
+					return false, fmt.Errorf("mark backlog admission decline commented: %w", err)
+				}
+				return false, nil
+			}
+		}
+	}
+	if err := issues.CreateComment(ctx, decline.IssueID, admissionDeclineComment(decline, issue.State)); err != nil {
+		return false, fmt.Errorf("create backlog admission decline comment: %w", err)
+	}
+	if err := m.store.MarkAdmissionDeclineCommented(ctx, decline.ID, m.now().UTC()); err != nil {
+		return false, fmt.Errorf("mark backlog admission decline commented: %w", err)
+	}
+	return true, nil
+}
+
+func classifyNonDeliverable(issue connector.Issue) (nonDeliverableClassification, bool) {
+	body := strings.TrimSpace(issue.Description)
+	if strings.Contains(strings.ToLower(body), admissionOptOutMarker) {
+		return nonDeliverableClassification{
+			reason: admissionDeclineExplicitOptOut,
+			detail: "the issue contains the " + admissionOptOutMarker + " operator opt-out marker",
+		}, true
+	}
+	if hasCompletionContract(body) {
+		return nonDeliverableClassification{}, false
+	}
+	if kind := selfIdentifiedArtifact(issue.Title, body); kind != "" {
+		return nonDeliverableClassification{
+			reason: kind,
+			detail: "the title or body identifies this as a " + kind + " artifact without an explicit completion contract",
+		}, true
+	}
+	if predominantlyLinkedChecklist(body) {
+		return nonDeliverableClassification{
+			reason: admissionDeclineLinkedChecklist,
+			detail: "the body is predominantly a checklist of links to other issues without an explicit completion contract",
+		}, true
+	}
+	return nonDeliverableClassification{}, false
+}
+
+func hasCompletionContract(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
+		heading = strings.TrimSuffix(strings.ToLower(heading), ":")
+		switch heading {
+		case "acceptance criteria", "completion criteria", "definition of done", "deliverable", "expected behavior", "what good looks like":
+			return true
+		}
+		if key, value, found := strings.Cut(line, ":"); found && strings.EqualFold(strings.TrimSpace(key), "deliverable") && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func selfIdentifiedArtifact(title string, body string) string {
+	if match := artifactTitlePattern.FindStringSubmatch(strings.TrimSpace(title)); len(match) > 1 {
+		for _, candidate := range match[1:] {
+			if kind := normalizeArtifactKind(candidate); kind != "" {
+				return kind
+			}
+		}
+	}
+	lowerBody := strings.ToLower(body)
+	phrases := []struct {
+		text string
+		kind string
+	}{
+		{text: "this is a master tracker", kind: admissionDeclineTracker},
+		{text: "this issue is a tracker", kind: admissionDeclineTracker},
+		{text: "this issue serves as a tracker", kind: admissionDeclineTracker},
+		{text: "this is an intake issue", kind: admissionDeclineIntake},
+		{text: "this issue is an intake", kind: admissionDeclineIntake},
+		{text: "this is a study artifact", kind: admissionDeclineStudy},
+		{text: "this issue is a study artifact", kind: admissionDeclineStudy},
+		{text: "this is a research artifact", kind: admissionDeclineResearch},
+		{text: "this issue is a research artifact", kind: admissionDeclineResearch},
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(lowerBody, phrase.text) {
+			return phrase.kind
+		}
+	}
+	for _, line := range strings.Split(lowerBody, "\n") {
+		line = strings.Trim(strings.TrimSpace(line), "*_`")
+		key, value, found := strings.Cut(line, ":")
+		if !found || (strings.TrimSpace(key) != "type" && strings.TrimSpace(key) != "artifact") {
+			continue
+		}
+		if kind := normalizeArtifactKind(value); kind != "" {
+			return kind
+		}
+	}
+	return ""
+}
+
+func normalizeArtifactKind(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.Contains(value, "tracker") {
+		return admissionDeclineTracker
+	}
+	switch value {
+	case admissionDeclineIntake, admissionDeclineStudy, admissionDeclineResearch:
+		return value
+	default:
+		return ""
+	}
+}
+
+func predominantlyLinkedChecklist(body string) bool {
+	total := 0
+	linked := 0
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) < 5 || (line[:5] != "- [ ]" && strings.ToLower(line[:5]) != "- [x]" && line[:5] != "* [ ]" && strings.ToLower(line[:5]) != "* [x]") {
+			continue
+		}
+		total++
+		if issueReferencePattern.MatchString(line[5:]) {
+			linked++
+		}
+	}
+	return total >= 3 && linked*3 >= total*2
+}
+
+func admissionDeclineID(projectID string, issueID string, fingerprint string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(projectID) + "\x00" + strings.TrimSpace(issueID) + "\x00" + fingerprint))
+	return "admission-decline-" + hex.EncodeToString(sum[:12])
+}
+
+func admissionDeclineComment(decline admissionmodel.Decline, sourceState string) string {
+	var b strings.Builder
+	b.WriteString("## Detent backlog admission declined\n\n")
+	b.WriteString("Detent did not propose this issue for dispatch because ")
+	b.WriteString(decline.Detail)
+	b.WriteString(". The issue remains")
+	if sourceState = strings.TrimSpace(sourceState); sourceState != "" {
+		b.WriteString(" in **")
+		b.WriteString(sourceState)
+		b.WriteString("**")
+	} else {
+		b.WriteString(" in its current untracked state")
+	}
+	b.WriteString(".\n\nDefine one bounded deliverable and an explicit completion contract in the title or body to make it eligible. Remove the `")
+	b.WriteString(admissionOptOutMarker)
+	b.WriteString("` marker first when the issue was deliberately opted out. Detent will re-evaluate only after the title or body changes.\n\n")
+	b.WriteString(admissionDeclineCommentMarker(decline.ID))
+	return b.String()
+}
+
+func admissionDeclineCommentMarker(id string) string {
+	return "<!-- detent-backlog-admission-decline:" + strings.TrimSpace(id) + " -->"
 }
 
 func (m *Manager) executeProposals(
@@ -862,6 +1172,28 @@ func (m *Manager) executeProposals(
 		if !supplied || !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
 			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
 			result.Skipped["stale_or_ineligible"]++
+			continue
+		}
+		if classification, declined := classifyNonDeliverable(current); declined {
+			decline, created, err := m.createAdmissionDecline(ctx, settings, current, classification, at)
+			if err != nil {
+				return result, err
+			}
+			commented, err := m.ensureAdmissionDeclineComment(
+				ctx,
+				settings.Issues,
+				current,
+				decline,
+				created,
+				commentsRemaining > 0,
+			)
+			if err != nil {
+				return result, err
+			}
+			if commented {
+				commentsRemaining--
+			}
+			result.Skipped["non_deliverable"]++
 			continue
 		}
 		findings, err := validateFindings(agentProposal.Findings, settings.Criteria)

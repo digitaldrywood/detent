@@ -13,6 +13,116 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
+const admissionResolutionNonDeliverable = "non_deliverable_declined"
+
+func (s *sqliteStore) CreateAdmissionDecline(ctx context.Context, decline admissionmodel.Decline) (bool, error) {
+	if err := validateAdmissionDecline(decline); err != nil {
+		return false, err
+	}
+	createdAt, err := requiredTimestamp("created_at", decline.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin backlog admission decline: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `
+UPDATE backlog_admission_proposals
+SET status = 'superseded', resolved_at = ?, resolution_reason = ?,
+    decision_seconds = CAST(MAX(0, (julianday(?) - julianday(created_at)) * 86400) AS INTEGER)
+WHERE project_id = ? AND issue_id = ? AND status = 'open'`,
+		createdAt,
+		admissionResolutionNonDeliverable,
+		createdAt,
+		strings.TrimSpace(decline.ProjectID),
+		strings.TrimSpace(decline.IssueID),
+	); err != nil {
+		return false, fmt.Errorf("supersede non-deliverable backlog admission proposals: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO backlog_admission_declines (
+  id, project_id, issue_id, issue_identifier, issue_url, fingerprint,
+  reason, detail, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id, issue_id, fingerprint) DO NOTHING`,
+		strings.TrimSpace(decline.ID),
+		strings.TrimSpace(decline.ProjectID),
+		strings.TrimSpace(decline.IssueID),
+		strings.TrimSpace(decline.IssueIdentifier),
+		strings.TrimSpace(decline.IssueURL),
+		strings.TrimSpace(decline.Fingerprint),
+		strings.TrimSpace(decline.Reason),
+		strings.TrimSpace(decline.Detail),
+		createdAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("create backlog admission decline: %w", err)
+	}
+	created, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read backlog admission decline result: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit backlog admission decline: %w", err)
+	}
+	committed = true
+	return created == 1, nil
+}
+
+func (s *sqliteStore) AdmissionDecline(
+	ctx context.Context,
+	projectID string,
+	issueID string,
+	fingerprint string,
+) (admissionmodel.Decline, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, project_id, issue_id, issue_identifier, issue_url, fingerprint,
+       reason, detail, created_at, COALESCE(commented_at, '')
+FROM backlog_admission_declines
+WHERE project_id = ? AND issue_id = ? AND fingerprint = ?`,
+		strings.TrimSpace(projectID),
+		strings.TrimSpace(issueID),
+		strings.TrimSpace(fingerprint),
+	)
+	decline, err := scanAdmissionDecline(row.Scan)
+	if errors.Is(err, ErrNotFound) {
+		return admissionmodel.Decline{}, false, nil
+	}
+	if err != nil {
+		return admissionmodel.Decline{}, false, fmt.Errorf("read backlog admission decline: %w", err)
+	}
+	return decline, true, nil
+}
+
+func (s *sqliteStore) MarkAdmissionDeclineCommented(ctx context.Context, id string, at time.Time) error {
+	commentedAt, err := requiredTimestamp("commented_at", at)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE backlog_admission_declines
+SET commented_at = COALESCE(commented_at, ?)
+WHERE id = ?`, commentedAt, strings.TrimSpace(id))
+	if err != nil {
+		return fmt.Errorf("mark backlog admission decline commented: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read backlog admission decline comment count: %w", err)
+	}
+	if count != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sqliteStore) CreateAdmissionProposal(ctx context.Context, proposal admissionmodel.Proposal) (bool, error) {
 	if err := validateAdmissionProposal(proposal); err != nil {
 		return false, err
@@ -884,6 +994,26 @@ func validateAdmissionProposal(proposal admissionmodel.Proposal) error {
 	return nil
 }
 
+func validateAdmissionDecline(decline admissionmodel.Decline) error {
+	switch {
+	case strings.TrimSpace(decline.ID) == "":
+		return errors.New("backlog admission decline id is required")
+	case strings.TrimSpace(decline.ProjectID) == "":
+		return errors.New("backlog admission decline project id is required")
+	case strings.TrimSpace(decline.IssueID) == "":
+		return errors.New("backlog admission decline issue id is required")
+	case strings.TrimSpace(decline.Fingerprint) == "":
+		return errors.New("backlog admission decline fingerprint is required")
+	case strings.TrimSpace(decline.Reason) == "":
+		return errors.New("backlog admission decline reason is required")
+	case strings.TrimSpace(decline.Detail) == "":
+		return errors.New("backlog admission decline detail is required")
+	case decline.CreatedAt.IsZero():
+		return errors.New("backlog admission decline created at is required")
+	}
+	return nil
+}
+
 func validAdmissionProposalStatus(status admissionmodel.ProposalStatus) bool {
 	switch status {
 	case admissionmodel.ProposalOpen,
@@ -919,6 +1049,39 @@ func scanAdmissionProposals(rows admissionRows) ([]admissionmodel.Proposal, erro
 }
 
 type admissionScan func(...any) error
+
+func scanAdmissionDecline(scan admissionScan) (admissionmodel.Decline, error) {
+	var decline admissionmodel.Decline
+	var createdAt string
+	var commentedAt string
+	if err := scan(
+		&decline.ID,
+		&decline.ProjectID,
+		&decline.IssueID,
+		&decline.IssueIdentifier,
+		&decline.IssueURL,
+		&decline.Fingerprint,
+		&decline.Reason,
+		&decline.Detail,
+		&createdAt,
+		&commentedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return admissionmodel.Decline{}, ErrNotFound
+		}
+		return admissionmodel.Decline{}, err
+	}
+	var err error
+	decline.CreatedAt, err = parseTimestamp("created_at", createdAt)
+	if err != nil {
+		return admissionmodel.Decline{}, err
+	}
+	decline.CommentedAt, err = parseAdmissionOptionalTimestamp("commented_at", commentedAt)
+	if err != nil {
+		return admissionmodel.Decline{}, err
+	}
+	return decline, nil
+}
 
 func scanAdmissionProposal(scan admissionScan) (admissionmodel.Proposal, error) {
 	var proposal admissionmodel.Proposal
