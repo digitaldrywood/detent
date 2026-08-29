@@ -33,7 +33,15 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 		started:            make(chan procgroup.Identity, 1),
 		descendantSurvived: make(chan int, 1),
 	}
-	observedDescendant := make(chan int, 1)
+	beforeTermination := make(chan int, 1)
+	allowTermination := make(chan struct{})
+	var allowTerminationOnce sync.Once
+	releaseTermination := func() {
+		allowTerminationOnce.Do(func() {
+			close(allowTermination)
+		})
+	}
+	defer releaseTermination()
 	orch, err := orchestrator.New(
 		orchestrator.Config{
 			PollInterval:        time.Hour,
@@ -52,10 +60,11 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 			ReapWorkerProcess: func(ctx context.Context, identity procgroup.Identity, grace time.Duration) (procgroup.TerminationOutcome, error) {
 				select {
 				case descendantPID := <-runner.descendantSurvived:
-					observedDescendant <- descendantPID
+					beforeTermination <- descendantPID
 				case <-time.After(time.Second):
 					return "", errors.New("parent cancellation did not leave a surviving descendant")
 				}
+				<-allowTermination
 				return procgroup.Terminate(ctx, identity, grace)
 			},
 		},
@@ -85,10 +94,11 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 		t.Fatalf("StopRun() = %#v, %v", result, err)
 	}
 
-	descendantPID := <-observedDescendant
+	descendantPID := <-beforeTermination
 	if !operatorStopProcessAlive(descendantPID) {
 		t.Fatalf("descendant %d exited before process-group termination", descendantPID)
 	}
+	releaseTermination()
 	waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
 		_, stillRunning := state.Running[issue.ID]
 		return !stillRunning
