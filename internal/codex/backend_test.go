@@ -173,9 +173,10 @@ func TestAgentUpdateFromCodexCarriesCumulativeAndLastTokenUsage(t *testing.T) {
 
 	contextWindow := int64(200_000)
 	update := agentUpdateFromCodex(Update{
-		Type:     UpdateTokenUsage,
-		ThreadID: "thread-1716",
-		TurnID:   "turn-2",
+		Type:          UpdateTokenUsage,
+		ThreadID:      "thread-1716",
+		TurnID:        "turn-2",
+		AuxiliaryTurn: true,
 		Tokens: TokenUsage{
 			InputTokens:        14_300_000,
 			CachedInputTokens:  13_900_000,
@@ -199,6 +200,9 @@ func TestAgentUpdateFromCodexCarriesCumulativeAndLastTokenUsage(t *testing.T) {
 	}
 	if update.ProviderSessionID != "thread-1716-turn-2" {
 		t.Fatalf("ProviderSessionID = %q, want thread-turn identity", update.ProviderSessionID)
+	}
+	if !update.AuxiliaryTurn {
+		t.Fatal("AuxiliaryTurn = false, want child turn marker")
 	}
 }
 

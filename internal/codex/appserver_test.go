@@ -2106,10 +2106,10 @@ func TestAppServerRunTurnWaitsForRootCompletion(t *testing.T) {
 			if len(completions) != 2 {
 				t.Fatalf("completion updates = %#v, want child and root completions", completions)
 			}
-			if completions[0].ThreadID != "thread-child" || completions[0].TurnID != "turn-child" {
+			if completions[0].ThreadID != "thread-child" || completions[0].TurnID != "turn-child" || !completions[0].AuxiliaryTurn {
 				t.Fatalf("child completion = %#v", completions[0])
 			}
-			if completions[1].ThreadID != "thread-root" || completions[1].TurnID != "turn-root" {
+			if completions[1].ThreadID != "thread-root" || completions[1].TurnID != "turn-root" || completions[1].AuxiliaryTurn {
 				t.Fatalf("root completion = %#v", completions[1])
 			}
 		})

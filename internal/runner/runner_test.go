@@ -698,6 +698,54 @@ func TestAgentRunProgressUsesStreamedCommandErrorInsteadOfCommandPayload(t *test
 	}
 }
 
+func TestAgentRunProgressExcludesAuxiliaryTurnsFromRootAccounting(t *testing.T) {
+	t.Parallel()
+
+	progress := newAgentRunProgress(runtimeoutput.Policy{}, "", "", 0, "", 0)
+	eventAt := time.Now()
+	progress.apply(AgentUpdate{
+		Type:     AgentUpdateTurnStarted,
+		ThreadID: "thread-root",
+		TurnID:   "turn-root",
+	}, eventAt)
+	progress.apply(AgentUpdate{
+		Type:          AgentUpdateTurnCompleted,
+		ThreadID:      "thread-child",
+		TurnID:        "turn-child",
+		AuxiliaryTurn: true,
+		Status:        "completed",
+	}, eventAt.Add(time.Second))
+
+	if progress.turnCount() != 1 {
+		t.Fatalf("turnCount() = %d, want 1", progress.turnCount())
+	}
+	if progress.sessionID != "thread-root-turn-root" {
+		t.Fatalf("sessionID = %q, want root provider session", progress.sessionID)
+	}
+	if progress.lastEvent != string(AgentUpdateTurnCompleted) || progress.lastMessage != "turn completed" {
+		t.Fatalf("child telemetry = event %q message %q, want completed turn activity", progress.lastEvent, progress.lastMessage)
+	}
+}
+
+func TestRunnerSkipsAuxiliaryTurnProviderIdentityPersistence(t *testing.T) {
+	t.Parallel()
+
+	sessionStore := &fakeSessionStore{}
+	runner := &Runner{store: sessionStore}
+	err := runner.persistSessionProviderIdentity(t.Context(), 2059, AgentUpdate{
+		ThreadID:          "thread-child",
+		TurnID:            "turn-child",
+		AuxiliaryTurn:     true,
+		ProviderSessionID: "thread-child-turn-child",
+	})
+	if err != nil {
+		t.Fatalf("persistSessionProviderIdentity() error = %v", err)
+	}
+	if len(sessionStore.providerUpdates) != 0 {
+		t.Fatalf("provider updates = %#v, want child identity excluded", sessionStore.providerUpdates)
+	}
+}
+
 func TestCommandAfterLastGitPush(t *testing.T) {
 	t.Parallel()
 

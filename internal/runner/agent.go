@@ -1073,7 +1073,7 @@ func (r *Runner) runAgentTurn(
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
-		if update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "" {
+		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
 			turnStarted = true
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
@@ -3094,7 +3094,7 @@ func (r *Runner) startSession(
 }
 
 func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID int64, update AgentUpdate) error {
-	if sessionID <= 0 {
+	if sessionID <= 0 || update.AuxiliaryTurn {
 		return nil
 	}
 	threadID := strings.TrimSpace(update.ThreadID)
@@ -3793,7 +3793,7 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		p.rssObservedAt = eventAt.UTC()
 		return
 	}
-	if update.TurnID != "" {
+	if update.TurnID != "" && !update.AuxiliaryTurn {
 		p.turnIDs[update.TurnID] = struct{}{}
 		if update.ThreadID != "" {
 			p.sessionID = update.ThreadID + "-" + update.TurnID

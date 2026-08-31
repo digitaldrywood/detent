@@ -286,6 +286,7 @@ type Update struct {
 	WorkerProcess       procgroup.Identity
 	ThreadID            string
 	TurnID              string
+	AuxiliaryTurn       bool
 	ItemID              string
 	Tool                string
 	Command             string
@@ -1162,10 +1163,11 @@ func (s *AppServer) streamTurn(
 		if !ok {
 			continue
 		}
+		update.AuxiliaryTurn = !turnUpdateMatches(update, threadID, turnID)
 		if err := emitUpdate(update, onUpdate); err != nil {
 			return err
 		}
-		if update.Type != UpdateTurnCompleted || !turnCompletionMatches(update, threadID, turnID) {
+		if update.Type != UpdateTurnCompleted || update.AuxiliaryTurn {
 			continue
 		}
 		if update.Status == "" || update.Status == "completed" {
@@ -1179,7 +1181,7 @@ func (s *AppServer) streamTurn(
 	}
 }
 
-func turnCompletionMatches(update Update, threadID string, turnID string) bool {
+func turnUpdateMatches(update Update, threadID string, turnID string) bool {
 	if updateThreadID := strings.TrimSpace(update.ThreadID); updateThreadID != "" && updateThreadID != strings.TrimSpace(threadID) {
 		return false
 	}
