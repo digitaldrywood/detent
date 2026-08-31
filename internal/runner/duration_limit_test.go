@@ -713,7 +713,7 @@ func (s *durationReapSessionStore) MarkSessionWorkerProcessReaped(_ context.Cont
 	return nil
 }
 
-func (s *durationBlockingSessionStore) UpdateSessionWorkerProcess(ctx context.Context, _ int64, _ store.WorkerProcessIdentity) error {
+func (s *durationBlockingSessionStore) UpdateSessionWorkerProcess(ctx context.Context, _ int64, _ store.WorkerProcessRegistration) error {
 	_, s.hasDeadline = ctx.Deadline()
 	s.expireSession()
 	<-ctx.Done()

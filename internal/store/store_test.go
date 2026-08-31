@@ -1860,10 +1860,16 @@ func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
 	}
 
 	processStartedAt := startedAt.Add(time.Second)
-	if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, WorkerProcessIdentity{
-		PID:       4242,
-		GroupID:   4242,
-		StartedAt: processStartedAt,
+	cleanupRoot := t.TempDir()
+	cleanupPath := filepath.Join(cleanupRoot, "run-1214")
+	if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, WorkerProcessRegistration{
+		WorkerProcessIdentity: WorkerProcessIdentity{
+			PID:       4242,
+			GroupID:   4242,
+			StartedAt: processStartedAt,
+		},
+		CleanupRoot: cleanupRoot,
+		CleanupPath: cleanupPath,
 	}); err != nil {
 		t.Fatalf("UpdateSessionWorkerProcess() error = %v", err)
 	}
@@ -1875,7 +1881,7 @@ func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
 	if len(active) != 1 {
 		t.Fatalf("ListActiveWorkerProcesses() len = %d, want 1", len(active))
 	}
-	if got := active[0]; got.SessionID != sessionID || got.Identifier != "digitaldrywood/detent#1214" || got.PID != 4242 || got.GroupID != 4242 || !got.StartedAt.Equal(processStartedAt) {
+	if got := active[0]; got.SessionID != sessionID || got.Identifier != "digitaldrywood/detent#1214" || got.PID != 4242 || got.GroupID != 4242 || !got.StartedAt.Equal(processStartedAt) || got.CleanupRoot != cleanupRoot || got.CleanupPath != cleanupPath {
 		t.Fatalf("active worker process = %#v", got)
 	}
 	if err := backend.FinishSession(ctx, sessionID, SessionFinish{

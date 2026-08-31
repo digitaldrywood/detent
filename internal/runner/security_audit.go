@@ -43,7 +43,11 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	if err != nil {
 		return execution, err
 	}
+	removeAuditWorkspace := true
 	defer func() {
+		if !removeAuditWorkspace {
+			return
+		}
 		if cleanupErr := os.RemoveAll(auditWorkspace); cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("remove security audit workspace: %w", cleanupErr))
 		}
@@ -70,7 +74,8 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
 	var output strings.Builder
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(ctx, backend, AgentTurnRequest{
+	removeAuditWorkspace = false
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
 		Workspace:               auditWorkspace,
 		Prompt:                  prompt,
 		ToolInstructions:        securityaudit.ToolInstructions(),
@@ -99,7 +104,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		if update.WorkerProcess.PID > 0 {
 			execution.WorkerProcess = update.WorkerProcess
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
@@ -117,8 +122,10 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		}
 		return nil
 	}, r.turnLimit)
-	turnErr = errors.Join(turnErr, scratchCleanupErr)
-	if reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr)); reapErr != nil {
+	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
+	removeAuditWorkspace = reapErr == nil
+	turnErr = errors.Join(turnErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
+	if reapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
 	}
 

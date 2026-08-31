@@ -1512,6 +1512,23 @@ func CleanupWorkerScratch(workspacePath string) error {
 	return nil
 }
 
+func CleanupOwnedPath(root string, path string) error {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	root, err := canonicalExistingPath(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve cleanup root: %w", err)
+	}
+	if err := removeWorkspacePath(root, path); err != nil {
+		return fmt.Errorf("remove owned path: %w", err)
+	}
+	return nil
+}
+
 func remediateWorkspacePathPermissions(root string, path string) (string, error) {
 	validated, err := validateWorkspacePath(root, path)
 	if err != nil {

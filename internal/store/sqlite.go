@@ -267,19 +267,21 @@ func (s *sqliteStore) UpdateSessionProviderIdentity(ctx context.Context, session
 	return requireAffected(rows, "codex session", sessionID)
 }
 
-func (s *sqliteStore) UpdateSessionWorkerProcess(ctx context.Context, sessionID int64, identity WorkerProcessIdentity) error {
-	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
+func (s *sqliteStore) UpdateSessionWorkerProcess(ctx context.Context, sessionID int64, registration WorkerProcessRegistration) error {
+	if sessionID <= 0 || registration.PID <= 0 || registration.StartedAt.IsZero() {
 		return ErrNotFound
 	}
-	startedAt, err := requiredTimestamp("worker_started_at", identity.StartedAt)
+	startedAt, err := requiredTimestamp("worker_started_at", registration.StartedAt)
 	if err != nil {
 		return err
 	}
 	rows, err := s.queries.UpdateCodexSessionWorkerProcess(ctx, sqlc.UpdateCodexSessionWorkerProcessParams{
-		WorkerPid:       sql.NullInt64{Int64: int64(identity.PID), Valid: true},
-		WorkerPgid:      sql.NullInt64{Int64: int64(identity.GroupID), Valid: true},
-		WorkerStartedAt: sql.NullString{String: startedAt, Valid: true},
-		ID:              sessionID,
+		WorkerPid:         sql.NullInt64{Int64: int64(registration.PID), Valid: true},
+		WorkerPgid:        sql.NullInt64{Int64: int64(registration.GroupID), Valid: true},
+		WorkerStartedAt:   sql.NullString{String: startedAt, Valid: true},
+		WorkerCleanupRoot: nullString(registration.CleanupRoot),
+		WorkerCleanupPath: nullString(registration.CleanupPath),
+		ID:                sessionID,
 	})
 	if err != nil {
 		return fmt.Errorf("updating codex session worker process: %w", err)
@@ -317,6 +319,8 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 				GroupID:   int(row.WorkerPgid),
 				StartedAt: startedAt,
 			},
+			CleanupRoot: strings.TrimSpace(row.WorkerCleanupRoot),
+			CleanupPath: strings.TrimSpace(row.WorkerCleanupPath),
 		})
 	}
 	return processes, nil

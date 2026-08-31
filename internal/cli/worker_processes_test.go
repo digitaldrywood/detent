@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,65 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+func TestReapWorkerProcessesCleansArtifactsOnlyAfterVerifiedExit(t *testing.T) {
+	t.Parallel()
+
+	reapErr := errors.New("process group remained alive")
+	tests := []struct {
+		name       string
+		reapErr    error
+		wantExists bool
+		wantReaped bool
+	}{
+		{name: "verified exit", wantReaped: true},
+		{name: "unverified exit", reapErr: reapErr, wantExists: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cleanupRoot := t.TempDir()
+			cleanupPath := filepath.Join(cleanupRoot, "run-2011")
+			if err := os.MkdirAll(filepath.Join(cleanupPath, ".detent", "tmp"), 0o700); err != nil {
+				t.Fatalf("create cleanup path: %v", err)
+			}
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{
+				SessionID: 2011,
+				WorkerProcessIdentity: store.WorkerProcessIdentity{
+					PID:       4242,
+					GroupID:   4242,
+					StartedAt: time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC),
+				},
+				CleanupRoot: cleanupRoot,
+				CleanupPath: cleanupPath,
+			}}}
+
+			err := reapWorkerProcesses(
+				context.Background(),
+				processStore,
+				slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+				"startup",
+				time.Millisecond,
+				time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return procgroup.TerminationOutcomeTerminated, tt.reapErr
+				},
+			)
+			if got := errors.Is(err, reapErr); got != (tt.reapErr != nil) {
+				t.Fatalf("reapWorkerProcesses() error = %v, want reap error %v", err, tt.reapErr != nil)
+			}
+			_, statErr := os.Stat(cleanupPath)
+			if got := statErr == nil; got != tt.wantExists {
+				t.Fatalf("cleanup path exists = %v, want %v, stat error = %v", got, tt.wantExists, statErr)
+			}
+			if got := len(processStore.reaped) == 1; got != tt.wantReaped {
+				t.Fatalf("process marked reaped = %v, want %v", got, tt.wantReaped)
+			}
+		})
+	}
+}
 
 func TestReapWorkerProcessesAtStartup(t *testing.T) {
 	t.Parallel()

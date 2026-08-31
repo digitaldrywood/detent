@@ -64,7 +64,7 @@ type sessionProviderStore interface {
 }
 
 type sessionWorkerProcessStore interface {
-	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessIdentity) error
+	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessRegistration) error
 }
 
 type sessionWorkerProcessReaper interface {
@@ -821,6 +821,27 @@ func runAgentBackendTurnWithToolsUsingLimit(
 	onUpdate agentContextUpdateHandler,
 	turnLimit durationLimitContextFactory,
 ) (AgentTurnResult, error, error) {
+	result, cleanupScratch, runErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
+		ctx,
+		backend,
+		request,
+		tools,
+		toolHandler,
+		onUpdate,
+		turnLimit,
+	)
+	return result, runErr, runWorkerScratchCleanup(cleanupScratch)
+}
+
+func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
+	ctx context.Context,
+	backend AgentBackend,
+	request AgentTurnRequest,
+	tools []AgentTool,
+	toolHandler AgentToolHandler,
+	onUpdate agentContextUpdateHandler,
+	turnLimit durationLimitContextFactory,
+) (AgentTurnResult, func() error, error) {
 	if turnLimit == nil {
 		turnLimit = withAgentDurationLimit
 	}
@@ -912,32 +933,46 @@ func runAgentBackendTurnWithToolsUsingLimit(
 	workspacePath := strings.TrimSpace(request.Workspace)
 	if workspacePath == "" {
 		result, err := run(ctx, request)
-		return result, err, nil
+		return result, nil, err
 	}
 
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, workspacePath)
 	if workspace.IsMissingWorkspaceError(err) {
 		result, runErr := run(ctx, request)
-		return result, runErr, nil
+		return result, nil, runErr
 	}
 	if err != nil {
-		return AgentTurnResult{}, fmt.Errorf("prepare worker scratch: %w", err), nil
+		return AgentTurnResult{}, nil, fmt.Errorf("prepare worker scratch: %w", err)
 	}
 	request.TempDir = tempDir
+	cleanupScratch := func() error {
+		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath); cleanupErr != nil {
+			return fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
+		}
+		return nil
+	}
 	if err := configureWorkerGitHubEnvironment(&request); err != nil {
-		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
-		return AgentTurnResult{}, fmt.Errorf("prepare worker github environment: %w", err), cleanupErr
+		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker github environment: %w", err)
 	}
 	if err := configureWorkerCache(&request); err != nil {
-		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
-		return AgentTurnResult{}, fmt.Errorf("prepare worker cache: %w", err), cleanupErr
+		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker cache: %w", err)
 	}
 	result, runErr := run(ctx, request)
-	cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
-	if cleanupErr != nil {
-		cleanupErr = fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
+	return result, cleanupScratch, runErr
+}
+
+func runWorkerScratchCleanup(cleanup func() error) error {
+	if cleanup == nil {
+		return nil
 	}
-	return result, runErr, cleanupErr
+	return cleanup()
+}
+
+func cleanupWorkerScratchAfterProcessReap(cleanup func() error, reapErr error) error {
+	if reapErr != nil {
+		return nil
+	}
+	return runWorkerScratchCleanup(cleanup)
 }
 
 func observeAgentRSS(
@@ -1030,7 +1065,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1042,7 +1077,7 @@ func (r *Runner) runAgentTurn(
 			turnStarted = true
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, detentSessionID, update); err != nil {
@@ -1088,6 +1123,7 @@ func (r *Runner) runAgentTurn(
 		runRequest.Issue,
 		workerProcessReapReason(ctx, turnErr),
 	)
+	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, processReapErr)
 	if processReapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
 	}
@@ -2664,7 +2700,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	var output strings.Builder
 	usage := newSessionTokenUsage(false)
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(sessionCtx, backend, AgentTurnRequest{
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
@@ -2690,7 +2726,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
@@ -2730,6 +2766,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		req.Issue,
 		workerProcessReapReason(sessionCtx, turnErr),
 	)
+	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, processReapErr)
 	if processReapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
 	}
@@ -3078,7 +3115,7 @@ func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID i
 	return nil
 }
 
-func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate) error {
+func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate, cleanupRoot string, cleanupPath string) error {
 	identity := update.WorkerProcess
 	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
 		return nil
@@ -3087,10 +3124,14 @@ func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int6
 	if !ok {
 		return nil
 	}
-	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessIdentity{
-		PID:       identity.PID,
-		GroupID:   identity.GroupID,
-		StartedAt: identity.StartedAt,
+	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{
+		WorkerProcessIdentity: store.WorkerProcessIdentity{
+			PID:       identity.PID,
+			GroupID:   identity.GroupID,
+			StartedAt: identity.StartedAt,
+		},
+		CleanupRoot: strings.TrimSpace(cleanupRoot),
+		CleanupPath: strings.TrimSpace(cleanupPath),
 	}); err != nil {
 		return fmt.Errorf("update agent session worker process: %w", err)
 	}
@@ -3126,6 +3167,11 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 			attrs = append(attrs, "error", reapErr)
 			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
 			return fmt.Errorf("reap agent session worker process: %w", reapErr)
+		}
+		if cleanupErr := workspace.CleanupOwnedPath(process.CleanupRoot, process.CleanupPath); cleanupErr != nil {
+			attrs = append(attrs, "error", cleanupErr)
+			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+			return fmt.Errorf("clean agent session worker artifacts: %w", cleanupErr)
 		}
 		r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
 		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{

@@ -3,12 +3,14 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type workerProcessStore interface {
@@ -70,6 +72,12 @@ func reapWorkerProcesses(
 			result = errors.Join(result, reapErr)
 			continue
 		}
+		if cleanupErr := cleanupWorkerProcessArtifacts(process); cleanupErr != nil {
+			attrs = append(attrs, "error", cleanupErr)
+			logger.Info("worker process lifecycle decision", attrs...)
+			result = errors.Join(result, cleanupErr)
+			continue
+		}
 		logger.Info("worker process lifecycle decision", attrs...)
 		if err := processStore.MarkSessionWorkerProcessReaped(ctx, process.SessionID, store.WorkerProcessReap{
 			ReapedAt: now().UTC(),
@@ -80,4 +88,11 @@ func reapWorkerProcesses(
 		}
 	}
 	return result
+}
+
+func cleanupWorkerProcessArtifacts(process store.WorkerProcess) error {
+	if err := workspace.CleanupOwnedPath(process.CleanupRoot, process.CleanupPath); err != nil {
+		return fmt.Errorf("clean worker process artifacts: %w", err)
+	}
+	return nil
 }
