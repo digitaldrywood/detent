@@ -1409,6 +1409,139 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 	}
 }
 
+func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		reapErr     error
+		wantScratch bool
+	}{
+		{name: "reaped process group"},
+		{name: "process group exit not verified", reapErr: errors.New("process group remained alive"), wantScratch: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspacePath := t.TempDir()
+			t.Cleanup(func() {
+				if err := workspace.CleanupWorkerScratch(workspacePath); err != nil {
+					t.Fatalf("CleanupWorkerScratch() error = %v", err)
+				}
+			})
+			startedAt := time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC)
+			const sessionID = int64(2954)
+			identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
+			backend := &scratchWritingAgentBackend{workerProcess: identity}
+			sessionStore := &scratchReapSessionStore{
+				fakeSessionStore: &fakeSessionStore{},
+				process: store.WorkerProcess{
+					SessionID: sessionID,
+					WorkerProcessIdentity: store.WorkerProcessIdentity{
+						PID:       identity.PID,
+						GroupID:   identity.GroupID,
+						StartedAt: identity.StartedAt,
+					},
+				},
+			}
+			scratchPresentDuringReap := false
+			r := &Runner{
+				now:             time.Now,
+				logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+				store:           sessionStore,
+				workerReapGrace: time.Second,
+				reapWorkerProcess: func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					_, err := os.Stat(backend.tempDir)
+					scratchPresentDuringReap = err == nil
+					return procgroup.TerminationOutcomeTerminated, tt.reapErr
+				},
+			}
+
+			execution := r.runAgentTurn(
+				context.Background(),
+				backend,
+				AgentTurnRequest{Workspace: workspacePath},
+				RunRequest{Issue: connector.Issue{ID: "issue-2011", Identifier: "digitaldrywood/detent#2011"}},
+				workspace.Info{Path: workspacePath},
+				workspace.Issue{ID: "issue-2011", Identifier: "digitaldrywood/detent#2011"},
+				config.Agent{},
+				"",
+				nil,
+				time.Now(),
+				sessionID,
+				agentidentity.Identity{},
+				nil,
+				0,
+				"",
+				"",
+			)
+
+			if !scratchPresentDuringReap {
+				t.Fatal("worker scratch was removed before process reaping")
+			}
+			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != (tt.reapErr != nil) {
+				t.Fatalf("runAgentTurn() worker reap error = %v, want %v: %v", got, tt.reapErr != nil, execution.err)
+			}
+			_, statErr := os.Stat(backend.tempDir)
+			if got := statErr == nil; got != tt.wantScratch {
+				t.Fatalf("worker scratch exists after turn = %v, want %v, stat error = %v", got, tt.wantScratch, statErr)
+			}
+		})
+	}
+}
+
+func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	backend := &scratchWritingAgentBackend{}
+	r := &Runner{
+		now:    time.Now,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	tests := []struct {
+		name string
+	}{
+		{name: "initial attempt"},
+		{name: "reused workspace attempt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			execution := r.runAgentTurn(
+				context.Background(),
+				backend,
+				AgentTurnRequest{Workspace: workspacePath},
+				RunRequest{Issue: connector.Issue{ID: "issue-2011", Identifier: "digitaldrywood/detent#2011"}},
+				workspace.Info{Path: workspacePath},
+				workspace.Issue{ID: "issue-2011", Identifier: "digitaldrywood/detent#2011"},
+				config.Agent{},
+				"",
+				nil,
+				time.Now(),
+				0,
+				agentidentity.Identity{},
+				nil,
+				0,
+				"",
+				"",
+			)
+
+			if execution.err != nil || execution.cleanupErr != nil {
+				t.Fatalf("runAgentTurn() errors = %v, %v", execution.err, execution.cleanupErr)
+			}
+			if !backend.scratchReady[len(backend.scratchReady)-1] {
+				t.Fatal("worker scratch did not exist when backend turn started")
+			}
+			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("worker scratch stat error after turn = %v, want not exist", err)
+			}
+		})
+	}
+}
+
 func TestConfiguredRuntimeIdentityKeepsClaudeIntentDistinct(t *testing.T) {
 	t.Parallel()
 
@@ -5154,6 +5287,87 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunnerAuditRetainsWorkerScratchWhenProcessReapFails(t *testing.T) {
+	t.Parallel()
+
+	auditRoot := t.TempDir()
+	startedAt := time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC)
+	identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
+	backend := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateProcessStarted, WorkerProcess: identity},
+			{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No actionable security findings.","findings":[]}`},
+		},
+		result: AgentTurnResult{AuthenticationMode: securityaudit.AuthenticationSubscription},
+	}
+	const sessionID = int64(2011)
+	sessionStore := &scratchReapSessionStore{
+		fakeSessionStore: &fakeSessionStore{sessionID: sessionID},
+		process: store.WorkerProcess{
+			SessionID: sessionID,
+			WorkerProcessIdentity: store.WorkerProcessIdentity{
+				PID:       identity.PID,
+				GroupID:   identity.GroupID,
+				StartedAt: identity.StartedAt,
+			},
+		},
+	}
+	reapErr := errors.New("process group remained alive")
+	scratchPresentDuringReap := false
+	runner, err := NewRunner(Dependencies{
+		SecurityAuditRoot: auditRoot,
+		Workflow: config.Workflow{Config: config.Config{
+			Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{Enabled: true}},
+			Agents: config.Agents{
+				Backends: []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"}},
+				Routes:   []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
+			},
+		}},
+		Workspace:     &fakeWorkspaceBackend{},
+		AgentBackends: map[string]AgentBackend{"codex": backend},
+		Store:         sessionStore,
+		ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+			if got != identity {
+				t.Fatalf("worker identity = %#v, want %#v", got, identity)
+			}
+			_, statErr := os.Stat(filepath.Join(backend.request.Workspace, ".detent", "tmp"))
+			scratchPresentDuringReap = statErr == nil
+			return procgroup.TerminationOutcomeTerminated, reapErr
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	snapshot := securityaudit.Snapshot{
+		ProjectID:        "detent",
+		IssueID:          "issue-2011",
+		Identifier:       "digitaldrywood/detent#2011",
+		IssueURL:         "https://github.test/digitaldrywood/detent/issues/2011",
+		IssueTitle:       "Retain worker scratch through process reaping",
+		IssueDescription: "Worker scratch must outlive provider descendants.",
+		Repository:       "digitaldrywood/detent",
+		PRNumber:         2012,
+		PRTitle:          "Retain worker scratch through process reaping",
+		BaseSHA:          "base-1",
+		HeadSHA:          "head-1",
+		Diff:             "diff --git a/internal/runner/agent.go b/internal/runner/agent.go",
+	}
+	_, err = runner.Audit(t.Context(), SecurityAuditRequest{
+		Issue:    connector.Issue{ID: snapshot.IssueID, Identifier: snapshot.Identifier},
+		Snapshot: snapshot,
+	})
+	if !errors.Is(err, ErrWorkerProcessReap) || !errors.Is(err, reapErr) {
+		t.Fatalf("Audit() error = %v, want worker process reap failure", err)
+	}
+	if !scratchPresentDuringReap {
+		t.Fatal("worker scratch was removed before process reaping")
+	}
+	if _, err := os.Stat(filepath.Join(backend.request.Workspace, ".detent", "tmp")); err != nil {
+		t.Fatalf("worker scratch stat error after reap failure = %v", err)
+	}
+}
+
 func TestParseValidatorResultRejectsMissingOutput(t *testing.T) {
 	t.Parallel()
 
@@ -6135,12 +6349,21 @@ type deliverableRecoveryAgentBackend struct {
 }
 
 type scratchWritingAgentBackend struct {
-	runErr  error
-	tempDir string
+	runErr        error
+	tempDir       string
+	workerProcess procgroup.Identity
+	scratchReady  []bool
 }
 
-func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	_, scratchErr := os.Stat(req.TempDir)
+	b.scratchReady = append(b.scratchReady, scratchErr == nil)
+	if b.workerProcess.PID > 0 {
+		if err := onUpdate(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: b.workerProcess}); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
 	cacheDir := filepath.Join(req.TempDir, "go-mod", "modernc.org", "libc@v1.73.4")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return AgentTurnResult{}, err
@@ -6152,6 +6375,23 @@ func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnReq
 		return AgentTurnResult{}, err
 	}
 	return AgentTurnResult{ThreadID: "thread-1305", TurnID: "turn-1305", SessionID: "thread-1305-turn-1305"}, b.runErr
+}
+
+type scratchReapSessionStore struct {
+	*fakeSessionStore
+	process store.WorkerProcess
+	reaps   []store.WorkerProcessReap
+}
+
+func (s *scratchReapSessionStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
+	return []store.WorkerProcess{s.process}, nil
+}
+
+func (s *scratchReapSessionStore) MarkSessionWorkerProcessReaped(_ context.Context, sessionID int64, reap store.WorkerProcessReap) error {
+	if sessionID == s.process.SessionID {
+		s.reaps = append(s.reaps, reap)
+	}
+	return nil
 }
 
 func (b *toolUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {

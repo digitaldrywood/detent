@@ -821,6 +821,27 @@ func runAgentBackendTurnWithToolsUsingLimit(
 	onUpdate agentContextUpdateHandler,
 	turnLimit durationLimitContextFactory,
 ) (AgentTurnResult, error, error) {
+	result, cleanupScratch, runErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
+		ctx,
+		backend,
+		request,
+		tools,
+		toolHandler,
+		onUpdate,
+		turnLimit,
+	)
+	return result, runErr, runWorkerScratchCleanup(cleanupScratch)
+}
+
+func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
+	ctx context.Context,
+	backend AgentBackend,
+	request AgentTurnRequest,
+	tools []AgentTool,
+	toolHandler AgentToolHandler,
+	onUpdate agentContextUpdateHandler,
+	turnLimit durationLimitContextFactory,
+) (AgentTurnResult, func() error, error) {
 	if turnLimit == nil {
 		turnLimit = withAgentDurationLimit
 	}
@@ -912,32 +933,46 @@ func runAgentBackendTurnWithToolsUsingLimit(
 	workspacePath := strings.TrimSpace(request.Workspace)
 	if workspacePath == "" {
 		result, err := run(ctx, request)
-		return result, err, nil
+		return result, nil, err
 	}
 
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, workspacePath)
 	if workspace.IsMissingWorkspaceError(err) {
 		result, runErr := run(ctx, request)
-		return result, runErr, nil
+		return result, nil, runErr
 	}
 	if err != nil {
-		return AgentTurnResult{}, fmt.Errorf("prepare worker scratch: %w", err), nil
+		return AgentTurnResult{}, nil, fmt.Errorf("prepare worker scratch: %w", err)
 	}
 	request.TempDir = tempDir
+	cleanupScratch := func() error {
+		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath); cleanupErr != nil {
+			return fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
+		}
+		return nil
+	}
 	if err := configureWorkerGitHubEnvironment(&request); err != nil {
-		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
-		return AgentTurnResult{}, fmt.Errorf("prepare worker github environment: %w", err), cleanupErr
+		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker github environment: %w", err)
 	}
 	if err := configureWorkerCache(&request); err != nil {
-		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
-		return AgentTurnResult{}, fmt.Errorf("prepare worker cache: %w", err), cleanupErr
+		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker cache: %w", err)
 	}
 	result, runErr := run(ctx, request)
-	cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
-	if cleanupErr != nil {
-		cleanupErr = fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
+	return result, cleanupScratch, runErr
+}
+
+func runWorkerScratchCleanup(cleanup func() error) error {
+	if cleanup == nil {
+		return nil
 	}
-	return result, runErr, cleanupErr
+	return cleanup()
+}
+
+func cleanupWorkerScratchAfterProcessReap(cleanup func() error, reapErr error) error {
+	if reapErr != nil {
+		return nil
+	}
+	return runWorkerScratchCleanup(cleanup)
 }
 
 func observeAgentRSS(
@@ -1030,7 +1065,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1088,6 +1123,7 @@ func (r *Runner) runAgentTurn(
 		runRequest.Issue,
 		workerProcessReapReason(ctx, turnErr),
 	)
+	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, processReapErr)
 	if processReapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
 	}
@@ -2664,7 +2700,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	var output strings.Builder
 	usage := newSessionTokenUsage(false)
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(sessionCtx, backend, AgentTurnRequest{
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
@@ -2730,6 +2766,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		req.Issue,
 		workerProcessReapReason(sessionCtx, turnErr),
 	)
+	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, processReapErr)
 	if processReapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
 	}
