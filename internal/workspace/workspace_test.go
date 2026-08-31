@@ -1106,20 +1106,34 @@ func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
 	skipWindows(t)
 
 	workspacePath := t.TempDir()
+	startedPath := filepath.Join(workspacePath, "hook.started")
+	completedPath := filepath.Join(workspacePath, "hook.completed")
 	backend := &LocalGit{
-		hooks:  Hooks{Timeout: 20 * time.Millisecond},
+		hooks:  Hooks{Timeout: time.Minute},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	started := time.Now()
-	err := backend.runHook(
-		context.Background(),
-		"before_run",
-		"sleep 4 & wait",
-		Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
-		Issue{Identifier: "DD-HOOK"},
-	)
-	elapsed := time.Since(started)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	hookDone := make(chan error, 1)
+	go func() {
+		hookDone <- backend.runHook(
+			ctx,
+			"before_run",
+			"(\n"+
+				": > "+shellQuote(startedPath)+"\n"+
+				"sleep 4\n"+
+				": > "+shellQuote(completedPath)+"\n"+
+				") &\n"+
+				"wait",
+			Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
+			Issue{Identifier: "DD-HOOK"},
+		)
+	}()
+
+	waitForFile(t, startedPath, 10*time.Second)
+	cancel()
+	err := waitForError(t, hookDone, 10*time.Second)
 
 	if err == nil {
 		t.Fatal("runHook() error = nil, want cancellation error")
@@ -1128,11 +1142,11 @@ func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
 	if !errors.As(err, &hookErr) {
 		t.Fatalf("runHook() error = %T, want *HookError", err)
 	}
-	if !errors.Is(hookErr.Err, context.DeadlineExceeded) {
-		t.Fatalf("HookError.Err = %v, want context deadline exceeded", hookErr.Err)
+	if !errors.Is(hookErr.Err, context.Canceled) {
+		t.Fatalf("HookError.Err = %v, want context canceled", hookErr.Err)
 	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("runHook() elapsed = %s, want cancellation within wait delay", elapsed)
+	if _, err := os.Stat(completedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hook workload completed before cancellation returned, stat error = %v", err)
 	}
 }
 
