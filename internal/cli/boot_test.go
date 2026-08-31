@@ -772,6 +772,29 @@ func TestStartRunningRefusesSharedRuntimeDatabase(t *testing.T) {
 	}
 }
 
+func TestStartupServerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		addr *net.TCPAddr
+		want string
+	}{
+		{name: "specific host", addr: &net.TCPAddr{IP: net.ParseIP("100.109.187.102"), Port: 4000}, want: "http://100.109.187.102:4000"},
+		{name: "IPv4 wildcard", addr: &net.TCPAddr{IP: net.IPv4zero, Port: 4000}, want: "http://127.0.0.1:4000"},
+		{name: "IPv6 wildcard", addr: &net.TCPAddr{IP: net.IPv6zero, Port: 4000}, want: "http://[::1]:4000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := startupServerURL(tt.addr); got != tt.want {
+				t.Fatalf("startupServerURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeStoreLocation(t *testing.T) {
 	t.Parallel()
 

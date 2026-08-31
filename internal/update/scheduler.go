@@ -53,6 +53,7 @@ type SchedulerConfig struct {
 	ReserveIdle        func(context.Context) (func(), bool)
 	ReserveDrain       func(context.Context) (func(), error)
 	RequestRestart     func(string) bool
+	ApplyOptions       ApplyOptions
 	Logger             *slog.Logger
 	Now                func() time.Time
 	NextDelay          func(time.Duration) time.Duration
@@ -323,11 +324,11 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 		status.LastError = ""
 	})
 
-	applied, err := s.cfg.Updater.Apply(ctx, ApplyOptions{
-		AssumeYes: true,
-		Stdout:    io.Discard,
-		Stderr:    io.Discard,
-	})
+	applyOptions := s.cfg.ApplyOptions
+	applyOptions.AssumeYes = true
+	applyOptions.Stdout = io.Discard
+	applyOptions.Stderr = io.Discard
+	applied, err := s.cfg.Updater.Apply(ctx, applyOptions)
 	if err != nil {
 		persistErr := s.recordFailure(s.cfg.Now(), err)
 		return applied, fmt.Errorf("apply Detent update: %w", errors.Join(err, persistErr))

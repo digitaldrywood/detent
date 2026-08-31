@@ -1126,7 +1126,7 @@ func TestRunStartupAndServeForcedResultPrecedesStartupAuthError(t *testing.T) {
 		<-ctx.Done()
 		cause := fmt.Errorf("resolve github_token via gh auth token: %w", errors.New("context deadline exceeded"))
 		return GitHubAuthError(cause)
-	}, func(context.Context) error {
+	}, startupReadiness{}, func(context.Context) error {
 		return ErrShutdownForced
 	})
 
@@ -1148,7 +1148,7 @@ func TestRunStartupAndServeMarksFailedBeforeCancelingServe(t *testing.T) {
 	err := runStartupAndServe(context.Background(), lifecycle, func(context.Context) error {
 		<-serveStarted
 		return startupErr
-	}, func(ctx context.Context) error {
+	}, startupReadiness{}, func(ctx context.Context) error {
 		close(serveStarted)
 		<-ctx.Done()
 		observed <- lifecycle.State()
@@ -1160,6 +1160,95 @@ func TestRunStartupAndServeMarksFailedBeforeCancelingServe(t *testing.T) {
 	}
 	if got := <-observed; got != web.StartupLifecycleFailed {
 		t.Fatalf("lifecycle at serve cancellation = %q, want %q", got, web.StartupLifecycleFailed)
+	}
+}
+
+func TestRunStartupAndServeMarksHealthyAfterServingReadiness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		serveBeforeReady bool
+		wantHealthy      int32
+	}{
+		{name: "serving failure preserves rollback state", serveBeforeReady: true},
+		{name: "serving readiness commits healthy startup", wantHealthy: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			startupDone := make(chan struct{})
+			serveReady := make(chan struct{})
+			serveFailed := make(chan struct{})
+			healthyMarked := make(chan struct{})
+			var healthyCalls atomic.Int32
+			serveErr := errors.New("serve failed before readiness")
+
+			done := make(chan error, 1)
+			go func() {
+				done <- runStartupAndServe(ctx, web.NewStartupLifecycle(), func(context.Context) error {
+					close(startupDone)
+					return nil
+				}, startupReadiness{
+					AwaitServe: func(ctx context.Context) error {
+						select {
+						case <-serveReady:
+							return nil
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					},
+					MarkHealthy: func(context.Context) error {
+						healthyCalls.Add(1)
+						close(healthyMarked)
+						return nil
+					},
+				}, func(ctx context.Context) error {
+					if tt.serveBeforeReady {
+						<-startupDone
+						close(serveFailed)
+						return serveErr
+					}
+					<-ctx.Done()
+					return ctx.Err()
+				})
+			}()
+
+			select {
+			case <-startupDone:
+			case <-time.After(time.Second):
+				t.Fatal("startup did not finish")
+			}
+			if tt.serveBeforeReady {
+				select {
+				case <-serveFailed:
+				case <-time.After(time.Second):
+					t.Fatal("serving failure did not occur")
+				}
+			} else {
+				close(serveReady)
+				select {
+				case <-healthyMarked:
+				case <-done:
+					t.Fatal("runStartupAndServe returned before marking healthy")
+				case <-time.After(time.Second):
+					t.Fatal("startup was not marked healthy after serving readiness")
+				}
+				cancel()
+			}
+
+			err := <-done
+			if tt.serveBeforeReady && !errors.Is(err, serveErr) {
+				t.Fatalf("runStartupAndServe() error = %v, want %v", err, serveErr)
+			}
+			if got := healthyCalls.Load(); got != tt.wantHealthy {
+				t.Fatalf("healthy calls = %d, want %d", got, tt.wantHealthy)
+			}
+		})
 	}
 }
 

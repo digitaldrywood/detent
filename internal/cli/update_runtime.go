@@ -63,6 +63,10 @@ func newRuntimeUpdateScheduler(
 		ReserveDrain:     reserveDrain,
 		Logger:           logger,
 		StatePath:        runtimeUpdateStatePath(cfg),
+		ApplyOptions: detentupdate.ApplyOptions{
+			Preflight:         candidateStartupPreflight(cfg),
+			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
+		},
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -78,19 +82,8 @@ func newRuntimeUpdateScheduler(
 	if !schedulerConfig.Enabled {
 		return detentupdate.NewScheduler(schedulerConfig)
 	}
-	version := strings.TrimSpace(cfg.Version)
-	if version == "" {
-		version = strings.TrimSpace(cfg.Build.Version)
-	}
-	schedulerConfig.Updater = detentupdate.NewService(detentupdate.Config{
-		CurrentVersion: version,
-		ExecutablePath: executable,
-		GOOS:           runtime.GOOS,
-		GOARCH:         runtime.GOARCH,
-		Client: detentupdate.NewGitHubClient(detentupdate.GitHubClientConfig{
-			Token: strings.TrimSpace(cfg.Runtime.GitHubToken.Value),
-		}),
-	})
+	version := runtimeUpdateVersion(cfg)
+	schedulerConfig.Updater = newRuntimeUpdater(cfg, executable, version)
 	schedulerConfig.RequestRestart = func(binary string) bool {
 		if strings.TrimSpace(binary) == "" {
 			binary = executable

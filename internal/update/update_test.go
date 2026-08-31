@@ -487,6 +487,7 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "bin", "detent")
 	lockPath := filepath.Join(tmp, "state", "install.lock")
+	recoveryStatePath := filepath.Join(tmp, "state", startupRecoveryStateName)
 	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
 		t.Fatalf("MkdirAll(binary dir) error = %v", err)
 	}
@@ -552,7 +553,22 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		},
 	})
 
-	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+	var preflightPath string
+	status, err := service.Apply(context.Background(), ApplyOptions{
+		AssumeYes:         true,
+		RecoveryStatePath: recoveryStatePath,
+		Preflight: func(_ context.Context, path string) error {
+			preflightPath = path
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(raw)) != "updated" {
+				return fmt.Errorf("candidate content = %q", raw)
+			}
+			return nil
+		},
+	})
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -568,6 +584,27 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	}
 	if strings.TrimSpace(string(raw)) != "updated" {
 		t.Fatalf("updated binary = %q, want updated", raw)
+	}
+	if preflightPath == "" || preflightPath == binary {
+		t.Fatalf("preflight path = %q, want staged candidate", preflightPath)
+	}
+	previousPath := PreviousBinaryPath(binary)
+	previousRaw, err := os.ReadFile(previousPath)
+	if err != nil {
+		t.Fatalf("ReadFile(previous) error = %v", err)
+	}
+	if string(previousRaw) != "old" {
+		t.Fatalf("previous binary = %q, want old", previousRaw)
+	}
+	recoveryState := readTestStartupRecoveryState(t, recoveryStatePath)
+	if recoveryState.PendingUpdate == nil {
+		t.Fatal("PendingUpdate = nil, want rollback metadata")
+	}
+	if got := recoveryState.PendingUpdate; got.FromVersion != "1.2.3" || got.ToVersion != "1.2.4" || got.PreviousBinaryPath != previousPath {
+		t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
+	}
+	if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
+		t.Fatalf("PendingUpdate install lock = %#v, want preserved pre-update metadata", got)
 	}
 	if got := InstalledReleaseVersion(DetectionOptions{
 		ExecutablePath: binary,
@@ -1273,7 +1310,7 @@ func TestReplaceBinaryStagesWindowsReplacement(t *testing.T) {
 		Binary: []byte("new"),
 		Mode:   0o755,
 		GOOS:   "windows",
-		StartProcess: func(command string, args []string) error {
+		StartProcess: func(_ context.Context, command string, args []string) error {
 			startedCommand = command
 			startedArgs = append(startedArgs, args...)
 			return nil

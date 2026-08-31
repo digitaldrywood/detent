@@ -557,6 +557,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		})
 		return nil
 	}
+	readiness := startupReadiness{}
+	if cfg.StartupRecovery != nil {
+		readiness.AwaitServe = func(ctx context.Context) error {
+			return awaitStartupServer(ctx, startupServerURL(listener.Addr()))
+		}
+		readiness.MarkHealthy = cfg.StartupRecovery.MarkHealthy
+	}
 
 	if useDashboard {
 		if err := printBootBanner(cfg, displayURL); err != nil {
@@ -564,11 +571,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		listenerOwned = false
 		if cfg.Shutdown == nil {
-			return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
+			return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
 				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, nil, nil, nil)
 			})
 		}
-		return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
+		return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
 				Controller:        cfg.Shutdown,
 				Registry:          manager.Registry(),
@@ -598,11 +605,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	listenerOwned = false
 	if cfg.Shutdown == nil {
-		return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
+		return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
 			return serve(ctx, server, listener)
 		})
 	}
-	return runStartupAndServe(runCtx, startupLifecycle, startProjects, func(ctx context.Context) error {
+	return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
 		return runWithShutdown(ctx, runningShutdownConfig{
 			Controller:  cfg.Shutdown,
 			Registry:    manager.Registry(),
@@ -842,10 +849,16 @@ type startupServeResult struct {
 	err  error
 }
 
+type startupReadiness struct {
+	AwaitServe  func(context.Context) error
+	MarkHealthy func(context.Context) error
+}
+
 func runStartupAndServe(
 	ctx context.Context,
 	lifecycle *web.StartupLifecycle,
 	startup func(context.Context) error,
+	readiness startupReadiness,
 	serveApp func(context.Context) error,
 ) error {
 	if ctx == nil {
@@ -861,16 +874,39 @@ func runStartupAndServe(
 	go func() {
 		results <- startupServeResult{name: "serve", err: serveApp(runCtx)}
 	}()
+	serveReady := readiness.AwaitServe == nil
+	if readiness.AwaitServe != nil {
+		go func() {
+			results <- startupServeResult{name: "readiness", err: readiness.AwaitServe(runCtx)}
+		}()
+	}
 
 	startupDone := false
+	healthyMarked := false
 	for {
-		result := <-results
+		var result startupServeResult
+		if startupDone && serveReady && !healthyMarked {
+			select {
+			case result = <-results:
+			default:
+				completeStartupLifecycle(lifecycle, nil)
+				if readiness.MarkHealthy != nil {
+					if err := readiness.MarkHealthy(runCtx); err != nil {
+						slog.Default().Warn("record healthy startup failed", "error", err)
+					}
+				}
+				healthyMarked = true
+				result = <-results
+			}
+		} else {
+			result = <-results
+		}
 		switch result.name {
 		case "startup":
-			completeStartupLifecycle(lifecycle, result.err)
 			if result.err != nil {
+				completeStartupLifecycle(lifecycle, result.err)
 				cancel()
-				serveResult := <-results
+				serveResult := awaitStartupServeResult(results, "serve")
 				if primaryShutdownError(serveResult.err) {
 					logSecondaryShutdownError("startup", serveResult.err, result.err)
 					return serveResult.err
@@ -881,10 +917,14 @@ func runStartupAndServe(
 				return result.err
 			}
 			startupDone = true
+		case "readiness":
+			if result.err == nil {
+				serveReady = true
+			}
 		case "serve":
 			cancel()
 			if !startupDone {
-				startupResult := <-results
+				startupResult := awaitStartupServeResult(results, "startup")
 				completeStartupLifecycle(lifecycle, startupResult.err)
 				if primaryShutdownError(result.err) {
 					logSecondaryShutdownError("startup", result.err, startupResult.err)
@@ -896,10 +936,60 @@ func runStartupAndServe(
 					}
 					return startupResult.err
 				}
+			} else if !healthyMarked {
+				completeStartupLifecycle(lifecycle, errors.New("serving stopped before startup readiness"))
 			}
 			return result.err
 		}
 	}
+}
+
+func awaitStartupServeResult(results <-chan startupServeResult, name string) startupServeResult {
+	for result := range results {
+		if result.name == name {
+			return result
+		}
+	}
+	return startupServeResult{name: name, err: context.Canceled}
+}
+
+func awaitStartupServer(ctx context.Context, baseURL string) error {
+	endpoint := strings.TrimRight(baseURL, "/") + "/.detent-startup-readiness"
+	client := http.Client{Timeout: time.Second}
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+			return nil
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func startupServerURL(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(strings.SplitN(host, "%", 2)[0])
+	if ip != nil && ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
+		}
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func completeStartupLifecycle(lifecycle *web.StartupLifecycle, err error) {

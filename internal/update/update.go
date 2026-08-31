@@ -97,9 +97,10 @@ type ReleaseClient interface {
 	Download(context.Context, string) ([]byte, error)
 }
 
-type ProcessStarter func(string, []string) error
+type ProcessStarter func(context.Context, string, []string) error
 type CommandRunner func(context.Context, string, []string, io.Writer, io.Writer) error
 type BinaryVerifier func(context.Context, string) (string, error)
+type BinaryPreflight func(context.Context, string) error
 type BinarySigner func(context.Context, string) error
 type CodeSignatureVerifier func(context.Context, string) (bool, error)
 type ChecksumSignatureVerifier func(context.Context, []byte, []byte) error
@@ -306,6 +307,8 @@ type ApplyOptions struct {
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
 	SelectGoInstallAction func(Status) (GoInstallAction, error)
+	Preflight             BinaryPreflight
+	RecoveryStatePath     string
 	Stdout                io.Writer
 	Stderr                io.Writer
 }
@@ -326,8 +329,13 @@ type Replacement struct {
 	Context               context.Context //nolint:containedctx // Replacement carries AfterReplace cancellation across Windows handoff.
 	StartProcess          ProcessStarter
 	Verify                BinaryVerifier
+	Preflight             BinaryPreflight
 	Sign                  BinarySigner
 	CodeSignatureVerifier CodeSignatureVerifier
+	BackupPath            string
+	PreserveBackup        bool
+	BeforeReplace         func(context.Context, string, string) error
+	AfterRevert           func(context.Context, string) error
 	AfterReplace          func(context.Context, string) error
 }
 
@@ -550,13 +558,41 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 	replacement := Replacement{
-		Target:  s.cfg.ExecutablePath,
-		Binary:  binary,
-		Mode:    mode,
-		GOOS:    s.cfg.GOOS,
-		Context: ctx,
-		Verify:  s.cfg.BinaryVerifier,
-		Sign:    s.cfg.BinarySigner,
+		Target:         s.cfg.ExecutablePath,
+		Binary:         binary,
+		Mode:           mode,
+		GOOS:           s.cfg.GOOS,
+		Context:        ctx,
+		Verify:         s.cfg.BinaryVerifier,
+		Preflight:      opts.Preflight,
+		Sign:           s.cfg.BinarySigner,
+		BackupPath:     PreviousBinaryPath(s.cfg.ExecutablePath),
+		PreserveBackup: strings.TrimSpace(opts.RecoveryStatePath) != "",
+	}
+	if replacement.PreserveBackup {
+		replacement.BeforeReplace = func(_ context.Context, target string, previous string) error {
+			lockSnapshot, lockFound, err := snapshotInstallLock(s.cfg.GOOS, DetectionOptions{
+				HomeDir: s.cfg.HomeDir,
+				Env:     s.cfg.Env,
+			})
+			if err != nil {
+				return err
+			}
+			return recordPendingUpdate(opts.RecoveryStatePath, PendingUpdate{
+				FromVersion:              status.CurrentVersion,
+				ToVersion:                status.LatestVersion,
+				InstallSource:            status.InstallSource,
+				ExecutablePath:           target,
+				PreviousBinaryPath:       previous,
+				InstallLockPath:          lockSnapshot.path,
+				PreviousInstallLock:      lockSnapshot.contents,
+				PreviousInstallLockFound: lockFound,
+				AppliedAt:                time.Now().UTC(),
+			})
+		}
+		replacement.AfterRevert = func(_ context.Context, _ string) error {
+			return clearPendingUpdate(opts.RecoveryStatePath, status.LatestVersion)
+		}
 	}
 	replacement.AfterReplace = func(_ context.Context, target string) error {
 		return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
@@ -803,8 +839,13 @@ func replaceBinaryNow(ctx context.Context, replacement Replacement) error {
 	if writeErr != nil {
 		return writeErr
 	}
+	if replacement.Preflight != nil {
+		if err := replacement.Preflight(ctx, tempPath); err != nil {
+			return fmt.Errorf("preflight candidate binary: %w", err)
+		}
+	}
 
-	backupPath, err := backupBinary(target)
+	backupPath, err := backupBinary(target, replacement.BackupPath)
 	if err != nil {
 		return err
 	}
@@ -814,9 +855,21 @@ func replaceBinaryNow(ctx context.Context, replacement Replacement) error {
 			removeFile(backupPath)
 		}
 	}()
+	if replacement.BeforeReplace != nil {
+		if err := replacement.BeforeReplace(ctx, target, backupPath); err != nil {
+			if replacement.AfterRevert != nil {
+				err = errors.Join(err, replacement.AfterRevert(ctx, target))
+			}
+			return err
+		}
+	}
 
 	if err := os.Rename(tempPath, target); err != nil {
-		return fmt.Errorf("replace binary %s: %w", target, err)
+		replaceErr := fmt.Errorf("replace binary %s: %w", target, err)
+		if replacement.AfterRevert != nil {
+			replaceErr = errors.Join(replaceErr, replacement.AfterRevert(ctx, target))
+		}
+		return replaceErr
 	}
 	cleanup = false
 	if err := finalizeReplacement(ctx, replacement); err != nil {
@@ -824,7 +877,13 @@ func replaceBinaryNow(ctx context.Context, replacement Replacement) error {
 			return fmt.Errorf("%w; rollback failed: %w", err, rollbackErr)
 		}
 		cleanupBackup = false
+		if replacement.AfterRevert != nil {
+			err = errors.Join(err, replacement.AfterRevert(ctx, target))
+		}
 		return err
+	}
+	if replacement.PreserveBackup {
+		cleanupBackup = false
 	}
 	return nil
 }
@@ -842,7 +901,15 @@ func replacementMode(target string, fallback os.FileMode) os.FileMode {
 	return 0o755
 }
 
-func backupBinary(target string) (string, error) {
+func PreviousBinaryPath(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	return target + ".previous"
+}
+
+func backupBinary(target string, destination string) (string, error) {
 	source, err := os.Open(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
@@ -860,6 +927,10 @@ func backupBinary(target string) (string, error) {
 	}
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
+	if strings.TrimSpace(destination) != "" {
+		dir = filepath.Dir(destination)
+		base = filepath.Base(destination)
+	}
 	backup, err := os.CreateTemp(dir, "."+base+".rollback-*")
 	if err != nil {
 		return "", fmt.Errorf("create rollback binary: %w", err)
@@ -884,6 +955,13 @@ func backupBinary(target string) (string, error) {
 	if err := backup.Close(); err != nil {
 		removeFile(backupPath)
 		return "", fmt.Errorf("close rollback binary: %w", err)
+	}
+	if strings.TrimSpace(destination) != "" {
+		if err := os.Rename(backupPath, destination); err != nil {
+			removeFile(backupPath)
+			return "", fmt.Errorf("preserve rollback binary: %w", err)
+		}
+		backupPath = destination
 	}
 	return backupPath, nil
 }
@@ -954,9 +1032,26 @@ func stageWindowsReplacement(ctx context.Context, replacement Replacement) error
 			removeFile(source)
 		}
 	}()
+	if replacement.Preflight != nil {
+		if err := replacement.Preflight(ctx, source); err != nil {
+			return fmt.Errorf("preflight candidate binary: %w", err)
+		}
+	}
+	backupPath := strings.TrimSpace(replacement.BackupPath)
+	if replacement.BeforeReplace != nil {
+		if err := replacement.BeforeReplace(ctx, replacement.Target, backupPath); err != nil {
+			if replacement.AfterRevert != nil {
+				err = errors.Join(err, replacement.AfterRevert(ctx, replacement.Target))
+			}
+			return err
+		}
+	}
 
-	script, err := writeWindowsUpdateScript(dir, source, replacement.Target)
+	script, err := writeWindowsUpdateScript(dir, source, replacement.Target, backupPath)
 	if err != nil {
+		if replacement.AfterRevert != nil {
+			err = errors.Join(err, replacement.AfterRevert(ctx, replacement.Target))
+		}
 		return err
 	}
 	cleanupScript := true
@@ -970,8 +1065,12 @@ func stageWindowsReplacement(ctx context.Context, replacement Replacement) error
 	if starter == nil {
 		starter = startProcess
 	}
-	if err := starter("cmd.exe", []string{"/D", "/C", "start", "", "/B", "cmd.exe", "/D", "/C", script}); err != nil {
-		return fmt.Errorf("start windows updater: %w", err)
+	if err := starter(detachedProcessContext(ctx), "cmd.exe", []string{"/D", "/C", "start", "", "/B", "cmd.exe", "/D", "/C", script}); err != nil {
+		startErr := fmt.Errorf("start windows updater: %w", err)
+		if replacement.AfterRevert != nil {
+			startErr = errors.Join(startErr, replacement.AfterRevert(ctx, replacement.Target))
+		}
+		return startErr
 	}
 	if replacement.AfterReplace != nil {
 		if replacement.Context != nil {
@@ -1003,13 +1102,13 @@ func writeWindowsUpdateBinary(dir string, base string, binary []byte, mode os.Fi
 	return tempPath, nil
 }
 
-func writeWindowsUpdateScript(dir string, source string, target string) (string, error) {
+func writeWindowsUpdateScript(dir string, source string, target string, backup string) (string, error) {
 	script, err := os.CreateTemp(dir, ".detent-update-*.cmd")
 	if err != nil {
 		return "", fmt.Errorf("create windows update script: %w", err)
 	}
 	scriptPath := script.Name()
-	raw := windowsUpdateScript(source, target)
+	raw := windowsUpdateScript(source, target, backup)
 	if _, err := script.WriteString(raw); err != nil {
 		closeErr := script.Close()
 		removeFile(scriptPath)
@@ -1033,12 +1132,19 @@ func writeWindowsUpdateScript(dir string, source string, target string) (string,
 	return scriptPath, nil
 }
 
-func windowsUpdateScript(source string, target string) string {
+func windowsUpdateScript(source string, target string, backup string) string {
+	backupStep := ""
+	if strings.TrimSpace(backup) != "" {
+		backupStep = `copy /Y "%target%" "%backup%" >nul 2>nul
+if errorlevel 1 exit /b 1
+`
+	}
 	return fmt.Sprintf(`@echo off
 setlocal DisableDelayedExpansion
 set "source=%s"
 set "target=%s"
-set /a attempts=0
+set "backup=%s"
+%sset /a attempts=0
 :retry
 move /Y "%%source%%" "%%target%%" >nul 2>nul
 if not exist "%%source%%" goto done
@@ -1049,15 +1155,43 @@ goto retry
 :done
 del "%%~f0" >nul 2>nul
 exit /b 0
-`, escapeBatchValue(source), escapeBatchValue(target))
+`, escapeBatchValue(source), escapeBatchValue(target), escapeBatchValue(backup), backupStep)
+}
+
+func restorePreviousBinary(ctx context.Context, pending PendingUpdate, goos string) error {
+	target := strings.TrimSpace(pending.ExecutablePath)
+	previous := strings.TrimSpace(pending.PreviousBinaryPath)
+	if target == "" || previous == "" {
+		return errors.New("restore previous binary: executable and previous binary paths are required")
+	}
+	if goos != "windows" {
+		return rollbackBinary(target, previous)
+	}
+	dir := filepath.Dir(target)
+	script, err := writeWindowsUpdateScript(dir, previous, target, "")
+	if err != nil {
+		return err
+	}
+	if err := startProcess(detachedProcessContext(ctx), "cmd.exe", []string{"/D", "/C", "start", "", "/B", "cmd.exe", "/D", "/C", script}); err != nil {
+		removeFile(script)
+		return fmt.Errorf("start windows rollback: %w", err)
+	}
+	return nil
 }
 
 func escapeBatchValue(value string) string {
 	return strings.ReplaceAll(value, "%", "%%")
 }
 
-func startProcess(command string, args []string) error {
-	return exec.CommandContext(context.Background(), command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
+func detachedProcessContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
+
+func startProcess(ctx context.Context, command string, args []string) error {
+	return exec.CommandContext(ctx, command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 }
 
 func runCommand(ctx context.Context, command string, args []string, stdout io.Writer, stderr io.Writer) error {
@@ -1672,6 +1806,26 @@ func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, 
 	return writeInstallLock(lockPath, binary, version, time.Now().UTC())
 }
 
+type installLockSnapshot struct {
+	path     string
+	contents string
+}
+
+func snapshotInstallLock(goos string, opts DetectionOptions) (installLockSnapshot, bool, error) {
+	path, ok := installLockPath(goos, opts)
+	if !ok {
+		return installLockSnapshot{}, false, nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return installLockSnapshot{path: path}, false, nil
+	}
+	if err != nil {
+		return installLockSnapshot{}, false, fmt.Errorf("read install lock before update: %w", err)
+	}
+	return installLockSnapshot{path: path, contents: string(raw)}, true, nil
+}
+
 func installLockPath(goos string, opts DetectionOptions) (string, bool) {
 	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
 		return lockPath, true
@@ -1697,6 +1851,14 @@ func writeInstallLock(path string, binary string, version string, installedAt ti
 	if strings.TrimSpace(binary) == "" {
 		return errors.New("install lock binary path is required")
 	}
+	raw := fmt.Sprintf("binary=%s\nversion=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), installedAt.UTC().Format(time.RFC3339))
+	return writeInstallLockContents(path, raw)
+}
+
+func writeInstallLockContents(path string, raw string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("install lock path is required")
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create install lock dir: %w", err)
@@ -1713,7 +1875,6 @@ func writeInstallLock(path string, binary string, version string, installedAt ti
 			removeFile(tempPath)
 		}
 	}()
-	raw := fmt.Sprintf("binary=%s\nversion=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), installedAt.UTC().Format(time.RFC3339))
 	if _, err := temp.WriteString(raw); err != nil {
 		closeErr := temp.Close()
 		if closeErr != nil {
