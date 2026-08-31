@@ -426,6 +426,7 @@ type AgentUpdate struct {
 	WorkerProcess       procgroup.Identity
 	ThreadID            string
 	TurnID              string
+	AuxiliaryTurn       bool
 	ProviderSessionID   string
 	ItemID              string
 	Tool                string

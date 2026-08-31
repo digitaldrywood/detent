@@ -286,6 +286,7 @@ type Update struct {
 	WorkerProcess       procgroup.Identity
 	ThreadID            string
 	TurnID              string
+	AuxiliaryTurn       bool
 	ItemID              string
 	Tool                string
 	Command             string
@@ -532,7 +533,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
-	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
+	if err := s.streamTurn(ctx, transport, threadID, turnID, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
 
@@ -1130,6 +1131,8 @@ func (r RunTurnRequest) turnTimeout(fallback time.Duration) time.Duration {
 func (s *AppServer) streamTurn(
 	ctx context.Context,
 	transport Transport,
+	threadID string,
+	turnID string,
 	turnTimeout time.Duration,
 	stallTimeout time.Duration,
 	toolHandler DynamicToolHandler,
@@ -1160,10 +1163,11 @@ func (s *AppServer) streamTurn(
 		if !ok {
 			continue
 		}
+		update.AuxiliaryTurn = !turnUpdateMatches(update, threadID, turnID)
 		if err := emitUpdate(update, onUpdate); err != nil {
 			return err
 		}
-		if update.Type != UpdateTurnCompleted {
+		if update.Type != UpdateTurnCompleted || update.AuxiliaryTurn {
 			continue
 		}
 		if update.Status == "" || update.Status == "completed" {
@@ -1175,6 +1179,16 @@ func (s *AppServer) streamTurn(
 			Body:    update.BackendErrorBody,
 		}
 	}
+}
+
+func turnUpdateMatches(update Update, threadID string, turnID string) bool {
+	if updateThreadID := strings.TrimSpace(update.ThreadID); updateThreadID != "" && updateThreadID != strings.TrimSpace(threadID) {
+		return false
+	}
+	if updateTurnID := strings.TrimSpace(update.TurnID); updateTurnID != "" && updateTurnID != strings.TrimSpace(turnID) {
+		return false
+	}
+	return true
 }
 
 func receiveTurnMessage(
