@@ -35,6 +35,7 @@ type workerProcessFixOutcome struct {
 }
 
 type workerProcessFixStore interface {
+	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
 	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
 	Close() error
 }
@@ -152,6 +153,14 @@ func applyWorkerProcessesFix(
 	if now == nil {
 		now = time.Now
 	}
+	registered, err := processStore.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		return fmt.Errorf("list worker processes: %w", err)
+	}
+	registrations := make(map[int64]store.WorkerProcess, len(registered))
+	for _, process := range registered {
+		registrations[process.SessionID] = process
+	}
 	for index := range result.Processes {
 		process := &result.Processes[index]
 		outcome, err := reap(ctx, procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt}, procgroup.DefaultTerminationGrace)
@@ -159,6 +168,9 @@ func applyWorkerProcessesFix(
 			return fmt.Errorf("reap worker process %d: %w", process.PID, err)
 		}
 		process.Outcome = string(outcome)
+		if err := cleanupWorkerProcessArtifacts(registrations[process.SessionID]); err != nil {
+			return fmt.Errorf("clean worker process %d artifacts: %w", process.PID, err)
+		}
 		if err := processStore.MarkSessionWorkerProcessReaped(ctx, process.SessionID, store.WorkerProcessReap{
 			ReapedAt: now().UTC(),
 			Outcome:  process.Outcome,

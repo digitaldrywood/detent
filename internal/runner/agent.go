@@ -64,7 +64,7 @@ type sessionProviderStore interface {
 }
 
 type sessionWorkerProcessStore interface {
-	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessIdentity) error
+	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessRegistration) error
 }
 
 type sessionWorkerProcessReaper interface {
@@ -1077,7 +1077,7 @@ func (r *Runner) runAgentTurn(
 			turnStarted = true
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, detentSessionID, update); err != nil {
@@ -2726,7 +2726,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
@@ -3115,7 +3115,7 @@ func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID i
 	return nil
 }
 
-func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate) error {
+func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate, cleanupRoot string, cleanupPath string) error {
 	identity := update.WorkerProcess
 	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
 		return nil
@@ -3124,10 +3124,14 @@ func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int6
 	if !ok {
 		return nil
 	}
-	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessIdentity{
-		PID:       identity.PID,
-		GroupID:   identity.GroupID,
-		StartedAt: identity.StartedAt,
+	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{
+		WorkerProcessIdentity: store.WorkerProcessIdentity{
+			PID:       identity.PID,
+			GroupID:   identity.GroupID,
+			StartedAt: identity.StartedAt,
+		},
+		CleanupRoot: strings.TrimSpace(cleanupRoot),
+		CleanupPath: strings.TrimSpace(cleanupPath),
 	}); err != nil {
 		return fmt.Errorf("update agent session worker process: %w", err)
 	}
@@ -3163,6 +3167,11 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 			attrs = append(attrs, "error", reapErr)
 			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
 			return fmt.Errorf("reap agent session worker process: %w", reapErr)
+		}
+		if cleanupErr := workspace.CleanupOwnedPath(process.CleanupRoot, process.CleanupPath); cleanupErr != nil {
+			attrs = append(attrs, "error", cleanupErr)
+			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+			return fmt.Errorf("clean agent session worker artifacts: %w", cleanupErr)
 		}
 		r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
 		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{

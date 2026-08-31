@@ -174,6 +174,8 @@ type CodexSession struct {
 	WorkerReapOutcome            sql.NullString `json:"worker_reap_outcome"`
 	ProjectID                    sql.NullString `json:"project_id"`
 	WorkerReapReason             sql.NullString `json:"worker_reap_reason"`
+	WorkerCleanupRoot            sql.NullString `json:"worker_cleanup_root"`
+	WorkerCleanupPath            sql.NullString `json:"worker_cleanup_path"`
 }
 
 type DetentRun struct {

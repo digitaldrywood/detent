@@ -139,6 +139,8 @@ UPDATE codex_sessions
 SET worker_pid = sqlc.arg(worker_pid),
     worker_pgid = sqlc.arg(worker_pgid),
     worker_started_at = sqlc.arg(worker_started_at),
+    worker_cleanup_root = sqlc.narg(worker_cleanup_root),
+    worker_cleanup_path = sqlc.narg(worker_cleanup_path),
     worker_reaped_at = NULL,
     worker_reap_outcome = NULL,
     worker_reap_reason = NULL
@@ -153,6 +155,8 @@ SELECT
   CAST(worker_pid AS INTEGER) AS worker_pid,
   CAST(COALESCE(worker_pgid, 0) AS INTEGER) AS worker_pgid,
   CAST(worker_started_at AS TEXT) AS worker_started_at,
+  CAST(COALESCE(worker_cleanup_root, '') AS TEXT) AS worker_cleanup_root,
+  CAST(COALESCE(worker_cleanup_path, '') AS TEXT) AS worker_cleanup_path,
   CAST(COALESCE(final_state, '') AS TEXT) AS final_state,
   CAST(COALESCE(completed_at, '') AS TEXT) AS completed_at
 FROM codex_sessions

@@ -7247,7 +7247,7 @@ func TestHealthReportsOnlyWorkerProcessesWithoutLiveSessions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StartSession() error = %v", err)
 			}
-			if err := deps.Store.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessIdentity{PID: 1885, GroupID: 1885, StartedAt: startedAt}); err != nil {
+			if err := deps.Store.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 1885, GroupID: 1885, StartedAt: startedAt}}); err != nil {
 				t.Fatalf("UpdateSessionWorkerProcess() error = %v", err)
 			}
 			if tt.terminal {

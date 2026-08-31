@@ -104,7 +104,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		if update.WorkerProcess.PID > 0 {
 			execution.WorkerProcess = update.WorkerProcess
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {

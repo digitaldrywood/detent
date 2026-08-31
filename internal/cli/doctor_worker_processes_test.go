@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +73,16 @@ func TestApplyWorkerProcessesFixRecordsReapCause(t *testing.T) {
 
 	startedAt := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	reapedAt := startedAt.Add(time.Hour)
-	processStore := &workerProcessesFixTestStore{}
+	cleanupRoot := t.TempDir()
+	cleanupPath := filepath.Join(cleanupRoot, "run-1885")
+	if err := os.MkdirAll(cleanupPath, 0o700); err != nil {
+		t.Fatalf("create cleanup path: %v", err)
+	}
+	processStore := &workerProcessesFixTestStore{processes: []store.WorkerProcess{{
+		SessionID:   1885,
+		CleanupRoot: cleanupRoot,
+		CleanupPath: cleanupPath,
+	}}}
 	result := workerProcessesFixResult{Processes: []workerProcessFixOutcome{{SessionID: 1885, PID: 4242, GroupID: 4242, StartedAt: startedAt}}}
 	var gotIdentity procgroup.Identity
 	err := applyWorkerProcessesFix(
@@ -92,10 +104,18 @@ func TestApplyWorkerProcessesFixRecordsReapCause(t *testing.T) {
 	if len(processStore.reaps) != 1 || processStore.reaps[0].Reason != "doctor_reap" || processStore.reaps[0].Outcome != store.WorkerProcessOutcomeKilled || !processStore.reaps[0].ReapedAt.Equal(reapedAt) {
 		t.Fatalf("reap records = %#v", processStore.reaps)
 	}
+	if _, err := os.Stat(cleanupPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup path stat error = %v, want not exist", err)
+	}
 }
 
 type workerProcessesFixTestStore struct {
-	reaps []store.WorkerProcessReap
+	processes []store.WorkerProcess
+	reaps     []store.WorkerProcessReap
+}
+
+func (s *workerProcessesFixTestStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
+	return s.processes, nil
 }
 
 func (s *workerProcessesFixTestStore) MarkSessionWorkerProcessReaped(_ context.Context, _ int64, reap store.WorkerProcessReap) error {

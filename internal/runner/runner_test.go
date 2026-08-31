@@ -5287,7 +5287,7 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	}
 }
 
-func TestRunnerAuditRetainsWorkerScratchWhenProcessReapFails(t *testing.T) {
+func TestRunnerAuditRetainsWorkerScratchUntilLaterProcessReapSucceeds(t *testing.T) {
 	t.Parallel()
 
 	auditRoot := t.TempDir()
@@ -5365,6 +5365,17 @@ func TestRunnerAuditRetainsWorkerScratchWhenProcessReapFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(backend.request.Workspace, ".detent", "tmp")); err != nil {
 		t.Fatalf("worker scratch stat error after reap failure = %v", err)
+	}
+
+	reapErr = nil
+	if err := runner.reapSessionWorkerProcess(t.Context(), sessionID, connector.Issue{
+		ID:         snapshot.IssueID,
+		Identifier: snapshot.Identifier,
+	}, "startup"); err != nil {
+		t.Fatalf("reapSessionWorkerProcess() later error = %v", err)
+	}
+	if _, err := os.Stat(backend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("audit workspace stat error after later reap = %v, want not exist", err)
 	}
 }
 
@@ -6383,6 +6394,18 @@ type scratchReapSessionStore struct {
 	reaps   []store.WorkerProcessReap
 }
 
+func (s *scratchReapSessionStore) UpdateSessionWorkerProcess(ctx context.Context, sessionID int64, registration store.WorkerProcessRegistration) error {
+	if err := s.fakeSessionStore.UpdateSessionWorkerProcess(ctx, sessionID, registration); err != nil {
+		return err
+	}
+	if sessionID == s.process.SessionID {
+		s.process.WorkerProcessIdentity = registration.WorkerProcessIdentity
+		s.process.CleanupRoot = registration.CleanupRoot
+		s.process.CleanupPath = registration.CleanupPath
+	}
+	return nil
+}
+
 func (s *scratchReapSessionStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
 	return []store.WorkerProcess{s.process}, nil
 }
@@ -6550,7 +6573,7 @@ type fakeSessionStore struct {
 	resumeLookups   int
 	resumeLookup    store.AgentResumeLookup
 	providerUpdates []store.SessionProviderIdentity
-	workerProcesses []store.WorkerProcessIdentity
+	workerProcesses []store.WorkerProcessRegistration
 	resumeUpdates   []store.SessionResumeState
 }
 
@@ -6576,8 +6599,8 @@ func (s *fakeSessionStore) UpdateSessionProviderIdentity(_ context.Context, _ in
 	return nil
 }
 
-func (s *fakeSessionStore) UpdateSessionWorkerProcess(_ context.Context, _ int64, identity store.WorkerProcessIdentity) error {
-	s.workerProcesses = append(s.workerProcesses, identity)
+func (s *fakeSessionStore) UpdateSessionWorkerProcess(_ context.Context, _ int64, registration store.WorkerProcessRegistration) error {
+	s.workerProcesses = append(s.workerProcesses, registration)
 	return nil
 }
 

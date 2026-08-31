@@ -85,7 +85,7 @@ type StatsStore interface {
 	StartSession(context.Context, SessionStart) (int64, error)
 	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
 	UpdateSessionProviderIdentity(context.Context, int64, SessionProviderIdentity) error
-	UpdateSessionWorkerProcess(context.Context, int64, WorkerProcessIdentity) error
+	UpdateSessionWorkerProcess(context.Context, int64, WorkerProcessRegistration) error
 	ListActiveWorkerProcesses(context.Context) ([]WorkerProcess, error)
 	MarkSessionWorkerProcessReaped(context.Context, int64, WorkerProcessReap) error
 	UpdateSessionResumeState(context.Context, int64, SessionResumeState) error
@@ -444,6 +444,12 @@ type WorkerProcessIdentity struct {
 	StartedAt time.Time
 }
 
+type WorkerProcessRegistration struct {
+	WorkerProcessIdentity
+	CleanupRoot string
+	CleanupPath string
+}
+
 type WorkerProcess struct {
 	SessionID   int64
 	IssueID     string
@@ -452,6 +458,8 @@ type WorkerProcess struct {
 	FinalState  string
 	CompletedAt time.Time
 	WorkerProcessIdentity
+	CleanupRoot string
+	CleanupPath string
 }
 
 type WorkerProcessReap struct {

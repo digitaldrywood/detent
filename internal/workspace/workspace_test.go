@@ -2273,6 +2273,63 @@ func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T)
 	}
 }
 
+func TestCleanupOwnedPathConfinesRemovalToRegisteredRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       func(root string, outside string) string
+		wantErr    bool
+		wantExists bool
+	}{
+		{
+			name: "registered descendant",
+			path: func(root string, _ string) string {
+				return filepath.Join(root, "run-2011")
+			},
+		},
+		{
+			name: "cleanup root",
+			path: func(root string, _ string) string {
+				return root
+			},
+			wantErr:    true,
+			wantExists: true,
+		},
+		{
+			name: "outside root",
+			path: func(_ string, outside string) string {
+				return outside
+			},
+			wantErr:    true,
+			wantExists: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			outside := t.TempDir()
+			path := tt.path(root, outside)
+			if path != root && path != outside {
+				if err := os.MkdirAll(filepath.Join(path, "cache"), 0o700); err != nil {
+					t.Fatalf("create cleanup path: %v", err)
+				}
+			}
+			err := CleanupOwnedPath(root, path)
+			if got := err != nil; got != tt.wantErr {
+				t.Fatalf("CleanupOwnedPath() error = %v, want error %v", err, tt.wantErr)
+			}
+			_, statErr := os.Stat(path)
+			if got := statErr == nil; got != tt.wantExists {
+				t.Fatalf("cleanup path exists = %v, want %v, stat error = %v", got, tt.wantExists, statErr)
+			}
+		})
+	}
+}
+
 func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	t.Parallel()
 
