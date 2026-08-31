@@ -1160,7 +1160,7 @@ func TestAppServerStreamTurnResetsStallTimeoutAfterActivity(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	if err := server.streamTurn(context.Background(), transport, time.Hour, time.Second, nil, nil, nil); err != nil {
+	if err := server.streamTurn(context.Background(), transport, "thread-1", "turn-1", time.Hour, time.Second, nil, nil, nil); err != nil {
 		t.Fatalf("streamTurn() error = %v", err)
 	}
 	if len(transport.deadlines) != 2 {
@@ -1190,7 +1190,7 @@ func TestAppServerStreamTurnResetsTurnTimeoutAfterActivity(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	if err := server.streamTurn(context.Background(), transport, time.Second, 0, nil, nil, nil); err != nil {
+	if err := server.streamTurn(context.Background(), transport, "thread-1", "turn-1", time.Second, 0, nil, nil, nil); err != nil {
 		t.Fatalf("streamTurn() error = %v", err)
 	}
 	if len(transport.deadlines) != 2 {
@@ -2041,6 +2041,78 @@ func TestAppServerRunTurnReportsTurnErrorBody(t *testing.T) {
 	}
 	if updates[2].Status != "failed" || updates[2].BackendErrorBody != backendError {
 		t.Fatalf("failed update = %#v, want status failed with backend error", updates[2])
+	}
+}
+
+func TestAppServerRunTurnWaitsForRootCompletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		childCompletion string
+	}{
+		{
+			name:            "completed child",
+			childCompletion: `{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}`,
+		},
+		{
+			name:            "interrupted child",
+			childCompletion: `{"threadId":"thread-child","turn":{"id":"turn-child","status":"interrupted","error":null}}`,
+		},
+		{
+			name:            "failed child",
+			childCompletion: `{"threadId":"thread-child","turn":{"id":"turn-child","status":"failed","error":{"message":"child failed"}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/0.151.0"}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-root","model":"gpt-5.6-sol"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-root"}}`),
+				notificationMessage(t, "turn/completed", tt.childCompletion),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-root","turn":{"id":"turn-root","status":"completed"}}`),
+			})
+			server, err := NewAppServer(staticTransportFactory{transport: transport},
+				WithReadTimeout(time.Second),
+				WithTurnTimeout(time.Second),
+			)
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+
+			var completions []Update
+			result, err := server.RunTurn(context.Background(), RunTurnRequest{
+				Workspace: "/tmp/detent-workspace",
+				Prompt:    "Ship issue #2059",
+			}, func(update Update) error {
+				if update.Type == UpdateTurnCompleted {
+					completions = append(completions, update)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+			if result.ThreadID != "thread-root" || result.TurnID != "turn-root" {
+				t.Fatalf("RunTurn() result = %#v", result)
+			}
+			if len(transport.received) != 0 {
+				t.Fatalf("unread transport messages = %d, want root completion consumed", len(transport.received))
+			}
+			if len(completions) != 2 {
+				t.Fatalf("completion updates = %#v, want child and root completions", completions)
+			}
+			if completions[0].ThreadID != "thread-child" || completions[0].TurnID != "turn-child" {
+				t.Fatalf("child completion = %#v", completions[0])
+			}
+			if completions[1].ThreadID != "thread-root" || completions[1].TurnID != "turn-root" {
+				t.Fatalf("root completion = %#v", completions[1])
+			}
+		})
 	}
 }
 
