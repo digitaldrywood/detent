@@ -259,6 +259,12 @@ func launchdProtectedSkillLink(path string, userHome string) (bool, error) {
 }
 
 func launchdProtectedPath(path string, userHome string) bool {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(userHome); err == nil {
+		userHome = resolved
+	}
 	protectedRoots := []string{
 		filepath.Join(userHome, "Desktop"),
 		filepath.Join(userHome, "Documents"),

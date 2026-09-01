@@ -183,7 +183,15 @@ func TestPrepareCodexCommandForServiceRejectsProtectedAgentSkill(t *testing.T) {
 func TestLaunchdProtectedSkillLinkResolvesSymlinkedParent(t *testing.T) {
 	t.Parallel()
 
-	home := t.TempDir()
+	root := t.TempDir()
+	realHome := filepath.Join(root, "real-home")
+	if err := os.MkdirAll(realHome, 0o700); err != nil {
+		t.Fatalf("MkdirAll() home error = %v", err)
+	}
+	home := filepath.Join(root, "home")
+	if err := os.Symlink(realHome, home); err != nil {
+		t.Fatalf("Symlink() home error = %v", err)
+	}
 	protectedRoot := filepath.Join(home, "Documents", "shared")
 	if err := os.MkdirAll(filepath.Join(protectedRoot, "skill"), 0o700); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
