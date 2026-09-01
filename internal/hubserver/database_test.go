@@ -119,6 +119,29 @@ func TestOpenRejectsInvalidDatabasePaths(t *testing.T) {
 	}
 }
 
+func TestSQLiteDSNEncodesAbsolutePaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		wantPrefix string
+	}{
+		{name: "Unix", path: "/var/lib/detent/hub.db", wantPrefix: "file:///var/lib/detent/hub.db?"},
+		{name: "Windows uppercase drive", path: "C:/detent/hub.db", wantPrefix: "file:///C:/detent/hub.db?"},
+		{name: "Windows lowercase drive", path: "d:/detent/hub.db", wantPrefix: "file:///d:/detent/hub.db?"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := sqliteDSN(test.path, defaultBusyTimeout)
+			if !strings.HasPrefix(got, test.wantPrefix) {
+				t.Fatalf("sqliteDSN() = %q, want prefix %q", got, test.wantPrefix)
+			}
+		})
+	}
+}
+
 func TestOpenRejectsUnrecognizedDatabase(t *testing.T) {
 	t.Parallel()
 

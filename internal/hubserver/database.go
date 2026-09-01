@@ -101,13 +101,24 @@ func canonicalDatabasePath(rawPath string) (string, error) {
 }
 
 func sqliteDSN(path string, busyTimeout time.Duration) string {
-	databaseURL := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	databasePath := filepath.ToSlash(path)
+	if isWindowsDrivePath(databasePath) {
+		databasePath = "/" + databasePath
+	}
+	databaseURL := &url.URL{Scheme: "file", Path: databasePath}
 	query := databaseURL.Query()
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "locking_mode(EXCLUSIVE)")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
+}
+
+func isWindowsDrivePath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || path[2] != '/' {
+		return false
+	}
+	return path[0] >= 'A' && path[0] <= 'Z' || path[0] >= 'a' && path[0] <= 'z'
 }
 
 func (d *database) configure(ctx context.Context, busyTimeout time.Duration) error {
