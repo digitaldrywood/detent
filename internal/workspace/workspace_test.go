@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,57 @@ import (
 	"testing"
 	"time"
 )
+
+const workspacePackageDefaultParallelism = "1"
+
+func TestMain(m *testing.M) {
+	if !hasExplicitTestParallelism(os.Args[1:]) {
+		if err := flag.Set("test.parallel", workspacePackageDefaultParallelism); err != nil {
+			fmt.Fprintf(os.Stderr, "configure workspace test parallelism: %v\n", err)
+			os.Exit(2)
+		}
+	}
+	os.Exit(m.Run())
+}
+
+func TestHasExplicitTestParallelism(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "default"},
+		{name: "unrelated flag", args: []string{"-test.run=LocalGit"}},
+		{name: "single dash value", args: []string{"-test.parallel=4"}, want: true},
+		{name: "single dash separate value", args: []string{"-test.parallel", "4"}, want: true},
+		{name: "double dash value", args: []string{"--test.parallel=4"}, want: true},
+		{name: "double dash separate value", args: []string{"--test.parallel", "4"}, want: true},
+		{name: "before terminator", args: []string{"-test.parallel=4", "--"}, want: true},
+		{name: "after terminator", args: []string{"--", "-test.parallel=4"}},
+		{name: "after positional argument", args: []string{"fixture", "-test.parallel=4"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasExplicitTestParallelism(tt.args); got != tt.want {
+				t.Fatalf("hasExplicitTestParallelism(%q) = %t, want %t", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func hasExplicitTestParallelism(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			return false
+		}
+		if arg == "-test.parallel" || arg == "--test.parallel" || strings.HasPrefix(arg, "-test.parallel=") || strings.HasPrefix(arg, "--test.parallel=") {
+			return true
+		}
+	}
+	return false
+}
 
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
 	t.Parallel()
