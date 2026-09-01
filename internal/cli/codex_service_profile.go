@@ -130,7 +130,7 @@ func ensureLaunchdCodexProfile(profileHome string) error {
 	if _, err := os.Stat(filepath.Join(profileHome, launchdCodexProfileMarker)); err != nil {
 		return fmt.Errorf("launchd Codex profile %s is not managed by Detent", profileHome)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("launchd Codex profile %s permissions are broader than 0700", profileHome)
 	}
 	return nil
