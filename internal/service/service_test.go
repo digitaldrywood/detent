@@ -244,6 +244,53 @@ func TestStatusRunningRequiresRunningState(t *testing.T) {
 	}
 }
 
+func TestManagerFromProcessEnvironment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		goos string
+		env  map[string]string
+		want ManagerName
+	}{
+		{
+			name: "explicit manager",
+			goos: "darwin",
+			env:  map[string]string{ManagerEnvironment: string(ManagerLaunchd)},
+			want: ManagerLaunchd,
+		},
+		{
+			name: "legacy launchd definition",
+			goos: "darwin",
+			env:  map[string]string{launchdServiceEnvironment: launchdLabel},
+			want: ManagerLaunchd,
+		},
+		{
+			name: "unrelated XPC service",
+			goos: "darwin",
+			env:  map[string]string{launchdServiceEnvironment: "application.com.example.client"},
+		},
+		{
+			name: "non-macOS process",
+			goos: "linux",
+			env:  map[string]string{launchdServiceEnvironment: launchdLabel},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := ManagerFromProcessEnvironment(tt.goos, func(key string) (string, bool) {
+				value, ok := tt.env[key]
+				return value, ok
+			})
+			if got != tt.want {
+				t.Fatalf("ManagerFromProcessEnvironment() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInspectManualUsesInstanceLock(t *testing.T) {
 	t.Parallel()
 

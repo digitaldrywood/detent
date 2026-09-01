@@ -26,11 +26,10 @@ type codexServiceCommand struct {
 }
 
 func prepareCodexCommandForRuntime(command string) (codexServiceCommand, error) {
-	manager, _ := os.LookupEnv(servicepkg.ManagerEnvironment)
 	return prepareCodexCommandForService(
 		command,
 		runtime.GOOS,
-		manager,
+		string(servicepkg.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)),
 		os.LookupEnv,
 		os.UserHomeDir,
 	)
@@ -249,31 +248,14 @@ func removeManagedProfileLink(path string) (bool, error) {
 }
 
 func launchdProtectedSkillLink(path string, userHome string) (bool, error) {
-	current := filepath.Clean(path)
-	for range 32 {
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			return launchdProtectedPath(current, userHome), nil
-		}
-		target, err := os.Readlink(current)
-		if err != nil {
-			return false, err
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(current), target)
-		}
-		current = filepath.Clean(target)
-		if launchdProtectedPath(current, userHome) {
-			return true, nil
-		}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
+		return true, nil
 	}
-	return true, nil
+	if err != nil {
+		return false, err
+	}
+	return launchdProtectedPath(resolved, userHome), nil
 }
 
 func launchdProtectedPath(path string, userHome string) bool {

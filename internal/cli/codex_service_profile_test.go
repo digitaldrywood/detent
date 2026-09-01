@@ -179,3 +179,32 @@ func TestPrepareCodexCommandForServiceRejectsProtectedAgentSkill(t *testing.T) {
 		t.Fatalf("error = %v, want protected agent skill detail", err)
 	}
 }
+
+func TestLaunchdProtectedSkillLinkResolvesSymlinkedParent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	protectedRoot := filepath.Join(home, "Documents", "shared")
+	if err := os.MkdirAll(filepath.Join(protectedRoot, "skill"), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	linkedParent := filepath.Join(home, "shared")
+	if err := os.Symlink(protectedRoot, linkedParent); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	skillLink := filepath.Join(home, ".codex", "skills", "shared")
+	if err := os.MkdirAll(filepath.Dir(skillLink), 0o700); err != nil {
+		t.Fatalf("MkdirAll() skill root error = %v", err)
+	}
+	if err := os.Symlink(filepath.Join(linkedParent, "skill"), skillLink); err != nil {
+		t.Fatalf("Symlink() skill error = %v", err)
+	}
+
+	protected, err := launchdProtectedSkillLink(skillLink, home)
+	if err != nil {
+		t.Fatalf("launchdProtectedSkillLink() error = %v", err)
+	}
+	if !protected {
+		t.Fatal("launchdProtectedSkillLink() = false, want true")
+	}
+}
