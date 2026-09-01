@@ -2550,7 +2550,7 @@ func boardCardView2(card boardCardView) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 224, "<div class=\"flex flex-col gap-1.5 border-t border-line/70 pt-1.5\" data-board-card-content=\"comfy\" data-ai-debug-card-action>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 224, "<div class=\"flex flex-col gap-1.5 border-t border-line/70 pt-1.5\" data-ai-debug-card-action>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

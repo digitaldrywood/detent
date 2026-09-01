@@ -56,13 +56,13 @@ func TestAIDebugCardActionIsComfyOnly(t *testing.T) {
 	t.Parallel()
 
 	html := renderBoardComponent(t, boardCardView2(boardCardView{DomID: "card-2006", Project: "detent", Identity: "digitaldrywood/detent#2006", Title: "AI Debug"}))
-	marker := `data-board-card-content="comfy" data-ai-debug-card-action`
+	marker := `data-ai-debug-card-action`
 	if !strings.Contains(html, marker) {
 		t.Fatalf("card action missing comfy marker:\n%s", html)
 	}
-	for _, forbidden := range []string{`data-board-card-content="compact" data-ai-debug-card-action`, `data-board-card-content="cozy" data-ai-debug-card-action`} {
+	for _, forbidden := range []string{`data-board-card-content="compact" data-ai-debug-card-action`, `data-board-card-content="cozy" data-ai-debug-card-action`, `data-board-card-content="comfy" data-ai-debug-card-action`} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("card action rendered in non-comfy density %q:\n%s", forbidden, html)
+			t.Fatalf("card action reused a board content density marker %q:\n%s", forbidden, html)
 		}
 	}
 }

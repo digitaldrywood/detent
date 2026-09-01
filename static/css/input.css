@@ -343,7 +343,8 @@
 }
 
 [data-board-card-content="compact"],
-[data-board-card-content="comfy"] {
+[data-board-card-content="comfy"],
+[data-ai-debug-card-action] {
   display: none;
 }
 
@@ -379,4 +380,8 @@
 
 [data-density="comfy"] [data-board-card-content="comfy"] {
   display: grid;
+}
+
+[data-density="comfy"] [data-ai-debug-card-action] {
+  display: flex;
 }
