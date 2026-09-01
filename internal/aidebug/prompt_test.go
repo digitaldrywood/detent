@@ -62,8 +62,9 @@ func TestPromptIncludesDiscriminatingEvidence(t *testing.T) {
 				projection.Fleet.AgentPools = json.RawMessage(`[{"name":"default","used":4,"capacity":4}]`)
 				projection.Fleet.RunningCount = 4
 				projection.Issue.SchedulerDecisions = []SchedulerDecisionEvidence{{At: at, Result: "skipped", WaitReason: "global_capacity_full", CapacityJSON: `{"used":4,"capacity":4}`}}
+				projection.Issue.SchedulerWaitCounts = map[string]int{"global_capacity_full": 7}
 			},
-			want: []string{`"global_slots_in_use": 4`, `"wait_reason": "global_capacity_full"`, `"capacity": 4`},
+			want: []string{`"global_slots_in_use": 4`, `"wait_reason": "global_capacity_full"`, `"global_capacity_full": 7`, `"capacity": 4`},
 		},
 		{
 			name: "healthy card",
@@ -94,6 +95,33 @@ func TestPromptIncludesDiscriminatingEvidence(t *testing.T) {
 			}
 			if !strings.Contains(prompt, "2026-08-27T15:04:05Z") {
 				t.Fatalf("Prompt() does not use UTC RFC3339 timestamp:\n%s", prompt)
+			}
+		})
+	}
+}
+
+func TestFinalizeAggregatesRequiresARealAlternatingPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		states []string
+		want   bool
+	}{
+		{name: "three alternating outcomes", states: []string{"success", "no_progress", "success"}, want: true},
+		{name: "two relevant outcomes among unrelated failures", states: []string{"failure", "success", "no_progress"}},
+		{name: "single relevant outcome among unrelated failures", states: []string{"failure", "success", "cancelled"}},
+		{name: "repeated relevant outcome", states: []string{"success", "no_progress", "no_progress"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			attempts := make([]AttemptEvidence, 0, len(tt.states))
+			for _, state := range tt.states {
+				attempts = append(attempts, AttemptEvidence{TerminalState: state})
+			}
+			if got := alternatingSuccessNoProgress(attempts); got != tt.want {
+				t.Fatalf("alternatingSuccessNoProgress(%v) = %t, want %t", tt.states, got, tt.want)
 			}
 		})
 	}
@@ -140,13 +168,13 @@ func TestPromptScopesUseSameSectionStructure(t *testing.T) {
 
 func testProjection(at time.Time) Projection {
 	projection := NewProjection(ScopeIssue, at)
-	projection.Detent = DetentEvidence{Version: "v0.88.0", Host: "worker.example", InstanceName: "dogfood"}
+	projection.Detent = DetentEvidence{Version: "v0.88.0", Host: "worker.example", InstanceName: "dogfood", DefectDestinationRepository: "digitaldrywood/detent"}
 	projection.Issue = &IssueEvidence{
 		ID: "I_2006", Identifier: "digitaldrywood/detent#2006", Title: "AI Debug", URL: "https://github.com/digitaldrywood/detent/issues/2006",
 		ProjectID: "detent", TrackerKind: "github", TrackerState: "In Progress", RuntimeState: "In Progress", CurrentLane: "In Progress",
 		Blocked:      BlockedEvidence{Cause: "No blocked cause is recorded.", CauseAuthor: "none", RecoveryPredicate: []map[string]any{}},
 		Park:         ParkEvidence{Thresholds: map[string]int64{}, ConsecutiveCounts: map[string]int64{}, Causes: []map[string]any{}},
-		Dependencies: []DependencyEvidence{}, Attempts: []AttemptEvidence{}, Sessions: []SessionEvidence{}, SchedulerDecisions: []SchedulerDecisionEvidence{}, LaneTransitions: []LaneTransitionEvidence{}, HookAndCIErrors: []string{},
+		Dependencies: []DependencyEvidence{}, Attempts: []AttemptEvidence{}, Sessions: []SessionEvidence{}, SchedulerDecisions: []SchedulerDecisionEvidence{}, SchedulerWaitCounts: map[string]int{}, LaneTransitions: []LaneTransitionEvidence{}, HookAndCIErrors: []string{},
 	}
 	projection.Project = &ProjectEvidence{ID: "detent", Repository: "digitaldrywood/detent", ConfigDestinationRepo: "digitaldrywood/detent", Authorization: map[string]any{}, GateDefinition: json.RawMessage(`{}`), Dispatch: json.RawMessage(`{}`)}
 	projection.Fleet = FleetEvidence{AgentPools: json.RawMessage(`[]`), ProviderRateState: json.RawMessage(`{}`), GitHubBudgets: json.RawMessage(`{}`), Dispatch: json.RawMessage(`{}`), CapacityConditions: json.RawMessage(`{}`)}

@@ -3341,7 +3341,7 @@ func (q *Queries) ListIssueActivityEvents(ctx context.Context, arg ListIssueActi
 }
 
 const listIssueCodexSessions = `-- name: ListIssueCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path
 FROM codex_sessions
 WHERE project_id = ?1
   AND (
@@ -3419,6 +3419,8 @@ func (q *Queries) ListIssueCodexSessions(ctx context.Context, arg ListIssueCodex
 			&i.WorkerReapOutcome,
 			&i.ProjectID,
 			&i.WorkerReapReason,
+			&i.WorkerCleanupRoot,
+			&i.WorkerCleanupPath,
 		); err != nil {
 			return nil, err
 		}

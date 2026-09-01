@@ -46,6 +46,16 @@ templ aiDebugScript() {
 				input.remove();
 			}
 
+			function copyPrompt(value) {
+				if (!navigator.clipboard || !navigator.clipboard.writeText) {
+					copyFallback(value);
+					return Promise.resolve();
+				}
+				return navigator.clipboard.writeText(value).catch(function () {
+					copyFallback(value);
+				});
+			}
+
 			document.addEventListener("click", function (event) {
 				var button = event.target instanceof Element ? event.target.closest("[data-ai-debug-url]") : null;
 				if (!button) return;
@@ -60,8 +70,7 @@ templ aiDebugScript() {
 						return response.text();
 					})
 					.then(function (prompt) {
-						if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(prompt);
-						copyFallback(prompt);
+						return copyPrompt(prompt);
 					})
 					.catch(function (error) {
 						console.error(error);

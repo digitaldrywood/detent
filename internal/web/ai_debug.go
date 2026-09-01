@@ -50,9 +50,10 @@ func (s *Server) aiDebugProjection(ctx context.Context, scope aidebug.Scope, pro
 		projection.EvidenceGaps = append(projection.EvidenceGaps, "host lookup failed: "+err.Error())
 	}
 	projection.Detent = aidebug.DetentEvidence{
-		Version:      strings.TrimSpace(s.version),
-		Host:         strings.TrimSpace(host),
-		InstanceName: s.instanceName(),
+		Version:                     strings.TrimSpace(s.version),
+		Host:                        strings.TrimSpace(host),
+		InstanceName:                s.instanceName(),
+		DefectDestinationRepository: "digitaldrywood/detent",
 	}
 	projection.Fleet = aiDebugFleetEvidence(snapshot)
 
@@ -69,7 +70,7 @@ func (s *Server) aiDebugProjection(ctx context.Context, scope aidebug.Scope, pro
 	if !ok {
 		return aidebug.Projection{}, errAIDebugNotFound
 	}
-	projectEvidence, projectGaps := aiDebugProjectEvidence(trackedProject, snapshot)
+	projectEvidence, projectGaps := aiDebugProjectEvidence(ctx, trackedProject, snapshot)
 	projection.Project = &projectEvidence
 	projection.EvidenceGaps = append(projection.EvidenceGaps, projectGaps...)
 	if scope == aidebug.ScopeProject {
@@ -109,9 +110,16 @@ func aiDebugFleetEvidence(snapshot telemetry.Snapshot) aidebug.FleetEvidence {
 			"rest_usage_by_endpoint_family": snapshot.RateLimits.RESTUsage,
 		}
 	}
+	runningCount := 0
+	for _, pool := range snapshot.AgentPools {
+		runningCount += pool.Used
+	}
+	if len(snapshot.AgentPools) == 0 {
+		runningCount = len(snapshot.Running)
+	}
 	return aidebug.FleetEvidence{
 		AgentPools:        aiDebugJSON(snapshot.AgentPools),
-		RunningCount:      len(snapshot.Running),
+		RunningCount:      runningCount,
 		ProviderRateState: aiDebugJSON(provider),
 		GitHubBudgets:     aiDebugJSON(github),
 		Dispatch:          aiDebugJSON(map[string]any{"fleet": snapshot.Dispatch, "project_stalls": snapshot.DispatchStalls}),
@@ -124,17 +132,35 @@ func aiDebugFleetEvidence(snapshot telemetry.Snapshot) aidebug.FleetEvidence {
 	}
 }
 
-func aiDebugProjectEvidence(trackedProject *project.Project, snapshot telemetry.Snapshot) (aidebug.ProjectEvidence, []string) {
+func aiDebugProjectEvidence(ctx context.Context, trackedProject *project.Project, snapshot telemetry.Snapshot) (aidebug.ProjectEvidence, []string) {
 	projectConfig := trackedProject.Config()
 	workflow := trackedProject.Workflow().Config
 	source := trackedProject.WorkflowSourceStatus()
-	drift := "not detected by runtime"
 	gaps := []string{}
+	var drift string
+	configuredSourceHash := ""
+	configuredSourceRevision := ""
+	comparisonCtx, cancelComparison := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelComparison()
+	configuredWorkflow, configuredErr := project.LoadWorkflowContext(comparisonCtx, projectConfig)
+	if configuredErr != nil {
+		drift = "comparison failed: " + configuredErr.Error()
+		gaps = append(gaps, "workflow drift comparison failed: "+configuredErr.Error())
+	} else {
+		configuredSourceHash = strings.TrimSpace(configuredWorkflow.SourceHash)
+		configuredSourceRevision = strings.TrimSpace(configuredWorkflow.Definition.Revision)
+		switch {
+		case strings.TrimSpace(source.Hash) == "" || configuredSourceHash == "":
+			drift = "unknown: source hash is unavailable"
+			gaps = append(gaps, "workflow drift could not be determined because a source hash is unavailable")
+		case strings.TrimSpace(source.Hash) == configuredSourceHash:
+			drift = "runtime matches configured source"
+		default:
+			drift = "runtime differs from configured source"
+		}
+	}
 	if source.LastReloadError != "" {
 		drift = "runtime reload error"
-	} else if strings.TrimSpace(projectConfig.WorkflowRef) != "" {
-		drift = "unknown: runtime does not expose committed-ref comparison"
-		gaps = append(gaps, "workflow drift from committed ref could not be proven or disproven from runtime evidence")
 	}
 	dispatch := snapshot.Dispatch
 	for _, candidate := range snapshot.DispatchStalls {
@@ -172,16 +198,18 @@ func aiDebugProjectEvidence(trackedProject *project.Project, snapshot telemetry.
 		},
 		Authorization: authorization,
 		Workflow: aidebug.WorkflowEvidence{
-			ConfiguredPath:  strings.TrimSpace(projectConfig.Workflow),
-			CommittedRef:    strings.TrimSpace(projectConfig.WorkflowRef),
-			LoadedPath:      strings.TrimSpace(source.Path),
-			LoadedHash:      strings.TrimSpace(source.Hash),
-			Revision:        strings.TrimSpace(source.Revision),
-			ModifiedAt:      modifiedAt,
-			LoadedAt:        loadedAt,
-			LastReconcileAt: reconciledAt,
-			DriftStatus:     drift,
-			LastReloadError: strings.TrimSpace(source.LastReloadError),
+			ConfiguredPath:           strings.TrimSpace(projectConfig.Workflow),
+			CommittedRef:             strings.TrimSpace(projectConfig.WorkflowRef),
+			ConfiguredSourceHash:     configuredSourceHash,
+			ConfiguredSourceRevision: configuredSourceRevision,
+			LoadedPath:               strings.TrimSpace(source.Path),
+			LoadedHash:               strings.TrimSpace(source.Hash),
+			Revision:                 strings.TrimSpace(source.Revision),
+			ModifiedAt:               modifiedAt,
+			LoadedAt:                 loadedAt,
+			LastReconcileAt:          reconciledAt,
+			DriftStatus:              drift,
+			LastReloadError:          strings.TrimSpace(source.LastReloadError),
 		},
 		GateDefinition: aiDebugJSON(workflow.Gate),
 		LastGateResult: aiDebugProjectGateResult(snapshot, string(trackedProject.ID())),
@@ -232,25 +260,26 @@ func (s *Server) aiDebugIssueEvidence(ctx context.Context, trackedProject *proje
 
 	blocked, blockedFound := aiDebugBlocked(snapshot, issue)
 	evidence := aidebug.IssueEvidence{
-		ID:                 strings.TrimSpace(issue.ID),
-		Identifier:         strings.TrimSpace(issue.Identifier),
-		Title:              strings.TrimSpace(issue.Title),
-		URL:                strings.TrimSpace(issue.URL),
-		ProjectID:          identity.ProjectID,
-		TrackerKind:        strings.TrimSpace(trackedProject.Workflow().Config.Tracker.Kind),
-		TrackerState:       strings.TrimSpace(issue.State),
-		RuntimeState:       aiDebugRuntimeState(snapshot, issue),
-		CurrentLane:        strings.TrimSpace(issue.State),
-		TimeInLaneSeconds:  issue.CurrentLaneAgeSeconds,
-		Blocked:            aiDebugBlockedEvidence(issue, blocked, blockedFound),
-		Park:               aiDebugParkEvidence(snapshot, issue, trackedProject.Workflow().Config.Agent.AutoPromote.NoProgressLimit),
-		Dependencies:       aiDebugDependencies(snapshot, issue),
-		Attempts:           aiDebugAttempts(attempts),
-		Sessions:           aiDebugSessions(sessions),
-		SchedulerDecisions: aiDebugSchedulerDecisions(decisions),
-		LaneTransitions:    aiDebugLaneTransitions(timeline),
-		Delivery:           aiDebugDelivery(issue, attempts),
-		HookAndCIErrors:    aiDebugHookAndCIErrors(issue, attempts),
+		ID:                  strings.TrimSpace(issue.ID),
+		Identifier:          strings.TrimSpace(issue.Identifier),
+		Title:               strings.TrimSpace(issue.Title),
+		URL:                 strings.TrimSpace(issue.URL),
+		ProjectID:           identity.ProjectID,
+		TrackerKind:         strings.TrimSpace(trackedProject.Workflow().Config.Tracker.Kind),
+		TrackerState:        strings.TrimSpace(issue.State),
+		RuntimeState:        aiDebugRuntimeState(snapshot, issue),
+		CurrentLane:         strings.TrimSpace(issue.State),
+		TimeInLaneSeconds:   issue.CurrentLaneAgeSeconds,
+		Blocked:             aiDebugBlockedEvidence(issue, blocked, blockedFound),
+		Park:                aiDebugParkEvidence(snapshot, issue, trackedProject.Workflow().Config.Agent.AutoPromote.NoProgressLimit),
+		Dependencies:        aiDebugDependencies(snapshot, issue),
+		Attempts:            aiDebugAttempts(attempts),
+		Sessions:            aiDebugSessions(sessions),
+		SchedulerDecisions:  aiDebugSchedulerDecisions(decisions),
+		SchedulerWaitCounts: aiDebugSchedulerWaitCounts(decisions),
+		LaneTransitions:     aiDebugLaneTransitions(timeline),
+		Delivery:            aiDebugDelivery(issue, attempts),
+		HookAndCIErrors:     aiDebugHookAndCIErrors(issue, attempts),
 	}
 	evidence.StateDisagreement = !strings.EqualFold(strings.TrimSpace(evidence.TrackerState), strings.TrimSpace(evidence.RuntimeState))
 	aidebug.FinalizeAggregates(&evidence)
@@ -342,7 +371,7 @@ func aiDebugBlockedEvidence(issue telemetry.Issue, blocked telemetry.Blocked, fo
 		if cause != "" {
 			evidence.CausePresent = true
 			evidence.Cause = cause
-			evidence.CauseAuthor = "detent"
+			evidence.CauseAuthor = aiDebugBlockedCauseAuthor(blocked)
 		}
 	}
 	if !evidence.CausePresent && len(issue.BlockedBy) > 0 {
@@ -351,6 +380,13 @@ func aiDebugBlockedEvidence(issue telemetry.Issue, blocked telemetry.Blocked, fo
 		evidence.CauseAuthor = "tracker"
 	}
 	return evidence
+}
+
+func aiDebugBlockedCauseAuthor(blocked telemetry.Blocked) string {
+	if blocked.Source == telemetry.BlockedSourceDependency {
+		return "tracker"
+	}
+	return "detent"
 }
 
 func aiDebugParkEvidence(snapshot telemetry.Snapshot, issue telemetry.Issue, noProgressLimit int) aidebug.ParkEvidence {
@@ -434,12 +470,13 @@ func aiDebugAttempts(attempts []store.WorkAttempt) []aidebug.AttemptEvidence {
 		metadata := aiDebugDecodeObject(attempt.WorkerMetadataJSON)
 		metrics := aiDebugDecodeObject(attempt.MetricsJSON)
 		completedAt := aiDebugTimePointer(attempt.CompletedAt)
+		diffstat := aiDebugMapValue(metadata, metrics, "workspace_diffstat", "diffstat")
 		result = append(result, aidebug.AttemptEvidence{
 			ID: attempt.ID, StartedAt: attempt.StartedAt.UTC(), CompletedAt: completedAt,
 			TerminalState: string(attempt.TerminalState), AttemptNumber: attempt.AttemptNumber, Lane: attempt.Lane,
 			ErrorClass: attempt.ErrorClass, ErrorMessage: attempt.ErrorMessage, PRNumber: attempt.PRNumber,
-			WorkspaceDiffstat:   aiDebugStringValue(metadata, metrics, "workspace_diffstat", "diffstat"),
-			UnpushedCommitCount: aiDebugIntPointer(metadata, metrics, "unpushed_commit_count"),
+			WorkspaceDiffstat:   diffstat,
+			UnpushedCommitCount: aiDebugIntPointer(metadata, metrics, "unpushed_commits", "unpushed_commit_count"),
 			WorkProductPushed:   aiDebugBoolPointer(metadata, metrics, "work_product_pushed"),
 			CIState:             attempt.CIState, WorkerMetadataJSON: attempt.WorkerMetadataJSON, MetricsJSON: attempt.MetricsJSON,
 			CapacitySnapshotJSON: attempt.CapacitySnapshotJSON, GitHubRateSnapshotJSON: attempt.GitHubRateSnapshotJSON,
@@ -470,6 +507,18 @@ func aiDebugSchedulerDecisions(decisions []store.SchedulerDecision) []aidebug.Sc
 	return result
 }
 
+func aiDebugSchedulerWaitCounts(decisions []store.SchedulerDecision) map[string]int {
+	counts := map[string]int{}
+	for _, decision := range decisions {
+		waitReason := strings.TrimSpace(decision.WaitReason)
+		if waitReason == "" {
+			waitReason = "none recorded"
+		}
+		counts[waitReason]++
+	}
+	return counts
+}
+
 func aiDebugLaneTransitions(timeline store.WorkflowTimeline) []aidebug.LaneTransitionEvidence {
 	result := []aidebug.LaneTransitionEvidence{}
 	for _, event := range timeline.Events {
@@ -477,12 +526,27 @@ func aiDebugLaneTransitions(timeline store.WorkflowTimeline) []aidebug.LaneTrans
 			continue
 		}
 		origin := "indeterminate"
+		recordedOrigin := ""
 		if metadata, ok := provenance.Parse(event.MetadataJSON); ok {
-			origin = string(metadata.Provenance.Origin)
+			recordedOrigin = string(metadata.Provenance.Origin)
+			origin = aiDebugLaneOrigin(metadata.Provenance.Origin)
 		}
-		result = append(result, aidebug.LaneTransitionEvidence{At: event.StartedAt.UTC(), From: event.PreviousPhaseName, To: event.PhaseName, Origin: origin, MutationReason: event.Reason})
+		result = append(result, aidebug.LaneTransitionEvidence{At: event.StartedAt.UTC(), From: event.PreviousPhaseName, To: event.PhaseName, Origin: origin, RecordedOrigin: recordedOrigin, MutationReason: event.Reason})
 	}
 	return result
+}
+
+func aiDebugLaneOrigin(origin provenance.Origin) string {
+	switch provenance.NormalizeOrigin(origin) {
+	case provenance.OriginHuman:
+		return "human"
+	case provenance.OriginAgent:
+		return "agent"
+	case provenance.OriginDetent, provenance.OriginRoutine, provenance.OriginRetro, provenance.OriginDependency, provenance.OriginAdmission:
+		return "detent"
+	default:
+		return "indeterminate"
+	}
 }
 
 func aiDebugDelivery(issue telemetry.Issue, attempts []store.WorkAttempt) aidebug.DeliveryEvidence {
@@ -512,6 +576,9 @@ func aiDebugDelivery(issue telemetry.Issue, attempts []store.WorkAttempt) aidebu
 	evidence.MergeableStatus = pr.MergeableState
 	evidence.HeadSHA = pr.HeadSHA
 	evidence.BranchName = pr.BranchName
+	evidence.CIStatus = pr.CIStatus
+	evidence.CheckRunCount = pr.CheckRunCount
+	evidence.StatusContextCount = pr.StatusContextCount
 	for _, check := range aiDebugPRChecks(pr) {
 		evidence.Checks = append(evidence.Checks, aiDebugMap(check))
 	}
@@ -567,10 +634,18 @@ func aiDebugUniqueTrimmed(values []string) []string {
 }
 
 func aiDebugProjectGateResult(snapshot telemetry.Snapshot, projectID string) string {
+	var latest *telemetry.WorkAttempt
 	for _, attempt := range snapshot.WorkAttempts {
-		if strings.TrimSpace(attempt.ProjectID) == strings.TrimSpace(projectID) && strings.TrimSpace(attempt.CIState) != "" {
-			return attempt.CIState
+		if strings.TrimSpace(attempt.ProjectID) != strings.TrimSpace(projectID) || strings.TrimSpace(attempt.CIState) == "" {
+			continue
 		}
+		if latest == nil || attempt.StartedAt.After(latest.StartedAt) || attempt.StartedAt.Equal(latest.StartedAt) && attempt.AttemptID > latest.AttemptID {
+			candidate := attempt
+			latest = &candidate
+		}
+	}
+	if latest != nil {
+		return latest.CIState
 	}
 	return "No gate result is recorded in the current snapshot."
 }
@@ -606,28 +681,44 @@ func aiDebugDecodeObject(raw string) map[string]any {
 }
 
 func aiDebugNestedValue(objects []map[string]any, keys ...string) any {
-	var search func(map[string]any) any
-	search = func(object map[string]any) any {
+	var search func(map[string]any, string) any
+	search = func(object map[string]any, candidate string) any {
 		for key, value := range object {
-			for _, candidate := range keys {
-				if strings.EqualFold(key, candidate) {
-					return value
-				}
+			if strings.EqualFold(key, candidate) {
+				return value
 			}
+		}
+		for _, value := range object {
 			if nested, ok := value.(map[string]any); ok {
-				if found := search(nested); found != nil {
+				if found := search(nested, candidate); found != nil {
 					return found
 				}
 			}
 		}
 		return nil
 	}
-	for _, object := range objects {
-		if value := search(object); value != nil {
-			return value
+	for _, key := range keys {
+		for _, object := range objects {
+			if value := search(object, key); value != nil {
+				return value
+			}
 		}
 	}
 	return nil
+}
+
+func aiDebugMapValue(first map[string]any, second map[string]any, keys ...string) map[string]any {
+	value := aiDebugNestedValue([]map[string]any{first, second}, keys...)
+	if object, ok := value.(map[string]any); ok {
+		return object
+	}
+	if raw, ok := value.(string); ok {
+		object := map[string]any{}
+		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &object) == nil {
+			return object
+		}
+	}
+	return map[string]any{}
 }
 
 func aiDebugStringValue(first map[string]any, second map[string]any, keys ...string) string {

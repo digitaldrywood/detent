@@ -84,7 +84,7 @@ func TestAIDebugPromptRoutesReturnSelfContainedScopes(t *testing.T) {
 		{
 			name:     "project",
 			path:     "/api/v1/ai-debug?scope=project&project=video",
-			want:     []string{"## Project evidence", "## Fleet evidence", `"id": "video"`, "configuration_or_workflow_issue_destination_repository"},
+			want:     []string{"## Project evidence", "## Fleet evidence", `"id": "video"`, "configuration_or_workflow_issue_destination_repository", `"drift_status": "comparison failed: workflow path must not be blank"`},
 			dontWant: []string{"## Issue evidence"},
 		},
 		{

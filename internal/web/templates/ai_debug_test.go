@@ -71,7 +71,7 @@ func TestAIDebugScriptFetchesPromptOnlyOnClick(t *testing.T) {
 	t.Parallel()
 
 	html := renderBoardComponent(t, aiDebugScript())
-	for _, want := range []string{"[data-ai-debug-url]", "fetch(url", `"HX-Request": "true"`, "navigator.clipboard.writeText(prompt)"} {
+	for _, want := range []string{"[data-ai-debug-url]", "event.stopPropagation()", "fetch(url", `"HX-Request": "true"`, "navigator.clipboard.writeText(value).catch", "copyFallback(value)"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("AI Debug script missing %q:\n%s", want, html)
 		}
