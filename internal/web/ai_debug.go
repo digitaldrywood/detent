@@ -43,7 +43,7 @@ var errAIDebugNotFound = errors.New("AI Debug target not found")
 
 func (s *Server) aiDebugProjection(ctx context.Context, scope aidebug.Scope, projectID string, issueRef string) (aidebug.Projection, error) {
 	now := s.now().UTC()
-	snapshot := s.cachedEnrichedSnapshot(ctx, s.latestSnapshot(ctx))
+	snapshot := s.latestSnapshot(ctx)
 	projection := aidebug.NewProjection(scope, now)
 	host, err := s.hostname()
 	if err != nil {
@@ -400,9 +400,8 @@ func aiDebugParkEvidence(snapshot telemetry.Snapshot, issue telemetry.Issue, noP
 	for _, cause := range issue.ParkSummary.Causes {
 		evidence.Causes = append(evidence.Causes, aiDebugMap(cause))
 	}
-	evidence.Parked = evidence.ParkCount > 0
 	for _, loop := range snapshot.DispatchLoops {
-		if loop.ProjectID == issue.ProjectID && (loop.IssueID == issue.ID || loop.Identifier == issue.Identifier) {
+		if strings.TrimSpace(loop.ProjectID) == strings.TrimSpace(issue.ProjectID) && aiDebugIssueAliasMatches(issue, loop.IssueID, loop.Identifier, loop.IssueURL) {
 			evidence.BreakerKind = "dispatch_loop"
 			evidence.Thresholds["dispatch_limit"] = int64(loop.DispatchLimit)
 			evidence.ConsecutiveCounts["dispatches"] = int64(loop.ConsecutiveDispatches)
@@ -410,8 +409,11 @@ func aiDebugParkEvidence(snapshot telemetry.Snapshot, issue telemetry.Issue, noP
 		}
 	}
 	for _, breaker := range snapshot.FailureBreakers {
+		if strings.TrimSpace(breaker.ProjectID) != strings.TrimSpace(issue.ProjectID) {
+			continue
+		}
 		for _, item := range breaker.Items {
-			if item.IssueID != issue.ID && item.Identifier != issue.Identifier {
+			if !aiDebugIssueAliasMatches(issue, item.IssueID, item.Identifier, item.IssueURL) {
 				continue
 			}
 			evidence.BreakerKind = "failure_breaker"
@@ -654,6 +656,12 @@ func aiDebugIssueMatches(left telemetry.Issue, right telemetry.Issue) bool {
 	return strings.TrimSpace(left.ProjectID) == strings.TrimSpace(right.ProjectID) && (strings.TrimSpace(left.ID) != "" && left.ID == right.ID ||
 		strings.TrimSpace(left.Identifier) != "" && left.Identifier == right.Identifier ||
 		strings.TrimSpace(left.URL) != "" && left.URL == right.URL)
+}
+
+func aiDebugIssueAliasMatches(issue telemetry.Issue, issueID string, identifier string, issueURL string) bool {
+	return strings.TrimSpace(issue.ID) != "" && strings.TrimSpace(issue.ID) == strings.TrimSpace(issueID) ||
+		strings.TrimSpace(issue.Identifier) != "" && strings.TrimSpace(issue.Identifier) == strings.TrimSpace(identifier) ||
+		strings.TrimSpace(issue.URL) != "" && strings.TrimSpace(issue.URL) == strings.TrimSpace(issueURL)
 }
 
 func aiDebugJSON(value any) json.RawMessage {

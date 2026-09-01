@@ -75,6 +75,77 @@ func TestAIDebugProjectionSummariesUseCanonicalValues(t *testing.T) {
 	}
 }
 
+func TestAIDebugParkEvidenceUsesCurrentScopedBreakerState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		snapshot      telemetry.Snapshot
+		issue         telemetry.Issue
+		wantParked    bool
+		wantKind      string
+		wantParkCount int64
+	}{
+		{
+			name:          "historical parks do not imply current park",
+			issue:         telemetry.Issue{ProjectID: "alpha", ID: "1", ParkSummary: telemetry.ParkSummary{ParkCount: 3}},
+			wantParkCount: 3,
+		},
+		{
+			name: "empty aliases do not match",
+			snapshot: telemetry.Snapshot{DispatchLoops: []telemetry.DispatchLoop{{
+				ProjectID:  "alpha",
+				Identifier: "other#1",
+				Tripped:    true,
+			}}},
+			issue: telemetry.Issue{ProjectID: "alpha"},
+		},
+		{
+			name: "failure breaker from another project is ignored",
+			snapshot: telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{{
+				ProjectID: "beta",
+				Items:     []telemetry.FailureBreakerItem{{IssueID: "1", Parked: true}},
+			}}},
+			issue: telemetry.Issue{ProjectID: "alpha", ID: "1"},
+		},
+		{
+			name: "matching dispatch loop reports current park",
+			snapshot: telemetry.Snapshot{DispatchLoops: []telemetry.DispatchLoop{{
+				ProjectID: "alpha",
+				IssueURL:  "https://example.test/issues/1",
+				Tripped:   true,
+			}}},
+			issue:      telemetry.Issue{ProjectID: "alpha", URL: "https://example.test/issues/1"},
+			wantParked: true,
+			wantKind:   "dispatch_loop",
+		},
+		{
+			name: "matching failure breaker reports current park",
+			snapshot: telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{{
+				ProjectID: "alpha",
+				Items:     []telemetry.FailureBreakerItem{{Identifier: "alpha#1", Parked: true}},
+			}}},
+			issue:      telemetry.Issue{ProjectID: "alpha", Identifier: "alpha#1"},
+			wantParked: true,
+			wantKind:   "failure_breaker",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := aiDebugParkEvidence(tt.snapshot, tt.issue, 3)
+			if evidence.Parked != tt.wantParked {
+				t.Errorf("Parked = %t, want %t", evidence.Parked, tt.wantParked)
+			}
+			if evidence.BreakerKind != tt.wantKind {
+				t.Errorf("BreakerKind = %q, want %q", evidence.BreakerKind, tt.wantKind)
+			}
+			if evidence.ParkCount != tt.wantParkCount {
+				t.Errorf("ParkCount = %d, want %d", evidence.ParkCount, tt.wantParkCount)
+			}
+		})
+	}
+}
+
 func TestAIDebugLaneOriginUsesPromptVocabulary(t *testing.T) {
 	t.Parallel()
 
