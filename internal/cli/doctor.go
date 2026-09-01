@@ -287,6 +287,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	workflowTokenThreshold := doctorWorkflowDefaultTokenThreshold
 	workflowProposalThreshold := doctorWorkflowProposalDefaultThreshold
 	strict := false
+	startupPreflight := false
 	projectID := ""
 	cmd := &cobra.Command{
 		Use:          "doctor",
@@ -306,7 +307,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 			if out.IsJSON() {
 				progressOut = cmd.ErrOrStderr()
 			}
-			report := runDoctor(cmd.Context(), doctorConfig{
+			config := doctorConfig{
 				ConfigPath:                derefString(configPath),
 				Host:                      derefString(host),
 				ProjectID:                 projectID,
@@ -323,7 +324,13 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
 					Port:     runtimeIntFlag{Value: derefInt(port, -1), Set: flagChanged(cmd, "port")},
 				},
-			}, opts, deps)
+			}
+			var report doctorReport
+			if startupPreflight {
+				report = runDoctorStartupPreflight(cmd.Context(), config, opts, deps)
+			} else {
+				report = runDoctor(cmd.Context(), config, opts, deps)
+			}
 			report.strict = strict
 			if workflowWrite {
 				if err := confirmDoctorWorkflowOptimizationWrite(cmd, report.WorkflowOptimization); err != nil {
@@ -354,6 +361,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	cmd.Flags().IntVar(&workflowProposalThreshold, "proposal-threshold", doctorWorkflowProposalDefaultThreshold, "minimum repeated signal count before emitting a governed self-improvement proposal")
 	cmd.Flags().BoolVar(&workflowProposeIssues, "propose-issues", false, "create governed backlog issue proposals for repeated workflow optimization signals")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail when checks warn or workflow optimization findings exist")
+	cmd.Flags().BoolVar(&startupPreflight, "startup-preflight", false, "limit checks to candidate startup compatibility")
 	cmd.Flags().StringVar(&projectID, "project", "", "limit project checks to the selected project id")
 	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
 		lookupEnv: opts.lookupEnv,

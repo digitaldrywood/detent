@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -64,11 +65,17 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 				if out.IsJSON() {
 					streamOut = cmd.ErrOrStderr()
 				}
+				preflight, recoveryStatePath, safetyErr := updateSafetyOptions(cmd)
+				if safetyErr != nil {
+					return safetyErr
+				}
 				opts := detentupdate.ApplyOptions{
-					AssumeYes:   assumeYes,
-					FromRelease: fromRelease,
-					Stdout:      streamOut,
-					Stderr:      cmd.ErrOrStderr(),
+					AssumeYes:         assumeYes,
+					FromRelease:       fromRelease,
+					Preflight:         preflight,
+					RecoveryStatePath: recoveryStatePath,
+					Stdout:            streamOut,
+					Stderr:            cmd.ErrOrStderr(),
 				}
 				if !assumeYes && !fromRelease && !out.IsJSON() {
 					opts.Confirm = confirmUpdate(cmd)
@@ -90,6 +97,28 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 	cmd.Flags().BoolVar(&fromRelease, "from-release", false, "replace a go-install-managed binary with the latest release asset")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable update status")
 	return cmd
+}
+
+func updateSafetyOptions(cmd *cobra.Command) (detentupdate.BinaryPreflight, string, error) {
+	configPath := ""
+	if cmd.InheritedFlags().Lookup("config") != nil {
+		value, err := cmd.InheritedFlags().GetString("config")
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve update config flag: %w", err)
+		}
+		configPath = value
+	}
+	resolution, err := globalconfig.ResolvePath(configPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve update startup config: %w", err)
+	}
+	preflight := detentupdate.CommandPreflight(
+		"--config", resolution.Path,
+		"--port", "0",
+		"--format", "json",
+		"doctor", "--startup-preflight",
+	)
+	return preflight, detentupdate.RecoveryStatePath(resolution.Path), nil
 }
 
 func newDefaultUpdateRunner(context.Context) (updateRunner, error) {

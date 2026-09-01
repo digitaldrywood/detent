@@ -172,6 +172,53 @@ func TestSchedulerAutoApplyBehavior(t *testing.T) {
 	}
 }
 
+func TestSchedulerPassesUpdateSafetyOptions(t *testing.T) {
+	t.Parallel()
+
+	updater := &schedulerUpdaterStub{
+		checkStatus: Status{
+			CurrentVersion:  "1.2.3",
+			LatestVersion:   "1.2.4",
+			UpdateAvailable: true,
+			Action:          ActionAvailable,
+			InstallSource:   InstallSourceRelease,
+		},
+		applyStatus: Status{
+			CurrentVersion: "1.2.3",
+			LatestVersion:  "1.2.4",
+			Action:         ActionUpdated,
+		},
+	}
+	preflight := func(context.Context, string) error { return nil }
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:          true,
+		AutoApplyEnabled: true,
+		CheckInterval:    time.Hour,
+		Updater:          updater,
+		ReserveIdle:      func(context.Context) (func(), bool) { return func() {}, true },
+		ReserveDrain:     schedulerDrainReservation,
+		RequestRestart:   func(string) bool { return true },
+		ApplyOptions: ApplyOptions{
+			Preflight:         preflight,
+			RecoveryStatePath: "/var/lib/detent/startup-recovery.json",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+	if _, err := scheduler.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow() error = %v", err)
+	}
+
+	if len(updater.applyOptions) != 1 {
+		t.Fatalf("Apply() options = %d, want 1", len(updater.applyOptions))
+	}
+	got := updater.applyOptions[0]
+	if !got.AssumeYes || got.Preflight == nil || got.RecoveryStatePath != "/var/lib/detent/startup-recovery.json" {
+		t.Fatalf("ApplyOptions = %#v, want preflight and durable recovery state", got)
+	}
+}
+
 func TestSchedulerDefersAutoApplyUntilIdle(t *testing.T) {
 	t.Parallel()
 
@@ -989,13 +1036,14 @@ func seedSchedulerLastCheck(t *testing.T, statePath string, checkedAt time.Time)
 }
 
 type schedulerUpdaterStub struct {
-	mu          sync.Mutex
-	checkStatus Status
-	checkErr    error
-	applyStatus Status
-	applyErr    error
-	checkCalls  int
-	applyCalls  int
+	mu           sync.Mutex
+	checkStatus  Status
+	checkErr     error
+	applyStatus  Status
+	applyErr     error
+	checkCalls   int
+	applyCalls   int
+	applyOptions []ApplyOptions
 }
 
 func (s *schedulerUpdaterStub) Check(context.Context) (Status, error) {
@@ -1005,10 +1053,11 @@ func (s *schedulerUpdaterStub) Check(context.Context) (Status, error) {
 	return s.checkStatus, s.checkErr
 }
 
-func (s *schedulerUpdaterStub) Apply(context.Context, ApplyOptions) (Status, error) {
+func (s *schedulerUpdaterStub) Apply(_ context.Context, opts ApplyOptions) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.applyCalls++
+	s.applyOptions = append(s.applyOptions, opts)
 	return s.applyStatus, s.applyErr
 }
 

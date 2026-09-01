@@ -200,6 +200,7 @@ type BootConfig struct {
 	HardExit         func(int)
 	Runner           orchestrator.Runner
 	ConnectorFactory project.ConnectorFactory
+	StartupRecovery  StartupRecovery
 }
 
 type IsolatedRuntimeInfo struct {
@@ -217,6 +218,13 @@ type IsolatedRuntimeInfo struct {
 }
 
 type BootFunc func(context.Context, BootConfig) error
+
+type StartupRecovery interface {
+	MarkHealthy(context.Context) error
+	HandleFailure(context.Context, error)
+}
+
+type StartupRecoveryFactory func(context.Context, BootConfig) (StartupRecovery, error)
 
 type SignalFunc func(context.Context, Signal) error
 
@@ -255,6 +263,7 @@ type options struct {
 	shutdown          *ShutdownController
 	restart           *RestartRequest
 	service           ServiceFactory
+	startupRecovery   StartupRecoveryFactory
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -330,6 +339,12 @@ func WithServiceFactory(factory ServiceFactory) Option {
 		if factory != nil {
 			opts.service = factory
 		}
+	}
+}
+
+func WithStartupRecovery() Option {
+	return func(opts *options) {
+		opts.startupRecovery = newDefaultStartupRecovery
 	}
 }
 
@@ -430,7 +445,20 @@ detent --format json config path`),
 					slog.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
 				}
 			}
-			return opts.boot(cmd.Context(), boot)
+			var recovery StartupRecovery
+			if opts.startupRecovery != nil && boot.Mode == BootModeRunning {
+				recovery, err = opts.startupRecovery(cmd.Context(), boot)
+				if err != nil {
+					slog.Warn("initialize startup recovery failed", "error", err)
+				} else {
+					boot.StartupRecovery = recovery
+				}
+			}
+			bootErr := opts.boot(cmd.Context(), boot)
+			if bootErr != nil && recovery != nil {
+				recovery.HandleFailure(cmd.Context(), bootErr)
+			}
+			return bootErr
 		},
 	}
 	cmd.SetContext(withCommandOutputOptions(ctx, commandOutputOptions{

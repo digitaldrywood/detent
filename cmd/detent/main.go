@@ -102,6 +102,7 @@ func newRootCommandWithRestart(ctx context.Context, shutdownController *cli.Shut
 		cli.WithVersion(build.Version),
 		cli.WithBuild(build),
 		cli.WithLoggerFunc(setupLoggerFromRuntime),
+		cli.WithStartupRecovery(),
 	}
 	if shutdownController != nil {
 		opts = append(opts, cli.WithShutdownController(shutdownController))
