@@ -218,6 +218,7 @@ func boardCardDetailPath(path string, projectID string, issueIdentity string, sc
 func sheetOpenAttrs(projectID string, issueIdentity string, scope string, boardActions bool) templ.Attributes {
 	return templ.Attributes{
 		"hx-get":                     boardCardSheetPath(projectID, issueIdentity, scope, boardActions),
+		"hx-trigger":                 "click[!event.target.closest('[data-ai-debug-url]')]",
 		"hx-target":                  "#detail-sheet-host",
 		"hx-swap":                    "innerHTML",
 		"hx-sync":                    "#detail-sheet-host:replace",

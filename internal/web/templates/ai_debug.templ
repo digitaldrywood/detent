@@ -1,0 +1,84 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+
+templ aiDebugCopyButton(path string, class string) {
+	<button
+		type="button"
+		class={ class }
+		data-ai-debug-url={ path }
+		title="Copy a self-contained AI diagnostic prompt"
+		aria-label="Copy AI Debug prompt"
+	>
+		@icon.Bug(icon.Props{Class: "size-3.5 shrink-0"})
+		<span>AI Debug</span>
+	</button>
+}
+
+templ aiDebugPrivacyNotice(class string) {
+	<span class={ class } data-ai-debug-privacy>
+		@icon.TriangleAlert(icon.Props{Class: "size-3.5 shrink-0"})
+		<span>Contains private fleet detail. Do not paste into a public or shared context.</span>
+	</span>
+}
+
+templ aiDebugActionPanel(path string) {
+	<section class="flex flex-col gap-2 rounded-card border border-warn/40 bg-warn/5 p-3" aria-label="AI Debug">
+		<div class="flex flex-wrap items-center gap-2">
+			@aiDebugCopyButton(path, "inline-flex min-h-11 items-center gap-2 rounded-card border border-line bg-surface px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:min-h-9")
+			@aiDebugPrivacyNotice("flex min-w-0 items-start gap-1.5 text-2xs leading-5 text-warn")
+		</div>
+	</section>
+}
+
+templ aiDebugScript() {
+	<script>
+		(function () {
+			function copyFallback(value) {
+				var input = document.createElement("textarea");
+				input.value = value;
+				input.setAttribute("readonly", "");
+				input.style.position = "fixed";
+				input.style.opacity = "0";
+				document.body.appendChild(input);
+				input.select();
+				document.execCommand("copy");
+				input.remove();
+			}
+
+			function copyPrompt(value) {
+				if (!navigator.clipboard || !navigator.clipboard.writeText) {
+					copyFallback(value);
+					return Promise.resolve();
+				}
+				return navigator.clipboard.writeText(value).catch(function () {
+					copyFallback(value);
+				});
+			}
+
+			document.addEventListener("click", function (event) {
+				var button = event.target instanceof Element ? event.target.closest("[data-ai-debug-url]") : null;
+				if (!button) return;
+				event.preventDefault();
+				event.stopPropagation();
+				var url = button.getAttribute("data-ai-debug-url") || "";
+				if (!url || button.getAttribute("aria-busy") === "true") return;
+				button.setAttribute("aria-busy", "true");
+				fetch(url, { headers: { "Accept": "text/plain", "HX-Request": "true" } })
+					.then(function (response) {
+						if (!response.ok) throw new Error("AI Debug request failed with status " + response.status);
+						return response.text();
+					})
+					.then(function (prompt) {
+						return copyPrompt(prompt);
+					})
+					.catch(function (error) {
+						console.error(error);
+					})
+					.finally(function () {
+						button.removeAttribute("aria-busy");
+					});
+			});
+		})();
+	</script>
+}

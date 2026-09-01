@@ -35,17 +35,20 @@ test("card density changes rendered information and persists", async ({
   const matchingOriginActorCard = page.locator("article", {
     hasText: "Add screenshot manifest smoke test",
   });
+  const aiDebugAction = runningCard.locator("[data-ai-debug-card-action]");
 
   await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
   await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeHidden();
   await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeVisible();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeHidden();
+  await expect(aiDebugAction).toBeHidden();
 
   await page.locator('[data-density-choice="compact"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
   await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeVisible();
   await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeHidden();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeHidden();
+  await expect(aiDebugAction).toBeHidden();
   await expect(
     reviewCard
       .locator('[data-board-card-content="compact"]')
@@ -57,6 +60,7 @@ test("card density changes rendered information and persists", async ({
   await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeHidden();
   await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeVisible();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeVisible();
+  await expect(aiDebugAction).toBeVisible();
   await expect(runningCard.locator("[data-board-card-labels]")).toContainText("enhancement");
   await expect(runningCard.locator("[data-board-card-effort]")).toContainText("xhigh");
   await expect(runningCard.locator("[data-board-card-activity]")).toContainText(

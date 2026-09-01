@@ -514,6 +514,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/ai-debug", s.aiDebugPrompt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/card/core", s.apiBoardCardCore, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/receipt", s.apiBoardReceipt, apiDashboardReadAuth, apiReadScope)

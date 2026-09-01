@@ -2349,8 +2349,12 @@ func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
 	if card.Project != "detent" {
 		t.Fatalf("card project = %q, want detent fallback", card.Project)
 	}
-	if got, _ := sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)["hx-get"].(string); !strings.Contains(got, "project=detent") {
+	attrs := sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)
+	if got, _ := attrs["hx-get"].(string); !strings.Contains(got, "project=detent") {
 		t.Fatalf("card sheet link should carry the fallback project, got %q", got)
+	}
+	if got, _ := attrs["hx-trigger"].(string); got != "click[!event.target.closest('[data-ai-debug-url]')]" {
+		t.Fatalf("card sheet trigger = %q, want AI Debug action excluded", got)
 	}
 
 	if _, ok := FindBoardCard(data, "detent", "42"); !ok {
