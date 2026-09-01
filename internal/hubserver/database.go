@@ -31,10 +31,16 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := cfg.validateDatabaseFilesystem(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("validate hub database filesystem: %w", err)
+	}
 
 	lock, err := instancelock.Acquire(path + ".lock")
 	if err != nil {
 		return nil, fmt.Errorf("acquire hub database ownership: %w", err)
+	}
+	if err := createPrivateDatabaseFile(path); err != nil {
+		return nil, errors.Join(err, lock.Close())
 	}
 
 	db, err := sql.Open("sqlite", sqliteDSN(path, cfg.BusyTimeout))
@@ -98,6 +104,20 @@ func canonicalDatabasePath(rawPath string) (string, error) {
 		return "", fmt.Errorf("resolve hub database directory: %w", err)
 	}
 	return filepath.Join(resolvedParent, filepath.Base(absolutePath)), nil
+}
+
+func createPrivateDatabaseFile(path string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create private hub database: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close new hub database: %w", err)
+	}
+	return nil
 }
 
 func sqliteDSN(path string, busyTimeout time.Duration) string {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,6 +117,58 @@ func TestOpenRejectsInvalidDatabasePaths(t *testing.T) {
 				t.Fatal("Open() error = nil, want validation error")
 			}
 		})
+	}
+}
+
+func TestOpenRejectsNetworkFilesystemBeforeTakingOwnership(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	path := filepath.Join(directory, "hub.db")
+	service, err := Open(t.Context(), Config{
+		DatabasePath: path,
+		Logger:       discardLogger(),
+		validateDatabaseFilesystem: func(gotDirectory string) error {
+			if gotDirectory != directory {
+				t.Fatalf("filesystem directory = %q, want %q", gotDirectory, directory)
+			}
+			return ErrNetworkFilesystem
+		},
+	})
+	if err == nil {
+		service.Close()
+		t.Fatal("Open() error = nil, want network filesystem error")
+	}
+	if !errors.Is(err, ErrNetworkFilesystem) {
+		t.Fatalf("Open() error = %v, want ErrNetworkFilesystem", err)
+	}
+	for _, candidate := range []string{path, path + ".lock"} {
+		if _, statErr := os.Stat(candidate); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("os.Stat(%q) error = %v, want file not to exist", candidate, statErr)
+		}
+	}
+}
+
+func TestOpenCreatesPrivateDatabaseFiles(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose POSIX file modes")
+	}
+
+	path := filepath.Join(t.TempDir(), "hub.db")
+	openTestService(t, Config{DatabasePath: path})
+
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if errors.Is(err, os.ErrNotExist) && candidate != path {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("os.Stat(%q) error = %v", candidate, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s permissions = %o, want 600", filepath.Base(candidate), got)
+		}
 	}
 }
 

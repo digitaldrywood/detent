@@ -15,6 +15,7 @@ const (
 var (
 	ErrBackupSource      = errors.New("hub backup destination matches the source database")
 	ErrDatabaseIdentity  = errors.New("database is not a Detent Hub database")
+	ErrNetworkFilesystem = errors.New("hub database requires a local filesystem")
 	ErrNotReady          = errors.New("hub service is not ready")
 	ErrUnsupportedSchema = errors.New("hub database schema is newer than this Detent version")
 )
@@ -26,6 +27,8 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	Logger          *slog.Logger
 	Version         string
+
+	validateDatabaseFilesystem func(string) error
 }
 
 func (c Config) normalized() Config {
@@ -40,6 +43,9 @@ func (c Config) normalized() Config {
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
+	}
+	if c.validateDatabaseFilesystem == nil {
+		c.validateDatabaseFilesystem = validateLocalDatabaseFilesystem
 	}
 	return c
 }
