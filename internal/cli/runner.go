@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -283,9 +284,22 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions) (ru
 	if command == "" {
 		return nil, errors.New("codex command is required")
 	}
+	serviceCommand, err := prepareCodexCommandForRuntime(command)
+	if err != nil {
+		return nil, fmt.Errorf("prepare Codex service profile: %w", err)
+	}
+	command = serviceCommand.Command
+	if len(serviceCommand.OmittedSkills) > 0 {
+		slog.Warn(
+			"launchd Codex profile omitted skills in macOS privacy-protected locations",
+			"skills", strings.Join(serviceCommand.OmittedSkills, ","),
+		)
+	}
 
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		return buildCodexCommandFromConfig(ctx, command, cfg.Shell)
+		cmd := buildCodexCommandFromConfig(ctx, command, cfg.Shell)
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: serviceCommand.Environment})
+		return cmd
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create codex transport factory: %w", err)

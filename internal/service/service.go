@@ -30,6 +30,8 @@ const (
 	ManagerLaunchd ManagerName = "launchd"
 )
 
+const ManagerEnvironment = "DETENT_SERVICE_MANAGER"
+
 type State string
 
 const (

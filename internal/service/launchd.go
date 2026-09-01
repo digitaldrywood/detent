@@ -119,12 +119,20 @@ func launchdPlist(cfg Config) string {
 	for _, argument := range cfg.Arguments {
 		lines = append(lines, `    <string>`+escape(argument)+`</string>`)
 	}
+	lines = append(lines, `  </array>`)
+	if workingDirectory := strings.TrimSpace(cfg.HomeDir); workingDirectory != "" {
+		lines = append(lines,
+			`  <key>WorkingDirectory</key>`,
+			`  <string>`+escape(workingDirectory)+`</string>`,
+		)
+	}
 	lines = append(lines,
-		`  </array>`,
 		`  <key>EnvironmentVariables</key>`,
 		`  <dict>`,
 		`    <key>PATH</key>`,
 		`    <string>`+escape(cfg.Path)+`</string>`,
+		`    <key>`+ManagerEnvironment+`</key>`,
+		`    <string>`+string(ManagerLaunchd)+`</string>`,
 		`  </dict>`,
 		`  <key>RunAtLoad</key>`,
 		`  <true/>`,
