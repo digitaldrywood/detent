@@ -124,13 +124,17 @@ func TestOpenRejectsNetworkFilesystemBeforeTakingOwnership(t *testing.T) {
 	t.Parallel()
 
 	directory := t.TempDir()
+	resolvedDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatalf("resolve temporary directory: %v", err)
+	}
 	path := filepath.Join(directory, "hub.db")
 	service, err := Open(t.Context(), Config{
 		DatabasePath: path,
 		Logger:       discardLogger(),
 		validateDatabaseFilesystem: func(gotDirectory string) error {
-			if gotDirectory != directory {
-				t.Fatalf("filesystem directory = %q, want %q", gotDirectory, directory)
+			if gotDirectory != resolvedDirectory {
+				t.Fatalf("filesystem directory = %q, want %q", gotDirectory, resolvedDirectory)
 			}
 			return ErrNetworkFilesystem
 		},
