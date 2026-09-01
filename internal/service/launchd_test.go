@@ -16,6 +16,7 @@ func TestLaunchdPlistIncludesRuntimeSettings(t *testing.T) {
 	plist := launchdPlist(Config{
 		BinaryPath: "/Applications/Detent & Tools/detent",
 		Arguments:  []string{"--config", "/Users/name/Library/Application Support/Detent/global.yaml", "--headless"},
+		HomeDir:    "/Users/name & operator",
 		Path:       "/Users/name/bin:/usr/bin",
 	})
 	for _, want := range []string{
@@ -25,6 +26,10 @@ func TestLaunchdPlistIncludesRuntimeSettings(t *testing.T) {
 		"<key>RunAtLoad</key>",
 		"<key>SuccessfulExit</key>",
 		"<string>/Users/name/bin:/usr/bin</string>",
+		"<key>WorkingDirectory</key>",
+		"<string>/Users/name &amp; operator</string>",
+		"<key>DETENT_SERVICE_MANAGER</key>",
+		"<string>launchd</string>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("plist missing %q:\n%s", want, plist)

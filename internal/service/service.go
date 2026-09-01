@@ -30,6 +30,10 @@ const (
 	ManagerLaunchd ManagerName = "launchd"
 )
 
+const ManagerEnvironment = "DETENT_SERVICE_MANAGER"
+
+const launchdServiceEnvironment = "XPC_SERVICE_NAME"
+
 type State string
 
 const (
@@ -139,6 +143,18 @@ type Status struct {
 
 func (s Status) Running() bool {
 	return s.State == StateRunning
+}
+
+func ManagerFromProcessEnvironment(goos string, lookupEnv func(string) (string, bool)) ManagerName {
+	if manager, ok := lookupEnv(ManagerEnvironment); ok && strings.TrimSpace(manager) != "" {
+		return ManagerName(strings.TrimSpace(manager))
+	}
+	if goos == "darwin" {
+		if serviceName, ok := lookupEnv(launchdServiceEnvironment); ok && strings.TrimSpace(serviceName) == launchdLabel {
+			return ManagerLaunchd
+		}
+	}
+	return ""
 }
 
 type Controller struct {
