@@ -15,25 +15,45 @@ templ aiDebugCopyButton(path string, class string) {
 	</button>
 }
 
-templ aiDebugPrivacyNotice(class string) {
-	<span class={ class } data-ai-debug-privacy>
-		@icon.TriangleAlert(icon.Props{Class: "size-3.5 shrink-0"})
-		<span>Contains private fleet detail. Do not paste into a public or shared context.</span>
-	</span>
-}
-
 templ aiDebugActionPanel(path string) {
 	<section class="flex flex-col gap-2 rounded-card border border-warn/40 bg-warn/5 p-3" aria-label="AI Debug">
 		<div class="flex flex-wrap items-center gap-2">
 			@aiDebugCopyButton(path, "inline-flex min-h-11 items-center gap-2 rounded-card border border-line bg-surface px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:min-h-9")
-			@aiDebugPrivacyNotice("flex min-w-0 items-start gap-1.5 text-2xs leading-5 text-warn")
 		</div>
 	</section>
 }
 
 templ aiDebugScript() {
+	<dialog
+		id="ai-debug-privacy-dialog"
+		class="m-auto w-[calc(100vw-2.5rem)] max-w-md rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50"
+		role="alertdialog"
+		aria-labelledby="ai-debug-privacy-title"
+		aria-describedby="ai-debug-privacy-description"
+		data-ai-debug-dialog
+	>
+		<form method="dialog" class="flex flex-col gap-4 p-5">
+			<div class="flex flex-col gap-2">
+				<h2 id="ai-debug-privacy-title" class="text-base font-semibold">Copy private fleet details?</h2>
+				<p id="ai-debug-privacy-description" class="text-sm leading-relaxed text-sec">Contains private fleet detail. Do not paste into a public or shared context.</p>
+			</div>
+			<label class="flex cursor-pointer items-center gap-2 text-sm text-text">
+				<input type="checkbox" class="size-4 accent-accent" data-ai-debug-dismiss-warning/>
+				<span>Don't warn me again</span>
+			</label>
+			<div class="flex flex-row-reverse flex-wrap gap-2">
+				<button type="button" class="min-h-10 rounded-card bg-accent px-4 text-sm font-medium text-page hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-ai-debug-confirm>Copy prompt</button>
+				<button type="submit" value="cancel" class="min-h-10 rounded-card border border-line bg-surface px-4 text-sm font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-ai-debug-cancel autofocus>Cancel</button>
+			</div>
+		</form>
+	</dialog>
 	<script>
 		(function () {
+			var privacyStorageKey = "detent-ai-debug-privacy-warning-dismissed";
+			var dialog = document.getElementById("ai-debug-privacy-dialog");
+			var activeButton = null;
+			var pendingURL = "";
+
 			function copyFallback(value) {
 				var input = document.createElement("textarea");
 				input.value = value;
@@ -56,13 +76,23 @@ templ aiDebugScript() {
 				});
 			}
 
-			document.addEventListener("click", function (event) {
-				var button = event.target instanceof Element ? event.target.closest("[data-ai-debug-url]") : null;
-				if (!button) return;
-				event.preventDefault();
-				event.stopPropagation();
-				var url = button.getAttribute("data-ai-debug-url") || "";
-				if (!url || button.getAttribute("aria-busy") === "true") return;
+			function privacyWarningDismissed() {
+				try {
+					return !!(window.localStorage && window.localStorage.getItem(privacyStorageKey) === "true");
+				} catch (_) {
+					return false;
+				}
+			}
+
+			function dismissPrivacyWarning() {
+				try {
+					window.localStorage && window.localStorage.setItem(privacyStorageKey, "true");
+				} catch (_) {
+					return;
+				}
+			}
+
+			function fetchAndCopy(button, url) {
 				button.setAttribute("aria-busy", "true");
 				fetch(url, { headers: { "Accept": "text/plain", "HX-Request": "true" } })
 					.then(function (response) {
@@ -78,6 +108,48 @@ templ aiDebugScript() {
 					.finally(function () {
 						button.removeAttribute("aria-busy");
 					});
+			}
+
+			if (dialog) {
+				dialog.addEventListener("close", function () {
+					var button = activeButton;
+					activeButton = null;
+					pendingURL = "";
+					var checkbox = dialog.querySelector("[data-ai-debug-dismiss-warning]");
+					if (checkbox) checkbox.checked = false;
+					if (button && document.documentElement.contains(button)) button.focus();
+				});
+			}
+
+			document.addEventListener("click", function (event) {
+				var confirm = event.target instanceof Element ? event.target.closest("[data-ai-debug-confirm]") : null;
+				if (confirm && dialog && dialog.open && activeButton && pendingURL) {
+					event.preventDefault();
+					var button = activeButton;
+					var url = pendingURL;
+					var checkbox = dialog.querySelector("[data-ai-debug-dismiss-warning]");
+					if (checkbox && checkbox.checked) dismissPrivacyWarning();
+					dialog.close("confirm");
+					fetchAndCopy(button, url);
+					return;
+				}
+
+				var button = event.target instanceof Element ? event.target.closest("[data-ai-debug-url]") : null;
+				if (!button) return;
+				event.preventDefault();
+				event.stopPropagation();
+				var url = button.getAttribute("data-ai-debug-url") || "";
+				if (!url || button.getAttribute("aria-busy") === "true") return;
+				if (privacyWarningDismissed()) {
+					fetchAndCopy(button, url);
+					return;
+				}
+				if (!dialog) return;
+				activeButton = button;
+				pendingURL = url;
+				var checkbox = dialog.querySelector("[data-ai-debug-dismiss-warning]");
+				if (checkbox) checkbox.checked = false;
+				if (!dialog.open) dialog.showModal();
 			});
 		})();
 	</script>
