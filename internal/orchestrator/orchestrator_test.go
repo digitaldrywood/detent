@@ -2459,7 +2459,7 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	}
 	waitForFetchCalls(t, tracker, 2)
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
+	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
 		snapshot := state.Snapshot(time.Now())
 		return snapshot.Refresh.Manual != nil &&
 			snapshot.Refresh.Manual.ID == refresh.RequestID &&
