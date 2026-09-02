@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -13,7 +14,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
-const admissionResolutionNonDeliverable = "non_deliverable_declined"
+const (
+	admissionResolutionNonDeliverable = "non_deliverable_declined"
+	admissionResolutionCriteriaNotMet = "criteria_not_met_declined"
+	admissionDeclineCriteriaNotMet    = "criteria_not_met"
+)
 
 func (s *sqliteStore) CreateAdmissionDecline(ctx context.Context, decline admissionmodel.Decline) (bool, error) {
 	if err := validateAdmissionDecline(decline); err != nil {
@@ -33,13 +38,17 @@ func (s *sqliteStore) CreateAdmissionDecline(ctx context.Context, decline admiss
 			_ = tx.Rollback()
 		}
 	}()
+	resolutionReason := admissionResolutionNonDeliverable
+	if strings.TrimSpace(decline.Reason) == admissionDeclineCriteriaNotMet {
+		resolutionReason = admissionResolutionCriteriaNotMet
+	}
 	if _, err = tx.ExecContext(ctx, `
 UPDATE backlog_admission_proposals
 SET status = 'superseded', resolved_at = ?, resolution_reason = ?,
     decision_seconds = CAST(MAX(0, (julianday(?) - julianday(created_at)) * 86400) AS INTEGER)
 WHERE project_id = ? AND issue_id = ? AND status = 'open'`,
 		createdAt,
-		admissionResolutionNonDeliverable,
+		resolutionReason,
 		createdAt,
 		strings.TrimSpace(decline.ProjectID),
 		strings.TrimSpace(decline.IssueID),
@@ -49,8 +58,8 @@ WHERE project_id = ? AND issue_id = ? AND status = 'open'`,
 	result, err := tx.ExecContext(ctx, `
 INSERT INTO backlog_admission_declines (
   id, project_id, issue_id, issue_identifier, issue_url, fingerprint,
-  reason, detail, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  reason, detail, confidence, failed_dimension, failed_criterion, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id, issue_id, fingerprint) DO NOTHING`,
 		strings.TrimSpace(decline.ID),
 		strings.TrimSpace(decline.ProjectID),
@@ -60,6 +69,9 @@ ON CONFLICT(project_id, issue_id, fingerprint) DO NOTHING`,
 		strings.TrimSpace(decline.Fingerprint),
 		strings.TrimSpace(decline.Reason),
 		strings.TrimSpace(decline.Detail),
+		decline.Confidence,
+		strings.TrimSpace(decline.FailedDimension),
+		strings.TrimSpace(decline.FailedCriterion),
 		createdAt,
 	)
 	if err != nil {
@@ -84,7 +96,8 @@ func (s *sqliteStore) AdmissionDecline(
 ) (admissionmodel.Decline, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, project_id, issue_id, issue_identifier, issue_url, fingerprint,
-       reason, detail, created_at, COALESCE(commented_at, '')
+       reason, detail, confidence, failed_dimension, failed_criterion,
+       created_at, COALESCE(commented_at, '')
 FROM backlog_admission_declines
 WHERE project_id = ? AND issue_id = ? AND fingerprint = ?`,
 		strings.TrimSpace(projectID),
@@ -893,16 +906,17 @@ func (s *sqliteStore) RecordAdmissionRun(ctx context.Context, record admissionmo
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO backlog_admission_runs (
-  project_id, scheduled_for, started_at, completed_at, outcome, deferred_reason,
+  project_id, scheduled_for, started_at, completed_at, outcome, deferred_reason, proposal_reason,
   candidates_found_count, candidates_count, proposed_count, skipped_json,
   truncated_json, issues_json, error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(record.ProjectID),
 		scheduledFor,
 		startedAt,
 		completedAt,
 		strings.TrimSpace(record.Outcome),
 		nullString(record.DeferredReason),
+		nullString(record.ProposalReason),
 		nonNegative(int64(record.CandidatesFound)),
 		nonNegative(int64(record.Candidates)),
 		nonNegative(int64(record.Proposed)),
@@ -920,7 +934,7 @@ INSERT INTO backlog_admission_runs (
 func (s *sqliteStore) LatestAdmissionRun(ctx context.Context, projectID string) (admissionmodel.RunRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT project_id, scheduled_for, started_at, completed_at, outcome,
-       COALESCE(deferred_reason, ''), candidates_found_count, candidates_count,
+       COALESCE(deferred_reason, ''), COALESCE(proposal_reason, ''), candidates_found_count, candidates_count,
        proposed_count, skipped_json, truncated_json, issues_json, COALESCE(error, '')
 FROM backlog_admission_runs
 WHERE project_id = ?
@@ -942,7 +956,7 @@ func (s *sqliteStore) RecentAdmissionRuns(ctx context.Context, projectID string,
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT project_id, scheduled_for, started_at, completed_at, outcome,
-       COALESCE(deferred_reason, ''), candidates_found_count, candidates_count,
+       COALESCE(deferred_reason, ''), COALESCE(proposal_reason, ''), candidates_found_count, candidates_count,
        proposed_count, skipped_json, truncated_json, issues_json, COALESCE(error, '')
 FROM backlog_admission_runs
 WHERE project_id = ?
@@ -1008,6 +1022,14 @@ func validateAdmissionDecline(decline admissionmodel.Decline) error {
 		return errors.New("backlog admission decline reason is required")
 	case strings.TrimSpace(decline.Detail) == "":
 		return errors.New("backlog admission decline detail is required")
+	case decline.Confidence != nil && (math.IsNaN(*decline.Confidence) || math.IsInf(*decline.Confidence, 0) || *decline.Confidence < 0 || *decline.Confidence > 1):
+		return errors.New("backlog admission decline confidence must be between zero and one")
+	case decline.Reason == admissionDeclineCriteriaNotMet && decline.Confidence == nil:
+		return errors.New("backlog admission criteria decline confidence is required")
+	case decline.Reason == admissionDeclineCriteriaNotMet && strings.TrimSpace(decline.FailedDimension) == "":
+		return errors.New("backlog admission criteria decline failed dimension is required")
+	case decline.Reason == admissionDeclineCriteriaNotMet && strings.TrimSpace(decline.FailedCriterion) == "":
+		return errors.New("backlog admission criteria decline failed criterion is required")
 	case decline.CreatedAt.IsZero():
 		return errors.New("backlog admission decline created at is required")
 	}
@@ -1052,6 +1074,7 @@ type admissionScan func(...any) error
 
 func scanAdmissionDecline(scan admissionScan) (admissionmodel.Decline, error) {
 	var decline admissionmodel.Decline
+	var confidence sql.NullFloat64
 	var createdAt string
 	var commentedAt string
 	if err := scan(
@@ -1063,6 +1086,9 @@ func scanAdmissionDecline(scan admissionScan) (admissionmodel.Decline, error) {
 		&decline.Fingerprint,
 		&decline.Reason,
 		&decline.Detail,
+		&confidence,
+		&decline.FailedDimension,
+		&decline.FailedCriterion,
 		&createdAt,
 		&commentedAt,
 	); err != nil {
@@ -1070,6 +1096,9 @@ func scanAdmissionDecline(scan admissionScan) (admissionmodel.Decline, error) {
 			return admissionmodel.Decline{}, ErrNotFound
 		}
 		return admissionmodel.Decline{}, err
+	}
+	if confidence.Valid {
+		decline.Confidence = &confidence.Float64
 	}
 	var err error
 	decline.CreatedAt, err = parseTimestamp("created_at", createdAt)
@@ -1161,6 +1190,7 @@ func scanAdmissionRun(scan admissionScan) (admissionmodel.RunRecord, error) {
 		&completedAt,
 		&record.Outcome,
 		&record.DeferredReason,
+		&record.ProposalReason,
 		&record.CandidatesFound,
 		&record.Candidates,
 		&record.Proposed,

@@ -2249,6 +2249,9 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		"Issue effort selection",
 		"recommended_effort",
 		"standard feature work",
+		"exactly one terminal evaluation for every supplied candidate",
+		`"evaluations"`,
+		`"disposition":"proposed"`,
 		"exactly one finding for every configured dimension",
 		"Confidence is telemetry only and cannot override a failed dimension",
 	} {

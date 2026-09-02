@@ -52,16 +52,19 @@ type AuthSession struct {
 }
 
 type BacklogAdmissionDecline struct {
-	ID              string         `json:"id"`
-	ProjectID       string         `json:"project_id"`
-	IssueID         string         `json:"issue_id"`
-	IssueIdentifier string         `json:"issue_identifier"`
-	IssueURL        string         `json:"issue_url"`
-	Fingerprint     string         `json:"fingerprint"`
-	Reason          string         `json:"reason"`
-	Detail          string         `json:"detail"`
-	CreatedAt       string         `json:"created_at"`
-	CommentedAt     sql.NullString `json:"commented_at"`
+	ID              string          `json:"id"`
+	ProjectID       string          `json:"project_id"`
+	IssueID         string          `json:"issue_id"`
+	IssueIdentifier string          `json:"issue_identifier"`
+	IssueURL        string          `json:"issue_url"`
+	Fingerprint     string          `json:"fingerprint"`
+	Reason          string          `json:"reason"`
+	Detail          string          `json:"detail"`
+	CreatedAt       string          `json:"created_at"`
+	CommentedAt     sql.NullString  `json:"commented_at"`
+	Confidence      sql.NullFloat64 `json:"confidence"`
+	FailedDimension string          `json:"failed_dimension"`
+	FailedCriterion string          `json:"failed_criterion"`
 }
 
 type BacklogAdmissionDownstreamOutcome struct {
@@ -117,6 +120,7 @@ type BacklogAdmissionRun struct {
 	TruncatedJson        string         `json:"truncated_json"`
 	IssuesJson           string         `json:"issues_json"`
 	Error                sql.NullString `json:"error"`
+	ProposalReason       sql.NullString `json:"proposal_reason"`
 }
 
 type BudgetOverride struct {
