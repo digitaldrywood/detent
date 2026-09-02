@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -5424,6 +5425,261 @@ func TestRunnerAuditRetainsWorkerScratchUntilLaterProcessReapSucceeds(t *testing
 	}
 	if _, err := os.Stat(backend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("audit workspace stat error after later reap = %v, want not exist", err)
+	}
+}
+
+func TestCleanupSessionWorkerArtifactsRetriesENOTEMPTY(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		failures  int
+		failure   error
+		wantCalls int
+		wantWaits []time.Duration
+		wantErr   bool
+	}{
+		{name: "first attempt succeeds", wantCalls: 1},
+		{
+			name:      "ENOTEMPTY self heals",
+			failures:  2,
+			failure:   &os.PathError{Op: "unlinkat", Path: "node-compile-cache", Err: syscall.ENOTEMPTY},
+			wantCalls: 3,
+			wantWaits: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
+		},
+		{
+			name:      "ENOTEMPTY exhausts bound",
+			failures:  4,
+			failure:   &os.PathError{Op: "unlinkat", Path: "node-compile-cache", Err: syscall.ENOTEMPTY},
+			wantCalls: 4,
+			wantWaits: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond},
+			wantErr:   true,
+		},
+		{
+			name:      "permission failure is not retried",
+			failures:  1,
+			failure:   &os.PathError{Op: "unlinkat", Path: "node-compile-cache", Err: syscall.EPERM},
+			wantCalls: 1,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls := 0
+			var waits []time.Duration
+			runner := &Runner{
+				cleanupWorkerArtifacts: func(root string, path string) error {
+					calls++
+					if root != "/workspace" || path != "/workspace/.detent/tmp" {
+						t.Fatalf("cleanup paths = %q, %q", root, path)
+					}
+					if calls <= tt.failures {
+						return tt.failure
+					}
+					return nil
+				},
+				waitWorkerArtifactCleanup: func(_ context.Context, delay time.Duration) error {
+					waits = append(waits, delay)
+					return nil
+				},
+			}
+
+			attempts, err := runner.cleanupSessionWorkerArtifacts(t.Context(), "/workspace", "/workspace/.detent/tmp")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("cleanupSessionWorkerArtifacts() error = %v, want error %v", err, tt.wantErr)
+			}
+			if attempts != tt.wantCalls || calls != tt.wantCalls {
+				t.Fatalf("cleanup attempts = %d, calls = %d, want %d", attempts, calls, tt.wantCalls)
+			}
+			if !reflect.DeepEqual(waits, tt.wantWaits) {
+				t.Fatalf("cleanup waits = %v, want %v", waits, tt.wantWaits)
+			}
+		})
+	}
+}
+
+func TestReapSessionWorkerProcessArtifactCleanupFailureIsWarning(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 9, 2, 14, 30, 0, 0, time.UTC)
+	const sessionID = int64(2082)
+	cleanupPath := filepath.Join("workspace", ".detent", "tmp")
+	sessionStore := &scratchReapSessionStore{
+		fakeSessionStore: &fakeSessionStore{},
+		process: store.WorkerProcess{
+			SessionID: sessionID,
+			WorkerProcessIdentity: store.WorkerProcessIdentity{
+				PID:       2082,
+				GroupID:   2082,
+				StartedAt: startedAt,
+			},
+			CleanupRoot: "workspace",
+			CleanupPath: cleanupPath,
+		},
+	}
+	var logs bytes.Buffer
+	runner := &Runner{
+		now:             time.Now,
+		logger:          slog.New(slog.NewTextHandler(&logs, nil)),
+		store:           sessionStore,
+		workerReapGrace: time.Second,
+		reapWorkerProcess: func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+			if identity.PID != 2082 || identity.GroupID != 2082 || !identity.StartedAt.Equal(startedAt) {
+				t.Fatalf("worker identity = %#v", identity)
+			}
+			return procgroup.TerminationOutcomeTerminated, nil
+		},
+		cleanupWorkerArtifacts: func(root string, path string) error {
+			if root != "workspace" || path != cleanupPath {
+				t.Fatalf("cleanup paths = %q, %q", root, path)
+			}
+			return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.ENOTEMPTY}
+		},
+		waitWorkerArtifactCleanup: func(context.Context, time.Duration) error { return nil },
+	}
+
+	issue := connector.Issue{
+		ID:         "issue-2082",
+		Identifier: "digitaldrywood/detent#2082",
+	}
+	if err := runner.reapSessionWorkerProcess(t.Context(), sessionID, issue, "turn_completed"); err != nil {
+		t.Fatalf("reapSessionWorkerProcess() error = %v", err)
+	}
+	if len(sessionStore.reaps) != 1 {
+		t.Fatalf("recorded reaps = %v, want one", sessionStore.reaps)
+	}
+	for _, want := range []string{
+		"level=INFO",
+		"event=worker_process_reap_decision",
+		"level=WARN",
+		"event=worker_artifact_cleanup_failed",
+		"detent_session_id=2082",
+		"path=" + cleanupPath,
+		"attempts=4",
+		"directory not empty",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
+func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		request func() RunRequest
+	}{
+		{
+			name: "implementation worker",
+			request: func() RunRequest {
+				return RunRequest{
+					Issue: connector.Issue{
+						ID:         "issue-2082",
+						Identifier: "digitaldrywood/detent#2082",
+						Title:      "Preserve completed worker outcome",
+						State:      "In Progress",
+					},
+				}
+			},
+		},
+		{
+			name: "scheduled backlog admission",
+			request: func() RunRequest {
+				return RunRequest{
+					Issue: connector.Issue{ID: "admission-detent", Identifier: "detent/admission", State: "Admission"},
+					Mode:  RunModeRoutine,
+					Admission: &AdmissionRequest{
+						TargetState:     "Todo",
+						CriteriaSection: "Admission criteria",
+						CriteriaText:    "- **Evidence** — Require reproducible evidence.",
+						Dimensions: []AdmissionDimension{{
+							Name: "Evidence",
+							Text: "Require reproducible evidence.",
+						}},
+						EffortSection:  "Issue effort selection",
+						EffortText:     "- `high` — standard feature work.",
+						AllowedEfforts: []string{"high"},
+						Candidates: []AdmissionCandidate{{
+							ID:          "issue-candidate",
+							Identifier:  "digitaldrywood/detent#2083",
+							Title:       "Candidate",
+							Description: "Ready for evaluation.",
+						}},
+					},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspacePath := t.TempDir()
+			startedAt := time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)
+			identity := procgroup.Identity{PID: 2082, GroupID: 2082, StartedAt: startedAt}
+			const sessionID = int64(2082)
+			sessionStore := &scratchReapSessionStore{
+				fakeSessionStore: &fakeSessionStore{sessionID: sessionID},
+				process: store.WorkerProcess{
+					SessionID: sessionID,
+					WorkerProcessIdentity: store.WorkerProcessIdentity{
+						PID:       identity.PID,
+						GroupID:   identity.GroupID,
+						StartedAt: identity.StartedAt,
+					},
+				},
+			}
+			backend := &fakeCodexClient{
+				updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: identity}},
+				result:  AgentTurnResult{ThreadID: "thread-2082", TurnID: "turn-1", SessionID: "thread-2082-turn-1"},
+			}
+			var logs bytes.Buffer
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{Config: config.Config{}},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: workspacePath, Key: "issue-2082", Branch: "detent/issue-2082"},
+				},
+				AgentBackend: backend,
+				Store:        sessionStore,
+				Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+				ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+					if got != identity {
+						t.Fatalf("worker identity = %#v, want %#v", got, identity)
+					}
+					return procgroup.TerminationOutcomeTerminated, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+			runner.cleanupWorkerArtifacts = func(root string, path string) error {
+				if root == "" || !strings.HasSuffix(path, filepath.Join(".detent", "tmp")) {
+					t.Fatalf("cleanup paths = %q, %q", root, path)
+				}
+				return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.ENOTEMPTY}
+			}
+			runner.waitWorkerArtifactCleanup = func(context.Context, time.Duration) error { return nil }
+
+			result, err := runner.Run(t.Context(), tt.request())
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if result.FinalState != FinalStateCompleted || sessionStore.finished.FinalState != FinalStateCompleted {
+				t.Fatalf("final states = result %q, session %q, want completed", result.FinalState, sessionStore.finished.FinalState)
+			}
+			if len(sessionStore.reaps) != 1 {
+				t.Fatalf("recorded reaps = %v, want one", sessionStore.reaps)
+			}
+			if got := logs.String(); !strings.Contains(got, "event=worker_artifact_cleanup_failed") || !strings.Contains(got, "directory not empty") {
+				t.Fatalf("logs missing artifact cleanup warning:\n%s", got)
+			}
+		})
 	}
 }
 
