@@ -132,33 +132,35 @@ type Dependencies struct {
 }
 
 type Runner struct {
-	mu                  sync.RWMutex
-	projectID           string
-	workflow            config.Workflow
-	workspace           workspace.Backend
-	agentRuntime        agentRuntime
-	agentBackendFactory AgentBackendFactory
-	store               SessionStore
-	pricing             budget.PricingTable
-	budgetChecker       BudgetChecker
-	dispatchEstimator   DispatchEstimator
-	budgetGuardBuilder  BudgetGuardBuilder
-	enforcedBudget      config.Budget
-	enforcedBudgetKnown bool
-	now                 func() time.Time
-	logger              *slog.Logger
-	securityAuditRoot   string
-	afterRunTimeout     time.Duration
-	maxAgentRSSBytes    uint64
-	rssPollInterval     time.Duration
-	processRSS          func(context.Context, procgroup.Identity) (uint64, error)
-	workerReapGrace     time.Duration
-	reapWorkerProcess   workerProcessReapFunc
-	sessionLimit        durationLimitContextFactory
-	turnLimit           durationLimitContextFactory
-	progressTicker      sessionProgressTickerFactory
-	admissionLeaks      admissionWorkspaceLeakTracker
-	lookupEnv           func(string) string
+	mu                        sync.RWMutex
+	projectID                 string
+	workflow                  config.Workflow
+	workspace                 workspace.Backend
+	agentRuntime              agentRuntime
+	agentBackendFactory       AgentBackendFactory
+	store                     SessionStore
+	pricing                   budget.PricingTable
+	budgetChecker             BudgetChecker
+	dispatchEstimator         DispatchEstimator
+	budgetGuardBuilder        BudgetGuardBuilder
+	enforcedBudget            config.Budget
+	enforcedBudgetKnown       bool
+	now                       func() time.Time
+	logger                    *slog.Logger
+	securityAuditRoot         string
+	afterRunTimeout           time.Duration
+	maxAgentRSSBytes          uint64
+	rssPollInterval           time.Duration
+	processRSS                func(context.Context, procgroup.Identity) (uint64, error)
+	workerReapGrace           time.Duration
+	reapWorkerProcess         workerProcessReapFunc
+	cleanupWorkerArtifacts    func(string, string) error
+	waitWorkerArtifactCleanup func(context.Context, time.Duration) error
+	sessionLimit              durationLimitContextFactory
+	turnLimit                 durationLimitContextFactory
+	progressTicker            sessionProgressTickerFactory
+	admissionLeaks            admissionWorkspaceLeakTracker
+	lookupEnv                 func(string) string
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -228,31 +230,33 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	enforcedBudget, enforcedBudgetKnown := enforcedBudgetConfig(deps.Workflow.Config.Budget, budgetChecker)
 
 	return &Runner{
-		projectID:           projectID,
-		workflow:            deps.Workflow,
-		workspace:           deps.Workspace,
-		agentRuntime:        runtime,
-		agentBackendFactory: deps.AgentBackendFactory,
-		store:               deps.Store,
-		pricing:             deps.Pricing,
-		budgetChecker:       budgetChecker,
-		dispatchEstimator:   dispatchEstimator,
-		budgetGuardBuilder:  deps.BudgetGuardBuilder,
-		enforcedBudget:      enforcedBudget,
-		enforcedBudgetKnown: enforcedBudgetKnown,
-		now:                 deps.Now,
-		logger:              deps.Logger,
-		securityAuditRoot:   filepath.Clean(deps.SecurityAuditRoot),
-		afterRunTimeout:     deps.AfterRunTimeout,
-		maxAgentRSSBytes:    deps.MaxAgentRSSBytes,
-		rssPollInterval:     deps.RSSPollInterval,
-		processRSS:          deps.ProcessRSS,
-		workerReapGrace:     deps.WorkerReapGrace,
-		reapWorkerProcess:   deps.ReapWorkerProcess,
-		sessionLimit:        deps.sessionLimit,
-		turnLimit:           deps.turnLimit,
-		progressTicker:      deps.progressTicker,
-		lookupEnv:           deps.lookupEnv,
+		projectID:                 projectID,
+		workflow:                  deps.Workflow,
+		workspace:                 deps.Workspace,
+		agentRuntime:              runtime,
+		agentBackendFactory:       deps.AgentBackendFactory,
+		store:                     deps.Store,
+		pricing:                   deps.Pricing,
+		budgetChecker:             budgetChecker,
+		dispatchEstimator:         dispatchEstimator,
+		budgetGuardBuilder:        deps.BudgetGuardBuilder,
+		enforcedBudget:            enforcedBudget,
+		enforcedBudgetKnown:       enforcedBudgetKnown,
+		now:                       deps.Now,
+		logger:                    deps.Logger,
+		securityAuditRoot:         filepath.Clean(deps.SecurityAuditRoot),
+		afterRunTimeout:           deps.AfterRunTimeout,
+		maxAgentRSSBytes:          deps.MaxAgentRSSBytes,
+		rssPollInterval:           deps.RSSPollInterval,
+		processRSS:                deps.ProcessRSS,
+		workerReapGrace:           deps.WorkerReapGrace,
+		reapWorkerProcess:         deps.ReapWorkerProcess,
+		cleanupWorkerArtifacts:    workspace.CleanupOwnedPath,
+		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
+		sessionLimit:              deps.sessionLimit,
+		turnLimit:                 deps.turnLimit,
+		progressTicker:            deps.progressTicker,
+		lookupEnv:                 deps.lookupEnv,
 	}, nil
 }
 
@@ -3168,12 +3172,19 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
 			return fmt.Errorf("reap agent session worker process: %w", reapErr)
 		}
-		if cleanupErr := workspace.CleanupOwnedPath(process.CleanupRoot, process.CleanupPath); cleanupErr != nil {
-			attrs = append(attrs, "error", cleanupErr)
-			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
-			return fmt.Errorf("clean agent session worker artifacts: %w", cleanupErr)
-		}
 		r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+		cleanupAttempts, cleanupErr := r.cleanupSessionWorkerArtifacts(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath)
+		if cleanupErr != nil {
+			r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_artifact_cleanup_failed",
+				telemetry.DetentSessionIDKey, sessionID,
+				"pid", process.PID,
+				"pgid", process.GroupID,
+				"reason", strings.TrimSpace(reason),
+				"path", strings.TrimSpace(process.CleanupPath),
+				"attempts", cleanupAttempts,
+				"error", cleanupErr,
+			)
+		}
 		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{
 			ReapedAt: r.now().UTC(),
 			Outcome:  string(outcome),
@@ -3183,6 +3194,20 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 		}
 	}
 	return nil
+}
+
+func (r *Runner) cleanupSessionWorkerArtifacts(ctx context.Context, root string, path string) (int, error) {
+	cleanup := r.cleanupWorkerArtifacts
+	if cleanup == nil {
+		cleanup = workspace.CleanupOwnedPath
+	}
+	wait := r.waitWorkerArtifactCleanup
+	if wait == nil {
+		wait = waitForPathRemovalRetry
+	}
+	return removePathWithRetry(ctx, path, func(string) error {
+		return cleanup(root, path)
+	}, wait)
 }
 
 func workerProcessReapReason(ctx context.Context, turnErr error) string {

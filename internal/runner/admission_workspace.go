@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	admissionWorkspaceRemoveAttempts = 4
-	admissionWorkspaceRetryDelay     = 10 * time.Millisecond
-	admissionWorkspacePathLimit      = 20
+	pathRemovalAttempts         = 4
+	pathRemovalRetryDelay       = 10 * time.Millisecond
+	admissionWorkspacePathLimit = 20
 )
 
 type admissionWorkspace struct {
@@ -67,9 +67,9 @@ func (w *admissionWorkspace) Cleanup(ctx context.Context, path string) error {
 	}
 	wait := w.wait
 	if wait == nil {
-		wait = waitForAdmissionWorkspaceRetry
+		wait = waitForPathRemovalRetry
 	}
-	if err := removeAdmissionWorkspace(ctx, w.path, removeAll, wait); err != nil {
+	if _, err := removePathWithRetry(ctx, w.path, removeAll, wait); err != nil {
 		return err
 	}
 	if w.leaks != nil {
@@ -79,29 +79,29 @@ func (w *admissionWorkspace) Cleanup(ctx context.Context, path string) error {
 	return nil
 }
 
-func removeAdmissionWorkspace(
+func removePathWithRetry(
 	ctx context.Context,
 	path string,
 	removeAll func(string) error,
 	wait func(context.Context, time.Duration) error,
-) error {
+) (int, error) {
 	var err error
-	for attempt := range admissionWorkspaceRemoveAttempts {
+	for attempt := range pathRemovalAttempts {
 		err = removeAll(path)
 		if err == nil {
-			return nil
+			return attempt + 1, nil
 		}
-		if !errors.Is(err, fs.ErrExist) || attempt == admissionWorkspaceRemoveAttempts-1 {
-			return err
+		if !errors.Is(err, fs.ErrExist) || attempt == pathRemovalAttempts-1 {
+			return attempt + 1, err
 		}
-		if waitErr := wait(ctx, admissionWorkspaceRetryDelay<<attempt); waitErr != nil {
-			return errors.Join(err, waitErr)
+		if waitErr := wait(ctx, pathRemovalRetryDelay<<attempt); waitErr != nil {
+			return attempt + 1, errors.Join(err, waitErr)
 		}
 	}
-	return err
+	return pathRemovalAttempts, err
 }
 
-func waitForAdmissionWorkspaceRetry(ctx context.Context, delay time.Duration) error {
+func waitForPathRemovalRetry(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
