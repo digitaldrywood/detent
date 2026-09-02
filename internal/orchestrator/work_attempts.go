@@ -311,9 +311,14 @@ func (o *Orchestrator) startDurableWorkAttempt(
 	now time.Time,
 	workerHost string,
 	runMode string,
+	dispatchLoopStart dispatchLoopStartRecord,
 ) (int64, bool) {
 	if o == nil || o.workAttempts == nil {
 		return 0, true
+	}
+	metadata := map[string]any{"run_mode": strings.TrimSpace(runMode)}
+	if strings.TrimSpace(runMode) == runpkg.RunModeImplement {
+		metadata[dispatchLoopStartMetadataKey] = dispatchLoopStart
 	}
 	start := store.WorkAttemptStart{
 		ProjectID:              strings.TrimSpace(o.cfg.Project.ID),
@@ -332,7 +337,7 @@ func (o *Orchestrator) startDurableWorkAttempt(
 		StatusMessage:          "worker lease acquired",
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, issue),
-		WorkerMetadataJSON:     marshalWorkAttemptJSON(map[string]any{"run_mode": strings.TrimSpace(runMode)}),
+		WorkerMetadataJSON:     marshalWorkAttemptJSON(metadata),
 		MetricsJSON:            "{}",
 		NextAction:             "start worker",
 	}
@@ -1048,6 +1053,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"run_mode":            strings.TrimSpace(running.Mode),
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
+	}
+	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement {
+		out[dispatchLoopStartMetadataKey] = running.DispatchLoopStart
 	}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)

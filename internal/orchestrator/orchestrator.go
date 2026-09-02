@@ -365,6 +365,7 @@ type configUpdateRequest struct {
 type runUpdate struct {
 	issueID string
 	usage   runpkg.UsageUpdate
+	applied chan struct{}
 }
 
 type capacityClearRequest struct {
@@ -771,6 +772,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:
 			o.handleRunUpdate(&state, update)
+			if update.applied != nil {
+				close(update.applied)
+			}
 		case result := <-heartbeatResults:
 			o.handleHeartbeatResult(&state, result)
 		case event := <-o.validatorCapacityEvents:

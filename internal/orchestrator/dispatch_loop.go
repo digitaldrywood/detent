@@ -6,11 +6,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const dispatchLoopDetectedReason = "dispatch_loop_detected"
+
+const dispatchLoopStartMetadataKey = "dispatch_loop_start"
 
 const dispatchLoopMinimumDispatches = 2
 
@@ -22,17 +26,34 @@ func dispatchLoopBlockMessage(decision implementCompletionProgressDecision) stri
 }
 
 type dispatchLoopFingerprint struct {
-	Lane            string
-	PRNumber        int64
-	PRHeadSHA       string
-	FailedChecks    []string
-	FilesChanged    int
-	AddedLines      int
-	RemovedLines    int
-	UnpushedCommits int
-	WorkspaceHead   string
-	DiffFingerprint string
-	DiffStatus      string
+	Lane            string   `json:"lane,omitempty"`
+	PRNumber        int64    `json:"pr_number,omitempty"`
+	PRHeadSHA       string   `json:"pr_head_sha,omitempty"`
+	FailedChecks    []string `json:"failed_checks,omitempty"`
+	FilesChanged    int      `json:"files_changed"`
+	AddedLines      int      `json:"added_lines"`
+	RemovedLines    int      `json:"removed_lines"`
+	UnpushedCommits int      `json:"unpushed_commits,omitempty"`
+	WorkspaceHead   string   `json:"workspace_head,omitempty"`
+	DiffFingerprint string   `json:"diff_fingerprint,omitempty"`
+	DiffStatus      string   `json:"diff_status,omitempty"`
+}
+
+type dispatchLoopStartRecord struct {
+	Fingerprint            dispatchLoopFingerprint `json:"fingerprint"`
+	Captured               bool                    `json:"captured"`
+	Persisted              bool                    `json:"persisted"`
+	LaneAvailable          bool                    `json:"lane_available"`
+	PullRequestAvailable   bool                    `json:"pull_request_available"`
+	WorkspaceDiffAvailable bool                    `json:"workspace_diff_available"`
+	WorkspaceHeadAvailable bool                    `json:"workspace_head_available"`
+}
+
+type dispatchLoopCompletionEvidence struct {
+	LaneAvailable          bool
+	PullRequestAvailable   bool
+	WorkspaceDiffAvailable bool
+	WorkspaceHeadAvailable bool
 }
 
 func (o *Orchestrator) evaluateDispatchLoopProgress(
@@ -60,6 +81,14 @@ func (o *Orchestrator) evaluateDispatchLoopProgress(
 	}
 
 	current := dispatchLoopFingerprintFromDecision(decision, currentLane)
+	withinAttemptAdvanced, withinAttemptComplete := dispatchLoopWithinAttemptProgress(
+		running.DispatchLoopStart,
+		current,
+		dispatchLoopCompletionEvidenceFromDecision(decision, current),
+	)
+	if withinAttemptAdvanced || !withinAttemptComplete {
+		return resetDispatchLoopDecision(decision)
+	}
 	previous, found := latestDispatchLoopFingerprint(attempts, currentLane)
 	if dispatchLoopCurrentAdvanced(decision, current, previous, found) {
 		return resetDispatchLoopDecision(decision)
@@ -122,7 +151,7 @@ func dispatchLoopCurrentAdvanced(
 	if found {
 		return !dispatchLoopFingerprintEqual(previous, current)
 	}
-	return !implementProgressDiffStatsClean(decision.WorkspaceDiffStats) && diffStatsPresent(decision.WorkspaceDiffStats)
+	return false
 }
 
 func latestDispatchLoopFingerprint(attempts []store.WorkAttempt, currentLane string) (dispatchLoopFingerprint, bool) {
@@ -144,7 +173,7 @@ func consecutiveDispatchLoopAttempts(attempts []store.WorkAttempt, current dispa
 			return count
 		}
 		fingerprint := dispatchLoopFingerprintFromRecord(attempt, record, current.Lane)
-		if !dispatchLoopFingerprintEqual(fingerprint, current) || dispatchLoopRecordAdvanced(record) {
+		if !dispatchLoopFingerprintEqual(fingerprint, current) || dispatchLoopRecordBreaksSequence(attempt, record, fingerprint) {
 			return count
 		}
 		count++
@@ -152,7 +181,15 @@ func consecutiveDispatchLoopAttempts(attempts []store.WorkAttempt, current dispa
 	return count
 }
 
-func dispatchLoopRecordAdvanced(record implementProgressRecord) bool {
+func dispatchLoopRecordBreaksSequence(attempt store.WorkAttempt, record implementProgressRecord, completion dispatchLoopFingerprint) bool {
+	advanced, complete := dispatchLoopWithinAttemptProgress(
+		record.DispatchLoopStart,
+		completion,
+		dispatchLoopCompletionEvidenceFromRecord(attempt, record, completion),
+	)
+	if advanced || !complete {
+		return true
+	}
 	if record.ConsecutiveNoProgress > 0 {
 		return false
 	}
@@ -176,6 +213,125 @@ func dispatchLoopRecordAdvanced(record implementProgressRecord) bool {
 	default:
 		return false
 	}
+}
+
+func newDispatchLoopStartRecord(issue connector.Issue, mode string) dispatchLoopStartRecord {
+	if strings.TrimSpace(mode) != RunModeImplement {
+		return dispatchLoopStartRecord{}
+	}
+	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
+	lane := normalizeState(issue.State)
+	return dispatchLoopStartRecord{
+		Fingerprint:          dispatchLoopFingerprintFromValues(lane, signature, implementProgressDiffStats{}),
+		LaneAvailable:        lane != "",
+		PullRequestAvailable: dispatchLoopPullRequestEvidenceAvailable(workAttemptPRNumber(issue), signature, ""),
+	}
+}
+
+func dispatchLoopStartRecordFromSnapshot(
+	running Running,
+	snapshot runpkg.DispatchLoopStartSnapshot,
+) dispatchLoopStartRecord {
+	record := running.DispatchLoopStart
+	diff := implementProgressDiffStatsFromDiffStats(snapshot.DiffStats)
+	record.Fingerprint = dispatchLoopFingerprintFromValues(
+		normalizeState(firstNonBlank(running.DispatchSourceState, running.Issue.State)),
+		record.Fingerprint.signature(),
+		diff,
+	)
+	record.Captured = true
+	record.Persisted = true
+	record.WorkspaceDiffAvailable = snapshot.WorkspaceDiffAvailable
+	record.WorkspaceHeadAvailable = snapshot.WorkspaceHeadAvailable
+	return record
+}
+
+func (f dispatchLoopFingerprint) signature() autoPromoteReworkSignature {
+	return autoPromoteReworkSignature{
+		PRNumber:     f.PRNumber,
+		HeadSHA:      strings.TrimSpace(f.PRHeadSHA),
+		FailedChecks: append([]string(nil), f.FailedChecks...),
+	}
+}
+
+func dispatchLoopWithinAttemptProgress(
+	start dispatchLoopStartRecord,
+	completion dispatchLoopFingerprint,
+	evidence dispatchLoopCompletionEvidence,
+) (bool, bool) {
+	if !start.Captured || !start.Persisted {
+		return false, false
+	}
+	if start.LaneAvailable && evidence.LaneAvailable && start.Fingerprint.Lane != completion.Lane {
+		return true, true
+	}
+	if start.PullRequestAvailable && evidence.PullRequestAvailable &&
+		(start.Fingerprint.PRNumber != completion.PRNumber || start.Fingerprint.PRHeadSHA != completion.PRHeadSHA) {
+		return true, true
+	}
+	if start.WorkspaceDiffAvailable && evidence.WorkspaceDiffAvailable &&
+		!dispatchLoopWorkspaceDiffEqual(start.Fingerprint, completion) {
+		return true, true
+	}
+	if start.WorkspaceHeadAvailable && evidence.WorkspaceHeadAvailable && start.Fingerprint.WorkspaceHead != completion.WorkspaceHead {
+		return true, true
+	}
+	complete := start.LaneAvailable && evidence.LaneAvailable &&
+		start.PullRequestAvailable && evidence.PullRequestAvailable &&
+		start.WorkspaceDiffAvailable && evidence.WorkspaceDiffAvailable &&
+		start.WorkspaceHeadAvailable && evidence.WorkspaceHeadAvailable
+	return false, complete
+}
+
+func dispatchLoopCompletionEvidenceFromDecision(
+	decision implementCompletionProgressDecision,
+	fingerprint dispatchLoopFingerprint,
+) dispatchLoopCompletionEvidence {
+	return dispatchLoopCompletionEvidence{
+		LaneAvailable:          fingerprint.Lane != "",
+		PullRequestAvailable:   dispatchLoopPullRequestEvidenceAvailable(workAttemptPRNumber(decision.Issue), decision.CurrentSignature, decision.Reason),
+		WorkspaceDiffAvailable: diffStatsPresent(decision.WorkspaceDiffStats),
+		WorkspaceHeadAvailable: strings.TrimSpace(decision.WorkspaceDiffStats.HeadSHA) != "",
+	}
+}
+
+func dispatchLoopCompletionEvidenceFromRecord(
+	attempt store.WorkAttempt,
+	record implementProgressRecord,
+	fingerprint dispatchLoopFingerprint,
+) dispatchLoopCompletionEvidence {
+	return dispatchLoopCompletionEvidence{
+		LaneAvailable:          fingerprint.Lane != "",
+		PullRequestAvailable:   dispatchLoopPullRequestEvidenceAvailable(attempt.PRNumber, record.CurrentSignature.signature(), record.Reason),
+		WorkspaceDiffAvailable: implementProgressDiffStatsPresent(record.WorkspaceDiffStats),
+		WorkspaceHeadAvailable: strings.TrimSpace(record.WorkspaceDiffStats.HeadSHA) != "",
+	}
+}
+
+func dispatchLoopPullRequestEvidenceAvailable(number *int64, signature autoPromoteReworkSignature, reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "pull_request_hydrator_unavailable", "pull_request_hydration_failed", "pull_request_hydration_unavailable":
+		return false
+	}
+	if number == nil && signature.PRNumber == 0 {
+		return true
+	}
+	return implementProgressSignatureUsable(signature)
+}
+
+func dispatchLoopWorkspaceDiffEqual(left dispatchLoopFingerprint, right dispatchLoopFingerprint) bool {
+	return left.FilesChanged == right.FilesChanged &&
+		left.AddedLines == right.AddedLines &&
+		left.RemovedLines == right.RemovedLines &&
+		left.UnpushedCommits == right.UnpushedCommits &&
+		left.DiffFingerprint == right.DiffFingerprint &&
+		left.DiffStatus == right.DiffStatus
+}
+
+func implementProgressDiffStatsPresent(diff implementProgressDiffStats) bool {
+	return diff.FilesChanged != 0 || diff.AddedLines != 0 || diff.RemovedLines != 0 ||
+		diff.UnpushedCommits != 0 || strings.TrimSpace(diff.HeadSHA) != "" ||
+		strings.TrimSpace(diff.Fingerprint) != "" || strings.TrimSpace(diff.Status) != ""
 }
 
 func dispatchLoopFingerprintFromDecision(decision implementCompletionProgressDecision, lane string) dispatchLoopFingerprint {

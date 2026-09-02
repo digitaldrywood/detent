@@ -746,6 +746,13 @@ type UsageUpdate struct {
 	RSSBytes              uint64
 	RSSCeilingBytes       uint64
 	RSSObservedAt         time.Time
+	DispatchLoopStart     *DispatchLoopStartSnapshot
+}
+
+type DispatchLoopStartSnapshot struct {
+	WorkspaceDiffAvailable bool
+	WorkspaceHeadAvailable bool
+	DiffStats              DiffStats
 }
 
 type BudgetRefusal struct {

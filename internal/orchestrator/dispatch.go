@@ -530,7 +530,8 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 			priorAttempt = breakerAttempt
 		}
 	}
-	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode)
+	dispatchLoopStart := newDispatchLoopStartRecord(issue, runMode)
+	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, dispatchLoopStart)
 	if !ok {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
@@ -566,12 +567,13 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 			}
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{
-				Issue:         issue,
-				Attempt:       attempt,
-				WorkAttemptID: workAttemptID,
-				Mode:          runMode,
-				StartedAt:     now,
-				WorkerHost:    workerHost,
+				Issue:             issue,
+				Attempt:           attempt,
+				WorkAttemptID:     workAttemptID,
+				Mode:              runMode,
+				DispatchLoopStart: dispatchLoopStart,
+				StartedAt:         now,
+				WorkerHost:        workerHost,
 			}, now, store.WorkAttemptTerminalFailure, workAttemptErrorStartTransition, err.Error(), "starting", "start state transition failed")
 			o.logWorkerLifecycle(issue, "worker_capacity_released",
 				telemetry.WorkAttemptIDKey, workAttemptID,
@@ -666,6 +668,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		DispatchArtifactStatus: strings.TrimSpace(dispatchArtifactStatus),
 		ArtifactStatusField:    strings.TrimSpace(artifactStatusField),
 		DeliverableKind:        o.cfg.DeliverableKind,
+		DispatchLoopStart:      dispatchLoopStart,
 		StartedAt:              now,
 		WorkerHost:             workerHost,
 		CapacityScope:          capacityScope,
@@ -976,6 +979,20 @@ func (o *Orchestrator) usageUpdateHandler(
 		}
 		if startupTimer != nil {
 			startupTimer.Stop()
+		}
+		if update.DispatchLoopStart != nil {
+			applied := make(chan struct{})
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case o.runUpdates <- runUpdate{issueID: issueID, usage: update, applied: applied}:
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-applied:
+				return nil
+			}
 		}
 		if strings.TrimSpace(update.WorkerGitHubActor.Login) != "" {
 			select {
