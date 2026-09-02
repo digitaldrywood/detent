@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -227,6 +228,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
 	}
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
+	running.ArtifactEvidence = event.Result.ArtifactEvidence
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
@@ -606,7 +608,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	o.commentObservedLaneTransition(ctx, dispatchedIssue, running.Issue, event.CompletedAt)
 	evidenceWarning := ""
-	if o.spendProgressEnabled() && !implementProgressLinkedPullRequest(running.Issue) {
+	if o.spendProgressEnabled() && (o.spendProgressDeliverableKind(running) == workflowconfig.DeliverableArtifact || !implementProgressLinkedPullRequest(running.Issue)) {
 		running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
 	}
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)

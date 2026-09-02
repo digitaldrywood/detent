@@ -38,8 +38,32 @@ func TestFilesystemWorkspaceCreatesArtifactWorkspaceAndOutputRoot(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(outputRoot, info.Key)); err != nil {
 		t.Fatalf("output directory missing: %v", err)
 	}
+	initialEvidence, err := backend.ArtifactEvidence(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("initial ArtifactEvidence() error = %v", err)
+	}
+	if !initialEvidence.Available || initialEvidence.Files != 0 || initialEvidence.Fingerprint == "" {
+		t.Fatalf("initial ArtifactEvidence() = %#v, want available empty output fingerprint", initialEvidence)
+	}
 	if err := os.WriteFile(filepath.Join(info.Path, "artifacts", "manifest.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("write artifact: %v", err)
+	}
+	workspaceOnlyEvidence, err := backend.ArtifactEvidence(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("workspace-only ArtifactEvidence() error = %v", err)
+	}
+	if workspaceOnlyEvidence != initialEvidence {
+		t.Fatalf("workspace-only ArtifactEvidence() = %#v, want unchanged from %#v", workspaceOnlyEvidence, initialEvidence)
+	}
+	if err := os.WriteFile(filepath.Join(outputRoot, info.Key, "final.mp4"), []byte("rendered-video"), 0o600); err != nil {
+		t.Fatalf("write output artifact: %v", err)
+	}
+	finalEvidence, err := backend.ArtifactEvidence(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("final ArtifactEvidence() error = %v", err)
+	}
+	if !finalEvidence.Available || finalEvidence.Files != 1 || finalEvidence.Fingerprint == initialEvidence.Fingerprint {
+		t.Fatalf("final ArtifactEvidence() = %#v, want one changed output file from %#v", finalEvidence, initialEvidence)
 	}
 
 	stat, err := backend.DiffStat(context.Background(), info, issue)

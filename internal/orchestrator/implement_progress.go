@@ -84,12 +84,14 @@ type implementProgressRecord struct {
 }
 
 type implementProgressArtifactSnapshot struct {
-	TrackerState   string
-	NativeBlockers []string
-	WorkpadRead    bool
-	WorkpadReason  string
-	WorkpadFields  map[string]string
-	CompletionKind string
+	TrackerState       string
+	NativeBlockers     []string
+	WorkpadRead        bool
+	WorkpadStatus      string
+	WorkpadReason      string
+	WorkpadFields      map[string]string
+	WorkpadReceiptHash string
+	CompletionKind     string
 }
 
 type implementDependencyBlocker struct {
@@ -451,8 +453,12 @@ func implementProgressArtifactSnapshotFromIssue(issue connector.Issue, workpadRe
 	if !ok || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured {
 		return snapshot
 	}
+	snapshot.WorkpadStatus = strings.TrimSpace(signal.Status)
 	snapshot.WorkpadReason = strings.TrimSpace(signal.ReasonCode)
 	snapshot.WorkpadFields = cloneStringMap(signal.Fields)
+	if snapshot.WorkpadStatus == workpad.StatusComplete {
+		snapshot.WorkpadReceiptHash = artifactCompletionReceiptHash(issue.Comments)
+	}
 	return snapshot
 }
 
@@ -469,6 +475,11 @@ func implementProgressArtifactKinds(previous, current implementProgressArtifactS
 	}
 	if current.WorkpadReason != "" && current.WorkpadReason != previous.WorkpadReason {
 		kinds = append(kinds, "workpad_predicate")
+	}
+	if strings.TrimSpace(current.WorkpadFields[workpad.FieldCompletionKind]) != workpad.CompletionOperational &&
+		current.WorkpadStatus == workpad.StatusComplete && current.WorkpadReceiptHash != "" &&
+		current.WorkpadReceiptHash != previous.WorkpadReceiptHash {
+		kinds = append(kinds, "artifact_receipt")
 	}
 	if implementProgressFieldsAdvanced(previous.WorkpadFields, current.WorkpadFields) {
 		kinds = append(kinds, "audit_artifact")

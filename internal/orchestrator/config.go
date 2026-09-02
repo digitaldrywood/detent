@@ -34,6 +34,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
 		MergeFairnessAge:           durationFromSeconds(cfg.Agent.MergeFastPath.FairnessAgeSeconds),
 		MergeMethod:                cfg.Deliverable.EffectiveMergeMethod(),
+		DeliverableKind:            cfg.Deliverable.Kind,
 		MergeWorkerStartupTimeout:  durationFromMillis(cfg.Agent.MergeWorkerStartupTimeoutMS),
 		MergeWorkerMaxDuration:     durationFromMillis(cfg.Agent.MergeWorkerMaxDurationMS),
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
@@ -274,6 +275,10 @@ func normalizeConfig(cfg Config) Config {
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
 	cfg.MergeMethod = workflowconfig.Deliverable{MergeMethod: cfg.MergeMethod}.EffectiveMergeMethod()
+	cfg.DeliverableKind = strings.ToLower(strings.TrimSpace(cfg.DeliverableKind))
+	if cfg.DeliverableKind == "" {
+		cfg.DeliverableKind = workflowconfig.DeliverablePullRequest
+	}
 	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)

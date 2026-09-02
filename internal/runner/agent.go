@@ -1422,10 +1422,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	var recoveryState *workspace.RecoveryState
 	initialDeliverableState := workspaceDeliverableStateObservation{}
+	initialArtifactEvidence := workspaceArtifactEvidenceObservation{}
 	var targetRefObserver func(context.Context) *DeliverableTargetRefEvidence
 	if mode == RunModeImplement {
 		recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
 		initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue, "initial")
+		if workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
+			initialArtifactEvidence = r.observeWorkspaceArtifactEvidence(runWorkspace, ctx, info, workspaceIssue, "initial")
+		}
 		targetRefObserver = func(observerCtx context.Context) *DeliverableTargetRefEvidence {
 			postCommand := r.observeWorkspaceDeliverableState(runWorkspace, observerCtx, info, workspaceIssue, "post_command")
 			return deliverableTargetRefEvidence(info.Branch, initialDeliverableState, postCommand)
@@ -1832,6 +1836,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		telemetry.DetentSessionIDKey, sessionID,
 		"workspace_path", info.Path,
 	)
+	if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
+		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, context.WithoutCancel(ctx), info, workspaceIssue, "final")
+		result.ArtifactEvidence = artifactProgressEvidence(initialArtifactEvidence, finalArtifactEvidence)
+	}
 
 	if turnErr != nil {
 		finishedAt := r.now().UTC()
@@ -2374,6 +2382,68 @@ func (r *Runner) workspaceRecoveryState(
 		slog.String("error", err.Error()),
 	)
 	return nil
+}
+
+type workspaceArtifactEvidenceObservation struct {
+	evidence  workspace.ArtifactEvidence
+	supported bool
+	observed  bool
+	err       string
+}
+
+func (r *Runner) observeWorkspaceArtifactEvidence(
+	backend workspace.Backend,
+	ctx context.Context,
+	info workspace.Info,
+	issue workspace.Issue,
+	phase string,
+) workspaceArtifactEvidenceObservation {
+	provider, ok := backend.(workspace.ArtifactEvidenceProvider)
+	if !ok {
+		return workspaceArtifactEvidenceObservation{}
+	}
+	observation := workspaceArtifactEvidenceObservation{supported: true}
+	evidence, err := provider.ArtifactEvidence(ctx, info, issue)
+	if err == nil {
+		observation.evidence = evidence
+		observation.observed = evidence.Available
+		return observation
+	}
+	observation.err = err.Error()
+	r.logger.Warn(
+		"workspace artifact evidence failed",
+		slog.String("issue_id", issue.ID),
+		slog.String("issue_identifier", issue.Identifier),
+		slog.String("workspace_path", info.Path),
+		slog.String("phase", phase),
+		slog.String("error", err.Error()),
+	)
+	return observation
+}
+
+func artifactProgressEvidence(initial, current workspaceArtifactEvidenceObservation) ArtifactProgressEvidence {
+	evidence := ArtifactProgressEvidence{
+		InitialFiles:       initial.evidence.Files,
+		CurrentFiles:       current.evidence.Files,
+		InitialFingerprint: strings.TrimSpace(initial.evidence.Fingerprint),
+		CurrentFingerprint: strings.TrimSpace(current.evidence.Fingerprint),
+	}
+	if initial.observed && current.observed {
+		evidence.Available = true
+		return evidence
+	}
+	warnings := make([]string, 0, 2)
+	if initial.err != "" {
+		warnings = append(warnings, "initial artifact output evidence: "+initial.err)
+	}
+	if current.err != "" {
+		warnings = append(warnings, "final artifact output evidence: "+current.err)
+	}
+	if len(warnings) == 0 && (initial.supported || current.supported) {
+		warnings = append(warnings, "artifact output root is not configured")
+	}
+	evidence.Warning = strings.Join(warnings, "; ")
+	return evidence
 }
 
 func (r *Runner) workspaceDeliverableState(

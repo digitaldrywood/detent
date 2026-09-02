@@ -71,6 +71,10 @@ type DeliverableStateProvider interface {
 	DeliverableState(context.Context, Info, Issue) (DeliverableState, error)
 }
 
+type ArtifactEvidenceProvider interface {
+	ArtifactEvidence(context.Context, Info, Issue) (ArtifactEvidence, error)
+}
+
 type BranchHoldProvider interface {
 	BranchHold(context.Context, Issue) (BranchHold, bool, error)
 }
@@ -90,6 +94,12 @@ type RecoveryState struct {
 	HeadSHA              string
 	WorkspaceFingerprint string
 	UnpushedCommits      int
+}
+
+type ArtifactEvidence struct {
+	Available   bool
+	Files       int
+	Fingerprint string
 }
 
 type DeliverableState struct {

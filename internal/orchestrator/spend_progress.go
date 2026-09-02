@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -20,11 +22,13 @@ import (
 )
 
 const (
-	spendProgressMetadataKey = "spend_since_progress_breaker"
-	spendProgressReason      = "spend_since_progress_circuit_breaker"
-	spendProgressHistorySize = 200
-	spendProgressCaseNoPR    = "spend_without_pr_evidence"
-	spendProgressCaseStatic  = "spend_with_static_pr_evidence"
+	spendProgressMetadataKey        = "spend_since_progress_breaker"
+	spendProgressReason             = "spend_since_progress_circuit_breaker"
+	spendProgressHistorySize        = 200
+	spendProgressCaseNoPR           = "spend_without_pr_evidence"
+	spendProgressCaseStatic         = "spend_with_static_pr_evidence"
+	spendProgressCaseNoArtifact     = "spend_without_artifact_evidence"
+	spendProgressCaseStaticArtifact = "spend_with_static_artifact_evidence"
 )
 
 type spendProgressDecision struct {
@@ -41,7 +45,10 @@ type spendProgressDecision struct {
 	LimitUSD             float64
 	BillingMode          string
 	Effort               string
+	DeliverableKind      string
+	EvidenceChecked      []string
 	PRFingerprint        *spendProgressPRFingerprint
+	ArtifactFingerprint  *spendProgressArtifactFingerprint
 	Case                 string
 	BlockedBy            string
 	Block                bool
@@ -49,25 +56,28 @@ type spendProgressDecision struct {
 }
 
 type spendProgressRecord struct {
-	AcceptedStateChange  bool                        `json:"accepted_state_change,omitempty"`
-	AcceptedReason       string                      `json:"accepted_reason,omitempty"`
-	Since                string                      `json:"since,omitempty"`
-	TotalTokens          int64                       `json:"total_tokens,omitempty"`
-	SpendUSD             float64                     `json:"spend_usd,omitempty"`
-	Sessions             int64                       `json:"sessions,omitempty"`
-	FirstSessionAt       string                      `json:"first_session_at,omitempty"`
-	LastSessionAt        string                      `json:"last_session_at,omitempty"`
-	ConfiguredTokenLimit int64                       `json:"configured_token_limit,omitempty"`
-	TokenLimit           int64                       `json:"token_limit,omitempty"`
-	ConfiguredLimitUSD   float64                     `json:"configured_limit_usd,omitempty"`
-	LimitUSD             float64                     `json:"limit_usd,omitempty"`
-	BillingMode          string                      `json:"billing_mode,omitempty"`
-	Effort               string                      `json:"effort,omitempty"`
-	PRFingerprint        *spendProgressPRFingerprint `json:"pr_fingerprint,omitempty"`
-	Case                 string                      `json:"case,omitempty"`
-	BlockedBy            string                      `json:"blocked_by,omitempty"`
-	BlockReason          string                      `json:"block_reason,omitempty"`
-	Warning              string                      `json:"warning,omitempty"`
+	AcceptedStateChange  bool                              `json:"accepted_state_change,omitempty"`
+	AcceptedReason       string                            `json:"accepted_reason,omitempty"`
+	Since                string                            `json:"since,omitempty"`
+	TotalTokens          int64                             `json:"total_tokens,omitempty"`
+	SpendUSD             float64                           `json:"spend_usd,omitempty"`
+	Sessions             int64                             `json:"sessions,omitempty"`
+	FirstSessionAt       string                            `json:"first_session_at,omitempty"`
+	LastSessionAt        string                            `json:"last_session_at,omitempty"`
+	ConfiguredTokenLimit int64                             `json:"configured_token_limit,omitempty"`
+	TokenLimit           int64                             `json:"token_limit,omitempty"`
+	ConfiguredLimitUSD   float64                           `json:"configured_limit_usd,omitempty"`
+	LimitUSD             float64                           `json:"limit_usd,omitempty"`
+	BillingMode          string                            `json:"billing_mode,omitempty"`
+	Effort               string                            `json:"effort,omitempty"`
+	DeliverableKind      string                            `json:"deliverable_kind,omitempty"`
+	EvidenceChecked      []string                          `json:"evidence_checked,omitempty"`
+	PRFingerprint        *spendProgressPRFingerprint       `json:"pr_fingerprint,omitempty"`
+	ArtifactFingerprint  *spendProgressArtifactFingerprint `json:"artifact_fingerprint,omitempty"`
+	Case                 string                            `json:"case,omitempty"`
+	BlockedBy            string                            `json:"blocked_by,omitempty"`
+	BlockReason          string                            `json:"block_reason,omitempty"`
+	Warning              string                            `json:"warning,omitempty"`
 }
 
 type spendProgressPRFingerprint struct {
@@ -75,6 +85,15 @@ type spendProgressPRFingerprint struct {
 	HeadSHA        string `json:"head_sha,omitempty"`
 	MergeableState string `json:"mergeable_state,omitempty"`
 	CIStatus       string `json:"ci_status,omitempty"`
+}
+
+type spendProgressArtifactFingerprint struct {
+	ReceiptHash            string `json:"receipt_hash,omitempty"`
+	StatusField            string `json:"status_field,omitempty"`
+	Status                 string `json:"status,omitempty"`
+	DeliverableFingerprint string `json:"deliverable_fingerprint,omitempty"`
+	OutputFiles            int    `json:"output_files,omitempty"`
+	OutputFingerprint      string `json:"output_fingerprint,omitempty"`
 }
 
 func (o *Orchestrator) evaluateSpendProgress(
@@ -103,7 +122,13 @@ func (o *Orchestrator) evaluateSpendProgress(
 	decision.ConfiguredLimitUSD = o.cfg.NoProgressSpendLimitUSD
 	decision.Effort = spendProgressEffort(running)
 	decision.LimitUSD = workflowconfig.EffectiveNoProgressSpendLimitUSD(decision.ConfiguredLimitUSD, decision.Effort)
-	decision.PRFingerprint = spendProgressPRFingerprintFromIssue(running.Issue)
+	decision.DeliverableKind = o.spendProgressDeliverableKind(running)
+	if decision.DeliverableKind == workflowconfig.DeliverableArtifact {
+		decision.ArtifactFingerprint, decision.EvidenceChecked = o.spendProgressArtifactFingerprint(running)
+	} else {
+		decision.PRFingerprint = spendProgressPRFingerprintFromIssue(running.Issue)
+		decision.EvidenceChecked = []string{"issue PR linkage", "hydrated PR metadata", "tracker closing references including Fixes #N"}
+	}
 	if accepted {
 		decision.Since = completedAt
 		return decision
@@ -120,18 +145,32 @@ func (o *Orchestrator) evaluateSpendProgress(
 		o.warnSpendProgress(running.Issue, "work attempt history lookup failed", err)
 		return decision
 	}
-	if previous, ok := latestSpendProgressPRFingerprint(attempts); ok {
-		if reason := spendProgressPRAdvance(previous, decision.PRFingerprint); reason != "" {
+	if decision.DeliverableKind == workflowconfig.DeliverableArtifact {
+		previous, found := latestSpendProgressArtifactFingerprint(attempts)
+		reason := spendProgressArtifactAdvance(previous, decision.ArtifactFingerprint)
+		if !found {
+			reason = spendProgressInitialArtifactReason(decision.ArtifactFingerprint)
+		}
+		if reason != "" {
 			decision.AcceptedStateChange = true
 			decision.AcceptedReason = reason
 			decision.Since = completedAt
 			return decision
 		}
-	} else if decision.PRFingerprint != nil {
-		decision.AcceptedStateChange = true
-		decision.AcceptedReason = "pull_request_created"
-		decision.Since = completedAt
-		return decision
+	} else {
+		if previous, ok := latestSpendProgressPRFingerprint(attempts); ok {
+			if reason := spendProgressPRAdvance(previous, decision.PRFingerprint); reason != "" {
+				decision.AcceptedStateChange = true
+				decision.AcceptedReason = reason
+				decision.Since = completedAt
+				return decision
+			}
+		} else if decision.PRFingerprint != nil {
+			decision.AcceptedStateChange = true
+			decision.AcceptedReason = "pull_request_created"
+			decision.Since = completedAt
+			return decision
+		}
 	}
 	decision.Since = spendProgressBaseline(running.Issue, attempts)
 	creditedAt, err := o.spendProgressCredit(ctx, running.Issue)
@@ -158,9 +197,16 @@ func (o *Orchestrator) evaluateSpendProgress(
 		return decision
 	}
 	decision.Spend = spend
-	decision.Case = spendProgressCaseNoPR
-	if decision.PRFingerprint != nil {
-		decision.Case = spendProgressCaseStatic
+	if decision.DeliverableKind == workflowconfig.DeliverableArtifact {
+		decision.Case = spendProgressCaseNoArtifact
+		if spendProgressArtifactFingerprintPresent(decision.ArtifactFingerprint) {
+			decision.Case = spendProgressCaseStaticArtifact
+		}
+	} else {
+		decision.Case = spendProgressCaseNoPR
+		if decision.PRFingerprint != nil {
+			decision.Case = spendProgressCaseStatic
+		}
 	}
 	if spendProgressTokenLimitReached(spend.TotalTokens, decision.TokenLimit) {
 		decision.BlockedBy = "tokens"
@@ -202,6 +248,123 @@ func spendProgressTokenLimitReached(totalTokens int64, tokenLimit int64) bool {
 
 func spendProgressEffort(running Running) string {
 	return strings.ToLower(strings.TrimSpace(running.RuntimeIdentity.ReasoningEffort.Value))
+}
+
+func (o *Orchestrator) spendProgressDeliverableKind(running Running) string {
+	if o != nil {
+		switch strings.ToLower(strings.TrimSpace(o.cfg.DeliverableKind)) {
+		case workflowconfig.DeliverableArtifact:
+			return workflowconfig.DeliverableArtifact
+		case workflowconfig.DeliverablePullRequest:
+			return workflowconfig.DeliverablePullRequest
+		}
+	}
+	return spendProgressRunningDeliverableKind(running)
+}
+
+func spendProgressRunningDeliverableKind(running Running) string {
+	values := []string{running.DeliverableKind}
+	if running.Issue.Deliverable != nil {
+		values = append(values, running.Issue.Deliverable.Kind)
+	}
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case workflowconfig.DeliverableArtifact, "artifacts", "file", "files":
+			return workflowconfig.DeliverableArtifact
+		case workflowconfig.DeliverablePullRequest:
+			return workflowconfig.DeliverablePullRequest
+		}
+	}
+	return workflowconfig.DeliverablePullRequest
+}
+
+func (o *Orchestrator) spendProgressArtifactFingerprint(running Running) (*spendProgressArtifactFingerprint, []string) {
+	statusField := gate.Effective(o.cfg.AutoPromote.Gate).Artifact.StatusField
+	status, _ := artifactStatusFieldFromIssue(running.Issue, statusField)
+	receiptHash := ""
+	if signal, ok := autoPromoteIssueWorkpadSignal(running.Issue); ok && signal != nil && signal.Invalid == nil &&
+		signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.Status) == workpad.StatusComplete {
+		receiptHash = artifactCompletionReceiptHash(running.Issue.Comments)
+	}
+	fingerprint := &spendProgressArtifactFingerprint{
+		ReceiptHash:       receiptHash,
+		StatusField:       strings.TrimSpace(statusField),
+		Status:            strings.TrimSpace(status),
+		OutputFiles:       running.ArtifactEvidence.CurrentFiles,
+		OutputFingerprint: strings.TrimSpace(running.ArtifactEvidence.CurrentFingerprint),
+	}
+	checked := make([]string, 0, 4)
+	if running.DispatchProgress.WorkpadRead || running.Issue.Comments != nil {
+		checked = append(checked, "completion receipt")
+	}
+	if fingerprint.StatusField != "" {
+		checked = append(checked, "artifact status field "+fingerprint.StatusField)
+	}
+	if running.Issue.Deliverable != nil {
+		encoded, err := json.Marshal(running.Issue.Deliverable)
+		if err == nil {
+			fingerprint.DeliverableFingerprint = workpad.ContentHash(string(encoded))
+		}
+		checked = append(checked, "work item deliverable metadata")
+	}
+	if running.ArtifactEvidence.Available {
+		checked = append(checked, "files under the configured artifact output root")
+	}
+	return fingerprint, checked
+}
+
+func latestSpendProgressArtifactFingerprint(attempts []store.WorkAttempt) (*spendProgressArtifactFingerprint, bool) {
+	for _, attempt := range attempts {
+		record, ok := spendProgressRecordFromAttempt(attempt)
+		if !ok || record.ArtifactFingerprint == nil {
+			continue
+		}
+		fingerprint := *record.ArtifactFingerprint
+		return &fingerprint, true
+	}
+	return nil, false
+}
+
+func spendProgressArtifactAdvance(previous, current *spendProgressArtifactFingerprint) string {
+	if previous == nil || current == nil {
+		return ""
+	}
+	if current.ReceiptHash != "" && current.ReceiptHash != previous.ReceiptHash {
+		return "artifact_receipt_changed"
+	}
+	if current.Status != "" && current.Status != previous.Status {
+		return "artifact_status_changed"
+	}
+	if current.DeliverableFingerprint != "" && current.DeliverableFingerprint != previous.DeliverableFingerprint {
+		return "artifact_deliverable_changed"
+	}
+	if current.OutputFiles > 0 && current.OutputFingerprint != "" && current.OutputFingerprint != previous.OutputFingerprint {
+		return "artifact_output_changed"
+	}
+	return ""
+}
+
+func spendProgressInitialArtifactReason(current *spendProgressArtifactFingerprint) string {
+	if current == nil {
+		return ""
+	}
+	switch {
+	case current.ReceiptHash != "":
+		return "artifact_receipt_changed"
+	case current.Status != "":
+		return "artifact_status_changed"
+	case current.DeliverableFingerprint != "":
+		return "artifact_deliverable_changed"
+	case current.OutputFiles > 0 && current.OutputFingerprint != "":
+		return "artifact_output_changed"
+	default:
+		return ""
+	}
+}
+
+func spendProgressArtifactFingerprintPresent(fingerprint *spendProgressArtifactFingerprint) bool {
+	return fingerprint != nil && (fingerprint.ReceiptHash != "" || fingerprint.Status != "" ||
+		fingerprint.DeliverableFingerprint != "" || (fingerprint.OutputFiles > 0 && fingerprint.OutputFingerprint != ""))
 }
 
 func spendProgressPRFingerprintFromIssue(issue connector.Issue) *spendProgressPRFingerprint {
@@ -282,6 +445,13 @@ func (o *Orchestrator) recentSpendProgressAttempts(ctx context.Context, issue co
 }
 
 func (o *Orchestrator) refreshSpendProgressIssue(ctx context.Context, issue connector.Issue) (connector.Issue, string) {
+	if o.spendProgressDeliverableKind(Running{Issue: issue}) == workflowconfig.DeliverableArtifact {
+		refreshed, current := o.refreshImplementCompletionIssue(ctx, issue)
+		if !current {
+			return refreshed, "artifact progress evidence refresh unavailable"
+		}
+		return refreshed, ""
+	}
 	refreshed := cloneIssue(issue)
 	if !implementProgressLinkedPullRequest(refreshed) {
 		if o == nil || o.connector == nil || strings.TrimSpace(refreshed.ID) == "" {
@@ -392,7 +562,10 @@ func spendProgressMetadata(decision spendProgressDecision) map[string]any {
 		LimitUSD:             decision.LimitUSD,
 		BillingMode:          decision.BillingMode,
 		Effort:               decision.Effort,
+		DeliverableKind:      decision.DeliverableKind,
+		EvidenceChecked:      slices.Clone(decision.EvidenceChecked),
 		PRFingerprint:        decision.PRFingerprint,
+		ArtifactFingerprint:  decision.ArtifactFingerprint,
 		Case:                 decision.Case,
 		BlockedBy:            decision.BlockedBy,
 		Warning:              strings.TrimSpace(decision.Warning),
@@ -425,7 +598,32 @@ func mergeWorkAttemptMetadata(groups ...map[string]any) map[string]any {
 	return merged
 }
 
-func implementAcceptedStateChange(_ Running, decision implementCompletionProgressDecision) (bool, string) {
+func implementAcceptedStateChange(running Running, decision implementCompletionProgressDecision) (bool, string) {
+	if spendProgressRunningDeliverableKind(running) == workflowconfig.DeliverableArtifact {
+		statusField := strings.TrimSpace(running.ArtifactStatusField)
+		if statusField == "" {
+			statusField = gate.DefaultArtifactStatusField
+		}
+		currentStatus, _ := artifactStatusFieldFromIssue(decision.Issue, statusField)
+		if currentStatus != "" &&
+			!strings.EqualFold(strings.TrimSpace(running.DispatchArtifactStatus), strings.TrimSpace(currentStatus)) {
+			return true, "artifact_status_changed"
+		}
+		if running.ArtifactEvidence.Available &&
+			strings.TrimSpace(running.ArtifactEvidence.InitialFingerprint) != "" &&
+			strings.TrimSpace(running.ArtifactEvidence.CurrentFingerprint) != "" &&
+			running.ArtifactEvidence.InitialFingerprint != running.ArtifactEvidence.CurrentFingerprint {
+			return true, "artifact_output_changed"
+		}
+		for _, progressKind := range decision.ProgressKinds {
+			switch progressKind {
+			case "artifact_receipt", "audit_artifact":
+				return true, "artifact_receipt_changed"
+			case "workspace_diff":
+				return true, "artifact_workspace_changed"
+			}
+		}
+	}
 	switch strings.TrimSpace(decision.Reason) {
 	case "pull_request_created_or_updated", "signature_changed", implementMergedCompletionReason:
 		return true, decision.Reason
@@ -516,6 +714,8 @@ func (o *Orchestrator) blockSpendProgress(
 			"sessions", decision.Spend.Sessions,
 			"since", decision.Since,
 			"case", decision.Case,
+			"deliverable_kind", decision.DeliverableKind,
+			"evidence_checked", decision.EvidenceChecked,
 			"effort", decision.Effort,
 		)
 	}
@@ -533,7 +733,12 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 	b.WriteString(decision.Case)
 	b.WriteString("\n- issue: ")
 	b.WriteString(issueLabel(issue))
-	b.WriteString("\n- pr_evidence_checked: issue PR linkage, hydrated PR metadata, and tracker closing references including Fixes #N")
+	if decision.DeliverableKind == workflowconfig.DeliverableArtifact {
+		b.WriteString("\n- artifact_evidence_checked: ")
+		b.WriteString(strings.Join(decision.EvidenceChecked, ", "))
+	} else {
+		b.WriteString("\n- pr_evidence_checked: issue PR linkage, hydrated PR metadata, and tracker closing references including Fixes #N")
+	}
 	b.WriteString("\n- billing_mode: ")
 	b.WriteString(decision.BillingMode)
 	b.WriteString("\n- blocked_by: ")
@@ -579,6 +784,24 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 			b.WriteString(decision.PRFingerprint.CIStatus)
 		}
 	}
+	if decision.ArtifactFingerprint != nil {
+		if decision.ArtifactFingerprint.StatusField != "" {
+			b.WriteString("\n- artifact_status_field: ")
+			b.WriteString(decision.ArtifactFingerprint.StatusField)
+			b.WriteString("\n- artifact_status: ")
+			b.WriteString(decision.ArtifactFingerprint.Status)
+		}
+		if decision.ArtifactFingerprint.ReceiptHash != "" {
+			b.WriteString("\n- artifact_receipt_hash: ")
+			b.WriteString(decision.ArtifactFingerprint.ReceiptHash)
+		}
+		if decision.ArtifactFingerprint.OutputFingerprint != "" {
+			b.WriteString("\n- artifact_output_files: ")
+			b.WriteString(strconv.Itoa(decision.ArtifactFingerprint.OutputFiles))
+			b.WriteString("\n- artifact_output_fingerprint: ")
+			b.WriteString(decision.ArtifactFingerprint.OutputFingerprint)
+		}
+	}
 	if !decision.Since.IsZero() {
 		b.WriteString("\n- last_accepted_progress_at: ")
 		b.WriteString(decision.Since.UTC().Format(time.RFC3339))
@@ -587,9 +810,14 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 		b.WriteString("\n- observed_session_span: ")
 		b.WriteString(decision.Spend.LastSessionAt.Sub(decision.Spend.FirstSessionAt).Round(time.Second).String())
 	}
-	if decision.Case == spendProgressCaseStatic {
+	switch decision.Case {
+	case spendProgressCaseStatic:
 		b.WriteString("\n\nThe linked PR fingerprint stayed static during this spend window. Check merge-train capacity, Merging serialization, and dispatch priority before narrowing the task; this pattern can indicate throughput starvation rather than missing implementation work.")
-	} else {
+	case spendProgressCaseStaticArtifact:
+		b.WriteString("\n\nThe contracted artifact evidence stayed static during this spend window. Verify that the next attempt changes its completion receipt, artifact status, deliverable metadata, or configured output files before retrying.")
+	case spendProgressCaseNoArtifact:
+		b.WriteString("\n\nNo contracted artifact evidence was recorded during this spend window. Verify that the workflow can write a completion receipt, artifact status, deliverable metadata, or configured output file before retrying.")
+	default:
 		b.WriteString("\n\nShrink the task before retrying: split or narrow the scope so the next session can produce a concrete accepted change or linked PR evidence.")
 	}
 	b.WriteString("\n\nOn the next dispatch, the agent's first tool action must update the Workpad to explain which accepted progress signal was missing and what is concretely different before any other tool use.")
@@ -597,10 +825,16 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 }
 
 func spendProgressCaseSummary(progressCase string) string {
-	if progressCase == spendProgressCaseStatic {
+	switch progressCase {
+	case spendProgressCaseStatic:
 		return "resource consumption continued while a linked PR existed but could not merge"
+	case spendProgressCaseStaticArtifact:
+		return "resource consumption continued while artifact evidence stayed static"
+	case spendProgressCaseNoArtifact:
+		return "resource consumption continued without any artifact evidence"
+	default:
+		return "resource consumption continued without any PR evidence"
 	}
-	return "resource consumption continued without any PR evidence"
 }
 
 func spendProgressBlockMessage(decision spendProgressDecision) string {
@@ -626,16 +860,25 @@ func spendProgressUsageSummary(decision spendProgressDecision) string {
 }
 
 func spendProgressRecoveryReason(decision spendProgressDecision) string {
-	if decision.Case == spendProgressCaseStatic {
+	switch decision.Case {
+	case spendProgressCaseStatic:
 		return "inspect merge-train capacity, Merging serialization, and dispatch priority before moving the issue back to Rework"
+	case spendProgressCaseStaticArtifact:
+		return "identify why the completion receipt, artifact status, deliverable metadata, and output files stayed static before moving the item back to Rework"
+	case spendProgressCaseNoArtifact:
+		return "restore a writable completion receipt, artifact status, deliverable metadata, or output path before moving the item back to Todo or Rework"
+	default:
+		return "narrow or split the task, then identify why no linked PR evidence was produced before moving the issue back to Todo or Rework"
 	}
-	return "narrow or split the task, then identify why no linked PR evidence was produced before moving the issue back to Todo or Rework"
 }
 
 func spendProgressRetryHandoff(decision spendProgressDecision) runpkg.PriorAttempt {
 	missingSignal := "lane transition, pull request creation, or a recognized PR fingerprint advancement"
-	if decision.Case == spendProgressCaseStatic {
+	switch decision.Case {
+	case spendProgressCaseStatic:
 		missingSignal = "new PR head commit, dirty-to-clean mergeability, failing-to-passing CI, or merge-train capacity that lets the linked PR advance"
+	case spendProgressCaseStaticArtifact, spendProgressCaseNoArtifact:
+		missingSignal = "changed completion receipt, artifact status, deliverable metadata, or configured output files"
 	}
 	prior := runpkg.PriorAttempt{
 		Source:               spendProgressReason,
@@ -657,17 +900,7 @@ func (o *Orchestrator) spendProgressPriorAttempt(ctx context.Context, issue conn
 		(o.cfg.NoProgressTokenLimit <= 0 && (o.cfg.subscriptionBilling() || o.cfg.NoProgressSpendLimitUSD <= 0)) {
 		return runpkg.PriorAttempt{}, false
 	}
-	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
-		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
-		IssueID:    strings.TrimSpace(issue.ID),
-		Identifier: strings.TrimSpace(issue.Identifier),
-		IssueURL:   strings.TrimSpace(issue.URL),
-		Limit:      1,
-	})
-	if err != nil || len(attempts) == 0 {
-		return runpkg.PriorAttempt{}, false
-	}
-	record, ok := spendProgressRecordFromAttempt(attempts[0])
+	record, ok := o.latestSpendProgressRecord(ctx, issue)
 	if !ok || strings.TrimSpace(record.BlockReason) != spendProgressReason {
 		return runpkg.PriorAttempt{}, false
 	}
@@ -679,10 +912,31 @@ func (o *Orchestrator) spendProgressPriorAttempt(ctx context.Context, issue conn
 		LimitUSD:             record.LimitUSD,
 		BillingMode:          record.BillingMode,
 		Effort:               record.Effort,
+		DeliverableKind:      record.DeliverableKind,
+		EvidenceChecked:      slices.Clone(record.EvidenceChecked),
 		PRFingerprint:        record.PRFingerprint,
+		ArtifactFingerprint:  record.ArtifactFingerprint,
 		Case:                 record.Case,
 		BlockedBy:            record.BlockedBy,
 	}), true
+}
+
+func (o *Orchestrator) latestSpendProgressRecord(ctx context.Context, issue connector.Issue) (spendProgressRecord, bool) {
+	if o == nil || o.workAttempts == nil {
+		return spendProgressRecord{}, false
+	}
+	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
+		Limit:      1,
+	})
+	if err != nil || len(attempts) == 0 {
+		return spendProgressRecord{}, false
+	}
+	record, ok := spendProgressRecordFromAttempt(attempts[0])
+	return record, ok
 }
 
 func (o *Orchestrator) warnSpendProgress(issue connector.Issue, message string, err error) {

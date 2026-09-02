@@ -82,6 +82,7 @@ type Config struct {
 	MergeFastPathEnabled          bool
 	MergeFairnessAge              time.Duration
 	MergeMethod                   string
+	DeliverableKind               string
 	MergeWorkerStartupTimeout     time.Duration
 	MergeWorkerMaxDuration        time.Duration
 	ResumeOrphanedSessions        bool

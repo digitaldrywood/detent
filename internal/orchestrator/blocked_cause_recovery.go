@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -395,6 +396,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		}
 		return false
 	}
+	if handled, transitioned := o.reconcileObsoleteArtifactSpendProgressPark(ctx, state, issue, park, now); handled {
+		return transitioned
+	}
 	if handled, transitioned := o.reconcilePersistentlyMissingRequiredCheckPark(ctx, state, issue, park, now); handled {
 		return transitioned
 	}
@@ -476,6 +480,45 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
+}
+
+func (o *Orchestrator) reconcileObsoleteArtifactSpendProgressPark(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park workflowLaneBlockedRecoveryMetadata,
+	now time.Time,
+) (bool, bool) {
+	if strings.TrimSpace(park.Cause) != spendProgressReason ||
+		o.spendProgressDeliverableKind(Running{Issue: issue}) != workflowconfig.DeliverableArtifact {
+		return false, false
+	}
+	record, ok := o.latestSpendProgressRecord(ctx, issue)
+	if !ok || strings.TrimSpace(record.BlockReason) != spendProgressReason || strings.TrimSpace(record.Case) != spendProgressCaseNoPR {
+		return false, false
+	}
+	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
+	fingerprint := blockedCauseFingerprint(park.Cause, signals)
+	signature := blockedCauseRecoverySignature("obsolete_artifact_pr_evidence", fingerprint)
+	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionCauseBlockedRecovery, signature); consumed {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "obsolete_artifact_spend_recovery_already_consumed", &park, fingerprint)
+		return true, false
+	}
+	targetState := blockedCauseTargetState(issue, signals, park.TargetState)
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "obsolete_artifact_spend_recovery", metadata, laneMutationPreserveOwnership); err != nil {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "obsolete_artifact_spend_recovery_transition_failed", &park, fingerprint)
+		return true, false
+	}
+	if o.connector != nil {
+		comment := "Recovered this artifact-deliverable item from Blocked because its persisted spend breaker checked PR evidence that the project cannot produce. Future spend-progress checks use artifact receipts, status, deliverable metadata, and output evidence."
+		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
+			o.logger.Warn("obsolete artifact spend recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	delete(state.Blocked, issue.ID)
+	o.logBlockedRecoveryDecision(issue, "transition", "obsolete_artifact_spend_recovery", &park, fingerprint)
+	return true, true
 }
 
 func (o *Orchestrator) rebaselineLegacyBlockedRecoveryPark(
