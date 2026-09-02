@@ -140,7 +140,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		switch {
 		case rightArtifact.ReceiptHash != "" && rightArtifact.ReceiptHash != leftArtifact.ReceiptHash:
 			wantArtifactAdvance = "artifact_receipt_changed"
-		case rightArtifact.Status != "" && rightArtifact.Status != leftArtifact.Status:
+		case rightArtifact.Status != "" && !strings.EqualFold(strings.TrimSpace(rightArtifact.Status), strings.TrimSpace(leftArtifact.Status)):
 			wantArtifactAdvance = "artifact_status_changed"
 		case rightArtifact.DeliverableFingerprint != "" && rightArtifact.DeliverableFingerprint != leftArtifact.DeliverableFingerprint:
 			wantArtifactAdvance = "artifact_deliverable_changed"

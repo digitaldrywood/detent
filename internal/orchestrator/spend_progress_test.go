@@ -554,6 +554,43 @@ func (c spendProgressHydratingConnector) HydratePullRequest(ctx context.Context,
 	return c.hydrator.HydratePullRequest(ctx, issue)
 }
 
+func TestSpendProgressArtifactAdvance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		previous spendProgressArtifactFingerprint
+		current  spendProgressArtifactFingerprint
+		want     string
+	}{
+		{
+			name:     "status transition",
+			previous: spendProgressArtifactFingerprint{Status: "recut"},
+			current:  spendProgressArtifactFingerprint{Status: "pending_review"},
+			want:     "artifact_status_changed",
+		},
+		{
+			name:     "status casing only",
+			previous: spendProgressArtifactFingerprint{Status: "approved"},
+			current:  spendProgressArtifactFingerprint{Status: "Approved"},
+		},
+		{
+			name:     "all outputs deleted",
+			previous: spendProgressArtifactFingerprint{OutputFiles: 1, OutputFingerprint: "with-output"},
+			current:  spendProgressArtifactFingerprint{OutputFingerprint: "empty-output"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := spendProgressArtifactAdvance(&tt.previous, &tt.current); got != tt.want {
+				t.Fatalf("spendProgressArtifactAdvance() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 	t.Parallel()
 
@@ -575,8 +612,9 @@ func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 		{name: "artifact receipt", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact}, decision: implementCompletionProgressDecision{ProgressKinds: []string{"artifact_receipt"}}, want: true, wantReason: "artifact_receipt_changed"},
 		{name: "artifact status", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, DispatchArtifactStatus: "recut", ArtifactStatusField: "render_status"}, decision: implementCompletionProgressDecision{Issue: connector.Issue{Fields: map[string]string{"render_status": "pending_review"}}}, want: true, wantReason: "artifact_status_changed"},
 		{name: "artifact status initialized", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactStatusField: "render_status"}, decision: implementCompletionProgressDecision{Issue: connector.Issue{Fields: map[string]string{"render_status": "recut"}}}, want: true, wantReason: "artifact_status_changed"},
-		{name: "artifact output", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFingerprint: "before", CurrentFingerprint: "after"}}, want: true, wantReason: "artifact_output_changed"},
+		{name: "artifact output", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFiles: 1, CurrentFiles: 1, InitialFingerprint: "before", CurrentFingerprint: "after"}}, want: true, wantReason: "artifact_output_changed"},
 		{name: "static artifact output", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFingerprint: "same", CurrentFingerprint: "same"}}},
+		{name: "all artifact outputs deleted", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFiles: 1, InitialFingerprint: "before", CurrentFingerprint: "empty-output"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

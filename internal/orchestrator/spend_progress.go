@@ -332,7 +332,7 @@ func spendProgressArtifactAdvance(previous, current *spendProgressArtifactFinger
 	if current.ReceiptHash != "" && current.ReceiptHash != previous.ReceiptHash {
 		return "artifact_receipt_changed"
 	}
-	if current.Status != "" && current.Status != previous.Status {
+	if current.Status != "" && !strings.EqualFold(strings.TrimSpace(current.Status), strings.TrimSpace(previous.Status)) {
 		return "artifact_status_changed"
 	}
 	if current.DeliverableFingerprint != "" && current.DeliverableFingerprint != previous.DeliverableFingerprint {
@@ -610,6 +610,7 @@ func implementAcceptedStateChange(running Running, decision implementCompletionP
 			return true, "artifact_status_changed"
 		}
 		if running.ArtifactEvidence.Available &&
+			running.ArtifactEvidence.CurrentFiles > 0 &&
 			strings.TrimSpace(running.ArtifactEvidence.InitialFingerprint) != "" &&
 			strings.TrimSpace(running.ArtifactEvidence.CurrentFingerprint) != "" &&
 			running.ArtifactEvidence.InitialFingerprint != running.ArtifactEvidence.CurrentFingerprint {
