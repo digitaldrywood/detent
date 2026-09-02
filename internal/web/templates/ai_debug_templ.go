@@ -78,7 +78,7 @@ func aiDebugCopyButton(path string, class string) templ.Component {
 	})
 }
 
-func aiDebugPrivacyNotice(class string) templ.Component {
+func aiDebugActionPanel(path string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -99,62 +99,7 @@ func aiDebugPrivacyNotice(class string) templ.Component {
 			templ_7745c5c3_Var5 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var6 = []any{class}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var6...)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<span class=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var7 string
-		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var6).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/ai_debug.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\" data-ai-debug-privacy>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = icon.TriangleAlert(icon.Props{Class: "size-3.5 shrink-0"}).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<span>Contains private fleet detail. Do not paste into a public or shared context.</span></span>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		return nil
-	})
-}
-
-func aiDebugActionPanel(path string) templ.Component {
-	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
-			return templ_7745c5c3_CtxErr
-		}
-		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-		if !templ_7745c5c3_IsBuffer {
-			defer func() {
-				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err == nil {
-					templ_7745c5c3_Err = templ_7745c5c3_BufErr
-				}
-			}()
-		}
-		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var8 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var8 == nil {
-			templ_7745c5c3_Var8 = templ.NopComponent
-		}
-		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<section class=\"flex flex-col gap-2 rounded-card border border-warn/40 bg-warn/5 p-3\" aria-label=\"AI Debug\"><div class=\"flex flex-wrap items-center gap-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<section class=\"flex flex-col gap-2 rounded-card border border-warn/40 bg-warn/5 p-3\" aria-label=\"AI Debug\"><div class=\"flex flex-wrap items-center gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -162,11 +107,7 @@ func aiDebugActionPanel(path string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = aiDebugPrivacyNotice("flex min-w-0 items-start gap-1.5 text-2xs leading-5 text-warn").Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -190,12 +131,12 @@ func aiDebugScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var9 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var9 == nil {
-			templ_7745c5c3_Var9 = templ.NopComponent
+		templ_7745c5c3_Var6 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var6 == nil {
+			templ_7745c5c3_Var6 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<script>\n\t\t(function () {\n\t\t\tfunction copyFallback(value) {\n\t\t\t\tvar input = document.createElement(\"textarea\");\n\t\t\t\tinput.value = value;\n\t\t\t\tinput.setAttribute(\"readonly\", \"\");\n\t\t\t\tinput.style.position = \"fixed\";\n\t\t\t\tinput.style.opacity = \"0\";\n\t\t\t\tdocument.body.appendChild(input);\n\t\t\t\tinput.select();\n\t\t\t\tdocument.execCommand(\"copy\");\n\t\t\t\tinput.remove();\n\t\t\t}\n\n\t\t\tfunction copyPrompt(value) {\n\t\t\t\tif (!navigator.clipboard || !navigator.clipboard.writeText) {\n\t\t\t\t\tcopyFallback(value);\n\t\t\t\t\treturn Promise.resolve();\n\t\t\t\t}\n\t\t\t\treturn navigator.clipboard.writeText(value).catch(function () {\n\t\t\t\t\tcopyFallback(value);\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar button = event.target instanceof Element ? event.target.closest(\"[data-ai-debug-url]\") : null;\n\t\t\t\tif (!button) return;\n\t\t\t\tevent.preventDefault();\n\t\t\t\tevent.stopPropagation();\n\t\t\t\tvar url = button.getAttribute(\"data-ai-debug-url\") || \"\";\n\t\t\t\tif (!url || button.getAttribute(\"aria-busy\") === \"true\") return;\n\t\t\t\tbutton.setAttribute(\"aria-busy\", \"true\");\n\t\t\t\tfetch(url, { headers: { \"Accept\": \"text/plain\", \"HX-Request\": \"true\" } })\n\t\t\t\t\t.then(function (response) {\n\t\t\t\t\t\tif (!response.ok) throw new Error(\"AI Debug request failed with status \" + response.status);\n\t\t\t\t\t\treturn response.text();\n\t\t\t\t\t})\n\t\t\t\t\t.then(function (prompt) {\n\t\t\t\t\t\treturn copyPrompt(prompt);\n\t\t\t\t\t})\n\t\t\t\t\t.catch(function (error) {\n\t\t\t\t\t\tconsole.error(error);\n\t\t\t\t\t})\n\t\t\t\t\t.finally(function () {\n\t\t\t\t\t\tbutton.removeAttribute(\"aria-busy\");\n\t\t\t\t\t});\n\t\t\t});\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<dialog id=\"ai-debug-privacy-dialog\" class=\"m-auto w-[calc(100vw-2.5rem)] max-w-md rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50\" role=\"alertdialog\" aria-labelledby=\"ai-debug-privacy-title\" aria-describedby=\"ai-debug-privacy-description\" data-ai-debug-dialog><form method=\"dialog\" class=\"flex flex-col gap-4 p-5\"><div class=\"flex flex-col gap-2\"><h2 id=\"ai-debug-privacy-title\" class=\"text-base font-semibold\">Copy private fleet details?</h2><p id=\"ai-debug-privacy-description\" class=\"text-sm leading-relaxed text-sec\">Contains private fleet detail. Do not paste into a public or shared context.</p></div><label class=\"flex cursor-pointer items-center gap-2 text-sm text-text\"><input type=\"checkbox\" class=\"size-4 accent-accent\" data-ai-debug-dismiss-warning> <span>Don't warn me again</span></label><div class=\"flex flex-row-reverse flex-wrap gap-2\"><button type=\"button\" class=\"min-h-10 rounded-card bg-accent px-4 text-sm font-medium text-page hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-ai-debug-confirm>Copy prompt</button> <button type=\"submit\" value=\"cancel\" class=\"min-h-10 rounded-card border border-line bg-surface px-4 text-sm font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-ai-debug-cancel autofocus>Cancel</button></div></form></dialog><script>\n\t\t(function () {\n\t\t\tvar privacyStorageKey = \"detent-ai-debug-privacy-warning-dismissed\";\n\t\t\tvar dialog = document.getElementById(\"ai-debug-privacy-dialog\");\n\t\t\tvar activeButton = null;\n\t\t\tvar pendingURL = \"\";\n\n\t\t\tfunction copyFallback(value) {\n\t\t\t\tvar input = document.createElement(\"textarea\");\n\t\t\t\tinput.value = value;\n\t\t\t\tinput.setAttribute(\"readonly\", \"\");\n\t\t\t\tinput.style.position = \"fixed\";\n\t\t\t\tinput.style.opacity = \"0\";\n\t\t\t\tdocument.body.appendChild(input);\n\t\t\t\tinput.select();\n\t\t\t\tdocument.execCommand(\"copy\");\n\t\t\t\tinput.remove();\n\t\t\t}\n\n\t\t\tfunction copyPrompt(value) {\n\t\t\t\tif (!navigator.clipboard || !navigator.clipboard.writeText) {\n\t\t\t\t\tcopyFallback(value);\n\t\t\t\t\treturn Promise.resolve();\n\t\t\t\t}\n\t\t\t\treturn navigator.clipboard.writeText(value).catch(function () {\n\t\t\t\t\tcopyFallback(value);\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction privacyWarningDismissed() {\n\t\t\t\ttry {\n\t\t\t\t\treturn !!(window.localStorage && window.localStorage.getItem(privacyStorageKey) === \"true\");\n\t\t\t\t} catch (_) {\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction dismissPrivacyWarning() {\n\t\t\t\ttry {\n\t\t\t\t\twindow.localStorage && window.localStorage.setItem(privacyStorageKey, \"true\");\n\t\t\t\t} catch (_) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction fetchAndCopy(button, url) {\n\t\t\t\tbutton.setAttribute(\"aria-busy\", \"true\");\n\t\t\t\tfetch(url, { headers: { \"Accept\": \"text/plain\", \"HX-Request\": \"true\" } })\n\t\t\t\t\t.then(function (response) {\n\t\t\t\t\t\tif (!response.ok) throw new Error(\"AI Debug request failed with status \" + response.status);\n\t\t\t\t\t\treturn response.text();\n\t\t\t\t\t})\n\t\t\t\t\t.then(function (prompt) {\n\t\t\t\t\t\treturn copyPrompt(prompt);\n\t\t\t\t\t})\n\t\t\t\t\t.catch(function (error) {\n\t\t\t\t\t\tconsole.error(error);\n\t\t\t\t\t})\n\t\t\t\t\t.finally(function () {\n\t\t\t\t\t\tbutton.removeAttribute(\"aria-busy\");\n\t\t\t\t\t});\n\t\t\t}\n\n\t\t\tif (dialog) {\n\t\t\t\tdialog.addEventListener(\"close\", function () {\n\t\t\t\t\tvar button = activeButton;\n\t\t\t\t\tactiveButton = null;\n\t\t\t\t\tpendingURL = \"\";\n\t\t\t\t\tvar checkbox = dialog.querySelector(\"[data-ai-debug-dismiss-warning]\");\n\t\t\t\t\tif (checkbox) checkbox.checked = false;\n\t\t\t\t\tif (button && document.documentElement.contains(button)) button.focus();\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar confirm = event.target instanceof Element ? event.target.closest(\"[data-ai-debug-confirm]\") : null;\n\t\t\t\tif (confirm && dialog && dialog.open && activeButton && pendingURL) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tvar button = activeButton;\n\t\t\t\t\tvar url = pendingURL;\n\t\t\t\t\tvar checkbox = dialog.querySelector(\"[data-ai-debug-dismiss-warning]\");\n\t\t\t\t\tif (checkbox && checkbox.checked) dismissPrivacyWarning();\n\t\t\t\t\tdialog.close(\"confirm\");\n\t\t\t\t\tfetchAndCopy(button, url);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\n\t\t\t\tvar button = event.target instanceof Element ? event.target.closest(\"[data-ai-debug-url]\") : null;\n\t\t\t\tif (!button) return;\n\t\t\t\tevent.preventDefault();\n\t\t\t\tevent.stopPropagation();\n\t\t\t\tvar url = button.getAttribute(\"data-ai-debug-url\") || \"\";\n\t\t\t\tif (!url || button.getAttribute(\"aria-busy\") === \"true\") return;\n\t\t\t\tif (privacyWarningDismissed()) {\n\t\t\t\t\tfetchAndCopy(button, url);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (!dialog) return;\n\t\t\t\tactiveButton = button;\n\t\t\t\tpendingURL = url;\n\t\t\t\tvar checkbox = dialog.querySelector(\"[data-ai-debug-dismiss-warning]\");\n\t\t\t\tif (checkbox) checkbox.checked = false;\n\t\t\t\tif (!dialog.open) dialog.showModal();\n\t\t\t});\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
