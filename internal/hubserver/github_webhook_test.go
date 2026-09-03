@@ -421,6 +421,97 @@ func TestGitHubWebhookMapsAndClearsWorkflowStateFromLabels(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhookDeletedIssueCannotRemainSchedulable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		deliveries         []string
+		wantState          string
+		wantWorkflowMapped bool
+	}{
+		{
+			name: "newer deletion",
+			deliveries: []string{
+				completeIssueWebhookPayload(t, "Mapped issue", "2026-09-02T12:00:00Z"),
+				issueWebhookPayloadWithAction(t, "deleted", "Mapped issue", "2026-09-02T13:00:00Z"),
+			},
+			wantState: "closed",
+		},
+		{
+			name: "stale deletion",
+			deliveries: []string{
+				completeIssueWebhookPayload(t, "Mapped issue", "2026-09-02T13:00:00Z"),
+				issueWebhookPayloadWithAction(t, "deleted", "Mapped issue", "2026-09-02T12:00:00Z"),
+			},
+			wantState:          "open",
+			wantWorkflowMapped: true,
+		},
+		{
+			name: "equal timestamp deletion last",
+			deliveries: []string{
+				completeIssueWebhookPayload(t, "Mapped issue", "2026-09-02T12:00:00Z"),
+				issueWebhookPayloadWithAction(t, "deleted", "Mapped issue", "2026-09-02T12:00:00Z"),
+			},
+			wantState: "closed",
+		},
+		{
+			name: "equal timestamp deletion first",
+			deliveries: []string{
+				issueWebhookPayloadWithAction(t, "deleted", "Mapped issue", "2026-09-02T12:00:00Z"),
+				completeIssueWebhookPayload(t, "Mapped issue", "2026-09-02T12:00:00Z"),
+			},
+			wantState: "closed",
+		},
+	}
+	for testIndex, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("deleted-seed-%d", testIndex), "issues", completeIssueWebhookPayload(t, "Seed issue", "2026-09-02T11:00:00Z"))
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("seed status = %d body = %s", response.Code, response.Body.String())
+			}
+			var repositoryID int64
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM repositories").Scan(&repositoryID); err != nil {
+				t.Fatalf("read repository ID: %v", err)
+			}
+			result, err := service.database.db.ExecContext(t.Context(), `
+				INSERT INTO workflow_states (
+					repository_id, github_node_id, source_name, detent_state,
+					dispatchable, created_at, updated_at
+				) VALUES (?, ?, ?, ?, 1, ?, ?)
+			`, repositoryID, "WS_todo", "detent:todo", "Todo", testTimestamp, testTimestamp)
+			if err != nil {
+				t.Fatalf("insert workflow state: %v", err)
+			}
+			wantWorkflowStateID, err := result.LastInsertId()
+			if err != nil {
+				t.Fatalf("read workflow state ID: %v", err)
+			}
+			for deliveryIndex, payload := range test.deliveries {
+				response = sendSignedWebhookRequest(t, service, fmt.Sprintf("deleted-%d-%d", testIndex, deliveryIndex), "issues", payload)
+				if response.Code != http.StatusAccepted {
+					t.Fatalf("delivery %d status = %d body = %s", deliveryIndex, response.Code, response.Body.String())
+				}
+			}
+			var state string
+			var workflowStateID sql.NullInt64
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT github_state, workflow_state_id FROM issues").Scan(&state, &workflowStateID); err != nil {
+				t.Fatalf("read issue scheduling state: %v", err)
+			}
+			if state != test.wantState {
+				t.Fatalf("GitHub state = %q, want %q", state, test.wantState)
+			}
+			if workflowStateID.Valid != test.wantWorkflowMapped {
+				t.Fatalf("workflow state = %#v, want mapped %t", workflowStateID, test.wantWorkflowMapped)
+			}
+			if test.wantWorkflowMapped && workflowStateID.Int64 != wantWorkflowStateID {
+				t.Fatalf("workflow state ID = %d, want %d", workflowStateID.Int64, wantWorkflowStateID)
+			}
+		})
+	}
+}
+
 func TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection(t *testing.T) {
 	t.Parallel()
 
@@ -606,6 +697,20 @@ func completeIssueWebhookPayload(t *testing.T, title string, updatedAt string) s
 			"updated_at": updatedAt,
 		},
 	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode issue webhook payload: %v", err)
+	}
+	return string(encoded)
+}
+
+func issueWebhookPayloadWithAction(t *testing.T, action string, title string, updatedAt string) string {
+	t.Helper()
+	payload := make(map[string]any)
+	if err := json.Unmarshal([]byte(completeIssueWebhookPayload(t, title, updatedAt)), &payload); err != nil {
+		t.Fatalf("decode issue webhook payload: %v", err)
+	}
+	payload["action"] = action
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("encode issue webhook payload: %v", err)

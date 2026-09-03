@@ -177,6 +177,17 @@ func applyIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, 
 	partialStamp := sourceStampFromDelivery(delivery, webhookObjectTime(payload.Issue))
 	target, hasTarget := issueHydrationTarget(repositoryFullName, payload.Issue, partialStamp, "partial_payload")
 	issue, issueStamp, issueComplete := normalizeWebhookIssue(payload.Issue)
+	deleted := strings.EqualFold(strings.TrimSpace(delivery.Action), "deleted")
+	if deleted && issueComplete {
+		issue.State = "closed"
+		issue.Labels = []string{}
+		issue.Assignees = []string{}
+		var err error
+		issueStamp, err = newSourceStampWithVersion(issue.UpdatedAt, "2", issue)
+		if err != nil {
+			return webhookProcessResult{}, err
+		}
+	}
 	repository, repositoryStamp, repositoryComplete := normalizeWebhookRepository(payload.Repository, issueStamp.UpdatedAt)
 	repositoryID, repositoryConflict, err := applyOrResolveWebhookRepository(ctx, tx, repositoryFullName, repository, repositoryStamp, repositoryComplete, now)
 	if err != nil {
@@ -199,7 +210,7 @@ func applyIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, 
 	if err != nil {
 		return webhookProcessResult{}, err
 	}
-	if repositoryConflict || result.Conflict {
+	if !deleted && (repositoryConflict || result.Conflict) {
 		target, _ = issueHydrationTarget(repositoryFullName, payload.Issue, issueStamp, "source_version_conflict")
 		target.RepositoryID = repositoryID
 		if err := enqueueHydration(ctx, tx, delivery.DeliveryID, target, now); err != nil {
@@ -851,12 +862,16 @@ func checkHydrationTargets(repositoryID *int64, repositoryFullName string, check
 }
 
 func newSourceStamp(updatedAt time.Time, canonical any) (sourceStamp, error) {
+	return newSourceStampWithVersion(updatedAt, "1", canonical)
+}
+
+func newSourceStampWithVersion(updatedAt time.Time, version string, canonical any) (sourceStamp, error) {
 	value, err := json.Marshal(canonical)
 	if err != nil {
 		return sourceStamp{}, fmt.Errorf("encode GitHub webhook source version: %w", err)
 	}
 	digest := sha256.Sum256(value)
-	return sourceStamp{UpdatedAt: updatedAt.UTC(), Version: "1:" + hex.EncodeToString(digest[:])}, nil
+	return sourceStamp{UpdatedAt: updatedAt.UTC(), Version: version + ":" + hex.EncodeToString(digest[:])}, nil
 }
 
 func sourceStampFromDelivery(delivery storedWebhook, updatedAt time.Time) sourceStamp {
