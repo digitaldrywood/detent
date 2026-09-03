@@ -100,6 +100,7 @@ func TestBoardSnapshotRendersSharedWorkControlsAndRepresentations(t *testing.T) 
 		`data-work-search-input`,
 		`data-work-filter="readiness"`,
 		`data-work-health`,
+		`href="/health/ui"`,
 		`data-work-list-body`,
 		`data-work-view-panel="board"`,
 		`data-work-view-panel="list"`,

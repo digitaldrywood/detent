@@ -58,7 +58,7 @@ templ workToolbar(data DashboardData, view boardView) {
 				<option value="identifier">Identifier</option>
 			</select>
 		</label>
-		<a href="/health" class={ "flex h-9 min-w-0 items-center gap-1.5 rounded-card border border-line bg-surface px-2.5 font-mono text-2xs " + boardExtraTextClass(refreshFreshnessKind(data.Snapshot)) } title={ workHealthTitle(data) } data-work-health>
+		<a href="/health/ui" class={ "flex h-9 min-w-0 items-center gap-1.5 rounded-card border border-line bg-surface px-2.5 font-mono text-2xs " + boardExtraTextClass(refreshFreshnessKind(data.Snapshot)) } title={ workHealthTitle(data) } data-work-health>
 			@primitives.StatusDot(refreshFreshnessKind(data.Snapshot), false)
 			<span class="max-w-36 truncate">{ refreshFreshnessSummary(data.Snapshot) }</span>
 		</a>
@@ -513,6 +513,8 @@ templ workViewScript() {
 				var current = event.target.closest("[data-work-item]");
 				if (!current || current.dataset.workRepresentation !== state.mode) return;
 				if (event.key === "Enter") {
+					var interactive = event.target.closest("a, button, input, select, textarea, label, [data-work-bulk]");
+					if (interactive && interactive !== current) return;
 					setSelection(current);
 					if (!current.matches('[role="button"]')) {
 						event.preventDefault();

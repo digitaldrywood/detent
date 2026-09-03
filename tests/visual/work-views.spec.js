@@ -49,6 +49,10 @@ test("Board and List share query, selection, detail, and density state", async (
   expect(await listItems.count()).toBe(await boardItems.count());
   await expect(page.locator('[data-work-view-panel="board"]')).toBeVisible();
   await expect(page.locator('[data-work-view-panel="list"]')).toBeHidden();
+  await expect(page.locator("[data-work-health]")).toHaveAttribute(
+    "href",
+    "/health/ui",
+  );
 
   const search = page.locator("[data-work-search-input]");
   await search.fill("deterministic chart colors");
@@ -169,6 +173,25 @@ test("List stays contained and keyboard position survives a tablet view switch",
   await page.keyboard.press("Enter");
   await expect(page.locator("[data-detail-sheet]")).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+
+  const issueLink = rows.first().locator("a").first();
+  await issueLink.evaluate((link) => {
+    link.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        document.body.dataset.workNestedLinkActivated = "true";
+      },
+      { once: true },
+    );
+  });
+  await issueLink.focus();
+  await issueLink.press("Enter");
+  await expect(page.locator("body")).toHaveAttribute(
+    "data-work-nested-link-activated",
+    "true",
+  );
   await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
 });
 
