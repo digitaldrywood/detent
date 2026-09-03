@@ -636,6 +636,12 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
 	dispatchWorkpadHash, dispatchComments, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(runCtx, issue)
 	dispatchProgress := implementProgressArtifactSnapshotFromIssue(issue, false)
+	dispatchArtifactStatus := ""
+	artifactStatusField := ""
+	if o.cfg.DeliverableKind == workflowconfig.DeliverableArtifact {
+		artifactStatusField = gate.Effective(o.cfg.AutoPromote.Gate).Artifact.StatusField
+		dispatchArtifactStatus, _ = artifactStatusFieldFromIssue(issue, artifactStatusField)
+	}
 	if runMode == runpkg.RunModeImplement {
 		if dispatchWorkpadRead {
 			progressIssue := cloneIssue(issue)
@@ -647,28 +653,31 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	}
 	generation := o.workerGeneration.Add(1)
 	state.Running[issue.ID] = Running{
-		Issue:               issue,
-		Attempt:             attempt,
-		WorkAttemptID:       workAttemptID,
-		Generation:          generation,
-		Mode:                runMode,
-		DispatchSourceState: dispatchStartSourceState,
-		DispatchTargetState: dispatchStartTargetState,
-		DispatchWorkpadHash: dispatchWorkpadHash,
-		DispatchWorkpadRead: dispatchWorkpadRead,
-		DispatchProgress:    dispatchProgress,
-		StartedAt:           now,
-		WorkerHost:          workerHost,
-		CapacityScope:       capacityScope,
-		CapacityProbe:       capacityProbeKey != "",
-		ForgeProbeHost:      reservedForgeProbeHost(state, issue.ID),
-		GitHubCredential:    reservedGitHubCredential(state, issue.ID),
-		ModelPermitExempt:   !modelPermitRequired,
-		StopDestination:     o.cfg.StopRunTargetState,
-		StopPriorityOptions: stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
-		globalSlot:          globalSlot,
-		cancel:              cancel,
-		stop:                cancelCause,
+		Issue:                  issue,
+		Attempt:                attempt,
+		WorkAttemptID:          workAttemptID,
+		Generation:             generation,
+		Mode:                   runMode,
+		DispatchSourceState:    dispatchStartSourceState,
+		DispatchTargetState:    dispatchStartTargetState,
+		DispatchWorkpadHash:    dispatchWorkpadHash,
+		DispatchWorkpadRead:    dispatchWorkpadRead,
+		DispatchProgress:       dispatchProgress,
+		DispatchArtifactStatus: strings.TrimSpace(dispatchArtifactStatus),
+		ArtifactStatusField:    strings.TrimSpace(artifactStatusField),
+		DeliverableKind:        o.cfg.DeliverableKind,
+		StartedAt:              now,
+		WorkerHost:             workerHost,
+		CapacityScope:          capacityScope,
+		CapacityProbe:          capacityProbeKey != "",
+		ForgeProbeHost:         reservedForgeProbeHost(state, issue.ID),
+		GitHubCredential:       reservedGitHubCredential(state, issue.ID),
+		ModelPermitExempt:      !modelPermitRequired,
+		StopDestination:        o.cfg.StopRunTargetState,
+		StopPriorityOptions:    stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
+		globalSlot:             globalSlot,
+		cancel:                 cancel,
+		stop:                   cancelCause,
 	}
 	o.setGlobalDispatchPreempt(globalSlot, cancel)
 	state.Claimed[issue.ID] = claim

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -271,6 +272,78 @@ func (f *Filesystem) IssueRecoveryState(ctx context.Context, issue Issue) (Recov
 	return RecoveryState{
 		DiffStat:             diffStat,
 		WorkspaceFingerprint: diffStat.Fingerprint,
+	}, nil
+}
+
+func (f *Filesystem) ArtifactEvidence(ctx context.Context, info Info, issue Issue) (ArtifactEvidence, error) {
+	if f == nil || strings.TrimSpace(f.outputRoot) == "" {
+		return ArtifactEvidence{}, nil
+	}
+	normalized, err := f.normalizeInfo(info, issue)
+	if err != nil {
+		return ArtifactEvidence{}, err
+	}
+	outputPath, err := validateWorkspacePath(f.outputRoot, filepath.Join(f.outputRoot, normalized.Key))
+	if err != nil {
+		return ArtifactEvidence{}, err
+	}
+	exists, isDir, err := pathExists(outputPath)
+	if err != nil {
+		return ArtifactEvidence{}, err
+	}
+	if !exists || !isDir {
+		return ArtifactEvidence{Available: true}, nil
+	}
+	root, err := os.OpenRoot(outputPath)
+	if err != nil {
+		return ArtifactEvidence{}, fmt.Errorf("open artifact output root: %w", err)
+	}
+	defer f.closeRoot("artifact output", root)
+
+	hash := sha256.New()
+	files := 0
+	err = filepath.WalkDir(outputPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relativePath, err := filepath.Rel(outputPath, path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files++
+		values := []string{
+			filepath.ToSlash(relativePath),
+			info.Mode().String(),
+			strconv.FormatInt(info.Size(), 10),
+			strconv.FormatInt(info.ModTime().UTC().UnixNano(), 10),
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := root.Readlink(relativePath)
+			if err != nil {
+				return err
+			}
+			values = append(values, target)
+		}
+		_, err = io.WriteString(hash, strings.Join(values, "\x00")+"\x00")
+		return err
+	})
+	if err != nil {
+		return ArtifactEvidence{}, err
+	}
+	return ArtifactEvidence{
+		Available:   true,
+		Files:       files,
+		Fingerprint: hex.EncodeToString(hash.Sum(nil)),
 	}, nil
 }
 

@@ -678,6 +678,7 @@ type RunResult struct {
 	RuntimeIdentity         agentidentity.Identity
 	Tokens                  TokenTotals
 	DiffStats               DiffStats
+	ArtifactEvidence        ArtifactProgressEvidence
 	RateLimits              *telemetry.RateLimits
 	BudgetRefusal           *BudgetRefusal
 	SkillDraftProposed      bool
@@ -690,6 +691,15 @@ type RunResult struct {
 	MergePrecheck           *MergePrecheck
 	MergeFallbackFindings   string
 	budgetProjection        *dispatchBudgetProjection
+}
+
+type ArtifactProgressEvidence struct {
+	Available          bool
+	InitialFiles       int
+	CurrentFiles       int
+	InitialFingerprint string
+	CurrentFingerprint string
+	Warning            string
 }
 
 type dispatchBudgetProjection struct {

@@ -76,6 +76,45 @@ func TestAgentTurnIssueRepository(t *testing.T) {
 	}
 }
 
+func TestArtifactProgressEvidenceRequiresBothSnapshots(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		initial workspaceArtifactEvidenceObservation
+		current workspaceArtifactEvidenceObservation
+		want    ArtifactProgressEvidence
+	}{
+		{
+			name:    "changed output",
+			initial: workspaceArtifactEvidenceObservation{supported: true, observed: true, evidence: workspace.ArtifactEvidence{Available: true, Files: 1, Fingerprint: "before"}},
+			current: workspaceArtifactEvidenceObservation{supported: true, observed: true, evidence: workspace.ArtifactEvidence{Available: true, Files: 2, Fingerprint: "after"}},
+			want:    ArtifactProgressEvidence{Available: true, InitialFiles: 1, CurrentFiles: 2, InitialFingerprint: "before", CurrentFingerprint: "after"},
+		},
+		{
+			name:    "final read failed",
+			initial: workspaceArtifactEvidenceObservation{supported: true, observed: true, evidence: workspace.ArtifactEvidence{Available: true, Files: 1, Fingerprint: "before"}},
+			current: workspaceArtifactEvidenceObservation{supported: true, err: "permission denied"},
+			want:    ArtifactProgressEvidence{InitialFiles: 1, InitialFingerprint: "before", Warning: "final artifact output evidence: permission denied"},
+		},
+		{
+			name:    "output root unavailable",
+			initial: workspaceArtifactEvidenceObservation{supported: true},
+			current: workspaceArtifactEvidenceObservation{supported: true},
+			want:    ArtifactProgressEvidence{Warning: "artifact output root is not configured"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := artifactProgressEvidence(tt.initial, tt.current); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("artifactProgressEvidence() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	t.Parallel()
 

@@ -226,6 +226,64 @@ func TestRecoverBlockedIssuesSurfacesInvalidWorkpadHold(t *testing.T) {
 	}
 }
 
+func TestCauseBlockedRecoveryAutoRecoversObsoleteArtifactSpendPark(t *testing.T) {
+	t.Parallel()
+
+	issue := dependencyAutoUnblockIssue("wi-artifact-legacy-spend", blockedStatusState)
+	issue.Deliverable = &connector.Deliverable{Kind: "artifact"}
+	parkedAt := time.Date(2026, 8, 31, 18, 30, 0, 0, time.UTC)
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	parkOrch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+	parkOrch.cfg.DeliverableKind = "artifact"
+	parkOrch.workflowMetrics = metrics
+	metadata := parkOrch.newBlockedRecoveryMetadata(
+		t.Context(),
+		issue,
+		RunModeImplement,
+		spendProgressReason,
+		blockedRecoveryPredicateFingerprintChange,
+		autoPromoteReworkState,
+		DiffStats{},
+	)
+	recordBlockedCausePark(t, metrics, issue, parkedAt, metadata)
+
+	tracker := &dependencyAutoUnblockConnector{}
+	orch := blockedCauseTestOrchestrator(tracker)
+	orch.cfg.DeliverableKind = "artifact"
+	orch.workflowMetrics = metrics
+	orch.workAttempts = &implementProgressAttemptStore{history: []store.WorkAttempt{{
+		TerminalState: store.WorkAttemptTerminalNoProgress,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			spendProgressMetadataKey: spendProgressRecord{
+				BlockReason: spendProgressReason,
+				Case:        spendProgressCaseNoPR,
+			},
+		}),
+	}}}
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{
+		Issue:     issue,
+		Source:    BlockedSourceProjectStatus,
+		BlockedAt: parkedAt,
+		Recovery:  metadata.BlockedRecovery,
+	}
+
+	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Second))
+
+	if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
+		t.Fatalf("updates = %#v, want immediate Rework recovery", tracker.updates)
+	}
+	if _, ok := transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] remains after recovery", issue.ID)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "checked PR evidence that the project cannot produce") {
+		t.Fatalf("comments = %#v, want obsolete PR evidence explanation", tracker.comments)
+	}
+}
+
 func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) {
 	t.Parallel()
 

@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -23,6 +25,8 @@ func TestEvaluateSpendProgress(t *testing.T) {
 	base := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	createdAt := base.Add(-time.Hour)
 	acceptedAt := base.Add(-20 * time.Minute)
+	artifactReceiptBody := "## Codex Workpad\n\nCompleted timecode repairs with verification evidence.\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+	artifactDeliverableFingerprint := workpad.ContentHash(`{"kind":"artifact"}`)
 	acceptedAttempt := store.WorkAttempt{
 		CompletedAt: acceptedAt,
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
@@ -45,6 +49,8 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		effort           string
 		accepted         bool
 		acceptedReason   string
+		deliverableKind  string
+		artifactEvidence runpkg.ArtifactProgressEvidence
 		wantBlock        bool
 		wantBlockedBy    string
 		wantAccepted     bool
@@ -53,6 +59,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		wantSpendCalls   int
 		wantHistoryCalls int
 		wantSince        time.Time
+		wantCase         string
 		creditAt         time.Time
 	}{
 		{name: "disabled avoids tracking", limit: 0, spend: store.IssueSpendSince{CostUSD: 100}, wantLimit: 0, wantSpendCalls: 0, wantHistoryCalls: 0},
@@ -148,6 +155,115 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			wantHistoryCalls: 1,
 			wantSince:        createdAt,
 		},
+		{
+			name:        "artifact completion receipt resets spend",
+			billingMode: "subscription",
+			tokenLimit:  25_000_000,
+			spend:       store.IssueSpendSince{TotalTokens: 33_152_887, Sessions: 6},
+			issue: connector.Issue{
+				Deliverable: &connector.Deliverable{Kind: "artifact"},
+				WorkpadSignal: &workpad.Signal{
+					Source: workpad.SourceStructured,
+					Status: workpad.StatusComplete,
+				},
+				Comments: []connector.IssueComment{{Body: artifactReceiptBody}},
+			},
+			wantAccepted:     true,
+			wantReason:       "artifact_receipt_changed",
+			wantHistoryCalls: 1,
+			wantSince:        base,
+		},
+		{
+			name:            "static artifact receipt still parks",
+			billingMode:     "subscription",
+			tokenLimit:      25_000_000,
+			spend:           store.IssueSpendSince{TotalTokens: 25_000_000, Sessions: 5},
+			deliverableKind: workflowconfig.DeliverableArtifact,
+			issue: connector.Issue{
+				Deliverable: &connector.Deliverable{Kind: "artifact"},
+				Comments:    []connector.IssueComment{{Body: artifactReceiptBody}},
+			},
+			history: []store.WorkAttempt{{
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: spendProgressRecord{
+						TokenLimit: 25_000_000,
+						ArtifactFingerprint: &spendProgressArtifactFingerprint{
+							ReceiptHash:            workpad.ContentHash(artifactReceiptBody),
+							StatusField:            gate.DefaultArtifactStatusField,
+							DeliverableFingerprint: artifactDeliverableFingerprint,
+						},
+					},
+				}),
+			}},
+			wantBlock:        true,
+			wantBlockedBy:    "tokens",
+			wantSpendCalls:   1,
+			wantHistoryCalls: 1,
+			wantSince:        createdAt,
+			wantCase:         spendProgressCaseStaticArtifact,
+		},
+		{
+			name:            "artifact status transition resets spend",
+			billingMode:     "subscription",
+			tokenLimit:      25_000_000,
+			deliverableKind: workflowconfig.DeliverableArtifact,
+			issue: connector.Issue{
+				Deliverable: &connector.Deliverable{Kind: "artifact"},
+				Fields:      map[string]string{gate.DefaultArtifactStatusField: "pending_review"},
+			},
+			history: []store.WorkAttempt{{
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: spendProgressRecord{
+						TokenLimit: 25_000_000,
+						ArtifactFingerprint: &spendProgressArtifactFingerprint{
+							StatusField:            gate.DefaultArtifactStatusField,
+							Status:                 "recut",
+							DeliverableFingerprint: artifactDeliverableFingerprint,
+						},
+					},
+				}),
+			}},
+			wantAccepted:     true,
+			wantReason:       "artifact_status_changed",
+			wantHistoryCalls: 1,
+			wantSince:        base,
+		},
+		{
+			name:             "artifact output transition resets spend",
+			billingMode:      "subscription",
+			tokenLimit:       25_000_000,
+			deliverableKind:  workflowconfig.DeliverableArtifact,
+			artifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, CurrentFiles: 2, CurrentFingerprint: "new-output"},
+			history: []store.WorkAttempt{{
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: spendProgressRecord{
+						TokenLimit: 25_000_000,
+						ArtifactFingerprint: &spendProgressArtifactFingerprint{
+							StatusField:       gate.DefaultArtifactStatusField,
+							OutputFiles:       1,
+							OutputFingerprint: "old-output",
+						},
+					},
+				}),
+			}},
+			wantAccepted:     true,
+			wantReason:       "artifact_output_changed",
+			wantHistoryCalls: 1,
+			wantSince:        base,
+		},
+		{
+			name:             "artifact without evidence still parks",
+			billingMode:      "subscription",
+			tokenLimit:       25_000_000,
+			deliverableKind:  workflowconfig.DeliverableArtifact,
+			spend:            store.IssueSpendSince{TotalTokens: 25_000_000, Sessions: 5},
+			wantBlock:        true,
+			wantBlockedBy:    "tokens",
+			wantSpendCalls:   1,
+			wantHistoryCalls: 1,
+			wantSince:        createdAt,
+			wantCase:         spendProgressCaseNoArtifact,
+		},
 		{name: "xhigh threshold allows one expensive session", limit: 3, effort: "xhigh", spend: store.IssueSpendSince{CostUSD: 17.99, Sessions: 1}, wantLimit: 18, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 	}
 
@@ -170,6 +286,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 					BillingMode:             billingMode,
 					NoProgressTokenLimit:    tt.tokenLimit,
 					NoProgressSpendLimitUSD: tt.limit,
+					DeliverableKind:         tt.deliverableKind,
 				},
 				progressSpend: spend,
 				workAttempts:  attempts,
@@ -178,7 +295,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			issue.ID = "issue-214"
 			issue.Identifier = "gopherguides/gopher-ai#214"
 			issue.CreatedAt = &createdAt
-			running := Running{Issue: issue}
+			running := Running{Issue: issue, DeliverableKind: tt.deliverableKind, ArtifactEvidence: tt.artifactEvidence}
 			running.RuntimeIdentity.ReasoningEffort.Value = tt.effort
 			decision := orch.evaluateSpendProgress(context.Background(), running, base, tt.accepted, tt.acceptedReason)
 
@@ -193,6 +310,9 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			}
 			if decision.AcceptedReason != tt.wantReason {
 				t.Fatalf("AcceptedReason = %q, want %q", decision.AcceptedReason, tt.wantReason)
+			}
+			if tt.wantCase != "" && decision.Case != tt.wantCase {
+				t.Fatalf("Case = %q, want %q", decision.Case, tt.wantCase)
 			}
 			if math.Abs(decision.LimitUSD-tt.wantLimit) > 0.000001 {
 				t.Fatalf("LimitUSD = %f, want %f", decision.LimitUSD, tt.wantLimit)
@@ -289,6 +409,25 @@ func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
 			},
 			wantContains: []string{"resource consumption continued while a linked PR existed but could not merge", "case: spend_with_static_pr_evidence", "pr_evidence_checked: issue PR linkage, hydrated PR metadata, and tracker closing references including Fixes #N", "merge-train capacity", "pr_head_sha: same-head"},
 		},
+		{
+			name: "static artifact evidence",
+			decision: spendProgressDecision{
+				Spend:           store.IssueSpendSince{TotalTokens: 33_152_887, Sessions: 6},
+				TokenLimit:      25_000_000,
+				Case:            spendProgressCaseStaticArtifact,
+				BlockedBy:       "tokens",
+				DeliverableKind: workflowconfig.DeliverableArtifact,
+				EvidenceChecked: []string{"completion receipt", "artifact status field render_status", "files under the configured artifact output root"},
+				ArtifactFingerprint: &spendProgressArtifactFingerprint{
+					ReceiptHash:       "receipt-hash",
+					StatusField:       "render_status",
+					Status:            "pending_review",
+					OutputFiles:       2,
+					OutputFingerprint: "output-hash",
+				},
+			},
+			wantContains: []string{"resource consumption continued while artifact evidence stayed static", "case: spend_with_static_artifact_evidence", "artifact_evidence_checked: completion receipt, artifact status field render_status, files under the configured artifact output root", "artifact_status_field: render_status", "artifact_receipt_hash: receipt-hash", "artifact_output_fingerprint: output-hash"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -298,6 +437,9 @@ func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
 				if !strings.Contains(comment, want) {
 					t.Fatalf("comment missing %q:\n%s", want, comment)
 				}
+			}
+			if tt.decision.DeliverableKind == workflowconfig.DeliverableArtifact && strings.Contains(comment, "pr_evidence_checked:") {
+				t.Fatalf("artifact comment contains PR evidence signal:\n%s", comment)
 			}
 			if recovery := spendProgressRecoveryReason(tt.decision); recovery == "" {
 				t.Fatal("recovery reason is empty")
@@ -412,6 +554,43 @@ func (c spendProgressHydratingConnector) HydratePullRequest(ctx context.Context,
 	return c.hydrator.HydratePullRequest(ctx, issue)
 }
 
+func TestSpendProgressArtifactAdvance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		previous spendProgressArtifactFingerprint
+		current  spendProgressArtifactFingerprint
+		want     string
+	}{
+		{
+			name:     "status transition",
+			previous: spendProgressArtifactFingerprint{Status: "recut"},
+			current:  spendProgressArtifactFingerprint{Status: "pending_review"},
+			want:     "artifact_status_changed",
+		},
+		{
+			name:     "status casing only",
+			previous: spendProgressArtifactFingerprint{Status: "approved"},
+			current:  spendProgressArtifactFingerprint{Status: "Approved"},
+		},
+		{
+			name:     "all outputs deleted",
+			previous: spendProgressArtifactFingerprint{OutputFiles: 1, OutputFingerprint: "with-output"},
+			current:  spendProgressArtifactFingerprint{OutputFingerprint: "empty-output"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := spendProgressArtifactAdvance(&tt.previous, &tt.current); got != tt.want {
+				t.Fatalf("spendProgressArtifactAdvance() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 	t.Parallel()
 
@@ -430,6 +609,12 @@ func TestImplementAcceptedStateChangeRequiresWorkProductProgress(t *testing.T) {
 		{name: "merged completion", decision: implementCompletionProgressDecision{Reason: implementMergedCompletionReason}, want: true, wantReason: implementMergedCompletionReason},
 		{name: "operational reason without accepted kind", decision: implementCompletionProgressDecision{Reason: implementOperationalCompletion}},
 		{name: "operational completion", decision: implementCompletionProgressDecision{Reason: string(AutoPromoteReasonOperationalCompletion), CompletionKind: workpad.CompletionOperational}, want: true, wantReason: string(AutoPromoteReasonOperationalCompletion)},
+		{name: "artifact receipt", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact}, decision: implementCompletionProgressDecision{ProgressKinds: []string{"artifact_receipt"}}, want: true, wantReason: "artifact_receipt_changed"},
+		{name: "artifact status", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, DispatchArtifactStatus: "recut", ArtifactStatusField: "render_status"}, decision: implementCompletionProgressDecision{Issue: connector.Issue{Fields: map[string]string{"render_status": "pending_review"}}}, want: true, wantReason: "artifact_status_changed"},
+		{name: "artifact status initialized", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactStatusField: "render_status"}, decision: implementCompletionProgressDecision{Issue: connector.Issue{Fields: map[string]string{"render_status": "recut"}}}, want: true, wantReason: "artifact_status_changed"},
+		{name: "artifact output", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFiles: 1, CurrentFiles: 1, InitialFingerprint: "before", CurrentFingerprint: "after"}}, want: true, wantReason: "artifact_output_changed"},
+		{name: "static artifact output", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFingerprint: "same", CurrentFingerprint: "same"}}},
+		{name: "all artifact outputs deleted", running: Running{DeliverableKind: workflowconfig.DeliverableArtifact, ArtifactEvidence: runpkg.ArtifactProgressEvidence{Available: true, InitialFiles: 1, InitialFingerprint: "before", CurrentFingerprint: "empty-output"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

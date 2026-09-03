@@ -159,6 +159,17 @@ func artifactGateWorkpadStatusHash(comments []connector.IssueComment) string {
 	return ""
 }
 
+func artifactCompletionReceiptHash(comments []connector.IssueComment) string {
+	for index := len(comments) - 1; index >= 0; index-- {
+		body := strings.TrimSpace(comments[index].Body)
+		if !autoPromoteIsWorkpadComment(body) {
+			continue
+		}
+		return workpad.ContentHash(body)
+	}
+	return ""
+}
+
 func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, issue connector.Issue) (string, []connector.IssueComment, bool) {
 	if o == nil || o.connector == nil || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact {
 		return "", nil, false

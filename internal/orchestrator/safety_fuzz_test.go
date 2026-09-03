@@ -28,6 +28,8 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false, uint8(1))
 	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(2))
 	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(10), int64(0), false, uint8(3))
+	f.Add(1, 0, 0, "old-output", "same-deliverable", int64(1), "old-receipt", "recut", int64(1), "new-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(0))
+	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(1))
 
 	f.Fuzz(func(
 		t *testing.T,
@@ -117,6 +119,36 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		}
 		if got := spendProgressPRAdvance(leftFingerprint, rightFingerprint); got != wantAdvance {
 			t.Fatalf("spendProgressPRAdvance(%#v, %#v) = %q, want %q", leftFingerprint, rightFingerprint, got, wantAdvance)
+		}
+		leftArtifact := &spendProgressArtifactFingerprint{
+			ReceiptHash:            strings.TrimSpace(leftHead),
+			Status:                 strings.TrimSpace(leftChecks),
+			DeliverableFingerprint: strings.TrimSpace(status),
+			OutputFiles:            1,
+			OutputFingerprint:      strings.TrimSpace(fingerprint),
+		}
+		rightArtifact := &spendProgressArtifactFingerprint{
+			ReceiptHash:            strings.TrimSpace(rightHead),
+			Status:                 strings.TrimSpace(rightChecks),
+			DeliverableFingerprint: strings.TrimSpace(fingerprint),
+			OutputFingerprint:      strings.TrimSpace(status),
+		}
+		if rightNumber > 0 {
+			rightArtifact.OutputFiles = 1
+		}
+		wantArtifactAdvance := ""
+		switch {
+		case rightArtifact.ReceiptHash != "" && rightArtifact.ReceiptHash != leftArtifact.ReceiptHash:
+			wantArtifactAdvance = "artifact_receipt_changed"
+		case rightArtifact.Status != "" && !strings.EqualFold(strings.TrimSpace(rightArtifact.Status), strings.TrimSpace(leftArtifact.Status)):
+			wantArtifactAdvance = "artifact_status_changed"
+		case rightArtifact.DeliverableFingerprint != "" && rightArtifact.DeliverableFingerprint != leftArtifact.DeliverableFingerprint:
+			wantArtifactAdvance = "artifact_deliverable_changed"
+		case rightArtifact.OutputFiles > 0 && rightArtifact.OutputFingerprint != "" && rightArtifact.OutputFingerprint != leftArtifact.OutputFingerprint:
+			wantArtifactAdvance = "artifact_output_changed"
+		}
+		if got := spendProgressArtifactAdvance(leftArtifact, rightArtifact); got != wantArtifactAdvance {
+			t.Fatalf("spendProgressArtifactAdvance(%#v, %#v) = %q, want %q", leftArtifact, rightArtifact, got, wantArtifactAdvance)
 		}
 		wantTokenLimitReached := rightNumber > 0 && leftNumber >= rightNumber
 		if got := spendProgressTokenLimitReached(leftNumber, rightNumber); got != wantTokenLimitReached {

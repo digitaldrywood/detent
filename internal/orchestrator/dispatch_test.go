@@ -289,6 +289,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.MergeFastPath.FairnessAgeSeconds = 5400
 	cfg.Observability.StrandedActiveThresholdSeconds = 42
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
+	cfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Agent.LifetimeSessionLimit = 21
 	cfg.Agent.LifetimeTokenLimit = 52_000_000
@@ -321,6 +322,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 
 	got := ConfigFromWorkflow(cfg)
+	if got.DeliverableKind != workflowconfig.DeliverableArtifact {
+		t.Fatalf("DeliverableKind = %q, want artifact", got.DeliverableKind)
+	}
 	if got.StopRunPriorityNames[1] != "Critical" || got.StopRunPriorityNames[3] != "Normal" || len(got.StopRunPriorityNames) != 2 {
 		t.Fatalf("StopRunPriorityNames = %#v, want configured ranked options", got.StopRunPriorityNames)
 	}

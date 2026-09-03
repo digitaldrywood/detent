@@ -134,6 +134,9 @@ type Running struct {
 	DispatchWorkpadHash         string
 	DispatchWorkpadRead         bool
 	DispatchProgress            implementProgressArtifactSnapshot
+	DispatchArtifactStatus      string
+	ArtifactStatusField         string
+	DeliverableKind             string
 	StartedAt                   time.Time
 	WorkerHost                  string
 	ProcessIdentity             string
@@ -150,6 +153,7 @@ type Running struct {
 	LastMessageTruncation       *runtimeoutput.Truncation
 	RecentEvents                []telemetry.ActivityEvent
 	DiffStats                   DiffStats
+	ArtifactEvidence            runpkg.ArtifactProgressEvidence
 	WorkProductPushed           bool
 	Tokens                      TokenTotals
 	RSSBytes                    uint64
