@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -21,6 +23,7 @@ const (
 type Service struct {
 	echo      *echo.Echo
 	database  *database
+	tracker   tracker.Tracker
 	config    Config
 	ready     atomic.Bool
 	closeOnce sync.Once
@@ -42,16 +45,24 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	workTracker, err := tracker.NewStore(database)
+	if err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
 
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
 	e.Server.ReadHeaderTimeout = defaultHTTPReadHeaderTimeout
 	e.Server.IdleTimeout = defaultHTTPIdleTimeout
-	service := &Service{echo: e, database: database, config: cfg}
+	service := &Service{echo: e, database: database, tracker: workTracker, config: cfg}
 	e.GET("/health", service.health)
 	service.ready.Store(true)
 	return service, nil
+}
+
+func (s *Service) Tracker() tracker.Tracker {
+	return s.tracker
 }
 
 func Run(ctx context.Context, cfg Config) (resultErr error) {
