@@ -117,6 +117,9 @@ func (s Snapshot) WithFreshness(now time.Time) Snapshot {
 		return s
 	}
 	s.Projects = append([]ProjectSnapshot(nil), s.Projects...)
+	partial := s.Refresh.Partial()
+	partialLastError := s.Refresh.LastError
+	partialLastErrorAt := copyTimePointer(s.Refresh.LastErrorAt)
 	staleAfterSeconds, observedSweepSeconds := refreshFleetStaleAfter(s.Refresh, s.Projects)
 	if staleAfterSeconds > s.Refresh.StaleAfterSeconds {
 		s.Refresh.StaleAfterSeconds = staleAfterSeconds
@@ -129,7 +132,22 @@ func (s Snapshot) WithFreshness(now time.Time) Snapshot {
 		}
 		s.Projects[index].Refresh = s.Projects[index].Refresh.WithFreshness(now)
 	}
+	if partial && hasReadyProjectRefresh(s.Projects) {
+		s.Refresh.Status = RefreshStatusPartial
+		s.Refresh.StalenessWindowExceeded = false
+		s.Refresh.LastError = partialLastError
+		s.Refresh.LastErrorAt = partialLastErrorAt
+	}
 	return s
+}
+
+func hasReadyProjectRefresh(projects []ProjectSnapshot) bool {
+	for _, project := range projects {
+		if project.Refresh.Ready() {
+			return true
+		}
+	}
+	return false
 }
 
 func refreshFleetStaleAfter(fleet Refresh, projects []ProjectSnapshot) (int64, int64) {

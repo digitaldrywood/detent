@@ -650,6 +650,26 @@ func TestFleetSnapshotKeepsBodyDuringDegradedRefresh(t *testing.T) {
 	}
 }
 
+func TestFleetSnapshotRendersPartialRefreshData(t *testing.T) {
+	t.Parallel()
+
+	data := DashboardData{
+		Projects: []ProjectSmallMultiple{{ID: "detent"}},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 9, 3, 16, 0, 0, 0, time.UTC),
+			Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusPartial, LastError: "pyroapex workflow invalid"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "i1", Identifier: "digitaldrywood/detent#7", ProjectID: "detent", Title: "Healthy project card", State: "Backlog"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Backlog"}},
+	}
+	html := renderBoardComponent(t, FleetSnapshot(data))
+	if !strings.Contains(html, "agent-activity") {
+		t.Fatalf("partial fleet refresh should render healthy fleet data:\n%s", html)
+	}
+}
+
 func TestSheetSessionForScopesToProject(t *testing.T) {
 	// Non-GitHub identifiers can repeat across projects; the session lookup
 	// must not surface another project's running session.

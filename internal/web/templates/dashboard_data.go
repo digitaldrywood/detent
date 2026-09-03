@@ -1758,7 +1758,9 @@ func snapshotReady(snapshot telemetry.Snapshot) bool {
 		return false
 	}
 	status := snapshotReadinessStatus(snapshot)
-	return status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind
+	return status == telemetry.RefreshStatusReady ||
+		status == telemetry.RefreshStatusBehind ||
+		status == telemetry.RefreshStatusPartial
 }
 
 func snapshotUsesStartupCache(snapshot telemetry.Snapshot) bool {
