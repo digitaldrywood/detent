@@ -35,6 +35,7 @@ SELECT
   q.state,
   q.rank,
   q.priority_override,
+  i.author_login,
   i.labels_json,
   i.assignees_json,
   i.source_updated_at,
@@ -188,6 +189,7 @@ func scanWorkItemRecord(row interface{ Scan(...any) error }) (tracker.Record, er
 	var queueState sql.NullString
 	var queueRank sql.NullString
 	var priorityRank sql.NullInt64
+	var authorLogin string
 	var labelsJSON string
 	var assigneesJSON string
 	var sourceUpdatedAt string
@@ -216,6 +218,7 @@ func scanWorkItemRecord(row interface{ Scan(...any) error }) (tracker.Record, er
 		&queueState,
 		&queueRank,
 		&priorityRank,
+		&authorLogin,
 		&labelsJSON,
 		&assigneesJSON,
 		&sourceUpdatedAt,
@@ -249,6 +252,7 @@ func scanWorkItemRecord(row interface{ Scan(...any) error }) (tracker.Record, er
 			record.Queue.PriorityRank = &priority
 		}
 	}
+	record.AuthorID = authorLogin
 	if err := json.Unmarshal([]byte(labelsJSON), &record.Labels); err != nil {
 		return tracker.Record{}, fmt.Errorf("decode hub work item labels: %w", err)
 	}

@@ -268,6 +268,7 @@ type reconcileIssue struct {
 	Body        *string     `json:"body"`
 	HTMLURL     string      `json:"html_url"`
 	State       string      `json:"state"`
+	User        restActor   `json:"user"`
 	Labels      []restLabel `json:"labels"`
 	Assignees   []restActor `json:"assignees"`
 	PullRequest *struct{}   `json:"pull_request"`
@@ -290,7 +291,7 @@ func (i reconcileIssue) source() hubserver.IssueSource {
 	}
 	return hubserver.IssueSource{
 		NodeID: i.NodeID, DatabaseID: positiveID(i.ID), Number: i.Number,
-		Title: i.Title, Body: body, URL: i.HTMLURL, State: i.State,
+		Title: i.Title, Body: body, URL: i.HTMLURL, State: i.State, AuthorID: i.User.Login,
 		Labels: labels, Assignees: assignees, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt,
 	}
 }

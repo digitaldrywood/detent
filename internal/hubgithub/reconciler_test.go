@@ -38,6 +38,7 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 				{
 					ID: 200, NodeID: "I_issue", Number: 17, Title: "Issue", Body: &body,
 					HTMLURL: "https://github.test/new-owner/renamed/issues/17", State: "open",
+					User:   restActor{Login: "octocat"},
 					Labels: []restLabel{{Name: "feature"}}, Assignees: []restActor{{Login: "alice"}},
 					CreatedAt: since.Add(-time.Hour), UpdatedAt: updatedAt,
 				},
@@ -74,7 +75,7 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 	if !reflect.DeepEqual(snapshot.Repository, wantRepository) {
 		t.Fatalf("repository = %#v, want %#v", snapshot.Repository, wantRepository)
 	}
-	if len(snapshot.Issues) != 1 || snapshot.Issues[0].Number != 17 || !reflect.DeepEqual(snapshot.Issues[0].Labels, []string{"feature"}) || !reflect.DeepEqual(snapshot.Issues[0].Assignees, []string{"alice"}) {
+	if len(snapshot.Issues) != 1 || snapshot.Issues[0].Number != 17 || snapshot.Issues[0].AuthorID != "octocat" || !reflect.DeepEqual(snapshot.Issues[0].Labels, []string{"feature"}) || !reflect.DeepEqual(snapshot.Issues[0].Assignees, []string{"alice"}) {
 		t.Fatalf("issues = %#v, want one normalized issue", snapshot.Issues)
 	}
 	if len(snapshot.PullRequests) != 1 || snapshot.PullRequests[0].Number != 18 || snapshot.PullRequests[0].HeadSHA != "head" {

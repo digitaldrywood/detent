@@ -361,6 +361,47 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	}
 }
 
+func TestClaimNextAPIAppliesAuthorizationFiltersBeforeClaim(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+	repositoryID, rejectedID := seedProjection(t, service.database.db)
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
+		t.Fatalf("mark repository fresh: %v", err)
+	}
+	var workflowID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id FROM issues WHERE id = ?", rejectedID).Scan(&workflowID); err != nil {
+		t.Fatalf("read workflow state: %v", err)
+	}
+	acceptedID := insertHubTestIssue(t, service, repositoryID, 2, "I_authorized", "open", &workflowID)
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET author_login = 'mallory', labels_json = '[\"detent:todo\",\"hold\"]', assignees_json = '[\"worker-b\"]' WHERE id = ?", rejectedID); err != nil {
+		t.Fatalf("update rejected issue: %v", err)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET author_login = 'Alice', labels_json = '[\"detent:todo\",\"backend\"]', assignees_json = '[\"worker-a\"]' WHERE id = ?", acceptedID); err != nil {
+		t.Fatalf("update accepted issue: %v", err)
+	}
+	registered := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, map[string]any{
+		"id": "machine-a", "hostname": "worker-a", "capacity": 1, "version": "v1",
+	})
+	if registered.Code != http.StatusOK {
+		t.Fatalf("register machine status = %d body = %s", registered.Code, registered.Body.String())
+	}
+	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"machine_id": "machine-a", "session_id": "filtered-session", "ttl_seconds": 90,
+		"authors": []string{"alice"}, "assignees": []string{"worker-a"},
+		"label_include": []string{"detent:todo", "backend"}, "label_exclude": []string{"hold"},
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("filtered claim status = %d body = %s", response.Code, response.Body.String())
+	}
+	var lease tracker.Lease
+	decodeHubResponse(t, response, &lease)
+	if lease.WorkItemID != tracker.WorkItemID(acceptedID) {
+		t.Fatalf("filtered claim work item = %d, want %d", lease.WorkItemID, acceptedID)
+	}
+}
+
 func TestClaimNextAPIRejectsUnsafeRepositorySyncHealth(t *testing.T) {
 	t.Parallel()
 

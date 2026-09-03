@@ -233,6 +233,7 @@ type WorkItem struct {
 	SourceState     SourceState          `json:"source_state"`
 	WorkflowState   *WorkflowState       `json:"workflow_state,omitempty"`
 	Queue           *QueueSummary        `json:"queue,omitempty"`
+	AuthorID        string               `json:"author_id,omitempty"`
 	Labels          []string             `json:"labels"`
 	Assignees       []string             `json:"assignees"`
 	CreatedAt       *time.Time           `json:"created_at,omitempty"`

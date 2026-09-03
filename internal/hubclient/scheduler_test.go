@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,7 +29,7 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 		GitHub: tracker.GitHubIssueReference{NodeID: "I_42", Number: 17}, Title: "Ship Hub scheduling",
 		BodyExcerpt: "```detent-agent\nschema: 1\neffort: high\n```", URL: "https://github.com/acme/widgets/issues/17",
 		SourceState: tracker.SourceStateOpen, WorkflowState: &tracker.WorkflowState{Name: "Todo", Dispatchable: true},
-		Labels: []string{"detent:todo"}, Dispatchability: tracker.Dispatchability{Dispatchable: true}, SyncStatus: tracker.SyncStatusSynced,
+		AuthorID: "alice", Labels: []string{"detent:todo"}, Dispatchability: tracker.Dispatchability{Dispatchable: true}, SyncStatus: tracker.SyncStatusSynced,
 	}, Body: "Full issue body from the Hub"}
 	var mu sync.Mutex
 	var paths []string
@@ -80,11 +81,15 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	}
 	issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
 		ProjectID: "widgets", Repository: "acme/widgets", WorkflowStates: []string{"Todo"},
+		Filter: connector.IssueFilterHint{
+			Authors: []string{"alice"}, Assignees: []string{"worker-a"},
+			LabelInclude: []string{"detent:todo"}, LabelExclude: []string{"hold"},
+		},
 	})
 	if err != nil || len(issues) != 1 {
 		t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
 	}
-	if issues[0].ID != "I_42" || issues[0].Identifier != "acme/widgets#17" || issues[0].Description != item.Body {
+	if issues[0].ID != "I_42" || issues[0].Identifier != "acme/widgets#17" || issues[0].Description != item.Body || issues[0].AuthorID != "alice" {
 		t.Fatalf("candidate = %#v", issues[0])
 	}
 	claimed, err := scheduler.AdoptClaim(t.Context(), issues[0], now)
@@ -95,6 +100,9 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	renewed, err := scheduler.RenewClaim(t.Context(), issues[0].ID, now)
 	if err != nil || renewed.LeaseRenewedAt != now {
 		t.Fatalf("RenewClaim() = %#v, %v", renewed, err)
+	}
+	if renewed.Issue.Labels != nil || renewed.Issue.Assignees != nil || renewed.Issue.BlockedBy != nil || renewed.Issue.Fields != nil {
+		t.Fatalf("RenewClaim() issue = %#v, want sparse lease metadata", renewed.Issue)
 	}
 	if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "completed"); err != nil {
 		t.Fatalf("ReleaseClaim() error = %v", err)
@@ -111,7 +119,9 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	if !reflect.DeepEqual(paths, wantPaths) {
 		t.Fatalf("Hub requests = %v, want %v", paths, wantPaths)
 	}
-	if len(claims) != 1 || !reflect.DeepEqual(claims[0].Repositories, []string{"acme/widgets"}) || claims[0].SessionID != "session-1" {
+	if len(claims) != 1 || !reflect.DeepEqual(claims[0].Repositories, []string{"acme/widgets"}) || claims[0].SessionID != "session-1" ||
+		!reflect.DeepEqual(claims[0].Authors, []string{"alice"}) || !reflect.DeepEqual(claims[0].Assignees, []string{"worker-a"}) ||
+		!reflect.DeepEqual(claims[0].LabelInclude, []string{"detent:todo"}) || !reflect.DeepEqual(claims[0].LabelExclude, []string{"hold"}) {
 		t.Fatalf("claims = %#v", claims)
 	}
 }

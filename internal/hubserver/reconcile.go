@@ -67,6 +67,7 @@ type IssueSource struct {
 	Body       string
 	URL        string
 	State      string
+	AuthorID   string
 	Labels     []string
 	Assignees  []string
 	CreatedAt  time.Time

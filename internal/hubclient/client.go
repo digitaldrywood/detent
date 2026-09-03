@@ -63,6 +63,10 @@ type ClaimRequest struct {
 	TTLSeconds    int64             `json:"ttl_seconds"`
 	Repositories  []string          `json:"repositories,omitempty"`
 	WorkflowState []string          `json:"workflow_states,omitempty"`
+	Authors       []string          `json:"authors,omitempty"`
+	Assignees     []string          `json:"assignees,omitempty"`
+	LabelInclude  []string          `json:"label_include,omitempty"`
+	LabelExclude  []string          `json:"label_exclude,omitempty"`
 }
 
 type LeaseRequest struct {

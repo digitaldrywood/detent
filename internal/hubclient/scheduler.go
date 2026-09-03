@@ -84,6 +84,10 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	claimRequest := ClaimRequest{
 		MachineID: s.machine.ID, SessionID: sessionID, TTLSeconds: int64(s.leaseTTL / time.Second),
 		WorkflowState: append([]string(nil), request.WorkflowStates...),
+		Authors:       append([]string(nil), request.Filter.Authors...),
+		Assignees:     append([]string(nil), request.Filter.Assignees...),
+		LabelInclude:  append([]string(nil), request.Filter.LabelInclude...),
+		LabelExclude:  append([]string(nil), request.Filter.LabelExclude...),
 	}
 	if repository := strings.TrimSpace(request.Repository); repository != "" {
 		claimRequest.Repositories = []string{repository}
@@ -149,8 +153,7 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	s.mu.Lock()
 	s.claims[strings.TrimSpace(issueID)] = renewed
 	s.mu.Unlock()
-	issue := connector.NewIssue()
-	issue.ID = strings.TrimSpace(issueID)
+	issue := connector.Issue{ID: strings.TrimSpace(issueID)}
 	return claimedIssue(issue, renewed), nil
 }
 
@@ -228,6 +231,7 @@ func issueFromWorkItem(item WorkItem) connector.Issue {
 	}
 	issue.URL = item.URL
 	issue.Closed = item.SourceState == tracker.SourceStateClosed
+	issue.AuthorID = item.AuthorID
 	issue.Labels = append([]string(nil), item.Labels...)
 	issue.Assignees = append([]string(nil), item.Assignees...)
 	issue.CreatedAt = cloneTime(item.CreatedAt)
@@ -268,6 +272,9 @@ func issueFromWorkItem(item WorkItem) connector.Issue {
 }
 
 func claimedIssue(issue connector.Issue, lease tracker.Lease) orchestrator.Claimed {
+	if issue.Metadata == nil {
+		issue.Metadata = make(map[string]string)
+	}
 	issue.Metadata["hub_lease_id"] = string(lease.ID)
 	issue.Metadata["hub_fencing_token"] = strconv.FormatInt(int64(lease.FencingToken), 10)
 	issue.Metadata["hub_session_id"] = lease.SessionID

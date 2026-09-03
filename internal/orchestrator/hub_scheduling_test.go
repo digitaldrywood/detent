@@ -102,8 +102,11 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 	issue.ID = "I_hub"
 	issue.Identifier = "acme/widgets#17"
 	issue.Title = "Hub scheduled"
-	renewedIssue := connector.NewIssue()
-	renewedIssue.ID = issue.ID
+	issue.Labels = []string{"detent:in-progress"}
+	issue.Assignees = []string{"worker-a"}
+	issue.BlockedBy = []connector.BlockedRef{{ID: "I_blocker"}}
+	issue.Fields["effort"] = "high"
+	renewedIssue := connector.Issue{ID: issue.ID}
 	renewed := Claimed{Issue: renewedIssue, Owner: "machine-a", ClaimedAt: now.Add(-time.Minute), LeaseRenewedAt: now, LeaseExpiresAt: now.Add(90 * time.Second)}
 	cfg := normalizeConfig(Config{PollInterval: 30 * time.Second, MaxConcurrentAgents: 1, Project: schedulerProjectCandidate("widgets")})
 	manager := newHeartbeatManager(cfg, nil, nil, func() time.Time { return now }, nil, &hubSchedulingSource{})
@@ -119,7 +122,9 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 	orch.handleHeartbeatResult(&state, heartbeatResult{issueID: issue.ID, sequence: sequence, claimRenewed: true, claim: renewed, claimIssue: renewedIssue})
 
 	claim := state.Claimed[issue.ID]
-	if claim.Issue.Title != issue.Title || claim.Owner != "machine-a" || !claim.LeaseExpiresAt.Equal(renewed.LeaseExpiresAt) {
+	if claim.Issue.Title != issue.Title || !reflect.DeepEqual(claim.Issue.Labels, issue.Labels) ||
+		!reflect.DeepEqual(claim.Issue.Assignees, issue.Assignees) || !reflect.DeepEqual(claim.Issue.BlockedBy, issue.BlockedBy) ||
+		!reflect.DeepEqual(claim.Issue.Fields, issue.Fields) || claim.Owner != "machine-a" || !claim.LeaseExpiresAt.Equal(renewed.LeaseExpiresAt) {
 		t.Fatalf("renewed claim = %#v", claim)
 	}
 }

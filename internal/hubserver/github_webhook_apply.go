@@ -49,17 +49,18 @@ type githubWebhookActor struct {
 }
 
 type githubWebhookIssue struct {
-	DatabaseID *int64          `json:"id"`
-	NodeID     *string         `json:"node_id"`
-	Number     *int            `json:"number"`
-	Title      *string         `json:"title"`
-	Body       json.RawMessage `json:"body"`
-	HTMLURL    *string         `json:"html_url"`
-	State      *string         `json:"state"`
-	Labels     json.RawMessage `json:"labels"`
-	Assignees  json.RawMessage `json:"assignees"`
-	CreatedAt  json.RawMessage `json:"created_at"`
-	UpdatedAt  json.RawMessage `json:"updated_at"`
+	DatabaseID *int64              `json:"id"`
+	NodeID     *string             `json:"node_id"`
+	Number     *int                `json:"number"`
+	Title      *string             `json:"title"`
+	Body       json.RawMessage     `json:"body"`
+	HTMLURL    *string             `json:"html_url"`
+	State      *string             `json:"state"`
+	User       *githubWebhookActor `json:"user"`
+	Labels     json.RawMessage     `json:"labels"`
+	Assignees  json.RawMessage     `json:"assignees"`
+	CreatedAt  json.RawMessage     `json:"created_at"`
+	UpdatedAt  json.RawMessage     `json:"updated_at"`
 }
 
 type githubWebhookPullRequest struct {
@@ -107,6 +108,7 @@ type normalizedIssue struct {
 	Body       string    `json:"body"`
 	URL        string    `json:"url"`
 	State      string    `json:"state"`
+	AuthorID   string    `json:"author_id"`
 	Labels     []string  `json:"labels"`
 	Assignees  []string  `json:"assignees"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -457,11 +459,11 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO issues (
 				repository_id, workflow_state_id, github_node_id, github_database_id, github_number,
-				title, body, url, github_state, labels_json, assignees_json,
+				title, body, url, github_state, author_login, labels_json, assignees_json,
 				source_version, source_updated_at, synchronized_at, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, repositoryID, optionalInt64(workflowStateID), issue.NodeID, optionalInt64(issue.DatabaseID), issue.Number,
-			issue.Title, issue.Body, issue.URL, issue.State, string(labelsJSON), string(assigneesJSON),
+			issue.Title, issue.Body, issue.URL, issue.State, issue.AuthorID, string(labelsJSON), string(assigneesJSON),
 			stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 			formatWebhookTime(issue.CreatedAt), formatWebhookTime(issue.UpdatedAt))
 		if err != nil {
@@ -494,6 +496,7 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 			body = ?,
 			url = ?,
 			github_state = ?,
+			author_login = ?,
 			labels_json = ?,
 			assignees_json = ?,
 			source_version = ?,
@@ -503,7 +506,7 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 			updated_at = ?
 		WHERE id = ?
 	`, repositoryID, optionalInt64(workflowStateID), issue.NodeID, optionalInt64(issue.DatabaseID), issue.Number,
-		issue.Title, issue.Body, issue.URL, issue.State, string(labelsJSON), string(assigneesJSON),
+		issue.Title, issue.Body, issue.URL, issue.State, issue.AuthorID, string(labelsJSON), string(assigneesJSON),
 		stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 		formatWebhookTime(issue.CreatedAt), formatWebhookTime(issue.UpdatedAt), issueID); err != nil {
 		return projectionApplyResult{}, fmt.Errorf("update GitHub webhook issue: %w", err)
@@ -733,6 +736,10 @@ func normalizeWebhookIssue(issue *githubWebhookIssue) (normalizedIssue, sourceSt
 	body, bodyOK := webhookNullableString(issue.Body)
 	labels, labelsOK := webhookStringList(issue.Labels, "name")
 	assignees, assigneesOK := webhookStringList(issue.Assignees, "login")
+	authorID := ""
+	if issue.User != nil && issue.User.Login != nil {
+		authorID = strings.TrimSpace(*issue.User.Login)
+	}
 	createdAt, createdOK := parseWebhookTime(issue.CreatedAt)
 	updatedAt, updatedOK := parseWebhookTime(issue.UpdatedAt)
 	if strings.TrimSpace(*issue.NodeID) == "" || *issue.Number <= 0 || strings.TrimSpace(*issue.Title) == "" ||
@@ -748,6 +755,7 @@ func normalizeWebhookIssue(issue *githubWebhookIssue) (normalizedIssue, sourceSt
 		Body:       body,
 		URL:        strings.TrimSpace(*issue.HTMLURL),
 		State:      strings.ToLower(strings.TrimSpace(*issue.State)),
+		AuthorID:   authorID,
 		Labels:     labels,
 		Assignees:  assignees,
 		CreatedAt:  createdAt,

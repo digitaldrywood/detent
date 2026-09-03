@@ -411,7 +411,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
 		Connector:          projectConnector,
-		Scheduling:         deps.Scheduling,
+		Scheduling:         projectSchedulingSource(deps.Scheduling, workflow.Config),
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		DispatchPacer:      deps.DispatchPacer,
@@ -1650,6 +1650,13 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 		RerunFlakyOnce:  cfg.Release.RerunFlakyOnce,
 		FlakyCheckNames: append([]string(nil), cfg.Release.FlakyCheckNames...),
 	}, releaseBackend)}, nil
+}
+
+func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {
+	if workflow.Tracker.Kind != workflowconfig.TrackerGitHub || strings.TrimSpace(workflow.Tracker.Repository) == "" {
+		return nil
+	}
+	return source
 }
 
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {

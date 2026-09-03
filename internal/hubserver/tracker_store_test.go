@@ -31,7 +31,7 @@ func TestTrackerReadsNormalizedWorkItems(t *testing.T) {
 	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) SELECT ?, workflow_state_id, ?, ?, ?, ?, ?, ? FROM issues WHERE id = ?", issueID, "fleet", "Todo", "a0", 2, testTimestamp, testTimestamp, issueID); err != nil {
 		t.Fatalf("insert queue entry: %v", err)
 	}
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, labels_json = ?, assignees_json = ?, github_database_id = ? WHERE id = ?", " Work item body ", `["hub"," Feature ","hub"]`, `["detent-bot"]`, 2068, issueID); err != nil {
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, author_login = ?, labels_json = ?, assignees_json = ?, github_database_id = ? WHERE id = ?", " Work item body ", "octocat", `["hub"," Feature ","hub"]`, `["detent-bot"]`, 2068, issueID); err != nil {
 		t.Fatalf("update issue projection: %v", err)
 	}
 	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET checks_summary_json = ?, reviews_summary_json = ?, mergeable_state = ?, merge_ready = 1, merge_readiness_refreshed_at = ? WHERE issue_id = ?", `{"status":"completed","passed":3,"total":3}`, `{"decision":"approved","approvals":1}`, "clean", testTimestamp, issueID); err != nil {
@@ -59,8 +59,8 @@ func TestTrackerReadsNormalizedWorkItems(t *testing.T) {
 	if item.Repository.ID != tracker.RepositoryID(repositoryID) || item.Repository.Owner != "digitaldrywood" || item.GitHub.NodeID != "I_issue" || item.GitHub.Number != 1 || item.GitHub.DatabaseID == nil || *item.GitHub.DatabaseID != 2068 {
 		t.Errorf("source identity = repository %#v GitHub %#v", item.Repository, item.GitHub)
 	}
-	if item.BodyExcerpt != "Work item body" || strings.Join(item.Labels, ",") != "hub,Feature" || strings.Join(item.Assignees, ",") != "detent-bot" {
-		t.Errorf("normalized content = body %q labels %v assignees %v", item.BodyExcerpt, item.Labels, item.Assignees)
+	if item.BodyExcerpt != "Work item body" || item.AuthorID != "octocat" || strings.Join(item.Labels, ",") != "hub,Feature" || strings.Join(item.Assignees, ",") != "detent-bot" {
+		t.Errorf("normalized content = body %q author %q labels %v assignees %v", item.BodyExcerpt, item.AuthorID, item.Labels, item.Assignees)
 	}
 	if item.Queue == nil || item.Queue.Scope != "fleet" || item.Queue.PriorityRank == nil || *item.Queue.PriorityRank != 2 {
 		t.Errorf("Queue = %#v", item.Queue)
