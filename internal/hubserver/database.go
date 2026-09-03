@@ -22,6 +22,8 @@ type database struct {
 	lock          *instancelock.Lock
 	path          string
 	schemaVersion int64
+	now           func() time.Time
+	newLeaseID    func() string
 	closeOnce     sync.Once
 	closeErr      error
 }
@@ -50,7 +52,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	store := &database{db: db, lock: lock, path: path}
+	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID}
 	if err := store.configure(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}

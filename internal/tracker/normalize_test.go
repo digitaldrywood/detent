@@ -199,17 +199,19 @@ func TestStoreTrackerReadsNormalizedItems(t *testing.T) {
 		t.Fatalf("ListDispatchQueue() = %#v, want one dispatchable item", queue)
 	}
 
-	mutationErrors := []error{}
-	_, err = backend.Claim(t.Context(), ClaimRequest{})
-	mutationErrors = append(mutationErrors, err)
-	_, err = backend.Renew(t.Context(), RenewRequest{})
-	mutationErrors = append(mutationErrors, err)
-	mutationErrors = append(mutationErrors, backend.Release(t.Context(), ReleaseRequest{}))
-	mutationErrors = append(mutationErrors, backend.AppendEvent(t.Context(), WorkEvent{}))
-	for i, mutationErr := range mutationErrors {
-		if !errors.Is(mutationErr, ErrNotImplemented) {
-			t.Errorf("mutation error %d = %v, want ErrNotImplemented", i, mutationErr)
-		}
+	claimed, err := backend.Claim(t.Context(), ClaimRequest{WorkItemID: 1})
+	if err != nil || claimed.ID != "lease-a" || store.claimRequest.WorkItemID != 1 {
+		t.Errorf("Claim() = %#v, %v; request = %#v", claimed, err, store.claimRequest)
+	}
+	renewed, err := backend.Renew(t.Context(), RenewRequest{LeaseID: "lease-a"})
+	if err != nil || renewed.ID != "lease-a" || store.renewRequest.LeaseID != "lease-a" {
+		t.Errorf("Renew() = %#v, %v; request = %#v", renewed, err, store.renewRequest)
+	}
+	if err := backend.Release(t.Context(), ReleaseRequest{LeaseID: "lease-a"}); err != nil || store.releaseRequest.LeaseID != "lease-a" {
+		t.Errorf("Release() error = %v; request = %#v", err, store.releaseRequest)
+	}
+	if err := backend.AppendEvent(t.Context(), WorkEvent{WorkItemID: 1, FencingToken: 7, Kind: "progress"}); err != nil || store.workEvent.Kind != "progress" || store.workEvent.FencingToken != 7 {
+		t.Errorf("AppendEvent() error = %v; event = %#v", err, store.workEvent)
 	}
 }
 
@@ -224,6 +226,10 @@ type fakeStore struct {
 	records        []Record
 	candidateQuery CandidateQuery
 	workItemIDs    []WorkItemID
+	claimRequest   ClaimRequest
+	renewRequest   RenewRequest
+	releaseRequest ReleaseRequest
+	workEvent      WorkEvent
 }
 
 func (s *fakeStore) ListCandidateRecords(_ context.Context, query CandidateQuery) ([]Record, error) {
@@ -234,6 +240,26 @@ func (s *fakeStore) ListCandidateRecords(_ context.Context, query CandidateQuery
 func (s *fakeStore) GetWorkItemRecords(_ context.Context, ids []WorkItemID) ([]Record, error) {
 	s.workItemIDs = append([]WorkItemID(nil), ids...)
 	return s.records, nil
+}
+
+func (s *fakeStore) Claim(_ context.Context, request ClaimRequest) (Lease, error) {
+	s.claimRequest = request
+	return Lease{LeaseSummary: LeaseSummary{ID: "lease-a"}}, nil
+}
+
+func (s *fakeStore) Renew(_ context.Context, request RenewRequest) (Lease, error) {
+	s.renewRequest = request
+	return Lease{LeaseSummary: LeaseSummary{ID: "lease-a"}}, nil
+}
+
+func (s *fakeStore) Release(_ context.Context, request ReleaseRequest) error {
+	s.releaseRequest = request
+	return nil
+}
+
+func (s *fakeStore) AppendEvent(_ context.Context, event WorkEvent) error {
+	s.workEvent = event
+	return nil
 }
 
 func dispatchReasonCodes(reasons []DispatchReason) []string {
