@@ -55,6 +55,9 @@ type Decline struct {
 	Fingerprint     string
 	Reason          string
 	Detail          string
+	Confidence      *float64
+	FailedDimension string
+	FailedCriterion string
 	CreatedAt       time.Time
 	CommentedAt     time.Time
 }
@@ -66,6 +69,7 @@ type RunRecord struct {
 	CompletedAt     time.Time
 	Outcome         string
 	DeferredReason  string
+	ProposalReason  string
 	CandidatesFound int
 	Candidates      int
 	Proposed        int

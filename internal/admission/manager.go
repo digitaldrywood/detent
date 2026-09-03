@@ -43,6 +43,7 @@ const (
 	admissionResolutionAutoAdmitIneligible = "candidate_became_ineligible_before_auto_admit"
 	admissionResolutionEffortUnavailable   = "effort_recommendation_unavailable"
 	admissionResolutionNonDeliverable      = "non_deliverable_declined"
+	admissionResolutionCriteriaNotMet      = "criteria_not_met_declined"
 	admissionOptOutMarker                  = "<!-- detent:no-dispatch -->"
 	admissionDeclineExplicitOptOut         = "explicit_opt_out"
 	admissionDeclineTracker                = "tracker"
@@ -50,6 +51,9 @@ const (
 	admissionDeclineStudy                  = "study"
 	admissionDeclineResearch               = "research"
 	admissionDeclineLinkedChecklist        = "linked_issue_checklist"
+	admissionDeclineCriteriaNotMet         = "criteria_not_met"
+	admissionDispositionProposed           = "proposed"
+	admissionDispositionDeclined           = "declined"
 	maxRationaleSize                       = 16 * 1024
 	maxEffortRationaleSize                 = 2 * 1024
 )
@@ -116,15 +120,19 @@ type Result struct {
 	Skipped         map[string]int
 	Truncated       map[string]int
 	DeferredReason  string
+	ProposalReason  string
 }
 
-type AgentProposal struct {
+type AgentEvaluation struct {
 	IssueID           string                   `json:"issue_id"`
+	Disposition       string                   `json:"disposition"`
 	Findings          []admissionmodel.Finding `json:"findings"`
 	Confidence        *float64                 `json:"confidence"`
 	RecommendedEffort string                   `json:"recommended_effort,omitempty"`
 	EffortRationale   string                   `json:"effort_rationale,omitempty"`
 }
+
+type AgentProposal = AgentEvaluation
 
 type Manager struct {
 	mu        sync.RWMutex
@@ -317,6 +325,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		record.Skipped = cloneCounts(result.Skipped)
 		record.Truncated = cloneCounts(result.Truncated)
 		record.DeferredReason = result.DeferredReason
+		record.ProposalReason = result.ProposalReason
 		record.Issues = make([]admissionmodel.IssueRecord, 0, len(result.Proposals))
 		for _, proposal := range result.Proposals {
 			record.Issues = append(record.Issues, admissionmodel.IssueRecord{
@@ -430,7 +439,6 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	if truncatedCandidates > 0 {
 		result.Truncated["candidates"] = truncatedCandidates
 	}
-	result.Candidates = len(candidates)
 	if len(candidates) == 0 {
 		return result, nil
 	}
@@ -444,6 +452,16 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	}
 	if commentsRemaining == 0 {
 		result.Skipped["comment_cap"] += len(candidates)
+		return result, nil
+	}
+	available := settings.Config.MaxOpenProposals - open
+	evaluationLimit := min(settings.Config.MaxProposalsPerRun, commentsRemaining, available)
+	if len(candidates) > evaluationLimit {
+		result.Truncated["candidates"] += len(candidates) - evaluationLimit
+		candidates = candidates[:evaluationLimit]
+	}
+	result.Candidates = len(candidates)
+	if len(candidates) == 0 {
 		return result, nil
 	}
 
@@ -470,27 +488,14 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	if runResult.FinalState != "" && runResult.FinalState != runner.FinalStateCompleted {
 		return result, fmt.Errorf("run backlog admission agent: final state %s", runResult.FinalState)
 	}
-	proposals, proposalErr := collector.result()
-	if len(proposals) == 0 && proposalErr == nil {
-		proposals, proposalErr = parseProposals(runResult.Output)
+	evaluations, proposalErr := collector.result()
+	if len(evaluations) == 0 && proposalErr == nil {
+		evaluations, proposalErr = parseEvaluations(runResult.Output)
 	}
 	if proposalErr != nil {
 		return result, proposalErr
 	}
-	if len(proposals) > settings.Config.MaxProposalsPerRun {
-		result.Truncated["proposals"] += len(proposals) - settings.Config.MaxProposalsPerRun
-		proposals = proposals[:settings.Config.MaxProposalsPerRun]
-	}
-	if len(proposals) > commentsRemaining {
-		result.Truncated["comments"] += len(proposals) - commentsRemaining
-		proposals = proposals[:commentsRemaining]
-	}
-	available := settings.Config.MaxOpenProposals - open
-	if len(proposals) > available {
-		result.Truncated["open_proposals"] += len(proposals) - available
-		proposals = proposals[:available]
-	}
-	return m.executeProposals(ctx, settings, candidates, proposals, result, commentsRemaining, autoAdmitsRemaining, startedAt)
+	return m.executeEvaluations(ctx, settings, candidates, evaluations, result, commentsRemaining, autoAdmitsRemaining, startedAt)
 }
 
 func candidateReadLimit(maxCandidates int) int {
@@ -874,7 +879,23 @@ func (m *Manager) unproposedCandidates(
 		if err != nil {
 			return nil, commentsRemaining, truncated, err
 		}
-		var classification nonDeliverableClassification
+		if found && decline.Reason == admissionDeclineCriteriaNotMet {
+			found = false
+		}
+		criteriaDecline, criteriaDeclined, err := m.store.AdmissionDecline(
+			ctx,
+			settings.ProjectID,
+			candidate.ID,
+			criteriaDeclineFingerprint(candidate, settings.Criteria),
+		)
+		if err != nil {
+			return nil, commentsRemaining, truncated, err
+		}
+		if criteriaDeclined && criteriaDecline.Reason == admissionDeclineCriteriaNotMet {
+			skipped[admissionDeclineCriteriaNotMet]++
+			continue
+		}
+		var classification admissionDeclineClassification
 		classified := false
 		if !found {
 			classification, classified = classifyNonDeliverable(candidate)
@@ -915,19 +936,22 @@ func (m *Manager) unproposedCandidates(
 	return out, commentsRemaining, truncated, nil
 }
 
-type nonDeliverableClassification struct {
-	reason string
-	detail string
+type admissionDeclineClassification struct {
+	reason          string
+	detail          string
+	confidence      *float64
+	failedDimension string
+	failedCriterion string
 }
 
 func (m *Manager) createAdmissionDecline(
 	ctx context.Context,
 	settings Settings,
 	issue connector.Issue,
-	classification nonDeliverableClassification,
+	classification admissionDeclineClassification,
 	at time.Time,
 ) (admissionmodel.Decline, bool, error) {
-	fingerprint := issueFingerprint(issue)
+	fingerprint := admissionDeclineFingerprint(issue, classification, settings.Criteria)
 	decline := admissionmodel.Decline{
 		ID:              admissionDeclineID(settings.ProjectID, issue.ID, fingerprint),
 		ProjectID:       settings.ProjectID,
@@ -937,6 +961,9 @@ func (m *Manager) createAdmissionDecline(
 		Fingerprint:     fingerprint,
 		Reason:          classification.reason,
 		Detail:          classification.detail,
+		Confidence:      classification.confidence,
+		FailedDimension: classification.failedDimension,
+		FailedCriterion: classification.failedCriterion,
 		CreatedAt:       at,
 	}
 	created, err := m.store.CreateAdmissionDecline(ctx, decline)
@@ -995,30 +1022,30 @@ func (m *Manager) ensureAdmissionDeclineComment(
 	return true, nil
 }
 
-func classifyNonDeliverable(issue connector.Issue) (nonDeliverableClassification, bool) {
+func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassification, bool) {
 	body := strings.TrimSpace(issue.Description)
 	if strings.Contains(strings.ToLower(body), admissionOptOutMarker) {
-		return nonDeliverableClassification{
+		return admissionDeclineClassification{
 			reason: admissionDeclineExplicitOptOut,
 			detail: "the issue contains the " + admissionOptOutMarker + " operator opt-out marker",
 		}, true
 	}
 	if hasCompletionContract(body) {
-		return nonDeliverableClassification{}, false
+		return admissionDeclineClassification{}, false
 	}
 	if kind := selfIdentifiedArtifact(issue.Title, body); kind != "" {
-		return nonDeliverableClassification{
+		return admissionDeclineClassification{
 			reason: kind,
 			detail: "the title or body identifies this as a " + kind + " artifact without an explicit completion contract",
 		}, true
 	}
 	if predominantlyLinkedChecklist(body) {
-		return nonDeliverableClassification{
+		return admissionDeclineClassification{
 			reason: admissionDeclineLinkedChecklist,
 			detail: "the body is predominantly a checklist of links to other issues without an explicit completion contract",
 		}, true
 	}
-	return nonDeliverableClassification{}, false
+	return admissionDeclineClassification{}, false
 }
 
 func hasCompletionContract(body string) bool {
@@ -1136,53 +1163,151 @@ func admissionDeclineCommentMarker(id string) string {
 	return "<!-- detent-backlog-admission-decline:" + strings.TrimSpace(id) + " -->"
 }
 
-func (m *Manager) executeProposals(
+func (m *Manager) executeEvaluations(
 	ctx context.Context,
 	settings Settings,
 	candidates []connector.Issue,
-	agentProposals []AgentProposal,
+	evaluations []AgentEvaluation,
 	result Result,
 	commentsRemaining int,
 	autoAdmitsRemaining int,
 	at time.Time,
 ) (Result, error) {
-	if len(agentProposals) == 0 {
-		return result, nil
+	if len(evaluations) != len(candidates) {
+		return result, fmt.Errorf("%w: got %d evaluations for %d candidates", ErrInvalidOutput, len(evaluations), len(candidates))
 	}
 	ids := make([]string, 0, len(candidates))
 	candidateByID := issueMap(candidates)
 	for _, candidate := range candidates {
 		ids = append(ids, candidate.ID)
 	}
+	evaluationByID := make(map[string]AgentEvaluation, len(evaluations))
+	for _, evaluation := range evaluations {
+		issueID := strings.TrimSpace(evaluation.IssueID)
+		if _, supplied := candidateByID[issueID]; !supplied {
+			return result, fmt.Errorf("%w: evaluation references unknown candidate %q", ErrInvalidOutput, issueID)
+		}
+		if _, duplicate := evaluationByID[issueID]; duplicate {
+			return result, fmt.Errorf("%w: duplicate evaluation for candidate %q", ErrInvalidOutput, issueID)
+		}
+		evaluation.Disposition = strings.TrimSpace(evaluation.Disposition)
+		if evaluation.Disposition != admissionDispositionProposed && evaluation.Disposition != admissionDispositionDeclined {
+			return result, fmt.Errorf("%w: invalid disposition for candidate %q", ErrInvalidOutput, issueID)
+		}
+		if err := validateAdmissionConfidence(evaluation.Confidence); err != nil {
+			return result, fmt.Errorf("%w: invalid confidence for candidate %q", ErrInvalidOutput, issueID)
+		}
+		if evaluation.Disposition == admissionDispositionDeclined {
+			failed, err := validateDeclineFindings(evaluation.Findings, settings.Criteria)
+			if err != nil || strings.TrimSpace(evaluation.RecommendedEffort) != "" || strings.TrimSpace(evaluation.EffortRationale) != "" {
+				return result, fmt.Errorf("%w: invalid decline for candidate %q", ErrInvalidOutput, issueID)
+			}
+			evaluation.Findings = []admissionmodel.Finding{failed}
+		} else {
+			findings, err := validateFindings(evaluation.Findings, settings.Criteria)
+			if err != nil {
+				return result, fmt.Errorf("%w: invalid proposal for candidate %q", ErrInvalidOutput, issueID)
+			}
+			evaluation.Findings = findings
+			recommendedEffort, effortRationale, err := validateRecommendedEffort(
+				evaluation.RecommendedEffort,
+				evaluation.EffortRationale,
+				settings.EffortRubric,
+				settings.Config.RequireEffort,
+			)
+			if err != nil {
+				return result, fmt.Errorf("%w: invalid effort for candidate %q", ErrInvalidOutput, issueID)
+			}
+			evaluation.RecommendedEffort = recommendedEffort
+			evaluation.EffortRationale = effortRationale
+		}
+		evaluationByID[issueID] = evaluation
+	}
 	fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, ids)
 	if err != nil {
 		return result, fmt.Errorf("revalidate backlog admission candidates: %w", err)
 	}
+	type evaluationPlan struct {
+		issue          connector.Issue
+		stale          bool
+		classification *admissionDeclineClassification
+		proposal       *admissionmodel.Proposal
+	}
 	freshByID := issueMap(fresh)
-	seen := map[string]struct{}{}
-	for _, agentProposal := range agentProposals {
-		issueID := strings.TrimSpace(agentProposal.IssueID)
-		if _, ok := seen[issueID]; ok {
-			result.Skipped["duplicate_agent_proposal"]++
-			continue
-		}
-		seen[issueID] = struct{}{}
-		original, supplied := candidateByID[issueID]
+	plans := make([]evaluationPlan, 0, len(candidates))
+	proposalCount := 0
+	for _, original := range candidates {
+		issueID := strings.TrimSpace(original.ID)
+		evaluation := evaluationByID[issueID]
 		current, currentFound := freshByID[issueID]
-		if !supplied || !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
+		if !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
 			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
-			result.Skipped["stale_or_ineligible"]++
+			plans = append(plans, evaluationPlan{issue: original, stale: true})
 			continue
 		}
 		if classification, declined := classifyNonDeliverable(current); declined {
-			decline, created, err := m.createAdmissionDecline(ctx, settings, current, classification, at)
+			plans = append(plans, evaluationPlan{issue: current, classification: &classification})
+			continue
+		}
+		if evaluation.Disposition == admissionDispositionDeclined {
+			failed := evaluation.Findings[0]
+			confidence := *evaluation.Confidence
+			classification := admissionDeclineClassification{
+				reason:          admissionDeclineCriteriaNotMet,
+				detail:          failed.Rationale,
+				confidence:      &confidence,
+				failedDimension: failed.Dimension,
+				failedCriterion: failed.CriterionQuote,
+			}
+			plans = append(plans, evaluationPlan{issue: current, classification: &classification})
+			continue
+		}
+		proposal := admissionmodel.Proposal{
+			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
+			ProjectID:         settings.ProjectID,
+			IssueID:           current.ID,
+			IssueIdentifier:   current.Identifier,
+			IssueURL:          current.URL,
+			TargetState:       settings.Config.TargetState,
+			Fingerprint:       issueFingerprint(current),
+			CriteriaSection:   settings.Criteria.Section,
+			CriteriaText:      settings.Criteria.Text,
+			Findings:          evaluation.Findings,
+			Confidence:        *evaluation.Confidence,
+			RecommendedEffort: evaluation.RecommendedEffort,
+			EffortRationale:   evaluation.EffortRationale,
+			Status:            admissionmodel.ProposalOpen,
+			CreatedAt:         at,
+			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
+		}
+		plans = append(plans, evaluationPlan{issue: current, proposal: &proposal})
+		proposalCount++
+	}
+	open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
+	if err != nil {
+		return result, err
+	}
+	if open+proposalCount > settings.Config.MaxOpenProposals {
+		return result, errors.New("backlog admission proposal capacity changed during evaluation")
+	}
+	for _, plan := range plans {
+		if plan.stale {
+			result.Skipped["stale_or_ineligible"]++
+			continue
+		}
+		if plan.classification != nil {
+			decline, created, err := m.createAdmissionDecline(ctx, settings, plan.issue, *plan.classification, at)
 			if err != nil {
 				return result, err
+			}
+			if plan.classification.reason == admissionDeclineCriteriaNotMet {
+				result.Skipped[admissionDeclineCriteriaNotMet]++
+				continue
 			}
 			commented, err := m.ensureAdmissionDeclineComment(
 				ctx,
 				settings.Issues,
-				current,
+				plan.issue,
 				decline,
 				created,
 				commentsRemaining > 0,
@@ -1196,53 +1321,7 @@ func (m *Manager) executeProposals(
 			result.Skipped["non_deliverable"]++
 			continue
 		}
-		findings, err := validateFindings(agentProposal.Findings, settings.Criteria)
-		if err != nil {
-			result.Skipped["invalid_agent_proposal"]++
-			continue
-		}
-		if agentProposal.Confidence == nil || math.IsNaN(*agentProposal.Confidence) ||
-			math.IsInf(*agentProposal.Confidence, 0) ||
-			*agentProposal.Confidence < 0 || *agentProposal.Confidence > 1 {
-			result.Skipped["invalid_agent_proposal"]++
-			continue
-		}
-		recommendedEffort, effortRationale, err := validateRecommendedEffort(
-			agentProposal.RecommendedEffort,
-			agentProposal.EffortRationale,
-			settings.EffortRubric,
-			settings.Config.RequireEffort,
-		)
-		if err != nil {
-			result.Skipped["invalid_agent_proposal"]++
-			continue
-		}
-		open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
-		if err != nil {
-			return result, err
-		}
-		if open >= settings.Config.MaxOpenProposals {
-			result.Truncated["open_proposals"] += len(agentProposals) - len(result.Proposals)
-			break
-		}
-		proposal := admissionmodel.Proposal{
-			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
-			ProjectID:         settings.ProjectID,
-			IssueID:           current.ID,
-			IssueIdentifier:   current.Identifier,
-			IssueURL:          current.URL,
-			TargetState:       settings.Config.TargetState,
-			Fingerprint:       issueFingerprint(current),
-			CriteriaSection:   settings.Criteria.Section,
-			CriteriaText:      settings.Criteria.Text,
-			Findings:          findings,
-			Confidence:        *agentProposal.Confidence,
-			RecommendedEffort: recommendedEffort,
-			EffortRationale:   effortRationale,
-			Status:            admissionmodel.ProposalOpen,
-			CreatedAt:         at,
-			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
-		}
+		proposal := *plan.proposal
 		created, err := m.store.CreateAdmissionProposal(ctx, proposal)
 		if err != nil {
 			return result, err
@@ -1253,22 +1332,36 @@ func (m *Manager) executeProposals(
 		}
 		result.Proposals = append(result.Proposals, proposal)
 		if commentsRemaining > 0 {
-			if err := m.commentProposal(ctx, settings, proposal, current); err != nil {
+			if err := m.commentProposal(ctx, settings, proposal, plan.issue); err != nil {
 				return result, err
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
+		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, plan.issue.Labels) {
 			if err := m.admitProposal(
 				ctx,
 				settings,
-				current,
+				plan.issue,
 				proposal,
 				automaticAdmissionDecision(settings.Issues, proposal, at),
 			); err != nil {
 				return result, err
 			}
 			autoAdmitsRemaining--
+		}
+	}
+	if len(result.Proposals) == 0 {
+		switch {
+		case result.Skipped[admissionDeclineCriteriaNotMet] > 0:
+			result.ProposalReason = admissionDeclineCriteriaNotMet
+		case result.Skipped["unchanged_open_proposal"] > 0:
+			result.ProposalReason = "unchanged_open_proposal"
+		case result.Skipped["non_deliverable"] > 0:
+			result.ProposalReason = "non_deliverable"
+		case result.Skipped["stale_or_ineligible"] > 0:
+			result.ProposalReason = "stale_or_ineligible"
+		default:
+			return result, errors.New("backlog admission completed without a candidate disposition")
 		}
 	}
 	return result, nil
@@ -1759,8 +1852,39 @@ func sortCandidates(issues []connector.Issue, settings Settings) {
 }
 
 func validateFindings(findings []admissionmodel.Finding, criteria config.AdmissionCriteria) ([]admissionmodel.Finding, error) {
-	if len(findings) == 0 || len(findings) != len(criteria.Dimensions) {
+	out, matched, err := validateEvaluationFindings(findings, criteria)
+	if err != nil || !matched {
 		return nil, ErrInvalidProposal
+	}
+	return out, nil
+}
+
+func validateDeclineFindings(
+	findings []admissionmodel.Finding,
+	criteria config.AdmissionCriteria,
+) (admissionmodel.Finding, error) {
+	out, matched, err := validateEvaluationFindings(findings, criteria)
+	if err != nil || matched {
+		return admissionmodel.Finding{}, ErrInvalidProposal
+	}
+	byDimension := make(map[string]admissionmodel.Finding, len(out))
+	for _, finding := range out {
+		byDimension[strings.ToLower(finding.Dimension)] = finding
+	}
+	for _, dimension := range criteria.Dimensions {
+		if finding, ok := byDimension[strings.ToLower(strings.TrimSpace(dimension.Name))]; ok {
+			return finding, nil
+		}
+	}
+	return admissionmodel.Finding{}, ErrInvalidProposal
+}
+
+func validateEvaluationFindings(
+	findings []admissionmodel.Finding,
+	criteria config.AdmissionCriteria,
+) ([]admissionmodel.Finding, bool, error) {
+	if len(findings) == 0 || len(findings) != len(criteria.Dimensions) {
+		return nil, false, ErrInvalidProposal
 	}
 	dimensions := make(map[string]config.AdmissionDimension, len(criteria.Dimensions))
 	for _, dimension := range criteria.Dimensions {
@@ -1777,24 +1901,29 @@ func validateFindings(findings []admissionmodel.Finding, criteria config.Admissi
 		dimension, ok := dimensions[key]
 		if !ok || finding.CriterionQuote == "" || !strings.Contains(dimension.Text, finding.CriterionQuote) ||
 			finding.Rationale == "" || len(finding.Rationale) > maxRationaleSize {
-			return nil, ErrInvalidProposal
+			return nil, false, ErrInvalidProposal
 		}
 		if _, ok := seen[key]; ok {
-			return nil, ErrInvalidProposal
+			return nil, false, ErrInvalidProposal
 		}
 		seen[key] = struct{}{}
 		matched = matched || finding.Matched
 		out = append(out, finding)
 	}
-	if !matched {
-		return nil, ErrInvalidProposal
-	}
 	for key := range dimensions {
 		if _, ok := seen[key]; !ok {
-			return nil, ErrInvalidProposal
+			return nil, false, ErrInvalidProposal
 		}
 	}
-	return out, nil
+	return out, matched, nil
+}
+
+func validateAdmissionConfidence(confidence *float64) error {
+	if confidence == nil || math.IsNaN(*confidence) || math.IsInf(*confidence, 0) ||
+		*confidence < 0 || *confidence > 1 {
+		return ErrInvalidProposal
+	}
+	return nil
 }
 
 func failedAdmissionDimensions(
@@ -1860,6 +1989,26 @@ func issueFingerprint(issue connector.Issue) string {
 			strconv.Itoa(len(issue.Description)) + ":" + issue.Description,
 	))
 	return hex.EncodeToString(sum[:])
+}
+
+func criteriaDeclineFingerprint(issue connector.Issue, criteria config.AdmissionCriteria) string {
+	sum := sha256.Sum256([]byte(
+		issueFingerprint(issue) + "\x00" +
+			strconv.Itoa(len(criteria.Section)) + ":" + criteria.Section +
+			strconv.Itoa(len(criteria.Text)) + ":" + criteria.Text,
+	))
+	return hex.EncodeToString(sum[:])
+}
+
+func admissionDeclineFingerprint(
+	issue connector.Issue,
+	classification admissionDeclineClassification,
+	criteria config.AdmissionCriteria,
+) string {
+	if classification.reason == admissionDeclineCriteriaNotMet {
+		return criteriaDeclineFingerprint(issue, criteria)
+	}
+	return issueFingerprint(issue)
 }
 
 func proposalID(projectID string, issueID string, fingerprint string, at time.Time) string {
@@ -1994,61 +2143,61 @@ func admissionIssue(projectID string) connector.Issue {
 }
 
 func proposalTool(requireEffort bool) runner.AgentTool {
-	required := `["issue_id","findings","confidence"]`
+	effortRequirement := ""
 	if requireEffort {
-		required = `["issue_id","findings","confidence","recommended_effort","effort_rationale"]`
+		effortRequirement = `,"allOf":[{"if":{"properties":{"disposition":{"const":"proposed"}}},"then":{"required":["recommended_effort","effort_rationale"]}}]`
 	}
 	return runner.AgentTool{
 		Name:        ProposalToolName,
-		Description: "Propose admission for one supplied candidate using only project-owned criteria.",
-		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":` + required + `,"properties":{"issue_id":{"type":"string","minLength":1},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["dimension","criterion_quote","matched","rationale"],"properties":{"dimension":{"type":"string","minLength":1},"criterion_quote":{"type":"string","minLength":1},"matched":{"type":"boolean"},"rationale":{"type":"string","minLength":1}}}},"confidence":{"type":"number","minimum":0,"maximum":1},"recommended_effort":{"type":"string","minLength":1},"effort_rationale":{"type":"string","minLength":1}}}`),
+		Description: "Record the terminal admission evaluation for one supplied candidate using only project-owned criteria.",
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["issue_id","disposition","findings","confidence"],"properties":{"issue_id":{"type":"string","minLength":1},"disposition":{"type":"string","enum":["proposed","declined"]},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["dimension","criterion_quote","matched","rationale"],"properties":{"dimension":{"type":"string","minLength":1},"criterion_quote":{"type":"string","minLength":1},"matched":{"type":"boolean"},"rationale":{"type":"string","minLength":1}}}},"confidence":{"type":"number","minimum":0,"maximum":1},"recommended_effort":{"type":"string","minLength":1},"effort_rationale":{"type":"string","minLength":1}}` + effortRequirement + `}`),
 	}
 }
 
 type proposalCollector struct {
-	mu        sync.Mutex
-	proposals []AgentProposal
-	err       error
+	mu          sync.Mutex
+	evaluations []AgentEvaluation
+	err         error
 }
 
 func (c *proposalCollector) handle(_ context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 	if call.Name != ProposalToolName {
 		return runner.AgentToolResult{Content: "unsupported tool", Success: false}, nil
 	}
-	var proposal AgentProposal
-	if err := decodeStrictJSON(call.Arguments, &proposal); err != nil {
+	var evaluation AgentEvaluation
+	if err := decodeStrictJSON(call.Arguments, &evaluation); err != nil {
 		c.mu.Lock()
 		c.err = errors.Join(c.err, fmt.Errorf("%w: %w", ErrInvalidOutput, err))
 		c.mu.Unlock()
-		return runner.AgentToolResult{Content: "invalid proposal", Success: false}, nil
+		return runner.AgentToolResult{Content: "invalid evaluation", Success: false}, nil
 	}
 	c.mu.Lock()
-	c.proposals = append(c.proposals, proposal)
+	c.evaluations = append(c.evaluations, evaluation)
 	c.mu.Unlock()
-	return runner.AgentToolResult{Content: "proposal received", Success: true}, nil
+	return runner.AgentToolResult{Content: "evaluation received", Success: true}, nil
 }
 
-func (c *proposalCollector) result() ([]AgentProposal, error) {
+func (c *proposalCollector) result() ([]AgentEvaluation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]AgentProposal(nil), c.proposals...), c.err
+	return append([]AgentEvaluation(nil), c.evaluations...), c.err
 }
 
-func parseProposals(output string) ([]AgentProposal, error) {
+func parseEvaluations(output string) ([]AgentEvaluation, error) {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return nil, nil
 	}
 	var envelope struct {
-		Proposals *[]AgentProposal `json:"proposals"`
+		Evaluations *[]AgentEvaluation `json:"evaluations"`
 	}
 	if err := decodeStrictJSON([]byte(output), &envelope); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidOutput, err)
 	}
-	if envelope.Proposals == nil {
-		return nil, fmt.Errorf("%w: proposals is required", ErrInvalidOutput)
+	if envelope.Evaluations == nil {
+		return nil, fmt.Errorf("%w: evaluations is required", ErrInvalidOutput)
 	}
-	return *envelope.Proposals, nil
+	return *envelope.Evaluations, nil
 }
 
 func decodeStrictJSON(raw []byte, target any) error {
@@ -2199,6 +2348,7 @@ func (m *Manager) logScheduledCompletion(ctx context.Context, result Result) {
 		"truncated", len(result.Truncated) > 0,
 		"truncations", result.Truncated,
 		"deferred_reason", result.DeferredReason,
+		"proposal_reason", result.ProposalReason,
 	)
 }
 

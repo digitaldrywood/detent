@@ -124,6 +124,41 @@ func TestAdmissionDeclineLifecycleAndProposalSupersession(t *testing.T) {
 	}
 }
 
+func TestAdmissionCriteriaDeclineSupersedesProposalWithCriteriaReason(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openAdmissionTestStore(t, ctx)
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	proposal := admissionTestProposal("proposal-criteria", "old-fingerprint", now.Add(-time.Minute))
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	confidence := 0.24
+	decline := admissionmodel.Decline{
+		ID:              "decline-criteria",
+		ProjectID:       proposal.ProjectID,
+		IssueID:         proposal.IssueID,
+		IssueIdentifier: proposal.IssueIdentifier,
+		IssueURL:        proposal.IssueURL,
+		Fingerprint:     "criteria-fingerprint",
+		Reason:          admissionDeclineCriteriaNotMet,
+		Detail:          "the issue does not satisfy alignment",
+		Confidence:      &confidence,
+		FailedDimension: "Alignment",
+		FailedCriterion: "serves a stated current priority",
+		CreatedAt:       now,
+	}
+	if created, err := backend.CreateAdmissionDecline(ctx, decline); err != nil || !created {
+		t.Fatalf("CreateAdmissionDecline() = %t, %v", created, err)
+	}
+	history, err := backend.AdmissionProposalHistory(ctx, proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalSuperseded ||
+		history[0].ResolutionReason != admissionResolutionCriteriaNotMet {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+}
+
 func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 	t.Parallel()
 
@@ -152,6 +187,7 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 		StartedAt:       now.Add(time.Minute),
 		CompletedAt:     now.Add(2 * time.Minute),
 		Outcome:         "completed",
+		ProposalReason:  "criteria_not_met",
 		CandidatesFound: 4,
 		Candidates:      2,
 		Proposed:        1,
@@ -172,6 +208,7 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", got, ok, err)
 	}
 	if got.CandidatesFound != 4 || got.Candidates != 2 || got.Proposed != 1 ||
+		got.ProposalReason != "criteria_not_met" ||
 		got.Skipped["author"] != 1 || got.Truncated["candidates"] != 1 ||
 		len(got.Issues) != 1 || got.Issues[0].ProposalID != "proposal-expiring" {
 		t.Fatalf("LatestAdmissionRun() = %#v", got)

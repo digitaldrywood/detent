@@ -130,11 +130,11 @@ func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	if got, want := agent.candidateIDs[0], []string{"issue-1", "issue-2"}; !reflect.DeepEqual(got, want) {
+	if got, want := agent.candidateIDs[0], []string{"issue-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate order = %#v, want %#v", got, want)
 	}
-	if result.CandidatesFound != 3 || result.Candidates != 2 || len(result.Proposals) != 1 ||
-		result.Truncated["candidates"] != 1 || result.Truncated["proposals"] != 1 {
+	if result.CandidatesFound != 3 || result.Candidates != 1 || len(result.Proposals) != 1 ||
+		result.Truncated["candidates"] != 2 {
 		t.Fatalf("result = %#v", result)
 	}
 	open, err := backend.OpenAdmissionProposals(context.Background(), "detent", 0)
@@ -363,6 +363,33 @@ func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
 	}
 }
 
+func TestManagerReevaluatesCriteriaDeclineAfterCriteriaChange(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	declining := staticAdmissionRunner{output: `{"evaluations":[{"issue_id":"issue-1","disposition":"declined","findings":[{"dimension":"Alignment","criterion_quote":"serves a stated current priority","matched":false,"rationale":"The issue does not serve a stated current priority."},{"dimension":"Readiness","criterion_quote":"has an actionable problem statement","matched":false,"rationale":"The issue lacks an actionable problem statement."}],"confidence":0.24}]}`}
+	settings := admissionTestSettings(tracker, declining)
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	first, err := manager.RunOnce(t.Context())
+	if err != nil || first.Skipped[admissionDeclineCriteriaNotMet] != 1 {
+		t.Fatalf("first RunOnce() = %#v, %v", first, err)
+	}
+	proposing := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings.Runner = proposing
+	settings.Criteria.Text += "\nOperator guidance changed."
+	if err := manager.Update(settings); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	second, err := manager.RunOnce(t.Context())
+	if err != nil || len(second.Proposals) != 1 || proposing.calls != 1 {
+		t.Fatalf("second RunOnce() = %#v, %v, runner calls = %d", second, err, proposing.calls)
+	}
+}
+
 func TestManagerDoesNotDuplicateDeclineCommentAfterStoreMarkFailure(t *testing.T) {
 	t.Parallel()
 
@@ -436,7 +463,7 @@ func TestManagerAdmissionDeclinePersistenceBoundaries(t *testing.T) {
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "PA-10", 1, now)
-	classification := nonDeliverableClassification{reason: admissionDeclineTracker, detail: "tracker without a completion contract"}
+	classification := admissionDeclineClassification{reason: admissionDeclineTracker, detail: "tracker without a completion contract"}
 	base := openManagerTestStore(t)
 	backend := &faultAdmissionStore{Store: base}
 	manager := &Manager{store: backend, now: func() time.Time { return now }}
@@ -1302,16 +1329,16 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name                string
-		requireEffort       bool
-		body                string
-		recommendedEffort   string
-		effortRationale     string
-		wantState           string
-		wantBody            string
-		wantBodyUpdates     int
-		wantInvalidProposal int
-		wantResolution      string
+		name              string
+		requireEffort     bool
+		body              string
+		recommendedEffort string
+		effortRationale   string
+		wantState         string
+		wantBody          string
+		wantBodyUpdates   int
+		wantInvalidOutput bool
+		wantResolution    string
 	}{
 		{
 			name:      "disabled preserves admission behavior",
@@ -1320,12 +1347,12 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			wantBody:  "Actionable problem.",
 		},
 		{
-			name:                "required recommendation unavailable skips admission",
-			requireEffort:       true,
-			body:                "Actionable problem.",
-			wantState:           "Backlog",
-			wantBody:            "Actionable problem.",
-			wantInvalidProposal: 1,
+			name:              "required recommendation unavailable fails evaluation",
+			requireEffort:     true,
+			body:              "Actionable problem.",
+			wantState:         "Backlog",
+			wantBody:          "Actionable problem.",
+			wantInvalidOutput: true,
 		},
 		{
 			name:              "required recommendation writes absent block",
@@ -1378,7 +1405,10 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
 
 			result, err := manager.RunOnce(t.Context())
-			if err != nil {
+			if tt.wantInvalidOutput && !errors.Is(err, ErrInvalidOutput) {
+				t.Fatalf("RunOnce() error = %v, want ErrInvalidOutput", err)
+			}
+			if !tt.wantInvalidOutput && err != nil {
 				t.Fatalf("RunOnce() error = %v", err)
 			}
 			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
@@ -1394,8 +1424,7 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 					bodyUpdates++
 				}
 			}
-			if bodyUpdates != tt.wantBodyUpdates ||
-				result.Skipped["invalid_agent_proposal"] != tt.wantInvalidProposal {
+			if bodyUpdates != tt.wantBodyUpdates {
 				t.Fatalf("result = %#v, body updates = %d", result, bodyUpdates)
 			}
 			if tt.wantResolution != "" {
@@ -1481,7 +1510,7 @@ func TestManagerRequiredEffortSupersedesOpenProposalWithoutRecommendation(t *tes
 	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
 		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
 	}
-	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings := admissionTestSettings(tracker, staticAdmissionRunner{output: `{"evaluations":[{"issue_id":"issue-1","disposition":"declined","findings":[{"dimension":"Alignment","criterion_quote":"serves a stated current priority","matched":false,"rationale":"The issue does not serve a stated current priority."},{"dimension":"Readiness","criterion_quote":"has an actionable problem statement","matched":false,"rationale":"The issue lacks an actionable problem statement."}],"confidence":0.2}]}`})
 	settings.Config.AutoAdmit = true
 	settings.Config.AutoAdmitMinConfidence = 0.9
 	settings.Config.RequireEffort = true
@@ -1585,7 +1614,7 @@ func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
 	if result.Skipped["excluded_label"] != 1 || result.Skipped["author"] != 1 ||
-		result.Truncated["proposals"] != 1 {
+		result.Truncated["candidates"] != 1 {
 		t.Fatalf("result = %#v", result)
 	}
 	issues, err := tracker.FetchIssueStatesByIDs(
@@ -2424,12 +2453,12 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 		t.Fatalf("sortCandidates(nil left date) = %#v", issues)
 	}
 
-	if proposals, err := parseProposals("  "); err != nil || proposals != nil {
-		t.Fatalf("parseProposals(empty) = %#v, %v", proposals, err)
+	if evaluations, err := parseEvaluations("  "); err != nil || evaluations != nil {
+		t.Fatalf("parseEvaluations(empty) = %#v, %v", evaluations, err)
 	}
-	for _, raw := range []string{`{"proposals":[]}{}`, `{"unknown":true}`} {
-		if _, err := parseProposals(raw); err == nil {
-			t.Fatalf("parseProposals(%q) error = nil", raw)
+	for _, raw := range []string{`{"evaluations":[]}{}`, `{"unknown":true}`} {
+		if _, err := parseEvaluations(raw); err == nil {
+			t.Fatalf("parseEvaluations(%q) error = nil", raw)
 		}
 	}
 	collector := &proposalCollector{}
@@ -2566,14 +2595,14 @@ func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 	settings.Config.Authors.Allow = []string{"octocat"}
 	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
 	result, err := manager.RunOnce(context.Background())
-	if err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
+	if !errors.Is(err, ErrInvalidOutput) {
+		t.Fatalf("RunOnce() error = %v, want ErrInvalidOutput", err)
 	}
 	if got, want := agent.candidateIDs[0], []string{"allowed"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate ids = %#v, want %#v", got, want)
 	}
 	if len(result.Proposals) != 0 || result.Skipped["excluded_label"] != 1 ||
-		result.Skipped["author"] != 1 || result.Skipped["invalid_agent_proposal"] != 1 {
+		result.Skipped["author"] != 1 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -2978,23 +3007,192 @@ func TestManagerRejectsMissingConfidence(t *testing.T) {
 	}}
 	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
 	result, err := manager.RunOnce(context.Background())
-	if err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
-	}
-	if len(result.Proposals) != 0 || result.Skipped["invalid_agent_proposal"] != 1 {
+	if !errors.Is(err, ErrInvalidOutput) || len(result.Proposals) != 0 {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
-func TestParseProposalsRequiresTypedEnvelope(t *testing.T) {
+func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
 	t.Parallel()
 
-	if _, err := parseProposals(`{}`); err == nil {
-		t.Fatal("parseProposals({}) error = nil")
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	agent := staticAdmissionRunner{output: `{"evaluations":[{"issue_id":"issue-1","disposition":"declined","findings":[{"dimension":"Alignment","criterion_quote":"serves a stated current priority","matched":false,"rationale":"The issue does not serve a stated current priority."},{"dimension":"Readiness","criterion_quote":"has an actionable problem statement","matched":false,"rationale":"The issue lacks an actionable problem statement."}],"confidence":0.24}]}`}
+	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
 	}
-	proposals, err := parseProposals(`{"proposals":[]}`)
-	if err != nil || len(proposals) != 0 {
-		t.Fatalf("parseProposals(empty) = %#v, %v", proposals, err)
+	if len(result.Proposals) != 0 || result.Skipped[admissionDeclineCriteriaNotMet] != 1 ||
+		result.ProposalReason != admissionDeclineCriteriaNotMet {
+		t.Fatalf("result = %#v", result)
+	}
+	decline, found, err := backend.AdmissionDecline(
+		t.Context(),
+		"detent",
+		issue.ID,
+		criteriaDeclineFingerprint(issue, admissionTestCriteria()),
+	)
+	if err != nil || !found {
+		t.Fatalf("AdmissionDecline() = %#v, %t, %v", decline, found, err)
+	}
+	if decline.IssueIdentifier != issue.Identifier || decline.Reason != admissionDeclineCriteriaNotMet ||
+		decline.Confidence == nil || *decline.Confidence != 0.24 ||
+		decline.FailedDimension != "Alignment" ||
+		decline.FailedCriterion != "serves a stated current priority" {
+		t.Fatalf("decline = %#v", decline)
+	}
+	record, found, err := backend.LatestAdmissionRun(t.Context(), "detent")
+	if err != nil || !found || record.ProposalReason != admissionDeclineCriteriaNotMet ||
+		record.Candidates != 1 || record.Proposed != 0 {
+		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", record, found, err)
+	}
+}
+
+func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		evaluations []AgentEvaluation
+	}{
+		{
+			name:        "missing candidate",
+			evaluations: []AgentEvaluation{admissionProposalEvaluation("issue-1")},
+		},
+		{
+			name: "duplicate candidate",
+			evaluations: []AgentEvaluation{
+				admissionProposalEvaluation("issue-1"),
+				admissionProposalEvaluation("issue-1"),
+			},
+		},
+		{
+			name: "unknown candidate",
+			evaluations: []AgentEvaluation{
+				admissionProposalEvaluation("issue-1"),
+				admissionProposalEvaluation("unknown"),
+			},
+		},
+		{
+			name: "invalid disposition",
+			evaluations: []AgentEvaluation{
+				admissionProposalEvaluation("issue-1"),
+				admissionProposalEvaluation("issue-2"),
+			},
+		},
+	}
+	tests[3].evaluations[1].Disposition = "pending"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issues := []connector.Issue{
+				admissionIssueFixture("issue-1", "DD-1", 1, now),
+				admissionIssueFixture("issue-2", "DD-2", 2, now),
+			}
+			tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+			backend := openManagerTestStore(t)
+			raw, err := json.Marshal(struct {
+				Evaluations []AgentEvaluation `json:"evaluations"`
+			}{Evaluations: tt.evaluations})
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			manager := newAdmissionTestManager(
+				t,
+				admissionTestSettings(tracker, staticAdmissionRunner{output: string(raw)}),
+				backend,
+				func() time.Time { return now },
+			)
+
+			result, err := manager.RunOnce(t.Context())
+			if !errors.Is(err, ErrInvalidOutput) || result.Candidates != len(issues) || len(result.Proposals) != 0 {
+				t.Fatalf("RunOnce() = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
+func TestManagerValidatesEntireEvaluationBatchBeforeSideEffects(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	issues := []connector.Issue{
+		admissionIssueFixture("issue-1", "DD-1", 1, now),
+		admissionIssueFixture("issue-2", "DD-2", 2, now),
+	}
+	evaluations := []AgentEvaluation{
+		admissionProposalEvaluation(issues[0].ID),
+		admissionProposalEvaluation(issues[1].ID),
+	}
+	evaluations[1].Confidence = float64Pointer(2)
+	raw, err := json.Marshal(struct {
+		Evaluations []AgentEvaluation `json:"evaluations"`
+	}{Evaluations: evaluations})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	backend := openManagerTestStore(t)
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, staticAdmissionRunner{output: string(raw)}),
+		backend,
+		func() time.Time { return now },
+	)
+
+	result, err := manager.RunOnce(t.Context())
+	if !errors.Is(err, ErrInvalidOutput) || len(result.Proposals) != 0 {
+		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+	for _, issue := range issues {
+		history, historyErr := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+		if historyErr != nil || len(history) != 0 {
+			t.Fatalf("AdmissionProposalHistory(%s) = %#v, %v", issue.ID, history, historyErr)
+		}
+	}
+}
+
+func TestManagerSkipsCandidateChangedDuringEvaluationAndContinues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
+	tracker := &stateChangingAdmissionStore{
+		Connector: memory.New(memory.Config{Issues: []connector.Issue{first, second}, Stateful: true}),
+		fetches:   1,
+		issueID:   first.ID,
+		state:     "In Progress",
+	}
+	backend := openManagerTestStore(t)
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+		backend,
+		func() time.Time { return now },
+	)
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || result.Skipped["stale_or_ineligible"] != 1 ||
+		len(result.Proposals) != 1 || result.Proposals[0].IssueID != second.ID {
+		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+}
+
+func TestParseEvaluationsRequiresTypedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseEvaluations(`{}`); err == nil {
+		t.Fatal("parseEvaluations({}) error = nil")
+	}
+	evaluations, err := parseEvaluations(`{"evaluations":[]}`)
+	if err != nil || len(evaluations) != 0 {
+		t.Fatalf("parseEvaluations(empty) = %#v, %v", evaluations, err)
 	}
 }
 
@@ -3014,6 +3212,11 @@ func TestProposalToolRequiresEffortFieldsOnlyWhenConfigured(t *testing.T) {
 			t.Parallel()
 			var schema struct {
 				Required []string `json:"required"`
+				AllOf    []struct {
+					Then struct {
+						Required []string `json:"required"`
+					} `json:"then"`
+				} `json:"allOf"`
 			}
 			if err := json.Unmarshal(proposalTool(tt.requireEffort).InputSchema, &schema); err != nil {
 				t.Fatalf("Unmarshal() error = %v", err)
@@ -3021,6 +3224,11 @@ func TestProposalToolRequiresEffortFieldsOnlyWhenConfigured(t *testing.T) {
 			required := map[string]struct{}{}
 			for _, field := range schema.Required {
 				required[field] = struct{}{}
+			}
+			for _, condition := range schema.AllOf {
+				for _, field := range condition.Then.Required {
+					required[field] = struct{}{}
+				}
 			}
 			_, effortRequired := required["recommended_effort"]
 			_, rationaleRequired := required["effort_rationale"]
@@ -3035,6 +3243,14 @@ type scriptedAdmissionRunner struct {
 	propose      func(runner.RunRequest) []AgentProposal
 	calls        int
 	candidateIDs [][]string
+}
+
+type staticAdmissionRunner struct {
+	output string
+}
+
+func (r staticAdmissionRunner) Run(context.Context, runner.RunRequest) (runner.RunResult, error) {
+	return runner.RunResult{Output: r.output, FinalState: runner.FinalStateCompleted}, nil
 }
 
 type capacityScheduler struct {
@@ -3236,6 +3452,9 @@ func (r *scriptedAdmissionRunner) Run(ctx context.Context, request runner.RunReq
 	}
 	r.candidateIDs = append(r.candidateIDs, ids)
 	for _, proposal := range r.propose(request) {
+		if proposal.Disposition == "" {
+			proposal.Disposition = admissionDispositionProposed
+		}
 		raw, err := json.Marshal(proposal)
 		if err != nil {
 			return runner.RunResult{}, err
@@ -3350,12 +3569,35 @@ func proposeEveryCandidate(request runner.RunRequest) []AgentProposal {
 	return proposeEveryCandidateAtConfidence(0.8)(request)
 }
 
+func admissionProposalEvaluation(issueID string) AgentEvaluation {
+	return AgentEvaluation{
+		IssueID:     issueID,
+		Disposition: admissionDispositionProposed,
+		Findings: []admissionmodel.Finding{
+			{
+				Dimension:      "Alignment",
+				CriterionQuote: "serves a stated current priority",
+				Matched:        true,
+				Rationale:      "The issue directly supports the stated priority.",
+			},
+			{
+				Dimension:      "Readiness",
+				CriterionQuote: "has an actionable problem statement",
+				Matched:        true,
+				Rationale:      "The issue has an actionable problem statement.",
+			},
+		},
+		Confidence: float64Pointer(0.8),
+	}
+}
+
 func proposeEveryCandidateAtConfidence(confidence float64) func(runner.RunRequest) []AgentProposal {
 	return func(request runner.RunRequest) []AgentProposal {
 		proposals := make([]AgentProposal, 0, len(request.Admission.Candidates))
 		for _, candidate := range request.Admission.Candidates {
 			proposals = append(proposals, AgentProposal{
-				IssueID: candidate.ID,
+				IssueID:     candidate.ID,
+				Disposition: admissionDispositionProposed,
 				Findings: []admissionmodel.Finding{
 					{
 						Dimension:      "Alignment",
