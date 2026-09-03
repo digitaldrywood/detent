@@ -50,6 +50,10 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 	snapshot.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
 	snapshot.WorkspaceFiles = recovery.DiffStat.Files
 	snapshot.UnpushedCommits = recovery.UnpushedCommits
+	snapshot.UnpushedCommitRefs = append([]string(nil), recovery.UnpushedCommitRefs...)
+	snapshot.TrackedPaths = append([]string(nil), recovery.TrackedPaths...)
+	snapshot.CommitsNotInPullRequest = append([]string(nil), recovery.CommitsNotInPullRequest...)
+	snapshot.PullRequestComparisonAvailable = recovery.PullRequestComparisonAvailable
 	snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)
 	if snapshot.WorkspaceFingerprint == "" {
 		snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.DiffStat.Fingerprint)

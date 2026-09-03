@@ -197,15 +197,18 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 
 	if err := os.WriteFile(filepath.Join(info.Path, "committed.txt"), []byte("committed\n"), 0o600); err != nil {
 		t.Fatalf("write committed file: %v", err)
 	}
 	runGit(t, info.Path, "add", "committed.txt")
 	runGit(t, info.Path, "commit", "-m", "test: add committed work")
+	commitSHA := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 	if err := os.WriteFile(filepath.Join(info.Path, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
 		t.Fatalf("write dirty file: %v", err)
 	}
+	runGit(t, info.Path, "add", "dirty.txt")
 
 	got, err := provider.RecoveryState(context.Background(), info, issue)
 	if err != nil {
@@ -213,6 +216,17 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	}
 	if got.UnpushedCommits != 1 || got.DiffStat.Files != 1 || got.DiffStat.Added != 1 {
 		t.Fatalf("RecoveryState() = %+v, want one unpushed commit and one dirty file", got)
+	}
+	if len(got.TrackedPaths) != 1 || got.TrackedPaths[0] != "dirty.txt" {
+		t.Fatalf("RecoveryState().TrackedPaths = %v, want [dirty.txt]", got.TrackedPaths)
+	}
+	if !got.PullRequestComparisonAvailable || len(got.CommitsNotInPullRequest) != 1 ||
+		!strings.Contains(got.CommitsNotInPullRequest[0], commitSHA) ||
+		!strings.Contains(got.CommitsNotInPullRequest[0], "test: add committed work") {
+		t.Fatalf("RecoveryState() pull request commit evidence = %v, available=%t, want %s and subject", got.CommitsNotInPullRequest, got.PullRequestComparisonAvailable, commitSHA)
+	}
+	if len(got.UnpushedCommitRefs) != 1 || !strings.Contains(got.UnpushedCommitRefs[0], commitSHA) {
+		t.Fatalf("RecoveryState().UnpushedCommitRefs = %v, want %s", got.UnpushedCommitRefs, commitSHA)
 	}
 	if want := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got.HeadSHA != want {
 		t.Fatalf("RecoveryState().HeadSHA = %q, want %q", got.HeadSHA, want)
@@ -224,6 +238,42 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	}
 	if pushed.UnpushedCommits != 0 || pushed.DiffStat != got.DiffStat {
 		t.Fatalf("RecoveryState() after push = %+v, want no unpushed commits and unchanged dirty diff %+v", pushed, got.DiffStat)
+	}
+}
+
+func TestLocalGitRecoveryStateExcludesUntrackedPathsFromStrandedEvidence(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	provider := backend.(RecoveryStateProvider)
+	issue := Issue{Identifier: "DD-UNTRACKED"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(info.Path, "session-marker.ses"), []byte("1722600000000 01234567-89ab-cdef-0123-456789abcdef\n"), 0o600); err != nil {
+		t.Fatalf("write untracked session marker: %v", err)
+	}
+
+	got, err := provider.RecoveryState(t.Context(), info, issue)
+	if err != nil {
+		t.Fatalf("RecoveryState() error = %v", err)
+	}
+	if got.DiffStat.Files != 1 || got.UnpushedCommits != 0 {
+		t.Fatalf("RecoveryState() = %+v, want one aggregate diff file and no unpushed commits", got)
+	}
+	if len(got.TrackedPaths) != 0 || len(got.CommitsNotInPullRequest) != 0 || !got.PullRequestComparisonAvailable {
+		t.Fatalf("RecoveryState() stranded evidence = tracked %v commits %v available=%t, want no evidence and available comparison", got.TrackedPaths, got.CommitsNotInPullRequest, got.PullRequestComparisonAvailable)
 	}
 }
 

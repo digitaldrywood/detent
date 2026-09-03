@@ -16,6 +16,8 @@ import (
 	"strings"
 )
 
+const recoveryEvidenceLimit = 20
+
 var (
 	diffStatFilesPattern   = regexp.MustCompile(`(\d+)\s+files?\s+changed`)
 	diffStatAddedPattern   = regexp.MustCompile(`(\d+)\s+insertions?\(\+\)`)
@@ -62,7 +64,11 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	unpushedCommits, err := gitUnpushedCommitCount(ctx, normalized.Path)
+	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidence(ctx, normalized.Path)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	trackedPaths, err := gitTrackedPaths(ctx, normalized.Path)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -70,12 +76,26 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, fmt.Errorf("git resolve recovery head: %w", err)
 	}
+	head = strings.TrimSpace(head)
+	commitsNotInPullRequest, comparisonAvailable, err := gitCommitsNotInPullRequest(
+		ctx,
+		normalized.Path,
+		head,
+		issue.PullRequestHeadSHA,
+	)
+	if err != nil {
+		return RecoveryState{}, err
+	}
 	return RecoveryState{
-		DiffStat:             stat,
-		BaseFingerprint:      gitRecoveryBaseFingerprint(ctx, normalized.Path, issue.BaseRef),
-		HeadSHA:              strings.TrimSpace(head),
-		WorkspaceFingerprint: workspaceRecoveryFingerprint(strings.TrimSpace(head), stat.Fingerprint),
-		UnpushedCommits:      unpushedCommits,
+		DiffStat:                       stat,
+		BaseFingerprint:                gitRecoveryBaseFingerprint(ctx, normalized.Path, issue.BaseRef),
+		HeadSHA:                        head,
+		WorkspaceFingerprint:           workspaceRecoveryFingerprint(head, stat.Fingerprint),
+		UnpushedCommits:                unpushedCommits,
+		UnpushedCommitRefs:             unpushedCommitRefs,
+		TrackedPaths:                   trackedPaths,
+		CommitsNotInPullRequest:        commitsNotInPullRequest,
+		PullRequestComparisonAvailable: comparisonAvailable,
 	}, nil
 }
 
@@ -196,23 +216,92 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 	return gitDiffStatWithEnv(ctx, workspacePath, env, "HEAD")
 }
 
-func gitUnpushedCommitCount(ctx context.Context, workspacePath string) (int, error) {
+func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string) (int, []string, error) {
 	remoteRefs, err := runGitAt(ctx, workspacePath, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes")
 	if err != nil {
-		return 0, fmt.Errorf("git list remote refs: %w", err)
+		return 0, nil, fmt.Errorf("git list remote refs: %w", err)
 	}
 	if strings.TrimSpace(remoteRefs) == "" {
-		return 0, nil
+		return 0, nil, nil
 	}
 	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	if err != nil {
-		return 0, fmt.Errorf("git count unpushed commits: %w", err)
+		return 0, nil, fmt.Errorf("git count unpushed commits: %w", err)
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(output))
 	if err != nil {
-		return 0, fmt.Errorf("parse unpushed commit count: %w", err)
+		return 0, nil, fmt.Errorf("parse unpushed commit count: %w", err)
 	}
-	return count, nil
+	if count == 0 {
+		return 0, nil, nil
+	}
+	refs, err := gitCommitEvidence(ctx, workspacePath, "HEAD", "--not", "--remotes")
+	if err != nil {
+		return 0, nil, fmt.Errorf("git list unpushed commits: %w", err)
+	}
+	return count, refs, nil
+}
+
+func gitTrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
+	output, err := runGitAt(ctx, workspacePath, "diff", "--name-only", "--no-ext-diff", "-z", "HEAD", "--")
+	if err != nil {
+		return nil, fmt.Errorf("git list tracked workspace changes: %w", err)
+	}
+	return boundedNULFields(output, recoveryEvidenceLimit, false), nil
+}
+
+func gitCommitsNotInPullRequest(
+	ctx context.Context,
+	workspacePath string,
+	head string,
+	pullRequestHead string,
+) ([]string, bool, error) {
+	head = strings.TrimSpace(head)
+	pullRequestHead = strings.TrimSpace(pullRequestHead)
+	if pullRequestHead == "" {
+		return nil, false, nil
+	}
+	if head == pullRequestHead {
+		return nil, true, nil
+	}
+	if _, err := runGitAt(ctx, workspacePath, "cat-file", "-e", pullRequestHead+"^{commit}"); err != nil {
+		return nil, false, nil
+	}
+	refs, err := gitCommitEvidence(ctx, workspacePath, head, "--not", pullRequestHead)
+	if err != nil {
+		return nil, false, fmt.Errorf("git compare workspace commits to pull request: %w", err)
+	}
+	return refs, true, nil
+}
+
+func gitCommitEvidence(ctx context.Context, workspacePath string, revisions ...string) ([]string, error) {
+	args := []string{"log", "--format=%H %s%x00", "-n", strconv.Itoa(recoveryEvidenceLimit)}
+	args = append(args, revisions...)
+	output, err := runGitAt(ctx, workspacePath, args...)
+	if err != nil {
+		return nil, err
+	}
+	return boundedNULFields(output, recoveryEvidenceLimit, true), nil
+}
+
+func boundedNULFields(output string, limit int, trimSpace bool) []string {
+	if limit <= 0 {
+		return nil
+	}
+	fields := make([]string, 0, min(strings.Count(output, "\x00"), limit))
+	for field := range strings.SplitSeq(output, "\x00") {
+		if trimSpace {
+			field = strings.TrimSpace(field)
+		}
+		if field == "" {
+			continue
+		}
+		fields = append(fields, field)
+		if len(fields) == limit {
+			break
+		}
+	}
+	return fields
 }
 
 func gitDeliveryState(ctx context.Context, workspacePath string, branch string, baseRef string) (DeliverableState, error) {

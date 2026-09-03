@@ -1471,10 +1471,11 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 	t.Parallel()
 
 	baseSnapshot := runpkg.BlockedRecoverySnapshot{
-		HeadSHA:          "ready-head",
-		WorkspacePresent: true,
-		WorkspaceStatus:  "present",
-		Health:           "ready",
+		HeadSHA:                        "ready-head",
+		WorkspacePresent:               true,
+		WorkspaceStatus:                "present",
+		PullRequestComparisonAvailable: true,
+		Health:                         "ready",
 	}
 	tests := []struct {
 		name         string
@@ -1546,7 +1547,7 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 			snapshot: baseSnapshot,
 		},
 		{
-			name:  "head mismatched pull request",
+			name:  "head mismatch without risk evidence",
 			cause: strandedUnpushedWorkReason,
 			owner: blockedRecoveryOwnerOrchestrator,
 			snapshot: runpkg.BlockedRecoverySnapshot{
@@ -1555,17 +1556,49 @@ func TestRecoverBlockedReadyPullRequestToMerging(t *testing.T) {
 				WorkspaceStatus:  "present",
 				Health:           "ready",
 			},
+			wantMerging: true,
 		},
 		{
-			name:  "dirty workspace",
+			name:  "untracked-only workspace with matching pull request head",
 			cause: strandedUnpushedWorkReason,
 			owner: blockedRecoveryOwnerOrchestrator,
 			snapshot: runpkg.BlockedRecoverySnapshot{
-				HeadSHA:          "ready-head",
-				WorkspacePresent: true,
-				WorkspaceFiles:   1,
-				WorkspaceStatus:  "present",
-				Health:           "ready",
+				HeadSHA:                        "ready-head",
+				WorkspacePresent:               true,
+				WorkspaceFiles:                 1,
+				UnpushedCommits:                1,
+				WorkspaceStatus:                "present",
+				PullRequestComparisonAvailable: true,
+				Health:                         "ready",
+			},
+			wantMerging: true,
+		},
+		{
+			name:  "tracked workspace path",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			snapshot: runpkg.BlockedRecoverySnapshot{
+				HeadSHA:                        "ready-head",
+				WorkspacePresent:               true,
+				WorkspaceFiles:                 1,
+				TrackedPaths:                   []string{"tracked.go"},
+				WorkspaceStatus:                "present",
+				PullRequestComparisonAvailable: true,
+				Health:                         "ready",
+			},
+		},
+		{
+			name:  "commit absent from pull request",
+			cause: strandedUnpushedWorkReason,
+			owner: blockedRecoveryOwnerOrchestrator,
+			snapshot: runpkg.BlockedRecoverySnapshot{
+				HeadSHA:                        "workspace-head",
+				WorkspacePresent:               true,
+				UnpushedCommits:                1,
+				CommitsNotInPullRequest:        []string{"abc123 fix: preserve work"},
+				WorkspaceStatus:                "present",
+				PullRequestComparisonAvailable: true,
+				Health:                         "ready",
 			},
 		},
 		{

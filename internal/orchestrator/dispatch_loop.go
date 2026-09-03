@@ -330,7 +330,8 @@ func dispatchLoopWorkspaceDiffEqual(left dispatchLoopFingerprint, right dispatch
 
 func implementProgressDiffStatsPresent(diff implementProgressDiffStats) bool {
 	return diff.FilesChanged != 0 || diff.AddedLines != 0 || diff.RemovedLines != 0 ||
-		diff.UnpushedCommits != 0 || strings.TrimSpace(diff.HeadSHA) != "" ||
+		diff.UnpushedCommits != 0 || len(diff.UnpushedCommitRefs) != 0 || len(diff.TrackedPaths) != 0 ||
+		len(diff.CommitsNotInPullRequest) != 0 || diff.PullRequestComparisonAvailable || strings.TrimSpace(diff.HeadSHA) != "" ||
 		strings.TrimSpace(diff.Fingerprint) != "" || strings.TrimSpace(diff.Status) != ""
 }
 

@@ -24,12 +24,13 @@ func (s *releaseErrorSafetyScheduler) ReleaseSlot(slot scheduler.Slot) error {
 }
 
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
-	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true, uint8(0))
-	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false, uint8(1))
-	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(2))
-	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(10), int64(0), false, uint8(3))
-	f.Add(1, 0, 0, "old-output", "same-deliverable", int64(1), "old-receipt", "recut", int64(1), "new-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(0))
-	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, uint8(1))
+	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true, false, uint8(0))
+	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false, false, uint8(1))
+	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(2))
+	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(10), int64(0), false, false, uint8(3))
+	f.Add(1, 0, 0, "old-output", "same-deliverable", int64(1), "old-receipt", "recut", int64(1), "new-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(0))
+	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(1))
+	f.Add(1, 0, 0, "tracked-output", "changed", int64(1), "same-head", "recut", int64(1), "same-head", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, true, uint8(1))
 
 	f.Fuzz(func(
 		t *testing.T,
@@ -51,6 +52,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		stageSeconds int64,
 		acceptedSeconds int64,
 		accepted bool,
+		tracked bool,
 		gateScenario uint8,
 	) {
 		diffStats := DiffStats{
@@ -67,11 +69,14 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		unpushed := diffStats
 		unpushed.UnpushedCommits = 1
 		unpushed.HeadSHA = leftHead
+		if tracked {
+			unpushed.TrackedPaths = []string{"tracked.go"}
+		}
 		gotStranded, gotDeferred := implementProgressUnpushedClassification(unpushed, &connector.PullRequest{HeadSHA: rightHead})
 		wantStranded := false
 		wantDeferred := ""
 		switch {
-		case !implementProgressDiffStatsClean(unpushed):
+		case len(unpushed.TrackedPaths) > 0:
 			wantStranded = true
 		case strings.TrimSpace(leftHead) == "":
 			wantDeferred = workspaceHeadUnavailableReason

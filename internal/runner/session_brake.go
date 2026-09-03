@@ -478,6 +478,7 @@ func (r *Runner) sessionProgressSnapshot(
 			workspaceErr = err
 		} else {
 			snapshot.DiffStats = diffStatsFromWorkspace(recovery.DiffStat)
+			applyRecoveryState(&snapshot.DiffStats, &recovery)
 			snapshot.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
 			snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)
 			snapshot.UnpushedCommits = recovery.UnpushedCommits

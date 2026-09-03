@@ -108,13 +108,17 @@ type implementProgressSignatureRecord struct {
 }
 
 type implementProgressDiffStats struct {
-	FilesChanged    int    `json:"files_changed"`
-	AddedLines      int    `json:"added_lines"`
-	RemovedLines    int    `json:"removed_lines"`
-	UnpushedCommits int    `json:"unpushed_commits,omitempty"`
-	HeadSHA         string `json:"head_sha,omitempty"`
-	Fingerprint     string `json:"fingerprint,omitempty"`
-	Status          string `json:"status,omitempty"`
+	FilesChanged                   int      `json:"files_changed"`
+	AddedLines                     int      `json:"added_lines"`
+	RemovedLines                   int      `json:"removed_lines"`
+	UnpushedCommits                int      `json:"unpushed_commits,omitempty"`
+	UnpushedCommitRefs             []string `json:"unpushed_commit_refs,omitempty"`
+	TrackedPaths                   []string `json:"tracked_paths,omitempty"`
+	CommitsNotInPullRequest        []string `json:"commits_not_in_pull_request,omitempty"`
+	PullRequestComparisonAvailable bool     `json:"pull_request_comparison_available,omitempty"`
+	HeadSHA                        string   `json:"head_sha,omitempty"`
+	Fingerprint                    string   `json:"fingerprint,omitempty"`
+	Status                         string   `json:"status,omitempty"`
 }
 
 func (o *Orchestrator) evaluateImplementCompletionProgress(
@@ -338,6 +342,7 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 	}
 	decision.Issue = issue
 	decision.TrackerState = strings.TrimSpace(issue.State)
+	decision.WorkspaceDiffStats = implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
 	decision.ProgressKinds = implementProgressArtifactKinds(
 		running.DispatchProgress,
 		implementProgressArtifactSnapshotFromIssue(issue, workpadCurrent),
@@ -369,7 +374,7 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		decision.PreviousSignatureFound = true
 		decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
 	}
-	if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, issue.PullRequest); deferReason != "" {
+	if stranded, deferReason := implementProgressUnpushedClassification(decision.WorkspaceDiffStats, issue.PullRequest); deferReason != "" {
 		decision.Reason = deferReason
 		return decision
 	} else if stranded {
@@ -391,8 +396,8 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		decision.ProgressKinds = append([]string{"pull_request"}, decision.ProgressKinds...)
 		return decision
 	}
-	if !implementProgressDiffStatsClean(running.DiffStats) {
-		if !diffStatsPresent(running.DiffStats) {
+	if !implementProgressDiffStatsClean(decision.WorkspaceDiffStats) {
+		if !diffStatsPresent(decision.WorkspaceDiffStats) {
 			decision.Reason = "workspace_diffstat_unavailable"
 			return decision
 		}
@@ -686,7 +691,7 @@ func consecutiveImplementStrandedWorkAttempts(attempts []store.WorkAttempt, curr
 	count := 0
 	for _, attempt := range attempts {
 		record, ok := implementProgressRecordFromAttempt(attempt)
-		if !ok || !implementProgressSignatureEqual(record.CurrentSignature.signature(), current) || record.WorkspaceDiffStats.UnpushedCommits <= 0 {
+		if !ok || !implementProgressSignatureEqual(record.CurrentSignature.signature(), current) || !implementProgressRecordedStrandedEvidence(record.WorkspaceDiffStats) {
 			return count
 		}
 		count++
@@ -813,14 +818,22 @@ func (r implementProgressSignatureRecord) signature() autoPromoteReworkSignature
 
 func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgressDiffStats {
 	return implementProgressDiffStats{
-		FilesChanged:    diffStats.FilesChanged,
-		AddedLines:      diffStats.AddedLines,
-		RemovedLines:    diffStats.RemovedLines,
-		UnpushedCommits: diffStats.UnpushedCommits,
-		HeadSHA:         strings.TrimSpace(diffStats.HeadSHA),
-		Fingerprint:     strings.TrimSpace(diffStats.Fingerprint),
-		Status:          strings.TrimSpace(diffStats.Status),
+		FilesChanged:                   diffStats.FilesChanged,
+		AddedLines:                     diffStats.AddedLines,
+		RemovedLines:                   diffStats.RemovedLines,
+		UnpushedCommits:                diffStats.UnpushedCommits,
+		UnpushedCommitRefs:             append([]string(nil), diffStats.UnpushedCommitRefs...),
+		TrackedPaths:                   append([]string(nil), diffStats.TrackedPaths...),
+		CommitsNotInPullRequest:        append([]string(nil), diffStats.CommitsNotInPullRequest...),
+		PullRequestComparisonAvailable: diffStats.PullRequestComparisonAvailable,
+		HeadSHA:                        strings.TrimSpace(diffStats.HeadSHA),
+		Fingerprint:                    strings.TrimSpace(diffStats.Fingerprint),
+		Status:                         strings.TrimSpace(diffStats.Status),
 	}
+}
+
+func implementProgressRecordedStrandedEvidence(diffStats implementProgressDiffStats) bool {
+	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
 }
 
 func implementProgressSignatureUsable(signature autoPromoteReworkSignature) bool {
@@ -843,17 +856,39 @@ func implementProgressDiffStatsClean(diffStats DiffStats) bool {
 func implementProgressOperationalWorkspaceClean(diffStats DiffStats) bool {
 	return implementProgressDiffStatsClean(diffStats) &&
 		diffStats.UnpushedCommits == 0 &&
-		diffStats.CommitsAhead == 0
+		diffStats.CommitsAhead == 0 &&
+		len(diffStats.TrackedPaths) == 0 &&
+		len(diffStats.CommitsNotInPullRequest) == 0
+}
+
+func implementProgressReconcilePullRequestEvidence(diffStats DiffStats, pullRequest *connector.PullRequest) DiffStats {
+	if pullRequest == nil || strings.TrimSpace(diffStats.HeadSHA) == "" ||
+		strings.TrimSpace(diffStats.HeadSHA) != strings.TrimSpace(pullRequest.HeadSHA) {
+		return diffStats
+	}
+	diffStats.UnpushedCommits = 0
+	diffStats.UnpushedCommitRefs = nil
+	diffStats.CommitsNotInPullRequest = nil
+	diffStats.PullRequestComparisonAvailable = true
+	return diffStats
 }
 
 func implementProgressUnpushedClassification(diffStats DiffStats, pullRequest *connector.PullRequest) (bool, string) {
+	if pullRequest != nil {
+		if len(diffStats.TrackedPaths) > 0 {
+			return true, ""
+		}
+		if diffStats.PullRequestComparisonAvailable {
+			return len(diffStats.CommitsNotInPullRequest) > 0, ""
+		}
+	}
 	if diffStats.UnpushedCommits <= 0 {
 		return false, ""
 	}
-	if !implementProgressDiffStatsClean(diffStats) {
-		return true, ""
-	}
 	if pullRequest == nil {
+		if !implementProgressDiffStatsClean(diffStats) {
+			return true, ""
+		}
 		return false, unpushedRemoteTruthUnavailable
 	}
 	workspaceHead := strings.TrimSpace(diffStats.HeadSHA)
@@ -1052,7 +1087,7 @@ func implementProgressRecoveryReason(decision implementCompletionProgressDecisio
 	if humanAction := strings.TrimSpace(decision.HumanAction); humanAction != "" {
 		return humanAction
 	}
-	if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+	if implementProgressStrandedEvidence(decision.WorkspaceDiffStats) {
 		return "validate and push the stranded workspace commits, then open or update the pull request and move the issue to Rework"
 	}
 	return "inspect the linked PR and worker logs, then move the issue back to Rework or Todo after a human confirms the next action"
@@ -1064,7 +1099,7 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 		b.WriteString("Routed this issue to Blocked: loop detected after ")
 		b.WriteString(strconv.Itoa(decision.ConsecutiveNoProgress))
 		b.WriteString(" dispatches without lane, diff, commit, or pull request advancement.")
-	} else if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+	} else if implementProgressStrandedEvidence(decision.WorkspaceDiffStats) {
 		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly with work produced but stranded unpushed in the workspace.")
 	} else {
 		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly without deliverable progress.")
@@ -1139,6 +1174,7 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 			b.WriteString("\n- unpushed_commits: ")
 			b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.UnpushedCommits))
 		}
+		appendStrandedWorkEvidence(&b, decision.WorkspaceDiffStats)
 	}
 	if humanAction := strings.TrimSpace(decision.HumanAction); humanAction != "" {
 		b.WriteString("\n\nHuman action requested by the Workpad:\n\n")
@@ -1149,6 +1185,33 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 		}
 	}
 	return b.String()
+}
+
+func implementProgressStrandedEvidence(diffStats DiffStats) bool {
+	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
+}
+
+func appendStrandedWorkEvidence(b *strings.Builder, diffStats DiffStats) {
+	appendQuotedEvidence(b, "tracked_paths", diffStats.TrackedPaths)
+	appendQuotedEvidence(b, "commits_not_in_pull_request", diffStats.CommitsNotInPullRequest)
+	if len(diffStats.CommitsNotInPullRequest) == 0 {
+		appendQuotedEvidence(b, "unpushed_commit_refs", diffStats.UnpushedCommitRefs)
+	}
+}
+
+func appendQuotedEvidence(b *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	b.WriteString("\n- ")
+	b.WriteString(label)
+	b.WriteString(": ")
+	for index, value := range values {
+		if index > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(strconv.Quote(value))
+	}
 }
 
 func appendDispatchLoopWorkspaceEvidence(b *strings.Builder, decision implementCompletionProgressDecision) {
