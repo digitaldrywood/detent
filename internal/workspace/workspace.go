@@ -89,11 +89,15 @@ type IssueRecoveryStateProvider interface {
 }
 
 type RecoveryState struct {
-	DiffStat             DiffStat
-	BaseFingerprint      string
-	HeadSHA              string
-	WorkspaceFingerprint string
-	UnpushedCommits      int
+	DiffStat                       DiffStat
+	BaseFingerprint                string
+	HeadSHA                        string
+	WorkspaceFingerprint           string
+	UnpushedCommits                int
+	UnpushedCommitRefs             []string
+	TrackedPaths                   []string
+	CommitsNotInPullRequest        []string
+	PullRequestComparisonAvailable bool
 }
 
 type ArtifactEvidence struct {
@@ -146,11 +150,12 @@ type IssueCleaner interface {
 }
 
 type Issue struct {
-	ProjectID  string
-	ID         string
-	Identifier string
-	BranchName string
-	BaseRef    string
+	ProjectID          string
+	ID                 string
+	Identifier         string
+	BranchName         string
+	BaseRef            string
+	PullRequestHeadSHA string
 }
 
 type Info struct {

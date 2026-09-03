@@ -1035,6 +1035,10 @@ func diffStatsPresent(diffStats DiffStats) bool {
 		diffStats.AddedLines != 0 ||
 		diffStats.RemovedLines != 0 ||
 		diffStats.UnpushedCommits != 0 ||
+		len(diffStats.UnpushedCommitRefs) != 0 ||
+		len(diffStats.TrackedPaths) != 0 ||
+		len(diffStats.CommitsNotInPullRequest) != 0 ||
+		diffStats.PullRequestComparisonAvailable ||
 		diffStats.CommitsAhead != 0 ||
 		diffStats.RemoteBranchExists ||
 		diffStats.DeliveryStateChecked ||

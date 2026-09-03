@@ -37,25 +37,29 @@ const (
 )
 
 type blockedCauseSignals struct {
-	ConfigFingerprint    string            `json:"config_fingerprint,omitempty"`
-	ToolingFingerprint   string            `json:"tooling_fingerprint,omitempty"`
-	BaseFingerprint      string            `json:"base_fingerprint,omitempty"`
-	WorkspaceHeadSHA     string            `json:"workspace_head_sha,omitempty"`
-	WorkspaceFingerprint string            `json:"workspace_fingerprint,omitempty"`
-	WorkspaceStatus      string            `json:"workspace_status,omitempty"`
-	WorkspacePresent     bool              `json:"workspace_present,omitempty"`
-	WorkspaceFiles       int               `json:"workspace_files,omitempty"`
-	UnpushedCommits      int               `json:"unpushed_commits,omitempty"`
-	Health               string            `json:"health,omitempty"`
-	Description          string            `json:"description,omitempty"`
-	ModelOverride        string            `json:"model_override,omitempty"`
-	Labels               []string          `json:"labels,omitempty"`
-	Workpad              *workpad.Signal   `json:"workpad,omitempty"`
-	Fields               map[string]string `json:"fields,omitempty"`
-	PRNumber             int               `json:"pr_number,omitempty"`
-	PRHeadSHA            string            `json:"pr_head_sha,omitempty"`
-	PRBaseSHA            string            `json:"pr_base_sha,omitempty"`
-	PRDiffFingerprint    string            `json:"pr_diff_fingerprint,omitempty"`
+	ConfigFingerprint              string            `json:"config_fingerprint,omitempty"`
+	ToolingFingerprint             string            `json:"tooling_fingerprint,omitempty"`
+	BaseFingerprint                string            `json:"base_fingerprint,omitempty"`
+	WorkspaceHeadSHA               string            `json:"workspace_head_sha,omitempty"`
+	WorkspaceFingerprint           string            `json:"workspace_fingerprint,omitempty"`
+	WorkspaceStatus                string            `json:"workspace_status,omitempty"`
+	WorkspacePresent               bool              `json:"workspace_present,omitempty"`
+	WorkspaceFiles                 int               `json:"workspace_files,omitempty"`
+	UnpushedCommits                int               `json:"unpushed_commits,omitempty"`
+	UnpushedCommitRefs             []string          `json:"unpushed_commit_refs,omitempty"`
+	TrackedPaths                   []string          `json:"tracked_paths,omitempty"`
+	CommitsNotInPullRequest        []string          `json:"commits_not_in_pull_request,omitempty"`
+	PullRequestComparisonAvailable bool              `json:"pull_request_comparison_available,omitempty"`
+	Health                         string            `json:"health,omitempty"`
+	Description                    string            `json:"description,omitempty"`
+	ModelOverride                  string            `json:"model_override,omitempty"`
+	Labels                         []string          `json:"labels,omitempty"`
+	Workpad                        *workpad.Signal   `json:"workpad,omitempty"`
+	Fields                         map[string]string `json:"fields,omitempty"`
+	PRNumber                       int               `json:"pr_number,omitempty"`
+	PRHeadSHA                      string            `json:"pr_head_sha,omitempty"`
+	PRBaseSHA                      string            `json:"pr_base_sha,omitempty"`
+	PRDiffFingerprint              string            `json:"pr_diff_fingerprint,omitempty"`
 }
 
 type blockedCauseIdentity struct {
@@ -134,24 +138,32 @@ func (o *Orchestrator) blockedCauseSignals(
 		}
 		snapshot.UnpushedCommits = fallback.UnpushedCommits
 		snapshot.WorkspaceFiles = fallback.FilesChanged
+		snapshot.UnpushedCommitRefs = append([]string(nil), fallback.UnpushedCommitRefs...)
+		snapshot.TrackedPaths = append([]string(nil), fallback.TrackedPaths...)
+		snapshot.CommitsNotInPullRequest = append([]string(nil), fallback.CommitsNotInPullRequest...)
+		snapshot.PullRequestComparisonAvailable = fallback.PullRequestComparisonAvailable
 		snapshot.WorkspaceStatus = "present"
 	}
 	signals := blockedCauseSignals{
-		ConfigFingerprint:    strings.TrimSpace(snapshot.ConfigFingerprint),
-		ToolingFingerprint:   strings.TrimSpace(snapshot.ToolingFingerprint),
-		BaseFingerprint:      strings.TrimSpace(snapshot.BaseFingerprint),
-		WorkspaceHeadSHA:     strings.TrimSpace(snapshot.HeadSHA),
-		WorkspaceFingerprint: strings.TrimSpace(snapshot.WorkspaceFingerprint),
-		WorkspaceStatus:      strings.TrimSpace(snapshot.WorkspaceStatus),
-		WorkspacePresent:     snapshot.WorkspacePresent,
-		WorkspaceFiles:       snapshot.WorkspaceFiles,
-		UnpushedCommits:      snapshot.UnpushedCommits,
-		Health:               strings.TrimSpace(snapshot.Health),
-		Description:          strings.TrimSpace(issue.Description),
-		ModelOverride:        strings.TrimSpace(issue.ModelOverride),
-		Labels:               blockedCauseLabels(issue.Labels, o.cfg.StatusLabelPrefix),
-		Workpad:              blockedCauseWorkpadSignal(issue.WorkpadSignal),
-		Fields:               blockedCauseFields(issue.Fields),
+		ConfigFingerprint:              strings.TrimSpace(snapshot.ConfigFingerprint),
+		ToolingFingerprint:             strings.TrimSpace(snapshot.ToolingFingerprint),
+		BaseFingerprint:                strings.TrimSpace(snapshot.BaseFingerprint),
+		WorkspaceHeadSHA:               strings.TrimSpace(snapshot.HeadSHA),
+		WorkspaceFingerprint:           strings.TrimSpace(snapshot.WorkspaceFingerprint),
+		WorkspaceStatus:                strings.TrimSpace(snapshot.WorkspaceStatus),
+		WorkspacePresent:               snapshot.WorkspacePresent,
+		WorkspaceFiles:                 snapshot.WorkspaceFiles,
+		UnpushedCommits:                snapshot.UnpushedCommits,
+		UnpushedCommitRefs:             append([]string(nil), snapshot.UnpushedCommitRefs...),
+		TrackedPaths:                   append([]string(nil), snapshot.TrackedPaths...),
+		CommitsNotInPullRequest:        append([]string(nil), snapshot.CommitsNotInPullRequest...),
+		PullRequestComparisonAvailable: snapshot.PullRequestComparisonAvailable,
+		Health:                         strings.TrimSpace(snapshot.Health),
+		Description:                    strings.TrimSpace(issue.Description),
+		ModelOverride:                  strings.TrimSpace(issue.ModelOverride),
+		Labels:                         blockedCauseLabels(issue.Labels, o.cfg.StatusLabelPrefix),
+		Workpad:                        blockedCauseWorkpadSignal(issue.WorkpadSignal),
+		Fields:                         blockedCauseFields(issue.Fields),
 	}
 	if issue.PRNumber != nil {
 		signals.PRNumber = *issue.PRNumber
@@ -807,10 +819,14 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	if !signals.WorkspacePresent || strings.TrimSpace(signals.WorkspaceStatus) != "present" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
 		return "workspace_head_unavailable"
 	}
-	if signals.WorkspaceFiles > 0 {
-		return "workspace_diff_present"
+	if len(signals.TrackedPaths) > 0 {
+		return "workspace_tracked_changes_present"
 	}
-	if strings.TrimSpace(signals.WorkspaceHeadSHA) != strings.TrimSpace(pullRequest.HeadSHA) {
+	if signals.PullRequestComparisonAvailable {
+		if len(signals.CommitsNotInPullRequest) > 0 {
+			return "workspace_commits_not_in_pull_request"
+		}
+	} else if signals.UnpushedCommits > 0 && strings.TrimSpace(signals.WorkspaceHeadSHA) != strings.TrimSpace(pullRequest.HeadSHA) {
 		return "workspace_pull_request_head_mismatch"
 	}
 	if !mergeWorkerProgrammaticMergeReady(issue) || !reworkBreakerCIGreen(pullRequest) || len(pullRequest.StaleSuccessfulChecks) > 0 {

@@ -104,15 +104,41 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReason:      "first_completed_attempt",
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
-			wantConsecutive: 1,
+			wantConsecutive: 0,
 			wantReview:      true,
 		},
 		{
-			name:             "new pull request head with newer unpushed commit remains stranded",
-			runningIssue:     implementProgressIssue("same-head", "Test"),
-			hydratedIssue:    implementProgressIssue("new-head", "Test"),
-			history:          []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
-			diffStats:        DiffStats{UnpushedCommits: 1, HeadSHA: "workspace-head", Status: "clean"},
+			name:          "hydrated pull request head supersedes stale commit comparison",
+			runningIssue:  implementProgressIssue("dispatch-head", "Test"),
+			hydratedIssue: implementProgressIssue("pushed-head", "Test"),
+			diffStats: DiffStats{
+				UnpushedCommits:                1,
+				UnpushedCommitRefs:             []string{"abc123 fix: pushed work"},
+				CommitsNotInPullRequest:        []string{"abc123 fix: pushed work"},
+				PullRequestComparisonAvailable: true,
+				HeadSHA:                        "pushed-head",
+				Status:                         "clean",
+			},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "first_completed_attempt",
+			wantCurrentHead: "pushed-head",
+			wantHydrations:  1,
+			wantConsecutive: 0,
+			wantReview:      true,
+		},
+		{
+			name:          "new pull request head with newer unpushed commit remains stranded",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("new-head", "Test"),
+			history:       []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats: DiffStats{
+				UnpushedCommits:                1,
+				CommitsNotInPullRequest:        []string{"abc123 fix: preserve work"},
+				PullRequestComparisonAvailable: true,
+				HeadSHA:                        "workspace-head",
+				Status:                         "clean",
+			},
 			noProgressLimit:  3,
 			wantTerminal:     store.WorkAttemptTerminalNoProgress,
 			wantReason:       strandedUnpushedWorkReason,
@@ -145,7 +171,14 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				implementProgressStrandedHistoryAttempt(2, signature),
 				implementProgressStrandedHistoryAttempt(1, signature),
 			},
-			diffStats:        DiffStats{UnpushedCommits: 1, HeadSHA: "workspace-head", Status: "clean"},
+			diffStats: DiffStats{
+				UnpushedCommits:                1,
+				UnpushedCommitRefs:             []string{"abc123 fix: preserve work"},
+				CommitsNotInPullRequest:        []string{"abc123 fix: preserve work"},
+				PullRequestComparisonAvailable: true,
+				HeadSHA:                        "workspace-head",
+				Status:                         "clean",
+			},
 			noProgressLimit:  3,
 			wantTerminal:     store.WorkAttemptTerminalNoProgress,
 			wantReason:       strandedUnpushedWorkReason,
@@ -155,13 +188,40 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantHydrations:   1,
 			wantBlocked:      true,
 			wantBlockReason:  strandedUnpushedWorkReason,
-			wantComment:      "unpushed_commits: 1",
+			wantComment:      "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
 		},
 		{
-			name:            "dirty workspace remains stranded despite matching pull request head",
-			runningIssue:    implementProgressIssue("same-head", "Test"),
-			hydratedIssue:   implementProgressIssue("same-head", "Test"),
-			diffStats:       DiffStats{FilesChanged: 1, AddedLines: 1, UnpushedCommits: 1, HeadSHA: "same-head", Status: "changed"},
+			name:          "untracked file with matching pull request head is not stranded",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			diffStats: DiffStats{
+				FilesChanged:                   1,
+				AddedLines:                     1,
+				UnpushedCommits:                1,
+				PullRequestComparisonAvailable: true,
+				HeadSHA:                        "same-head",
+				Status:                         "changed",
+			},
+			noProgressLimit: 1,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "first_completed_attempt",
+			wantConsecutive: 0,
+			wantCurrentHead: "same-head",
+			wantHydrations:  1,
+			wantReview:      true,
+		},
+		{
+			name:          "tracked file with matching pull request head remains stranded",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			diffStats: DiffStats{
+				FilesChanged:                   1,
+				AddedLines:                     1,
+				TrackedPaths:                   []string{"tracked.go"},
+				PullRequestComparisonAvailable: true,
+				HeadSHA:                        "same-head",
+				Status:                         "changed",
+			},
 			noProgressLimit: 1,
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      strandedUnpushedWorkReason,
@@ -170,7 +230,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantHydrations:  1,
 			wantBlocked:     true,
 			wantBlockReason: strandedUnpushedWorkReason,
-			wantComment:     "unpushed_commits: 1",
+			wantComment:     "tracked_paths: \"tracked.go\"",
 		},
 		{
 			name:            "missing workspace head defers unpushed classification",
@@ -1682,6 +1742,20 @@ func TestImplementProgressHelperBoundaries(t *testing.T) {
 		t.Fatal("legacy dirty completion matched no progress")
 	}
 
+	evidence := DiffStats{
+		UnpushedCommitRefs:             []string{"abc123 fix: preserve work"},
+		TrackedPaths:                   []string{"tracked.go"},
+		CommitsNotInPullRequest:        []string{"abc123 fix: preserve work"},
+		PullRequestComparisonAvailable: true,
+	}
+	recordedEvidence := implementProgressDiffStatsFromDiffStats(evidence)
+	if !reflect.DeepEqual(recordedEvidence.UnpushedCommitRefs, evidence.UnpushedCommitRefs) ||
+		!reflect.DeepEqual(recordedEvidence.TrackedPaths, evidence.TrackedPaths) ||
+		!reflect.DeepEqual(recordedEvidence.CommitsNotInPullRequest, evidence.CommitsNotInPullRequest) ||
+		!recordedEvidence.PullRequestComparisonAvailable {
+		t.Fatalf("implementProgressDiffStatsFromDiffStats() evidence = %#v, want %#v", recordedEvidence, evidence)
+	}
+
 	invalidAttempts := []store.WorkAttempt{
 		{TerminalState: store.WorkAttemptTerminalFailure, WorkerMetadataJSON: `{}`},
 		{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: `{`},
@@ -1779,6 +1853,8 @@ func TestImplementProgressOperationalWorkspaceClean(t *testing.T) {
 		{name: "workspace diff", diffStats: DiffStats{FilesChanged: 1, Status: "changed"}},
 		{name: "unpushed commit", diffStats: DiffStats{UnpushedCommits: 1, Status: "clean"}},
 		{name: "commit ahead", diffStats: DiffStats{CommitsAhead: 1, Status: "clean"}},
+		{name: "tracked path", diffStats: DiffStats{TrackedPaths: []string{"tracked.go"}, Status: "clean"}},
+		{name: "commit absent from pull request", diffStats: DiffStats{CommitsNotInPullRequest: []string{"abc123 fix: preserve work"}, Status: "clean"}},
 	}
 
 	for _, tt := range tests {
@@ -1788,6 +1864,40 @@ func TestImplementProgressOperationalWorkspaceClean(t *testing.T) {
 				t.Fatalf("implementProgressOperationalWorkspaceClean() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCompletedReworkGateWaitProgressPreservesStrandedCommitDecision(t *testing.T) {
+	t.Parallel()
+
+	issue := implementProgressIssue("pull-request-head")
+	issue.State = "Rework"
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	decision := implementCompletionProgressDecision{
+		Issue:            issue,
+		Outcome:          store.WorkAttemptTerminalNoProgress,
+		Reason:           strandedUnpushedWorkReason,
+		CurrentSignature: autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "pull-request-head"},
+		WorkspaceDiffStats: DiffStats{
+			CommitsNotInPullRequest:        []string{"abc123 fix: preserve work"},
+			PullRequestComparisonAvailable: true,
+			HeadSHA:                        "workspace-head",
+			Status:                         "clean",
+		},
+	}
+	running := Running{Issue: issue, DispatchSourceState: "Rework"}
+
+	got, reason := completedReworkGateWaitProgress(running, decision, cfg, FinalStateCompleted)
+	if reason != "" || got.Outcome != store.WorkAttemptTerminalNoProgress || got.Reason != strandedUnpushedWorkReason {
+		t.Fatalf("completedReworkGateWaitProgress() = outcome %q reason %q gate wait %q, want preserved stranded decision", got.Outcome, got.Reason, reason)
 	}
 }
 

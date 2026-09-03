@@ -233,16 +233,20 @@ type GitHubRESTBudgetProber interface {
 }
 
 type BlockedRecoverySnapshot struct {
-	ConfigFingerprint    string
-	ToolingFingerprint   string
-	BaseFingerprint      string
-	HeadSHA              string
-	WorkspaceFingerprint string
-	WorkspaceStatus      string
-	WorkspacePresent     bool
-	WorkspaceFiles       int
-	UnpushedCommits      int
-	Health               string
+	ConfigFingerprint              string
+	ToolingFingerprint             string
+	BaseFingerprint                string
+	HeadSHA                        string
+	WorkspaceFingerprint           string
+	WorkspaceStatus                string
+	WorkspacePresent               bool
+	WorkspaceFiles                 int
+	UnpushedCommits                int
+	UnpushedCommitRefs             []string
+	TrackedPaths                   []string
+	CommitsNotInPullRequest        []string
+	PullRequestComparisonAvailable bool
+	Health                         string
 }
 
 type Validator interface {
@@ -768,16 +772,20 @@ type BudgetRefusal struct {
 }
 
 type DiffStats struct {
-	FilesChanged         int
-	AddedLines           int
-	RemovedLines         int
-	UnpushedCommits      int
-	CommitsAhead         int
-	RemoteBranchExists   bool
-	DeliveryStateChecked bool
-	HeadSHA              string
-	Fingerprint          string
-	Status               string
+	FilesChanged                   int
+	AddedLines                     int
+	RemovedLines                   int
+	UnpushedCommits                int
+	UnpushedCommitRefs             []string
+	TrackedPaths                   []string
+	CommitsNotInPullRequest        []string
+	PullRequestComparisonAvailable bool
+	CommitsAhead                   int
+	RemoteBranchExists             bool
+	DeliveryStateChecked           bool
+	HeadSHA                        string
+	Fingerprint                    string
+	Status                         string
 }
 
 type TokenTotals struct {

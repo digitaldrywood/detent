@@ -1788,7 +1788,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	turnErr = classifyForgeDeliverableError(turnErr, forgeHost, result.PullRequestHeadPushed)
 	result.budgetProjection = budgetProjection
-	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
+	if brakeDiff := sessionBrake.resultDiffStats(); !diffStatsEmpty(brakeDiff) {
 		result.DiffStats = brakeDiff
 	}
 	var deliverableState *workspace.DeliverableState
@@ -1796,8 +1796,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if mode == RunModeImplement && result.PullRequestHeadPushed && errors.As(turnErr, &exhaustedDeliverable) {
 		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "deliverable_recovery"); recoveryState != nil {
 			result.DiffStats = diffStatsFromWorkspace(recoveryState.DiffStat)
-			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
-			result.DiffStats.HeadSHA = strings.TrimSpace(recoveryState.HeadSHA)
+			applyRecoveryState(&result.DiffStats, recoveryState)
 		}
 		deliverableState = r.workspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue)
 		applyDeliverableState(&result.DiffStats, deliverableState)
@@ -1888,8 +1887,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	if mode == RunModeImplement {
 		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
-			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
-			result.DiffStats.HeadSHA = strings.TrimSpace(recoveryState.HeadSHA)
+			applyRecoveryState(&result.DiffStats, recoveryState)
 		}
 	}
 	applyDeliverableState(&result.DiffStats, deliverableState)
@@ -2314,7 +2312,7 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 	result.PullRequestHeadPushed = initial.result.PullRequestHeadPushed || recovery.result.PullRequestHeadPushed
 	result.CITriggerLabelReapplied = initial.result.CITriggerLabelReapplied || recovery.result.CITriggerLabelReapplied
 	result.ForgeWriteCompleted = initial.result.ForgeWriteCompleted || recovery.result.ForgeWriteCompleted
-	if result.DiffStats == (DiffStats{}) {
+	if diffStatsEmpty(result.DiffStats) {
 		result.DiffStats = initial.result.DiffStats
 	}
 	return agentTurnExecution{
@@ -2456,8 +2454,7 @@ func (r *Runner) publishDispatchLoopStart(req RunRequest, recovery *workspace.Re
 		snapshot.WorkspaceDiffAvailable = true
 		snapshot.WorkspaceHeadAvailable = strings.TrimSpace(recovery.HeadSHA) != ""
 		snapshot.DiffStats = diffStatsFromWorkspace(recovery.DiffStat)
-		snapshot.DiffStats.UnpushedCommits = recovery.UnpushedCommits
-		snapshot.DiffStats.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
+		applyRecoveryState(&snapshot.DiffStats, recovery)
 	}
 	if err := req.OnUsageUpdate(UsageUpdate{DispatchLoopStart: &snapshot}); err != nil && r.logger != nil {
 		r.logger.Warn("dispatch loop start snapshot publish failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", err)
@@ -2872,7 +2869,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
 	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	sessionBrake.Stop()
-	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
+	if brakeDiff := sessionBrake.resultDiffStats(); !diffStatsEmpty(brakeDiff) {
 		runResult.DiffStats = brakeDiff
 	}
 	turnErr = errors.Join(turnErr, scratchCleanupErr)
@@ -3757,12 +3754,20 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		baseRef = strings.TrimSpace(issue.PullRequest.BaseSHA)
 	}
 	return workspace.Issue{
-		ProjectID:  projectID,
-		ID:         issue.ID,
-		Identifier: issue.Identifier,
-		BranchName: issue.BranchName,
-		BaseRef:    baseRef,
+		ProjectID:          projectID,
+		ID:                 issue.ID,
+		Identifier:         issue.Identifier,
+		BranchName:         issue.BranchName,
+		BaseRef:            baseRef,
+		PullRequestHeadSHA: pullRequestHeadSHA(issue.PullRequest),
 	}
+}
+
+func pullRequestHeadSHA(pullRequest *connector.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	return strings.TrimSpace(pullRequest.HeadSHA)
 }
 
 func applyAgentUpdate(result *RunResult, update AgentUpdate) {
@@ -4803,6 +4808,35 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		Fingerprint:  strings.TrimSpace(stat.Fingerprint),
 		Status:       status,
 	}
+}
+
+func applyRecoveryState(diffStats *DiffStats, state *workspace.RecoveryState) {
+	if diffStats == nil || state == nil {
+		return
+	}
+	diffStats.UnpushedCommits = state.UnpushedCommits
+	diffStats.UnpushedCommitRefs = append([]string(nil), state.UnpushedCommitRefs...)
+	diffStats.TrackedPaths = append([]string(nil), state.TrackedPaths...)
+	diffStats.CommitsNotInPullRequest = append([]string(nil), state.CommitsNotInPullRequest...)
+	diffStats.PullRequestComparisonAvailable = state.PullRequestComparisonAvailable
+	diffStats.HeadSHA = strings.TrimSpace(state.HeadSHA)
+}
+
+func diffStatsEmpty(diffStats DiffStats) bool {
+	return diffStats.FilesChanged == 0 &&
+		diffStats.AddedLines == 0 &&
+		diffStats.RemovedLines == 0 &&
+		diffStats.UnpushedCommits == 0 &&
+		len(diffStats.UnpushedCommitRefs) == 0 &&
+		len(diffStats.TrackedPaths) == 0 &&
+		len(diffStats.CommitsNotInPullRequest) == 0 &&
+		!diffStats.PullRequestComparisonAvailable &&
+		diffStats.CommitsAhead == 0 &&
+		!diffStats.RemoteBranchExists &&
+		!diffStats.DeliveryStateChecked &&
+		strings.TrimSpace(diffStats.HeadSHA) == "" &&
+		strings.TrimSpace(diffStats.Fingerprint) == "" &&
+		strings.TrimSpace(diffStats.Status) == ""
 }
 
 func (r *Runner) logWorkerEvent(issue connector.Issue, event string, attrs ...any) {
