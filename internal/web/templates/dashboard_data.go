@@ -1156,6 +1156,9 @@ func runningCountLabel(snapshot telemetry.Snapshot) string {
 		return formatCount(count)
 	}
 	if !snapshot.Runtime.Available() || !snapshot.Runtime.Complete && count == 0 {
+		if refreshSnapshotPartiallyFailed(snapshot) && snapshot.Runtime.Available() {
+			return formatCount(count) + "+"
+		}
 		return "unknown"
 	}
 	if !snapshot.Runtime.Complete {

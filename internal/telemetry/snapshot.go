@@ -593,6 +593,7 @@ const (
 	RefreshStatusInitializing RefreshStatus = "initializing"
 	RefreshStatusReady        RefreshStatus = "ready"
 	RefreshStatusBehind       RefreshStatus = "behind"
+	RefreshStatusPartial      RefreshStatus = "partial"
 	RefreshStatusDegraded     RefreshStatus = "degraded"
 )
 
@@ -712,6 +713,9 @@ func (a RefreshAttempt) IsZero() bool {
 }
 
 func (r Refresh) ReadinessStatus() RefreshStatus {
+	if RefreshStatus(strings.TrimSpace(string(r.Status))) == RefreshStatusPartial {
+		return RefreshStatusPartial
+	}
 	if strings.TrimSpace(r.LastError) != "" || r.LastErrorAt != nil {
 		return RefreshStatusDegraded
 	}
@@ -773,6 +777,10 @@ func (r Refresh) WithFreshness(now time.Time) Refresh {
 			readinessStatus = RefreshStatusReady
 		}
 	}
+	if readinessStatus == RefreshStatusPartial {
+		r.Status = RefreshStatusPartial
+		return r
+	}
 	if r.NextRefreshOverdue {
 		r.Status = RefreshStatusBehind
 		return r
@@ -826,6 +834,10 @@ func (r Refresh) Initializing() bool {
 
 func (r Refresh) Degraded() bool {
 	return r.ReadinessStatus() == RefreshStatusDegraded
+}
+
+func (r Refresh) Partial() bool {
+	return r.ReadinessStatus() == RefreshStatusPartial
 }
 
 func (r Refresh) Behind() bool {

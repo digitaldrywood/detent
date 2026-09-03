@@ -142,6 +142,14 @@ func appShellHealthKind(data DashboardShellData) primitives.Kind {
 	if refreshSnapshotFailed(data.Snapshot) {
 		return primitives.KindErr
 	}
+	if refreshSnapshotPartiallyFailed(data.Snapshot) {
+		for _, alert := range boardAlerts(data.Snapshot) {
+			if alert.Kind != boardAlertKindPartialRefresh {
+				return primitives.KindErr
+			}
+		}
+		return primitives.KindWarn
+	}
 	if len(boardAlerts(data.Snapshot)) > 0 {
 		return primitives.KindErr
 	}
@@ -162,6 +170,9 @@ func appLiveStatusKind(data DashboardShellData) primitives.Kind {
 func appLiveStatusLabel(data DashboardShellData) string {
 	if refreshSnapshotFailed(data.Snapshot) {
 		return "Live · refresh failed"
+	}
+	if refreshSnapshotPartiallyFailed(data.Snapshot) {
+		return "Live · " + refreshPartialFailureSummary(data.Snapshot)
 	}
 	if data.Snapshot.LastKnown {
 		return "Live · last-known data"

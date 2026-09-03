@@ -1181,6 +1181,138 @@ func TestPublishSnapshotOnceSurfacesPendingConnectorRetry(t *testing.T) {
 	}
 }
 
+func TestPublishSnapshotOnceIsolatesInvalidWorkflowProject(t *testing.T) {
+	t.Parallel()
+
+	const validationError = "create project pyroapex: validate project workflow: schedule_ownership.enabled must be true when scheduled work is configured"
+	now := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)
+	registry := projectpkg.NewRegistry()
+	healthy := startRefreshProject(t, "detent")
+	mustSetProject(t, registry, healthy)
+	waitForProjectDataSeq(t, healthy, 1)
+	if err := registry.SetPending(globalconfig.Project{ID: "pyroapex"}, projectpkg.RuntimeError{
+		Message:  validationError,
+		At:       now.Add(-time.Minute),
+		Terminal: true,
+	}); err != nil {
+		t.Fatalf("Registry.SetPending() error = %v", err)
+	}
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101", nil); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	snapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+	}
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusPartial {
+		t.Fatalf("fleet Refresh status = %q, want partial", got)
+	}
+	if !snapshot.Tracker.Available() || snapshot.Tracker.Complete {
+		t.Fatalf("fleet Tracker = %#v, want available partial data", snapshot.Tracker)
+	}
+	projects := make(map[string]telemetry.ProjectSnapshot, len(snapshot.Projects))
+	for _, projectSnapshot := range snapshot.Projects {
+		projects[projectSnapshot.Project.ID] = projectSnapshot
+	}
+	if got := projects["detent"]; !got.Refresh.Ready() || !got.Tracker.Available() || !got.Tracker.Complete {
+		t.Fatalf("healthy project snapshot = %#v, want current tracker data", got)
+	}
+	if got := projects["pyroapex"]; !got.Refresh.Degraded() || got.Refresh.LastError != validationError || got.Tracker.Available() {
+		t.Fatalf("invalid project snapshot = %#v, want unavailable validation failure", got)
+	}
+	failures := snapshot.RefreshFailures()
+	if len(failures) != 1 || failures[0].ProjectID != "pyroapex" || failures[0].LastError != validationError {
+		t.Fatalf("RefreshFailures() = %#v, want pyroapex validation failure", failures)
+	}
+
+	recovered := startRefreshProject(t, "pyroapex")
+	waitForProjectDataSeq(t, recovered, 1)
+	mustSetProject(t, registry, recovered)
+	if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now.Add(time.Minute), nil, nil, "http://localhost:4101", nil); err != nil {
+		t.Fatalf("publishSnapshotOnce(recovered) error = %v", err)
+	}
+	recoveredSnapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("snapshotHub.Latest() after recovery ok = false, want published snapshot")
+	}
+	if got := recoveredSnapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusReady {
+		t.Fatalf("recovered fleet Refresh status = %q, want ready", got)
+	}
+	if failures := recoveredSnapshot.RefreshFailures(); len(failures) != 0 {
+		t.Fatalf("recovered RefreshFailures() = %#v, want none", failures)
+	}
+	if !recoveredSnapshot.Tracker.Available() || !recoveredSnapshot.Tracker.Complete {
+		t.Fatalf("recovered fleet Tracker = %#v, want complete live data", recoveredSnapshot.Tracker)
+	}
+}
+
+func TestMergeRefreshAggregatesProjectReadiness(t *testing.T) {
+	t.Parallel()
+
+	ready := telemetry.Refresh{Status: telemetry.RefreshStatusReady}
+	degraded := telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "workflow invalid"}
+	partial := telemetry.Refresh{Status: telemetry.RefreshStatusPartial, LastError: "workflow invalid"}
+	tests := []struct {
+		name  string
+		left  telemetry.Refresh
+		right telemetry.Refresh
+		want  telemetry.RefreshStatus
+	}{
+		{name: "healthy projects stay ready", left: ready, right: ready, want: telemetry.RefreshStatusReady},
+		{name: "healthy then degraded is partial", left: ready, right: degraded, want: telemetry.RefreshStatusPartial},
+		{name: "degraded then healthy is partial", left: degraded, right: ready, want: telemetry.RefreshStatusPartial},
+		{name: "partial remains partial", left: partial, right: ready, want: telemetry.RefreshStatusPartial},
+		{name: "all projects degraded stays fail closed", left: degraded, right: degraded, want: telemetry.RefreshStatusDegraded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := mergeRefresh(tt.left, tt.right).ReadinessStatus(); got != tt.want {
+				t.Fatalf("mergeRefresh() status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPublishSnapshotOnceFailsClosedWhenEveryProjectIsInvalid(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 0, 0, 0, time.UTC)
+	registry := projectpkg.NewRegistry()
+	for _, id := range []string{"detent", "pyroapex"} {
+		if err := registry.SetPending(globalconfig.Project{ID: id}, projectpkg.RuntimeError{
+			Message:  "create project " + id + ": validate project workflow: workflow invalid",
+			At:       now,
+			Terminal: true,
+		}); err != nil {
+			t.Fatalf("Registry.SetPending(%q) error = %v", id, err)
+		}
+	}
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101", nil); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+	snapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+	}
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+		t.Fatalf("fleet Refresh status = %q, want degraded", got)
+	}
+	if snapshot.Tracker.Available() || snapshot.Runtime.Available() {
+		t.Fatalf("fleet sections = tracker %#v runtime %#v, want unavailable", snapshot.Tracker, snapshot.Runtime)
+	}
+	if failures := snapshot.RefreshFailures(); len(failures) != 2 {
+		t.Fatalf("RefreshFailures() = %#v, want both invalid projects", failures)
+	}
+}
+
 type agentPoolSnapshotSourceStub []scheduler.PoolSnapshot
 
 func (s agentPoolSnapshotSourceStub) PoolSnapshots() []scheduler.PoolSnapshot {
