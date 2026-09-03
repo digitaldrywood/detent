@@ -40,6 +40,8 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 		"--github-webhook-secret-env", "TEST_HUB_WEBHOOK_SECRET",
 		"--webhook-payload-retention", "48h",
 		"--webhook-maintenance-interval", "30s",
+		"--reconcile-interval", "2m",
+		"--full-repair-interval", "6h",
 	})
 	if err := cmd.ExecuteContext(wantContext); err != nil {
 		t.Fatalf("ExecuteContext() error = %v", err)
@@ -67,6 +69,12 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	}
 	if gotConfig.WebhookMaintenanceInterval != 30*time.Second {
 		t.Fatalf("webhook maintenance interval = %s, want 30s", gotConfig.WebhookMaintenanceInterval)
+	}
+	if gotConfig.ReconcileInterval != 2*time.Minute {
+		t.Fatalf("reconcile interval = %s, want 2m", gotConfig.ReconcileInterval)
+	}
+	if gotConfig.FullRepairInterval != 6*time.Hour {
+		t.Fatalf("full repair interval = %s, want 6h", gotConfig.FullRepairInterval)
 	}
 	if gotConfig.Version != "v-test" {
 		t.Fatalf("version = %q, want v-test", gotConfig.Version)

@@ -323,6 +323,10 @@ func applyOrResolveWebhookRepository(ctx context.Context, tx *sql.Tx, fullName s
 }
 
 func applyWebhookRepository(ctx context.Context, tx *sql.Tx, repository normalizedRepository, stamp sourceStamp, now time.Time) (int64, projectionApplyResult, error) {
+	return applyRepositoryProjection(ctx, tx, repository, stamp, now, true, false)
+}
+
+func applyRepositoryProjection(ctx context.Context, tx *sql.Tx, repository normalizedRepository, stamp sourceStamp, now time.Time, webhook bool, authoritative bool) (int64, projectionApplyResult, error) {
 	var repositoryID int64
 	var currentVersion string
 	var currentUpdatedAt sql.NullString
@@ -341,7 +345,7 @@ func applyWebhookRepository(ctx context.Context, tx *sql.Tx, repository normaliz
 				created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, repository.NodeID, optionalInt64(repository.DatabaseID), repository.Owner, repository.Name,
-			formatWebhookTime(now), stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
+			optionalTime(webhook, now), stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 			formatWebhookTime(now), formatWebhookTime(now))
 		if err != nil {
 			return 0, projectionApplyResult{}, fmt.Errorf("insert GitHub webhook repository: %w", err)
@@ -365,29 +369,32 @@ func applyWebhookRepository(ctx context.Context, tx *sql.Tx, repository normaliz
 		Stale:    comparison < 0,
 		Conflict: !current.UpdatedAt.IsZero() && stamp.UpdatedAt.Equal(current.UpdatedAt) && stamp.Version != current.Version,
 	}
-	if comparison > 0 {
+	apply := comparison > 0 || authoritative && stamp.UpdatedAt.Equal(current.UpdatedAt) && stamp.Version != current.Version
+	if apply {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE repositories
 			SET github_node_id = ?,
 				github_database_id = COALESCE(?, github_database_id),
 				github_owner = ?,
 				github_name = ?,
-				last_webhook_at = ?,
+				last_webhook_at = CASE WHEN ? THEN ? ELSE last_webhook_at END,
 				source_version = ?,
 				source_updated_at = ?,
 				synchronized_at = ?,
 				updated_at = ?
 			WHERE id = ?
 		`, repository.NodeID, optionalInt64(repository.DatabaseID), repository.Owner, repository.Name,
-			formatWebhookTime(now), stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
+			webhook, formatWebhookTime(now), stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 			formatWebhookTime(now), repositoryID); err != nil {
 			return 0, projectionApplyResult{}, fmt.Errorf("update GitHub webhook repository: %w", err)
 		}
 		result.Changed = true
-	} else if _, err := tx.ExecContext(ctx, `
-		UPDATE repositories SET last_webhook_at = ? WHERE id = ?
-	`, formatWebhookTime(now), repositoryID); err != nil {
-		return 0, projectionApplyResult{}, fmt.Errorf("touch GitHub webhook repository: %w", err)
+	} else if webhook {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE repositories SET last_webhook_at = ? WHERE id = ?
+		`, formatWebhookTime(now), repositoryID); err != nil {
+			return 0, projectionApplyResult{}, fmt.Errorf("touch GitHub webhook repository: %w", err)
+		}
 	}
 	return repositoryID, result, nil
 }
@@ -412,16 +419,21 @@ func resolveWebhookRepositoryID(ctx context.Context, tx *sql.Tx, fullName string
 }
 
 func applyWebhookIssue(ctx context.Context, tx *sql.Tx, repositoryID int64, issue normalizedIssue, stamp sourceStamp, now time.Time) (projectionApplyResult, error) {
+	return applyIssueProjection(ctx, tx, repositoryID, issue, stamp, now, false)
+}
+
+func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, issue normalizedIssue, stamp sourceStamp, now time.Time, authoritative bool) (projectionApplyResult, error) {
 	var issueID int64
 	var currentVersion string
 	var currentUpdatedAt string
+	var currentState string
 	queryErr := tx.QueryRowContext(ctx, `
-		SELECT id, source_version, source_updated_at
+		SELECT id, source_version, source_updated_at, github_state
 		FROM issues
 		WHERE github_node_id = ? OR (repository_id = ? AND github_number = ?)
 		ORDER BY CASE WHEN github_node_id = ? THEN 0 ELSE 1 END
 		LIMIT 1
-	`, issue.NodeID, repositoryID, issue.Number, issue.NodeID).Scan(&issueID, &currentVersion, &currentUpdatedAt)
+	`, issue.NodeID, repositoryID, issue.Number, issue.NodeID).Scan(&issueID, &currentVersion, &currentUpdatedAt, &currentState)
 	if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
 		return projectionApplyResult{}, fmt.Errorf("read GitHub webhook issue: %w", queryErr)
 	}
@@ -467,7 +479,8 @@ func applyWebhookIssue(ctx context.Context, tx *sql.Tx, repositoryID int64, issu
 		Stale:    comparison < 0,
 		Conflict: stamp.UpdatedAt.Equal(current.UpdatedAt) && stamp.Version != current.Version,
 	}
-	if comparison <= 0 {
+	force := authoritative && stamp.UpdatedAt.Equal(current.UpdatedAt) && stamp.Version != current.Version
+	if !force && (comparison < 0 || comparison == 0 && !strings.EqualFold(currentState, "deleted")) {
 		return result, nil
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -526,16 +539,21 @@ func resolveWebhookWorkflowStateID(ctx context.Context, tx *sql.Tx, repositoryID
 }
 
 func applyWebhookPullRequest(ctx context.Context, tx *sql.Tx, repositoryID int64, pullRequest normalizedPullRequest, stamp sourceStamp, now time.Time) (projectionApplyResult, error) {
+	return applyPullRequestProjection(ctx, tx, repositoryID, pullRequest, stamp, now, false)
+}
+
+func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, pullRequest normalizedPullRequest, stamp sourceStamp, now time.Time, authoritative bool) (projectionApplyResult, error) {
 	var pullRequestID int64
 	var currentVersion string
 	var currentUpdatedAt string
+	var currentState string
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, source_version, source_updated_at
+		SELECT id, source_version, source_updated_at, github_state
 		FROM pull_requests
 		WHERE github_node_id = ? OR (repository_id = ? AND github_number = ?)
 		ORDER BY CASE WHEN github_node_id = ? THEN 0 ELSE 1 END
 		LIMIT 1
-	`, pullRequest.NodeID, repositoryID, pullRequest.Number, pullRequest.NodeID).Scan(&pullRequestID, &currentVersion, &currentUpdatedAt)
+	`, pullRequest.NodeID, repositoryID, pullRequest.Number, pullRequest.NodeID).Scan(&pullRequestID, &currentVersion, &currentUpdatedAt, &currentState)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO pull_requests (
@@ -566,7 +584,8 @@ func applyWebhookPullRequest(ctx context.Context, tx *sql.Tx, repositoryID int64
 		Stale:    comparison < 0,
 		Conflict: stamp.UpdatedAt.Equal(current.UpdatedAt) && stamp.Version != current.Version,
 	}
-	if comparison <= 0 {
+	force := authoritative && stamp.UpdatedAt.Equal(current.UpdatedAt) && stamp.Version != current.Version
+	if !force && (comparison < 0 || comparison == 0 && !strings.EqualFold(currentState, "deleted")) {
 		return result, nil
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1071,6 +1090,13 @@ func optionalInt(value int) any {
 		return nil
 	}
 	return value
+}
+
+func optionalTime(enabled bool, value time.Time) any {
+	if !enabled {
+		return nil
+	}
+	return formatWebhookTime(value)
 }
 
 func optionalString(value string) any {

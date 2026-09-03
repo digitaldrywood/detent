@@ -19,6 +19,8 @@ const (
 	defaultOutboxMax                  = 15 * time.Minute
 	defaultOutboxStale                = 5 * time.Minute
 	defaultOutboxAttempts             = 8
+	DefaultReconcileInterval          = 10 * time.Minute
+	DefaultFullRepairInterval         = 24 * time.Hour
 )
 
 var (
@@ -48,6 +50,9 @@ type Config struct {
 	OutboxMaxBackoff           time.Duration
 	OutboxProcessingTimeout    time.Duration
 	OutboxMaxAttempts          int
+	ReconcileBackend           ReconcileBackend
+	ReconcileInterval          time.Duration
+	FullRepairInterval         time.Duration
 
 	validateDatabaseFilesystem func(string) error
 	now                        func() time.Time
@@ -88,6 +93,12 @@ func (c Config) normalized() Config {
 	}
 	if c.OutboxMaxAttempts <= 0 {
 		c.OutboxMaxAttempts = defaultOutboxAttempts
+	}
+	if c.ReconcileInterval <= 0 {
+		c.ReconcileInterval = DefaultReconcileInterval
+	}
+	if c.FullRepairInterval <= 0 {
+		c.FullRepairInterval = DefaultFullRepairInterval
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
