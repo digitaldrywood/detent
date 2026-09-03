@@ -92,7 +92,7 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 		RepositoryIDs:  request.RepositoryIDs,
 		WorkflowStates: request.WorkflowState,
 		Scope:          request.Scope,
-	})
+	}, s.config.ReconcileInterval)
 	if err != nil {
 		return trackerAPIError(c, err)
 	}
@@ -181,7 +181,7 @@ func trackerAPIError(c echo.Context, err error) error {
 	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
 }
 
-func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query tracker.CandidateQuery) (lease tracker.Lease, resultErr error) {
+func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query tracker.CandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -215,6 +215,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if existing.session.Machine.ID != request.MachineID || !existing.session.ExpiresAt.After(now) {
 			return tracker.Lease{}, fmt.Errorf("%w: session is no longer claimable", tracker.ErrLeaseConflict)
 		}
+		if request.WorkItemID > 0 && existing.issueID != request.WorkItemID {
+			return tracker.Lease{}, fmt.Errorf("%w: session is already assigned to work item %d", tracker.ErrLeaseConflict, existing.issueID)
+		}
 		if err := tx.Commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
 		}
@@ -232,7 +235,17 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if capacity <= 0 {
 		return tracker.Lease{}, ErrNoClaimableWork
 	}
-	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, workflowStates)
+	freshness, err := queryRepositoryFreshness(ctx, tx, now, reconcileInterval)
+	if err != nil {
+		return tracker.Lease{}, err
+	}
+	claimableRepositories := make(map[tracker.RepositoryID]struct{}, freshness.Summary.Fresh)
+	for _, repository := range freshness.Repositories {
+		if repository.Status == "fresh" {
+			claimableRepositories[tracker.RepositoryID(repository.ID)] = struct{}{}
+		}
+	}
+	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, workflowStates, claimableRepositories)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
@@ -305,7 +318,7 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - active, nil
 }
 
-func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, workflowStates []string) ([]tracker.WorkItemID, error) {
+func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, workflowStates []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	repositoryFilter := make(map[tracker.RepositoryID]struct{}, len(repositoryIDs))
 	for _, id := range repositoryIDs {
 		repositoryFilter[id] = struct{}{}
@@ -356,6 +369,9 @@ ORDER BY
 		var workflowState string
 		if err := rows.Scan(&id, &repositoryID, &workflowState); err != nil {
 			return nil, fmt.Errorf("scan hub claim candidate: %w", err)
+		}
+		if _, ok := claimableRepositories[repositoryID]; !ok {
+			continue
 		}
 		if len(repositoryFilter) > 0 {
 			if _, ok := repositoryFilter[repositoryID]; !ok {

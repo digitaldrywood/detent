@@ -48,6 +48,10 @@ type checkpointFreshness struct {
 	lastError      *SyncError
 }
 
+type freshnessQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func (s *Service) repositoryFreshness(c echo.Context) error {
 	result, err := s.database.repositoryFreshness(c.Request().Context(), s.config.now().UTC(), s.config.ReconcileInterval)
 	if err != nil {
@@ -90,7 +94,11 @@ func repositoryFreshnessSortValues(repository RepositoryFreshness) []string {
 }
 
 func (d *database) repositoryFreshness(ctx context.Context, now time.Time, reconcileInterval time.Duration) (repositoryFreshnessResponse, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	return queryRepositoryFreshness(ctx, d.db, now, reconcileInterval)
+}
+
+func queryRepositoryFreshness(ctx context.Context, queryer freshnessQueryer, now time.Time, reconcileInterval time.Duration) (repositoryFreshnessResponse, error) {
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT r.id, r.github_node_id, r.github_owner, r.github_name,
 			r.last_webhook_at, r.last_reconciled_at,
 			c.checkpoint_name, c.last_successful_at, c.last_error, c.state_json

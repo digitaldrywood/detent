@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -226,7 +227,10 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 
 	now := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
-	_, issueID := seedProjection(t, service.database.db)
+	repositoryID, issueID := seedProjection(t, service.database.db)
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
+		t.Fatalf("mark repository fresh: %v", err)
+	}
 	registered := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, map[string]any{
 		"id": "machine-a", "hostname": "worker-a", "display_name": "Worker A", "capacity": 10, "version": "v1", "capabilities": map[string]any{"go": true},
 	})
@@ -309,6 +313,68 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	})
 	if specific.Code != http.StatusCreated {
 		t.Fatalf("specific claim status = %d body = %s", specific.Code, specific.Body.String())
+	}
+	var workflowID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id FROM issues WHERE id = ?", issueID).Scan(&workflowID); err != nil {
+		t.Fatalf("read workflow state: %v", err)
+	}
+	otherID := insertHubTestIssue(t, service, repositoryID, 2, "I_other_claim", "open", &workflowID)
+	mismatched := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"work_item_id": otherID, "machine_id": "machine-a", "session_id": "specific-session", "ttl_seconds": 90,
+	})
+	if mismatched.Code != http.StatusConflict {
+		t.Fatalf("mismatched specific retry status = %d body = %s", mismatched.Code, mismatched.Body.String())
+	}
+}
+
+func TestClaimNextAPIRejectsUnsafeRepositorySyncHealth(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *Service, int64)
+	}{
+		{
+			name: "stale",
+			setup: func(t *testing.T, service *Service, repositoryID int64) {
+				t.Helper()
+				if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = NULL WHERE id = ?", repositoryID); err != nil {
+					t.Fatalf("mark repository stale: %v", err)
+				}
+			},
+		},
+		{
+			name: "error",
+			setup: func(t *testing.T, service *Service, repositoryID int64) {
+				t.Helper()
+				if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
+					t.Fatalf("mark repository reconciled: %v", err)
+				}
+				if err := service.database.recordCheckpointFailure(t.Context(), repositoryID, checkpointIncremental, now, errors.New("sync failed")); err != nil {
+					t.Fatalf("record sync failure: %v", err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+			repositoryID, _ := seedProjection(t, service.database.db)
+			test.setup(t, service, repositoryID)
+			registered := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, map[string]any{
+				"id": "machine-a", "hostname": "worker-a", "capacity": 1, "version": "v1",
+			})
+			if registered.Code != http.StatusOK {
+				t.Fatalf("register machine status = %d body = %s", registered.Code, registered.Body.String())
+			}
+			claimed := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+				"machine_id": "machine-a", "session_id": "unsafe-sync-session", "ttl_seconds": 90,
+			})
+			if claimed.Code != http.StatusConflict {
+				t.Fatalf("claim status = %d body = %s", claimed.Code, claimed.Body.String())
+			}
+		})
 	}
 }
 
