@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -14,29 +15,35 @@ import (
 type hubRunFunc func(context.Context, hubserver.Config) error
 
 func newHubCommand(opts options) *cobra.Command {
-	return newHubCommandWithRun(opts.version, hubserver.Run)
+	return newHubCommandWithRun(opts.version, opts.lookupEnv, hubserver.Run)
 }
 
-func newHubCommandWithRun(version string, run hubRunFunc) *cobra.Command {
+func newHubCommandWithRun(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
+	if lookupEnv == nil {
+		lookupEnv = os.Getenv
+	}
 	cmd := &cobra.Command{
 		Use:     "hub",
 		Short:   "Run the shared Detent Hub service",
 		Example: "detent hub serve --database /var/lib/detent/hub.db",
 		Args:    NoArgs,
 	}
-	cmd.AddCommand(newHubServeCommand(version, run))
+	cmd.AddCommand(newHubServeCommand(version, lookupEnv, run))
 	return cmd
 }
 
-func newHubServeCommand(version string, run hubRunFunc) *cobra.Command {
+func newHubServeCommand(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
 	var databasePath string
 	var listenAddress string
 	var busyTimeout time.Duration
 	var shutdownTimeout time.Duration
+	var githubWebhookSecretEnv string
+	var webhookPayloadRetention time.Duration
+	var webhookMaintenanceInterval time.Duration
 
 	cmd := &cobra.Command{
 		Use:          "serve",
-		Short:        "Serve the Detent Hub health endpoint",
+		Short:        "Serve the Detent Hub API",
 		Example:      "detent hub serve --database /var/lib/detent/hub.db --listen 127.0.0.1:7777",
 		Args:         NoArgs,
 		SilenceUsage: true,
@@ -50,13 +57,20 @@ func newHubServeCommand(version string, run hubRunFunc) *cobra.Command {
 			if strings.TrimSpace(listenAddress) == "" {
 				return NewValidationError("hub listen address is required", "Use --listen 127.0.0.1:7777 or another explicit address.", nil)
 			}
+			githubWebhookSecretEnv = strings.TrimSpace(githubWebhookSecretEnv)
+			if githubWebhookSecretEnv != "" && !validEnvName(githubWebhookSecretEnv) {
+				return NewValidationError("Hub GitHub webhook secret environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_GITHUB_WEBHOOK_SECRET.", nil)
+			}
 			return run(cmd.Context(), hubserver.Config{
-				DatabasePath:    databasePath,
-				ListenAddress:   listenAddress,
-				BusyTimeout:     busyTimeout,
-				ShutdownTimeout: shutdownTimeout,
-				Logger:          slog.Default(),
-				Version:         version,
+				DatabasePath:               databasePath,
+				ListenAddress:              listenAddress,
+				BusyTimeout:                busyTimeout,
+				ShutdownTimeout:            shutdownTimeout,
+				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
+				WebhookPayloadRetention:    webhookPayloadRetention,
+				WebhookMaintenanceInterval: webhookMaintenanceInterval,
+				Logger:                     slog.Default(),
+				Version:                    version,
 			})
 		},
 	}
@@ -64,5 +78,8 @@ func newHubServeCommand(version string, run hubRunFunc) *cobra.Command {
 	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address")
 	cmd.Flags().DurationVar(&busyTimeout, "busy-timeout", 5*time.Second, "SQLite busy timeout")
 	cmd.Flags().DurationVar(&shutdownTimeout, "shutdown-timeout", 5*time.Second, "graceful HTTP shutdown timeout")
+	cmd.Flags().StringVar(&githubWebhookSecretEnv, "github-webhook-secret-env", "DETENT_HUB_GITHUB_WEBHOOK_SECRET", "environment variable containing the GitHub webhook secret")
+	cmd.Flags().DurationVar(&webhookPayloadRetention, "webhook-payload-retention", hubserver.DefaultWebhookPayloadRetention, "retention period for raw GitHub webhook payloads")
+	cmd.Flags().DurationVar(&webhookMaintenanceInterval, "webhook-maintenance-interval", hubserver.DefaultWebhookMaintenanceInterval, "GitHub webhook retry and retention interval")
 	return cmd
 }
