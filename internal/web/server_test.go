@@ -2892,8 +2892,8 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 			t.Fatalf("response missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	if got := strings.Count(rec.Body.String(), "Move regression card"); got != 1 {
-		t.Fatalf("card render count = %d, want 1:\n%s", got, rec.Body.String())
+	if got := strings.Count(rec.Body.String(), "Move regression card"); got != 2 {
+		t.Fatalf("work item render count = %d, want Board and List representations:\n%s", got, rec.Body.String())
 	}
 	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Move regression card`).MatchString(rec.Body.String()) {
 		t.Fatalf("Todo lane missing moved card:\n%s", rec.Body.String())
@@ -2968,8 +2968,8 @@ func TestKanbanPendingMoveSurvivesMissingProjectRefresh(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	if got := strings.Count(body, "Pending refresh card"); got != 1 {
-		t.Fatalf("pending card render count = %d, want 1:\n%s", got, body)
+	if got := strings.Count(body, "Pending refresh card"); got != 2 {
+		t.Fatalf("pending work item render count = %d, want Board and List representations:\n%s", got, body)
 	}
 	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Pending refresh card`).MatchString(body) {
 		t.Fatalf("Todo lane missing pending card after refresh:\n%s", body)
@@ -3081,8 +3081,8 @@ func TestKanbanPendingMoveSurvivesAuthorizationFilteredSnapshot(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	if got := strings.Count(body, "Authorization filtered card"); got != 1 {
-		t.Fatalf("pending card render count = %d, want 1:\n%s", got, body)
+	if got := strings.Count(body, "Authorization filtered card"); got != 2 {
+		t.Fatalf("pending work item render count = %d, want Board and List representations:\n%s", got, body)
 	}
 	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Authorization filtered card`).MatchString(body) {
 		t.Fatalf("Todo lane missing authorization-filtered pending card:\n%s", body)
@@ -3652,8 +3652,8 @@ func TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash(t 
 	if !strings.Contains(body, `id="board-lanes"`) {
 		t.Fatalf("response missing project board:\n%s", body)
 	}
-	if got := strings.Count(body, "Drag feedback card"); got != 1 {
-		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
+	if got := strings.Count(body, "Drag feedback card"); got != 2 {
+		t.Fatalf("work item render count = %d, want Board and List representations:\n%s", got, body)
 	}
 	if strings.Contains(body, "Moved card to Todo.") {
 		t.Fatalf("drag success rendered inline success flash:\n%s", body)
@@ -3720,8 +3720,8 @@ func TestKanbanMoveUsesVisibleRuntimeStateForFreshness(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if got := strings.Count(body, "Runtime freshness card"); got != 1 {
-		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
+	if got := strings.Count(body, "Runtime freshness card"); got != 2 {
+		t.Fatalf("work item render count = %d, want Board and List representations:\n%s", got, body)
 	}
 	if !regexp.MustCompile(`data-board-lane="blocked"[\s\S]*Runtime freshness card`).MatchString(body) {
 		t.Fatalf("Blocked lane missing moved runtime card:\n%s", body)
@@ -3785,8 +3785,8 @@ func TestKanbanMoveUsesConfiguredBoardStateOverRawRuntimeFreshness(t *testing.T)
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if got := strings.Count(body, "Configured freshness card"); got != 1 {
-		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
+	if got := strings.Count(body, "Configured freshness card"); got != 2 {
+		t.Fatalf("work item render count = %d, want Board and List representations:\n%s", got, body)
 	}
 	if !regexp.MustCompile(`data-board-lane="blocked"[\s\S]*Configured freshness card`).MatchString(body) {
 		t.Fatalf("Blocked lane missing moved configured card:\n%s", body)

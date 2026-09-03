@@ -87,7 +87,7 @@ func projectTabs(data DashboardData, active string) []projectTab {
 	id := strings.TrimSpace(data.ProjectID)
 	tabs := []projectTab{
 		{ID: "overview", Label: "Overview", Href: projectDashboardPath(id)},
-		{ID: "kanban", Label: "Kanban", Href: projectKanbanPath(id)},
+		{ID: "kanban", Label: "Work", Href: projectKanbanPath(id)},
 		{ID: "runs", Label: "Runs", Href: projectRunsPath(id)},
 		{ID: "configuration", Label: "Configuration", Href: projectConfigurationPath(id)},
 		{ID: "diagnostics", Label: "Diagnostics", Href: projectDiagnosticsPath(id)},

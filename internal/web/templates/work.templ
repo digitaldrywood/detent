@@ -1,0 +1,556 @@
+package templates
+
+import (
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+templ workToolbar(data DashboardData, view boardView) {
+	<section id="work-toolbar" class="flex min-w-0 max-w-full flex-none flex-wrap items-center gap-2 overflow-x-hidden border-b border-line px-5 py-2.5" data-work-toolbar data-work-surface data-work-key={ view.Key }>
+		<label class="relative min-w-52 flex-1 md:max-w-md">
+			<span class="sr-only">Search work</span>
+			<input type="search" class="h-9 w-full rounded-card border border-line bg-surface px-3 text-xs text-text placeholder:text-dim focus:border-accent focus:outline-none" placeholder="Search issues…" autocomplete="off" data-work-search-input/>
+		</label>
+		<details class="relative" data-work-filters>
+			<summary class="flex h-9 cursor-pointer list-none items-center gap-1.5 rounded-card border border-line bg-surface px-3 text-xs font-medium text-sec hover:border-accent hover:text-text [&::-webkit-details-marker]:hidden">
+				Filters
+				<span class="rounded-chip bg-accent/15 px-1.5 py-0.5 font-mono text-2xs text-accent" data-work-filter-count hidden>0</span>
+			</summary>
+			<div class="absolute right-0 top-full z-40 mt-1 grid max-h-[calc(100vh-8rem)] w-[min(28rem,calc(100vw-2.5rem))] gap-3 overflow-y-auto rounded-card border border-line bg-elev p-3 shadow-lg">
+				@workFilterGroup("State", "state", workStateFilterOptions(view))
+				@workFilterGroup("Readiness", "readiness", []workFilterOption{
+					{Value: "ready", Label: "Ready"},
+					{Value: "running", Label: "Running"},
+					{Value: "waiting", Label: "Waiting"},
+					{Value: "blocked", Label: "Blocked"},
+					{Value: "complete", Label: "Complete"},
+				})
+				@workFilterGroup("Priority", "priority", []workFilterOption{
+					{Value: "urgent", Label: "Urgent"},
+					{Value: "high", Label: "High"},
+					{Value: "normal", Label: "Normal"},
+					{Value: "low", Label: "Low"},
+					{Value: "unset", Label: "Unset"},
+				})
+				if len(workProjectFilterOptions(view)) > 1 {
+					@workFilterGroup("Project", "project", workProjectFilterOptions(view))
+				}
+				@workFilterGroup("GitHub sync", "sync", []workFilterOption{
+					{Value: "synced", Label: "Synced"},
+					{Value: "pending", Label: "Pending"},
+					{Value: "retrying", Label: "Retrying"},
+					{Value: "error", Label: "Error"},
+					{Value: "stale", Label: "Stale"},
+				})
+				<div class="flex items-center justify-between border-t border-line pt-2">
+					<span class="text-2xs text-sec" data-work-result-count>{ strconv.Itoa(len(view.Items)) } issues</span>
+					<button type="button" class="rounded-chip px-2 py-1 text-xs font-medium text-accent hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-work-clear-filters>Clear filters</button>
+				</div>
+			</div>
+		</details>
+		<label class="flex h-9 items-center gap-2 rounded-card border border-line bg-surface px-2.5 text-2xs text-sec">
+			<span>Sort</span>
+			<select class="bg-transparent font-medium text-text outline-none" data-work-sort aria-label="Sort work">
+				<option value="priority">Priority</option>
+				<option value="updated">Updated</option>
+				<option value="state">State</option>
+				<option value="identifier">Identifier</option>
+			</select>
+		</label>
+		<a href="/health/ui" class={ "flex h-9 min-w-0 items-center gap-1.5 rounded-card border border-line bg-surface px-2.5 font-mono text-2xs " + boardExtraTextClass(refreshFreshnessKind(data.Snapshot)) } title={ workHealthTitle(data) } data-work-health>
+			@primitives.StatusDot(refreshFreshnessKind(data.Snapshot), false)
+			<span class="max-w-36 truncate">{ refreshFreshnessSummary(data.Snapshot) }</span>
+		</a>
+		<div class="flex h-9 overflow-hidden rounded-card border border-line bg-surface" role="group" aria-label="Work view">
+			<button type="button" class="px-3 text-xs font-medium" data-work-view="board" aria-pressed="true">Board</button>
+			<button type="button" class="border-l border-line px-3 text-xs font-medium text-sec" data-work-view="list" aria-pressed="false">List</button>
+		</div>
+		if workNewIssueURL(data) != "" {
+			<a href={ templ.SafeURL(workNewIssueURL(data)) } target="_blank" rel="noopener noreferrer" class="inline-flex h-9 items-center rounded-card bg-accent px-3 text-xs font-semibold text-page hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">New issue</a>
+		}
+	</section>
+}
+
+templ workFilterGroup(label string, name string, options []workFilterOption) {
+	<fieldset class="grid gap-1.5">
+		<legend class="mb-1 text-2xs font-semibold uppercase tracking-[0.06em] text-dim">{ label }</legend>
+		<div class="flex flex-wrap gap-1.5">
+			for _, option := range options {
+				<label class="flex cursor-pointer items-center gap-1.5 rounded-chip border border-line bg-surface px-2 py-1.5 text-xs text-sec has-checked:border-accent has-checked:bg-accent/10 has-checked:text-text">
+					<input type="checkbox" class="size-3 accent-accent" value={ option.Value } data-work-filter={ name }/>
+					<span>{ option.Label }</span>
+					if option.Count > 0 {
+						<span class="font-mono text-2xs text-dim">{ strconv.Itoa(option.Count) }</span>
+					}
+				</label>
+			}
+		</div>
+	</fieldset>
+}
+
+templ workList(view boardView) {
+	<section id="work-list" class="flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col px-5 pb-5" data-work-view-panel="list" hidden>
+		<div class="mb-2 flex min-h-8 flex-none items-center gap-2 text-xs text-sec">
+			<span data-work-list-summary>{ strconv.Itoa(len(view.Items)) } issues</span>
+			<div class="ml-auto hidden items-center gap-2 rounded-card border border-accent/30 bg-accent/10 px-2.5 py-1 text-accent" data-work-bulk-bar hidden>
+				<span data-work-bulk-count>0 selected</span>
+				<button type="button" class="font-medium hover:underline" data-work-bulk-clear>Clear</button>
+			</div>
+		</div>
+		<div id="work-list-scroll" class="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-auto rounded-card border border-line bg-surface" data-preserve-scroll="work-list-scroll">
+			<div class="min-w-[1040px]" role="table" aria-label="Work items" aria-rowcount={ strconv.Itoa(len(view.Items)) }>
+				<div class="grid h-9 grid-cols-[36px_minmax(280px,1fr)_112px_80px_160px_145px_130px_92px_112px] items-center gap-3 border-b border-line bg-elev px-3 text-2xs font-semibold uppercase tracking-[0.04em] text-dim" role="row">
+					<label class="grid size-7 place-items-center" title="Select all visible issues">
+						<span class="sr-only">Select all visible issues</span>
+						<input type="checkbox" class="size-3.5 accent-accent" data-work-bulk-all/>
+					</label>
+					<span role="columnheader">Issue</span>
+					<span role="columnheader">State</span>
+					<span role="columnheader">Priority</span>
+					<span role="columnheader">Readiness</span>
+					<span role="columnheader">Machine / lease</span>
+					<span role="columnheader">Pull request</span>
+					<span role="columnheader">Sync</span>
+					<span role="columnheader">Updated / stage</span>
+				</div>
+				<div id="work-list-body" role="rowgroup" data-work-list-body>
+					for _, item := range view.Items {
+						@workListRow(item)
+					}
+				</div>
+				<div class="grid min-h-32 place-items-center px-4 text-center text-xs text-sec" data-work-list-empty hidden?={ len(view.Items) > 0 }>
+					<span>No work matches this scope and filter.</span>
+				</div>
+			</div>
+		</div>
+	</section>
+}
+
+templ workListRow(item workItemView) {
+	<div
+		id={ "work-row-" + item.Meta.Key }
+		class="dt-work-row grid cursor-pointer grid-cols-[36px_minmax(280px,1fr)_112px_80px_160px_145px_130px_92px_112px] items-center gap-3 border-b border-line px-3 text-xs text-sec last:border-b-0 hover:bg-elev/70 focus-visible:bg-elev data-[work-selected=true]:bg-accent/10"
+		role="row"
+		tabindex="-1"
+		{ workListSheetOpenAttrs(item.Card.Project, item.Card.Identity, item.Card.Scope)... }
+		{ workItemDataAttributes(item.Meta, "list")... }
+		data-detail-sheet-project={ item.Card.Project }
+		data-detail-sheet-reference={ item.Card.Number }
+	>
+		<label class="grid size-7 place-items-center" data-work-bulk title={ "Select " + item.Card.Number }>
+			<span class="sr-only">{ "Select " + item.Card.Number }</span>
+			<input type="checkbox" class="size-3.5 accent-accent" value={ item.Meta.Key } data-work-bulk-checkbox/>
+		</label>
+		<div class="flex min-w-0 items-baseline gap-2" role="cell">
+			@primitives.TrackerReferenceLink(item.Card.Number, item.Card.URL, "max-w-28 flex-none truncate font-mono font-medium text-accent")
+			<span class="min-w-0 truncate text-text" data-board-card-title>{ item.Card.Title }</span>
+			if item.Card.Project != "" {
+				<span class="ml-auto max-w-28 flex-none truncate font-mono text-2xs text-dim">{ item.Card.Project }</span>
+			}
+		</div>
+		<div class="flex min-w-0 items-center gap-1.5" role="cell">
+			@primitives.StatusDot(item.Meta.ReadinessKind, item.Meta.ReadinessKey == "running")
+			<span class="truncate text-text" data-board-card-state>{ item.Meta.State }</span>
+		</div>
+		<span class="truncate font-mono text-text" role="cell" title={ item.Card.PriorityDetail }>{ item.Meta.Priority }</span>
+		<span class={ workReadinessClass(item.Meta) } role="cell" title={ item.Meta.ReadinessDetail }>
+			<span class="truncate">{ item.Meta.Readiness }</span>
+			if item.Meta.BlockerCount > 0 {
+				<span class="flex-none font-mono text-2xs" title={ workBlockerLabel(item.Meta.BlockerCount) }>{ "· " + strconv.Itoa(item.Meta.BlockerCount) }</span>
+			}
+		</span>
+		<span class="min-w-0 truncate font-mono text-text" role="cell" title={ item.Meta.LeaseTitle }>
+			{ item.Meta.Machine }
+			if item.Meta.LeaseAge != "" {
+				<span class="ml-1 text-2xs text-dim" data-work-row-secondary>{ item.Meta.LeaseAge }</span>
+			}
+		</span>
+		<span class="min-w-0 truncate font-mono" role="cell" title={ item.Meta.PullRequestTitle }>
+			if item.Meta.PullRequestURL != "" {
+				@primitives.TrackerReferenceLinkIsolated(item.Meta.PullRequest, item.Meta.PullRequestURL, "text-accent")
+			} else {
+				{ item.Meta.PullRequest }
+			}
+		</span>
+		<span class={ workSyncBadgeClass(item.Meta) } role="cell" title={ item.Meta.SyncTitle } data-work-sync-status={ item.Meta.SyncKey }>
+			@primitives.StatusDot(item.Meta.SyncKind, false)
+			<span>{ item.Meta.Sync }</span>
+		</span>
+		<span class="min-w-0 truncate font-mono text-2xs" role="cell" title={ item.Meta.UpdatedTitle + "; " + item.Meta.StageAgeTitle }>
+			{ item.Meta.Updated }
+			if item.Meta.StageAge != "" && item.Meta.StageAge != "n/a" {
+				<span class="ml-1 text-dim" data-work-row-secondary>{ "· " + item.Meta.StageAge }</span>
+			}
+		</span>
+	</div>
+}
+
+templ workListSkeleton() {
+	<section id="work-list" class="flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col px-5 pb-5" data-work-view-panel="list" hidden aria-busy="true">
+		<div class="mb-2 h-8 flex-none"></div>
+		<div class="min-h-0 min-w-0 flex-1 overflow-hidden rounded-card border border-line bg-surface">
+			<div class="grid h-9 grid-cols-[36px_minmax(280px,1fr)_112px_80px_160px_145px_130px_92px_112px] gap-3 border-b border-line bg-elev px-3"></div>
+			for range 8 {
+				<div class="dt-work-row grid grid-cols-[36px_minmax(280px,1fr)_112px_80px_160px_145px_130px_92px_112px] items-center gap-3 border-b border-line px-3">
+					<span class="dt-skeleton h-3 w-3"></span>
+					<span class="dt-skeleton h-3 w-3/4"></span>
+					<span class="dt-skeleton h-3 w-16"></span>
+					<span class="dt-skeleton h-3 w-12"></span>
+					<span class="dt-skeleton h-3 w-20"></span>
+					<span class="dt-skeleton h-3 w-20"></span>
+					<span class="dt-skeleton h-3 w-16"></span>
+					<span class="dt-skeleton h-3 w-14"></span>
+					<span class="dt-skeleton h-3 w-16"></span>
+				</div>
+			}
+		</div>
+	</section>
+}
+
+templ workStateList(message string) {
+	<section id="work-list" class="flex min-h-0 w-full min-w-0 max-w-full flex-1 items-center justify-center px-5 pb-5" data-work-view-panel="list" hidden>
+		<div class="grid min-h-48 w-full place-items-center rounded-card border border-dashed border-line bg-surface px-5 text-center text-xs text-sec">{ message }</div>
+	</section>
+}
+
+templ workViewScript() {
+	<script>
+		(function () {
+			if (window.__detentWorkViewRegistered) return;
+			window.__detentWorkViewRegistered = true;
+			var filterNames = ["state", "readiness", "priority", "project", "sync"];
+			var bulkSelection = new Set();
+			var state = null;
+			function surface() {
+				return document.querySelector("[data-work-surface]");
+			}
+			function settledSnapshot(event) {
+				var detailTarget = event.detail && event.detail.target;
+				var target = detailTarget instanceof Element ? detailTarget : event.target;
+				if (!(target instanceof Element)) return false;
+				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
+			}
+			function storageKey(kind) {
+				var root = surface();
+				return "detent.ui.work." + kind + ".v1." + (root ? root.dataset.workKey : "fleet");
+			}
+			function storedJSON(key) {
+				try {
+					return JSON.parse(window.localStorage.getItem(key) || "null");
+				} catch (_) {
+					return null;
+				}
+			}
+			function readState() {
+				var url = new URL(window.location.href);
+				var saved = storedJSON(storageKey("query")) || {};
+				var viewInURL = url.searchParams.has("view");
+				var hasQuery = ["q", "state", "readiness", "priority", "project", "sync", "sort"].some(function (name) {
+					return url.searchParams.has(name);
+				});
+				var mode = url.searchParams.get("view");
+				if (mode !== "board" && mode !== "list") {
+					try {
+						mode = window.localStorage.getItem(storageKey("view"));
+					} catch (_) {}
+				}
+				if (mode !== "list") mode = "board";
+				var next = {
+					mode: mode,
+					viewInURL: viewInURL || mode === "list",
+					q: hasQuery ? (url.searchParams.get("q") || "") : (saved.q || ""),
+					sort: hasQuery ? (url.searchParams.get("sort") || "priority") : (saved.sort || "priority"),
+					focus: url.searchParams.get("focus") || "",
+					issue: url.searchParams.get("issue") || "",
+					issueProject: url.searchParams.get("issue_project") || "",
+					filters: {}
+				};
+				filterNames.forEach(function (name) {
+					next.filters[name] = hasQuery ? url.searchParams.getAll(name).map(function (value) { return value.toLowerCase(); }) : (Array.isArray(saved[name]) ? saved[name] : []);
+				});
+				return next;
+			}
+			function storeState() {
+				try {
+					window.localStorage.setItem(storageKey("view"), state.mode);
+					var saved = { q: state.q, sort: state.sort };
+					filterNames.forEach(function (name) { saved[name] = state.filters[name]; });
+					window.localStorage.setItem(storageKey("query"), JSON.stringify(saved));
+				} catch (_) {}
+			}
+			function updateURL() {
+				var url = new URL(window.location.href);
+				if (state.viewInURL || state.mode === "list") url.searchParams.set("view", state.mode);
+				else url.searchParams.delete("view");
+				if (state.q) url.searchParams.set("q", state.q);
+				else url.searchParams.delete("q");
+				if (state.sort && state.sort !== "priority") url.searchParams.set("sort", state.sort);
+				else url.searchParams.delete("sort");
+				filterNames.forEach(function (name) {
+					url.searchParams.delete(name);
+					state.filters[name].forEach(function (value) { url.searchParams.append(name, value); });
+				});
+				if (state.focus) url.searchParams.set("focus", state.focus);
+				else url.searchParams.delete("focus");
+				if (state.issue) url.searchParams.set("issue", state.issue);
+				else url.searchParams.delete("issue");
+				if (state.issueProject) url.searchParams.set("issue_project", state.issueProject);
+				else url.searchParams.delete("issue_project");
+				window.history.replaceState(null, "", url);
+				storeState();
+			}
+			function matches(item) {
+				if (state.q && !(item.dataset.workSearch || "").includes(state.q.toLowerCase())) return false;
+				for (var index = 0; index < filterNames.length; index += 1) {
+					var name = filterNames[index];
+					var selected = state.filters[name];
+					if (selected.length > 0 && !selected.includes(item.dataset["work" + name.charAt(0).toUpperCase() + name.slice(1)] || "")) return false;
+				}
+				return true;
+			}
+			function activeItems() {
+				return Array.from(document.querySelectorAll('[data-work-item][data-work-representation="' + state.mode + '"]')).filter(function (item) {
+					return !item.hidden;
+				});
+			}
+			function sortList() {
+				var body = document.querySelector("[data-work-list-body]");
+				if (!body) return;
+				var rows = Array.from(body.querySelectorAll('[data-work-item][data-work-representation="list"]'));
+				rows.sort(function (left, right) {
+					var comparison = 0;
+					if (state.sort === "updated") comparison = Number(right.dataset.workUpdated || 0) - Number(left.dataset.workUpdated || 0);
+					else if (state.sort === "state") comparison = (left.dataset.workState || "").localeCompare(right.dataset.workState || "");
+					else if (state.sort === "identifier") comparison = (left.dataset.workIdentity || "").localeCompare(right.dataset.workIdentity || "", undefined, { numeric: true });
+					else comparison = Number(left.dataset.workPriorityRank || 5) - Number(right.dataset.workPriorityRank || 5);
+					if (comparison !== 0) return comparison;
+					return (left.dataset.workIdentity || "").localeCompare(right.dataset.workIdentity || "", undefined, { numeric: true });
+				});
+				rows.forEach(function (row) { body.appendChild(row); });
+			}
+			function filtersActive() {
+				return Boolean(state.q) || filterNames.some(function (name) { return state.filters[name].length > 0; });
+			}
+			function applyLaneCounts() {
+				document.querySelectorAll("[data-board-lane]").forEach(function (lane) {
+					var cards = Array.from(lane.querySelectorAll('[data-work-item][data-work-representation="board"]'));
+					var visible = cards.filter(function (card) { return !card.hidden; }).length;
+					var count = lane.querySelector("[data-work-lane-count]");
+					if (count) count.textContent = filtersActive() ? visible + "/" + cards.length : count.dataset.workLaneLabel;
+					var empty = lane.querySelector("[data-work-filter-empty]");
+					if (empty) empty.hidden = visible > 0 || cards.length === 0;
+				});
+			}
+			function applyBulk() {
+				var visible = activeItems().filter(function (item) { return item.dataset.workRepresentation === "list"; });
+				document.querySelectorAll("[data-work-bulk-checkbox]").forEach(function (checkbox) {
+					checkbox.checked = bulkSelection.has(checkbox.value);
+					var row = checkbox.closest("[data-work-item]");
+					if (row) row.dataset.workSelected = checkbox.checked ? "true" : "false";
+				});
+				var all = document.querySelector("[data-work-bulk-all]");
+				if (all) {
+					var selectedVisible = visible.filter(function (item) { return bulkSelection.has(item.dataset.workKey); }).length;
+					all.checked = visible.length > 0 && selectedVisible === visible.length;
+					all.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+				}
+				var bar = document.querySelector("[data-work-bulk-bar]");
+				var count = document.querySelector("[data-work-bulk-count]");
+				if (count) count.textContent = bulkSelection.size + " selected";
+				if (bar) {
+					bar.hidden = bulkSelection.size === 0;
+					bar.classList.toggle("hidden", bulkSelection.size === 0);
+					bar.classList.toggle("flex", bulkSelection.size > 0);
+				}
+			}
+			function applyControls() {
+				document.documentElement.dataset.workView = state.mode;
+				document.querySelectorAll("[data-work-view-panel]").forEach(function (panel) {
+					panel.hidden = panel.dataset.workViewPanel !== state.mode;
+				});
+				document.querySelectorAll("[data-work-view]").forEach(function (button) {
+					var active = button.dataset.workView === state.mode;
+					button.setAttribute("aria-pressed", active ? "true" : "false");
+					button.classList.toggle("bg-elev", active);
+					button.classList.toggle("text-text", active);
+					button.classList.toggle("text-sec", !active);
+				});
+				document.querySelectorAll("[data-work-board-only]").forEach(function (node) { node.hidden = state.mode !== "board"; });
+				var search = document.querySelector("[data-work-search-input]");
+				if (search && search.value !== state.q) search.value = state.q;
+				var sort = document.querySelector("[data-work-sort]");
+				if (sort) sort.value = state.sort;
+				document.querySelectorAll("[data-work-filter]").forEach(function (checkbox) {
+					checkbox.checked = state.filters[checkbox.dataset.workFilter].includes(checkbox.value.toLowerCase());
+				});
+				var count = filterNames.reduce(function (total, name) { return total + state.filters[name].length; }, state.q ? 1 : 0);
+				var badge = document.querySelector("[data-work-filter-count]");
+				if (badge) {
+					badge.textContent = String(count);
+					badge.hidden = count === 0;
+				}
+			}
+			function applyItems() {
+				document.querySelectorAll("[data-work-item]").forEach(function (item) { item.hidden = !matches(item); });
+				sortList();
+				applyLaneCounts();
+				var visible = activeItems();
+				var summary = visible.length + (visible.length === 1 ? " issue" : " issues");
+				document.querySelectorAll("[data-work-result-count], [data-work-list-summary]").forEach(function (node) { node.textContent = summary; });
+				var empty = document.querySelector("[data-work-list-empty]");
+				if (empty) empty.hidden = visible.length > 0 || state.mode !== "list";
+				applyBulk();
+			}
+			function applyState(restoreFocus) {
+				if (!surface()) return;
+				applyControls();
+				applyItems();
+				updateURL();
+				if (restoreFocus && state.focus) {
+					var target = activeItems().find(function (item) { return item.dataset.workKey === state.focus; });
+					if (target) target.focus({ preventScroll: true });
+				}
+			}
+			function setSelection(item) {
+				state.issue = item ? (item.dataset.workIdentity || "") : "";
+				state.issueProject = item ? (item.dataset.workProject || "") : "";
+				updateURL();
+			}
+			function restoreSelection() {
+				if (!state.issue) return;
+				var host = document.getElementById("detail-sheet-host");
+				if (host && host.querySelector("[data-detail-sheet]")) return;
+				var target = activeItems().find(function (item) {
+					return item.dataset.workIdentity === state.issue && (!state.issueProject || item.dataset.workProject === state.issueProject.toLowerCase());
+				});
+				if (target) window.requestAnimationFrame(function () { target.click(); });
+			}
+			state = readState();
+			applyState(Boolean(state.focus));
+			restoreSelection();
+			document.addEventListener("input", function (event) {
+				var search = event.target.closest("[data-work-search-input]");
+				if (!search) return;
+				state.q = search.value.trim();
+				applyState(false);
+			});
+			document.addEventListener("change", function (event) {
+				var sort = event.target.closest("[data-work-sort]");
+				if (sort) {
+					state.sort = sort.value;
+					applyState(false);
+					return;
+				}
+				var checkbox = event.target.closest("[data-work-bulk-checkbox]");
+				if (checkbox) {
+					if (checkbox.checked) bulkSelection.add(checkbox.value);
+					else bulkSelection.delete(checkbox.value);
+					applyBulk();
+					return;
+				}
+				if (event.target.closest("[data-work-bulk-all]")) {
+					var checked = event.target.checked;
+					activeItems().forEach(function (item) {
+						if (checked) bulkSelection.add(item.dataset.workKey);
+						else bulkSelection.delete(item.dataset.workKey);
+					});
+					applyBulk();
+				}
+			});
+			document.addEventListener("click", function (event) {
+				var filter = event.target.closest("[data-work-filter]");
+				if (filter) {
+					var name = filter.dataset.workFilter;
+					var value = filter.value.toLowerCase();
+					var selected = state.filters[name];
+					state.filters[name] = selected.includes(value) ? selected.filter(function (item) { return item !== value; }) : selected.concat(value);
+					applyState(false);
+					return;
+				}
+				var view = event.target.closest("[data-work-view]");
+				if (view) {
+					var focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest("[data-work-item]") : null;
+					if (focused) state.focus = focused.dataset.workKey || state.focus;
+					state.mode = view.dataset.workView;
+					state.viewInURL = true;
+					applyState(true);
+					return;
+				}
+				if (event.target.closest("[data-work-clear-filters]")) {
+					state.q = "";
+					filterNames.forEach(function (name) { state.filters[name] = []; });
+					applyState(false);
+					return;
+				}
+				if (event.target.closest("[data-work-bulk-clear]")) {
+					bulkSelection.clear();
+					applyBulk();
+					return;
+				}
+				if (event.target.closest("[data-sheet-close]")) setSelection(null);
+				var item = event.target.closest("[data-work-item]");
+				if (item && !event.target.closest("a, button, input, select, label, [data-work-bulk]")) setSelection(item);
+			}, true);
+			document.addEventListener("focusin", function (event) {
+				var item = event.target.closest("[data-work-item]");
+				if (!item || item.dataset.workRepresentation !== state.mode) return;
+				state.focus = item.dataset.workKey || "";
+				updateURL();
+			});
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape") {
+					setSelection(null);
+					return;
+				}
+				var formControl = event.target.closest("input, select, textarea");
+				if (event.key === "/" && !formControl) {
+					event.preventDefault();
+					var search = document.querySelector("[data-work-search-input]");
+					if (search) search.focus();
+					return;
+				}
+				var current = event.target.closest("[data-work-item]");
+				if (!current || current.dataset.workRepresentation !== state.mode) return;
+				if (event.key === "Enter") {
+					var interactive = event.target.closest("a, button, input, select, textarea, label, [data-work-bulk]");
+					if (interactive && interactive !== current) return;
+					setSelection(current);
+					if (!current.matches('[role="button"]')) {
+						event.preventDefault();
+						current.click();
+					}
+					return;
+				}
+				var items = activeItems();
+				var index = items.indexOf(current);
+				var next = index;
+				if (event.key === "ArrowDown" || event.key === "j") next = Math.min(items.length - 1, index + 1);
+				else if (event.key === "ArrowUp" || event.key === "k") next = Math.max(0, index - 1);
+				else if (event.key === "Home") next = 0;
+				else if (event.key === "End") next = items.length - 1;
+				else return;
+				if (items[next]) {
+					event.preventDefault();
+					items[next].focus();
+					items[next].scrollIntoView({ block: "nearest", inline: "nearest" });
+				}
+			});
+			document.addEventListener("htmx:beforeRequest", function (event) {
+				var trigger = event.detail && event.detail.elt;
+				if (trigger instanceof Element && trigger.matches("[data-detail-sheet-trigger][data-work-item]")) setSelection(trigger);
+			});
+			document.addEventListener("kanbanActionSucceeded", function () { setSelection(null); });
+			document.addEventListener("htmx:afterSettle", function (event) {
+				if (!settledSnapshot(event)) return;
+				applyState(false);
+				restoreSelection();
+			});
+			window.addEventListener("popstate", function () {
+				state = readState();
+				applyState(Boolean(state.focus));
+				restoreSelection();
+			});
+		})();
+	</script>
+}

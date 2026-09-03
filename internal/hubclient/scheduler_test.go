@@ -126,6 +126,47 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	}
 }
 
+func TestIssueFromWorkItemMapsQueuePriorityAndSyncMetadata(t *testing.T) {
+	syncedAt := time.Date(2026, 9, 3, 12, 34, 56, 0, time.FixedZone("offset", -5*60*60))
+	tests := []struct {
+		name         string
+		rank         int
+		wantPriority int
+		wantName     string
+	}{
+		{name: "urgent", rank: tracker.QueuePriorityUrgent, wantPriority: 1, wantName: "urgent"},
+		{name: "high", rank: tracker.QueuePriorityHigh, wantPriority: 2, wantName: "high"},
+		{name: "normal", rank: tracker.QueuePriorityNormal, wantPriority: 3, wantName: "normal"},
+		{name: "low", rank: tracker.QueuePriorityLow, wantPriority: 4, wantName: "low"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := WorkItem{WorkItem: tracker.WorkItem{
+				ID:             42,
+				Repository:     tracker.RepositoryReference{Owner: "acme", Name: "widgets"},
+				GitHub:         tracker.GitHubIssueReference{NodeID: "I_42", Number: 17},
+				Queue:          &tracker.QueueSummary{PriorityRank: &test.rank},
+				SyncStatus:     tracker.SyncStatusPending,
+				SourceSyncedAt: &syncedAt,
+			}}
+
+			issue := issueFromWorkItem(item)
+			if issue.Priority == nil || *issue.Priority != test.wantPriority {
+				t.Fatalf("Priority = %v, want %d", issue.Priority, test.wantPriority)
+			}
+			if issue.PriorityName != test.wantName {
+				t.Fatalf("PriorityName = %q, want %q", issue.PriorityName, test.wantName)
+			}
+			if got := issue.Metadata["hub_sync_status"]; got != string(tracker.SyncStatusPending) {
+				t.Fatalf("hub_sync_status = %q, want %q", got, tracker.SyncStatusPending)
+			}
+			if got := issue.Metadata["hub_source_synced_at"]; got != syncedAt.UTC().Format(time.RFC3339) {
+				t.Fatalf("hub_source_synced_at = %q, want UTC timestamp", got)
+			}
+		})
+	}
+}
+
 func TestSchedulerHubOutageIsUnavailableBeforeClaim(t *testing.T) {
 	tests := []struct {
 		name    string

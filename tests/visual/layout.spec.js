@@ -492,10 +492,9 @@ test("board hides informational recovery and overload notices", async ({
 
   await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
   await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
-  await expect(page.locator("#snapshot > :visible").first()).toHaveAttribute(
-    "id",
-    "board-figures",
-  );
+  const visibleSections = page.locator("#snapshot > :visible");
+  await expect(visibleSections.first()).toHaveAttribute("id", "work-toolbar");
+  await expect(visibleSections.nth(1)).toHaveAttribute("id", "board-figures");
 });
 
 test("board and health stay quiet while diagnostics retains scheduled pacing", async ({
@@ -512,10 +511,9 @@ test("board and health stay quiet while diagnostics retains scheduled pacing", a
   await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
   await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
   await expect(page.locator("#board-alerts")).toHaveCount(0);
-  await expect(page.locator("#snapshot > :visible").first()).toHaveAttribute(
-    "id",
-    "board-figures",
-  );
+  const visibleSections = page.locator("#snapshot > :visible");
+  await expect(visibleSections.first()).toHaveAttribute("id", "work-toolbar");
+  await expect(visibleSections.nth(1)).toHaveAttribute("id", "board-figures");
   await expect(
     page.locator('[data-sidebar-nav-item="health"] .bg-ok'),
   ).toBeVisible();

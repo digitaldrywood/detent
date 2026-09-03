@@ -130,6 +130,8 @@ templ BoardCardSheetHeader(data DashboardData, card projectKanbanCard) {
 templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardActions bool) {
 	{{ session := sheetSessionFor(data.Snapshot, card) }}
 	{{ projectID, issueIdentity, scope := boardCardDetailIdentity(data, card) }}
+	{{ syncLabel, _, syncTitle, syncKind := workItemSync(data, card) }}
+	{{ leaseAge, leaseTitle := workItemLease(card, pipelineNow(data.Snapshot)) }}
 	<div
 		id="detail-sheet-core"
 		class="flex flex-col gap-4"
@@ -157,6 +159,21 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 				@sheetRowValue("Waiting on", card.WaitDetail, card.WaitDetail)
 			}
 			@sheetRowLink("Issue", card.Identifier, card.URL)
+			@sheetRowText("GitHub sync") {
+				<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(syncKind) } title={ syncTitle } data-detail-sync-status>
+					@primitives.StatusDot(syncKind, false)
+					{ syncLabel }
+				</span>
+			}
+			if card.UpdatedAt != nil {
+				@sheetRowValue("Updated", timeLabel(*card.UpdatedAt), "Last source update")
+			}
+			if card.Owner != "" {
+				@sheetRowValue("Machine", card.Owner, "Active lease owner")
+			}
+			if leaseAge != "" {
+				@sheetRowValue("Lease", leaseAge, leaseTitle)
+			}
 			if card.HasPullRequest {
 				@sheetRowLink("Pull request", card.PullRequestLabel, card.PRURL)
 				if card.CIStatus != "" {

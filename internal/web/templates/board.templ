@@ -25,6 +25,7 @@ templ BoardPage(data DashboardData) {
 		@boardAlertScript()
 		@boardLaneScript()
 		@boardKanbanDragScript()
+		@workViewScript()
 	}
 }
 
@@ -37,33 +38,45 @@ templ BoardPage(data DashboardData) {
 // projectKanbanBoardLoaded) rather than flashing skeletons.
 templ BoardSnapshot(data DashboardData) {
 	{{ alerts := boardAlerts(data.Snapshot) }}
+	{{ view := boardViewFromDashboard(data) }}
 	if boardFirstRun(data) {
 		if len(alerts) > 0 {
 			<div class="flex-none px-5 pt-3.5">
 				@boardAlertsBar(alerts)
 			</div>
 		}
-		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+		@workToolbar(data, view)
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col" data-work-view-panel="board">
+			@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+		</div>
+		@workStateList("Connect a repository to start orchestrating work.")
 	} else if !projectKanbanBoardLoaded(data) {
 		if len(alerts) > 0 {
 			<div class="flex-none px-5 pt-3.5">
 				@boardAlertsBar(alerts)
 			</div>
 		}
+		@workToolbar(data, view)
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col" data-work-view-panel="board">
+			if snapshotDegraded(data.Snapshot) {
+				<div class="flex-none px-5 pt-4">
+					@snapshotReadiness(data.Snapshot)
+				</div>
+			} else {
+				@primitives.SkeletonLanes(4)
+			}
+		</div>
 		if snapshotDegraded(data.Snapshot) {
-			<div class="flex-none px-5 pt-4">
-				@snapshotReadiness(data.Snapshot)
-			</div>
+			@workStateList("Work data is unavailable. Check the toolbar health status for refresh details.")
 		} else {
-			@primitives.SkeletonLanes(4)
+			@workListSkeleton()
 		}
 	} else {
-		@boardSnapshotBody(data, alerts)
+		@boardSnapshotBody(data, alerts, view)
 	}
 }
 
-templ boardSnapshotBody(data DashboardData, alerts []boardAlert) {
-	{{ view := boardViewFromDashboard(data) }}
+templ boardSnapshotBody(data DashboardData, alerts []boardAlert, view boardView) {
 	if len(view.Exceptions) > 0 {
 		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
 			@primitives.ExceptionStrip(view.Exceptions)
@@ -75,6 +88,7 @@ templ boardSnapshotBody(data DashboardData, alerts []boardAlert) {
 			{ data.Kanban.Feedback }
 		}
 	</p>
+	@workToolbar(data, view)
 	<div id="board-figures" class="flex-none px-5 pb-3 pt-4">
 		@primitives.FigureRow(view.Figures) {
 			if len(alerts) > 0 {
@@ -87,27 +101,30 @@ templ boardSnapshotBody(data DashboardData, alerts []boardAlert) {
 			@boardLanePicker(view)
 		}
 	</div>
-	<div
-		id="board-lane-position"
-		class="flex flex-none items-center justify-center px-5 pb-2 font-mono text-2xs text-sec tabular-nums md:hidden"
-		data-board-lane-position
-		role="status"
-		aria-live="polite"
-		aria-label={ "Lane 1 of " + formatCount(view.Visible) }
-	>
-		<span aria-hidden="true"><span data-board-lane-position-current>1</span>/<span data-board-lane-position-total>{ formatCount(view.Visible) }</span></span>
+	<div class="flex min-h-0 min-w-0 flex-1 flex-col" data-work-view-panel="board">
+		<div
+			id="board-lane-position"
+			class="flex flex-none items-center justify-center px-5 pb-2 font-mono text-2xs text-sec tabular-nums md:hidden"
+			data-board-lane-position
+			role="status"
+			aria-live="polite"
+			aria-label={ "Lane 1 of " + formatCount(view.Visible) }
+		>
+			<span aria-hidden="true"><span data-board-lane-position-current>1</span>/<span data-board-lane-position-total>{ formatCount(view.Visible) }</span></span>
+		</div>
+		<div
+			id="board-lanes"
+			class={ boardLanesClass(data) }
+			data-board-lanes
+			data-board-key={ view.Key }
+			data-preserve-scroll="board-lanes"
+		>
+			for _, lane := range view.Lanes {
+				@boardLaneView2(lane)
+			}
+		</div>
 	</div>
-	<div
-		id="board-lanes"
-		class={ boardLanesClass(data) }
-		data-board-lanes
-		data-board-key={ view.Key }
-		data-preserve-scroll="board-lanes"
-	>
-		for _, lane := range view.Lanes {
-			@boardLaneView2(lane)
-		}
-	</div>
+	@workList(view)
 }
 
 templ boardAlertsBar(alerts []boardAlert) {
@@ -590,7 +607,7 @@ templ boardLaneView2(lane boardLaneView) {
 				@primitives.StatusDot(primitives.KindOK, true)
 			}
 			<h2 class="text-xs font-semibold text-text">{ lane.Title }</h2>
-			<span class="font-mono text-2xs font-medium text-sec tabular-nums">{ lane.Count }</span>
+			<span class="font-mono text-2xs font-medium text-sec tabular-nums" data-work-lane-count data-work-lane-label={ lane.Count }>{ lane.Count }</span>
 		</header>
 		<div class="dt-lane-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2" data-preserve-scroll={ lane.DomID + "-scroll" } data-kanban-card-container>
 			if len(lane.Cards) == 0 {
@@ -598,6 +615,7 @@ templ boardLaneView2(lane boardLaneView) {
 					@primitives.EmptyLine(lane.EmptyMessage)
 				</div>
 			}
+			<div class="rounded-card border border-dashed border-line px-3 py-4 text-center text-xs text-sec" data-work-filter-empty hidden>No issues match the active filters.</div>
 			for _, card := range lane.Cards {
 				@boardCardView2(card)
 			}
@@ -612,6 +630,7 @@ templ boardCardView2(card boardCardView) {
 		role="button"
 		tabindex="0"
 		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
+		{ workItemDataAttributes(card.Work, "board")... }
 		data-detail-sheet-project={ card.Project }
 		data-detail-sheet-reference={ card.Number }
 		if card.MoveDisabledText != "" {
@@ -713,6 +732,12 @@ templ boardCardView2(card boardCardView) {
 					{ card.ExtraText }
 				</div>
 			}
+		}
+		if card.Work.SyncKey != "synced" {
+			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.Work.SyncKind) } data-board-card-sync={ card.Work.SyncKey } data-board-card-expanded title={ card.Work.SyncTitle }>
+				@primitives.StatusDot(card.Work.SyncKind, false)
+				<span>{ "GitHub " + card.Work.Sync }</span>
+			</div>
 		}
 		if card.BlockerSummary != "" {
 			<div class="min-w-0 text-2xs text-sec" data-board-card-blockers data-board-card-expanded>
@@ -829,7 +854,7 @@ templ boardKanbanDragMoveForm(card boardCardView) {
 // delegated boardLaneScript outside #snapshot, so morphs cannot tear its
 // behavior down; the script re-asserts open state on htmx:afterSettle.
 templ boardLanePicker(view boardView) {
-	<details id="board-lane-picker" class="relative col-span-3 justify-self-start md:col-span-1" data-board-lane-picker data-preserve-details="board-lane-picker">
+	<details id="board-lane-picker" class="relative col-span-3 justify-self-start md:col-span-1" data-board-lane-picker data-work-board-only data-preserve-details="board-lane-picker">
 		<summary class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden md:min-h-0">
 			Lanes <span data-board-lane-count class="tabular-nums">{ boardLaneCountLabel(view) }</span>
 			<span

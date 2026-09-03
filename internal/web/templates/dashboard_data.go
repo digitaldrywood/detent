@@ -59,6 +59,8 @@ const (
 	projectKanbanAutomatedReviewTimeoutActionMetadataKey = "detent.automated_review_timeout_action"
 	projectKanbanDispatchSkipReasonMetadataKey           = "detent.dispatch_skip_reason"
 	projectKanbanArtifactGateStatusMetadataKey           = "detent.artifact_gate_status"
+	hubSyncStatusMetadataKey                             = "hub_sync_status"
+	hubSourceSyncedAtMetadataKey                         = "hub_source_synced_at"
 )
 
 type DashboardData struct {
@@ -656,6 +658,12 @@ type projectKanbanCard struct {
 	AuthorID              string
 	Origin                string
 	OriginActor           string
+	Owner                 string
+	LeaseRenewedAt        *time.Time
+	LeaseExpiresAt        *time.Time
+	UpdatedAt             *time.Time
+	SyncStatus            string
+	SourceSyncedAt        string
 	PriorityRank          int
 	PriorityName          string
 	DispatchPriorityLabel string
@@ -3185,6 +3193,12 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		AuthorID:              strings.TrimSpace(issue.AuthorID),
 		Origin:                strings.TrimSpace(issue.Origin),
 		OriginActor:           strings.TrimSpace(issue.OriginActor),
+		Owner:                 strings.TrimSpace(issue.Owner),
+		LeaseRenewedAt:        issue.LeaseRenewedAt,
+		LeaseExpiresAt:        issue.LeaseExpiresAt,
+		UpdatedAt:             issue.UpdatedAt,
+		SyncStatus:            strings.ToLower(strings.TrimSpace(issue.Metadata[hubSyncStatusMetadataKey])),
+		SourceSyncedAt:        strings.TrimSpace(issue.Metadata[hubSourceSyncedAtMetadataKey]),
 		PriorityRank:          projectKanbanPriorityRank(issue.Priority),
 		PriorityName:          strings.TrimSpace(issue.PriorityName),
 		UnblockerCount:        issue.UnblockerCount,

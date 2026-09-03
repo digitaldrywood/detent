@@ -77,6 +77,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot.BoardIssues[1].UnblockerCount = 2
 	case "startup-loading":
 		snapshot = demoStartupLoadingSnapshot()
+	case "work-error":
+		snapshot = demoWorkErrorSnapshot()
 	case "github-api-healthy":
 		snapshot = demoGitHubAPIHealthySnapshot()
 	case "github-api-warning":
@@ -541,6 +543,23 @@ func demoStartupLoadingSnapshot() telemetry.Snapshot {
 	}
 	for i := range snapshot.Projects {
 		snapshot.Projects[i].Refresh = refresh
+	}
+	return snapshot
+}
+
+func demoWorkErrorSnapshot() telemetry.Snapshot {
+	snapshot := demoStartupLoadingSnapshot()
+	errorAt := snapshot.GeneratedAt.Add(-5 * time.Second)
+	nextRefresh := snapshot.GeneratedAt.Add(time.Minute)
+	snapshot.Refresh = telemetry.Refresh{
+		PollIntervalSeconds: 60,
+		Status:              telemetry.RefreshStatusDegraded,
+		LastError:           "GitHub candidate query returned status 503",
+		LastErrorAt:         &errorAt,
+		NextRefreshAt:       &nextRefresh,
+	}
+	for index := range snapshot.Projects {
+		snapshot.Projects[index].Refresh = snapshot.Refresh
 	}
 	return snapshot
 }

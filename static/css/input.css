@@ -197,6 +197,22 @@
     overscroll-behavior-x: auto;
   }
 
+  .dt-work-row {
+    min-height: 44px;
+  }
+
+  [data-density="compact"] .dt-work-row {
+    min-height: 36px;
+  }
+
+  [data-density="compact"] .dt-work-row [data-work-row-secondary] {
+    display: none;
+  }
+
+  [data-density="comfy"] .dt-work-row {
+    min-height: 52px;
+  }
+
   @media (width < 48rem) {
     .dt-responsive-chart {
       aspect-ratio: var(--dt-chart-aspect-ratio);

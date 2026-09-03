@@ -732,7 +732,7 @@ func (s *Server) projectDashboard(c echo.Context) error {
 	switch view {
 	case "kanban":
 		data.ActiveNav = "kanban"
-		data.Title = s.projectPageTitle(data, "Kanban")
+		data.Title = s.projectPageTitle(data, "Work")
 		data = s.withKanbanRefreshFeedback(data)
 		applyDashboardPreferences(c.Request(), &data)
 		return render(c, templates.ProjectBoardPage(data))
