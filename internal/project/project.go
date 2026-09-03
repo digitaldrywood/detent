@@ -137,6 +137,7 @@ type startOptions struct {
 
 type Dependencies struct {
 	Connector                 connector.Connector
+	Scheduling                orchestrator.SchedulingSource
 	ConnectorFactory          ConnectorFactory
 	OrchestratorFactory       OrchestratorFactory
 	WorkflowWatcherFactory    WorkflowWatcherFactory
@@ -410,6 +411,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
 		Connector:          projectConnector,
+		Scheduling:         deps.Scheduling,
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		DispatchPacer:      deps.DispatchPacer,
@@ -1666,6 +1668,7 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 		ActiveHours:              workflow.ActiveHours,
 		ActiveHoursOverrideUntil: overrideUntil,
 	}
+	cfg.SchedulingRepository = workflow.Tracker.Repository
 	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
 	if lessonPath == "" {
 		lessonPath = lessons.DefaultPath

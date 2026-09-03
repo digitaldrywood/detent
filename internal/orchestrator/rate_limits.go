@@ -386,6 +386,13 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	if base <= 0 {
 		base = defaultPollInterval
 	}
+	if o.scheduling != nil {
+		source := state.RefreshSources[telemetry.RefreshSourceCandidates]
+		if source.Condition == schedulingUnavailableCondition && source.FailureStreak > 0 {
+			return schedulingBackoffInterval(base, source.FailureStreak)
+		}
+		return dispatchRecoveryPollInterval(state, now, base)
+	}
 
 	if pause := o.gitHubGraphQLPause(state, now); pause > base {
 		return pause
@@ -393,7 +400,6 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	if pause := o.gitHubRESTPause(state, now); pause > base {
 		return pause
 	}
-
 	bucket := gitHubGraphQLBucketFromState(state)
 	if bucket == nil || bucket.Remaining <= 0 || bucket.Remaining >= gitHubGraphQLBackoffRemaining {
 		return dispatchRecoveryPollInterval(state, now, base)
@@ -407,6 +413,22 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 		multiplier = 2
 	}
 	return dispatchRecoveryPollInterval(state, now, base*time.Duration(multiplier))
+}
+
+func schedulingBackoffInterval(base time.Duration, failureStreak int) time.Duration {
+	if base <= 0 || failureStreak <= 0 {
+		return base
+	}
+	shift := min(failureStreak, 4)
+	interval := base * time.Duration(1<<shift)
+	maximum := 5 * time.Minute
+	if maximum < base {
+		maximum = base
+	}
+	if interval > maximum {
+		return maximum
+	}
+	return interval
 }
 
 func (o *Orchestrator) gitHubRESTPause(state *State, now time.Time) time.Duration {

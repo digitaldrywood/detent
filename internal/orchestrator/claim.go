@@ -14,6 +14,16 @@ const claimTimeFormat = time.RFC3339Nano
 
 func (o *Orchestrator) claimIssue(ctx context.Context, issue connector.Issue, now time.Time) (connector.Issue, Claimed, bool) {
 	issue = cloneIssue(issue)
+	if o.scheduling != nil {
+		claim, err := o.scheduling.AdoptClaim(ctx, issue, now)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("adopt Hub scheduling claim failed", "issue_id", issue.ID, "error", err)
+			}
+			return connector.Issue{}, Claimed{}, false
+		}
+		return claim.Issue, claim, true
+	}
 	claim := Claimed{
 		Issue:     issue,
 		ClaimedAt: now,

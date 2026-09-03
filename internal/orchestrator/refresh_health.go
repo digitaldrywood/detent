@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ const (
 	refreshFailureDegradedThreshold = 3
 	refreshStaleIntervalMultiplier  = 2
 	defaultRefreshStaleAfter        = 2 * time.Minute
+	schedulingUnavailableCondition  = "scheduling_unavailable"
 )
 
 func recordRefreshSourceSuccess(state *State, name telemetry.RefreshSourceName, at time.Time) {
@@ -48,7 +50,10 @@ func recordRefreshSourceFailure(state *State, name telemetry.RefreshSourceName, 
 	source.FailureStreak++
 	if err != nil {
 		source.LastError = strings.TrimSpace(err.Error())
-		if availabilityErr, ok := connector.AsTrackerAvailability(err); ok {
+		if errors.Is(err, ErrSchedulingUnavailable) {
+			source.Condition = schedulingUnavailableCondition
+			source.Connector = "hub"
+		} else if availabilityErr, ok := connector.AsTrackerAvailability(err); ok {
 			source.Condition = connector.TrackerUnavailableCondition
 			source.Connector = availabilityErr.Scope.Connector
 		} else {

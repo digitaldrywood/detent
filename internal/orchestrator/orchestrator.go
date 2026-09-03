@@ -67,8 +67,10 @@ const (
 )
 
 var (
-	ErrMissingConnector = errors.New("orchestrator connector is required")
-	ErrStopped          = errors.New("orchestrator stopped")
+	ErrMissingConnector      = errors.New("orchestrator connector is required")
+	ErrSchedulingClaimLost   = errors.New("scheduling claim lost")
+	ErrSchedulingUnavailable = errors.New("scheduling source unavailable")
+	ErrStopped               = errors.New("orchestrator stopped")
 )
 
 type Config struct {
@@ -101,6 +103,7 @@ type Config struct {
 	RateWindowPacing              workflowconfig.RateWindowPacing
 	FailureBreaker                FailureBreakerConfig
 	Project                       scheduler.ProjectCandidate
+	SchedulingRepository          string
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
 	Plan                          gate.PlanConfig
@@ -163,8 +166,24 @@ type ClaimingConfig struct {
 	HeartbeatInterval time.Duration
 }
 
+type SchedulingRequest struct {
+	ProjectID      string
+	Repository     string
+	WorkflowStates []string
+	Filter         connector.IssueFilterHint
+}
+
+type SchedulingSource interface {
+	HeartbeatInterval() time.Duration
+	FetchCandidateIssues(context.Context, SchedulingRequest) ([]connector.Issue, error)
+	AdoptClaim(context.Context, connector.Issue, time.Time) (Claimed, error)
+	RenewClaim(context.Context, string, time.Time) (Claimed, error)
+	ReleaseClaim(context.Context, string, string) error
+}
+
 type Dependencies struct {
 	Connector            connector.Connector
+	Scheduling           SchedulingSource
 	Runner               Runner
 	WorkspaceReaper      WorkspaceReaper
 	WorkflowMetrics      WorkflowMetricsRecorder
@@ -227,6 +246,7 @@ type RuntimeUpdate struct {
 type Orchestrator struct {
 	cfg                     Config
 	connector               connector.Connector
+	scheduling              SchedulingSource
 	workflowMetrics         WorkflowMetricsRecorder
 	laneMutations           store.LaneMutationStore
 	efficiency              efficiency.Recorder
@@ -592,6 +612,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	orchestrator := &Orchestrator{
 		cfg:                     cfg,
 		connector:               deps.Connector,
+		scheduling:              deps.Scheduling,
 		workflowMetrics:         deps.WorkflowMetrics,
 		laneMutations:           laneMutations,
 		efficiency:              deps.Efficiency,
@@ -663,7 +684,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		completedStops:          map[string]StopRunResult{},
 		tickWatchdog:            newTickWatchdog(cfg.Project.ID, cfg.PollInterval, logger),
 	}
-	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger)
+	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger, deps.Scheduling)
 	return orchestrator, nil
 }
 
@@ -1255,6 +1276,9 @@ func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Tim
 }
 
 func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
+	if o.scheduling != nil {
+		return o.scheduling.ReleaseClaim(ctx, issueID, "orchestrator_release")
+	}
 	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
 		return nil
 	}

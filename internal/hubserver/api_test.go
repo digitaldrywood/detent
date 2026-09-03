@@ -147,6 +147,9 @@ func TestWorkItemAPIUsesStableFilteredCursorsAndDetailTimeline(t *testing.T) {
 	}
 	secondID := insertHubTestIssue(t, service, repositoryID, 2, "I_second", "open", &workflowID)
 	thirdID := insertHubTestIssue(t, service, repositoryID, 3, "I_third", "open", &workflowID)
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ? WHERE id = ?", "Complete issue body", thirdID); err != nil {
+		t.Fatalf("set complete issue body: %v", err)
+	}
 	entries := []struct {
 		id       int64
 		rank     string
@@ -211,7 +214,7 @@ VALUES ('workpad-api', ?, ?, ?, ?, 'pending', ?, ?)`, repositoryID, thirdID, Mut
 	detailResponse := performHubAPIRequest(t, service, http.MethodGet, fmt.Sprintf("/api/v1/work-items/%d?timeline_limit=1", thirdID), testHubAdminToken, nil)
 	var detail workItemDetailResponse
 	decodeHubResponse(t, detailResponse, &detail)
-	if detail.ID != tracker.WorkItemID(thirdID) || detail.Workpad == nil || detail.Workpad.Body != "Hub API workpad" || len(detail.Timeline) != 1 || detail.TimelineNextCursor == "" {
+	if detail.ID != tracker.WorkItemID(thirdID) || detail.Body != "Complete issue body" || detail.Workpad == nil || detail.Workpad.Body != "Hub API workpad" || len(detail.Timeline) != 1 || detail.TimelineNextCursor == "" {
 		t.Fatalf("detail response = %#v", detail)
 	}
 	nextTimeline := performHubAPIRequest(t, service, http.MethodGet, fmt.Sprintf("/api/v1/work-items/%d?timeline_limit=1&timeline_cursor=%s", thirdID, url.QueryEscape(detail.TimelineNextCursor)), testHubAdminToken, nil)
@@ -298,6 +301,37 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	released := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/release", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "reason": "complete"})
 	if released.Code != http.StatusNoContent {
 		t.Fatalf("release status = %d body = %s", released.Code, released.Body.String())
+	}
+	otherRepository, err := service.database.db.ExecContext(t.Context(), "INSERT INTO repositories (github_node_id, github_owner, github_name, last_reconciled_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", "R_other", "Acme", "Other", formatHubTime(now), testTimestamp, testTimestamp)
+	if err != nil {
+		t.Fatalf("insert other repository: %v", err)
+	}
+	otherRepositoryID, err := otherRepository.LastInsertId()
+	if err != nil {
+		t.Fatalf("other repository ID: %v", err)
+	}
+	otherWorkflow, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, github_node_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", otherRepositoryID, "WS_other_todo", "Todo", "Todo", testTimestamp, testTimestamp)
+	if err != nil {
+		t.Fatalf("insert other workflow state: %v", err)
+	}
+	otherWorkflowID, err := otherWorkflow.LastInsertId()
+	if err != nil {
+		t.Fatalf("other workflow state ID: %v", err)
+	}
+	otherRepositoryIssueID := insertHubTestIssue(t, service, otherRepositoryID, 1, "I_other_repository", "open", &otherWorkflowID)
+	repositoryScoped := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"machine_id": "machine-a", "session_id": "repository-session", "ttl_seconds": 90, "repositories": []string{"acme/other"},
+	})
+	if repositoryScoped.Code != http.StatusCreated {
+		t.Fatalf("repository-scoped claim status = %d body = %s", repositoryScoped.Code, repositoryScoped.Body.String())
+	}
+	var repositoryLease tracker.Lease
+	decodeHubResponse(t, repositoryScoped, &repositoryLease)
+	if repositoryLease.WorkItemID != tracker.WorkItemID(otherRepositoryIssueID) {
+		t.Fatalf("repository-scoped work item = %d, want %d", repositoryLease.WorkItemID, otherRepositoryIssueID)
+	}
+	if response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(repositoryLease.ID)+"/release", testHubAdminToken, map[string]any{"fencing_token": repositoryLease.FencingToken}); response.Code != http.StatusNoContent {
+		t.Fatalf("release repository-scoped claim status = %d body = %s", response.Code, response.Body.String())
 	}
 	heartbeat := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/machines/machine-a/heartbeat", testHubAdminToken, map[string]any{"capacity": 4, "version": "v2"})
 	if heartbeat.Code != http.StatusOK {

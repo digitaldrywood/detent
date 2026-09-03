@@ -23,8 +23,16 @@ type claimAPIRequest struct {
 	SessionID     string                 `json:"session_id"`
 	TTLSeconds    int64                  `json:"ttl_seconds"`
 	RepositoryIDs []tracker.RepositoryID `json:"repository_ids,omitempty"`
+	Repositories  []string               `json:"repositories,omitempty"`
 	WorkflowState []string               `json:"workflow_states,omitempty"`
 	Scope         string                 `json:"scope,omitempty"`
+}
+
+type claimCandidateQuery struct {
+	RepositoryIDs  []tracker.RepositoryID
+	Repositories   []string
+	WorkflowStates []string
+	Scope          string
 }
 
 type renewLeaseAPIRequest struct {
@@ -88,8 +96,9 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: err.Error()})
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
-	lease, err := s.database.claimNext(c.Request().Context(), claim, tracker.CandidateQuery{
+	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
 		RepositoryIDs:  request.RepositoryIDs,
+		Repositories:   request.Repositories,
 		WorkflowStates: request.WorkflowState,
 		Scope:          request.Scope,
 	}, s.config.ReconcileInterval)
@@ -181,7 +190,7 @@ func trackerAPIError(c echo.Context, err error) error {
 	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
 }
 
-func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query tracker.CandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -191,6 +200,10 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	repositoryIDs, err := normalizedRepositoryIDs(query.RepositoryIDs)
 	if err != nil {
 		return tracker.Lease{}, err
+	}
+	repositories := normalizedQueryStrings(query.Repositories)
+	if len(query.Repositories) > 0 && len(repositories) == 0 {
+		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
 	}
 	workflowStates := normalizedQueryStrings(query.WorkflowStates)
 	if len(query.WorkflowStates) > 0 && len(workflowStates) == 0 {
@@ -245,7 +258,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			claimableRepositories[tracker.RepositoryID(repository.ID)] = struct{}{}
 		}
 	}
-	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, workflowStates, claimableRepositories)
+	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, repositories, workflowStates, claimableRepositories)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
@@ -318,17 +331,21 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - active, nil
 }
 
-func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, workflowStates []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
+func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	repositoryFilter := make(map[tracker.RepositoryID]struct{}, len(repositoryIDs))
 	for _, id := range repositoryIDs {
 		repositoryFilter[id] = struct{}{}
+	}
+	repositoryNameFilter := make(map[string]struct{}, len(repositories))
+	for _, repository := range repositories {
+		repositoryNameFilter[strings.ToLower(repository)] = struct{}{}
 	}
 	workflowFilter := make(map[string]struct{}, len(workflowStates))
 	for _, state := range workflowStates {
 		workflowFilter[state] = struct{}{}
 	}
 	rows, err := tx.QueryContext(ctx, `
-SELECT i.id, r.id, lower(trim(ws.detent_state))
+SELECT i.id, r.id, r.github_owner, r.github_name, lower(trim(ws.detent_state))
 FROM issues i
 JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -366,8 +383,10 @@ ORDER BY
 	for rows.Next() {
 		var id tracker.WorkItemID
 		var repositoryID tracker.RepositoryID
+		var repositoryOwner string
+		var repositoryName string
 		var workflowState string
-		if err := rows.Scan(&id, &repositoryID, &workflowState); err != nil {
+		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState); err != nil {
 			return nil, fmt.Errorf("scan hub claim candidate: %w", err)
 		}
 		if _, ok := claimableRepositories[repositoryID]; !ok {
@@ -375,6 +394,11 @@ ORDER BY
 		}
 		if len(repositoryFilter) > 0 {
 			if _, ok := repositoryFilter[repositoryID]; !ok {
+				continue
+			}
+		}
+		if len(repositoryNameFilter) > 0 {
+			if _, ok := repositoryNameFilter[strings.ToLower(strings.TrimSpace(repositoryOwner)+"/"+strings.TrimSpace(repositoryName))]; !ok {
 				continue
 			}
 		}

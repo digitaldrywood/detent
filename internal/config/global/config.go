@@ -77,6 +77,7 @@ type Config struct {
 	APIToken              string          `yaml:"api_token,omitempty"`
 	TrustLoopbackPeerRead bool            `yaml:"trust_loopback_peer_read,omitempty"`
 	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
+	Client                HubClient       `yaml:"client,omitempty"`
 	Ops                   Ops             `yaml:"ops,omitempty"`
 	Port                  *int            `yaml:"port,omitempty"`
 	InstanceName          string          `yaml:"instance_name,omitempty"`
@@ -701,6 +702,7 @@ func (c Config) Validate(opts ...Option) error {
 	}
 	problems = append(problems, c.Notifications.Validate()...)
 	problems = append(problems, dashboardAccessProblems(c.DashboardAccess)...)
+	problems = append(problems, c.Client.Validate()...)
 	if c.Update.CheckIntervalHours < 0 {
 		problems = append(problems, "update.check_interval_hours: must be a positive integer")
 	}
@@ -1020,6 +1022,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 		problems = append(problems, err.Error())
 	}
 	problems = append(problems, dashboardAccessRawErrors(attrs["dashboard_access"])...)
+	problems = append(problems, hubClientRawErrors(attrs["client"])...)
 	problems = append(problems, opsRawErrors(attrs["ops"])...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
@@ -1873,6 +1876,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	client, err := buildHubClient(attrs["client"])
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	ops, err := buildOps(attrs["ops"])
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1918,6 +1925,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		APIToken:              apiToken,
 		TrustLoopbackPeerRead: trustLoopbackPeerRead,
 		DashboardAccess:       dashboardAccess,
+		Client:                client,
 		Ops:                   ops,
 		Port:                  port,
 		InstanceName:          instanceName,
