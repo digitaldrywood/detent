@@ -25,6 +25,7 @@ type Service struct {
 	database       *database
 	tracker        tracker.Tracker
 	config         Config
+	outbox         *outboxWorker
 	ready          atomic.Bool
 	workerCancel   context.CancelFunc
 	workerDone     chan struct{}
@@ -34,9 +35,10 @@ type Service struct {
 }
 
 type healthResponse struct {
-	Status        string `json:"status"`
-	SchemaVersion int64  `json:"schema_version,omitempty"`
-	Version       string `json:"version,omitempty"`
+	Status        string       `json:"status"`
+	SchemaVersion int64        `json:"schema_version,omitempty"`
+	Version       string       `json:"version,omitempty"`
+	Outbox        OutboxHealth `json:"outbox"`
 }
 
 func Open(ctx context.Context, cfg Config) (*Service, error) {
@@ -67,11 +69,17 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		workerCancel: workerCancel,
 		workerDone:   make(chan struct{}),
 	}
+	if cfg.OutboxBackend != nil {
+		service.outbox = newOutboxWorker(service)
+	}
 	e.GET("/health", service.health)
 	e.POST("/api/v1/webhooks/github", service.githubWebhook)
 	service.maintainGitHubWebhooks(ctx)
 	go service.runGitHubWebhookMaintenance(workerContext)
 	service.ready.Store(true)
+	if service.outbox != nil {
+		service.outbox.start(ctx)
+	}
 	return service, nil
 }
 
@@ -168,7 +176,11 @@ func (s *Service) Close() error {
 		if errors.Is(httpErr, http.ErrServerClosed) {
 			httpErr = nil
 		}
-		s.closeErr = errors.Join(httpErr, s.stopGitHubWebhookMaintenance(), s.database.Close())
+		webhookErr := s.stopGitHubWebhookMaintenance()
+		if s.outbox != nil {
+			s.outbox.stop()
+		}
+		s.closeErr = errors.Join(httpErr, webhookErr, s.database.Close())
 	})
 	return s.closeErr
 }
@@ -212,9 +224,14 @@ func (s *Service) health(c echo.Context) error {
 	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
 		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
 	}
+	outbox, err := s.OutboxHealth(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+	}
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:        "ok",
 		SchemaVersion: s.database.schemaVersion,
 		Version:       s.config.Version,
+		Outbox:        outbox,
 	})
 }

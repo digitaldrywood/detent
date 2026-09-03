@@ -12,6 +12,11 @@ const (
 	DefaultWebhookMaintenanceInterval = time.Minute
 	defaultBusyTimeout                = 5 * time.Second
 	defaultShutdownTime               = 5 * time.Second
+	defaultOutboxPoll                 = time.Second
+	defaultOutboxBase                 = 2 * time.Second
+	defaultOutboxMax                  = 15 * time.Minute
+	defaultOutboxStale                = 5 * time.Minute
+	defaultOutboxAttempts             = 8
 )
 
 var (
@@ -19,6 +24,7 @@ var (
 	ErrDatabaseIdentity        = errors.New("database is not a Detent Hub database")
 	ErrNetworkFilesystem       = errors.New("hub database requires a local filesystem")
 	ErrNotReady                = errors.New("hub service is not ready")
+	ErrOutboxDisabled          = errors.New("hub github outbox is disabled")
 	ErrUnsupportedSchema       = errors.New("hub database schema is newer than this Detent version")
 	ErrWebhookDeliveryConflict = errors.New("github webhook delivery ID has conflicting content")
 )
@@ -33,9 +39,16 @@ type Config struct {
 	WebhookMaintenanceInterval time.Duration
 	Logger                     *slog.Logger
 	Version                    string
+	OutboxBackend              OutboxBackend
+	OutboxPollInterval         time.Duration
+	OutboxBaseBackoff          time.Duration
+	OutboxMaxBackoff           time.Duration
+	OutboxProcessingTimeout    time.Duration
+	OutboxMaxAttempts          int
 
-	now                        func() time.Time
 	validateDatabaseFilesystem func(string) error
+	now                        func() time.Time
+	jitter                     func() float64
 }
 
 func (c Config) normalized() Config {
@@ -54,15 +67,36 @@ func (c Config) normalized() Config {
 	if c.WebhookMaintenanceInterval <= 0 {
 		c.WebhookMaintenanceInterval = DefaultWebhookMaintenanceInterval
 	}
+	if c.OutboxPollInterval <= 0 {
+		c.OutboxPollInterval = defaultOutboxPoll
+	}
+	if c.OutboxBaseBackoff <= 0 {
+		c.OutboxBaseBackoff = defaultOutboxBase
+	}
+	if c.OutboxMaxBackoff <= 0 {
+		c.OutboxMaxBackoff = defaultOutboxMax
+	}
+	if c.OutboxMaxBackoff < c.OutboxBaseBackoff {
+		c.OutboxMaxBackoff = c.OutboxBaseBackoff
+	}
+	if c.OutboxProcessingTimeout <= 0 {
+		c.OutboxProcessingTimeout = defaultOutboxStale
+	}
+	if c.OutboxMaxAttempts <= 0 {
+		c.OutboxMaxAttempts = defaultOutboxAttempts
+	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
+	}
+	if c.validateDatabaseFilesystem == nil {
+		c.validateDatabaseFilesystem = validateLocalDatabaseFilesystem
 	}
 	if c.now == nil {
 		c.now = time.Now
 	}
-	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
-	if c.validateDatabaseFilesystem == nil {
-		c.validateDatabaseFilesystem = validateLocalDatabaseFilesystem
+	if c.jitter == nil {
+		c.jitter = randomJitter
 	}
+	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
 	return c
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -72,7 +73,7 @@ func TestHealthEndpoint(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 				t.Fatalf("decode response: %v", err)
 			}
-			if got != test.wantBody {
+			if !reflect.DeepEqual(got, test.wantBody) {
 				t.Fatalf("response = %#v, want %#v", got, test.wantBody)
 			}
 		})
