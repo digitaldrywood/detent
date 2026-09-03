@@ -54,6 +54,19 @@ LEFT JOIN queue_entries q ON q.id = (
 )
 `
 
+const candidateOrder = `
+ORDER BY
+  CASE WHEN q.priority_override IS NULL THEN 1 ELSE 0 END,
+  q.priority_override,
+  CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
+  q.rank,
+  i.created_at,
+  r.github_owner,
+  r.github_name,
+  i.github_number,
+  i.id
+LIMIT ?`
+
 type databaseQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
@@ -102,7 +115,7 @@ func (d *database) ListCandidateRecords(ctx context.Context, query tracker.Candi
 		limit = tracker.DefaultCandidateLimit
 	}
 	args = append(args, limit)
-	statement := workItemColumns + "WHERE " + strings.Join(clauses, " AND ") + " ORDER BY i.id LIMIT ?"
+	statement := workItemColumns + "WHERE " + strings.Join(clauses, " AND ") + candidateOrder
 
 	return d.readWorkItemRecords(ctx, statement, args)
 }

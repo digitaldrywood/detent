@@ -110,6 +110,47 @@ func TestTrackerReadsPartialProjection(t *testing.T) {
 	}
 }
 
+func TestTrackerCandidatesApplyQueueOrderBeforeLimit(t *testing.T) {
+	t.Parallel()
+
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	repositoryID, lowPriorityID := seedProjection(t, service.database.db)
+	var workflowID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id FROM issues WHERE id = ?", lowPriorityID).Scan(&workflowID); err != nil {
+		t.Fatalf("read workflow state: %v", err)
+	}
+	highPriorityLaterID := insertHubTestIssue(t, service, repositoryID, 2, "I_high_later", "open", &workflowID)
+	highPriorityEarlierID := insertHubTestIssue(t, service, repositoryID, 3, "I_high_earlier", "open", &workflowID)
+	entries := []struct {
+		issueID  int64
+		rank     string
+		priority int
+	}{
+		{issueID: lowPriorityID, rank: "00", priority: 2},
+		{issueID: highPriorityLaterID, rank: "z0", priority: 0},
+		{issueID: highPriorityEarlierID, rank: "a0", priority: 0},
+	}
+	for _, entry := range entries {
+		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.issueID, workflowID, "fleet", "Todo", entry.rank, entry.priority, testTimestamp, testTimestamp); err != nil {
+			t.Fatalf("insert queue entry for issue %d: %v", entry.issueID, err)
+		}
+	}
+
+	candidates, err := service.Tracker().ListCandidates(t.Context(), tracker.CandidateQuery{Scope: "fleet", Limit: 2})
+	if err != nil {
+		t.Fatalf("ListCandidates() error = %v", err)
+	}
+	want := []tracker.WorkItemID{tracker.WorkItemID(highPriorityEarlierID), tracker.WorkItemID(highPriorityLaterID)}
+	if len(candidates) != len(want) {
+		t.Fatalf("ListCandidates() count = %d, want %d", len(candidates), len(want))
+	}
+	for i := range want {
+		if candidates[i].ID != want[i] {
+			t.Errorf("ListCandidates()[%d].ID = %d, want %d", i, candidates[i].ID, want[i])
+		}
+	}
+}
+
 func TestTrackerReadValidation(t *testing.T) {
 	t.Parallel()
 
