@@ -265,6 +265,7 @@ func TestIncrementalReconcileUsesOldestCursorAndExposesFailures(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/freshness", nil)
+	authorizeHubTestRequest(request)
 	response := httptest.NewRecorder()
 	service.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {

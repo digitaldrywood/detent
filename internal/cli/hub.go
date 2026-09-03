@@ -54,6 +54,10 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 func newHubServeCommand(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
 	var databasePath string
 	var listenAddress string
+	var tlsCertificateFile string
+	var tlsKeyFile string
+	var trustedProxy bool
+	var adminTokenEnv string
 	var busyTimeout time.Duration
 	var shutdownTimeout time.Duration
 	var githubWebhookSecretEnv string
@@ -78,6 +82,14 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			if strings.TrimSpace(listenAddress) == "" {
 				return NewValidationError("hub listen address is required", "Use --listen 127.0.0.1:7777 or another explicit address.", nil)
 			}
+			adminTokenEnv = strings.TrimSpace(adminTokenEnv)
+			if !validEnvName(adminTokenEnv) {
+				return NewValidationError("Hub administrator token environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_ADMIN_TOKEN.", nil)
+			}
+			adminToken := strings.TrimSpace(lookupEnv(adminTokenEnv))
+			if adminToken == "" {
+				return NewValidationError("Hub administrator token is required", "Set "+adminTokenEnv+" to a high-entropy API token.", nil)
+			}
 			githubWebhookSecretEnv = strings.TrimSpace(githubWebhookSecretEnv)
 			if githubWebhookSecretEnv != "" && !validEnvName(githubWebhookSecretEnv) {
 				return NewValidationError("Hub GitHub webhook secret environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_GITHUB_WEBHOOK_SECRET.", nil)
@@ -85,6 +97,10 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			return run(cmd.Context(), hubserver.Config{
 				DatabasePath:               databasePath,
 				ListenAddress:              listenAddress,
+				TLSCertFile:                strings.TrimSpace(tlsCertificateFile),
+				TLSKeyFile:                 strings.TrimSpace(tlsKeyFile),
+				TrustedProxy:               trustedProxy,
+				InitialAdminToken:          []byte(adminToken),
 				BusyTimeout:                busyTimeout,
 				ShutdownTimeout:            shutdownTimeout,
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
@@ -99,6 +115,10 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 	}
 	cmd.Flags().StringVar(&databasePath, "database", "", "local filesystem path to the Hub SQLite database")
 	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address")
+	cmd.Flags().StringVar(&tlsCertificateFile, "tls-cert", "", "TLS certificate file")
+	cmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS private key file")
+	cmd.Flags().BoolVar(&trustedProxy, "trusted-proxy", false, "declare that a trusted reverse proxy terminates TLS")
+	cmd.Flags().StringVar(&adminTokenEnv, "admin-token-env", "DETENT_HUB_ADMIN_TOKEN", "environment variable containing the initial Hub administrator token")
 	cmd.Flags().DurationVar(&busyTimeout, "busy-timeout", 5*time.Second, "SQLite busy timeout")
 	cmd.Flags().DurationVar(&shutdownTimeout, "shutdown-timeout", 5*time.Second, "graceful HTTP shutdown timeout")
 	cmd.Flags().StringVar(&githubWebhookSecretEnv, "github-webhook-secret-env", "DETENT_HUB_GITHUB_WEBHOOK_SECRET", "environment variable containing the GitHub webhook secret")

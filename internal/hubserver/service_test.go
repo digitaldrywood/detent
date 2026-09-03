@@ -52,7 +52,7 @@ func TestHealthEndpoint(t *testing.T) {
 		},
 		{
 			name:       "unregistered route",
-			path:       "/api/v1/work-items",
+			path:       "/api/v1/not-found",
 			ready:      true,
 			wantStatus: http.StatusNotFound,
 		},
@@ -61,6 +61,7 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service.ready.Store(test.ready)
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			authorizeHubTestRequest(request)
 			response := httptest.NewRecorder()
 			service.Handler().ServeHTTP(response, request)
 			if response.Code != test.wantStatus {
@@ -96,6 +97,7 @@ func TestHealthEndpointDegradesForStaleRepository(t *testing.T) {
 		t.Fatalf("insert stale repository: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	authorizeHubTestRequest(request)
 	response := httptest.NewRecorder()
 	service.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -129,6 +131,7 @@ func TestServeShutsDownGracefully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() error = %v", err)
 	}
+	authorizeHubTestRequest(request)
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET /health error = %v", err)

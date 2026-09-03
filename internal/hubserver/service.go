@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,10 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := database.ensureInitialAdminToken(ctx, cfg.InitialAdminToken); err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
+	cfg.InitialAdminToken = nil
 	workTracker, err := tracker.NewStore(database)
 	if err != nil {
 		return nil, errors.Join(err, database.Close())
@@ -79,9 +84,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
 	}
-	e.GET("/health", service.health)
-	e.GET("/api/v1/repositories/freshness", service.repositoryFreshness)
-	e.POST("/api/v1/webhooks/github", service.githubWebhook)
+	service.registerRoutes(e)
 	service.maintainGitHubWebhooks(ctx)
 	go service.runGitHubWebhookMaintenance(workerContext)
 	go service.runGitHubReconciliation(reconcileContext)
@@ -101,6 +104,9 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		ctx = context.Background()
 	}
 	cfg = cfg.normalized()
+	if err := validateListenerSecurity(cfg); err != nil {
+		return err
+	}
 	service, err := Open(ctx, cfg)
 	if err != nil {
 		return err
@@ -118,6 +124,10 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 
 	serveResult := make(chan error, 1)
 	go func() {
+		if cfg.TLSCertFile != "" {
+			serveResult <- service.ServeTLS(listener, cfg.TLSCertFile, cfg.TLSKeyFile)
+			return
+		}
 		serveResult <- service.Serve(listener)
 	}()
 
@@ -135,6 +145,31 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	}
 }
 
+func validateListenerSecurity(cfg Config) error {
+	certFile := strings.TrimSpace(cfg.TLSCertFile)
+	keyFile := strings.TrimSpace(cfg.TLSKeyFile)
+	if (certFile == "") != (keyFile == "") {
+		return errors.New("hub TLS certificate and key must be configured together")
+	}
+	if listenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrInsecureListener, cfg.ListenAddress)
+}
+
+func listenerAddressLoopback(address string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (s *Service) Handler() http.Handler {
 	return s.echo
 }
@@ -149,6 +184,20 @@ func (s *Service) Serve(listener net.Listener) error {
 	}
 	if err != nil {
 		return fmt.Errorf("serve hub requests: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ServeTLS(listener net.Listener, certificateFile string, keyFile string) error {
+	if listener == nil {
+		return errors.New("hub listener is required")
+	}
+	err := s.echo.Server.ServeTLS(listener, strings.TrimSpace(certificateFile), strings.TrimSpace(keyFile))
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("serve TLS hub requests: %w", err)
 	}
 	return nil
 }

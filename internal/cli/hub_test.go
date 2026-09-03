@@ -24,6 +24,9 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 		return nil
 	}
 	cmd := newHubCommandWithRun("v-test", func(name string) string {
+		if name == "TEST_HUB_ADMIN_TOKEN" {
+			return "hub-admin-token"
+		}
 		if name == "TEST_HUB_WEBHOOK_SECRET" {
 			return "webhook-secret"
 		}
@@ -35,6 +38,10 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 		"serve",
 		"--database", wantDatabase,
 		"--listen", "127.0.0.1:0",
+		"--tls-cert", "server.crt",
+		"--tls-key", "server.key",
+		"--trusted-proxy",
+		"--admin-token-env", "TEST_HUB_ADMIN_TOKEN",
 		"--busy-timeout", "2s",
 		"--shutdown-timeout", "3s",
 		"--github-webhook-secret-env", "TEST_HUB_WEBHOOK_SECRET",
@@ -55,6 +62,9 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	if gotConfig.ListenAddress != "127.0.0.1:0" {
 		t.Fatalf("listen address = %q, want ephemeral loopback", gotConfig.ListenAddress)
 	}
+	if gotConfig.TLSCertFile != "server.crt" || gotConfig.TLSKeyFile != "server.key" || !gotConfig.TrustedProxy {
+		t.Fatalf("transport security = cert %q key %q trusted proxy %t", gotConfig.TLSCertFile, gotConfig.TLSKeyFile, gotConfig.TrustedProxy)
+	}
 	if gotConfig.BusyTimeout != 2*time.Second {
 		t.Fatalf("busy timeout = %s, want 2s", gotConfig.BusyTimeout)
 	}
@@ -63,6 +73,9 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	}
 	if string(gotConfig.GitHubWebhookSecret) != "webhook-secret" {
 		t.Fatalf("GitHub webhook secret = %q, want resolved secret", gotConfig.GitHubWebhookSecret)
+	}
+	if string(gotConfig.InitialAdminToken) != "hub-admin-token" {
+		t.Fatalf("Hub administrator token was not resolved from its environment variable")
 	}
 	if gotConfig.WebhookPayloadRetention != 48*time.Hour {
 		t.Fatalf("webhook payload retention = %s, want 48h", gotConfig.WebhookPayloadRetention)
@@ -88,7 +101,7 @@ func TestHubServeCommandValidatesDatabase(t *testing.T) {
 	run := func(context.Context, hubserver.Config) error {
 		return runErr
 	}
-	cmd := newHubCommandWithRun("v-test", nil, run)
+	cmd := newHubCommandWithRun("v-test", func(string) string { return "hub-admin-token" }, run)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"serve"})
@@ -108,7 +121,7 @@ func TestHubServeCommandValidatesWebhookSecretEnvironmentName(t *testing.T) {
 	run := func(context.Context, hubserver.Config) error {
 		return runErr
 	}
-	cmd := newHubCommandWithRun("v-test", nil, run)
+	cmd := newHubCommandWithRun("v-test", func(string) string { return "hub-admin-token" }, run)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{
@@ -116,6 +129,26 @@ func TestHubServeCommandValidatesWebhookSecretEnvironmentName(t *testing.T) {
 		"--database", filepath.Join(t.TempDir(), "hub.db"),
 		"--github-webhook-secret-env", "INVALID-NAME",
 	})
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("ExecuteContext() error = nil, want validation error")
+	}
+	if errors.Is(err, runErr) {
+		t.Fatalf("ExecuteContext() error = %v, runner was called", err)
+	}
+}
+
+func TestHubServeCommandRequiresAdministratorToken(t *testing.T) {
+	t.Parallel()
+
+	runErr := errors.New("runner should not be called")
+	run := func(context.Context, hubserver.Config) error {
+		return runErr
+	}
+	cmd := newHubCommandWithRun("v-test", func(string) string { return "" }, run)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"serve", "--database", filepath.Join(t.TempDir(), "hub.db")})
 	err := cmd.ExecuteContext(context.Background())
 	if err == nil {
 		t.Fatal("ExecuteContext() error = nil, want validation error")

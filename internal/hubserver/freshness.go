@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -39,11 +40,16 @@ type RepositoryHealthSummary struct {
 type repositoryFreshnessResponse struct {
 	Repositories []RepositoryFreshness   `json:"repositories"`
 	Summary      RepositoryHealthSummary `json:"summary"`
+	NextCursor   string                  `json:"next_cursor,omitempty"`
 }
 
 type checkpointFreshness struct {
 	lastSuccessful *time.Time
 	lastError      *SyncError
+}
+
+type freshnessQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func (s *Service) repositoryFreshness(c echo.Context) error {
@@ -54,11 +60,45 @@ func (s *Service) repositoryFreshness(c echo.Context) error {
 			Message: "Repository freshness could not be read",
 		})
 	}
+	limit, err := parsePageLimit(c.QueryParam("limit"))
+	if err != nil {
+		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
+	}
+	cursor, err := decodeWorkItemCursor(c.QueryParam("cursor"))
+	if err != nil || cursor.Version != 0 && (cursor.Sort != "repository" || cursor.Order != "asc") {
+		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_cursor", Message: "Repository cursor is invalid"})
+	}
+	if cursor.Version != 0 {
+		for index, repository := range result.Repositories {
+			if compareStringSlices(repositoryFreshnessSortValues(repository), cursor.Values) > 0 {
+				result.Repositories = result.Repositories[index:]
+				break
+			}
+			if index == len(result.Repositories)-1 {
+				result.Repositories = []RepositoryFreshness{}
+			}
+		}
+	}
+	if len(result.Repositories) > limit {
+		result.Repositories = result.Repositories[:limit]
+		result.NextCursor, err = encodeWorkItemCursor(workItemCursor{Version: 1, Sort: "repository", Order: "asc", Values: repositoryFreshnessSortValues(result.Repositories[len(result.Repositories)-1])})
+		if err != nil {
+			return s.internalAPIError(c, "freshness_unavailable", "Repository freshness could not be read", err)
+		}
+	}
 	return c.JSON(http.StatusOK, result)
 }
 
+func repositoryFreshnessSortValues(repository RepositoryFreshness) []string {
+	return []string{strings.ToLower(strings.TrimSpace(repository.Repository)), fmt.Sprintf("%020d", repository.ID)}
+}
+
 func (d *database) repositoryFreshness(ctx context.Context, now time.Time, reconcileInterval time.Duration) (repositoryFreshnessResponse, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	return queryRepositoryFreshness(ctx, d.db, now, reconcileInterval)
+}
+
+func queryRepositoryFreshness(ctx context.Context, queryer freshnessQueryer, now time.Time, reconcileInterval time.Duration) (repositoryFreshnessResponse, error) {
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT r.id, r.github_node_id, r.github_owner, r.github_name,
 			r.last_webhook_at, r.last_reconciled_at,
 			c.checkpoint_name, c.last_successful_at, c.last_error, c.state_json

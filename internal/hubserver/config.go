@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
 )
 
 const (
@@ -27,6 +29,7 @@ var (
 	ErrBackupSource            = errors.New("hub backup destination matches the source database")
 	ErrDatabaseIdentity        = errors.New("database is not a Detent Hub database")
 	ErrInvalidClock            = errors.New("hub clock returned a zero time")
+	ErrInsecureListener        = errors.New("non-loopback hub listener requires TLS or a trusted reverse proxy")
 	ErrNetworkFilesystem       = errors.New("hub database requires a local filesystem")
 	ErrNotReady                = errors.New("hub service is not ready")
 	ErrOutboxDisabled          = errors.New("hub github outbox is disabled")
@@ -37,6 +40,10 @@ var (
 type Config struct {
 	DatabasePath               string
 	ListenAddress              string
+	TLSCertFile                string
+	TLSKeyFile                 string
+	TrustedProxy               bool
+	InitialAdminToken          []byte
 	BusyTimeout                time.Duration
 	ShutdownTimeout            time.Duration
 	GitHubWebhookSecret        []byte
@@ -58,6 +65,8 @@ type Config struct {
 	now                        func() time.Time
 	jitter                     func() float64
 	newLeaseID                 func() string
+	newTokenID                 func() string
+	generateToken              func() (string, error)
 }
 
 func (c Config) normalized() Config {
@@ -115,6 +124,13 @@ func (c Config) normalized() Config {
 	if c.newLeaseID == nil {
 		c.newLeaseID = uuid.NewString
 	}
+	if c.newTokenID == nil {
+		c.newTokenID = uuid.NewString
+	}
+	if c.generateToken == nil {
+		c.generateToken = apikey.GenerateToken
+	}
 	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
+	c.InitialAdminToken = append([]byte(nil), c.InitialAdminToken...)
 	return c
 }
