@@ -339,6 +339,8 @@ func writePullRequestStatusResponse(w http.ResponseWriter, path string) {
 		_, _ = w.Write([]byte(`[]`))
 	case strings.HasSuffix(path, "/reviews") || strings.Contains(path, "/reviews?"):
 		_, _ = w.Write([]byte(`[]`))
+	case strings.HasSuffix(path, "/comments") || strings.Contains(path, "/comments?"):
+		_, _ = w.Write([]byte(`[]`))
 	default:
 		http.Error(w, "unexpected path "+path, http.StatusNotFound)
 	}

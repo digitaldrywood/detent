@@ -694,6 +694,71 @@ func TestEvaluateAutoPromote(t *testing.T) {
 	}
 }
 
+func TestAutoPromoteUsesCurrentHeadSummaryOverStaleFormalReview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 23, 0, 0, 0, time.UTC)
+	reviewedAt := now.Add(-20 * time.Minute)
+	issue := autoPromoteTestIssue("issue-summary-review", nil)
+	issue.PullRequest = &connector.PullRequest{
+		Number:                       389,
+		URL:                          "https://github.com/gopherguides/gopher-ai/pull/389",
+		State:                        "OPEN",
+		MergeableState:               "clean",
+		HeadSHA:                      "79f9eb2d4ad5317af5ff46f29aba3b91f4b413a0",
+		CIStatus:                     "success",
+		CodexReviewState:             "COMMENTED",
+		CodexReviewSource:            connector.PullRequestReviewSourceSummaryComment,
+		CodexReviewSubmittedAt:       &reviewedAt,
+		LatestCodexReviewState:       "P1",
+		LatestCodexReviewCommitSHA:   "f236cc46fbb1a0e6821f16001e97ce07e0d483cd",
+		LatestCodexReviewSubmittedAt: new(reviewedAt.Add(-time.Minute)),
+	}
+
+	tests := []struct {
+		name       string
+		mutate     func(*connector.PullRequest)
+		wantAction AutoPromoteAction
+		wantReason AutoPromoteReason
+	}{
+		{
+			name:       "trusted clean summary promotes",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
+		},
+		{
+			name: "current head p1 reworks",
+			mutate: func(pullRequest *connector.PullRequest) {
+				pullRequest.CodexReviewState = "P1"
+				pullRequest.CodexReviewSource = connector.PullRequestReviewSourceFormal
+				pullRequest.CodexReviewFindings = []connector.PullRequestFinding{{Body: "[P1] Current-head defect."}}
+			},
+			wantAction: AutoPromoteActionRework,
+			wantReason: AutoPromoteReasonP1Findings,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			candidate := issue
+			pullRequest := *issue.PullRequest
+			candidate.PullRequest = &pullRequest
+			if tt.mutate != nil {
+				tt.mutate(candidate.PullRequest)
+			}
+			decision := EvaluateAutoPromote(candidate, AutoPromoteSummaryFromIssue(candidate), AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			}, now)
+			if decision.Action != tt.wantAction || decision.Reason != tt.wantReason {
+				t.Fatalf("decision = %s/%s, want %s/%s", decision.Action, decision.Reason, tt.wantAction, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
 	t.Parallel()
 

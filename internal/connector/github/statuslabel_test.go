@@ -576,6 +576,7 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 			path:   "/repos/digitaldrywood/digitaldrywood/pulls/434/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/digitaldrywood", 434),
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,
@@ -674,6 +675,7 @@ func TestConnectorFetchIssuesByStatesScopesPullRequestHydrationByIssueState(t *t
 			path:   "/repos/digitaldrywood/detent/pulls/120/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 120),
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,
@@ -1014,6 +1016,7 @@ func TestConnectorFetchCandidateIssuesSurfacesStatusLabelConflict(t *testing.T) 
 			path:   "/repos/digitaldrywood/detent/pulls/609/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 609),
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,

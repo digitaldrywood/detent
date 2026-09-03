@@ -450,6 +450,7 @@ func pullRequestDiagnosticAttrs(issue connector.Issue, now time.Time) []any {
 		"pr_unstarted_check_count", len(pr.UnstartedChecks),
 		"pr_slow_check_count", len(pr.SlowChecks),
 		"pr_codex_review_state", strings.TrimSpace(pr.CodexReviewState),
+		"pr_codex_review_source", strings.TrimSpace(pr.CodexReviewSource),
 		"pr_latest_codex_review_state", strings.TrimSpace(pr.LatestCodexReviewState),
 		"pr_hydration_unavailable_reason", strings.TrimSpace(pr.HydrationUnavailableReason),
 		"pr_hydration_degraded_reason", strings.TrimSpace(pr.HydrationDegradedReason),

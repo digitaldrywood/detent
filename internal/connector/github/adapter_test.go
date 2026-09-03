@@ -106,6 +106,191 @@ func TestPullRequestCodexReviewFindingsUseExplicitBodySeverity(t *testing.T) {
 	}
 }
 
+func TestLatestCodexReviewRequiresExactCurrentHead(t *testing.T) {
+	t.Parallel()
+
+	headSHA := strings.Repeat("a", 40)
+	tests := []struct {
+		name     string
+		commitID string
+		want     bool
+	}{
+		{name: "exact head", commitID: headSHA, want: true},
+		{name: "missing commit"},
+		{name: "abbreviated commit", commitID: headSHA[:10]},
+		{name: "stale commit", commitID: strings.Repeat("b", 40)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, got := latestCodexReview([]restReview{{
+				State:    "COMMENTED",
+				User:     &actor{Login: "chatgpt-codex-connector[bot]", Type: "Bot"},
+				CommitID: tt.commitID,
+			}}, headSHA)
+			if got != tt.want {
+				t.Fatalf("latestCodexReview() ok = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConnectorFetchPullRequestReviewsUsesTrustedCurrentHeadSummary(t *testing.T) {
+	t.Parallel()
+
+	const headSHA = "79f9eb2d4ad5317af5ff46f29aba3b91f4b413a0"
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/gopher-ai/pulls/389/reviews?per_page=100",
+			body:   `[{"body":"[P1] Prior-head finding.","html_url":"https://github.com/gopherguides/gopher-ai/pull/389#pullrequestreview-1","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"f236cc46fbb1a0e6821f16001e97ce07e0d483cd","submitted_at":"2026-09-02T22:18:56Z"}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/gopherguides/gopher-ai/issues/389/comments?per_page=100",
+			body:   `[{"node_id":"IC_summary","body":"<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-09-02T22:35:58.561318Z\">2026-09-02T22:35:58.561318Z</relative-time> | ` + "`79f9eb2`" + ` | Manual request |","html_url":"https://github.com/gopherguides/gopher-ai/pull/389#issuecomment-1","user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"created_at":"2026-09-02T16:27:27Z","updated_at":"2026-09-02T22:35:59Z"}]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{})
+	reviews, err := c.fetchPullRequestReviews(context.Background(), pullRequestRepo{Owner: "gopherguides", Name: "gopher-ai"}, 389, headSHA)
+	if err != nil {
+		t.Fatalf("fetchPullRequestReviews() error = %v", err)
+	}
+	if len(reviews.CurrentHead) != 1 {
+		t.Fatalf("CurrentHead = %#v, want trusted summary review", reviews.CurrentHead)
+	}
+	if got := pullRequestCodexReviewStateFromReviews(reviews.CurrentHead); got != "COMMENTED" {
+		t.Fatalf("current-head state = %q, want COMMENTED", got)
+	}
+	if got := reviews.CurrentHead[0].Source; got != connector.PullRequestReviewSourceSummaryComment {
+		t.Fatalf("current-head source = %q, want %q", got, connector.PullRequestReviewSourceSummaryComment)
+	}
+	if got := reviewBodySeverity(reviews.CurrentHead[0].Body); got != "" {
+		t.Fatalf("current-head severity = %q, want clean", got)
+	}
+	wantSubmittedAt := time.Date(2026, 9, 2, 22, 35, 58, 561318000, time.UTC)
+	if got := reviews.CurrentHead[0].SubmittedAt; got == nil || !got.Equal(wantSubmittedAt) {
+		t.Fatalf("current-head submitted at = %v, want %v", got, wantSubmittedAt)
+	}
+	if len(reviews.Latest) != 1 || reviews.Latest[0].CommitID != "f236cc46fbb1a0e6821f16001e97ce07e0d483cd" {
+		t.Fatalf("Latest = %#v, want prior-head formal review preserved", reviews.Latest)
+	}
+	if got := pullRequestCodexReviewStateFromReviews(reviews.Latest); got != "P1" {
+		t.Fatalf("latest formal state = %q, want stale P1 to remain observable", got)
+	}
+}
+
+func TestLatestCodexSummaryReviewFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	completedAt := time.Date(2026, 9, 2, 22, 35, 58, 561318000, time.UTC)
+	createdAt := completedAt.Add(-time.Hour)
+	updatedAt := completedAt.Add(time.Second)
+	headSHA := strings.Repeat("a", 40)
+	trustedAuthor := &actor{Login: "chatgpt-codex-connector[bot]", Type: "Bot"}
+	validComment := restComment{
+		ID:        1,
+		Body:      testCodexReviewSummaryBody("✅ **Completed** <relative-time datetime=\"2026-09-02T22:35:58.561318Z\">2026-09-02T22:35:58.561318Z</relative-time>", headSHA[:7]),
+		HTMLURL:   "https://github.test/pull/1#issuecomment-1",
+		User:      trustedAuthor,
+		CreatedAt: &createdAt,
+		UpdatedAt: &updatedAt,
+	}
+
+	tests := []struct {
+		name          string
+		comments      []restComment
+		formalReviews []restReview
+		want          bool
+	}{
+		{name: "trusted completed current head", comments: []restComment{validComment}, want: true},
+		{
+			name: "untrusted user",
+			comments: []restComment{func() restComment {
+				comment := validComment
+				comment.User = &actor{Login: "chatgpt-codex-connector[bot]", Type: "User"}
+				return comment
+			}()},
+		},
+		{
+			name: "untrusted bot",
+			comments: []restComment{func() restComment {
+				comment := validComment
+				comment.User = &actor{Login: "codex-helper[bot]", Type: "Bot"}
+				return comment
+			}()},
+		},
+		{
+			name: "stale head",
+			comments: []restComment{func() restComment {
+				comment := validComment
+				comment.Body = testCodexReviewSummaryBody("✅ **Completed** <relative-time datetime=\"2026-09-02T22:35:58.561318Z\">2026-09-02T22:35:58.561318Z</relative-time>", strings.Repeat("b", 7))
+				return comment
+			}()},
+		},
+		{
+			name: "incomplete review",
+			comments: []restComment{func() restComment {
+				comment := validComment
+				comment.Body = testCodexReviewSummaryBody("🔄 **In progress**", headSHA[:7])
+				return comment
+			}()},
+		},
+		{
+			name: "malformed table",
+			comments: []restComment{func() restComment {
+				comment := validComment
+				comment.Body = strings.Replace(comment.Body, codexReviewSummaryTableSeparator, "| --- | --- |", 1)
+				return comment
+			}()},
+		},
+		{
+			name: "short commit prefix",
+			comments: []restComment{func() restComment {
+				comment := validComment
+				comment.Body = testCodexReviewSummaryBody("✅ **Completed** <relative-time datetime=\"2026-09-02T22:35:58.561318Z\">2026-09-02T22:35:58.561318Z</relative-time>", headSHA[:6])
+				return comment
+			}()},
+		},
+		{
+			name:     "ambiguous commit prefix",
+			comments: []restComment{validComment},
+			formalReviews: []restReview{{
+				CommitID: headSHA[:7] + strings.Repeat("b", 33),
+			}},
+		},
+		{
+			name: "newer incomplete edit supersedes completed summary",
+			comments: []restComment{validComment, func() restComment {
+				comment := validComment
+				comment.ID = 2
+				comment.UpdatedAt = new(updatedAt.Add(time.Minute))
+				comment.Body = testCodexReviewSummaryBody("🔄 **In progress**", headSHA[:7])
+				return comment
+			}()},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, got := latestCodexSummaryReview(tt.comments, tt.formalReviews, headSHA)
+			if got != tt.want {
+				t.Fatalf("latestCodexSummaryReview() ok = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func testCodexReviewSummaryBody(status string, commit string) string {
+	return codexReviewSummaryMarker + "\n\n" + codexReviewSummaryHeading + "\n\n" +
+		codexReviewSummaryTableHeader + "\n" + codexReviewSummaryTableSeparator + "\n" +
+		"| 📝 **Code Review** | " + status + " | `" + commit + "` | Manual request |"
+}
+
 func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
@@ -1616,6 +1801,7 @@ func TestConnectorFetchIssuesByStatesPrefersMergedLinkedPullRequestOverClosedUnm
 			path:   "/repos/digitaldrywood/creswoodcorners-phone/pulls/191/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/creswoodcorners-phone", 191),
 	})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
@@ -1748,6 +1934,7 @@ func TestConnectorCachesPullRequestStatusByHeadSHA(t *testing.T) {
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/sha-187/statuses?per_page=100", body: `[]`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/187/reviews?per_page=100", body: `[]`},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 187),
 		{body: projectBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all", body: pullsBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/187", body: pullBody},
@@ -1769,7 +1956,7 @@ func TestConnectorCachesPullRequestStatusByHeadSHA(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 9 {
+	if len(requests) != 10 {
 		t.Fatalf("request count = %d, want second fetch to reuse PR status cache", len(requests))
 	}
 	for _, pattern := range []string{"/check-runs", "/statuses", "/reviews"} {
@@ -1868,7 +2055,7 @@ func TestConnectorAttachPullRequestsRotatesAfterRESTBudgetReservation(t *testing
 			_, _ = fmt.Fprintf(w, `{"number":%s,"html_url":"https://github.com/digitaldrywood/detent/pull/%s","state":"open","head":{"ref":"detent/issue-%s","sha":"sha-%s"}}`, number, number, number, number)
 		case strings.HasSuffix(path, "/check-runs"):
 			_, _ = w.Write([]byte(`{"check_runs":[]}`))
-		case strings.HasSuffix(path, "/statuses"), strings.HasSuffix(path, "/reviews"):
+		case strings.HasSuffix(path, "/statuses"), strings.HasSuffix(path, "/reviews"), strings.HasSuffix(path, "/comments"):
 			_, _ = w.Write([]byte(`[]`))
 		default:
 			t.Fatalf("unexpected REST path %s", r.URL.RequestURI())
@@ -1880,7 +2067,7 @@ func TestConnectorAttachPullRequestsRotatesAfterRESTBudgetReservation(t *testing
 		Endpoint:                   server.URL,
 		APIKey:                     "token",
 		HTTPClient:                 server.Client(),
-		RESTFanoutMaxRequests:      4,
+		RESTFanoutMaxRequests:      5,
 		DisableConditionalRequests: true,
 	})
 	if err != nil {
@@ -1949,7 +2136,7 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 			_, _ = fmt.Fprintf(w, `{"number":%s,"html_url":"https://github.com/digitaldrywood/detent/pull/%s","state":"open","head":{"ref":"detent/digitaldrywood_detent_%s","sha":"sha-%s"}}`, number, number, number, number)
 		case strings.HasSuffix(path, "/check-runs"):
 			_, _ = w.Write([]byte(`{"check_runs":[]}`))
-		case strings.HasSuffix(path, "/statuses"), strings.HasSuffix(path, "/reviews"):
+		case strings.HasSuffix(path, "/statuses"), strings.HasSuffix(path, "/reviews"), strings.HasSuffix(path, "/comments"):
 			_, _ = w.Write([]byte(`[]`))
 		default:
 			t.Fatalf("unexpected REST path %s", r.URL.RequestURI())
@@ -1961,7 +2148,7 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 		Endpoint:                   server.URL,
 		APIKey:                     "token",
 		HTTPClient:                 server.Client(),
-		RESTFanoutMaxRequests:      5,
+		RESTFanoutMaxRequests:      6,
 		DisableConditionalRequests: true,
 	})
 	if err != nil {
@@ -2105,6 +2292,7 @@ func TestConnectorFetchFreshIssuesByStatesRechecksPullRequestStatusForPromotion(
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100", body: `[]`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100", body: `[]`},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 411),
 		{body: projectBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411", body: pullBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"failure"}]}`},
@@ -2224,7 +2412,8 @@ func TestConnectorFreshPullRequestStatusReconcilesDeletedChecks(t *testing.T) {
 					w.Header().Set("ETag", `"checks-page-2-v2"`)
 					_, _ = w.Write([]byte(`{"check_runs":[]}`))
 				case "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100",
-					"/repos/digitaldrywood/detent/pulls/2028/reviews?per_page=100":
+					"/repos/digitaldrywood/detent/pulls/2028/reviews?per_page=100",
+					"/repos/digitaldrywood/detent/issues/2028/comments?per_page=100":
 					_, _ = w.Write([]byte(`[]`))
 				default:
 					w.WriteHeader(http.StatusNotFound)
@@ -2297,6 +2486,7 @@ func TestConnectorFetchFreshIssuesByStatesUsesCachedPullRequestStatusAfterRateLi
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100", body: `[]`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100", body: `[]`},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 411),
 		{body: projectBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411", body: pullBody},
 		{
@@ -2379,6 +2569,7 @@ func TestConnectorFetchIssuesByStatesCircuitBreaksPullRequestHydrationAfterSecon
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100", body: `[]`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100", body: `[]`},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 411),
 	})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -2536,7 +2727,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls/190/reviews?per_page=100",
-			body:   `[{"body":"[P1] Unsafe migration.","html_url":"https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2","state":"COMMENTED","user":{"login":"codex"},"commit_id":"sha-190","submitted_at":"2026-06-05T11:00:00Z"}]`,
+			body:   `[{"body":"[P1] Unsafe migration.","html_url":"https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"sha-190","submitted_at":"2026-06-05T11:00:00Z"}]`,
 		},
 	})
 
@@ -2558,6 +2749,9 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	pr := got[0].PullRequest
 	if pr == nil || pr.Number != 190 || pr.CIStatus != "pending" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest = %#v, want PR 190 with pending CI and P1 review", pr)
+	}
+	if pr.CodexReviewSource != connector.PullRequestReviewSourceFormal {
+		t.Fatalf("CodexReviewSource = %q, want formal review", pr.CodexReviewSource)
 	}
 	if pr.MergeableState != "dirty" {
 		t.Fatalf("MergeableState = %q, want dirty from hydrated PR", pr.MergeableState)
@@ -3163,6 +3357,77 @@ func TestConnectorPullRequestStatusCacheDebugLog(t *testing.T) {
 	}
 }
 
+func TestConnectorPullRequestStatusCacheRefreshesEditedCodexSummary(t *testing.T) {
+	t.Parallel()
+
+	const headSHA = "79f9eb2d4ad5317af5ff46f29aba3b91f4b413a0"
+	completedBody := testCodexReviewSummaryBody(
+		"✅ **Completed** <relative-time datetime=\"2026-09-02T22:35:58.561318Z\">2026-09-02T22:35:58.561318Z</relative-time>",
+		headSHA[:7],
+	)
+	incompleteBody := testCodexReviewSummaryBody("🔄 **In progress**", headSHA[:7])
+	commentResponse := func(body string, updatedAt string) string {
+		return fmt.Sprintf(`[{"id":1,"body":%q,"html_url":"https://github.test/pull/389#issuecomment-1","user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"created_at":"2026-09-02T16:27:27Z","updated_at":%q}]`, body, updatedAt)
+	}
+	statusResponses := func(commentBody string, commentETag string) []graphqlTestResponse {
+		return []graphqlTestResponse{
+			{method: http.MethodGet, path: "/repos/gopherguides/gopher-ai/commits/" + headSHA + "/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
+			{method: http.MethodGet, path: "/repos/gopherguides/gopher-ai/commits/" + headSHA + "/statuses?per_page=100", body: `[]`},
+			{method: http.MethodGet, path: "/repos/gopherguides/gopher-ai/pulls/389/reviews?per_page=100", body: `[]`},
+			{method: http.MethodGet, path: "/repos/gopherguides/gopher-ai/issues/389/comments?per_page=100", headers: map[string]string{"ETag": commentETag}, body: commentBody},
+		}
+	}
+	responses := statusResponses(commentResponse(completedBody, "2026-09-02T22:35:59Z"), `"summary-v1"`)
+	responses = append(responses, statusResponses(commentResponse(incompleteBody, "2026-09-02T22:40:00Z"), `"summary-v2"`)...)
+	server := newGraphQLTestServer(t, responses)
+
+	now := time.Date(2026, 9, 2, 22, 36, 0, 0, time.UTC)
+	c := newGitHubTestConnector(t, server, Config{Now: func() time.Time { return now }})
+	repo := pullRequestRepo{Owner: "gopherguides", Name: "gopher-ai"}
+
+	first := pullRequestNode{Number: 389, HeadSHA: headSHA}
+	if err := c.populatePullRequestStatus(context.Background(), repo, &first, true); err != nil {
+		t.Fatalf("first populatePullRequestStatus() error = %v", err)
+	}
+	if got := pullRequestCodexReviewSource(first); got != connector.PullRequestReviewSourceSummaryComment {
+		t.Fatalf("first review source = %q, want summary comment", got)
+	}
+
+	cached := pullRequestNode{Number: 389, HeadSHA: headSHA}
+	if err := c.populatePullRequestStatus(context.Background(), repo, &cached, true); err != nil {
+		t.Fatalf("cached populatePullRequestStatus() error = %v", err)
+	}
+	if got := pullRequestCodexReviewState(cached); got != "COMMENTED" {
+		t.Fatalf("cached review state = %q, want COMMENTED", got)
+	}
+
+	now = now.Add(githubCacheTTL + time.Second)
+	refreshed := pullRequestNode{Number: 389, HeadSHA: headSHA}
+	if err := c.populatePullRequestStatus(context.Background(), repo, &refreshed, true); err != nil {
+		t.Fatalf("refreshed populatePullRequestStatus() error = %v", err)
+	}
+	if got := pullRequestCodexReviewState(refreshed); got != "" {
+		t.Fatalf("refreshed review state = %q, want incomplete edit to invalidate evidence", got)
+	}
+
+	commentRequests := 0
+	secondCommentETag := ""
+	for _, request := range server.requests() {
+		if request["path"] == "/repos/gopherguides/gopher-ai/issues/389/comments?per_page=100" {
+			commentRequests++
+			if commentRequests == 2 {
+				secondCommentETag, _ = request["if_none_match"].(string)
+			}
+		}
+	}
+	if commentRequests != 2 {
+		t.Fatalf("comment requests = %d, want one initial request and one post-expiry refresh", commentRequests)
+	}
+	if secondCommentETag != `"summary-v1"` {
+		t.Fatalf("second comment If-None-Match = %q, want cached summary ETag", secondCommentETag)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesSurfacesStaleCodexReview(t *testing.T) {
 	t.Parallel()
 
@@ -3190,6 +3455,7 @@ func TestConnectorFetchIssuesByStatesSurfacesStaleCodexReview(t *testing.T) {
 			path:   "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100",
 			body:   `[{"body":"No blocking findings on an older head.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"head-previous","submitted_at":"2026-06-12T11:40:00Z"}]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 411),
 	})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
@@ -3254,6 +3520,7 @@ func TestConnectorFetchIssuesByStatesLimitExhaustsProjectItemsBeforeSampling(t *
 			path:   "/repos/digitaldrywood/detent/pulls/371/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 371),
 	})
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
@@ -3273,7 +3540,7 @@ func TestConnectorFetchIssuesByStatesLimitExhaustsProjectItemsBeforeSampling(t *
 	}
 
 	requests := server.requests()
-	if len(requests) != 6 {
+	if len(requests) != 7 {
 		t.Fatalf("request count = %d, want two project pages and linked PR status requests", len(requests))
 	}
 	if requests[0]["variables"].(map[string]any)["after"] != nil {
@@ -3890,6 +4157,7 @@ func TestConnectorFetchIssuesByStatesAttachesBlockedPullRequest(t *testing.T) {
 			path:   "/repos/digitaldrywood/detent/pulls/426/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("digitaldrywood/detent", 426),
 	})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
@@ -4794,6 +5062,7 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 42),
 	})
 	c := newGitHubTestConnector(t, server, Config{})
 	prNumber := 42
@@ -5048,6 +5317,7 @@ func TestConnectorHydratePullRequestNormalizesStaleSuccessfulWorkflowCheckRun(t 
 			path:   "/repos/example/repo/pulls/970/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 970),
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
@@ -5118,6 +5388,7 @@ func TestConnectorHydratePullRequestUsesEffectiveCheckRunsForWorkflowTelemetry(t
 			path:   "/repos/example/repo/pulls/971/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 971),
 	})
 	c := newGitHubTestConnector(t, server, Config{})
 	prNumber := 971
@@ -5171,6 +5442,7 @@ func TestConnectorHydratePullRequestIgnoresOptionalSkippedCheckRun(t *testing.T)
 			path:   "/repos/example/pyroapex/pulls/1648/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/pyroapex", 1648),
 	})
 	c := newGitHubTestConnector(t, server, Config{})
 	prNumber := 1648
@@ -5223,6 +5495,7 @@ func TestConnectorHydratePullRequestTreatsSkippedRequiredStatusCheckAsPending(t 
 			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 42),
 	})
 	c := newGitHubTestConnector(t, server, Config{RequiredStatusChecks: []string{"Lint", "Windows Core"}})
 	prNumber := 42
@@ -5278,6 +5551,7 @@ func TestConnectorHydratePullRequestWaitsForRunningRequiredCheckDespiteCancelled
 			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 42),
 	})
 	c := newGitHubTestConnector(t, server, Config{RequiredStatusChecks: []string{"Changed-file coverage", "Checks"}})
 	prNumber := 42
@@ -5331,6 +5605,7 @@ func TestConnectorHydratePullRequestBlocksMissingRequiredStatusCheck(t *testing.
 			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 42),
 	})
 	c := newGitHubTestConnector(t, server, Config{RequiredStatusChecks: []string{"Lint", "Windows Core"}})
 	prNumber := 42
@@ -5397,6 +5672,7 @@ func TestConnectorHydratePullRequestDetectsTransientKilledCheck(t *testing.T) {
 			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 42),
 	})
 	c := newGitHubTestConnector(t, server, Config{})
 	prNumber := 42
@@ -5456,6 +5732,7 @@ func TestConnectorHydratePullRequestIncludesWorkflowAndAnnotationsInRESTFanoutCa
 			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
 			body:   `[]`,
 		},
+		emptyPullRequestCommentsResponse("example/repo", 42),
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		RESTFanoutMaxRequests:      4,
@@ -5488,6 +5765,14 @@ func TestConnectorHydratePullRequestIncludesWorkflowAndAnnotationsInRESTFanoutCa
 	}
 	if got := restEndpointUsageCount(usage.Requests, "check run annotations"); got != 1 {
 		t.Fatalf("check run annotations usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+}
+
+func emptyPullRequestCommentsResponse(repository string, number int) graphqlTestResponse {
+	return graphqlTestResponse{
+		method: http.MethodGet,
+		path:   fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", repository, number),
+		body:   `[]`,
 	}
 }
 
@@ -6319,6 +6604,9 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"method": r.Method,
 		"path":   r.URL.RequestURI(),
+	}
+	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
+		payload["if_none_match"] = ifNoneMatch
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/" {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

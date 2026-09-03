@@ -2453,6 +2453,7 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				HeadSHA:                      "head-ready",
 				CIStatus:                     "success",
 				CodexReviewState:             "COMMENTED",
+				CodexReviewSource:            connector.PullRequestReviewSourceSummaryComment,
 				CodexReviewSubmittedAt:       &oldReview,
 				LatestCodexReviewState:       "COMMENTED",
 				LatestCodexReviewCommitSHA:   "head-ready",
@@ -2464,6 +2465,7 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				PRNumber:                     398,
 				PRURL:                        "https://github.test/pull/398",
 				PRHeadSHA:                    "head-ready",
+				CodexReviewSource:            connector.PullRequestReviewSourceSummaryComment,
 				LatestCodexReviewState:       "COMMENTED",
 				LatestCodexReviewCommitSHA:   "head-ready",
 				LatestCodexReviewSubmittedAt: &oldReview,
@@ -2544,6 +2546,9 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 			}
 			if tt.want.WorkpadBlocker != "" && !strings.Contains(got.Detail, tt.want.WorkpadBlocker) {
 				t.Fatalf("Detail = %q, want containing WorkpadBlocker %q", got.Detail, tt.want.WorkpadBlocker)
+			}
+			if tt.want.CodexReviewSource != "" && !strings.Contains(got.Detail, "review_source="+tt.want.CodexReviewSource) {
+				t.Fatalf("Detail = %q, want review source %q", got.Detail, tt.want.CodexReviewSource)
 			}
 		})
 	}
