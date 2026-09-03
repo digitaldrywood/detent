@@ -1143,6 +1143,7 @@ type PullRequest struct {
 	UnstartedChecks            []PullRequestCheck          `json:"unstarted_checks,omitempty"`
 	RequiredCheckFailures      []PullRequestCheck          `json:"required_check_failures,omitempty"`
 	CodexReviewState           string                      `json:"codex_review_state,omitempty"`
+	CodexReviewSource          string                      `json:"codex_review_source,omitempty"`
 	MergeQueueEntry            *PullRequestMergeQueueEntry `json:"merge_queue_entry,omitempty"`
 }
 

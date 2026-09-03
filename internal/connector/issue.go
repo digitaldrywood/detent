@@ -135,6 +135,7 @@ type PullRequest struct {
 	RequiredCheckFailures        []PullRequestCheck          `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
 	TransientFailedChecks        []PullRequestCheck          `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
 	CodexReviewState             string                      `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
+	CodexReviewSource            string                      `json:"codex_review_source,omitempty" yaml:"codex_review_source,omitempty"`
 	CodexReviewAPIState          string                      `json:"codex_review_api_state,omitempty" yaml:"codex_review_api_state,omitempty"`
 	CodexReviewBodySeverity      string                      `json:"codex_review_body_severity,omitempty" yaml:"codex_review_body_severity,omitempty"`
 	CodexReviewSubmittedAt       *time.Time                  `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
@@ -144,6 +145,11 @@ type PullRequest struct {
 	LatestCodexReviewSubmittedAt *time.Time                  `json:"latest_codex_review_submitted_at,omitempty" yaml:"latest_codex_review_submitted_at,omitempty"`
 	MergeQueueEntry              *PullRequestMergeQueueEntry `json:"merge_queue_entry,omitempty" yaml:"merge_queue_entry,omitempty"`
 }
+
+const (
+	PullRequestReviewSourceFormal         = "pull_request_review"
+	PullRequestReviewSourceSummaryComment = "summary_comment"
+)
 
 const (
 	PullRequestHydrationReasonRateLimited         = "rate_limited"

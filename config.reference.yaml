@@ -354,6 +354,8 @@
 #             duration_seconds: 0
 #         # tracker.issues[].pull_request.codex_review_state | type: string | default: none | required: No | validation: None
 #         codex_review_state: null
+#         # tracker.issues[].pull_request.codex_review_source | type: string | default: none | required: No | validation: None
+#         codex_review_source: null
 #         # tracker.issues[].pull_request.codex_review_api_state | type: string | default: none | required: No | validation: None
 #         codex_review_api_state: null
 #         # tracker.issues[].pull_request.codex_review_body_severity | type: string | default: none | required: No | validation: None

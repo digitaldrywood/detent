@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -46,7 +47,17 @@ type pullRequestRepo struct {
 
 const (
 	linkedPullRequestHydrationConcurrency     = 8
-	linkedPullRequestHydrationRequestEstimate = 5
+	linkedPullRequestHydrationRequestEstimate = 6
+	codexReviewSummaryMarker                  = "<!-- codex-pull-request-review-summary -->"
+	codexReviewSummaryHeading                 = "## Codex Review Summary"
+	codexReviewSummaryTableHeader             = "| Review | Status | Commit | Review trigger |"
+	codexReviewSummaryTableSeparator          = "| --- | --- | --- | --- |"
+	minimumCodexReviewCommitPrefixLength      = 7
+)
+
+var (
+	codexReviewSummaryStatusPattern = regexp.MustCompile(`^✅\s+\*\*Completed\*\*\s+<relative-time datetime="([^"]+)">([^<]+)</relative-time>$`)
+	codexReviewSummaryCommitPattern = regexp.MustCompile("^`([0-9a-fA-F]{7,40})`$")
 )
 
 type linkedPullRequestHydration struct {
@@ -905,6 +916,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		RequiredCheckFailures:        append([]connector.PullRequestCheck(nil), pullRequest.CI.RequiredFailures...),
 		TransientFailedChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.TransientFailures...),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
+		CodexReviewSource:            pullRequestCodexReviewSource(pullRequest),
 		CodexReviewAPIState:          pullRequestCodexReviewAPIState(pullRequest),
 		CodexReviewBodySeverity:      pullRequestCodexReviewBodySeverity(pullRequest),
 		CodexReviewSubmittedAt:       pullRequestCodexReviewSubmittedAt(pullRequest),
@@ -1220,6 +1232,23 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 	if review, ok := latestCodexReview(response, ""); ok {
 		reviews.Latest = []pullRequestReview{review}
 	}
+	if len(reviews.CurrentHead) > 0 {
+		return reviews, nil
+	}
+	comments, err := fetchRESTList[restComment](ctx, c.client, restIssueCommentsListPath(issueRef{
+		Owner:  repo.Owner,
+		Name:   repo.Name,
+		Number: number,
+	}))
+	if err != nil {
+		return pullRequestCodexReviews{}, fmt.Errorf("fetch github pull request review summary comments: %w", err)
+	}
+	if review, ok := latestCodexSummaryReview(comments, response, headSHA); ok {
+		reviews.CurrentHead = []pullRequestReview{review}
+		if len(reviews.Latest) == 0 {
+			reviews.Latest = []pullRequestReview{review}
+		}
+	}
 	return reviews, nil
 }
 
@@ -1330,13 +1359,14 @@ func latestCodexReview(reviews []restReview, headSHA string) (pullRequestReview,
 		if !codexReviewAuthor(review.User) || strings.EqualFold(strings.TrimSpace(review.State), "DISMISSED") {
 			continue
 		}
-		if headSHA != "" && strings.TrimSpace(review.CommitID) != "" && review.CommitID != headSHA {
+		if headSHA != "" && !strings.EqualFold(strings.TrimSpace(review.CommitID), headSHA) {
 			continue
 		}
 		candidate := pullRequestReview{
 			Body:        review.Body,
 			URL:         review.HTMLURL,
 			State:       review.State,
+			Source:      connector.PullRequestReviewSourceFormal,
 			Author:      review.User,
 			CommitID:    review.CommitID,
 			SubmittedAt: review.SubmittedAt,
@@ -1347,6 +1377,188 @@ func latestCodexReview(reviews []restReview, headSHA string) (pullRequestReview,
 		}
 	}
 	return latest, found
+}
+
+type codexReviewSummary struct {
+	commitPrefix string
+	completedAt  time.Time
+}
+
+func latestCodexSummaryReview(comments []restComment, formalReviews []restReview, headSHA string) (pullRequestReview, bool) {
+	comment, ok := latestTrustedCodexSummaryComment(comments)
+	if !ok {
+		return pullRequestReview{}, false
+	}
+	summary, ok := parseCodexReviewSummary(comment.Body)
+	if !ok || !codexReviewSummaryMatchesHead(summary.commitPrefix, headSHA, formalReviews) {
+		return pullRequestReview{}, false
+	}
+	if comment.CreatedAt != nil && summary.completedAt.Before(*comment.CreatedAt) {
+		return pullRequestReview{}, false
+	}
+	if comment.UpdatedAt == nil || summary.completedAt.After(comment.UpdatedAt.Add(time.Second)) {
+		return pullRequestReview{}, false
+	}
+	completedAt := summary.completedAt
+	return pullRequestReview{
+		Body:        comment.Body,
+		URL:         comment.HTMLURL,
+		State:       "COMMENTED",
+		Source:      connector.PullRequestReviewSourceSummaryComment,
+		Author:      comment.User,
+		CommitID:    strings.ToLower(strings.TrimSpace(headSHA)),
+		SubmittedAt: &completedAt,
+	}, true
+}
+
+func latestTrustedCodexSummaryComment(comments []restComment) (restComment, bool) {
+	var latest restComment
+	found := false
+	for _, comment := range comments {
+		if !trustedCodexSummaryAuthor(comment.User) || !strings.Contains(comment.Body, codexReviewSummaryMarker) {
+			continue
+		}
+		if !found || restCommentAfter(comment, latest) {
+			latest = comment
+			found = true
+		}
+	}
+	return latest, found
+}
+
+func trustedCodexSummaryAuthor(author *actor) bool {
+	if author == nil || !strings.EqualFold(strings.TrimSpace(actorType(author)), "Bot") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(author.Login)) {
+	case "chatgpt-codex-connector", "chatgpt-codex-connector[bot]":
+		return true
+	default:
+		return false
+	}
+}
+
+func restCommentAfter(left restComment, right restComment) bool {
+	leftAt := firstNonNilTime(left.UpdatedAt, left.CreatedAt)
+	rightAt := firstNonNilTime(right.UpdatedAt, right.CreatedAt)
+	if leftAt == nil {
+		return rightAt == nil && left.ID > right.ID
+	}
+	if rightAt == nil {
+		return true
+	}
+	if leftAt.Equal(*rightAt) {
+		return left.ID > right.ID
+	}
+	return leftAt.After(*rightAt)
+}
+
+func firstNonNilTime(values ...*time.Time) *time.Time {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func parseCodexReviewSummary(body string) (codexReviewSummary, bool) {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != codexReviewSummaryMarker || strings.Count(body, codexReviewSummaryMarker) != 1 {
+		return codexReviewSummary{}, false
+	}
+	headingIndex := -1
+	headerIndex := -1
+	for index, line := range lines {
+		switch strings.TrimSpace(line) {
+		case codexReviewSummaryHeading:
+			if headingIndex >= 0 {
+				return codexReviewSummary{}, false
+			}
+			headingIndex = index
+		case codexReviewSummaryTableHeader:
+			if headerIndex >= 0 {
+				return codexReviewSummary{}, false
+			}
+			headerIndex = index
+		}
+	}
+	if headingIndex <= 0 || headerIndex <= headingIndex || headerIndex+2 >= len(lines) || strings.TrimSpace(lines[headerIndex+1]) != codexReviewSummaryTableSeparator {
+		return codexReviewSummary{}, false
+	}
+
+	var summary codexReviewSummary
+	found := false
+	for _, line := range lines[headerIndex+2:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if found {
+				break
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+			break
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cells) != 4 {
+			return codexReviewSummary{}, false
+		}
+		if strings.TrimSpace(cells[0]) != "📝 **Code Review**" {
+			continue
+		}
+		if found {
+			return codexReviewSummary{}, false
+		}
+		statusMatches := codexReviewSummaryStatusPattern.FindStringSubmatch(strings.TrimSpace(cells[1]))
+		commitMatches := codexReviewSummaryCommitPattern.FindStringSubmatch(strings.TrimSpace(cells[2]))
+		if len(statusMatches) != 3 || len(commitMatches) != 2 {
+			return codexReviewSummary{}, false
+		}
+		completedAt, err := time.Parse(time.RFC3339Nano, statusMatches[1])
+		if err != nil {
+			return codexReviewSummary{}, false
+		}
+		displayedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(statusMatches[2]))
+		if err != nil || !displayedAt.Equal(completedAt) {
+			return codexReviewSummary{}, false
+		}
+		summary = codexReviewSummary{
+			commitPrefix: strings.ToLower(commitMatches[1]),
+			completedAt:  completedAt,
+		}
+		found = true
+	}
+	return summary, found
+}
+
+func codexReviewSummaryMatchesHead(prefix string, headSHA string, formalReviews []restReview) bool {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	headSHA = strings.ToLower(strings.TrimSpace(headSHA))
+	if len(prefix) < minimumCodexReviewCommitPrefixLength || !validFullGitSHA(headSHA) || !strings.HasPrefix(headSHA, prefix) {
+		return false
+	}
+	matches := map[string]struct{}{headSHA: {}}
+	for _, review := range formalReviews {
+		commitID := strings.ToLower(strings.TrimSpace(review.CommitID))
+		if validFullGitSHA(commitID) && strings.HasPrefix(commitID, prefix) {
+			matches[commitID] = struct{}{}
+		}
+	}
+	return len(matches) == 1
+}
+
+func validFullGitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return false
+		}
+	}
+	return true
 }
 
 func codexReviewAuthor(author *actor) bool {
@@ -1368,6 +1580,15 @@ func pullRequestReviewAfter(left pullRequestReview, right pullRequestReview) boo
 
 func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
 	return pullRequestCodexReviewStateFromReviews(pullRequest.LatestReviews.Nodes)
+}
+
+func pullRequestCodexReviewSource(pullRequest pullRequestNode) string {
+	for _, review := range pullRequest.LatestReviews.Nodes {
+		if source := strings.TrimSpace(review.Source); source != "" {
+			return source
+		}
+	}
+	return ""
 }
 
 func pullRequestLatestCodexReviewState(pullRequest pullRequestNode) string {

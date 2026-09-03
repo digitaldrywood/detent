@@ -1264,6 +1264,7 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		UnstartedChecks:            telemetryPullRequestChecks(pullRequest.UnstartedChecks),
 		RequiredCheckFailures:      telemetryPullRequestChecks(pullRequest.RequiredCheckFailures),
 		CodexReviewState:           pullRequest.CodexReviewState,
+		CodexReviewSource:          pullRequest.CodexReviewSource,
 	}
 	if pullRequest.MergeQueueEntry != nil {
 		out.MergeQueueEntry = &telemetry.PullRequestMergeQueueEntry{

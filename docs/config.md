@@ -1019,6 +1019,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].pull_request.codex_review_findings[].line` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.codex_review_findings[].path` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.codex_review_findings[].url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_source` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.codex_review_state` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.codex_review_submitted_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].pull_request.diff_fingerprint` | `string` | `none` | No | None |

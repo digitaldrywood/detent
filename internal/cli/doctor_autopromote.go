@@ -30,6 +30,7 @@ type doctorAutoPromoteCandidateDiagnostic struct {
 	PRURL                        string     `json:"pr_url,omitempty"`
 	PRHeadSHA                    string     `json:"pr_head_sha,omitempty"`
 	PRMergeableState             string     `json:"pr_mergeable_state,omitempty"`
+	CodexReviewSource            string     `json:"codex_review_source,omitempty"`
 	LatestCodexReviewState       string     `json:"latest_codex_review_state,omitempty"`
 	LatestCodexReviewCommitSHA   string     `json:"latest_codex_review_commit_sha,omitempty"`
 	LatestCodexReviewSubmittedAt *time.Time `json:"latest_codex_review_submitted_at,omitempty"`
@@ -615,6 +616,7 @@ func doctorAutoPromoteCandidateDiagnosticFromIssue(
 	diagnostic.PRURL = strings.TrimSpace(pullRequest.URL)
 	diagnostic.PRHeadSHA = strings.TrimSpace(pullRequest.HeadSHA)
 	diagnostic.PRMergeableState = strings.TrimSpace(pullRequest.MergeableState)
+	diagnostic.CodexReviewSource = strings.TrimSpace(pullRequest.CodexReviewSource)
 	diagnostic.LatestCodexReviewState = doctorLatestCodexReviewState(pullRequest)
 	diagnostic.LatestCodexReviewCommitSHA = strings.TrimSpace(pullRequest.LatestCodexReviewCommitSHA)
 	diagnostic.LatestCodexReviewSubmittedAt = doctorLatestCodexReviewSubmittedAt(pullRequest)
@@ -700,6 +702,9 @@ func doctorAutoPromoteCandidateSummary(candidate doctorAutoPromoteCandidateDiagn
 	}
 	if candidate.LatestCodexReviewSubmittedAt != nil {
 		parts = append(parts, "submitted="+candidate.LatestCodexReviewSubmittedAt.UTC().Format(time.RFC3339))
+	}
+	if candidate.CodexReviewSource != "" {
+		parts = append(parts, "review_source="+candidate.CodexReviewSource)
 	}
 	if candidate.QuietRemainingSeconds > 0 {
 		parts = append(parts, "quiet_remaining="+(time.Duration(candidate.QuietRemainingSeconds)*time.Second).String())

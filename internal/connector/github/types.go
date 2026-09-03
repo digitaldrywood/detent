@@ -186,6 +186,7 @@ type pullRequestReview struct {
 	Body        string     `json:"body"`
 	URL         string     `json:"url"`
 	State       string     `json:"state"`
+	Source      string     `json:"-"`
 	Author      *actor     `json:"author"`
 	CommitID    string     `json:"commitId"`
 	SubmittedAt *time.Time `json:"submittedAt"`
