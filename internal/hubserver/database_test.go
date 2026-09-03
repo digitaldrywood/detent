@@ -16,7 +16,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
 )
@@ -50,8 +53,10 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 	}
 
 	wantTables := []string{
+		"github_hydration_requests",
 		"github_outbox",
 		"github_webhook_inbox",
+		"github_webhook_payloads",
 		"hub_schema_version",
 		"issue_dependencies",
 		"issues",
@@ -78,6 +83,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		{name: "foreign keys", query: "PRAGMA foreign_keys", want: "1"},
 		{name: "busy timeout", query: "PRAGMA busy_timeout", want: "2500"},
 		{name: "locking mode", query: "PRAGMA locking_mode", want: "exclusive"},
+		{name: "synchronous mode", query: "PRAGMA synchronous", want: "2"},
 		{name: "application id", query: "PRAGMA application_id", want: strconv.Itoa(hubApplicationID)},
 	}
 	for _, check := range checks {
@@ -278,6 +284,82 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "hub.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
+		t.Fatalf("set application id: %v", err)
+	}
+	legacyMigrations := fstest.MapFS{}
+	for _, name := range []string{
+		"00001_create_github_projection.sql",
+		"00002_create_execution_state.sql",
+		"00003_create_github_delivery.sql",
+	} {
+		data, err := migrationFiles.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		legacyMigrations[name] = &fstest.MapFile{Data: data}
+	}
+	provider, err := goose.NewProvider(
+		goose.DialectSQLite3,
+		db,
+		legacyMigrations,
+		goose.WithDisableGlobalRegistry(true),
+		goose.WithTableName(hubSchemaTable),
+		goose.WithSlog(discardLogger()),
+	)
+	if err != nil {
+		t.Fatalf("create legacy migration provider: %v", err)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatalf("apply legacy migrations: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), `
+		INSERT INTO github_webhook_inbox (
+			delivery_id, event_type, action, headers_json, payload_json,
+			payload_sha256, payload_bytes, status, received_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "legacy-delivery", "push", "created", `{"user_agent":"GitHub-Hookshot"}`, `{"ref":"refs/heads/main"}`,
+		"legacy-sha", 25, "pending", testTimestamp, testTimestamp, testTimestamp); err != nil {
+		t.Fatalf("insert legacy webhook: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	service := openTestService(t, Config{
+		DatabasePath: path,
+		now: func() time.Time {
+			return time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	var eventType string
+	var action string
+	var headers string
+	var body string
+	var payloadSHA string
+	var lastReceivedAt string
+	if err := service.database.db.QueryRowContext(t.Context(), `
+		SELECT i.event_type, i.action, i.headers_json, CAST(p.body AS TEXT), i.payload_sha256, i.last_received_at
+		FROM github_webhook_inbox i
+		JOIN github_webhook_payloads p ON p.inbox_id = i.id
+		WHERE i.delivery_id = 'legacy-delivery'
+	`).Scan(&eventType, &action, &headers, &body, &payloadSHA, &lastReceivedAt); err != nil {
+		t.Fatalf("read migrated webhook: %v", err)
+	}
+	if eventType != "push" || action != "created" || headers != `{"user_agent":"GitHub-Hookshot"}` ||
+		body != `{"ref":"refs/heads/main"}` || payloadSHA != "legacy-sha" || lastReceivedAt != testTimestamp {
+		t.Fatalf("migrated webhook = event %q action %q headers %s body %s sha %q received %q", eventType, action, headers, body, payloadSHA, lastReceivedAt)
+	}
+}
+
 func TestSchemaEnforcesIdentityAndAppendOnlyConstraints(t *testing.T) {
 	t.Parallel()
 
@@ -312,8 +394,8 @@ func TestSchemaEnforcesIdentityAndAppendOnlyConstraints(t *testing.T) {
 		},
 		{
 			name:  "webhook delivery id",
-			query: "INSERT INTO github_webhook_inbox (delivery_id, event_type, payload_json, payload_sha256, payload_bytes, status, received_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			args:  []any{"delivery-one", "issues", "{}", "def", 2, "pending", testTimestamp, testTimestamp, testTimestamp},
+			query: "INSERT INTO github_webhook_inbox (delivery_id, event_type, payload_sha256, payload_bytes, status, received_at, last_received_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			args:  []any{"delivery-one", "issues", "def", 2, "pending", testTimestamp, testTimestamp, testTimestamp, testTimestamp},
 		},
 	}
 	for _, test := range duplicateTests {
@@ -322,6 +404,16 @@ func TestSchemaEnforcesIdentityAndAppendOnlyConstraints(t *testing.T) {
 				t.Fatal("duplicate insert error = nil, want unique constraint error")
 			}
 		})
+	}
+	if _, err := db.ExecContext(t.Context(), `
+		INSERT INTO github_hydration_requests (
+			repository_id, repository_full_name, object_kind, object_key,
+			github_number, reason, requested_source_version,
+			first_delivery_id, last_delivery_id, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, repositoryID, "digitaldrywood/detent", "repository", "detent", 1, "invalid", "v1",
+		"delivery-one", "delivery-one", "pending", testTimestamp, testTimestamp); err == nil {
+		t.Fatal("invalid hydration object kind error = nil, want constraint error")
 	}
 
 	if _, err := db.ExecContext(t.Context(), "INSERT INTO issues (repository_id, github_node_id, github_number, title, url, github_state, source_version, source_updated_at, synchronized_at, created_at, updated_at) VALUES (9999, 'I_missing', 9, 'Missing', 'https://example.test/9', 'open', 'v1', ?, ?, ?, ?)", testTimestamp, testTimestamp, testTimestamp, testTimestamp); err == nil {
@@ -582,7 +674,7 @@ func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {
 	if _, err := db.ExecContext(t.Context(), "INSERT INTO pull_requests (repository_id, issue_id, github_node_id, github_number, title, url, github_state, head_ref, head_sha, base_ref, source_version, source_updated_at, synchronized_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", repositoryID, issueID, "PR_one", 1, "PR", "https://example.test/pr/1", "open", "feature", "abc", "main", "v1", testTimestamp, testTimestamp, testTimestamp, testTimestamp); err != nil {
 		t.Fatalf("insert pull request: %v", err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO github_webhook_inbox (delivery_id, repository_id, event_type, payload_json, payload_sha256, payload_bytes, status, received_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", "delivery-one", repositoryID, "issues", "{}", "abc", 2, "pending", testTimestamp, testTimestamp, testTimestamp); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO github_webhook_inbox (delivery_id, repository_id, event_type, payload_sha256, payload_bytes, status, received_at, last_received_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", "delivery-one", repositoryID, "issues", "abc", 2, "pending", testTimestamp, testTimestamp, testTimestamp, testTimestamp); err != nil {
 		t.Fatalf("insert webhook delivery: %v", err)
 	}
 	return repositoryID, issueID

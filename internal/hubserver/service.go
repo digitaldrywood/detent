@@ -21,13 +21,16 @@ const (
 )
 
 type Service struct {
-	echo      *echo.Echo
-	database  *database
-	tracker   tracker.Tracker
-	config    Config
-	ready     atomic.Bool
-	closeOnce sync.Once
-	closeErr  error
+	echo           *echo.Echo
+	database       *database
+	tracker        tracker.Tracker
+	config         Config
+	ready          atomic.Bool
+	workerCancel   context.CancelFunc
+	workerDone     chan struct{}
+	workerStopOnce sync.Once
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 type healthResponse struct {
@@ -55,8 +58,19 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	e.HidePort = true
 	e.Server.ReadHeaderTimeout = defaultHTTPReadHeaderTimeout
 	e.Server.IdleTimeout = defaultHTTPIdleTimeout
-	service := &Service{echo: e, database: database, tracker: workTracker, config: cfg}
+	workerContext, workerCancel := context.WithCancel(context.Background())
+	service := &Service{
+		echo:         e,
+		database:     database,
+		tracker:      workTracker,
+		config:       cfg,
+		workerCancel: workerCancel,
+		workerDone:   make(chan struct{}),
+	}
 	e.GET("/health", service.health)
+	e.POST("/api/v1/webhooks/github", service.githubWebhook)
+	service.maintainGitHubWebhooks(ctx)
+	go service.runGitHubWebhookMaintenance(workerContext)
 	service.ready.Store(true)
 	return service, nil
 }
@@ -127,14 +141,14 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	s.ready.Store(false)
-	err := s.echo.Shutdown(ctx)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	httpErr := s.echo.Shutdown(ctx)
+	if errors.Is(httpErr, http.ErrServerClosed) {
+		httpErr = nil
 	}
-	if err != nil {
-		return fmt.Errorf("shut down hub server: %w", err)
+	if httpErr != nil {
+		httpErr = fmt.Errorf("shut down hub server: %w", httpErr)
 	}
-	return nil
+	return errors.Join(httpErr, s.stopGitHubWebhookMaintenance())
 }
 
 func (s *Service) Backup(ctx context.Context, destination string) error {
@@ -154,9 +168,44 @@ func (s *Service) Close() error {
 		if errors.Is(httpErr, http.ErrServerClosed) {
 			httpErr = nil
 		}
-		s.closeErr = errors.Join(httpErr, s.database.Close())
+		s.closeErr = errors.Join(httpErr, s.stopGitHubWebhookMaintenance(), s.database.Close())
 	})
 	return s.closeErr
+}
+
+func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
+	defer close(s.workerDone)
+	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.maintainGitHubWebhooks(ctx)
+		}
+	}
+}
+
+func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
+	now := s.config.now().UTC()
+	if err := s.database.processPendingWebhooks(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Error("process pending GitHub webhooks", "error", err)
+	}
+	if _, err := s.database.purgeWebhookPayloads(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
+	}
+}
+
+func (s *Service) stopGitHubWebhookMaintenance() error {
+	if s == nil || s.workerCancel == nil || s.workerDone == nil {
+		return nil
+	}
+	s.workerStopOnce.Do(func() {
+		s.workerCancel()
+		<-s.workerDone
+	})
+	return nil
 }
 
 func (s *Service) health(c echo.Context) error {

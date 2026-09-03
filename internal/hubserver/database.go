@@ -130,6 +130,7 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "locking_mode(EXCLUSIVE)")
+	query.Add("_pragma", "synchronous(FULL)")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
 }
@@ -149,6 +150,13 @@ func (d *database) configure(ctx context.Context, busyTimeout time.Duration) err
 	}
 	if gotBusyTimeout != wantBusyTimeout {
 		return fmt.Errorf("hub sqlite busy timeout is %dms, want %dms", gotBusyTimeout, wantBusyTimeout)
+	}
+	var synchronous int
+	if err := d.db.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
+		return fmt.Errorf("read hub sqlite synchronous mode: %w", err)
+	}
+	if synchronous != 2 {
+		return fmt.Errorf("hub sqlite synchronous mode is %d, want FULL", synchronous)
 	}
 
 	var foreignKeys int
