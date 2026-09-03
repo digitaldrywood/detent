@@ -173,6 +173,7 @@ type DispatchReason struct {
 	Repository RepositoryID       `json:"repository_id,omitempty"`
 	Scope      string             `json:"scope,omitempty"`
 	MachineID  MachineID          `json:"machine_id,omitempty"`
+	SessionID  string             `json:"session_id,omitempty"`
 	Active     int                `json:"active,omitempty"`
 	Limit      int                `json:"limit,omitempty"`
 }
@@ -199,6 +200,7 @@ type MachineAvailability struct {
 type DispatchSnapshot struct {
 	EvaluatedAt            time.Time                         `json:"evaluated_at"`
 	TargetMachineID        MachineID                         `json:"target_machine_id,omitempty"`
+	TargetSessionID        string                            `json:"target_session_id,omitempty"`
 	RepositoryConcurrency  map[RepositoryID]ConcurrencyUsage `json:"repository_concurrency,omitempty"`
 	ProjectConcurrency     map[string]ConcurrencyUsage       `json:"project_concurrency,omitempty"`
 	Machines               []MachineAvailability             `json:"machines"`

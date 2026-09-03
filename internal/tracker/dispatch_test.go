@@ -46,15 +46,38 @@ func TestDeriveDispatchQueueReasons(t *testing.T) {
 			name: "own lease can resume",
 			item: func() WorkItem {
 				item := readyWorkItem(4, 1, "digitaldrywood", "detent", 4, nil, "", now)
-				item.ActiveLease = &LeaseSummary{ID: "lease-a", Machine: MachineSummary{ID: "machine-a"}, ExpiresAt: now.Add(time.Minute)}
+				item.ActiveLease = &LeaseSummary{ID: "lease-a", Machine: MachineSummary{ID: "machine-a"}, SessionID: "session-a", ExpiresAt: now.Add(time.Minute)}
 				return item
 			}(),
 			snapshot: DispatchSnapshot{
 				EvaluatedAt:           now,
 				TargetMachineID:       "machine-a",
+				TargetSessionID:       "session-a",
 				Machines:              []MachineAvailability{{ID: "machine-a", Healthy: true, Capacity: 1, ActiveLeases: 1}},
 				RepositoryConcurrency: map[RepositoryID]ConcurrencyUsage{1: {Active: 1, Limit: 1}},
 				ProjectConcurrency:    map[string]ConcurrencyUsage{"fleet": {Active: 1, Limit: 1}},
+			},
+		},
+		{
+			name: "same machine different session cannot resume",
+			item: func() WorkItem {
+				item := readyWorkItem(18, 1, "digitaldrywood", "detent", 18, nil, "", now)
+				item.ActiveLease = &LeaseSummary{ID: "lease-a", Machine: MachineSummary{ID: "machine-a"}, SessionID: "session-a", ExpiresAt: now.Add(time.Minute)}
+				return item
+			}(),
+			snapshot: DispatchSnapshot{
+				EvaluatedAt:           now,
+				TargetMachineID:       "machine-a",
+				TargetSessionID:       "session-b",
+				Machines:              []MachineAvailability{{ID: "machine-a", Healthy: true, Capacity: 1, ActiveLeases: 1}},
+				RepositoryConcurrency: map[RepositoryID]ConcurrencyUsage{1: {Active: 1, Limit: 1}},
+				ProjectConcurrency:    map[string]ConcurrencyUsage{"fleet": {Active: 1, Limit: 1}},
+			},
+			wantCodes: []DispatchReasonCode{
+				DispatchReasonLeaseActive,
+				DispatchReasonRepositoryConcurrencyLimit,
+				DispatchReasonProjectConcurrencyLimit,
+				DispatchReasonMachineCapacityFull,
 			},
 		},
 		{
@@ -240,7 +263,7 @@ func TestDeriveDispatchQueueStructuredReasonDetails(t *testing.T) {
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	item := readyWorkItem(1, 7, "digitaldrywood", "detent", 2072, nil, "a", now)
 	item.Blockers = []WorkItemReference{{ID: 6, WorkflowState: &WorkflowState{Name: "Todo"}}}
-	item.ActiveLease = &LeaseSummary{ID: "lease-b", Machine: MachineSummary{ID: "machine-b"}, ExpiresAt: now.Add(time.Minute)}
+	item.ActiveLease = &LeaseSummary{ID: "lease-b", Machine: MachineSummary{ID: "machine-b"}, SessionID: "session-b", ExpiresAt: now.Add(time.Minute)}
 	snapshot := DispatchSnapshot{
 		EvaluatedAt:            now,
 		TargetMachineID:        "machine-a",
@@ -271,8 +294,8 @@ func TestDeriveDispatchQueueStructuredReasonDetails(t *testing.T) {
 	if reasons[0].WorkItemID == nil || *reasons[0].WorkItemID != 6 {
 		t.Errorf("blocker reason = %#v, want blocker 6", reasons[0])
 	}
-	if reasons[1].LeaseID != "lease-b" || reasons[1].MachineID != "machine-b" {
-		t.Errorf("lease reason = %#v, want lease-b on machine-b", reasons[1])
+	if reasons[1].LeaseID != "lease-b" || reasons[1].MachineID != "machine-b" || reasons[1].SessionID != "session-b" {
+		t.Errorf("lease reason = %#v, want lease-b on machine-b in session-b", reasons[1])
 	}
 	if reasons[2].Repository != 7 || reasons[2].Active != 2 || reasons[2].Limit != 2 {
 		t.Errorf("repository reason = %#v, want repository 7 at 2/2", reasons[2])

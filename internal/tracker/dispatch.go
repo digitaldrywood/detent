@@ -26,7 +26,7 @@ func DeriveDispatchQueue(candidates []WorkItem, snapshot DispatchSnapshot) Dispa
 }
 
 func deriveSnapshotDispatchability(item WorkItem, snapshot DispatchSnapshot) Dispatchability {
-	reasons := deriveDispatchReasons(item, snapshot.EvaluatedAt, snapshot.TargetMachineID)
+	reasons := deriveDispatchReasons(item, snapshot.EvaluatedAt, snapshot.TargetMachineID, snapshot.TargetSessionID)
 	ownLease := ownsActiveLease(item, snapshot)
 	if usage, ok := snapshot.RepositoryConcurrency[item.Repository.ID]; ok && concurrencyFull(usage, ownLease) {
 		active := effectiveActive(usage.Active, ownLease)
@@ -227,7 +227,7 @@ func workItemProject(item WorkItem) string {
 }
 
 func ownsActiveLease(item WorkItem, snapshot DispatchSnapshot) bool {
-	return snapshot.TargetMachineID != "" && item.ActiveLease != nil && item.ActiveLease.Machine.ID == snapshot.TargetMachineID && (snapshot.EvaluatedAt.IsZero() || item.ActiveLease.ExpiresAt.After(snapshot.EvaluatedAt))
+	return leaseIsActive(item.ActiveLease, snapshot.EvaluatedAt) && leaseOwnedBy(item.ActiveLease, snapshot.TargetMachineID, snapshot.TargetSessionID)
 }
 
 func sortWorkItemsForDispatch(items []WorkItem) {
