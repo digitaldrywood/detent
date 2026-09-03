@@ -74,6 +74,11 @@ func normalizeRecords(records []Record) []WorkItem {
 }
 
 func deriveDispatchability(item WorkItem) Dispatchability {
+	reasons := deriveDispatchReasons(item, time.Time{}, "", "")
+	return Dispatchability{Dispatchable: len(reasons) == 0, Reasons: reasons}
+}
+
+func deriveDispatchReasons(item WorkItem, evaluatedAt time.Time, targetMachineID MachineID, targetSessionID string) []DispatchReason {
 	reasons := make([]DispatchReason, 0)
 	switch item.SourceState {
 	case SourceStateClosed:
@@ -93,7 +98,7 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 
 	for i := range item.Blockers {
 		blocker := item.Blockers[i]
-		if blocker.SourceState == SourceStateClosed || blocker.WorkflowState != nil && blocker.WorkflowState.Terminal {
+		if blocker.WorkflowState != nil && blocker.WorkflowState.Terminal {
 			continue
 		}
 		blockerID := blocker.ID
@@ -104,11 +109,13 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 		})
 	}
 
-	if item.ActiveLease != nil {
+	if leaseIsActive(item.ActiveLease, evaluatedAt) && !leaseOwnedBy(item.ActiveLease, targetMachineID, targetSessionID) {
 		reasons = append(reasons, DispatchReason{
-			Code:    DispatchReasonLeaseActive,
-			Message: "work item has an active lease",
-			LeaseID: item.ActiveLease.ID,
+			Code:      DispatchReasonLeaseActive,
+			Message:   "work item has an active lease held by another machine or session",
+			LeaseID:   item.ActiveLease.ID,
+			MachineID: item.ActiveLease.Machine.ID,
+			SessionID: item.ActiveLease.SessionID,
 		})
 	}
 	switch item.SyncStatus {
@@ -118,7 +125,16 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 		reasons = append(reasons, DispatchReason{Code: DispatchReasonSyncStale, Message: "GitHub projection is stale"})
 	}
 
-	return Dispatchability{Dispatchable: len(reasons) == 0, Reasons: reasons}
+	return reasons
+}
+
+func leaseIsActive(lease *LeaseSummary, evaluatedAt time.Time) bool {
+	return lease != nil && (evaluatedAt.IsZero() || lease.ExpiresAt.After(evaluatedAt))
+}
+
+func leaseOwnedBy(lease *LeaseSummary, targetMachineID MachineID, targetSessionID string) bool {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	return targetMachineID != "" && targetSessionID != "" && lease != nil && lease.Machine.ID == targetMachineID && strings.TrimSpace(lease.SessionID) == targetSessionID
 }
 
 func normalizeRepository(repository RepositoryReference) RepositoryReference {
