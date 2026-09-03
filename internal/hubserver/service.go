@@ -21,24 +21,28 @@ const (
 )
 
 type Service struct {
-	echo           *echo.Echo
-	database       *database
-	tracker        tracker.Tracker
-	config         Config
-	outbox         *outboxWorker
-	ready          atomic.Bool
-	workerCancel   context.CancelFunc
-	workerDone     chan struct{}
-	workerStopOnce sync.Once
-	closeOnce      sync.Once
-	closeErr       error
+	echo              *echo.Echo
+	database          *database
+	tracker           tracker.Tracker
+	config            Config
+	outbox            *outboxWorker
+	ready             atomic.Bool
+	workerCancel      context.CancelFunc
+	workerDone        chan struct{}
+	workerStopOnce    sync.Once
+	reconcileCancel   context.CancelFunc
+	reconcileDone     chan struct{}
+	reconcileStopOnce sync.Once
+	closeOnce         sync.Once
+	closeErr          error
 }
 
 type healthResponse struct {
-	Status        string       `json:"status"`
-	SchemaVersion int64        `json:"schema_version,omitempty"`
-	Version       string       `json:"version,omitempty"`
-	Outbox        OutboxHealth `json:"outbox"`
+	Status        string                  `json:"status"`
+	SchemaVersion int64                   `json:"schema_version,omitempty"`
+	Version       string                  `json:"version,omitempty"`
+	Outbox        OutboxHealth            `json:"outbox"`
+	Repositories  RepositoryHealthSummary `json:"repositories"`
 }
 
 func Open(ctx context.Context, cfg Config) (*Service, error) {
@@ -61,21 +65,26 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	e.Server.ReadHeaderTimeout = defaultHTTPReadHeaderTimeout
 	e.Server.IdleTimeout = defaultHTTPIdleTimeout
 	workerContext, workerCancel := context.WithCancel(context.Background())
+	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
-		echo:         e,
-		database:     database,
-		tracker:      workTracker,
-		config:       cfg,
-		workerCancel: workerCancel,
-		workerDone:   make(chan struct{}),
+		echo:            e,
+		database:        database,
+		tracker:         workTracker,
+		config:          cfg,
+		workerCancel:    workerCancel,
+		workerDone:      make(chan struct{}),
+		reconcileCancel: reconcileCancel,
+		reconcileDone:   make(chan struct{}),
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
 	}
 	e.GET("/health", service.health)
+	e.GET("/api/v1/repositories/freshness", service.repositoryFreshness)
 	e.POST("/api/v1/webhooks/github", service.githubWebhook)
 	service.maintainGitHubWebhooks(ctx)
 	go service.runGitHubWebhookMaintenance(workerContext)
+	go service.runGitHubReconciliation(reconcileContext)
 	service.ready.Store(true)
 	if service.outbox != nil {
 		service.outbox.start(ctx)
@@ -156,7 +165,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if httpErr != nil {
 		httpErr = fmt.Errorf("shut down hub server: %w", httpErr)
 	}
-	return errors.Join(httpErr, s.stopGitHubWebhookMaintenance())
+	return errors.Join(httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
 
 func (s *Service) Backup(ctx context.Context, destination string) error {
@@ -177,10 +186,11 @@ func (s *Service) Close() error {
 			httpErr = nil
 		}
 		webhookErr := s.stopGitHubWebhookMaintenance()
+		reconcileErr := s.stopGitHubReconciliation()
 		if s.outbox != nil {
 			s.outbox.stop()
 		}
-		s.closeErr = errors.Join(httpErr, webhookErr, s.database.Close())
+		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
 	})
 	return s.closeErr
 }
@@ -228,10 +238,19 @@ func (s *Service) health(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
 	}
+	repositories, err := s.database.repositoryFreshness(c.Request().Context(), s.config.now().UTC(), s.config.ReconcileInterval)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+	}
+	status := "ok"
+	if repositories.Summary.Stale > 0 || repositories.Summary.Error > 0 {
+		status = "degraded"
+	}
 	return c.JSON(http.StatusOK, healthResponse{
-		Status:        "ok",
+		Status:        status,
 		SchemaVersion: s.database.schemaVersion,
 		Version:       s.config.Version,
 		Outbox:        outbox,
+		Repositories:  repositories.Summary,
 	})
 }

@@ -140,6 +140,31 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 	if status != "failed" || attempts != 1 || payloadCount != 1 {
 		t.Fatalf("durable receipt = status %q attempts %d payloads %d, want failed, 1, 1", status, attempts, payloadCount)
 	}
+	var checkpointError string
+	var checkpointState string
+	if err := service.database.db.QueryRowContext(t.Context(), `
+		SELECT last_error, state_json
+		FROM sync_checkpoints
+		WHERE checkpoint_name = 'webhook'
+	`).Scan(&checkpointError, &checkpointState); err != nil {
+		t.Fatalf("read repository webhook error: %v", err)
+	}
+	if checkpointError == "" || !strings.Contains(checkpointState, "last_error_at") {
+		t.Fatalf("webhook checkpoint = error %q state %q, want visible repository error", checkpointError, checkpointState)
+	}
+	freshness, err := service.database.repositoryFreshness(t.Context(), time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("read freshness after webhook failure: %v", err)
+	}
+	var exposed *SyncError
+	for _, repository := range freshness.Repositories {
+		if repository.GitHubNodeID == "R_conflicting_node" {
+			exposed = repository.LastWebhookError
+		}
+	}
+	if exposed == nil || exposed.Message != checkpointError {
+		t.Fatalf("exposed webhook error = %#v, want %q", exposed, checkpointError)
+	}
 }
 
 func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {

@@ -3,8 +3,10 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -187,6 +189,13 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(fmt.Errorf("complete GitHub webhook processing: %w", err), rollbackErr, failureErr)
 	}
+	if result.RepositoryID != nil {
+		if err := recordCheckpointSuccessTx(ctx, tx, *result.RepositoryID, checkpointWebhook, now, now); err != nil {
+			rollbackErr := tx.Rollback()
+			failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+			return errors.Join(err, rollbackErr, failureErr)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(fmt.Errorf("commit GitHub webhook processing: %w", err), failureErr)
@@ -209,7 +218,59 @@ func (d *database) markWebhookFailed(ctx context.Context, inboxID int64, now tim
 	if err != nil {
 		return fmt.Errorf("record GitHub webhook failure: %w", err)
 	}
-	return nil
+	repositoryID, found, err := d.webhookFailureRepository(ctx, inboxID)
+	if err != nil || !found {
+		return err
+	}
+	return d.recordCheckpointFailure(ctx, repositoryID, checkpointWebhook, now, processingErr)
+}
+
+func (d *database) webhookFailureRepository(ctx context.Context, inboxID int64) (int64, bool, error) {
+	var repositoryID sql.NullInt64
+	var payload []byte
+	if err := d.db.QueryRowContext(ctx, `
+		SELECT i.repository_id, p.body
+		FROM github_webhook_inbox i
+		LEFT JOIN github_webhook_payloads p ON p.inbox_id = i.id
+		WHERE i.id = ?
+	`, inboxID).Scan(&repositoryID, &payload); err != nil {
+		return 0, false, fmt.Errorf("read failed GitHub webhook repository: %w", err)
+	}
+	if repositoryID.Valid {
+		return repositoryID.Int64, true, nil
+	}
+	var webhook githubWebhookPayload
+	if json.Unmarshal(payload, &webhook) != nil || webhook.Repository == nil {
+		return 0, false, nil
+	}
+	fullName := webhookRepositoryFullName(webhook.Repository)
+	owner, name, ok := splitRepositoryFullName(fullName)
+	if !ok {
+		return 0, false, nil
+	}
+	var resolved int64
+	nodeID := optionalWebhookNodeID(webhook.Repository.NodeID)
+	err := d.db.QueryRowContext(ctx, `
+		SELECT id FROM repositories
+		WHERE (? IS NOT NULL AND github_node_id = ?)
+			OR (lower(github_owner) = lower(?) AND lower(github_name) = lower(?))
+		ORDER BY CASE WHEN ? IS NOT NULL AND github_node_id = ? THEN 0 ELSE 1 END
+		LIMIT 1
+	`, nodeID, nodeID, owner, name, nodeID, nodeID).Scan(&resolved)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("resolve failed GitHub webhook repository: %w", err)
+	}
+	return resolved, true, nil
+}
+
+func optionalWebhookNodeID(nodeID *string) any {
+	if nodeID == nil || strings.TrimSpace(*nodeID) == "" {
+		return nil
+	}
+	return strings.TrimSpace(*nodeID)
 }
 
 func (d *database) processPendingWebhooks(ctx context.Context, now time.Time) error {

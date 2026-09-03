@@ -31,6 +31,7 @@ func newHubCommand(opts options) *cobra.Command {
 			return fmt.Errorf("configure github hub outbox client: %w", err)
 		}
 		cfg.OutboxBackend = hubgithub.NewWriter(client)
+		cfg.ReconcileBackend = hubgithub.NewReconciler(client)
 		return hubserver.Run(ctx, cfg)
 	}
 	return newHubCommandWithRun(opts.version, opts.lookupEnv, run)
@@ -58,6 +59,8 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 	var githubWebhookSecretEnv string
 	var webhookPayloadRetention time.Duration
 	var webhookMaintenanceInterval time.Duration
+	var reconcileInterval time.Duration
+	var fullRepairInterval time.Duration
 
 	cmd := &cobra.Command{
 		Use:          "serve",
@@ -87,6 +90,8 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
 				WebhookPayloadRetention:    webhookPayloadRetention,
 				WebhookMaintenanceInterval: webhookMaintenanceInterval,
+				ReconcileInterval:          reconcileInterval,
+				FullRepairInterval:         fullRepairInterval,
 				Logger:                     slog.Default(),
 				Version:                    version,
 			})
@@ -99,5 +104,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 	cmd.Flags().StringVar(&githubWebhookSecretEnv, "github-webhook-secret-env", "DETENT_HUB_GITHUB_WEBHOOK_SECRET", "environment variable containing the GitHub webhook secret")
 	cmd.Flags().DurationVar(&webhookPayloadRetention, "webhook-payload-retention", hubserver.DefaultWebhookPayloadRetention, "retention period for raw GitHub webhook payloads")
 	cmd.Flags().DurationVar(&webhookMaintenanceInterval, "webhook-maintenance-interval", hubserver.DefaultWebhookMaintenanceInterval, "GitHub webhook retry and retention interval")
+	cmd.Flags().DurationVar(&reconcileInterval, "reconcile-interval", hubserver.DefaultReconcileInterval, "incremental GitHub mirror reconciliation interval")
+	cmd.Flags().DurationVar(&fullRepairInterval, "full-repair-interval", hubserver.DefaultFullRepairInterval, "full GitHub mirror repair interval")
 	return cmd
 }

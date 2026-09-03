@@ -81,6 +81,35 @@ func TestHealthEndpoint(t *testing.T) {
 	service.ready.Store(true)
 }
 
+func TestHealthEndpointDegradesForStaleRepository(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	service := openTestService(t, Config{
+		DatabasePath:      filepath.Join(t.TempDir(), "hub.db"),
+		ReconcileInterval: time.Minute,
+		now:               func() time.Time { return now },
+	})
+	if _, err := service.database.db.ExecContext(t.Context(), `
+		INSERT INTO repositories (github_node_id, github_owner, github_name, last_webhook_at, created_at, updated_at)
+		VALUES ('R_stale', 'digitaldrywood', 'detent', ?, ?, ?)
+	`, formatWebhookTime(now), testTimestamp, testTimestamp); err != nil {
+		t.Fatalf("insert stale repository: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d body = %s, want 200", response.Code, response.Body.String())
+	}
+	var got healthResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+	if got.Status != "degraded" || got.Repositories.Total != 1 || got.Repositories.Stale != 1 {
+		t.Fatalf("health response = %#v, want degraded stale repository", got)
+	}
+}
+
 func TestServeShutsDownGracefully(t *testing.T) {
 	t.Parallel()
 
