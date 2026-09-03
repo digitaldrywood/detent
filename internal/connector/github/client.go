@@ -257,6 +257,14 @@ func (c *Client) REST(ctx context.Context, method string, path string, body any,
 	return err
 }
 
+func (c *Client) RESTPage(ctx context.Context, path string, out any) (string, error) {
+	headers, err := c.rest(ctx, http.MethodGet, path, nil, out)
+	if err != nil {
+		return "", err
+	}
+	return c.nextRESTPage(headers)
+}
+
 func (c *Client) RESTText(ctx context.Context, path, accept string, maxBytes int) (string, bool, error) {
 	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true)
 }

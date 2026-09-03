@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -9,13 +10,30 @@ import (
 
 	"github.com/spf13/cobra"
 
+	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 type hubRunFunc func(context.Context, hubserver.Config) error
 
 func newHubCommand(opts options) *cobra.Command {
-	return newHubCommandWithRun(opts.version, opts.lookupEnv, hubserver.Run)
+	run := func(ctx context.Context, cfg hubserver.Config) error {
+		token, err := opts.ghAuthToken(ctx)
+		if err != nil {
+			return fmt.Errorf("resolve github credentials for hub outbox: %w", err)
+		}
+		client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{
+			TokenSource: connectorgithub.StaticTokenSource(token),
+			Logger:      cfg.Logger,
+		})
+		if err != nil {
+			return fmt.Errorf("configure github hub outbox client: %w", err)
+		}
+		cfg.OutboxBackend = hubgithub.NewWriter(client)
+		return hubserver.Run(ctx, cfg)
+	}
+	return newHubCommandWithRun(opts.version, opts.lookupEnv, run)
 }
 
 func newHubCommandWithRun(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
