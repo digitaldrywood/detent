@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -443,8 +444,10 @@ type restPullRequest struct {
 }
 
 type restReview struct {
-	State string `json:"state"`
-	User  struct {
+	State       string     `json:"state"`
+	Body        string     `json:"body"`
+	SubmittedAt *time.Time `json:"submitted_at"`
+	User        struct {
 		Login string `json:"login"`
 	} `json:"user"`
 }

@@ -60,7 +60,10 @@ skipped.
 A full repair compares complete issue and pull-request inventories. It updates
 labels and repository transfers, imports items missed during a webhook gap, and
 marks source records absent from GitHub as deleted so they stop participating in
-scheduling.
+scheduling. It also refreshes mergeability, checks, statuses, and reviews for
+every open pull request. Incremental passes fetch those details only for the
+exact webhook hydration requests captured when the pass starts; requests added
+or coalesced during the fetch remain pending for the next pass.
 
 Query `GET /api/v1/repositories/freshness` for each repository's latest
 successful sync, webhook receipt, reconciliation, full repair, and most recent

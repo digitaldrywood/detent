@@ -3,10 +3,13 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -35,6 +38,17 @@ type ReconcileRequest struct {
 	Mode       ReconcileMode
 	Since      *time.Time
 	Through    time.Time
+	Hydrations []HydrationRequest
+}
+
+type HydrationRequest struct {
+	ID           int64
+	ObjectKind   string
+	ObjectKey    string
+	GitHubNodeID string
+	GitHubNumber int
+	HeadSHA      string
+	RequestCount int
 }
 
 type RepositorySource struct {
@@ -75,10 +89,19 @@ type PullRequestSource struct {
 	UpdatedAt  time.Time
 }
 
+type PullRequestDetailSource struct {
+	Number         int
+	HeadSHA        string
+	MergeableState *string
+	Checks         *tracker.CheckSummary
+	Reviews        *tracker.ReviewSummary
+}
+
 type ReconcileSnapshot struct {
-	Repository   RepositorySource
-	Issues       []IssueSource
-	PullRequests []PullRequestSource
+	Repository         RepositorySource
+	Issues             []IssueSource
+	PullRequests       []PullRequestSource
+	PullRequestDetails []PullRequestDetailSource
 }
 
 type ReconcileBackend interface {
@@ -89,6 +112,7 @@ type reconcileTarget struct {
 	RepositoryTarget
 	Cursor         *time.Time
 	HydrationSince *time.Time
+	Hydrations     []HydrationRequest
 }
 
 func (s *Service) runGitHubReconciliation(ctx context.Context) {
@@ -139,6 +163,7 @@ func (s *Service) reconcileRepository(ctx context.Context, target reconcileTarge
 		Repository: target.RepositoryTarget,
 		Mode:       mode,
 		Through:    startedAt,
+		Hydrations: append([]HydrationRequest(nil), target.Hydrations...),
 	}
 	if mode == ReconcileIncremental {
 		request.Since = earliestTime(target.Cursor, target.HydrationSince)
@@ -169,13 +194,9 @@ func (s *Service) stopGitHubReconciliation() error {
 
 func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT r.id, r.github_node_id, r.github_database_id, r.github_owner, r.github_name,
-			r.reconcile_cursor,
-			MIN(CASE WHEN h.status = 'pending' THEN h.requested_source_updated_at END)
-		FROM repositories r
-		LEFT JOIN github_hydration_requests h ON h.repository_id = r.id
-		GROUP BY r.id
-		ORDER BY lower(r.github_owner), lower(r.github_name), r.id
+		SELECT id, github_node_id, github_database_id, github_owner, github_name, reconcile_cursor
+		FROM repositories
+		ORDER BY lower(github_owner), lower(github_name), id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list GitHub reconciliation targets: %w", err)
@@ -186,8 +207,7 @@ func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, err
 		var target reconcileTarget
 		var databaseID sql.NullInt64
 		var cursor sql.NullString
-		var hydrationSince sql.NullString
-		if err := rows.Scan(&target.ID, &target.NodeID, &databaseID, &target.Owner, &target.Name, &cursor, &hydrationSince); err != nil {
+		if err := rows.Scan(&target.ID, &target.NodeID, &databaseID, &target.Owner, &target.Name, &cursor); err != nil {
 			return nil, fmt.Errorf("scan GitHub reconciliation target: %w", err)
 		}
 		if databaseID.Valid {
@@ -201,19 +221,69 @@ func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, err
 		if cursorValid {
 			target.Cursor = &cursorValue
 		}
-		hydrationValue, hydrationValid, parseErr := parseCheckpointTime(hydrationSince)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse GitHub hydration cursor for %s/%s: %w", target.Owner, target.Name, parseErr)
-		}
-		if hydrationValid {
-			target.HydrationSince = &hydrationValue
-		}
 		targets = append(targets, target)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close GitHub reconciliation targets: %w", err)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate GitHub reconciliation targets: %w", err)
 	}
+	for index := range targets {
+		hydrations, since, err := d.pendingHydrationRequests(ctx, targets[index].ID)
+		if err != nil {
+			return nil, fmt.Errorf("list GitHub hydration requests for %s/%s: %w", targets[index].Owner, targets[index].Name, err)
+		}
+		targets[index].Hydrations = hydrations
+		targets[index].HydrationSince = since
+	}
 	return targets, nil
+}
+
+func (d *database) pendingHydrationRequests(ctx context.Context, repositoryID int64) ([]HydrationRequest, *time.Time, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, object_kind, object_key, github_node_id, github_number, head_sha, request_count, requested_source_updated_at
+		FROM github_hydration_requests
+		WHERE repository_id = ? AND status = 'pending'
+		ORDER BY id
+	`, repositoryID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var requests []HydrationRequest
+	var since *time.Time
+	for rows.Next() {
+		var request HydrationRequest
+		var githubNodeID sql.NullString
+		var githubNumber sql.NullInt64
+		var headSHA sql.NullString
+		var requestedAt sql.NullString
+		if err := rows.Scan(&request.ID, &request.ObjectKind, &request.ObjectKey, &githubNodeID, &githubNumber, &headSHA, &request.RequestCount, &requestedAt); err != nil {
+			return nil, nil, err
+		}
+		if githubNodeID.Valid {
+			request.GitHubNodeID = githubNodeID.String
+		}
+		if githubNumber.Valid {
+			request.GitHubNumber = int(githubNumber.Int64)
+		}
+		if headSHA.Valid {
+			request.HeadSHA = headSHA.String
+		}
+		value, valid, err := parseCheckpointTime(requestedAt)
+		if err != nil {
+			return nil, nil, err
+		}
+		if valid {
+			since = earliestTime(since, &value)
+		}
+		requests = append(requests, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return requests, since, nil
 }
 
 func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileTarget, mode ReconcileMode, cursor time.Time, completedAt time.Time, snapshot ReconcileSnapshot) error {
@@ -267,6 +337,11 @@ func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileT
 		}
 		pullRequestNodeIDs[pullRequest.NodeID] = struct{}{}
 	}
+	for _, details := range snapshot.PullRequestDetails {
+		if err := applyPullRequestDetails(ctx, tx, repositoryID, details, completedAt); err != nil {
+			return err
+		}
+	}
 	if mode == ReconcileFullRepair {
 		if err := markMissingProjectionRows(ctx, tx, "issues", `
 			SELECT id, github_node_id FROM issues
@@ -295,15 +370,82 @@ func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileT
 	if err := recordCheckpointSuccessTx(ctx, tx, repositoryID, string(mode), cursor, completedAt); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE github_hydration_requests
-		SET status = 'completed', completed_at = ?, last_error = NULL, updated_at = ?
-		WHERE repository_id = ? AND status = 'pending'
-	`, formatWebhookTime(completedAt), formatWebhookTime(completedAt), repositoryID); err != nil {
-		return fmt.Errorf("complete GitHub hydration requests: %w", err)
+	for _, hydration := range target.Hydrations {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE github_hydration_requests
+			SET status = 'completed', completed_at = ?, last_error = NULL, updated_at = ?
+			WHERE id = ? AND repository_id = ? AND status = 'pending' AND request_count = ?
+		`, formatWebhookTime(completedAt), formatWebhookTime(completedAt), hydration.ID, repositoryID, hydration.RequestCount); err != nil {
+			return fmt.Errorf("complete GitHub hydration request %d: %w", hydration.ID, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit GitHub reconciliation: %w", err)
+	}
+	return nil
+}
+
+func applyPullRequestDetails(ctx context.Context, tx *sql.Tx, repositoryID int64, details PullRequestDetailSource, now time.Time) error {
+	if details.Number <= 0 && strings.TrimSpace(details.HeadSHA) == "" {
+		return errors.New("GitHub reconciliation returned pull request details without an identity")
+	}
+	var pullRequestID int64
+	var state string
+	var draft bool
+	var mergeableState string
+	var checksJSON string
+	var reviewsJSON string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, github_state, draft, mergeable_state, checks_summary_json, reviews_summary_json
+		FROM pull_requests
+		WHERE repository_id = ? AND (github_number = ? OR (? <> '' AND head_sha = ?))
+		ORDER BY CASE WHEN github_number = ? THEN 0 ELSE 1 END
+		LIMIT 1
+	`, repositoryID, details.Number, details.HeadSHA, details.HeadSHA, details.Number).Scan(
+		&pullRequestID, &state, &draft, &mergeableState, &checksJSON, &reviewsJSON,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read GitHub pull request details: %w", err)
+	}
+	var checks tracker.CheckSummary
+	if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
+		return fmt.Errorf("decode GitHub pull request checks summary: %w", err)
+	}
+	var reviews tracker.ReviewSummary
+	if err := json.Unmarshal([]byte(reviewsJSON), &reviews); err != nil {
+		return fmt.Errorf("decode GitHub pull request reviews summary: %w", err)
+	}
+	if details.Checks != nil {
+		checks = *details.Checks
+	}
+	if details.Reviews != nil {
+		reviews = *details.Reviews
+	}
+	if details.MergeableState != nil {
+		mergeableState = strings.ToLower(strings.TrimSpace(*details.MergeableState))
+	}
+	checksBytes, err := json.Marshal(checks)
+	if err != nil {
+		return fmt.Errorf("encode GitHub pull request checks summary: %w", err)
+	}
+	reviewsBytes, err := json.Marshal(reviews)
+	if err != nil {
+		return fmt.Errorf("encode GitHub pull request reviews summary: %w", err)
+	}
+	mergeReady := strings.EqualFold(state, "open") && !draft && mergeableState == "clean" &&
+		checks.Total > 0 && checks.Pending == 0 && checks.Failed == 0 && strings.EqualFold(checks.Conclusion, "success") &&
+		reviews.ChangesRequested == 0 && !strings.EqualFold(reviews.Decision, "changes_requested")
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE pull_requests
+		SET mergeable_state = ?, checks_summary_json = ?, reviews_summary_json = ?,
+			merge_ready = ?, merge_readiness_refreshed_at = ?, synchronized_at = ?, updated_at = ?
+		WHERE id = ?
+	`, mergeableState, string(checksBytes), string(reviewsBytes), mergeReady,
+		formatWebhookTime(now), formatWebhookTime(now), formatWebhookTime(now), pullRequestID); err != nil {
+		return fmt.Errorf("update GitHub pull request details: %w", err)
 	}
 	return nil
 }

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestFullReconcileRepairsDroppedWebhookDrift(t *testing.T) {
@@ -165,6 +167,11 @@ func TestIncrementalReconcileUsesOldestCursorAndExposesFailures(t *testing.T) {
 				NodeID: "PR_one", Number: 1, Title: "PR", URL: "https://example.test/pr/1", State: "open",
 				HeadRef: "feature", HeadSHA: "abc", BaseRef: "main", BaseSHA: "base", CreatedAt: recovery.Add(-time.Hour), UpdatedAt: recovery,
 			}},
+			PullRequestDetails: []PullRequestDetailSource{{
+				Number: 1, HeadSHA: "abc", MergeableState: stringPointer("clean"),
+				Checks:  &tracker.CheckSummary{Status: "completed", Conclusion: "success", Total: 1, Passed: 1},
+				Reviews: &tracker.ReviewSummary{State: "approved", Decision: "approved", Approvals: 1},
+			}},
 		}},
 	}}
 	service := openTestService(t, Config{
@@ -202,7 +209,7 @@ func TestIncrementalReconcileUsesOldestCursorAndExposesFailures(t *testing.T) {
 		t.Fatalf("reconcileRepository() error = %v, want failure", err)
 	}
 	requests := backend.Requests()
-	if len(requests) != 1 || requests[0].Since == nil || !requests[0].Since.Equal(hydrationSince) {
+	if len(requests) != 1 || requests[0].Since == nil || !requests[0].Since.Equal(hydrationSince) || len(requests[0].Hydrations) != 1 {
 		t.Fatalf("incremental request = %#v, want since %s", requests, hydrationSince)
 	}
 	result, err := service.database.repositoryFreshness(t.Context(), start, time.Minute)
@@ -242,6 +249,20 @@ func TestIncrementalReconcileUsesOldestCursorAndExposesFailures(t *testing.T) {
 	if storedCursor != formatWebhookTime(recovery) {
 		t.Fatalf("reconcile cursor = %q, want %q", storedCursor, formatWebhookTime(recovery))
 	}
+	var checksJSON string
+	var reviewsJSON string
+	var mergeableState string
+	var mergeReady bool
+	if err := service.database.db.QueryRowContext(t.Context(), `
+		SELECT checks_summary_json, reviews_summary_json, mergeable_state, merge_ready
+		FROM pull_requests WHERE github_node_id = 'PR_one'
+	`).Scan(&checksJSON, &reviewsJSON, &mergeableState, &mergeReady); err != nil {
+		t.Fatalf("read reconciled pull request details: %v", err)
+	}
+	if checksJSON != `{"status":"completed","conclusion":"success","total":1,"passed":1}` ||
+		reviewsJSON != `{"state":"approved","decision":"approved","approvals":1}` || mergeableState != "clean" || !mergeReady {
+		t.Fatalf("pull request details = checks %s reviews %s mergeable %q ready %t", checksJSON, reviewsJSON, mergeableState, mergeReady)
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/freshness", nil)
 	response := httptest.NewRecorder()
@@ -255,6 +276,69 @@ func TestIncrementalReconcileUsesOldestCursorAndExposesFailures(t *testing.T) {
 	}
 	if endpoint.Summary.Fresh != 1 || endpoint.Summary.Error != 0 {
 		t.Fatalf("freshness endpoint summary = %#v, want one fresh", endpoint.Summary)
+	}
+}
+
+func TestReconcileDoesNotCompleteHydrationCreatedAfterCapture(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{
+		Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: now},
+	}}}}
+	service := openTestService(t, Config{
+		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ReconcileBackend: backend, now: func() time.Time { return now },
+	})
+	if err := service.stopGitHubReconciliation(); err != nil {
+		t.Fatalf("stop initial reconciliation: %v", err)
+	}
+	repositoryID, _ := seedProjection(t, service.database.db)
+	result, err := service.database.db.ExecContext(t.Context(), `
+		INSERT INTO github_hydration_requests (
+			repository_id, repository_full_name, object_kind, object_key, github_number,
+			reason, requested_source_version, status, created_at, updated_at
+		) VALUES (?, 'digitaldrywood/detent', 'issue', '1', 1, 'partial_payload', 'v1', 'pending', ?, ?)
+	`, repositoryID, testTimestamp, testTimestamp)
+	if err != nil {
+		t.Fatalf("insert captured hydration request: %v", err)
+	}
+	capturedID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("captured hydration request ID: %v", err)
+	}
+	targets, err := service.database.reconcileTargets(t.Context())
+	if err != nil || len(targets) != 1 || len(targets[0].Hydrations) != 1 {
+		t.Fatalf("reconcileTargets() = %#v, %v, want one captured hydration", targets, err)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_hydration_requests SET request_count = request_count + 1 WHERE id = ?", capturedID); err != nil {
+		t.Fatalf("coalesce captured hydration request: %v", err)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), `
+		INSERT INTO github_hydration_requests (
+			repository_id, repository_full_name, object_kind, object_key, github_number,
+			reason, requested_source_version, status, created_at, updated_at
+		) VALUES (?, 'digitaldrywood/detent', 'issue', '2', 2, 'partial_payload', 'v1', 'pending', ?, ?)
+	`, repositoryID, testTimestamp, testTimestamp); err != nil {
+		t.Fatalf("insert later hydration request: %v", err)
+	}
+	if err := service.reconcileRepository(t.Context(), targets[0], ReconcileFullRepair); err != nil {
+		t.Fatalf("reconcileRepository() error = %v", err)
+	}
+	rows, err := service.database.db.QueryContext(t.Context(), "SELECT object_key, status FROM github_hydration_requests ORDER BY id")
+	if err != nil {
+		t.Fatalf("read hydration statuses: %v", err)
+	}
+	defer rows.Close()
+	var statuses []string
+	for rows.Next() {
+		var key string
+		var status string
+		if err := rows.Scan(&key, &status); err != nil {
+			t.Fatalf("scan hydration status: %v", err)
+		}
+		statuses = append(statuses, key+":"+status)
+	}
+	if !reflect.DeepEqual(statuses, []string{"1:pending", "2:pending"}) {
+		t.Fatalf("hydration statuses = %#v, want both post-capture requests pending", statuses)
 	}
 }
 
@@ -288,5 +372,9 @@ func (b *scriptedReconcileBackend) Requests() []ReconcileRequest {
 }
 
 func int64Pointer(value int64) *int64 {
+	return &value
+}
+
+func stringPointer(value string) *string {
 	return &value
 }
