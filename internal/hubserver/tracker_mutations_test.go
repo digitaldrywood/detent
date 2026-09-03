@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,91 @@ func TestConcurrentClaimsProduceOneFencedWinner(t *testing.T) {
 	}
 	if total != 2 || active != 1 || maximumToken != winner.FencingToken {
 		t.Fatalf("persisted leases = total %d active %d max token %d; want total 2 active 1 max token %d", total, active, maximumToken, winner.FencingToken)
+	}
+}
+
+func TestLeaseOperationsSampleClockAfterTransactionAcquisition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("claim timestamps", func(t *testing.T) {
+		now := time.Date(2026, 9, 2, 12, 15, 0, 0, time.UTC)
+		clock := &leaseTestClock{value: now}
+		service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now})
+		_, issueID := seedProjection(t, service.database.db)
+		seedHubMachine(t, service, "machine-a", now)
+
+		var claimed tracker.Lease
+		err := runQueuedHubMutation(t, service, func() {
+			clock.Advance(2 * time.Minute)
+		}, func() (claimErr error) {
+			claimed, claimErr = service.Tracker().Claim(t.Context(), tracker.ClaimRequest{
+				WorkItemID: tracker.WorkItemID(issueID),
+				MachineID:  "machine-a",
+				SessionID:  "session-a",
+				TTL:        time.Minute,
+			})
+			return claimErr
+		})
+		if err != nil {
+			t.Fatalf("Claim() error = %v", err)
+		}
+		acquiredAt := now.Add(2 * time.Minute)
+		if !claimed.AcquiredAt.Equal(acquiredAt) || !claimed.ExpiresAt.Equal(acquiredAt.Add(time.Minute)) {
+			t.Fatalf("Claim() timestamps = acquired %s expires %s, want acquired %s expires %s", claimed.AcquiredAt, claimed.ExpiresAt, acquiredAt, acquiredAt.Add(time.Minute))
+		}
+	})
+
+	tests := []struct {
+		name   string
+		mutate func(*Service, tracker.WorkItemID, tracker.Lease) error
+	}{
+		{
+			name: "renew",
+			mutate: func(service *Service, _ tracker.WorkItemID, lease tracker.Lease) error {
+				_, err := service.Tracker().Renew(t.Context(), tracker.RenewRequest{LeaseID: lease.ID, FencingToken: lease.FencingToken, TTL: time.Minute})
+				return err
+			},
+		},
+		{
+			name: "release",
+			mutate: func(service *Service, _ tracker.WorkItemID, lease tracker.Lease) error {
+				return service.Tracker().Release(t.Context(), tracker.ReleaseRequest{LeaseID: lease.ID, FencingToken: lease.FencingToken})
+			},
+		},
+		{
+			name: "append event",
+			mutate: func(service *Service, workItemID tracker.WorkItemID, lease tracker.Lease) error {
+				return service.Tracker().AppendEvent(t.Context(), tracker.WorkEvent{WorkItemID: workItemID, FencingToken: lease.FencingToken, Kind: "late_progress"})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 2, 12, 20, 0, 0, time.UTC)
+			clock := &leaseTestClock{value: now}
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now})
+			_, issueID := seedProjection(t, service.database.db)
+			seedHubMachine(t, service, "machine-a", now)
+			workItemID := tracker.WorkItemID(issueID)
+			lease, err := service.Tracker().Claim(t.Context(), tracker.ClaimRequest{
+				WorkItemID: workItemID,
+				MachineID:  "machine-a",
+				SessionID:  "session-a",
+				TTL:        time.Minute,
+			})
+			if err != nil {
+				t.Fatalf("Claim() error = %v", err)
+			}
+
+			err = runQueuedHubMutation(t, service, func() {
+				clock.Advance(2 * time.Minute)
+			}, func() error {
+				return test.mutate(service, workItemID, lease)
+			})
+			if !errors.Is(err, tracker.ErrStaleFencingToken) {
+				t.Fatalf("queued mutation error = %v, want ErrStaleFencingToken", err)
+			}
+		})
 	}
 }
 
@@ -407,6 +493,42 @@ INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartb
 VALUES (?, ?, ?, 1, 'test', ?, ?, ?)`, machineID, machineID, machineID, formatHubTime(now), formatHubTime(now), formatHubTime(now)); err != nil {
 		t.Fatalf("insert machine %s: %v", machineID, err)
 	}
+}
+
+func runQueuedHubMutation(t *testing.T, service *Service, afterQueued func(), mutate func() error) error {
+	t.Helper()
+	blocker, err := service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin blocking transaction: %v", err)
+	}
+	defer func() { _ = blocker.Rollback() }()
+
+	waitsBefore := service.database.db.Stats().WaitCount
+	finished := make(chan error, 1)
+	go func() {
+		finished <- mutate()
+	}()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for service.database.db.Stats().WaitCount == waitsBefore {
+		select {
+		case mutationErr := <-finished:
+			t.Fatalf("queued mutation completed before the blocking transaction was released: %v", mutationErr)
+			return mutationErr
+		case <-timer.C:
+			t.Fatal("queued mutation did not wait for the blocking transaction")
+			return nil
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	afterQueued()
+	if err := blocker.Rollback(); err != nil {
+		t.Fatalf("release blocking transaction: %v", err)
+	}
+	return <-finished
 }
 
 type leaseTestClock struct {

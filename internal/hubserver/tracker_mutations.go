@@ -22,11 +22,6 @@ func (d *database) Claim(ctx context.Context, request tracker.ClaimRequest) (lea
 	if err != nil {
 		return tracker.Lease{}, err
 	}
-	now, err := d.currentTime()
-	if err != nil {
-		return tracker.Lease{}, err
-	}
-
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("begin hub claim: %w", err)
@@ -36,6 +31,10 @@ func (d *database) Claim(ctx context.Context, request tracker.ClaimRequest) (lea
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
+	now, err := d.currentTime()
+	if err != nil {
+		return tracker.Lease{}, err
+	}
 
 	if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {
 		return tracker.Lease{}, err
@@ -137,11 +136,6 @@ func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (lea
 	if err != nil {
 		return tracker.Lease{}, err
 	}
-	now, err := d.currentTime()
-	if err != nil {
-		return tracker.Lease{}, err
-	}
-
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("begin hub lease renewal: %w", err)
@@ -151,6 +145,10 @@ func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (lea
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
+	now, err := d.currentTime()
+	if err != nil {
+		return tracker.Lease{}, err
+	}
 
 	record, found, err := readLeaseByID(ctx, tx, request.LeaseID)
 	if err != nil {
@@ -196,11 +194,6 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 	if err != nil {
 		return err
 	}
-	now, err := d.currentTime()
-	if err != nil {
-		return err
-	}
-
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin hub lease release: %w", err)
@@ -210,6 +203,10 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
+	now, err := d.currentTime()
+	if err != nil {
+		return err
+	}
 
 	record, found, err := readLeaseByID(ctx, tx, request.LeaseID)
 	if err != nil {
@@ -266,16 +263,6 @@ func (d *database) AppendEvent(ctx context.Context, event tracker.WorkEvent) (re
 	if err != nil {
 		return err
 	}
-	now, err := d.currentTime()
-	if err != nil {
-		return err
-	}
-	if event.OccurredAt.IsZero() {
-		event.OccurredAt = now
-	} else {
-		event.OccurredAt = event.OccurredAt.UTC()
-	}
-
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin hub work event: %w", err)
@@ -285,6 +272,15 @@ func (d *database) AppendEvent(ctx context.Context, event tracker.WorkEvent) (re
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
+	now, err := d.currentTime()
+	if err != nil {
+		return err
+	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = now
+	} else {
+		event.OccurredAt = event.OccurredAt.UTC()
+	}
 
 	current, found, err := readUnreleasedLease(ctx, tx, event.WorkItemID)
 	if err != nil {
