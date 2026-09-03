@@ -35,6 +35,7 @@ type heartbeatManager struct {
 
 type heartbeatSettings struct {
 	connector    connector.Connector
+	scheduling   SchedulingSource
 	workAttempts store.WorkAttemptStore
 	claiming     ClaimingConfig
 	interval     time.Duration
@@ -65,6 +66,7 @@ type heartbeatResult struct {
 	workAttemptRenewed  bool
 	claimRenewed        bool
 	claimIssue          connector.Issue
+	claim               Claimed
 	claimOwnerLost      bool
 	currentClaimOwner   string
 	workerAlive         bool
@@ -76,7 +78,7 @@ type heartbeatResult struct {
 	claimError          error
 }
 
-func newHeartbeatManager(cfg Config, connectorBackend connector.Connector, workAttempts store.WorkAttemptStore, now func() time.Time, logger *slog.Logger) *heartbeatManager {
+func newHeartbeatManager(cfg Config, connectorBackend connector.Connector, workAttempts store.WorkAttemptStore, now func() time.Time, logger *slog.Logger, scheduling ...SchedulingSource) *heartbeatManager {
 	if now == nil {
 		now = time.Now
 	}
@@ -90,11 +92,11 @@ func newHeartbeatManager(cfg Config, connectorBackend connector.Connector, workA
 		now:     now,
 		logger:  logger,
 	}
-	manager.configure(cfg, connectorBackend, workAttempts)
+	manager.configure(cfg, connectorBackend, workAttempts, scheduling...)
 	return manager
 }
 
-func (m *heartbeatManager) configure(cfg Config, connectorBackend connector.Connector, workAttempts store.WorkAttemptStore) {
+func (m *heartbeatManager) configure(cfg Config, connectorBackend connector.Connector, workAttempts store.WorkAttemptStore, scheduling ...SchedulingSource) {
 	if m == nil {
 		return
 	}
@@ -104,6 +106,19 @@ func (m *heartbeatManager) configure(cfg Config, connectorBackend connector.Conn
 		claiming:     cfg.Claiming,
 		interval:     workHeartbeatInterval(cfg),
 		leaseTTL:     cfg.Claiming.LeaseTTL,
+	}
+	if len(scheduling) > 0 {
+		settings.scheduling = scheduling[0]
+	} else {
+		m.mu.Lock()
+		settings.scheduling = m.settings.scheduling
+		m.mu.Unlock()
+	}
+	if settings.scheduling != nil {
+		interval := settings.scheduling.HeartbeatInterval()
+		if interval > 0 && interval < settings.interval {
+			settings.interval = interval
+		}
 	}
 	if settings.leaseTTL <= 0 {
 		settings.leaseTTL = defaultWorkAttemptLeaseTTL
@@ -295,7 +310,15 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 		result.workAttemptError = settings.workAttempts.RecordWorkAttemptHeartbeat(operationCtx, heartbeat)
 		result.workAttemptRenewed = result.workAttemptError == nil
 	}
-	if settings.claiming.Enabled && strings.TrimSpace(settings.claiming.LeaseField) != "" && strings.TrimSpace(target.claimOwner) != "" {
+	if settings.scheduling != nil {
+		result.claim, result.claimError = settings.scheduling.RenewClaim(operationCtx, target.issueID, now)
+		result.claimOwnerLost = errors.Is(result.claimError, ErrSchedulingClaimLost)
+		result.claimRenewed = result.claimError == nil
+		if result.claimRenewed {
+			result.claimIssue = result.claim.Issue
+			result.currentClaimOwner = result.claim.Owner
+		}
+	} else if settings.claiming.Enabled && strings.TrimSpace(settings.claiming.LeaseField) != "" && strings.TrimSpace(target.claimOwner) != "" {
 		result.claimIssue, result.currentClaimOwner, result.claimOwnerLost, result.claimError = renewTrackerClaim(operationCtx, settings, target, now)
 		result.claimRenewed = result.claimError == nil && !result.claimOwnerLost
 	}
@@ -537,10 +560,16 @@ func (o *Orchestrator) handleHeartbeatResult(state *State, result heartbeatResul
 	if !ok {
 		return
 	}
-	claimed.Owner = result.currentClaimOwner
-	claimed.LeaseRenewedAt = result.heartbeat.HeartbeatAt
-	claimed.LeaseExpiresAt = o.leaseExpiresAt(result.heartbeat.HeartbeatAt)
-	claimed.Issue = mergeIssueTrackerFields(claimed.Issue, result.claimIssue)
+	if result.claim.LeaseRenewedAt.IsZero() {
+		claimed.Owner = result.currentClaimOwner
+		claimed.LeaseRenewedAt = result.heartbeat.HeartbeatAt
+		claimed.LeaseExpiresAt = o.leaseExpiresAt(result.heartbeat.HeartbeatAt)
+		claimed.Issue = mergeIssueTrackerFields(claimed.Issue, result.claimIssue)
+	} else {
+		renewed := result.claim
+		renewed.Issue = mergeIssueTrackerFields(claimed.Issue, renewed.Issue)
+		claimed = renewed
+	}
 	state.Claimed[result.issueID] = claimed
 	running.Issue = mergeIssueTrackerFields(running.Issue, result.claimIssue)
 	state.Running[result.issueID] = running

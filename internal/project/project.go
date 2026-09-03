@@ -137,6 +137,7 @@ type startOptions struct {
 
 type Dependencies struct {
 	Connector                 connector.Connector
+	Scheduling                orchestrator.SchedulingSource
 	ConnectorFactory          ConnectorFactory
 	OrchestratorFactory       OrchestratorFactory
 	WorkflowWatcherFactory    WorkflowWatcherFactory
@@ -410,6 +411,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
 		Connector:          projectConnector,
+		Scheduling:         projectSchedulingSource(deps.Scheduling, workflow.Config),
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		DispatchPacer:      deps.DispatchPacer,
@@ -1650,6 +1652,13 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 	}, releaseBackend)}, nil
 }
 
+func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {
+	if workflow.Tracker.Kind != workflowconfig.TrackerGitHub || strings.TrimSpace(workflow.Tracker.Repository) == "" {
+		return nil
+	}
+	return source
+}
+
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
@@ -1666,6 +1675,7 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 		ActiveHours:              workflow.ActiveHours,
 		ActiveHoursOverrideUntil: overrideUntil,
 	}
+	cfg.SchedulingRepository = workflow.Tracker.Repository
 	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
 	if lessonPath == "" {
 		lessonPath = lessons.DefaultPath

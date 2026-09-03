@@ -18,6 +18,7 @@ type Record struct {
 	SourceState     string
 	WorkflowState   *WorkflowState
 	Queue           *QueueSummary
+	AuthorID        string
 	Labels          []string
 	Assignees       []string
 	CreatedAt       *time.Time
@@ -49,6 +50,7 @@ func Normalize(record Record) WorkItem {
 		SourceState:     normalizeSourceState(record.SourceState),
 		WorkflowState:   normalizeWorkflowState(record.WorkflowState),
 		Queue:           normalizeQueue(record.Queue),
+		AuthorID:        strings.TrimSpace(record.AuthorID),
 		Labels:          normalizeStrings(record.Labels),
 		Assignees:       normalizeStrings(record.Assignees),
 		CreatedAt:       cloneTime(record.CreatedAt),

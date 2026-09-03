@@ -79,16 +79,20 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.syncGitHubRESTCapacityOutage(state, now)
 	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
 		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
-		return
+		if o.scheduling == nil {
+			return
+		}
 	}
 	if pause := o.gitHubRESTPause(state, now); pause > 0 {
 		o.logger.Warn("github rest polling paused", "remaining", gitHubRESTRemaining(state), "pause", pause)
+		if o.scheduling == nil {
+			return
+		}
+	}
+	if o.trackerAvailabilityPaused(ctx, state, now) && o.scheduling == nil {
 		return
 	}
-	if o.trackerAvailabilityPaused(ctx, state, now) {
-		return
-	}
-	if !o.retryDeferredCompletions(ctx, state, now) {
+	if !o.retryDeferredCompletions(ctx, state, now) && o.scheduling == nil {
 		return
 	}
 
@@ -345,7 +349,7 @@ func (o *Orchestrator) fetchTickIssues(
 	reserve githubBudgetReserveDecision,
 ) (tickFetchedIssues, bool) {
 	observedStates := o.observedStatusFetchStatesForTick(state)
-	if fetcher, ok := o.connector.(connector.RefreshIssueFetcher); ok && fetcher.CombinedRefreshEnabled() && !reserve.degraded {
+	if fetcher, ok := o.connector.(connector.RefreshIssueFetcher); o.scheduling == nil && ok && fetcher.CombinedRefreshEnabled() && !reserve.degraded {
 		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher)
 	}
 
@@ -353,12 +357,16 @@ func (o *Orchestrator) fetchTickIssues(
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
-		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		if o.scheduling == nil {
+			o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		}
 		markRefreshError(state, "fetch candidate issues failed: "+err.Error(), now)
 		return tickFetchedIssues{}, false
 	}
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceCandidates, now)
-	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
+	if o.scheduling == nil {
+		o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
+	}
 
 	fetched := tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
@@ -479,18 +487,22 @@ func (o *Orchestrator) fetchObservedIssuesByStates(ctx context.Context, states [
 }
 
 func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *State) ([]connector.Issue, error) {
+	states := o.candidateFetchStatesForTick(state)
+	if len(states) == 0 {
+		return []connector.Issue{}, nil
+	}
+	if o.scheduling != nil {
+		return o.scheduling.FetchCandidateIssues(ctx, SchedulingRequest{
+			ProjectID:      o.cfg.Project.ID,
+			Repository:     o.cfg.SchedulingRepository,
+			WorkflowStates: states,
+			Filter:         o.authorizationFilterHint(),
+		})
+	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesFilterFetcher); ok {
-		states := o.candidateFetchStatesForTick(state)
-		if len(states) == 0 {
-			return []connector.Issue{}, nil
-		}
 		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, o.authorizationFilterHint())
 	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesByStatesFetcher); ok {
-		states := o.candidateFetchStatesForTick(state)
-		if len(states) == 0 {
-			return []connector.Issue{}, nil
-		}
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
 	}
 	return o.connector.FetchCandidateIssues(ctx)

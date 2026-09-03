@@ -23,8 +23,24 @@ type claimAPIRequest struct {
 	SessionID     string                 `json:"session_id"`
 	TTLSeconds    int64                  `json:"ttl_seconds"`
 	RepositoryIDs []tracker.RepositoryID `json:"repository_ids,omitempty"`
+	Repositories  []string               `json:"repositories,omitempty"`
 	WorkflowState []string               `json:"workflow_states,omitempty"`
+	Authors       []string               `json:"authors,omitempty"`
+	Assignees     []string               `json:"assignees,omitempty"`
+	LabelInclude  []string               `json:"label_include,omitempty"`
+	LabelExclude  []string               `json:"label_exclude,omitempty"`
 	Scope         string                 `json:"scope,omitempty"`
+}
+
+type claimCandidateQuery struct {
+	RepositoryIDs  []tracker.RepositoryID
+	Repositories   []string
+	WorkflowStates []string
+	Authors        []string
+	Assignees      []string
+	LabelInclude   []string
+	LabelExclude   []string
+	Scope          string
 }
 
 type renewLeaseAPIRequest struct {
@@ -88,9 +104,14 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: err.Error()})
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
-	lease, err := s.database.claimNext(c.Request().Context(), claim, tracker.CandidateQuery{
+	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
 		RepositoryIDs:  request.RepositoryIDs,
+		Repositories:   request.Repositories,
 		WorkflowStates: request.WorkflowState,
+		Authors:        request.Authors,
+		Assignees:      request.Assignees,
+		LabelInclude:   request.LabelInclude,
+		LabelExclude:   request.LabelExclude,
 		Scope:          request.Scope,
 	}, s.config.ReconcileInterval)
 	if err != nil {
@@ -181,7 +202,7 @@ func trackerAPIError(c echo.Context, err error) error {
 	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
 }
 
-func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query tracker.CandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -192,8 +213,28 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	repositories := normalizedQueryStrings(query.Repositories)
+	if len(query.Repositories) > 0 && len(repositories) == 0 {
+		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
+	}
 	workflowStates := normalizedQueryStrings(query.WorkflowStates)
 	if len(query.WorkflowStates) > 0 && len(workflowStates) == 0 {
+		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
+	}
+	authors := normalizedQueryStrings(query.Authors)
+	if len(query.Authors) > 0 && len(authors) == 0 {
+		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
+	}
+	assignees := normalizedQueryStrings(query.Assignees)
+	if len(query.Assignees) > 0 && len(assignees) == 0 {
+		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
+	}
+	labelInclude := normalizedQueryStrings(query.LabelInclude)
+	if len(query.LabelInclude) > 0 && len(labelInclude) == 0 {
+		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
+	}
+	labelExclude := normalizedQueryStrings(query.LabelExclude)
+	if len(query.LabelExclude) > 0 && len(labelExclude) == 0 {
 		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -245,7 +286,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			claimableRepositories[tracker.RepositoryID(repository.ID)] = struct{}{}
 		}
 	}
-	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, workflowStates, claimableRepositories)
+	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
@@ -318,17 +359,23 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - active, nil
 }
 
-func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, workflowStates []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
+func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	repositoryFilter := make(map[tracker.RepositoryID]struct{}, len(repositoryIDs))
 	for _, id := range repositoryIDs {
 		repositoryFilter[id] = struct{}{}
 	}
-	workflowFilter := make(map[string]struct{}, len(workflowStates))
-	for _, state := range workflowStates {
-		workflowFilter[state] = struct{}{}
+	repositoryNameFilter := make(map[string]struct{}, len(repositories))
+	for _, repository := range repositories {
+		repositoryNameFilter[strings.ToLower(repository)] = struct{}{}
 	}
+	workflowFilter := stringSet(workflowStates)
+	authorFilter := stringSet(authors)
+	assigneeFilter := stringSet(assignees)
+	labelIncludeFilter := stringSet(labelInclude)
+	labelExcludeFilter := stringSet(labelExclude)
 	rows, err := tx.QueryContext(ctx, `
-SELECT i.id, r.id, lower(trim(ws.detent_state))
+SELECT i.id, r.id, r.github_owner, r.github_name, lower(trim(ws.detent_state)),
+       lower(trim(i.author_login)), i.labels_json, i.assignees_json
 FROM issues i
 JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -366,8 +413,13 @@ ORDER BY
 	for rows.Next() {
 		var id tracker.WorkItemID
 		var repositoryID tracker.RepositoryID
+		var repositoryOwner string
+		var repositoryName string
 		var workflowState string
-		if err := rows.Scan(&id, &repositoryID, &workflowState); err != nil {
+		var authorID string
+		var labelsJSON string
+		var assigneesJSON string
+		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState, &authorID, &labelsJSON, &assigneesJSON); err != nil {
 			return nil, fmt.Errorf("scan hub claim candidate: %w", err)
 		}
 		if _, ok := claimableRepositories[repositoryID]; !ok {
@@ -378,10 +430,34 @@ ORDER BY
 				continue
 			}
 		}
+		if len(repositoryNameFilter) > 0 {
+			if _, ok := repositoryNameFilter[strings.ToLower(strings.TrimSpace(repositoryOwner)+"/"+strings.TrimSpace(repositoryName))]; !ok {
+				continue
+			}
+		}
 		if len(workflowFilter) > 0 {
 			if _, ok := workflowFilter[workflowState]; !ok {
 				continue
 			}
+		}
+		if len(authorFilter) > 0 {
+			if _, ok := authorFilter[authorID]; !ok {
+				continue
+			}
+		}
+		labels, err := normalizedJSONStringSet(labelsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode hub claim candidate labels: %w", err)
+		}
+		candidateAssignees, err := normalizedJSONStringSet(assigneesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode hub claim candidate assignees: %w", err)
+		}
+		if len(assigneeFilter) > 0 && !setsIntersect(candidateAssignees, assigneeFilter) {
+			continue
+		}
+		if !setContainsAll(labels, labelIncludeFilter) || setsIntersect(labels, labelExcludeFilter) {
+			continue
 		}
 		ids = append(ids, id)
 	}
@@ -389,6 +465,42 @@ ORDER BY
 		return nil, fmt.Errorf("iterate hub claim candidates: %w", err)
 	}
 	return ids, nil
+}
+
+func stringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			result[value] = struct{}{}
+		}
+	}
+	return result
+}
+
+func normalizedJSONStringSet(value string) (map[string]struct{}, error) {
+	var values []string
+	if err := json.Unmarshal([]byte(value), &values); err != nil {
+		return nil, err
+	}
+	return stringSet(values), nil
+}
+
+func setsIntersect(left map[string]struct{}, right map[string]struct{}) bool {
+	for value := range left {
+		if _, ok := right[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func setContainsAll(haystack map[string]struct{}, needles map[string]struct{}) bool {
+	for value := range needles {
+		if _, ok := haystack[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) registerMachine(c echo.Context) error {

@@ -192,7 +192,7 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 				}
 			}
 			got := readIssueProjectionSnapshot(t, service)
-			if got.Title != "Newer title" || got.SourceUpdatedAt != "2026-09-02T12:00:00.000000000Z" {
+			if got.Title != "Newer title" || got.AuthorID != "octocat" || got.SourceUpdatedAt != "2026-09-02T12:00:00.000000000Z" {
 				t.Fatalf("projection = %#v, want newer source", got)
 			}
 			if index == 0 {
@@ -637,6 +637,7 @@ type issueProjectionSnapshot struct {
 	Title           string
 	Body            string
 	State           string
+	AuthorID        string
 	LabelsJSON      string
 	AssigneesJSON   string
 	SourceVersion   string
@@ -647,12 +648,13 @@ func readIssueProjectionSnapshot(t *testing.T, service *Service) issueProjection
 	t.Helper()
 	var snapshot issueProjectionSnapshot
 	if err := service.database.db.QueryRowContext(t.Context(), `
-		SELECT title, body, github_state, labels_json, assignees_json, source_version, source_updated_at
+		SELECT title, body, github_state, author_login, labels_json, assignees_json, source_version, source_updated_at
 		FROM issues WHERE github_node_id = 'I_issue'
 	`).Scan(
 		&snapshot.Title,
 		&snapshot.Body,
 		&snapshot.State,
+		&snapshot.AuthorID,
 		&snapshot.LabelsJSON,
 		&snapshot.AssigneesJSON,
 		&snapshot.SourceVersion,
@@ -716,6 +718,7 @@ func completeIssueWebhookPayload(t *testing.T, title string, updatedAt string) s
 			"body":       "Issue body",
 			"html_url":   "https://github.com/digitaldrywood/detent/issues/2069",
 			"state":      "open",
+			"user":       map[string]any{"login": "octocat"},
 			"labels":     []any{map[string]any{"name": "feature"}, map[string]any{"name": "detent:todo"}},
 			"assignees":  []any{map[string]any{"login": "corylanou"}},
 			"created_at": "2026-09-01T12:00:00Z",

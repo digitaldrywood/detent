@@ -196,7 +196,22 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			o.logDispatchPlanDecision(ctx, state, now, decision)
 		},
 	})
+	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
+}
+
+func (o *Orchestrator) releaseDeferredSchedulingClaims(ctx context.Context, state *State, issues []connector.Issue) {
+	if o.scheduling == nil {
+		return
+	}
+	for _, issue := range issues {
+		if _, running := state.Running[issue.ID]; running {
+			continue
+		}
+		if err := o.scheduling.ReleaseClaim(ctx, issue.ID, "dispatch_deferred"); err != nil && o.logger != nil {
+			o.logger.Warn("release deferred Hub claim failed", "issue_id", issue.ID, "error", err)
+		}
+	}
 }
 
 func (o *Orchestrator) logOwnershipEligibilityStartup(planner dispatchPlanner, issues []connector.Issue) {

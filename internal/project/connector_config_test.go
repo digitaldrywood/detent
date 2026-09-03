@@ -1,14 +1,61 @@
 package project
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
+
+type testSchedulingSource struct{}
+
+func (*testSchedulingSource) HeartbeatInterval() time.Duration { return time.Second }
+func (*testSchedulingSource) FetchCandidateIssues(context.Context, orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	return nil, nil
+}
+func (*testSchedulingSource) AdoptClaim(context.Context, connector.Issue, time.Time) (orchestrator.Claimed, error) {
+	return orchestrator.Claimed{}, nil
+}
+func (*testSchedulingSource) RenewClaim(context.Context, string, time.Time) (orchestrator.Claimed, error) {
+	return orchestrator.Claimed{}, nil
+}
+func (*testSchedulingSource) ReleaseClaim(context.Context, string, string) error { return nil }
+
+func TestProjectSchedulingSourceRequiresGitHubRepository(t *testing.T) {
+	t.Parallel()
+
+	source := &testSchedulingSource{}
+	tests := []struct {
+		name       string
+		kind       string
+		repository string
+		want       orchestrator.SchedulingSource
+	}{
+		{name: "GitHub", kind: workflowconfig.TrackerGitHub, repository: "acme/widgets", want: source},
+		{name: "GitHub missing repository", kind: workflowconfig.TrackerGitHub},
+		{name: "GitHub local", kind: workflowconfig.TrackerGitHubLocal, repository: "acme/widgets"},
+		{name: "Linear", kind: workflowconfig.TrackerLinear},
+		{name: "memory", kind: workflowconfig.TrackerMemory},
+		{name: "local SQLite", kind: workflowconfig.TrackerLocalSQLite},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := workflowconfig.Default()
+			workflow.Tracker.Kind = test.kind
+			workflow.Tracker.Repository = test.repository
+			if got := projectSchedulingSource(source, workflow); got != test.want {
+				t.Fatalf("projectSchedulingSource() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
 
 func TestTrackerStateMapConvertsWorkflowMap(t *testing.T) {
 	t.Parallel()

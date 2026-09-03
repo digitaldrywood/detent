@@ -41,6 +41,8 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
 | Loopback peer read trust | | | `trust_loopback_peer_read` | `false` |
 | Private dashboard URL | | | `dashboard_access` | disabled |
+| Hub scheduler | | | `client.hub_url` | disabled |
+| Hub worker token | | `DETENT_HUB_TOKEN` | `client.token_env` names the environment variable | required when Hub scheduling is enabled |
 | tmux window status | | `$TMUX` detection | `ops.tmux_window_status` | enabled inside tmux |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
@@ -90,6 +92,33 @@ from the first non-empty value in this order: top-level `instance_name` in
 single-project fallback mode without `global.yaml`, workflow top-level
 `identity.name` is used before the short hostname. Names are trimmed, must be a
 single line, and are capped at 40 characters in the web UI.
+
+Configure `client.hub_url` to move candidate discovery and claiming to a Detent
+Hub. The machine registers its identity, project and pool capabilities,
+capacity, operating system, architecture, and binary version. It then
+heartbeats while polling the Hub and renewing fenced work leases. The token is
+read from the environment variable named by `client.token_env`; the token is
+never stored in the configuration file.
+
+```yaml
+client:
+  hub_url: https://hub.example.com
+  token_env: DETENT_HUB_TOKEN
+  machine_id: build-mac-01
+  display_name: Build Mac 01
+  capacity: 4
+  heartbeat_interval_seconds: 30
+  lease_ttl_seconds: 90
+  request_timeout_ms: 10000
+```
+
+`machine_id` defaults to the configured global identity, instance name, or
+hostname. `capacity` defaults to `global.max_concurrent_agents`. The heartbeat
+interval must be shorter than the lease TTL. Hub outages mark project refresh
+health degraded and back off with the normal scheduling loop; they do not
+consume issue retry, no-progress, or work-failure budgets. GitHub remains in
+use for event ingestion, reconciliation, write-back, and fresh safety checks,
+but the scheduling claim cycle does not depend on a GitHub read.
 
 Health notifications deliver fleet and project needs-attention transitions to
 one generic webhook. They are disabled when

@@ -67,6 +67,7 @@ type timelineEvent struct {
 
 type workItemDetailResponse struct {
 	tracker.WorkItem
+	Body               string             `json:"body"`
 	Workpad            *workpadProjection `json:"workpad,omitempty"`
 	Timeline           []timelineEvent    `json:"timeline"`
 	TimelineNextCursor string             `json:"timeline_next_cursor,omitempty"`
@@ -120,6 +121,10 @@ func (s *Service) getWorkItem(c echo.Context) error {
 	if err := s.applyRepositorySyncHealth(c.Request().Context(), items); err != nil {
 		return s.internalAPIError(c, "work_item_unavailable", "Work item could not be read", err)
 	}
+	body, err := s.database.workItemBody(c.Request().Context(), id)
+	if err != nil {
+		return s.internalAPIError(c, "work_item_unavailable", "Work item could not be read", err)
+	}
 	timelineLimit, err := parsePageLimit(c.QueryParam("timeline_limit"))
 	if err != nil {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "timeline_limit must be between 1 and 200"})
@@ -136,7 +141,7 @@ func (s *Service) getWorkItem(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "work_item_unavailable", "Work item could not be read", err)
 	}
-	response := workItemDetailResponse{WorkItem: items[0], Timeline: timeline}
+	response := workItemDetailResponse{WorkItem: items[0], Body: body, Timeline: timeline}
 	if hasWorkpad {
 		response.Workpad = &workpad
 	}
@@ -148,6 +153,14 @@ func (s *Service) getWorkItem(c echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusOK, response)
+}
+
+func (d *database) workItemBody(ctx context.Context, id tracker.WorkItemID) (string, error) {
+	var body sql.NullString
+	if err := d.db.QueryRowContext(ctx, "SELECT body FROM issues WHERE id = ?", id).Scan(&body); err != nil {
+		return "", fmt.Errorf("read work item body: %w", err)
+	}
+	return body.String, nil
 }
 
 func (s *Service) allWorkItems(ctx context.Context) ([]tracker.WorkItem, error) {

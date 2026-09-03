@@ -294,8 +294,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Jitter:             managerConfig.Startup.Jitter,
 		RampStarts:         startupDispatchRampStarts(globalDispatchGate),
 	})
+	var hubScheduling orchestrator.SchedulingSource
+	if cfg.Global.Client.Configured() {
+		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version)
+		if err != nil {
+			return err
+		}
+	}
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:             events,
+		Scheduling:         hubScheduling,
 		Logger:             logger,
 		GlobalDispatchGate: globalDispatchGate,
 		DispatchPacer:      dispatchPacer,
