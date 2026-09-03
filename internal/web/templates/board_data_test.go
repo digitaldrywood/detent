@@ -2634,8 +2634,11 @@ func TestBoardSnapshotRenders(t *testing.T) {
 			t.Fatalf("board snapshot missing %q", want)
 		}
 	}
-	if strings.Contains(html, "data-board-lane-toggle") || strings.Contains(html, `type="checkbox"`) {
-		t.Fatalf("board lane picker must not render legacy checkbox toggles:\n%s", html)
+	pickerStart := strings.Index(html, `id="board-lane-picker"`)
+	pickerEnd := pickerStart + strings.Index(html[pickerStart:], "</details>")
+	picker := html[pickerStart:pickerEnd]
+	if strings.Contains(picker, "data-board-lane-toggle") || strings.Contains(picker, `type="checkbox"`) {
+		t.Fatalf("board lane picker must not render legacy checkbox toggles:\n%s", picker)
 	}
 	if strings.Contains(html, `id="board-exceptions"`) {
 		t.Fatalf("default board snapshot should not render elevated blocked alerts:\n%s", html)

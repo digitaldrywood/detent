@@ -306,7 +306,7 @@ func TestAppSidebarContentRendersNavIconsAndTooltipMetadata(t *testing.T) {
 		`data-sidebar-nav-icon="settings"`,
 		`data-help-scope="sidebar-nav"`,
 		`data-help-term="sidebar-nav-board"`,
-		`aria-label="Board"`,
+		`aria-label="Work"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("sidebar missing %q:\n%s", want, html)
@@ -666,7 +666,7 @@ func TestAppShellTopbarTitle(t *testing.T) {
 	}{
 		{name: "project name wins", data: DashboardShellData{ProjectName: "gopher-ai", ActiveNav: "kanban", ProjectID: "gopher-ai"}, want: "gopher-ai"},
 		{name: "active nav label", data: DashboardShellData{ActiveNav: "reports"}, want: "Reports"},
-		{name: "board default", data: DashboardShellData{}, want: "Board"},
+		{name: "work default", data: DashboardShellData{}, want: "Work"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -34,6 +34,7 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 		{name: "hot path", projectID: "billing-api", variant: "hot-path"},
 		{name: "not found", projectID: "missing-project", variant: "not-found"},
 		{name: "startup loading", projectID: "dogfood", variant: "startup-loading"},
+		{name: "work error", projectID: "dogfood", variant: "work-error"},
 		{name: "transition blocked", projectID: "dogfood", variant: "transition-blocked"},
 		{name: "terminal", projectID: "dogfood", variant: "terminal"},
 		{name: "tracker refresh gap", projectID: "dogfood", variant: "tracker-refresh-gap"},

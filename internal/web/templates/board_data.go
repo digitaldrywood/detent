@@ -27,6 +27,7 @@ type boardView struct {
 	TPS         string
 	Spend       string
 	Lanes       []boardLaneView
+	Items       []workItemView
 	Visible     int
 	Total       int
 	HiddenCards int
@@ -879,6 +880,7 @@ type boardCardView struct {
 	MergeLaneStatus   string
 	MergeLaneDetail   string
 	MergeLaneKind     primitives.Kind
+	Work              workItemMetadata
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -949,7 +951,9 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		}
 		for _, card := range lane.Cards {
 			cardTerminal := projectKanbanTerminalState(lane.Title, projectKanbanTerminalStateSetForProject(data, card.ProjectID))
-			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(data, lane, card, cardTerminal, projectKanbanBoardScope(data), fallbackProjectID))
+			cardView := boardCardViewFromCard(data, lane, card, cardTerminal, projectKanbanBoardScope(data), fallbackProjectID)
+			laneView.Cards = append(laneView.Cards, cardView)
+			view.Items = append(view.Items, workItemViewFromCard(cardView))
 		}
 		view.Lanes = append(view.Lanes, laneView)
 		view.Total++
@@ -1347,6 +1351,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.MergeLaneDetail = card.MergeLaneDetail
 	view.MergeLaneKind = card.MergeLaneKind
 	view.CompactSignal = boardCardCompactSignal(view)
+	view.Work = workItemMetadataFromCard(data, card, view)
 	return view
 }
 

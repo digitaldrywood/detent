@@ -169,6 +169,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "project-not-found", Route: "/projects/missing-project", WaitSelector: "body", Page: "project", Variant: "not-found", ProjectID: "missing-project", Status: http.StatusNotFound},
 		{ID: "kanban-full-integration", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-startup-loading", Route: "/projects/dogfood/kanban", WaitSelector: "#snapshot", Page: "kanban", Variant: "startup-loading", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-work-error", Route: "/projects/dogfood/kanban", WaitSelector: "#work-list", Page: "kanban", Variant: "work-error", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-read-only", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "kanban-empty-lanes", Route: "/projects/agent-lab/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "project-empty", ProjectID: "agent-lab", KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-dense-overflow", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "dense-kanban", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},

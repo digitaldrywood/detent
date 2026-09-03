@@ -87,7 +87,7 @@ func appShellNavGroups(data DashboardShellData) []appNavGroup {
 		{
 			ID: "primary",
 			Items: []appNavItem{
-				{ID: "board", Label: "Board", Href: "/", Icon: "kanban", Active: active == "board"},
+				{ID: "board", Label: "Work", Href: "/", Icon: "kanban", Active: active == "board"},
 			},
 		},
 		{

@@ -629,10 +629,20 @@ test("board cards preserve native pan axes and horizontal lane swipes", async ({
       waitUntil: "domcontentloaded",
     });
     session = await page.context().newCDPSession(page);
+    const topbarToggle = page.getByRole("button", {
+      name: "More topbar controls",
+    });
+    const topbarControls = page.locator("[data-mobile-topbar-controls]");
     for (const density of ["compact", "cozy"]) {
-      await page
-        .locator(`[data-density-choice="${density}"]`)
-        .click({ force: true });
+      await topbarToggle.click();
+      await expect(topbarControls).toBeVisible();
+      await page.locator(`[data-density-choice="${density}"]`).click();
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-density",
+        density,
+      );
+      await topbarToggle.click();
+      await expect(topbarControls).toBeHidden();
 
       const lanes = page.locator("#board-lanes");
       const card = lanes

@@ -240,13 +240,16 @@ func issueFromWorkItem(item WorkItem) connector.Issue {
 	issue.Fields[hubWorkItemField] = strconv.FormatInt(int64(item.ID), 10)
 	issue.Metadata[hubWorkItemField] = strconv.FormatInt(int64(item.ID), 10)
 	issue.Metadata["hub_sync_status"] = string(item.SyncStatus)
+	if item.SourceSyncedAt != nil {
+		issue.Metadata["hub_source_synced_at"] = item.SourceSyncedAt.UTC().Format(time.RFC3339)
+	}
 	if item.WorkflowState != nil {
 		issue.State = item.WorkflowState.Name
 	}
 	if item.Queue != nil && item.Queue.PriorityRank != nil {
-		priority := *item.Queue.PriorityRank
+		priority := *item.Queue.PriorityRank + 1
 		issue.Priority = &priority
-		issue.PriorityName = queuePriorityName(priority)
+		issue.PriorityName = queuePriorityName(*item.Queue.PriorityRank)
 	}
 	for _, blocker := range item.Blockers {
 		state := ""
