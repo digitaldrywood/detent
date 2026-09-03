@@ -355,7 +355,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:         true,
 		},
 		{
-			name:         "July telemetry replay trips third clean completion without linked PR",
+			name:         "legacy telemetry replay fails open without dispatch start evidence",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressLegacyNoPRHistoryAttempt(2),
@@ -364,11 +364,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			diffStats:       DiffStats{Status: "clean"},
 			noProgressLimit: 3,
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
-			wantReason:      dispatchLoopDetectedReason,
-			wantConsecutive: 3,
-			wantBlocked:     true,
-			wantBlockReason: dispatchLoopDetectedReason,
-			wantComment:     "consecutive_no_progress_attempts: 3",
+			wantReason:      "completed_clean_diff_without_pull_request",
+			wantConsecutive: 0,
+			wantRetry:       true,
 		},
 		{
 			name:         "identical non-empty diff trips third completion without linked PR",
@@ -441,7 +439,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:       store.WorkAttemptTerminalSuccess,
 			wantReason:         "verifiable_non_diff_progress",
 			wantProgressKinds:  []string{"audit_artifact"},
-			wantConsecutive:    2,
+			wantConsecutive:    0,
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
@@ -454,7 +452,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			noProgressLimit:    3,
 			wantTerminal:       store.WorkAttemptTerminalNoProgress,
 			wantReason:         "completed_clean_diff_without_pull_request",
-			wantConsecutive:    2,
+			wantConsecutive:    0,
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "baseline prose", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "expanded prose without a machine artifact", nil),
@@ -567,6 +565,18 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			if diffStatsPresent(tt.diffStats) && tt.wantReason != workspaceHeadUnavailableReason && strings.TrimSpace(tt.diffStats.HeadSHA) == "" {
+				tt.diffStats.HeadSHA = "same-workspace-head"
+			}
+			dispatchStartDiff := tt.diffStats
+			if slices.Contains(tt.wantProgressKinds, "workspace_diff") {
+				dispatchStartDiff.FilesChanged = 0
+				dispatchStartDiff.AddedLines = 0
+				dispatchStartDiff.RemovedLines = 0
+				dispatchStartDiff.UnpushedCommits = 0
+				dispatchStartDiff.Fingerprint = ""
+				dispatchStartDiff.Status = "clean"
+			}
 
 			if tt.runningWorkpadBody != "" {
 				tt.runningIssue.Comments = []connector.IssueComment{{Body: tt.runningWorkpadBody, URL: "https://github.test/workpad"}}
@@ -614,6 +624,11 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				StartedAt:        base.Add(-time.Minute),
 				DiffStats:        tt.diffStats,
 				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.runningIssue, true),
+				DispatchLoopStart: dispatchLoopTestStart(
+					tt.runningIssue.State,
+					autoPromoteReworkSignatureFromIssue(tt.runningIssue, AutoPromoteSummaryFromIssue(tt.runningIssue)),
+					implementProgressDiffStatsFromDiffStats(dispatchStartDiff),
+				),
 			}
 			state.Running[tt.runningIssue.ID] = running
 			state.Claimed[tt.runningIssue.ID] = Claimed{Issue: tt.runningIssue, ClaimedAt: running.StartedAt}
@@ -2034,6 +2049,7 @@ func implementProgressStructuredWorkpad(status string, prose string, fields map[
 }
 
 func implementProgressHistoryAttempt(id int64, signature autoPromoteReworkSignature, terminal store.WorkAttemptTerminalState) store.WorkAttempt {
+	diff := implementProgressDiffStats{HeadSHA: "same-workspace-head", Status: "clean"}
 	return store.WorkAttempt{
 		ID:                 id,
 		ProjectID:          "detent",
@@ -2041,10 +2057,11 @@ func implementProgressHistoryAttempt(id int64, signature autoPromoteReworkSignat
 		Identifier:         "digitaldrywood/detent#1070",
 		IssueURL:           "https://github.test/digitaldrywood/detent/issues/1070",
 		WorkerType:         "agent",
+		Lane:               "In Progress",
 		Status:             store.WorkAttemptStatusTerminal,
 		TerminalState:      terminal,
 		CompletedAt:        time.Date(2026, 7, 8, 15, int(id), 0, 0, time.UTC),
-		WorkerMetadataJSON: implementProgressMetadataJSON(signature, terminal),
+		WorkerMetadataJSON: implementProgressMetadataJSONWithDiff(signature, diff, terminal),
 	}
 }
 
@@ -2071,6 +2088,7 @@ func implementProgressLegacyNoPRHistoryAttempt(id int64) store.WorkAttempt {
 }
 
 func implementProgressDependencyDeferralHistoryAttempt(id int64, identifier string, state string) store.WorkAttempt {
+	diff := implementProgressDiffStats{HeadSHA: "same-workspace-head", Status: "clean"}
 	return store.WorkAttempt{
 		ID:            id,
 		ProjectID:     "detent",
@@ -2078,17 +2096,20 @@ func implementProgressDependencyDeferralHistoryAttempt(id int64, identifier stri
 		Identifier:    "digitaldrywood/detent#1200",
 		IssueURL:      "https://github.test/digitaldrywood/detent/issues/1200",
 		WorkerType:    "agent",
+		Lane:          "In Progress",
 		Status:        store.WorkAttemptStatusTerminal,
 		TerminalState: store.WorkAttemptTerminalSuccess,
 		CompletedAt:   time.Date(2026, 8, 8, 18, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			"run_mode": runpkg.RunModeImplement,
+			"run_mode":                   runpkg.RunModeImplement,
+			dispatchLoopStartMetadataKey: dispatchLoopTestStart("In Progress", autoPromoteReworkSignature{}, diff),
 			implementProgressMetadataKey: implementProgressRecord{
 				Outcome:            string(store.WorkAttemptTerminalSuccess),
 				Reason:             implementDependencyDeferralReason,
 				DependencyDeferral: true,
 				DependencyBlockers: []implementDependencyBlocker{{ID: "blocker", Identifier: identifier, State: state}},
-				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
+				WorkspaceDiffStats: diff,
+				TrackerState:       "In Progress",
 			},
 		}),
 	}
@@ -2099,6 +2120,11 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 	if strings.TrimSpace(humanAction) != "" {
 		workpadStatus = "blocked"
 	}
+	diffStats = dispatchLoopTestRunnerDiff(diffStats)
+	lane := strings.TrimSpace(trackerState)
+	if lane == "" {
+		lane = "In Progress"
+	}
 	return store.WorkAttempt{
 		ID:            id,
 		ProjectID:     "detent",
@@ -2106,18 +2132,20 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 		Identifier:    "digitaldrywood/detent#1200",
 		IssueURL:      "https://github.test/digitaldrywood/detent/issues/1200",
 		WorkerType:    "agent",
+		Lane:          lane,
 		Status:        store.WorkAttemptStatusTerminal,
 		TerminalState: store.WorkAttemptTerminalSuccess,
 		CompletedAt:   time.Date(2026, 7, 11, 12, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			"run_mode": runpkg.RunModeImplement,
+			"run_mode":                   runpkg.RunModeImplement,
+			dispatchLoopStartMetadataKey: dispatchLoopTestStart(lane, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(diffStats)),
 			implementProgressMetadataKey: map[string]any{
 				"outcome":            string(store.WorkAttemptTerminalSuccess),
 				"reason":             "workspace_diff_present_without_pull_request",
 				"workspace_diffstat": implementProgressDiffStatsFromDiffStats(diffStats),
 				"workpad_status":     workpadStatus,
 				"human_action":       humanAction,
-				"tracker_state":      trackerState,
+				"tracker_state":      lane,
 			},
 		}),
 	}
@@ -2148,13 +2176,24 @@ func implementProgressStrandedHistoryAttempt(id int64, signature autoPromoteRewo
 }
 
 func implementProgressMetadataJSON(signature autoPromoteReworkSignature, terminal store.WorkAttemptTerminalState) string {
+	return implementProgressMetadataJSONWithDiff(
+		signature,
+		implementProgressDiffStats{HeadSHA: "same-workspace-head", Status: "clean"},
+		terminal,
+	)
+}
+
+func implementProgressMetadataJSONWithDiff(signature autoPromoteReworkSignature, diff implementProgressDiffStats, terminal store.WorkAttemptTerminalState) string {
 	return marshalWorkAttemptJSON(map[string]any{
-		"run_mode": runpkg.RunModeImplement,
+		"run_mode":                   runpkg.RunModeImplement,
+		dispatchLoopStartMetadataKey: dispatchLoopTestStart("In Progress", signature, diff),
 		implementProgressMetadataKey: implementProgressRecord{
-			Outcome:          string(terminal),
-			Reason:           "test_history",
-			CurrentSignature: implementProgressSignatureRecordFromSignature(signature),
-			CurrentHeadSHA:   signature.HeadSHA,
+			Outcome:            string(terminal),
+			Reason:             "test_history",
+			CurrentSignature:   implementProgressSignatureRecordFromSignature(signature),
+			CurrentHeadSHA:     signature.HeadSHA,
+			WorkspaceDiffStats: diff,
+			TrackerState:       "In Progress",
 		},
 	})
 }
@@ -2289,12 +2328,16 @@ type implementProgressAttemptStore struct {
 	history       []store.WorkAttempt
 	historyErr    error
 	completionErr error
+	heartbeatErr  error
 	completions   []store.WorkAttemptCompletion
+	starts        []store.WorkAttemptStart
+	heartbeats    []store.WorkAttemptHeartbeat
 	historyCalls  int
 	queries       []store.WorkAttemptHistoryQuery
 }
 
-func (s *implementProgressAttemptStore) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
+func (s *implementProgressAttemptStore) StartWorkAttempt(_ context.Context, attrs store.WorkAttemptStart) (int64, error) {
+	s.starts = append(s.starts, attrs)
 	return 1, nil
 }
 
@@ -2302,8 +2345,9 @@ func (s *implementProgressAttemptStore) WorkAttempt(context.Context, int64) (sto
 	return store.WorkAttempt{}, store.ErrNotFound
 }
 
-func (s *implementProgressAttemptStore) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
-	return nil
+func (s *implementProgressAttemptStore) RecordWorkAttemptHeartbeat(_ context.Context, attrs store.WorkAttemptHeartbeat) error {
+	s.heartbeats = append(s.heartbeats, attrs)
+	return s.heartbeatErr
 }
 
 func (s *implementProgressAttemptStore) CompleteWorkAttempt(_ context.Context, attrs store.WorkAttemptCompletion) error {

@@ -1430,6 +1430,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
 			initialArtifactEvidence = r.observeWorkspaceArtifactEvidence(runWorkspace, ctx, info, workspaceIssue, "initial")
 		}
+		r.publishDispatchLoopStart(req, recoveryState)
 		targetRefObserver = func(observerCtx context.Context) *DeliverableTargetRefEvidence {
 			postCommand := r.observeWorkspaceDeliverableState(runWorkspace, observerCtx, info, workspaceIssue, "post_command")
 			return deliverableTargetRefEvidence(info.Branch, initialDeliverableState, postCommand)
@@ -2444,6 +2445,23 @@ func artifactProgressEvidence(initial, current workspaceArtifactEvidenceObservat
 	}
 	evidence.Warning = strings.Join(warnings, "; ")
 	return evidence
+}
+
+func (r *Runner) publishDispatchLoopStart(req RunRequest, recovery *workspace.RecoveryState) {
+	if req.OnUsageUpdate == nil {
+		return
+	}
+	snapshot := DispatchLoopStartSnapshot{}
+	if recovery != nil {
+		snapshot.WorkspaceDiffAvailable = true
+		snapshot.WorkspaceHeadAvailable = strings.TrimSpace(recovery.HeadSHA) != ""
+		snapshot.DiffStats = diffStatsFromWorkspace(recovery.DiffStat)
+		snapshot.DiffStats.UnpushedCommits = recovery.UnpushedCommits
+		snapshot.DiffStats.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
+	}
+	if err := req.OnUsageUpdate(UsageUpdate{DispatchLoopStart: &snapshot}); err != nil && r.logger != nil {
+		r.logger.Warn("dispatch loop start snapshot publish failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", err)
+	}
 }
 
 func (r *Runner) workspaceDeliverableState(

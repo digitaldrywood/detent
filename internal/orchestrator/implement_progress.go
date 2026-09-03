@@ -81,6 +81,7 @@ type implementProgressRecord struct {
 	RejectedBlockerRefs    []string                          `json:"rejected_blocker_refs,omitempty"`
 	ProgressKinds          []string                          `json:"progress_kinds,omitempty"`
 	CompletionKind         string                            `json:"completion_kind,omitempty"`
+	DispatchLoopStart      dispatchLoopStartRecord           `json:"-"`
 }
 
 type implementProgressArtifactSnapshot struct {
@@ -750,6 +751,7 @@ func implementProgressRecordFromAttempt(attempt store.WorkAttempt) (implementPro
 func implementProgressRecordFromAnyAttempt(attempt store.WorkAttempt) (implementProgressRecord, bool) {
 	var root struct {
 		CompletionProgress implementProgressRecord `json:"completion_progress"`
+		DispatchLoopStart  dispatchLoopStartRecord `json:"dispatch_loop_start"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(attempt.WorkerMetadataJSON)), &root); err != nil {
 		return implementProgressRecord{}, false
@@ -758,6 +760,7 @@ func implementProgressRecordFromAnyAttempt(attempt store.WorkAttempt) (implement
 	if strings.TrimSpace(record.Outcome) == "" {
 		return implementProgressRecord{}, false
 	}
+	record.DispatchLoopStart = root.DispatchLoopStart
 	return record, true
 }
 

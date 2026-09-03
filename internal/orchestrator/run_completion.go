@@ -36,6 +36,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if !ok {
 		return
 	}
+	if event.usage.DispatchLoopStart != nil {
+		running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, *event.usage.DispatchLoopStart)
+	}
 
 	if event.usage.SessionID != "" {
 		running.SessionID = event.usage.SessionID
@@ -108,6 +111,10 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 		}
 		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
 		if err := o.workAttempts.RecordWorkAttemptHeartbeat(context.Background(), heartbeat); err != nil {
+			if event.usage.DispatchLoopStart != nil {
+				running.DispatchLoopStart.Persisted = false
+				state.Running[event.issueID] = running
+			}
 			if o.logger != nil {
 				o.logger.Warn("work attempt usage heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", event.issueID, "error", err)
 			}

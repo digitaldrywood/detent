@@ -137,6 +137,7 @@ type Running struct {
 	DispatchArtifactStatus      string
 	ArtifactStatusField         string
 	DeliverableKind             string
+	DispatchLoopStart           dispatchLoopStartRecord
 	StartedAt                   time.Time
 	WorkerHost                  string
 	ProcessIdentity             string

@@ -277,13 +277,16 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.Tokens.ModelContextWindow == nil || *result.Tokens.ModelContextWindow != modelContextWindow {
 		t.Fatalf("RunResult ModelContextWindow = %#v, want %d", result.Tokens.ModelContextWindow, modelContextWindow)
 	}
-	if len(usageUpdates) != 5 {
-		t.Fatalf("usage updates len = %d, want workspace start plus 4 agent updates", len(usageUpdates))
+	if len(usageUpdates) != 6 {
+		t.Fatalf("usage updates len = %d, want workspace start, dispatch baseline, plus 4 agent updates", len(usageUpdates))
 	}
 	if usageUpdates[0].LastEvent != "workspace_create_started" || !usageUpdates[0].LastEventAt.Equal(startedAt) {
 		t.Fatalf("workspace usage update = %#v, want startup progress", usageUpdates[0])
 	}
-	usageUpdates = usageUpdates[1:]
+	if usageUpdates[1].DispatchLoopStart == nil || !usageUpdates[1].DispatchLoopStart.WorkspaceDiffAvailable {
+		t.Fatalf("dispatch loop start update = %#v, want available workspace baseline", usageUpdates[1])
+	}
+	usageUpdates = usageUpdates[2:]
 	if usageUpdates[0].DetentSessionID != 42 || usageUpdates[0].LastEvent != string(AgentUpdateRuntimeIdentity) {
 		t.Fatalf("initial usage update = %#v, want configured route identity", usageUpdates[0])
 	}
@@ -3037,8 +3040,8 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
 		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
 	}
-	if len(usageUpdates) != 4 {
-		t.Fatalf("usage update count = %d, want workspace start, configured identity, and 2 token updates", len(usageUpdates))
+	if len(usageUpdates) != 5 {
+		t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
 	}
 	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
 		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
