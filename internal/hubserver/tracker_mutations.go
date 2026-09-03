@@ -35,7 +35,17 @@ func (d *database) Claim(ctx context.Context, request tracker.ClaimRequest) (lea
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	lease, err = d.claimInTransaction(ctx, tx, request, now)
+	if err != nil {
+		return tracker.Lease{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return tracker.Lease{}, fmt.Errorf("commit hub claim: %w", err)
+	}
+	return lease, nil
+}
 
+func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, now time.Time) (tracker.Lease, error) {
 	if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {
 		return tracker.Lease{}, err
 	}
@@ -50,9 +60,6 @@ func (d *database) Claim(ctx context.Context, request tracker.ClaimRequest) (lea
 	}
 	if found && current.session.ExpiresAt.After(now) {
 		if current.session.Machine.ID == request.MachineID && current.session.SessionID == request.SessionID {
-			if err := tx.Commit(); err != nil {
-				return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim: %w", err)
-			}
 			return leaseFromRecord(current), nil
 		}
 		return tracker.Lease{}, fmt.Errorf("%w: work item %d is held by lease %s", tracker.ErrLeaseConflict, request.WorkItemID, current.session.ID)
@@ -112,9 +119,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	}
 	if err := heartbeatMachine(ctx, tx, request.MachineID, now); err != nil {
 		return tracker.Lease{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return tracker.Lease{}, fmt.Errorf("commit hub claim: %w", err)
 	}
 	return tracker.Lease{
 		LeaseSummary: tracker.LeaseSummary{

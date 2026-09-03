@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +25,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/instancelock"
 )
 
-const testTimestamp = "2026-09-01T12:00:00Z"
+const (
+	testTimestamp     = "2026-09-01T12:00:00Z"
+	testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
+)
 
 func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 	t.Parallel()
@@ -53,6 +57,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 	}
 
 	wantTables := []string{
+		"api_tokens",
 		"github_hydration_requests",
 		"github_outbox",
 		"github_webhook_inbox",
@@ -633,6 +638,9 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	cfg.Logger = discardLogger()
+	if len(cfg.InitialAdminToken) == 0 {
+		cfg.InitialAdminToken = []byte(testHubAdminToken)
+	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -643,6 +651,10 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		}
 	})
 	return service
+}
+
+func authorizeHubTestRequest(request *http.Request) {
+	request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
 }
 
 func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {

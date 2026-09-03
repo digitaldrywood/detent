@@ -195,7 +195,7 @@ func (m WorkflowLabelMutation) outboxRecord() (outboxRecord, error) {
 		issueID:        m.IssueID,
 		kind:           MutationWorkflowLabel,
 		desired:        desired,
-		coalesceKey:    fmt.Sprintf("workflow-label:%d:%d", m.RepositoryID, m.IssueID),
+		coalesceKey:    fmt.Sprintf("managed-label:%d:%d:%s", m.RepositoryID, m.IssueID, strings.ToLower(prefix)),
 	}
 	return record, record.validate()
 }
