@@ -17,9 +17,16 @@ const (
 
 var (
 	ErrInvalidCandidateQuery = errors.New("invalid tracker candidate query")
+	ErrInvalidClaimRequest   = errors.New("invalid tracker claim request")
+	ErrInvalidLeaseRequest   = errors.New("invalid tracker lease request")
+	ErrInvalidWorkEvent      = errors.New("invalid tracker work event")
 	ErrInvalidWorkItemID     = errors.New("invalid tracker work item ID")
-	ErrNotImplemented        = errors.New("tracker operation not implemented")
+	ErrLeaseConflict         = errors.New("tracker lease conflict")
+	ErrLeaseNotFound         = errors.New("tracker lease not found")
+	ErrStaleFencingToken     = errors.New("stale tracker fencing token")
 	ErrStoreRequired         = errors.New("tracker store is required")
+	ErrWorkItemNotFound      = errors.New("tracker work item not found")
+	ErrMachineNotFound       = errors.New("tracker machine not found")
 )
 
 type WorkItemID int64
@@ -268,12 +275,19 @@ type ReleaseRequest struct {
 
 type Lease struct {
 	LeaseSummary
-	WorkItemID WorkItemID `json:"work_item_id"`
+	WorkItemID      WorkItemID      `json:"work_item_id"`
+	PreviousSession *SessionSummary `json:"previous_session,omitempty"`
+}
+
+type SessionSummary struct {
+	LeaseSummary
+	ReleasedAt *time.Time `json:"released_at,omitempty"`
+	LastEvent  *WorkEvent `json:"last_event,omitempty"`
 }
 
 type WorkEvent struct {
 	WorkItemID   WorkItemID     `json:"work_item_id"`
-	FencingToken *FencingToken  `json:"fencing_token,omitempty"`
+	FencingToken FencingToken   `json:"fencing_token"`
 	MachineID    MachineID      `json:"machine_id,omitempty"`
 	SessionID    string         `json:"session_id,omitempty"`
 	RunID        string         `json:"run_id,omitempty"`
@@ -295,6 +309,10 @@ type Tracker interface {
 type Store interface {
 	ListCandidateRecords(context.Context, CandidateQuery) ([]Record, error)
 	GetWorkItemRecords(context.Context, []WorkItemID) ([]Record, error)
+	Claim(context.Context, ClaimRequest) (Lease, error)
+	Renew(context.Context, RenewRequest) (Lease, error)
+	Release(context.Context, ReleaseRequest) error
+	AppendEvent(context.Context, WorkEvent) error
 }
 
 func NewStore(store Store) (Tracker, error) {
@@ -336,18 +354,18 @@ func (t *storeTracker) GetWorkItems(ctx context.Context, ids []WorkItemID) ([]Wo
 	return normalizeRecords(records), nil
 }
 
-func (*storeTracker) Claim(context.Context, ClaimRequest) (Lease, error) {
-	return Lease{}, ErrNotImplemented
+func (t *storeTracker) Claim(ctx context.Context, request ClaimRequest) (Lease, error) {
+	return t.store.Claim(ctx, request)
 }
 
-func (*storeTracker) Renew(context.Context, RenewRequest) (Lease, error) {
-	return Lease{}, ErrNotImplemented
+func (t *storeTracker) Renew(ctx context.Context, request RenewRequest) (Lease, error) {
+	return t.store.Renew(ctx, request)
 }
 
-func (*storeTracker) Release(context.Context, ReleaseRequest) error {
-	return ErrNotImplemented
+func (t *storeTracker) Release(ctx context.Context, request ReleaseRequest) error {
+	return t.store.Release(ctx, request)
 }
 
-func (*storeTracker) AppendEvent(context.Context, WorkEvent) error {
-	return ErrNotImplemented
+func (t *storeTracker) AppendEvent(ctx context.Context, event WorkEvent) error {
+	return t.store.AppendEvent(ctx, event)
 }

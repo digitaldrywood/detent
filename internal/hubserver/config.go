@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -22,6 +24,7 @@ const (
 var (
 	ErrBackupSource            = errors.New("hub backup destination matches the source database")
 	ErrDatabaseIdentity        = errors.New("database is not a Detent Hub database")
+	ErrInvalidClock            = errors.New("hub clock returned a zero time")
 	ErrNetworkFilesystem       = errors.New("hub database requires a local filesystem")
 	ErrNotReady                = errors.New("hub service is not ready")
 	ErrOutboxDisabled          = errors.New("hub github outbox is disabled")
@@ -49,6 +52,7 @@ type Config struct {
 	validateDatabaseFilesystem func(string) error
 	now                        func() time.Time
 	jitter                     func() float64
+	newLeaseID                 func() string
 }
 
 func (c Config) normalized() Config {
@@ -96,6 +100,9 @@ func (c Config) normalized() Config {
 	}
 	if c.jitter == nil {
 		c.jitter = randomJitter
+	}
+	if c.newLeaseID == nil {
+		c.newLeaseID = uuid.NewString
 	}
 	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
 	return c
