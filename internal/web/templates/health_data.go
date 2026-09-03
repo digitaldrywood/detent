@@ -98,6 +98,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail, view.DetailAt, view.DetailRelative = backendCapacityOutageDetailParts(backendFaults[0], snapshot.GeneratedAt)
 		return view
 	}
+	if refreshSnapshotPartiallyFailed(snapshot) {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Tracker refresh is partially degraded."
+		view.Detail = refreshPartialFailureSummary(snapshot) + ". Healthy project data remains live."
+		return view
+	}
 	if refreshSnapshotFailed(snapshot) {
 		view.Kind = primitives.KindErr
 		view.Verdict = "Tracker refresh failed."

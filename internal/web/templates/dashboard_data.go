@@ -1156,6 +1156,9 @@ func runningCountLabel(snapshot telemetry.Snapshot) string {
 		return formatCount(count)
 	}
 	if !snapshot.Runtime.Available() || !snapshot.Runtime.Complete && count == 0 {
+		if refreshSnapshotPartiallyFailed(snapshot) && snapshot.Runtime.Available() {
+			return formatCount(count) + "+"
+		}
 		return "unknown"
 	}
 	if !snapshot.Runtime.Complete {
@@ -1755,7 +1758,9 @@ func snapshotReady(snapshot telemetry.Snapshot) bool {
 		return false
 	}
 	status := snapshotReadinessStatus(snapshot)
-	return status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind
+	return status == telemetry.RefreshStatusReady ||
+		status == telemetry.RefreshStatusBehind ||
+		status == telemetry.RefreshStatusPartial
 }
 
 func snapshotUsesStartupCache(snapshot telemetry.Snapshot) bool {

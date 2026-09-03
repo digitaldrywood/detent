@@ -1796,6 +1796,8 @@ func mergeInstanceValue(current, next string, mixed string) string {
 func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 	currentHadSignal := refreshHasSignal(current)
 	nextHadSignal := refreshHasSignal(next)
+	currentStatus := current.ReadinessStatus()
+	nextStatus := next.ReadinessStatus()
 	if current.PollIntervalSeconds == 0 ||
 		(next.PollIntervalSeconds > 0 && next.PollIntervalSeconds < current.PollIntervalSeconds) {
 		current.PollIntervalSeconds = next.PollIntervalSeconds
@@ -1831,14 +1833,18 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 	current.Manual = mergeRefreshAttempt(current.Manual, next.Manual)
 	switch {
 	case !currentHadSignal && nextHadSignal:
-		current.Status = next.ReadinessStatus()
+		current.Status = nextStatus
 	case currentHadSignal && !nextHadSignal:
-		current.Status = current.ReadinessStatus()
-	case current.ReadinessStatus() == telemetry.RefreshStatusDegraded || next.ReadinessStatus() == telemetry.RefreshStatusDegraded:
+		current.Status = currentStatus
+	case currentStatus == telemetry.RefreshStatusPartial || nextStatus == telemetry.RefreshStatusPartial:
+		current.Status = telemetry.RefreshStatusPartial
+	case currentStatus == telemetry.RefreshStatusDegraded && nextStatus == telemetry.RefreshStatusDegraded:
 		current.Status = telemetry.RefreshStatusDegraded
-	case current.ReadinessStatus() == telemetry.RefreshStatusInitializing || next.ReadinessStatus() == telemetry.RefreshStatusInitializing:
+	case currentStatus == telemetry.RefreshStatusDegraded || nextStatus == telemetry.RefreshStatusDegraded:
+		current.Status = telemetry.RefreshStatusPartial
+	case currentStatus == telemetry.RefreshStatusInitializing || nextStatus == telemetry.RefreshStatusInitializing:
 		current.Status = telemetry.RefreshStatusInitializing
-	case current.ReadinessStatus() == telemetry.RefreshStatusBehind || next.ReadinessStatus() == telemetry.RefreshStatusBehind:
+	case currentStatus == telemetry.RefreshStatusBehind || nextStatus == telemetry.RefreshStatusBehind:
 		current.Status = telemetry.RefreshStatusBehind
 	case currentHadSignal || nextHadSignal:
 		current.Status = telemetry.RefreshStatusReady

@@ -13,6 +13,9 @@ func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
 	if refreshSnapshotFailed(snapshot) {
 		return primitives.KindErr
 	}
+	if refreshSnapshotPartiallyFailed(snapshot) {
+		return primitives.KindWarn
+	}
 	if snapshot.Refresh.Status == telemetry.RefreshStatusInitializing {
 		return primitives.KindNeutral
 	}
@@ -41,6 +44,9 @@ func refreshFreshnessLabel(snapshot telemetry.Snapshot) string {
 	if refreshSnapshotFailed(snapshot) {
 		return "Refresh failed"
 	}
+	if refreshSnapshotPartiallyFailed(snapshot) {
+		return refreshPartialFailureSummary(snapshot)
+	}
 	if snapshot.LastKnown {
 		return "Last-known data"
 	}
@@ -55,6 +61,22 @@ func refreshFreshnessLabel(snapshot telemetry.Snapshot) string {
 	default:
 		return "Waiting for data"
 	}
+}
+
+func refreshPartialFailureSummary(snapshot telemetry.Snapshot) string {
+	failures := snapshot.RefreshFailures()
+	projectIDs := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		if projectID := strings.TrimSpace(failure.ProjectID); projectID != "" {
+			projectIDs = append(projectIDs, projectID)
+		}
+	}
+	sort.Strings(projectIDs)
+	label := boardCountLabel(len(failures), "project degraded", "projects degraded")
+	if len(projectIDs) > 0 {
+		label += " · " + strings.Join(projectIDs, ", ")
+	}
+	return label
 }
 
 func refreshFreshnessSummary(snapshot telemetry.Snapshot) string {

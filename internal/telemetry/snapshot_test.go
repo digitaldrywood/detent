@@ -699,6 +699,14 @@ func TestRefreshReadinessStatus(t *testing.T) {
 			want: telemetry.RefreshStatusDegraded,
 		},
 		{
+			name: "partial fleet preserves project error",
+			value: telemetry.Refresh{
+				Status:    telemetry.RefreshStatusPartial,
+				LastError: "one project unavailable",
+			},
+			want: telemetry.RefreshStatusPartial,
+		},
+		{
 			name: "loop behind remains operational",
 			value: telemetry.Refresh{
 				Status: telemetry.RefreshStatusBehind,
@@ -777,6 +785,57 @@ func TestRefreshReadinessStatusAt(t *testing.T) {
 			}
 			if refresh.NextRefreshOverdue != tt.wantOverdue {
 				t.Fatalf("NextRefreshOverdue = %v, want %v", refresh.NextRefreshOverdue, tt.wantOverdue)
+			}
+		})
+	}
+}
+
+func TestSnapshotPartialRefreshWithFreshness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 0, 0, 0, time.UTC)
+	invalidLastRefreshAt := now.Add(-10 * time.Minute)
+	invalidErrorAt := now.Add(-time.Minute)
+	tests := []struct {
+		name       string
+		healthyAge time.Duration
+		wantStatus telemetry.RefreshStatus
+	}{
+		{name: "invalid project source does not stale healthy fleet", healthyAge: time.Minute, wantStatus: telemetry.RefreshStatusPartial},
+		{name: "last healthy project becomes stale", healthyAge: 3 * time.Minute, wantStatus: telemetry.RefreshStatusDegraded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			healthyLastRefreshAt := now.Add(-tt.healthyAge)
+			snapshot := (telemetry.Snapshot{
+				Refresh: telemetry.Refresh{
+					Status:            telemetry.RefreshStatusPartial,
+					StaleAfterSeconds: 120,
+					LastRefreshAt:     &healthyLastRefreshAt,
+					LastError:         "pyroapex workflow invalid",
+					LastErrorAt:       &invalidErrorAt,
+					Sources: []telemetry.RefreshSource{
+						{ProjectID: "detent", Name: telemetry.RefreshSourceProject, LastSuccessAt: &healthyLastRefreshAt},
+						{ProjectID: "pyroapex", Name: telemetry.RefreshSourceProject, LastSuccessAt: &invalidLastRefreshAt, Degraded: true, LastError: "pyroapex workflow invalid", LastErrorAt: &invalidErrorAt},
+					},
+				},
+				Projects: []telemetry.ProjectSnapshot{
+					{
+						Project: telemetry.Project{ID: "detent"},
+						Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, StaleAfterSeconds: 120, LastRefreshAt: &healthyLastRefreshAt},
+					},
+					{
+						Project: telemetry.Project{ID: "pyroapex"},
+						Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, StaleAfterSeconds: 120, LastRefreshAt: &invalidLastRefreshAt, LastError: "pyroapex workflow invalid", LastErrorAt: &invalidErrorAt},
+					},
+				},
+			}).WithFreshness(now)
+			if got := snapshot.Refresh.ReadinessStatus(); got != tt.wantStatus {
+				t.Fatalf("ReadinessStatus() = %q, want %q", got, tt.wantStatus)
+			}
+			if tt.wantStatus == telemetry.RefreshStatusPartial && snapshot.Refresh.LastError != "pyroapex workflow invalid" {
+				t.Fatalf("LastError = %q, want invalid project error", snapshot.Refresh.LastError)
 			}
 		})
 	}

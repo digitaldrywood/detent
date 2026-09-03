@@ -1638,6 +1638,128 @@ func TestBoardFiguresExposeIncompleteWorkloadProjection(t *testing.T) {
 	}
 }
 
+func TestPartialProjectRefreshPresentation(t *testing.T) {
+	t.Parallel()
+
+	const validationError = "create project pyroapex: validate project workflow: schedule_ownership.enabled must be true when scheduled work is configured"
+	now := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)
+	lastErrorAt := now.Add(-time.Minute)
+	liveSection := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, ObservedAt: now, Complete: true}
+	partialSnapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Tracker:     telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed, ObservedAt: now},
+		Runtime:     telemetry.SnapshotSection{Source: telemetry.SnapshotSourceMixed, ObservedAt: now},
+		Refresh: telemetry.Refresh{
+			Status:        telemetry.RefreshStatusPartial,
+			LastRefreshAt: &now,
+			LastError:     validationError,
+			LastErrorAt:   &lastErrorAt,
+		},
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent"},
+				Tracker: liveSection,
+				Runtime: liveSection,
+				Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, LastRefreshAt: &now},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex"},
+				Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown},
+				Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown},
+				Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: validationError, LastErrorAt: &lastErrorAt},
+			},
+		},
+	}
+	recoveredSnapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Tracker:     liveSection,
+		Runtime:     liveSection,
+		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady, LastRefreshAt: &now},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent"}, Tracker: liveSection, Runtime: liveSection, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, LastRefreshAt: &now}},
+			{Project: telemetry.Project{ID: "pyroapex"}, Tracker: liveSection, Runtime: liveSection, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, LastRefreshAt: &now}},
+		},
+	}
+	tests := []struct {
+		name          string
+		snapshot      telemetry.Snapshot
+		wantKind      primitives.Kind
+		wantLabel     string
+		wantLiveLabel string
+		wantHealth    string
+		wantAlerts    int
+		wantCount     string
+	}{
+		{
+			name:          "invalid project leaves healthy data visible",
+			snapshot:      partialSnapshot,
+			wantKind:      primitives.KindWarn,
+			wantLabel:     "1 project degraded · pyroapex",
+			wantLiveLabel: "Live · 1 project degraded · pyroapex",
+			wantHealth:    "Tracker refresh is partially degraded.",
+			wantAlerts:    1,
+			wantCount:     "0+",
+		},
+		{
+			name:          "successful refresh clears degradation",
+			snapshot:      recoveredSnapshot,
+			wantKind:      primitives.KindOK,
+			wantLabel:     "Data current",
+			wantLiveLabel: "Live · data current",
+			wantHealth:    "All systems nominal.",
+			wantCount:     "0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := refreshFreshnessKind(tt.snapshot); got != tt.wantKind {
+				t.Fatalf("refreshFreshnessKind() = %q, want %q", got, tt.wantKind)
+			}
+			if got := refreshFreshnessLabel(tt.snapshot); got != tt.wantLabel {
+				t.Fatalf("refreshFreshnessLabel() = %q, want %q", got, tt.wantLabel)
+			}
+			data := DashboardShellData{Snapshot: tt.snapshot}
+			if got := appLiveStatusLabel(data); got != tt.wantLiveLabel {
+				t.Fatalf("appLiveStatusLabel() = %q, want %q", got, tt.wantLiveLabel)
+			}
+			if got := appShellHealthKind(data); got != tt.wantKind {
+				t.Fatalf("appShellHealthKind() = %q, want %q", got, tt.wantKind)
+			}
+			view := healthViewFromDashboard(DashboardData{Snapshot: tt.snapshot})
+			if view.Verdict != tt.wantHealth {
+				t.Fatalf("health verdict = %q, want %q", view.Verdict, tt.wantHealth)
+			}
+			alerts := boardAlerts(tt.snapshot)
+			if len(alerts) != tt.wantAlerts {
+				t.Fatalf("boardAlerts() = %#v, want %d", alerts, tt.wantAlerts)
+			}
+			for _, figure := range boardFigures(tt.snapshot) {
+				if figure.ID != "fig-completed" && figure.Value != tt.wantCount {
+					t.Fatalf("%s value = %q, want %q", figure.ID, figure.Value, tt.wantCount)
+				}
+			}
+			if tt.wantAlerts == 0 {
+				return
+			}
+			alert := alerts[0]
+			if alert.Kind != boardAlertKindPartialRefresh || alert.DeepLink != "/health/ui" || len(alert.DetailRows) != 1 {
+				t.Fatalf("partial refresh alert = %#v", alert)
+			}
+			if row := alert.DetailRows[0]; row.Label != "pyroapex" || !strings.Contains(row.Detail, validationError) {
+				t.Fatalf("partial refresh alert row = %#v", row)
+			}
+			if !strings.Contains(view.Detail, "pyroapex") {
+				t.Fatalf("health detail = %q, want affected project", view.Detail)
+			}
+			rows := healthRefreshFailureRows(tt.snapshot.RefreshFailures())
+			if len(rows) != 1 || !strings.Contains(rows[0].Component, "pyroapex") || !strings.Contains(rows[0].Detail, validationError) {
+				t.Fatalf("health refresh rows = %#v, want matching pyroapex failure", rows)
+			}
+		})
+	}
+}
+
 func TestBoardExceptionsRequireOptIn(t *testing.T) {
 	data := boardTestData()
 	if got := boardExceptions(data, true); len(got) != 0 {

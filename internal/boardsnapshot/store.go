@@ -197,7 +197,7 @@ func Eligible(snapshot telemetry.Snapshot) bool {
 		return true
 	}
 	status := snapshot.Refresh.ReadinessStatus()
-	if status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind {
+	if status == telemetry.RefreshStatusReady || status == telemetry.RefreshStatusBehind || status == telemetry.RefreshStatusPartial {
 		return true
 	}
 	return status == telemetry.RefreshStatusDegraded && carriesTrackerData(snapshot)

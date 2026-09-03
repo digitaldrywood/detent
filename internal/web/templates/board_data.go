@@ -37,6 +37,7 @@ type boardAlertKind string
 
 const (
 	boardAlertKindLastKnown              boardAlertKind = "board-last-known"
+	boardAlertKindPartialRefresh         boardAlertKind = "project-refresh-degraded"
 	boardAlertKindFailureBreaker         boardAlertKind = "project-failure-breaker"
 	boardAlertKindDispatchStall          boardAlertKind = "dispatch-stall"
 	boardAlertKindTrackerUnavailable     boardAlertKind = "tracker-unavailable"
@@ -59,6 +60,7 @@ const (
 	boardAlertSeverityDispatchStall                     = 575
 	boardAlertSeverityLastKnown                         = 600
 	boardAlertSeverityStrandedActive                    = 580
+	boardAlertSeverityPartialRefresh                    = 570
 )
 
 type boardAlert struct {
@@ -101,6 +103,9 @@ type boardStalenessDismissal struct {
 func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+8)
 	if alert, ok := boardLastKnownAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardPartialRefreshAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardFailureBreakerAlert(snapshot); ok {
@@ -492,7 +497,40 @@ func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 }
 
 func refreshSnapshotFailed(snapshot telemetry.Snapshot) bool {
-	return len(snapshot.RefreshFailures()) > 0
+	return !refreshSnapshotPartiallyFailed(snapshot) && len(snapshot.RefreshFailures()) > 0
+}
+
+func refreshSnapshotPartiallyFailed(snapshot telemetry.Snapshot) bool {
+	return snapshot.Refresh.Partial() && len(snapshot.RefreshFailures()) > 0
+}
+
+func boardPartialRefreshAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if !refreshSnapshotPartiallyFailed(snapshot) {
+		return boardAlert{}, false
+	}
+	failures := snapshot.RefreshFailures()
+	rows := make([]boardAlertDetailRow, 0, len(failures))
+	for index, failure := range failures {
+		projectID := diagnosticsConditionProject(failure.ProjectID)
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-partial-refresh-" + boardAlertRowSlug(projectID, index),
+			Label:   projectID,
+			Summary: "Project unavailable",
+			Detail:  refreshFailureDetail(failure),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-partial-refresh",
+		Kind:          boardAlertKindPartialRefresh,
+		Severity:      boardAlertSeverityPartialRefresh,
+		Tone:          primitives.KindWarn,
+		TerseSummary:  refreshPartialFailureSummary(snapshot),
+		DetailSummary: "Healthy project data remains live while affected projects are unavailable.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
 }
 
 func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
@@ -1090,6 +1128,9 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 func boardWorkloadCountLabel(snapshot telemetry.Snapshot, count int) string {
 	if telemetry.BoardWorkloadComplete(snapshot) {
 		return formatCount(count)
+	}
+	if refreshSnapshotPartiallyFailed(snapshot) {
+		return formatCount(count) + "+"
 	}
 	if count == 0 {
 		return "unknown"
