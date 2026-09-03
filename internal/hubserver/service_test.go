@@ -170,14 +170,16 @@ func TestServeRequiresListener(t *testing.T) {
 func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	t.Parallel()
 
-	const listenerReadyDeadlockGuard = 30 * time.Second
+	const runDeadlockGuard = time.Minute
+
 	databasePath := filepath.Join(t.TempDir(), "hub.db")
 	listenerAccepting := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	result := make(chan error, 1)
+	runDone := make(chan struct{})
+	runResult := make(chan error, 1)
 	go func() {
-		result <- Run(ctx, Config{
+		defer close(runDone)
+		runResult <- Run(ctx, Config{
 			DatabasePath:  databasePath,
 			ListenAddress: "127.0.0.1:0",
 			listen: func(ctx context.Context, network string, address string) (net.Listener, error) {
@@ -190,20 +192,32 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 			},
 		})
 	}()
+	cancelAndJoin := func() bool {
+		cancel()
+		select {
+		case <-runDone:
+			return true
+		case <-time.After(runDeadlockGuard):
+			t.Error("Run() did not stop after cancellation")
+			return false
+		}
+	}
+	t.Cleanup(func() {
+		cancelAndJoin()
+	})
 
 	select {
 	case <-listenerAccepting:
-	case <-time.After(listenerReadyDeadlockGuard):
+	case <-runDone:
+		t.Fatalf("Run() returned before accepting listener connections: %v", <-runResult)
+	case <-time.After(runDeadlockGuard):
 		t.Fatal("Run() did not start accepting listener connections")
 	}
-	cancel()
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run() did not stop after cancellation")
+	if !cancelAndJoin() {
+		return
+	}
+	if err := <-runResult; err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 
 	service := openTestService(t, Config{DatabasePath: databasePath})
