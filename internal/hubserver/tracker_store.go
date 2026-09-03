@@ -56,15 +56,13 @@ LEFT JOIN queue_entries q ON q.id = (
 
 const candidateOrder = `
 ORDER BY
-  CASE WHEN q.priority_override IS NULL THEN 1 ELSE 0 END,
-  q.priority_override,
+  CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  q.rank,
+  trim(q.rank),
   i.created_at,
-  r.github_owner,
-  r.github_name,
-  i.github_number,
-  i.id
+  lower(trim(r.github_owner)),
+  lower(trim(r.github_name)),
+  i.github_number
 LIMIT ?`
 
 type databaseQueryer interface {
@@ -87,11 +85,11 @@ func (d *database) ListCandidateRecords(ctx context.Context, query tracker.Candi
 		"lower(trim(i.github_state)) = 'open'",
 		"ws.id IS NOT NULL",
 		"ws.terminal = 0",
+		"lower(trim(ws.detent_state)) <> 'cancelled'",
+		"ws.dispatchable = 1",
 	}
 	args := []any{query.Scope, query.Scope, query.Scope}
-	if len(workflowStates) == 0 {
-		clauses = append(clauses, "ws.dispatchable = 1")
-	} else {
+	if len(workflowStates) > 0 {
 		clauses = append(clauses, "lower(ws.detent_state) IN ("+placeholders(len(workflowStates))+")")
 		for _, state := range workflowStates {
 			args = append(args, state)

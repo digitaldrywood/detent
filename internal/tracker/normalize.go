@@ -74,6 +74,11 @@ func normalizeRecords(records []Record) []WorkItem {
 }
 
 func deriveDispatchability(item WorkItem) Dispatchability {
+	reasons := deriveDispatchReasons(item, time.Time{}, "")
+	return Dispatchability{Dispatchable: len(reasons) == 0, Reasons: reasons}
+}
+
+func deriveDispatchReasons(item WorkItem, evaluatedAt time.Time, targetMachineID MachineID) []DispatchReason {
 	reasons := make([]DispatchReason, 0)
 	switch item.SourceState {
 	case SourceStateClosed:
@@ -93,7 +98,7 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 
 	for i := range item.Blockers {
 		blocker := item.Blockers[i]
-		if blocker.SourceState == SourceStateClosed || blocker.WorkflowState != nil && blocker.WorkflowState.Terminal {
+		if blocker.WorkflowState != nil && blocker.WorkflowState.Terminal {
 			continue
 		}
 		blockerID := blocker.ID
@@ -104,11 +109,12 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 		})
 	}
 
-	if item.ActiveLease != nil {
+	if item.ActiveLease != nil && (evaluatedAt.IsZero() || item.ActiveLease.ExpiresAt.After(evaluatedAt)) && (targetMachineID == "" || item.ActiveLease.Machine.ID != targetMachineID) {
 		reasons = append(reasons, DispatchReason{
-			Code:    DispatchReasonLeaseActive,
-			Message: "work item has an active lease",
-			LeaseID: item.ActiveLease.ID,
+			Code:      DispatchReasonLeaseActive,
+			Message:   "work item has an active lease held by another machine",
+			LeaseID:   item.ActiveLease.ID,
+			MachineID: item.ActiveLease.Machine.ID,
 		})
 	}
 	switch item.SyncStatus {
@@ -118,7 +124,7 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 		reasons = append(reasons, DispatchReason{Code: DispatchReasonSyncStale, Message: "GitHub projection is stale"})
 	}
 
-	return Dispatchability{Dispatchable: len(reasons) == 0, Reasons: reasons}
+	return reasons
 }
 
 func normalizeRepository(repository RepositoryReference) RepositoryReference {

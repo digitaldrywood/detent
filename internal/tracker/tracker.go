@@ -8,6 +8,13 @@ import (
 
 const DefaultCandidateLimit = 100
 
+const (
+	QueuePriorityUrgent = iota
+	QueuePriorityHigh
+	QueuePriorityNormal
+	QueuePriorityLow
+)
+
 var (
 	ErrInvalidCandidateQuery = errors.New("invalid tracker candidate query")
 	ErrInvalidWorkItemID     = errors.New("invalid tracker work item ID")
@@ -53,6 +60,13 @@ const (
 	DispatchReasonWorkflowStateNotDispatchable DispatchReasonCode = "workflow_state_not_dispatchable"
 	DispatchReasonBlockerUnresolved            DispatchReasonCode = "blocker_unresolved"
 	DispatchReasonLeaseActive                  DispatchReasonCode = "lease_active"
+	DispatchReasonRepositoryConcurrencyLimit   DispatchReasonCode = "repository_concurrency_limit"
+	DispatchReasonProjectConcurrencyLimit      DispatchReasonCode = "project_concurrency_limit"
+	DispatchReasonNoCompatibleMachine          DispatchReasonCode = "no_compatible_machine"
+	DispatchReasonMachineUnhealthy             DispatchReasonCode = "machine_unhealthy"
+	DispatchReasonMachineCapacityFull          DispatchReasonCode = "machine_capacity_full"
+	DispatchReasonOperatorPaused               DispatchReasonCode = "operator_paused"
+	DispatchReasonSyncUnsafe                   DispatchReasonCode = "sync_unsafe"
 	DispatchReasonSyncError                    DispatchReasonCode = "sync_error"
 	DispatchReasonSyncStale                    DispatchReasonCode = "sync_stale"
 )
@@ -156,11 +170,48 @@ type DispatchReason struct {
 	Message    string             `json:"message"`
 	WorkItemID *WorkItemID        `json:"work_item_id,omitempty"`
 	LeaseID    LeaseID            `json:"lease_id,omitempty"`
+	Repository RepositoryID       `json:"repository_id,omitempty"`
+	Scope      string             `json:"scope,omitempty"`
+	MachineID  MachineID          `json:"machine_id,omitempty"`
+	Active     int                `json:"active,omitempty"`
+	Limit      int                `json:"limit,omitempty"`
 }
 
 type Dispatchability struct {
 	Dispatchable bool             `json:"dispatchable"`
 	Reasons      []DispatchReason `json:"reasons"`
+}
+
+type ConcurrencyUsage struct {
+	Active int `json:"active"`
+	Limit  int `json:"limit"`
+}
+
+type MachineAvailability struct {
+	ID            MachineID      `json:"id"`
+	Healthy       bool           `json:"healthy"`
+	Capacity      int            `json:"capacity"`
+	ActiveLeases  int            `json:"active_leases"`
+	RepositoryIDs []RepositoryID `json:"repository_ids,omitempty"`
+	ProjectScopes []string       `json:"project_scopes,omitempty"`
+}
+
+type DispatchSnapshot struct {
+	EvaluatedAt            time.Time                         `json:"evaluated_at"`
+	TargetMachineID        MachineID                         `json:"target_machine_id,omitempty"`
+	RepositoryConcurrency  map[RepositoryID]ConcurrencyUsage `json:"repository_concurrency,omitempty"`
+	ProjectConcurrency     map[string]ConcurrencyUsage       `json:"project_concurrency,omitempty"`
+	Machines               []MachineAvailability             `json:"machines"`
+	OperatorPaused         bool                              `json:"operator_paused"`
+	PausedRepositories     []RepositoryID                    `json:"paused_repositories,omitempty"`
+	PausedProjects         []string                          `json:"paused_projects,omitempty"`
+	SyncSafetyBlocked      bool                              `json:"sync_safety_blocked"`
+	SyncUnsafeRepositories []RepositoryID                    `json:"sync_unsafe_repositories,omitempty"`
+}
+
+type DispatchQueue struct {
+	Dispatchable    []WorkItem `json:"dispatchable"`
+	NonDispatchable []WorkItem `json:"non_dispatchable"`
 }
 
 type WorkItem struct {
@@ -231,6 +282,7 @@ type WorkEvent struct {
 
 type Tracker interface {
 	ListCandidates(context.Context, CandidateQuery) ([]WorkItem, error)
+	ListDispatchQueue(context.Context, CandidateQuery, DispatchSnapshot) (DispatchQueue, error)
 	GetWorkItems(context.Context, []WorkItemID) ([]WorkItem, error)
 	Claim(context.Context, ClaimRequest) (Lease, error)
 	Renew(context.Context, RenewRequest) (Lease, error)
@@ -261,7 +313,17 @@ func (t *storeTracker) ListCandidates(ctx context.Context, query CandidateQuery)
 	if err != nil {
 		return nil, err
 	}
-	return normalizeRecords(records), nil
+	items := normalizeRecords(records)
+	sortWorkItemsForDispatch(items)
+	return items, nil
+}
+
+func (t *storeTracker) ListDispatchQueue(ctx context.Context, query CandidateQuery, snapshot DispatchSnapshot) (DispatchQueue, error) {
+	items, err := t.ListCandidates(ctx, query)
+	if err != nil {
+		return DispatchQueue{}, err
+	}
+	return DeriveDispatchQueue(items, snapshot), nil
 }
 
 func (t *storeTracker) GetWorkItems(ctx context.Context, ids []WorkItemID) ([]WorkItem, error) {

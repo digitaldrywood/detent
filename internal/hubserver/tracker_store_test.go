@@ -15,7 +15,15 @@ func TestTrackerReadsNormalizedWorkItems(t *testing.T) {
 
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
 	repositoryID, issueID := seedProjection(t, service.database.db)
-	blockerID := insertHubTestIssue(t, service, repositoryID, 2, "I_blocker", "closed", nil)
+	result, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 1, 0, ?, ?)", repositoryID, "Done", "Done", testTimestamp, testTimestamp)
+	if err != nil {
+		t.Fatalf("insert terminal workflow state: %v", err)
+	}
+	terminalWorkflowID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("terminal workflow state ID: %v", err)
+	}
+	blockerID := insertHubTestIssue(t, service, repositoryID, 2, "I_blocker", "closed", &terminalWorkflowID)
 	dependentID := insertHubTestIssue(t, service, repositoryID, 3, "I_dependent", "open", nil)
 	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)", blockerID, issueID, "native", testTimestamp, testTimestamp, issueID, dependentID, "native", testTimestamp, testTimestamp); err != nil {
 		t.Fatalf("insert dependencies: %v", err)
@@ -148,6 +156,54 @@ func TestTrackerCandidatesApplyQueueOrderBeforeLimit(t *testing.T) {
 		if candidates[i].ID != want[i] {
 			t.Errorf("ListCandidates()[%d].ID = %d, want %d", i, candidates[i].ID, want[i])
 		}
+	}
+}
+
+func TestTrackerCandidatesExcludeCancelledState(t *testing.T) {
+	t.Parallel()
+
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	repositoryID, activeID := seedProjection(t, service.database.db)
+	result, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 0, 1, ?, ?)", repositoryID, "Cancelled", "Cancelled", testTimestamp, testTimestamp)
+	if err != nil {
+		t.Fatalf("insert cancelled workflow state: %v", err)
+	}
+	cancelledWorkflowID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("cancelled workflow state ID: %v", err)
+	}
+	cancelledID := insertHubTestIssue(t, service, repositoryID, 2, "I_cancelled", "open", &cancelledWorkflowID)
+
+	candidates, err := service.Tracker().ListCandidates(t.Context(), tracker.CandidateQuery{WorkflowStates: []string{"Todo", "Cancelled"}})
+	if err != nil {
+		t.Fatalf("ListCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != tracker.WorkItemID(activeID) {
+		t.Fatalf("ListCandidates() = %#v, want active issue %d and not cancelled issue %d", candidates, activeID, cancelledID)
+	}
+}
+
+func TestTrackerCandidatesRequireConfiguredCandidateState(t *testing.T) {
+	t.Parallel()
+
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	repositoryID, activeID := seedProjection(t, service.database.db)
+	result, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?)", repositoryID, "Backlog", "Backlog", testTimestamp, testTimestamp)
+	if err != nil {
+		t.Fatalf("insert non-candidate workflow state: %v", err)
+	}
+	backlogWorkflowID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("non-candidate workflow state ID: %v", err)
+	}
+	backlogID := insertHubTestIssue(t, service, repositoryID, 2, "I_backlog", "open", &backlogWorkflowID)
+
+	candidates, err := service.Tracker().ListCandidates(t.Context(), tracker.CandidateQuery{WorkflowStates: []string{"Todo", "Backlog"}})
+	if err != nil {
+		t.Fatalf("ListCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != tracker.WorkItemID(activeID) {
+		t.Fatalf("ListCandidates() = %#v, want active issue %d and not non-candidate issue %d", candidates, activeID, backlogID)
 	}
 }
 

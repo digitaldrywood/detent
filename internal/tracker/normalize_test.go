@@ -88,6 +88,21 @@ func TestNormalizeWorkItem(t *testing.T) {
 			wantReasonLeaseID: "lease-9",
 		},
 		{
+			name: "closed blocker without configured terminal state",
+			record: Record{
+				ID:            12,
+				SourceState:   "open",
+				WorkflowState: todo,
+				Blockers:      []WorkItemReference{{ID: 6, SourceState: SourceStateClosed}},
+				SyncStatus:    SyncStatusSynced,
+			},
+			wantReasons:   []DispatchReasonCode{DispatchReasonBlockerUnresolved},
+			wantState:     SourceStateOpen,
+			wantSync:      SyncStatusSynced,
+			wantLabels:    []string{},
+			wantBlockerID: 6,
+		},
+		{
 			name:             "expired lease omitted",
 			record:           Record{ID: 10, SourceState: "open", WorkflowState: todo, Lease: &LeaseSummary{ID: "expired", ExpiresAt: now.Add(-time.Second)}, SyncStatus: SyncStatusPending, ObservedAt: now},
 			wantDispatchable: true,
@@ -134,7 +149,13 @@ func TestNormalizeWorkItem(t *testing.T) {
 				}
 			}
 			if test.wantBlockerID != 0 {
-				if got.Blockers[0].ID != test.wantBlockerID || got.Dispatchability.Reasons[2].WorkItemID == nil || *got.Dispatchability.Reasons[2].WorkItemID != test.wantBlockerID {
+				matchedReason := false
+				for _, reason := range got.Dispatchability.Reasons {
+					if reason.Code == DispatchReasonBlockerUnresolved && reason.WorkItemID != nil && *reason.WorkItemID == test.wantBlockerID {
+						matchedReason = true
+					}
+				}
+				if got.Blockers[0].ID != test.wantBlockerID || !matchedReason {
 					t.Errorf("blocker identity was not retained: item=%#v reasons=%#v", got.Blockers, got.Dispatchability.Reasons)
 				}
 			}
@@ -169,6 +190,13 @@ func TestStoreTrackerReadsNormalizedItems(t *testing.T) {
 	}
 	if len(items) != 1 || len(store.workItemIDs) != 1 || store.workItemIDs[0] != 1 {
 		t.Fatalf("GetWorkItems() = %#v; IDs = %v", items, store.workItemIDs)
+	}
+	queue, err := backend.ListDispatchQueue(t.Context(), CandidateQuery{Scope: "fleet"}, DispatchSnapshot{Machines: []MachineAvailability{{ID: "machine-a", Healthy: true, Capacity: 1}}})
+	if err != nil {
+		t.Fatalf("ListDispatchQueue() error = %v", err)
+	}
+	if len(queue.Dispatchable) != 1 || len(queue.NonDispatchable) != 0 {
+		t.Fatalf("ListDispatchQueue() = %#v, want one dispatchable item", queue)
 	}
 
 	mutationErrors := []error{}
