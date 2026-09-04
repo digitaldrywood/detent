@@ -28,13 +28,13 @@ func (s *Server) aiDebugPrompt(c echo.Context) error {
 	projection, err := s.aiDebugProjection(c.Request().Context(), scope, c.QueryParam("project"), c.QueryParam("issue"))
 	if err != nil {
 		if errors.Is(err, errAIDebugNotFound) {
-			return echo.NewHTTPError(http.StatusNotFound, "AI Debug target not found")
+			return c.JSON(http.StatusNotFound, errorResponse("ai_debug_target_not_found", "AI Debug target not found"))
 		}
-		return echo.NewHTTPError(http.StatusInternalServerError, "AI Debug prompt could not be assembled").SetInternal(err)
+		return c.JSON(http.StatusInternalServerError, errorResponse("ai_debug_assembly_failed", "AI Debug prompt could not be assembled"))
 	}
 	prompt, err := projection.Prompt()
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "AI Debug prompt could not be rendered").SetInternal(err)
+		return c.JSON(http.StatusInternalServerError, errorResponse("ai_debug_render_failed", "AI Debug prompt could not be rendered"))
 	}
 	return c.Blob(http.StatusOK, echo.MIMETextPlainCharsetUTF8, []byte(prompt))
 }
@@ -290,11 +290,12 @@ func (s *Server) aiDebugIssueEvidence(ctx context.Context, trackedProject *proje
 
 func aiDebugFindIssue(snapshot telemetry.Snapshot, projectID string, issueRef string) (telemetry.Issue, bool) {
 	issueRef = strings.TrimSpace(issueRef)
+	issueNumber, issueNumberErr := strconv.Atoi(issueRef)
 	for _, issue := range aiDebugAllIssues(snapshot) {
 		if strings.TrimSpace(issue.ProjectID) != "" && strings.TrimSpace(issue.ProjectID) != projectID {
 			continue
 		}
-		if issueRef == strings.TrimSpace(issue.ID) || issueRef == strings.TrimSpace(issue.Identifier) || issueRef == strings.TrimSpace(issue.URL) {
+		if issueRef == strings.TrimSpace(issue.ID) || issueRef == strings.TrimSpace(issue.Identifier) || issueRef == strings.TrimSpace(issue.URL) || issueNumberErr == nil && issueNumber > 0 && issue.Number == issueNumber {
 			return issue, true
 		}
 	}
