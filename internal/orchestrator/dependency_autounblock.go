@@ -748,6 +748,9 @@ func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue conn
 		ref.Identifier = strings.TrimSpace(ref.Identifier)
 		ref.ID = strings.TrimSpace(ref.ID)
 		ref.State = strings.TrimSpace(ref.State)
+		if ref.Identifier == "" && ref.ID == "" {
+			continue
+		}
 		blockers = append(blockers, dependencyBlocker{Ref: ref})
 		if ref.Identifier == "" {
 			continue

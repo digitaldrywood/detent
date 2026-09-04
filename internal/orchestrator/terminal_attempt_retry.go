@@ -268,15 +268,19 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		state.Blocked = map[string]Blocked{}
 	}
 	state.Blocked[issue.ID] = Blocked{
-		Issue:          cloneIssue(issue),
-		Reason:         cause,
-		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
-		RecoveryTarget: metadata.BlockedRecovery.TargetState,
-		BlockedAt:      at,
-		Source:         BlockedSourceProjectStatus,
-		AttemptError:   attemptError,
-		WorkAttemptID:  latest.AttemptID,
-		Recovery:       metadata.BlockedRecovery,
+		Issue:                   cloneIssue(issue),
+		Reason:                  cause,
+		RecoveryAction:          "defer",
+		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
+		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
+		RecoveryRemedy:          BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
+		RecoveryReachability:    blockedRecoveryReachability("defer"),
+		RecoveryIntentResumable: true,
+		BlockedAt:               at,
+		Source:                  BlockedSourceProjectStatus,
+		AttemptError:            attemptError,
+		WorkAttemptID:           latest.AttemptID,
+		Recovery:                metadata.BlockedRecovery,
 	}
 	if o.connector != nil {
 		comment := retryCycleLimitComment(issue, cause, count, targetState, latest, attemptError)
@@ -318,7 +322,7 @@ func retryCycleLimitComment(
 	attemptError string,
 ) string {
 	comment := fmt.Sprintf(
-		"Detent stopped retrying %s after %d consecutive %s attempts. The issue is parked in `%s` until its recovery fingerprint changes.",
+		"Detent stopped retrying %s after %d consecutive %s attempts. The issue is parked in `%s` until the configured breaker cooldown ends, then Detent returns it to its prior lane automatically.",
 		issueLabel(issue),
 		count,
 		retryCycleDescription(cause),

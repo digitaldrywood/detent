@@ -691,13 +691,17 @@ func (o *Orchestrator) blockSpendProgress(
 		state.Blocked = map[string]Blocked{}
 	}
 	state.Blocked[issueID] = Blocked{
-		Issue:          issue,
-		Reason:         spendProgressReason,
-		RecoveryReason: spendProgressRecoveryReason(decision),
-		RecoveryTarget: "Rework",
-		BlockedAt:      blockedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
+		Issue:                   issue,
+		Reason:                  spendProgressReason,
+		RecoveryAction:          "defer",
+		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
+		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
+		RecoveryRemedy:          spendProgressRecoveryReason(decision) + ". " + BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
+		RecoveryReachability:    blockedRecoveryReachability("defer"),
+		RecoveryIntentResumable: true,
+		BlockedAt:               blockedAt,
+		Source:                  BlockedSourceProjectStatus,
+		Recovery:                metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      blockedAt,
@@ -863,13 +867,13 @@ func spendProgressUsageSummary(decision spendProgressDecision) string {
 func spendProgressRecoveryReason(decision spendProgressDecision) string {
 	switch decision.Case {
 	case spendProgressCaseStatic:
-		return "inspect merge-train capacity, Merging serialization, and dispatch priority before moving the issue back to Rework"
+		return "inspect merge-train capacity, Merging serialization, and dispatch priority before the breaker cooldown ends"
 	case spendProgressCaseStaticArtifact:
-		return "identify why the completion receipt, artifact status, deliverable metadata, and output files stayed static before moving the item back to Rework"
+		return "identify why the completion receipt, artifact status, deliverable metadata, and output files stayed static before the breaker cooldown ends"
 	case spendProgressCaseNoArtifact:
-		return "restore a writable completion receipt, artifact status, deliverable metadata, or output path before moving the item back to Todo or Rework"
+		return "restore a writable completion receipt, artifact status, deliverable metadata, or output path before the breaker cooldown ends"
 	default:
-		return "narrow or split the task, then identify why no linked PR evidence was produced before moving the issue back to Todo or Rework"
+		return "narrow or split the task, then identify why no linked PR evidence was produced before the breaker cooldown ends"
 	}
 }
 

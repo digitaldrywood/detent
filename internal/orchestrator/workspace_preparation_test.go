@@ -90,8 +90,8 @@ func TestWorkspacePreparationRetriesAreBoundedAndPreserveFailureBreakers(t *test
 			}
 
 			blocked, ok := state.Blocked[issue.ID]
-			if !ok || blocked.Reason != workspacePreparationRetryLimitCause || blocked.Recovery == nil || blocked.RecoveryReason != blockedRecoveryPredicateFingerprintChange {
-				t.Fatalf("Blocked[%q] = %#v, want durable fingerprint-recovery park", issue.ID, blocked)
+			if !ok || blocked.Reason != workspacePreparationRetryLimitCause || blocked.Recovery == nil || blocked.RecoveryReason != blockedRecoveryReasonBreakerCooldownActive || blocked.Recovery.Predicate != blockedRecoveryPredicateBreakerCooldown {
+				t.Fatalf("Blocked[%q] = %#v, want durable breaker cooldown park", issue.ID, blocked)
 			}
 			if blocked.AttemptError != tt.err.Error() || blocked.WorkAttemptID != retryLimit {
 				t.Fatalf("Blocked[%q] attempt evidence = %q/%d, want %q/%d", issue.ID, blocked.AttemptError, blocked.WorkAttemptID, tt.err.Error(), retryLimit)
