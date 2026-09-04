@@ -930,6 +930,7 @@ func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 	tests := []struct {
 		name                string
 		prepublish          bool
+		publishAfterFailure bool
 		wrapperFailure      bool
 		laterFailure        bool
 		laterLocalChange    bool
@@ -941,6 +942,7 @@ func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 	}{
 		{
 			name:                "published bare push clears failed item",
+			publishAfterFailure: true,
 			wrapperFailure:      true,
 			wantPublished:       true,
 			wantOutcome:         "published",
@@ -965,12 +967,13 @@ func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 			wantExitCode:   23,
 		},
 		{
-			name:             "post-command remote does not match final local head",
-			wrapperFailure:   true,
-			laterLocalChange: true,
-			wantErrorClass:   "push",
-			wantOutcome:      "failed",
-			wantExitCode:     23,
+			name:                "post-command remote does not match final local head",
+			publishAfterFailure: true,
+			wrapperFailure:      true,
+			laterLocalChange:    true,
+			wantErrorClass:      "push",
+			wantOutcome:         "failed",
+			wantExitCode:        23,
 		},
 	}
 
@@ -1032,29 +1035,23 @@ func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 			wrapperPath := filepath.Join(wrapperDir, "git")
 			wrapper := `#!/bin/sh
 if [ "$#" -eq 3 ] && [ "$1" = "push" ] && [ "$2" = "origin" ] && [ "$3" = "$DETENT_TEST_PUSH_REF" ]; then
-  "$DETENT_REAL_GIT" "$@"
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    exit "$status"
-  fi
-  if [ "$DETENT_TEST_PUSH_WRAPPER_FAIL" = "1" ]; then
-    printf '%s\n' 'detent injected postcondition failure' >&2
-    exit 23
-  fi
-  exit 0
+	if [ "$DETENT_TEST_PUSH_WRAPPER_FAIL" = "1" ]; then
+		printf '%s\n' 'detent injected postcondition failure' >&2
+		exit 23
+	fi
+	exec "$DETENT_REAL_GIT" "$@"
 fi
 exec "$DETENT_REAL_GIT" "$@"
 `
 			if runtime.GOOS == "windows" {
 				wrapperPath = filepath.Join(wrapperDir, "git.cmd")
 				wrapper = `@echo off
-"%DETENT_REAL_GIT%" %*
-if errorlevel 1 exit /b %errorlevel%
 if "%DETENT_TEST_PUSH_WRAPPER_FAIL%"=="1" (
-  >&2 echo detent injected postcondition failure
-  exit /b 23
+	>&2 echo detent injected postcondition failure
+	exit /b 23
 )
-exit /b 0
+"%DETENT_REAL_GIT%" %*
+exit /b %errorlevel%
 `
 			}
 			if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o700); err != nil {
@@ -1062,15 +1059,21 @@ exit /b 0
 			}
 
 			command := "git push origin " + pushRef
-			actualCommand := command
+			wrapperCommand := wrapperPath
+			actualCommand := `"$DETENT_TEST_GIT" push origin ` + pushRef
 			if tt.laterFailure {
 				command += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
-				actualCommand = command
+				actualCommand += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 			}
 			var cmd *exec.Cmd
 			if runtime.GOOS == "windows" {
+				wrapperCommand, err = filepath.Rel(workspacePath, wrapperPath)
+				if err != nil {
+					t.Fatalf("resolve relative git wrapper path: %v", err)
+				}
+				actualCommand = `call %DETENT_TEST_GIT% push origin ` + pushRef
 				if tt.laterFailure {
-					actualCommand = "git push origin " + pushRef + " && echo later assertion failed 1>&2 && exit /b 19"
+					actualCommand += " && echo later assertion failed 1>&2 && exit /b 19"
 				}
 				cmd = exec.CommandContext(t.Context(), "cmd.exe", "/d", "/s", "/c", actualCommand)
 			} else {
@@ -1084,6 +1087,7 @@ exit /b 0
 			cmd.Env = append(os.Environ(),
 				"PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"DETENT_REAL_GIT="+realGit,
+				"DETENT_TEST_GIT="+wrapperCommand,
 				"DETENT_TEST_PUSH_REF="+pushRef,
 				"DETENT_TEST_PUSH_WRAPPER_FAIL="+wrapperFailure,
 			)
@@ -1098,6 +1102,13 @@ exit /b 0
 			}
 			if tt.wrapperFailure && !strings.Contains(string(output), "detent injected postcondition failure") {
 				t.Fatalf("command output = %q, want fault injection marker", output)
+			}
+			if tt.publishAfterFailure {
+				remoteRef := "refs/heads/" + branch
+				if got := strings.TrimSpace(runRunnerGit(t, workspacePath, "ls-remote", "--heads", "origin", remoteRef)); got != "" {
+					t.Fatalf("failed push created remote ref %q: %s", remoteRef, got)
+				}
+				runRunnerGit(t, workspacePath, "push", "origin", pushRef)
 			}
 			deliverableErr := &DeliverableCommandError{
 				OperationClass: "push",
