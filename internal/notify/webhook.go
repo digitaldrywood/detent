@@ -7,12 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
 
 const defaultWebhookTimeout = 5 * time.Second
+
+const (
+	defaultWebhookDialTimeout     = 30 * time.Second
+	defaultWebhookDialKeepAlive   = 30 * time.Second
+	defaultWebhookIdleConnTimeout = 90 * time.Second
+)
 
 type WebhookConfig struct {
 	URL       string
@@ -44,8 +51,31 @@ func NewWebhook(cfg WebhookConfig) (*Webhook, error) {
 		url:       cfg.URL,
 		headers:   cloneHeaders(cfg.Headers),
 		userAgent: strings.TrimSpace(cfg.UserAgent),
-		client:    &http.Client{Timeout: cfg.Timeout},
+		client: &http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: newWebhookTransport(),
+		},
 	}, nil
+}
+
+func newWebhookTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		return transport.Clone()
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   defaultWebhookDialTimeout,
+		KeepAlive: defaultWebhookDialKeepAlive,
+	}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       defaultWebhookIdleConnTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
 }
 
 func (w *Webhook) Send(ctx context.Context, payload any) error {

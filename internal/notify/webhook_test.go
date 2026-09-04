@@ -2,9 +2,11 @@ package notify
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -79,4 +81,90 @@ func TestWebhookErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWebhookTransportIsolation(t *testing.T) {
+	tests := []struct {
+		name string
+		test func(*testing.T)
+	}{
+		{name: "separate webhooks", test: testSeparateWebhookTransports},
+		{name: "concurrent server cleanup", test: testConcurrentServerCleanup},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.test)
+	}
+}
+
+func testSeparateWebhookTransports(t *testing.T) {
+	first, err := NewWebhook(WebhookConfig{URL: "http://example.com"})
+	if err != nil {
+		t.Fatalf("NewWebhook() first error = %v", err)
+	}
+	second, err := NewWebhook(WebhookConfig{URL: "http://example.com"})
+	if err != nil {
+		t.Fatalf("NewWebhook() second error = %v", err)
+	}
+	if first.client.Transport == nil {
+		t.Fatal("first transport is nil, want dedicated transport")
+	}
+	if first.client.Transport == second.client.Transport {
+		t.Fatal("webhook transports are shared, want dedicated transports")
+	}
+}
+
+func testConcurrentServerCleanup(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	deliveryStarted := make(chan struct{})
+	cleanupTransport := &closeSensitiveTransport{
+		deliveryStarted: deliveryStarted,
+		closed:          make(chan struct{}),
+	}
+	http.DefaultTransport = cleanupTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	releaseDelivery := make(chan struct{})
+	deliveryServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		close(deliveryStarted)
+		<-releaseDelivery
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(deliveryServer.Close)
+	cleanupServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	webhook, err := NewWebhook(WebhookConfig{URL: deliveryServer.URL, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewWebhook() error = %v", err)
+	}
+	sendResult := make(chan error, 1)
+	go func() {
+		sendResult <- webhook.Send(t.Context(), struct{}{})
+	}()
+
+	<-deliveryStarted
+	cleanupServer.Close()
+	close(releaseDelivery)
+	if err := <-sendResult; err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+}
+
+type closeSensitiveTransport struct {
+	deliveryStarted chan struct{}
+	closed          chan struct{}
+	startOnce       sync.Once
+	closeOnce       sync.Once
+}
+
+func (t *closeSensitiveTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.startOnce.Do(func() { close(t.deliveryStarted) })
+	<-t.closed
+	return nil, errors.New("http: CloseIdleConnections called")
+}
+
+func (t *closeSensitiveTransport) CloseIdleConnections() {
+	t.closeOnce.Do(func() { close(t.closed) })
 }
