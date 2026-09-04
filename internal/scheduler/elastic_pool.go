@@ -65,8 +65,8 @@ func (r *PoolRegistry) allowPoolCapacity(
 	req SlotRequest,
 ) string {
 	if req.PressureCapacity > 0 {
-		_, currentSharedUsed := r.elasticTotals(runtime, currentUsed)
-		if currentSharedUsed+req.Weight > req.PressureCapacity {
+		currentPressureUsed := r.pressureUsed(runtime, currentUsed)
+		if currentPressureUsed+req.Weight > req.PressureCapacity {
 			return DispatchGateReasonPressureCapacityFull
 		}
 	}
@@ -188,6 +188,25 @@ func (r *PoolRegistry) elasticTotals(current *poolRuntime, projectedUsed int) (i
 	return capacity, used
 }
 
+func (r *PoolRegistry) pressureUsed(current *poolRuntime, currentUsed int) int {
+	r.mu.RLock()
+	runtimes := make([]*poolRuntime, 0, len(r.byGeneration))
+	for _, runtime := range r.byGeneration {
+		runtimes = append(runtimes, runtime)
+	}
+	r.mu.RUnlock()
+
+	used := 0
+	for _, runtime := range runtimes {
+		if runtime == current {
+			used += currentUsed
+			continue
+		}
+		used += runtime.gate.PoolSnapshot().Used
+	}
+	return used
+}
+
 func (r *PoolRegistry) cleanupElasticWaiters() {
 	r.mu.RLock()
 	runtimes := make(map[uint64]*poolRuntime, len(r.active))
@@ -260,7 +279,7 @@ func (r *PoolRegistry) elasticDecision(
 	decision.SharedCapacity = sharedCapacity
 	decision.SharedUsed = sharedUsed
 	decision.SharedAvailable = max(0, sharedCapacity-sharedUsed)
-	decision.PressureUsed = sharedUsed
-	decision.PressureAvailable = max(0, decision.PressureCapacity-sharedUsed)
+	decision.PressureUsed = r.pressureUsed(nil, 0)
+	decision.PressureAvailable = max(0, decision.PressureCapacity-decision.PressureUsed)
 	return decision
 }

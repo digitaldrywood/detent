@@ -95,6 +95,46 @@ func TestPoolRegistryPressureCapacityComposesAcrossPools(t *testing.T) {
 	}
 }
 
+func TestPoolRegistryPressureCapacityCountsDrainingPools(t *testing.T) {
+	t.Parallel()
+
+	video := scheduler.ProjectCandidate{ID: "video", Pool: "video"}
+	registry := newPoolRegistry(t,
+		[]scheduler.PoolConfig{
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
+			poolConfig("video", "weighted", 1, nil),
+		},
+		[]scheduler.ProjectCandidate{video},
+	)
+	oldSlot := acquirePoolSlots(t, registry, time.Time{}, video)[0]
+
+	reassigned := scheduler.ProjectCandidate{ID: "video"}
+	if err := registry.Reconfigure(
+		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil)},
+		[]scheduler.ProjectCandidate{reassigned},
+	); err != nil {
+		t.Fatalf("remove Reconfigure() error = %v", err)
+	}
+
+	request := scheduler.SlotRequest{State: "Todo", PressureCapacity: 1}
+	_, acquired, decision, err := registry.TryAcquireWithDecision(t.Context(), reassigned, request, time.Time{})
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if acquired || decision.Reason != scheduler.DispatchGateReasonPressureCapacityFull || decision.PressureUsed != 1 || decision.PressureAvailable != 0 {
+		t.Fatalf("pressure decision with draining pool = %t, %#v", acquired, decision)
+	}
+	if err := registry.Release(oldSlot); err != nil {
+		t.Fatalf("Release(oldSlot) error = %v", err)
+	}
+
+	newSlot, acquired, decision, err := registry.TryAcquireWithDecision(t.Context(), reassigned, request, time.Time{})
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquireWithDecision() after drain = %t, %v; decision = %#v", acquired, err, decision)
+	}
+	releasePoolSlots(t, registry, []scheduler.Slot{newSlot})
+}
+
 func TestPoolRegistryWithoutBurstRemainsRigid(t *testing.T) {
 	t.Parallel()
 
