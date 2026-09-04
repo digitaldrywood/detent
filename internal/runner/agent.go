@@ -73,6 +73,7 @@ type sessionWorkerProcessReaper interface {
 }
 
 type workerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
+type workspaceProcessReapFunc func(context.Context, string, time.Duration) (int, error)
 
 type sessionResumeStore interface {
 	UpdateSessionResumeState(context.Context, int64, store.SessionResumeState) error
@@ -105,30 +106,31 @@ func (f AgentBackendFactoryFunc) NewAgentBackend(cfg config.AgentBackend) (Agent
 type durationLimitContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
 type Dependencies struct {
-	ProjectID           string
-	Workflow            config.Workflow
-	Workspace           workspace.Backend
-	AgentBackend        AgentBackend
-	AgentBackends       map[string]AgentBackend
-	AgentBackendFactory AgentBackendFactory
-	Store               SessionStore
-	Pricing             budget.PricingTable
-	BudgetChecker       BudgetChecker
-	DispatchEstimator   DispatchEstimator
-	BudgetGuardBuilder  BudgetGuardBuilder
-	Now                 func() time.Time
-	Logger              *slog.Logger
-	SecurityAuditRoot   string
-	AfterRunTimeout     time.Duration
-	MaxAgentRSSBytes    uint64
-	RSSPollInterval     time.Duration
-	ProcessRSS          func(context.Context, procgroup.Identity) (uint64, error)
-	WorkerReapGrace     time.Duration
-	ReapWorkerProcess   workerProcessReapFunc
-	sessionLimit        durationLimitContextFactory
-	turnLimit           durationLimitContextFactory
-	progressTicker      sessionProgressTickerFactory
-	lookupEnv           func(string) string
+	ProjectID              string
+	Workflow               config.Workflow
+	Workspace              workspace.Backend
+	AgentBackend           AgentBackend
+	AgentBackends          map[string]AgentBackend
+	AgentBackendFactory    AgentBackendFactory
+	Store                  SessionStore
+	Pricing                budget.PricingTable
+	BudgetChecker          BudgetChecker
+	DispatchEstimator      DispatchEstimator
+	BudgetGuardBuilder     BudgetGuardBuilder
+	Now                    func() time.Time
+	Logger                 *slog.Logger
+	SecurityAuditRoot      string
+	AfterRunTimeout        time.Duration
+	MaxAgentRSSBytes       uint64
+	RSSPollInterval        time.Duration
+	ProcessRSS             func(context.Context, procgroup.Identity) (uint64, error)
+	WorkerReapGrace        time.Duration
+	ReapWorkerProcess      workerProcessReapFunc
+	ReapWorkspaceProcesses workspaceProcessReapFunc
+	sessionLimit           durationLimitContextFactory
+	turnLimit              durationLimitContextFactory
+	progressTicker         sessionProgressTickerFactory
+	lookupEnv              func(string) string
 }
 
 type Runner struct {
@@ -154,6 +156,7 @@ type Runner struct {
 	processRSS                func(context.Context, procgroup.Identity) (uint64, error)
 	workerReapGrace           time.Duration
 	reapWorkerProcess         workerProcessReapFunc
+	reapWorkspaceProcesses    workspaceProcessReapFunc
 	cleanupWorkerArtifacts    func(string, string) error
 	waitWorkerArtifactCleanup func(context.Context, time.Duration) error
 	sessionLimit              durationLimitContextFactory
@@ -190,6 +193,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.ReapWorkerProcess == nil {
 		deps.ReapWorkerProcess = procgroup.Terminate
+	}
+	if deps.ReapWorkspaceProcesses == nil {
+		deps.ReapWorkspaceProcesses = workspace.ReapProcesses
 	}
 	if deps.sessionLimit == nil {
 		deps.sessionLimit = withAgentDurationLimit
@@ -251,6 +257,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		processRSS:                deps.ProcessRSS,
 		workerReapGrace:           deps.WorkerReapGrace,
 		reapWorkerProcess:         deps.ReapWorkerProcess,
+		reapWorkspaceProcesses:    deps.ReapWorkspaceProcesses,
 		cleanupWorkerArtifacts:    workspace.CleanupOwnedPath,
 		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
 		sessionLimit:              deps.sessionLimit,
@@ -1127,13 +1134,22 @@ func (r *Runner) runAgentTurn(
 		runRequest.Issue,
 		workerProcessReapReason(ctx, turnErr),
 	)
-	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, processReapErr)
-	if processReapErr != nil {
-		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+	workspaceReapErr := r.reapCancelledWorkspaceProcesses(
+		ctx,
+		info.Path,
+		detentSessionID,
+		runRequest.WorkAttemptID,
+		runRequest.Issue,
+		turnErr,
+	)
+	workerReapErr := errors.Join(processReapErr, workspaceReapErr)
+	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
+	if workerReapErr != nil {
+		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 	}
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
-		if processReapErr != nil {
-			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+		if workerReapErr != nil {
+			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 		} else {
 			turnErr = cause
 		}
@@ -2855,13 +2871,22 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		req.Issue,
 		workerProcessReapReason(sessionCtx, turnErr),
 	)
-	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, processReapErr)
-	if processReapErr != nil {
-		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+	workspaceReapErr := r.reapCancelledWorkspaceProcesses(
+		sessionCtx,
+		info.Path,
+		sessionID,
+		runReq.WorkAttemptID,
+		req.Issue,
+		turnErr,
+	)
+	workerReapErr := errors.Join(processReapErr, workspaceReapErr)
+	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
+	if workerReapErr != nil {
+		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 	}
 	if cause := context.Cause(sessionCtx); cooperativeStopError(cause) || durationLimitError(cause) {
-		if processReapErr != nil {
-			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, processReapErr))
+		if workerReapErr != nil {
+			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 		} else {
 			turnErr = cause
 		}
@@ -3281,6 +3306,51 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 	return nil
 }
 
+func (r *Runner) reapCancelledWorkspaceProcesses(
+	ctx context.Context,
+	workspacePath string,
+	sessionID int64,
+	workAttemptID int64,
+	issue connector.Issue,
+	turnErr error,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	combined := errors.Join(context.Cause(ctx), turnErr)
+	if !workerSessionCanceled(combined) {
+		return nil
+	}
+
+	reap := r.reapWorkspaceProcesses
+	if reap == nil {
+		reap = workspace.ReapProcesses
+	}
+	reaped, err := reap(context.WithoutCancel(ctx), workspacePath, r.workerReapGrace)
+	attrs := []any{
+		telemetry.WorkAttemptIDKey, workAttemptID,
+		telemetry.DetentSessionIDKey, sessionID,
+		"workspace_path", strings.TrimSpace(workspacePath),
+		"reason", workerProcessReapReason(ctx, turnErr),
+		"count", reaped,
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_orphan_processes_reaped", attrs...)
+	if err != nil {
+		return fmt.Errorf("reap orphaned workspace processes: %w", err)
+	}
+	return nil
+}
+
+func workerSessionCanceled(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		durationLimitError(err) ||
+		errors.Is(err, ErrSessionMemoryCeilingExceeded)
+}
+
 func (r *Runner) cleanupSessionWorkerArtifacts(ctx context.Context, root string, path string) (int, error) {
 	cleanup := r.cleanupWorkerArtifacts
 	if cleanup == nil {
@@ -3301,6 +3371,8 @@ func workerProcessReapReason(ctx context.Context, turnErr error) string {
 	switch {
 	case errors.Is(combined, ErrSessionDurationExceeded), errors.Is(combined, ErrMergeFallbackBudgetExceeded):
 		return "maximum_session_lifetime_exceeded"
+	case errors.Is(combined, ErrSessionNoProgress):
+		return SessionBrakeReasonNoProgress
 	case errors.Is(combined, ErrTurnDurationExceeded):
 		return "maximum_turn_lifetime_exceeded"
 	case errors.Is(combined, context.Canceled):

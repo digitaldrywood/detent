@@ -5,6 +5,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,32 +14,162 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
+const defaultProcessTerminationGrace = 250 * time.Millisecond
+
 func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
-	pids, err := workspaceProcessIDs(ctx, path)
+	reaped, err := ReapProcesses(ctx, path, defaultProcessTerminationGrace)
 	if err != nil {
 		if logger != nil {
-			logger.Warn("workspace process scan failed", slog.String("path", path), slog.Any("error", err))
+			logger.Warn("workspace process reap failed", slog.String("path", path), slog.Any("error", err))
 		}
-		return 0
+	}
+	return reaped
+}
+
+func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return 0, errors.New("workspace path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return 0, fmt.Errorf("workspace path must be absolute: %q", path)
+	}
+	path = filepath.Clean(path)
+	if filepath.Dir(path) == path {
+		return 0, fmt.Errorf("workspace path must not be a filesystem root: %q", path)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if grace <= 0 {
+		grace = defaultProcessTerminationGrace
+	}
+	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
+}
+
+type workspaceProcessScanner func(context.Context, string) ([]int, error)
+type workspaceProcessSignaler func(int, syscall.Signal) error
+type workspaceProcessWaiter func(context.Context, string, time.Duration, workspaceProcessScanner) ([]int, error)
+
+func reapProcesses(
+	ctx context.Context,
+	path string,
+	grace time.Duration,
+	scan workspaceProcessScanner,
+	signal workspaceProcessSignaler,
+) (int, error) {
+	return reapProcessesWithWait(ctx, path, grace, scan, signal, waitForWorkspaceProcesses)
+}
+
+func reapProcessesWithWait(
+	ctx context.Context,
+	path string,
+	grace time.Duration,
+	scan workspaceProcessScanner,
+	signal workspaceProcessSignaler,
+	wait workspaceProcessWaiter,
+) (int, error) {
+	pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, scan)
+	if err != nil {
+		return 0, fmt.Errorf("scan workspace processes: %w", err)
+	}
+	if len(pids) == 0 {
+		return 0, nil
 	}
 
-	killed := 0
+	reaped := make(map[int]struct{}, len(pids))
+	termErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
+	survivors, err := wait(ctx, path, grace, scan)
+	if err != nil {
+		return len(reaped), errors.Join(termErr, err)
+	}
+	if len(survivors) == 0 {
+		return len(reaped), termErr
+	}
+
+	killErr := signalWorkspaceProcesses(survivors, syscall.SIGKILL, signal, reaped)
+	survivors, waitErr := wait(ctx, path, grace, scan)
+	if waitErr != nil {
+		return len(reaped), errors.Join(termErr, killErr, waitErr)
+	}
+	if len(survivors) > 0 {
+		return len(reaped), errors.Join(
+			termErr,
+			killErr,
+			fmt.Errorf("workspace processes remained after SIGKILL: pids=%v", survivors),
+		)
+	}
+	return len(reaped), errors.Join(termErr, killErr)
+}
+
+func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
+	pids, err := scan(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	owned := make([]int, 0, len(pids))
+	seen := make(map[int]struct{}, len(pids))
 	for _, pid := range pids {
 		if pid <= 0 || pid == os.Getpid() {
 			continue
 		}
-		err := syscall.Kill(pid, syscall.SIGKILL)
-		if err == nil {
-			killed++
+		if _, ok := seen[pid]; ok {
 			continue
 		}
-		if !errors.Is(err, syscall.ESRCH) && logger != nil {
-			logger.Warn("workspace process kill failed", slog.String("path", path), slog.Int("pid", pid), slog.Any("error", err))
+		seen[pid] = struct{}{}
+		owned = append(owned, pid)
+	}
+	return owned, nil
+}
+
+func signalWorkspaceProcesses(
+	pids []int,
+	sig syscall.Signal,
+	signal workspaceProcessSignaler,
+	reaped map[int]struct{},
+) error {
+	var result error
+	for _, pid := range pids {
+		if err := signal(pid, sig); errors.Is(err, syscall.ESRCH) {
+			continue
+		} else if err != nil {
+			result = errors.Join(result, fmt.Errorf("signal workspace process %d with %s: %w", pid, sig, err))
+			continue
+		}
+		reaped[pid] = struct{}{}
+	}
+	return result
+}
+
+func waitForWorkspaceProcesses(
+	ctx context.Context,
+	path string,
+	grace time.Duration,
+	scan workspaceProcessScanner,
+) ([]int, error) {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, scan)
+		if err != nil {
+			return nil, fmt.Errorf("verify workspace processes: %w", err)
+		}
+		if len(pids) == 0 {
+			return nil, nil
+		}
+		select {
+		case <-ctx.Done():
+			return pids, ctx.Err()
+		case <-timer.C:
+			return pids, nil
+		case <-ticker.C:
 		}
 	}
-	return killed
 }
 
 func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
