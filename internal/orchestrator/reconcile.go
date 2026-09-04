@@ -509,6 +509,10 @@ func (o *Orchestrator) finishRefresh(state *State, now time.Time, captureREST bo
 		o.logRESTRateLimitCycle(restCycle)
 	}
 	o.syncGitHubRESTCapacityOutage(state, now)
+	if o.scheduling == nil {
+		o.finalizeGitHubLookupProviderProbe(state, now)
+		o.syncGitHubLookupBackoff(state, now)
+	}
 
 	interval := o.adaptivePollInterval(state, now)
 	state.PollInterval = interval

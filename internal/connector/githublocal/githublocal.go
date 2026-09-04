@@ -41,6 +41,10 @@ type githubBackend interface {
 	connector.Authenticator
 	connector.AuthHealthReporter
 	connector.GraphQLRateLimitUsageReporter
+	connector.GraphQLRateLimitStatusReporter
+	connector.GraphQLRateLimitProber
+	connector.RESTRateLimitStatusReporter
+	connector.RESTRateLimitProber
 	connector.InstanceIdentifier
 	connector.IssueChildrenResolver
 	connector.IssueCloser
@@ -104,6 +108,10 @@ var _ connector.Closer = (*Connector)(nil)
 var _ connector.ConditionalPoller = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
 var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
+var _ connector.GraphQLRateLimitStatusReporter = (*Connector)(nil)
+var _ connector.GraphQLRateLimitProber = (*Connector)(nil)
+var _ connector.RESTRateLimitStatusReporter = (*Connector)(nil)
+var _ connector.RESTRateLimitProber = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.ProjectURLResolver = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
@@ -263,6 +271,22 @@ func (c *Connector) ProjectURL(ctx context.Context) (string, error) {
 
 func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.github.GraphQLRateLimit()
+}
+
+func (c *Connector) GraphQLRateLimitStatus() string {
+	return c.github.GraphQLRateLimitStatus()
+}
+
+func (c *Connector) ProbeGraphQLRateLimit(ctx context.Context) (connector.GraphQLRateLimit, error) {
+	return c.github.ProbeGraphQLRateLimit(ctx)
+}
+
+func (c *Connector) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	return c.github.RESTRateLimitStatus()
+}
+
+func (c *Connector) ProbeRESTRateLimit(ctx context.Context, minimumRemaining int64) (connector.RESTRateLimit, error) {
+	return c.github.ProbeRESTRateLimit(ctx, minimumRemaining)
 }
 
 func (c *Connector) AuthHealth() (connector.AuthHealth, bool) {

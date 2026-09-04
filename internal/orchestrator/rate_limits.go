@@ -386,6 +386,9 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	if base <= 0 {
 		base = defaultPollInterval
 	}
+	if pause := githubLookupBackoffPause(state, now); pause > 0 {
+		return pause
+	}
 	if o.scheduling != nil {
 		source := state.RefreshSources[telemetry.RefreshSourceCandidates]
 		if source.Condition == schedulingUnavailableCondition && source.FailureStreak > 0 {

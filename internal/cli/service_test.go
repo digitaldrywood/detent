@@ -5,15 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -221,6 +225,120 @@ func TestStatusCommandManualStoppedIsSuccessful(t *testing.T) {
 	}
 }
 
+func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
+	t.Parallel()
+
+	nextProbeAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/state" {
+			t.Fatalf("request path = %q, want /api/v1/state", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer operator-token" {
+			t.Fatalf("Authorization = %q, want bearer credential", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"backend_outages": []telemetry.BackendOutage{{
+				BackendID:     "github-lookups",
+				Kind:          "github_lookup_backoff",
+				Trigger:       "github_graphql_rate_limit",
+				Reason:        "GitHub GraphQL returned a rate-limit response",
+				ResumeAt:      nextProbeAt,
+				NextProbeAt:   &nextProbeAt,
+				ProbeAttempts: 3,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	runner := statusServiceRunner{
+		ServiceRunner: &serviceRunnerStub{status: servicepkg.Status{State: servicepkg.StateRunning}},
+		fallbackURL:   server.URL,
+		credential:    "operator-token",
+		httpDo:        server.Client().Do,
+	}
+	status, err := runner.Status(t.Context())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if len(status.BackendOutages) != 1 || status.BackendOutages[0].ProbeAttempts != 3 {
+		t.Fatalf("BackendOutages = %#v, want active lookup backoff", status.BackendOutages)
+	}
+
+	var output bytes.Buffer
+	if err := writeServiceStatusText(&output, status); err != nil {
+		t.Fatalf("writeServiceStatusText() error = %v", err)
+	}
+	for _, want := range []string{
+		"GitHub lookup backoff:",
+		"trigger=github_graphql_rate_limit",
+		"step=3",
+		"next probe=2026-09-03T18:30:00Z",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestServiceRunnerForCommandConfiguresStatusSnapshotHTTP(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configure func(*options)
+		wantHTTP  bool
+	}{
+		{
+			name:     "built-in service factory",
+			wantHTTP: true,
+		},
+		{
+			name: "explicitly injected service factory",
+			configure: func(opts *options) {
+				WithServiceFactory(serviceFactoryFor(&serviceRunnerStub{}))(opts)
+			},
+			wantHTTP: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			cfg, err := globalconfig.DefaultAt(path)
+			if err != nil {
+				t.Fatalf("DefaultAt() error = %v", err)
+			}
+			if err := globalconfig.Write(path, cfg); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+
+			opts := defaultOptions()
+			opts.lookupEnv = func(string) string { return "" }
+			if tt.configure != nil {
+				tt.configure(&opts)
+			}
+			host := ""
+			port := -1
+			cmd := newStatusCommand(&path, &host, &port, opts)
+			cmd.SetContext(t.Context())
+			runner, err := serviceRunnerForCommand(cmd, &path, &host, &port, opts)
+			if err != nil {
+				t.Fatalf("serviceRunnerForCommand() error = %v", err)
+			}
+			statusRunner, ok := runner.(statusServiceRunner)
+			if !ok {
+				t.Fatalf("runner type = %T, want statusServiceRunner", runner)
+			}
+			if got := statusRunner.httpDo != nil; got != tt.wantHTTP {
+				t.Fatalf("status HTTP configured = %t, want %t", got, tt.wantHTTP)
+			}
+		})
+	}
+}
+
 func TestStoppedManagedServiceUsesNonzeroExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -354,7 +472,7 @@ func TestServiceCommandsLoadLegacyWorkflowPort(t *testing.T) {
 	}
 }
 
-func TestStatusCommandResolvesDashboardPort(t *testing.T) {
+func TestStatusCommandResolvesDashboardAddress(t *testing.T) {
 	t.Setenv("PORT", "4200")
 
 	tests := []struct {
@@ -375,16 +493,16 @@ func TestStatusCommandResolvesDashboardPort(t *testing.T) {
 			wantFactoryURL:   "http://localhost:4100",
 		},
 		{
-			name:             "installed unit port",
+			name:             "installed unit concrete host and port",
 			configPort:       4100,
 			writeConfig:      true,
-			definition:       "[Service]\nExecStart=\"/usr/bin/detent\" \"--config\" \"/tmp/global.yaml\" \"--port\" \"4300\" \"--headless\"\n",
+			definition:       "[Service]\nExecStart=\"/usr/bin/detent\" \"--config\" \"/tmp/global.yaml\" \"--host\" \"100.109.187.102\" \"--port\" \"4300\" \"--headless\"\n",
 			manager:          servicepkg.ManagerSystemd,
-			wantDashboardURL: "http://localhost:4300",
+			wantDashboardURL: "http://100.109.187.102:4300",
 			wantFactoryURL:   "http://localhost:4100",
 		},
 		{
-			name:        "installed launchd port",
+			name:        "installed launchd wildcard host and port",
 			configPort:  4100,
 			writeConfig: true,
 			definition: `<?xml version="1.0" encoding="UTF-8"?>
@@ -397,6 +515,8 @@ func TestStatusCommandResolvesDashboardPort(t *testing.T) {
     <string>/usr/local/bin/detent</string>
     <string>--config</string>
     <string>/tmp/global.yaml</string>
+    <string>--host</string>
+    <string>0.0.0.0</string>
     <string>--port</string>
     <string>4400</string>
     <string>--headless</string>
@@ -404,7 +524,7 @@ func TestStatusCommandResolvesDashboardPort(t *testing.T) {
 </dict>
 </plist>`,
 			manager:          servicepkg.ManagerLaunchd,
-			wantDashboardURL: "http://localhost:4400",
+			wantDashboardURL: "http://127.0.0.1:4400",
 			wantFactoryURL:   "http://localhost:4100",
 		},
 		{

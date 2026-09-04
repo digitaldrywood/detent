@@ -263,6 +263,7 @@ type options struct {
 	shutdown          *ShutdownController
 	restart           *RestartRequest
 	service           ServiceFactory
+	serviceInjected   bool
 	startupRecovery   StartupRecoveryFactory
 }
 
@@ -338,6 +339,7 @@ func WithServiceFactory(factory ServiceFactory) Option {
 	return func(opts *options) {
 		if factory != nil {
 			opts.service = factory
+			opts.serviceInjected = true
 		}
 	}
 }
