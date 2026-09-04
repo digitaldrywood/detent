@@ -220,7 +220,7 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
     (element, request) => element.setAttribute("hx-get", request),
     cardRequest,
   );
-  await card.tap({ position: { x: 20, y: 20 } });
+  await card.locator("[data-board-card-title]").tap();
 
   const sheet = page.locator("[data-detail-sheet]");
   const dialog = sheet.getByRole("dialog");

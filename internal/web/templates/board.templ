@@ -656,12 +656,23 @@ templ boardCardView2(card boardCardView) {
 			}
 		}
 	>
-		<div class="flex min-w-0 items-center gap-0.5 font-mono text-2xs font-medium text-sec" data-board-card-content="cozy">
+		<div class="grid min-w-0 gap-0.5 font-mono text-2xs text-sec" data-board-card-identity>
+			<span class="min-w-0 break-words font-medium leading-tight text-text" data-board-card-project>{ card.Project }</span>
+			<div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5" data-board-card-references>
+				<span class="contents" data-board-card-issue>
+					@primitives.TrackerReferenceLinkIsolated(card.Number, card.URL, boardCardNumberClass(card))
+				</span>
+				if card.MetaRight != "" {
+					<span class="contents" data-board-card-pr>
+						@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "flex-none max-w-full break-all tabular-nums")
+					</span>
+				}
+			</div>
+		</div>
+		<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs font-medium text-sec" data-board-card-content="cozy">
 			if card.Running {
 				@primitives.StatusDot(primitives.KindOK, true)
 			}
-			@primitives.TrackerReferenceLink(card.Number, card.URL, boardCardNumberClass(card))
-			<span class="min-w-0 truncate">{ card.Project }</span>
 			if card.PriorityBadge != "" {
 				<span
 					id={ card.DomID + "-priority" }
@@ -679,32 +690,23 @@ templ boardCardView2(card boardCardView) {
 					onclick="event.stopPropagation()"
 				><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
 			}
-			if card.MetaRight != "" {
-				@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
-			} else if card.MoveDisabledText != "" {
-				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+			if card.MoveDisabledText != "" {
+				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			} else if card.Done {
-				<span class="ml-auto text-ok" role="img" aria-label="done">✓</span>
+				<span class="text-ok" role="img" aria-label="done">✓</span>
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
-		<div class="min-w-0 items-center gap-1.5 font-mono text-2xs text-sec" data-board-card-content="compact">
+		<div class="min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-2xs text-sec" data-board-card-content="compact">
 			<span class="flex-none font-medium text-text" data-board-card-state>{ card.State }</span>
 			if card.CompactSignal != "" {
 				<span aria-hidden="true">·</span>
 				<span class="min-w-0 truncate">{ card.CompactSignal }</span>
 			}
-			if card.MetaRight != "" {
-				@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "ml-auto flex-none whitespace-nowrap tabular-nums")
-			} else if card.MoveDisabledText != "" {
-				<span class="ml-auto flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+			if card.MoveDisabledText != "" {
+				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
 			}
 		</div>
-		if card.MetaRight != "" && card.MoveDisabledText != "" {
-			<div class="flex" data-board-card-expanded>
-				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
-			</div>
-		}
 		if card.RuntimeBadge {
 			@boardRuntimeBadge(card)
 		}

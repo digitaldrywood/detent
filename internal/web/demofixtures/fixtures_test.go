@@ -42,6 +42,7 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 		{name: "backoff heavy", projectID: "dogfood", variant: "backoff-heavy"},
 		{name: "blocked heavy", projectID: "billing-api", variant: "blocked-heavy"},
 		{name: "long content", projectID: "dogfood", variant: "long-content"},
+		{name: "board card identity", variant: "board-card-identity"},
 		{name: "budget refusals", projectID: "dogfood", variant: "budget-refusals"},
 		{name: "no history", projectID: "agent-lab", variant: "no-history"},
 		{name: "one board staleness warning", variant: "board-staleness-one"},

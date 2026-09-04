@@ -65,6 +65,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBlockedHeavySnapshot()
 	case "long-content":
 		snapshot = demoLongContentSnapshot()
+	case "board-card-identity":
+		snapshot = demoBoardCardIdentitySnapshot()
 	case "dense", "dense-kanban":
 		snapshot = demoDenseSnapshot()
 	case "hot-path", "model-heavy", "filtered-project":
@@ -846,6 +848,33 @@ func demoLongContentSnapshot() telemetry.Snapshot {
 			CodexReviewState: "CLEAN",
 		}
 		snapshot.Running[0].Tokens = telemetry.Tokens{Input: 980000, Output: 214000, Total: 1194000, RuntimeSeconds: 9180}
+	}
+	return snapshot
+}
+
+func demoBoardCardIdentitySnapshot() telemetry.Snapshot {
+	const projectID = "digitaldrywood-release-train-platform"
+	snapshot := demoHealthySnapshot()
+	project := snapshot.Projects[0]
+	project.Project.ID = projectID
+	project.Project.DisplayName = "Digital Drywood Release Train Platform"
+	snapshot.Projects = append(snapshot.Projects, project)
+	running := &snapshot.Running[0]
+	running.ProjectID = projectID
+	running.Identifier = "digitaldrywood/release-train-platform#5260"
+	running.URL = demoIssueURL(running.Identifier)
+	running.Title = "Keep project, issue, and pull request identity visible with maximal metadata"
+	running.UnblockerCount = 12
+	running.Origin = "admission"
+	running.OriginActor = "release-operator"
+	running.PullRequest = &telemetry.PullRequest{
+		Number:           5260,
+		URL:              demoPRURL(running.Identifier, 5260),
+		BranchName:       "detent/demo-board-card-identity",
+		State:            "OPEN",
+		MergeableState:   "clean",
+		CIStatus:         "pending",
+		CodexReviewState: "CLEAN",
 	}
 	return snapshot
 }

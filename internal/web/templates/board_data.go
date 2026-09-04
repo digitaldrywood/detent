@@ -2065,9 +2065,9 @@ func boardMoveDisabledLabel(reason string) string {
 
 func boardCardNumberClass(card boardCardView) string {
 	if card.Done {
-		return "flex-none max-w-16 truncate text-sec"
+		return "flex-none max-w-full break-all text-sec"
 	}
-	return "flex-none max-w-16 truncate text-text"
+	return "flex-none max-w-full break-all text-text"
 }
 
 func boardCardTitleClass(card boardCardView) string {
