@@ -17,6 +17,8 @@ func TestSnapshotJSONShape(t *testing.T) {
 	generatedAt := time.Date(2026, 5, 30, 22, 15, 0, 0, time.UTC)
 	startedAt := generatedAt.Add(-5 * time.Minute)
 	completedAt := generatedAt.Add(-time.Minute)
+	divergenceStartedAt := generatedAt.Add(-10 * time.Minute)
+	divergenceResetAt := generatedAt.Add(45 * time.Minute)
 	perDay := 50.0
 	perIssue := 5.0
 
@@ -159,6 +161,11 @@ func TestSnapshotJSONShape(t *testing.T) {
 				Unlimited:  false,
 				Balance:    "7.25",
 			},
+			RESTUsage: &telemetry.RESTUsage{Divergences: []telemetry.RESTUsageDivergence{{
+				CredentialIdentity: "github-rest:shared", Resource: "core", Attribution: "expected_shared_credential",
+				ObservedRequests: 22, DetentRequests: 2, AttributedRequests: 20,
+				WindowStartedAt: &divergenceStartedAt, LastObservedAt: &generatedAt, ResetAt: &divergenceResetAt,
+			}}},
 		},
 		Tokens: telemetry.Tokens{
 			Input:          110,
@@ -341,6 +348,15 @@ func TestSnapshotJSONShape(t *testing.T) {
 	credits := rateLimits["credits"].(map[string]any)
 	if credits["has_credits"] != true || credits["balance"] != "7.25" {
 		t.Fatalf("credits = %#v", credits)
+	}
+	restUsage := rateLimits["rest_usage"].(map[string]any)
+	divergences := restUsage["divergences"].([]any)
+	if len(divergences) != 1 {
+		t.Fatalf("rest_usage.divergences = %#v, want one window", divergences)
+	}
+	divergence := divergences[0].(map[string]any)
+	if divergence["credential_identity"] != "github-rest:shared" || divergence["attributed_requests"] != float64(20) || divergence["reset_at"] != divergenceResetAt.Format(time.RFC3339) {
+		t.Fatalf("rest_usage.divergences[0] = %#v", divergence)
 	}
 
 	tokens := got["tokens"].(map[string]any)

@@ -79,7 +79,7 @@ func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Tim
 		return restRateLimitCycle{}
 	}
 	usage := reporter.FlushRESTRateLimitUsage()
-	if !usage.HasRateLimit && usage.TotalRequests == 0 && len(usage.Requests) == 0 {
+	if !usage.HasRateLimit && usage.TotalRequests == 0 && len(usage.Requests) == 0 && len(usage.Divergences) == 0 {
 		return restRateLimitCycle{}
 	}
 
@@ -126,6 +126,7 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 		BillableRequests:    usage.BillableRequests,
 		RateLimited:         usage.RateLimited,
 		Contributors:        make([]telemetry.RESTUsageContributor, 0, len(usage.Requests)),
+		Divergences:         make([]telemetry.RESTUsageDivergence, 0, len(usage.Divergences)),
 	}
 	if !usage.BackoffUntil.IsZero() {
 		backoffUntil := usage.BackoffUntil
@@ -154,6 +155,31 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 			contributor.RetryAfterMS = request.RetryAfter.Milliseconds()
 		}
 		out.Contributors = append(out.Contributors, contributor)
+	}
+	for _, divergence := range usage.Divergences {
+		summary := telemetry.RESTUsageDivergence{
+			CredentialIdentity:   divergence.CredentialIdentity,
+			Resource:             divergence.Resource,
+			Attribution:          divergence.Attribution,
+			ObservedRequests:     divergence.ObservedRequests,
+			DetentRequests:       divergence.DetentRequests,
+			AttributedRequests:   divergence.AttributedRequests,
+			UnattributedRequests: divergence.UnattributedRequests,
+			WarningEmitted:       divergence.WarningEmitted,
+		}
+		if !divergence.WindowStartedAt.IsZero() {
+			value := divergence.WindowStartedAt
+			summary.WindowStartedAt = &value
+		}
+		if !divergence.LastObservedAt.IsZero() {
+			value := divergence.LastObservedAt
+			summary.LastObservedAt = &value
+		}
+		if !divergence.ResetAt.IsZero() {
+			value := divergence.ResetAt
+			summary.ResetAt = &value
+		}
+		out.Divergences = append(out.Divergences, summary)
 	}
 	return out
 }

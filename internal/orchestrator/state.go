@@ -929,6 +929,14 @@ func cloneRESTUsage(usage *telemetry.RESTUsage) *telemetry.RESTUsage {
 			cloned.Contributors[index].ResetAt = &resetAt
 		}
 	}
+	if len(usage.Divergences) > 0 {
+		cloned.Divergences = append([]telemetry.RESTUsageDivergence(nil), usage.Divergences...)
+		for index := range cloned.Divergences {
+			cloned.Divergences[index].WindowStartedAt = cloneTimePointer(usage.Divergences[index].WindowStartedAt)
+			cloned.Divergences[index].LastObservedAt = cloneTimePointer(usage.Divergences[index].LastObservedAt)
+			cloned.Divergences[index].ResetAt = cloneTimePointer(usage.Divergences[index].ResetAt)
+		}
+	}
 	return &cloned
 }
 

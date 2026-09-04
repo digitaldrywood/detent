@@ -1567,18 +1567,16 @@ func TestClientRESTCredentialIdentityStaysStableAcrossInstallationTokenRotation(
 	}
 }
 
-func TestClientWarnsOnUnexplainedRESTBudgetDivergence(t *testing.T) {
+func TestClientDoesNotWarnOnExpectedSharedRESTBudgetUsage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		remaining       []string
-		wantWarning     bool
-		wantUnexplained string
+		name      string
+		remaining []string
 	}{
 		{name: "detent request explains drop", remaining: []string{"4999", "4998"}},
 		{name: "small external drop stays quiet", remaining: []string{"4999", "4990"}},
-		{name: "worker consumption emits warning", remaining: []string{"4999", "4988"}, wantWarning: true, wantUnexplained: "10"},
+		{name: "worker consumption is expected telemetry", remaining: []string{"4999", "4988"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1615,15 +1613,170 @@ func TestClientWarnsOnUnexplainedRESTBudgetDivergence(t *testing.T) {
 			}
 
 			output := logs.String()
-			warning := strings.Contains(output, "github rest observed usage diverged from detent requests")
-			if warning != test.wantWarning {
-				t.Fatalf("warning = %v, want %v; logs = %s", warning, test.wantWarning, output)
+			if strings.Contains(output, "level=WARN msg=\"github rest usage divergence coalesced\"") {
+				t.Fatalf("expected shared usage emitted warning; logs = %s", output)
 			}
-			if test.wantWarning {
-				for _, want := range []string{"credential_identity=github-rest:", "unexplained_requests=" + test.wantUnexplained, `likely_external_consumer="worker gh subprocess sharing credential"`} {
-					if !strings.Contains(output, want) {
-						t.Fatalf("logs = %s, want %q", output, want)
-					}
+		})
+	}
+}
+
+func TestClientCoalescesExpectedSharedRESTBudgetDivergence(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	remaining := []string{"4999", "4988", "4977"}
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		index := int(calls.Add(1)) - 1
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", strconv.Itoa(5000-mustAtoi(t, remaining[index])))
+		w.Header().Set("X-RateLimit-Remaining", remaining[index])
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+		w.Header().Set("X-RateLimit-Resource", "core")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var logs bytes.Buffer
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("shared-divergence-token"),
+		HTTPClient:  server.Client(),
+		Logger:      slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	for range remaining {
+		if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &[]json.RawMessage{}); err != nil {
+			t.Fatalf("REST() error = %v", err)
+		}
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if len(usage.Divergences) != 1 || usage.Divergences[0].AttributedRequests != 20 || usage.Divergences[0].UnattributedRequests != 0 {
+		t.Fatalf("Divergences = %#v, want 20 attributed requests", usage.Divergences)
+	}
+
+	output := logs.String()
+	if got := strings.Count(output, "level=WARN msg=\"github rest usage divergence coalesced\""); got != 0 {
+		t.Fatalf("warning count = %d, want 0; logs = %s", got, output)
+	}
+	if got := strings.Count(output, "level=DEBUG msg=\"github rest usage divergence coalesced\""); got != 1 {
+		t.Fatalf("debug report count = %d, want 1; logs = %s", got, output)
+	}
+}
+
+func TestClientRESTBudgetDivergenceEscalationAndRollover(t *testing.T) {
+	t.Parallel()
+
+	type observation struct {
+		client    int
+		remaining int64
+		window    int
+	}
+	tests := []struct {
+		name               string
+		credentialIdentity string
+		reserve            int64
+		observations       []observation
+		wantAttributed     int64
+		wantUnattributed   int64
+		wantWarnings       int
+		wantDebug          int
+		wantWindow         int
+		wantLogFields      []string
+	}{
+		{
+			name:               "unexplained usage stays quiet below threshold",
+			credentialIdentity: "github-app-installation:42",
+			observations:       []observation{{remaining: 4999}, {remaining: 4993}},
+			wantUnattributed:   5,
+		},
+		{
+			name:               "unexplained usage warns once at accumulated threshold",
+			credentialIdentity: "github-app-installation:43",
+			observations:       []observation{{remaining: 4999}, {remaining: 4993}, {remaining: 4987}, {remaining: 4981}},
+			wantUnattributed:   15,
+			wantWarnings:       1,
+			wantLogFields:      []string{"report_reason=unattributed_threshold", "observed_requests=12", "detent_requests=2", "unattributed_requests=10", "window_started_at=", "last_observed_at=", "reset_at="},
+		},
+		{
+			name:               "shared usage warns once when reserve is threatened",
+			credentialIdentity: "github-rest:reserve",
+			reserve:            10,
+			observations:       []observation{{remaining: 20}, {remaining: 9}, {remaining: 3}},
+			wantAttributed:     15,
+			wantWarnings:       1,
+			wantLogFields:      []string{"report_reason=reserve_threat", "attribution=expected_shared_credential", "reserve=10"},
+		},
+		{
+			name:               "shared usage coalesces across clients",
+			credentialIdentity: "github-rest:clients",
+			observations:       []observation{{remaining: 4999}, {client: 1, remaining: 4988}, {remaining: 4977}},
+			wantAttributed:     20,
+			wantDebug:          1,
+		},
+		{
+			name:               "provider reset starts a new window",
+			credentialIdentity: "github-rest:rollover",
+			observations:       []observation{{remaining: 4999}, {remaining: 4988}, {remaining: 4999, window: 1}, {remaining: 4988, window: 1}},
+			wantAttributed:     10,
+			wantDebug:          2,
+			wantWindow:         1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC)
+			registry := newRESTDivergenceRegistry()
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			clients := []*Client{
+				{restEndpoint: "https://api.github.test", restPolicy: RESTBudgetPolicy{MinRemainingReserve: test.reserve}, restDivergences: registry, logger: logger},
+				{restEndpoint: "https://api.github.test", restPolicy: RESTBudgetPolicy{MinRemainingReserve: test.reserve}, restDivergences: registry, logger: logger},
+			}
+			paths := []string{"/repos/example/repo/issues", "/repos/example/repo/issues/1/comments", "/repos/example/repo/pulls"}
+			for index, current := range test.observations {
+				at := start.Add(time.Duration(index) * time.Minute)
+				resetAt := start.Add(time.Duration(current.window+1) * time.Hour)
+				headers := http.Header{
+					"X-Ratelimit-Limit":     []string{"5000"},
+					"X-Ratelimit-Used":      []string{strconv.FormatInt(5000-current.remaining, 10)},
+					"X-Ratelimit-Remaining": []string{strconv.FormatInt(current.remaining, 10)},
+					"X-Ratelimit-Reset":     []string{strconv.FormatInt(resetAt.Unix(), 10)},
+					"X-Ratelimit-Resource":  []string{"core"},
+				}
+				clients[current.client].recordRESTRateLimitFromHeaders(context.Background(), "", test.credentialIdentity, http.MethodGet, paths[index%len(paths)], http.StatusOK, headers, nil, at, false)
+			}
+
+			usage := clients[0].FlushRESTRateLimitUsage()
+			if len(usage.Divergences) != 1 {
+				t.Fatalf("Divergences = %#v, want one active provider window", usage.Divergences)
+			}
+			divergence := usage.Divergences[0]
+			if divergence.AttributedRequests != test.wantAttributed || divergence.UnattributedRequests != test.wantUnattributed {
+				t.Fatalf("divergence = %#v, want attributed %d unattributed %d", divergence, test.wantAttributed, test.wantUnattributed)
+			}
+			wantReset := start.Add(time.Duration(test.wantWindow+1) * time.Hour)
+			if !divergence.ResetAt.Equal(wantReset) {
+				t.Fatalf("ResetAt = %s, want %s", divergence.ResetAt, wantReset)
+			}
+
+			output := logs.String()
+			if got := strings.Count(output, "level=WARN msg=\"github rest usage divergence coalesced\""); got != test.wantWarnings {
+				t.Fatalf("warning count = %d, want %d; logs = %s", got, test.wantWarnings, output)
+			}
+			if got := strings.Count(output, "level=DEBUG msg=\"github rest usage divergence coalesced\""); got != test.wantDebug {
+				t.Fatalf("debug count = %d, want %d; logs = %s", got, test.wantDebug, output)
+			}
+			for _, field := range test.wantLogFields {
+				if !strings.Contains(output, field) {
+					t.Fatalf("logs = %s, want field %q", output, field)
 				}
 			}
 		})

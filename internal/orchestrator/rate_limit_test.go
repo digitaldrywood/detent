@@ -397,6 +397,11 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 				{CredentialIdentity: "github-rest:shared", EndpointFamily: "label issues", RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4879, Resource: "core", ResetAt: now.Add(time.Hour), UpdatedAt: now}},
 				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4878, Resource: "core", ResetAt: now.Add(2 * time.Hour), UpdatedAt: now}},
 			},
+			Divergences: []connector.RESTUsageDivergence{{
+				CredentialIdentity: "github-rest:shared", Resource: "core", Attribution: connector.RESTDivergenceExpectedShared,
+				ObservedRequests: 22, DetentRequests: 2, AttributedRequests: 20,
+				WindowStartedAt: now.Add(-time.Minute), LastObservedAt: now, ResetAt: now.Add(time.Hour),
+			}},
 			TotalRequests:       2,
 			ConditionalRequests: 1,
 			NotModifiedRequests: 1,
@@ -429,6 +434,9 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	}
 	if len(state.RateLimits.RESTUsage.Contributors) != 2 || state.RateLimits.RESTUsage.Contributors[1].EndpointFamily != "issue comments" {
 		t.Fatalf("RESTUsage.Contributors = %#v, want issue comments contributor", state.RateLimits.RESTUsage.Contributors)
+	}
+	if got := state.RateLimits.RESTUsage.Divergences; len(got) != 1 || got[0].AttributedRequests != 20 || got[0].ResetAt == nil || !got[0].ResetAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("RESTUsage.Divergences = %#v, want shared credential window counters", got)
 	}
 	if len(state.RateLimits.GitHubRESTBudgets) != 2 || state.RateLimits.GitHubRESTBudgets[0].CredentialIdentity != "github-rest:shared" {
 		t.Fatalf("GitHubRESTBudgets = %#v, want attributed endpoint budgets", state.RateLimits.GitHubRESTBudgets)

@@ -1573,6 +1573,21 @@ type RESTUsage struct {
 	RateLimited         bool                   `json:"rate_limited,omitempty"`
 	BackoffUntil        *time.Time             `json:"backoff_until,omitempty"`
 	Contributors        []RESTUsageContributor `json:"contributors,omitempty"`
+	Divergences         []RESTUsageDivergence  `json:"divergences,omitempty"`
+}
+
+type RESTUsageDivergence struct {
+	CredentialIdentity   string     `json:"credential_identity"`
+	Resource             string     `json:"resource"`
+	Attribution          string     `json:"attribution"`
+	ObservedRequests     int64      `json:"observed_requests"`
+	DetentRequests       int64      `json:"detent_requests"`
+	AttributedRequests   int64      `json:"attributed_requests,omitempty"`
+	UnattributedRequests int64      `json:"unattributed_requests,omitempty"`
+	WindowStartedAt      *time.Time `json:"window_started_at,omitempty"`
+	LastObservedAt       *time.Time `json:"last_observed_at,omitempty"`
+	ResetAt              *time.Time `json:"reset_at,omitempty"`
+	WarningEmitted       bool       `json:"warning_emitted,omitempty"`
 }
 
 const (

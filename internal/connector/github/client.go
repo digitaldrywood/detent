@@ -38,6 +38,7 @@ const (
 )
 
 var defaultRESTBackoffs = newRESTBackoffRegistry()
+var defaultRESTDivergences = newRESTDivergenceRegistry()
 
 type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
@@ -76,8 +77,9 @@ type Client struct {
 	graphQLRateLimitStatus string
 	restRateLimit          connector.RESTRateLimit
 	restRateLimits         map[string]connector.RESTRateLimit
-	restCredentialLimits   map[string]connector.RESTRateLimit
 	restBudgets            map[string]connector.RESTRateLimitBudget
+	restDivergenceKeys     map[string]struct{}
+	restDivergences        *restDivergenceRegistry
 	restRequests           map[string]connector.RESTEndpointUsage
 	restFanoutUnits        int64
 	restCache              map[string]restCacheEntry
@@ -134,6 +136,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		restDebugLogging:    cfg.RESTDebugLogging,
 		logger:              logger,
 		restBackoffs:        defaultRESTBackoffs,
+		restDivergences:     defaultRESTDivergences,
 		conditionalRequests: !cfg.DisableConditionalRequests,
 		restCache:           map[string]restCacheEntry{},
 	}, nil
@@ -337,7 +340,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest text response", http.MethodGet, path, family, resp.StatusCode)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
@@ -417,7 +420,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
@@ -524,7 +527,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
 	if resp.StatusCode == http.StatusNotModified {
 		if !conditional {
 			return nil, ErrInvalidResponse
@@ -769,6 +772,7 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 		HasRateLimit: c.hasRestRateLimit,
 		Requests:     sortedRESTEndpointUsages(c.restRequests),
 		Budgets:      sortedRESTRateLimitBudgets(c.restBudgets),
+		Divergences:  c.restDivergences.snapshots(c.restDivergenceKeys),
 		BackoffUntil: backoffUntil,
 	}
 	for _, request := range usage.Requests {
@@ -978,7 +982,7 @@ func (c *Client) rememberRESTBackoffKey(backoffKey string) {
 	c.mu.Unlock()
 }
 
-func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, credentialIdentity string, method string, path string, status int, headers http.Header, body []byte, now time.Time, conditional bool) {
+func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey string, credentialIdentity string, method string, path string, status int, headers http.Header, body []byte, now time.Time, conditional bool) {
 	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
 	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
 	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
@@ -1036,25 +1040,22 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, credentialIde
 	}
 	if hasSnapshot {
 		snapshot.UpdatedAt = now
-		credentialLimitKey := restCredentialResourceKey(credentialIdentity, resource)
-		if previous, ok := c.restCredentialLimits[credentialLimitKey]; ok {
-			if divergence, ok := restBudgetDivergence(previous, snapshot, status != http.StatusNotModified); ok {
-				c.logger.Warn(
-					"github rest observed usage diverged from detent requests",
-					"credential_identity", credentialIdentity,
-					"endpoint_family", family,
-					"resource", resource,
-					"observed_drop", divergence.ObservedDrop,
-					"detent_billable_requests", divergence.DetentBillableRequests,
-					"unexplained_requests", divergence.UnexplainedRequests,
-					"likely_external_consumer", "worker gh subprocess sharing credential",
-				)
+		divergenceKey := restDivergenceKey(c.restEndpoint, credentialIdentity, resource)
+		divergence, report := c.restDivergences.observe(
+			divergenceKey,
+			credentialIdentity,
+			snapshot,
+			status != http.StatusNotModified,
+			restDivergenceAttribution(credentialIdentity),
+			c.restPolicy.MinRemainingReserve,
+		)
+		if divergence.ObservedRequests > 0 {
+			if c.restDivergenceKeys == nil {
+				c.restDivergenceKeys = make(map[string]struct{})
 			}
+			c.restDivergenceKeys[divergenceKey] = struct{}{}
 		}
-		if c.restCredentialLimits == nil {
-			c.restCredentialLimits = make(map[string]connector.RESTRateLimit)
-		}
-		c.restCredentialLimits[credentialLimitKey] = snapshot
+		c.logRESTUsageDivergence(ctx, divergence, report)
 		c.restRateLimit = snapshot
 		if resource != "" {
 			if c.restRateLimits == nil {
@@ -1849,6 +1850,19 @@ func sortedRESTRateLimitBudgets(budgets map[string]connector.RESTRateLimitBudget
 	return out
 }
 
+func sortedRESTUsageDivergences(divergences []connector.RESTUsageDivergence) []connector.RESTUsageDivergence {
+	sort.Slice(divergences, func(i, j int) bool {
+		if divergences[i].CredentialIdentity != divergences[j].CredentialIdentity {
+			return divergences[i].CredentialIdentity < divergences[j].CredentialIdentity
+		}
+		if divergences[i].Resource != divergences[j].Resource {
+			return divergences[i].Resource < divergences[j].Resource
+		}
+		return divergences[i].ResetAt.Before(divergences[j].ResetAt)
+	})
+	return divergences
+}
+
 type restUsageDivergence struct {
 	ObservedDrop           int64
 	DetentBillableRequests int64
@@ -1870,7 +1884,7 @@ func restBudgetDivergence(previous connector.RESTRateLimit, current connector.RE
 		DetentBillableRequests: detentRequests,
 		UnexplainedRequests:    unexplained,
 	}
-	return divergence, unexplained >= restDivergenceMinUnexplained
+	return divergence, unexplained > 0
 }
 
 func restCredentialFamilyKey(credentialIdentity string, family string) string {
@@ -1879,6 +1893,158 @@ func restCredentialFamilyKey(credentialIdentity string, family string) string {
 
 func restCredentialResourceKey(credentialIdentity string, resource string) string {
 	return credentialIdentity + "\x00" + resource
+}
+
+func restDivergenceKey(endpoint string, credentialIdentity string, resource string) string {
+	return endpoint + "\x00" + restCredentialResourceKey(credentialIdentity, resource)
+}
+
+func restDivergenceAttribution(credentialIdentity string) string {
+	if strings.HasPrefix(strings.TrimSpace(credentialIdentity), "github-rest:") {
+		return connector.RESTDivergenceExpectedShared
+	}
+	return connector.RESTDivergenceUnattributed
+}
+
+type restDivergenceReport struct {
+	Level  slog.Level
+	Reason string
+	Emit   bool
+}
+
+type restDivergenceWindow struct {
+	last              connector.RESTRateLimit
+	usage             connector.RESTUsageDivergence
+	telemetryReported bool
+	warningReported   bool
+}
+
+type restDivergenceRegistry struct {
+	mu      sync.Mutex
+	windows map[string]restDivergenceWindow
+}
+
+func newRESTDivergenceRegistry() *restDivergenceRegistry {
+	return &restDivergenceRegistry{windows: make(map[string]restDivergenceWindow)}
+}
+
+func (r *restDivergenceRegistry) observe(
+	key string,
+	credentialIdentity string,
+	current connector.RESTRateLimit,
+	billable bool,
+	attribution string,
+	reserve int64,
+) (connector.RESTUsageDivergence, restDivergenceReport) {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return connector.RESTUsageDivergence{}, restDivergenceReport{}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for existingKey, existing := range r.windows {
+		if existingKey != key && !existing.last.ResetAt.IsZero() && existing.last.ResetAt.Add(restRateLimitResetSkew).Before(current.UpdatedAt) {
+			delete(r.windows, existingKey)
+		}
+	}
+
+	window, ok := r.windows[key]
+	if !ok || window.last.Limit <= 0 || current.Limit != window.last.Limit ||
+		window.last.ResetAt.IsZero() || !current.ResetAt.Equal(window.last.ResetAt) {
+		r.windows[key] = restDivergenceWindow{last: current}
+		return connector.RESTUsageDivergence{}, restDivergenceReport{}
+	}
+	if current.Remaining > window.last.Remaining || current.Used < window.last.Used {
+		return window.usage, restDivergenceReport{}
+	}
+
+	divergence, diverged := restBudgetDivergence(window.last, current, billable)
+	previous := window.last
+	window.last = current
+	if !diverged {
+		r.windows[key] = window
+		return window.usage, restDivergenceReport{}
+	}
+
+	if window.usage.ObservedRequests == 0 {
+		window.usage = connector.RESTUsageDivergence{
+			CredentialIdentity: credentialIdentity,
+			Resource:           current.Resource,
+			Attribution:        attribution,
+			WindowStartedAt:    previous.UpdatedAt,
+			ResetAt:            current.ResetAt,
+		}
+	}
+	window.usage.ObservedRequests += divergence.ObservedDrop
+	window.usage.DetentRequests += divergence.DetentBillableRequests
+	window.usage.LastObservedAt = current.UpdatedAt
+	if attribution == connector.RESTDivergenceExpectedShared {
+		window.usage.AttributedRequests += divergence.UnexplainedRequests
+	} else {
+		window.usage.UnattributedRequests += divergence.UnexplainedRequests
+	}
+
+	report := restDivergenceReport{}
+	reserveThreat := reserve > 0 && current.Remaining <= reserve
+	if reserveThreat && !window.warningReported {
+		report = restDivergenceReport{Level: slog.LevelWarn, Reason: "reserve_threat", Emit: true}
+		window.warningReported = true
+		window.telemetryReported = true
+		window.usage.WarningEmitted = true
+	} else if window.usage.UnattributedRequests >= restDivergenceMinUnexplained && !window.warningReported {
+		report = restDivergenceReport{Level: slog.LevelWarn, Reason: "unattributed_threshold", Emit: true}
+		window.warningReported = true
+		window.telemetryReported = true
+		window.usage.WarningEmitted = true
+	} else if window.usage.AttributedRequests >= restDivergenceMinUnexplained && !window.telemetryReported {
+		report = restDivergenceReport{Level: slog.LevelDebug, Reason: "expected_shared_usage", Emit: true}
+		window.telemetryReported = true
+	}
+
+	r.windows[key] = window
+	return window.usage, report
+}
+
+func (r *restDivergenceRegistry) snapshots(keys map[string]struct{}) []connector.RESTUsageDivergence {
+	if r == nil || len(keys) == 0 {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]connector.RESTUsageDivergence, 0, len(keys))
+	for key := range keys {
+		window, ok := r.windows[key]
+		if ok && window.usage.ObservedRequests > 0 {
+			out = append(out, window.usage)
+		}
+	}
+	return sortedRESTUsageDivergences(out)
+}
+
+func (c *Client) logRESTUsageDivergence(ctx context.Context, divergence connector.RESTUsageDivergence, report restDivergenceReport) {
+	if !report.Emit {
+		return
+	}
+
+	c.logger.Log(
+		ctx,
+		report.Level,
+		"github rest usage divergence coalesced",
+		"credential_identity", divergence.CredentialIdentity,
+		"resource", divergence.Resource,
+		"attribution", divergence.Attribution,
+		"report_reason", report.Reason,
+		"observed_requests", divergence.ObservedRequests,
+		"detent_requests", divergence.DetentRequests,
+		"attributed_requests", divergence.AttributedRequests,
+		"unattributed_requests", divergence.UnattributedRequests,
+		"window_started_at", divergence.WindowStartedAt,
+		"last_observed_at", divergence.LastObservedAt,
+		"reset_at", divergence.ResetAt,
+		"reserve", c.restPolicy.MinRemainingReserve,
+	)
 }
 
 type restBackoffRegistry struct {

@@ -86,11 +86,31 @@ type RESTRateLimitBudget struct {
 	RateLimit          RESTRateLimit
 }
 
+const (
+	RESTDivergenceExpectedShared = "expected_shared_credential"
+	RESTDivergenceUnattributed   = "unattributed"
+)
+
+type RESTUsageDivergence struct {
+	CredentialIdentity   string
+	Resource             string
+	Attribution          string
+	ObservedRequests     int64
+	DetentRequests       int64
+	AttributedRequests   int64
+	UnattributedRequests int64
+	WindowStartedAt      time.Time
+	LastObservedAt       time.Time
+	ResetAt              time.Time
+	WarningEmitted       bool
+}
+
 type RESTRateLimitUsage struct {
 	RateLimit           RESTRateLimit
 	HasRateLimit        bool
 	Requests            []RESTEndpointUsage
 	Budgets             []RESTRateLimitBudget
+	Divergences         []RESTUsageDivergence
 	TotalRequests       int64
 	ConditionalRequests int64
 	NotModifiedRequests int64
