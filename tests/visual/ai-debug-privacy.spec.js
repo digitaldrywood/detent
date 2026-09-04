@@ -35,7 +35,7 @@ async function openHealth(page, context, options = {}) {
   const requests = { count: 0 };
   await page.route("**/api/v1/ai-debug?scope=fleet", async (route) => {
     requests.count += 1;
-    await route.fulfill({
+    await route.fulfill(options.response || {
       status: 200,
       contentType: "text/plain",
       body: prompt,
@@ -147,3 +147,76 @@ test("shows the dialog when localStorage throws", async ({ context, page }) => {
   ).toBeVisible();
   expect(requests.count).toBe(0);
 });
+
+for (const failure of [
+  {
+    status: 403,
+    title: "Authorization failed",
+    code: "api_token_required",
+    message: "configure api_token or use an API key to enable API access on non-loopback hosts",
+  },
+  {
+    status: 404,
+    title: "Target not found",
+    code: "ai_debug_target_not_found",
+    message: "AI Debug target not found",
+  },
+  {
+    status: 409,
+    title: "AI Debug request failed",
+    code: "ai_debug_target_ambiguous",
+    message: "Multiple issues use that number; use the owner/repo#N form",
+  },
+  {
+    status: 500,
+    title: "Server error",
+    code: "ai_debug_assembly_failed",
+    message: "AI Debug prompt could not be assembled",
+  },
+]) {
+  test(`surfaces the ${failure.status} response and marks the button failed`, async ({
+    context,
+    page,
+  }) => {
+    await openHealth(page, context, {
+      response: {
+        status: failure.status,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: failure.code, message: failure.message },
+        }),
+      },
+    });
+    const button = page.locator('[data-ai-debug-url="/api/v1/ai-debug?scope=fleet"]');
+
+    await button.click();
+    await page
+      .getByRole("alertdialog", { name: "Copy private fleet details?" })
+      .getByRole("button", { name: "Copy prompt" })
+      .click();
+
+    const dialog = page.getByRole("alertdialog", {
+      name: `${failure.title} (${failure.status})`,
+    });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText(failure.code, { exact: true })).toBeVisible();
+    await expect(dialog.getByText(failure.message, { exact: true })).toBeVisible();
+    await expect(button).toHaveAttribute("data-ai-debug-state", "error");
+    await expect(button).toContainText("AI Debug failed");
+    await expect(button).not.toHaveAttribute("aria-busy", "true");
+
+    await button.evaluate((element) => {
+      element.removeAttribute("data-ai-debug-state");
+      element.removeAttribute("aria-invalid");
+      element.querySelector("[data-ai-debug-label]").textContent = "AI Debug";
+      const snapshot = document.getElementById("snapshot");
+      document.dispatchEvent(
+        new CustomEvent("htmx:afterSettle", {
+          detail: { target: snapshot },
+        }),
+      );
+    });
+    await expect(button).toHaveAttribute("data-ai-debug-state", "error");
+    await expect(button).toContainText("AI Debug failed");
+  });
+}

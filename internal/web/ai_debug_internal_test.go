@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -8,6 +9,41 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestAIDebugFindIssueRequiresUnambiguousNumber(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+		{ID: "first", Identifier: "owner/first#42", Number: 42, ProjectID: "detent"},
+		{ID: "second", Identifier: "owner/second#42", Number: 42, ProjectID: "detent"},
+		{ID: "other-project", Identifier: "owner/other#7", Number: 7, ProjectID: "other"},
+	}}
+	tests := []struct {
+		name      string
+		projectID string
+		issueRef  string
+		wantID    string
+		wantErr   error
+	}{
+		{name: "qualified identity wins", projectID: "detent", issueRef: "owner/second#42", wantID: "second"},
+		{name: "ambiguous number", projectID: "detent", issueRef: "42", wantErr: errAIDebugAmbiguous},
+		{name: "other project excluded", projectID: "detent", issueRef: "7", wantErr: errAIDebugNotFound},
+		{name: "unique number in project", projectID: "other", issueRef: "7", wantID: "other-project"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue, err := aiDebugFindIssue(snapshot, tt.projectID, tt.issueRef)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("aiDebugFindIssue() error = %v, want %v", err, tt.wantErr)
+			}
+			if issue.ID != tt.wantID {
+				t.Fatalf("aiDebugFindIssue() issue ID = %q, want %q", issue.ID, tt.wantID)
+			}
+		})
+	}
+}
 
 func TestAIDebugAttemptsExtractRecordedProgressEvidence(t *testing.T) {
 	t.Parallel()

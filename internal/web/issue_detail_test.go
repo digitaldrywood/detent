@@ -82,6 +82,11 @@ func TestAIDebugPromptRoutesReturnSelfContainedScopes(t *testing.T) {
 			want: []string{"## Issue evidence", "## Project evidence", "## Fleet evidence", `"identifier": "wi-detail"`, `"cause": "No blocked cause is recorded."`, "Do not request tool access"},
 		},
 		{
+			name: "issue by number",
+			path: "/api/v1/ai-debug?scope=issue&project=video&issue=2",
+			want: []string{"## Issue evidence", "## Project evidence", "## Fleet evidence", `"identifier": "wi-detail"`, `"cause": "No blocked cause is recorded."`, "Do not request tool access"},
+		},
+		{
 			name:     "project",
 			path:     "/api/v1/ai-debug?scope=project&project=video",
 			want:     []string{"## Project evidence", "## Fleet evidence", `"id": "video"`, "configuration_or_workflow_issue_destination_repository", `"drift_status": "comparison failed: workflow path must not be blank"`},
@@ -109,6 +114,19 @@ func TestAIDebugPromptRoutesReturnSelfContainedScopes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAIDebugPromptMissingTargetReturnsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalIssueDetailTestServer(t)
+	payload := requestJSON(t, server, http.MethodGet, "/api/v1/ai-debug?scope=issue&project=video&issue=999", http.StatusNotFound)
+	if got := nestedString(t, payload, "error", "code"); got != "ai_debug_target_not_found" {
+		t.Fatalf("error.code = %q, want ai_debug_target_not_found", got)
+	}
+	if got := nestedString(t, payload, "error", "message"); got != "AI Debug target not found" {
+		t.Fatalf("error.message = %q, want AI Debug target not found", got)
 	}
 }
 

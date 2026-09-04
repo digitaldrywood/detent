@@ -83,6 +83,10 @@ func TestAIDebugScriptFetchesPromptOnlyOnClick(t *testing.T) {
 		"role=\"alertdialog\"",
 		"aria-labelledby=\"ai-debug-privacy-title\"",
 		"aria-describedby=\"ai-debug-privacy-description\"",
+		"id=\"ai-debug-error-dialog\"",
+		"data-ai-debug-error-title",
+		"data-ai-debug-error-code",
+		"data-ai-debug-error-message",
 		"Contains private fleet detail. Do not paste into a public or shared context.",
 		"Copy prompt",
 		"Don't warn me again",
@@ -98,6 +102,9 @@ func TestAIDebugScriptFetchesPromptOnlyOnClick(t *testing.T) {
 		"window.localStorage && window.localStorage.getItem(privacyStorageKey) === \"true\"",
 		"window.localStorage && window.localStorage.setItem(privacyStorageKey, \"true\")",
 		"button.removeAttribute(\"aria-busy\")",
+		"button.setAttribute(\"data-ai-debug-state\", \"error\")",
+		"showFailure(button, error)",
+		"document.addEventListener(\"htmx:afterSettle\", syncFailureAfterMorph)",
 		"button.focus()",
 	} {
 		if !strings.Contains(html, want) {
@@ -111,9 +118,13 @@ func TestAIDebugDialogIsSharedOutsideSnapshot(t *testing.T) {
 
 	html := renderBoardComponent(t, ProjectBoardPage(boardTestData()))
 	dialogAt := strings.Index(html, "id=\"ai-debug-privacy-dialog\"")
+	errorDialogAt := strings.Index(html, "id=\"ai-debug-error-dialog\"")
 	snapshotAt := strings.Index(html, "id=\"snapshot\"")
 	if dialogAt < 0 || snapshotAt < 0 || dialogAt >= snapshotAt {
 		t.Fatal("shared AI Debug dialog is not rendered before the live snapshot")
+	}
+	if errorDialogAt < 0 || errorDialogAt >= snapshotAt {
+		t.Fatal("shared AI Debug error dialog is not rendered before the live snapshot")
 	}
 	if got := strings.Count(html, "id=\"ai-debug-privacy-dialog\""); got != 1 {
 		t.Fatalf("shared AI Debug dialog count = %d, want 1", got)

@@ -11,7 +11,7 @@ templ aiDebugCopyButton(path string, class string) {
 		aria-label="Copy AI Debug prompt"
 	>
 		@icon.Bug(icon.Props{Class: "size-3.5 shrink-0"})
-		<span>AI Debug</span>
+		<span data-ai-debug-label>AI Debug</span>
 	</button>
 }
 
@@ -47,11 +47,33 @@ templ aiDebugScript() {
 			</div>
 		</form>
 	</dialog>
+	<dialog
+		id="ai-debug-error-dialog"
+		class="m-auto w-[calc(100vw-2.5rem)] max-w-md rounded-card border border-err/40 bg-page p-0 text-text shadow-lg backdrop:bg-black/50"
+		role="alertdialog"
+		aria-labelledby="ai-debug-error-title"
+		aria-describedby="ai-debug-error-message"
+		data-ai-debug-error-dialog
+	>
+		<form method="dialog" class="flex flex-col gap-4 p-5">
+			<div class="flex flex-col gap-2">
+				<h2 id="ai-debug-error-title" class="text-base font-semibold text-err" data-ai-debug-error-title>AI Debug request failed</h2>
+				<p class="text-xs font-medium uppercase tracking-wide text-sec" data-ai-debug-error-code></p>
+				<p id="ai-debug-error-message" class="text-sm leading-relaxed text-text" data-ai-debug-error-message></p>
+			</div>
+			<div class="flex flex-row-reverse">
+				<button type="submit" value="close" class="min-h-10 rounded-card bg-err px-4 text-sm font-medium text-page hover:bg-err/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-err" autofocus>Close</button>
+			</div>
+		</form>
+	</dialog>
 	<script>
 		(function () {
 			var privacyStorageKey = "detent-ai-debug-privacy-warning-dismissed";
 			var dialog = document.getElementById("ai-debug-privacy-dialog");
+			var errorDialog = document.getElementById("ai-debug-error-dialog");
 			var activeButton = null;
+			var errorButton = null;
+			var failedRequest = null;
 			var pendingURL = "";
 
 			function copyFallback(value) {
@@ -92,11 +114,88 @@ templ aiDebugScript() {
 				}
 			}
 
+			function responseFailure(response, body) {
+				var payload = null;
+				try {
+					payload = JSON.parse(body);
+				} catch (_) {
+					payload = null;
+				}
+				var detail = payload && payload.error && typeof payload.error === "object" ? payload.error : {};
+				return {
+					status: response.status,
+					code: typeof detail.code === "string" && detail.code ? detail.code : "http_" + response.status,
+					message: typeof detail.message === "string" && detail.message ? detail.message : response.statusText || "AI Debug request failed",
+				};
+			}
+
+			function failureTitle(status) {
+				if (status === 401 || status === 403) return "Authorization failed";
+				if (status === 404) return "Target not found";
+				if (status >= 500) return "Server error";
+				return "AI Debug request failed";
+			}
+
+			function clearFailure(button) {
+				if (failedRequest && failedRequest.url === button.getAttribute("data-ai-debug-url")) failedRequest = null;
+				button.removeAttribute("data-ai-debug-state");
+				button.removeAttribute("aria-invalid");
+				button.classList.remove("border-err", "bg-err/10", "text-err");
+				button.setAttribute("aria-label", "Copy AI Debug prompt");
+				button.setAttribute("title", "Copy a self-contained AI diagnostic prompt");
+				var label = button.querySelector("[data-ai-debug-label]");
+				if (label) label.textContent = "AI Debug";
+			}
+
+			function markButtonFailed(button, message) {
+				button.setAttribute("data-ai-debug-state", "error");
+				button.setAttribute("aria-invalid", "true");
+				button.classList.add("border-err", "bg-err/10", "text-err");
+				button.setAttribute("aria-label", "Retry AI Debug prompt after failure");
+				button.setAttribute("title", message);
+				var label = button.querySelector("[data-ai-debug-label]");
+				if (label) label.textContent = "AI Debug failed";
+			}
+
+			function showFailure(button, error) {
+				var status = typeof error.status === "number" ? error.status : 0;
+				var code = typeof error.code === "string" && error.code ? error.code : "request_failed";
+				var message = typeof error.message === "string" && error.message ? error.message : "AI Debug request failed";
+				failedRequest = { url: button.getAttribute("data-ai-debug-url") || "", message: message };
+				markButtonFailed(button, message);
+				if (!errorDialog) return;
+				var title = errorDialog.querySelector("[data-ai-debug-error-title]");
+				var codeElement = errorDialog.querySelector("[data-ai-debug-error-code]");
+				var messageElement = errorDialog.querySelector("[data-ai-debug-error-message]");
+				if (title) title.textContent = failureTitle(status) + (status ? " (" + status + ")" : "");
+				if (codeElement) codeElement.textContent = code;
+				if (messageElement) messageElement.textContent = message;
+				errorButton = button;
+				if (!errorDialog.open) errorDialog.showModal();
+			}
+
+			function syncFailureAfterMorph(event) {
+				if (!failedRequest) return;
+				var detailTarget = event.detail && event.detail.target;
+				var target = detailTarget instanceof Element ? detailTarget : event.target;
+				if (!(target instanceof Element) || target.id !== "snapshot" && !target.closest("#snapshot")) return;
+				document.querySelectorAll("[data-ai-debug-url]").forEach(function (button) {
+					if (button.getAttribute("data-ai-debug-url") !== failedRequest.url) return;
+					markButtonFailed(button, failedRequest.message);
+					errorButton = button;
+				});
+			}
+
 			function fetchAndCopy(button, url) {
+				clearFailure(button);
 				button.setAttribute("aria-busy", "true");
 				fetch(url, { headers: { "Accept": "text/plain", "HX-Request": "true" } })
 					.then(function (response) {
-						if (!response.ok) throw new Error("AI Debug request failed with status " + response.status);
+						if (!response.ok) {
+							return response.text().then(function (body) {
+								throw responseFailure(response, body);
+							});
+						}
 						return response.text();
 					})
 					.then(function (prompt) {
@@ -104,6 +203,7 @@ templ aiDebugScript() {
 					})
 					.catch(function (error) {
 						console.error(error);
+						showFailure(button, error);
 					})
 					.finally(function () {
 						button.removeAttribute("aria-busy");
@@ -120,6 +220,16 @@ templ aiDebugScript() {
 					if (button && document.documentElement.contains(button)) button.focus();
 				});
 			}
+
+			if (errorDialog) {
+				errorDialog.addEventListener("close", function () {
+					var button = errorButton;
+					errorButton = null;
+					if (button && document.documentElement.contains(button)) button.focus();
+				});
+			}
+
+			document.addEventListener("htmx:afterSettle", syncFailureAfterMorph);
 
 			document.addEventListener("click", function (event) {
 				var confirm = event.target instanceof Element ? event.target.closest("[data-ai-debug-confirm]") : null;
