@@ -241,9 +241,16 @@ reference remains available when permission or revocation isolation is useful:
 ```yaml
 worker:
   github_token: gh
+  github_token_resolution_timeout_ms: 15000
   github_rest_min_remaining_reserve: 1250
   github_rest_poll_interval_ms: 60000
 ```
+
+The token-resolution timeout applies to each `gh auth token` invocation. Detent
+tries the command up to three times with short backoff before recording a
+same-attempt infrastructure wait; these failures do not consume issue attempt
+or failure-breaker budgets. Increase the timeout when the host credential store
+can legitimately take longer than 15 seconds.
 
 After resolving `gh`, Detent classifies an exact orchestrator token or any token
 that resolves to the same GitHub user as `shared_budget`: GitHub's primary REST
@@ -1121,6 +1128,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
 | `worker.github_token` | `string` | `none` | No | None |
+| `worker.github_token_resolution_timeout_ms` | `integer` | `15000` | No | must be greater than 0 |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
 | `worker.ssh_hosts` | `list<string>` | `[]` | No | None |
 | `workpad` | `object` | `see child fields` | No | None |

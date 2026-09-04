@@ -98,6 +98,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		o.recoverForgeAvailabilityWaits(ctx, state, recent, now)
 		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
 		o.recoverWorkerGitHubMonitorWaits(ctx, state, recent, now)
+		o.recoverWorkerGitHubTokenResolutionWaits(ctx, state, recent, now)
 	}
 	decisions, err := o.workAttempts.ListRecentSchedulerDecisions(ctx, store.SchedulerDecisionQuery{
 		ProjectID: projectID,
