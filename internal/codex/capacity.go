@@ -17,7 +17,7 @@ import (
 const codexCapacityAvailableThresholdPercent = 5
 
 var codexProviderOutageStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(404|5[0-9]{2})\b`)
-var codexResponsesEndpointPattern = regexp.MustCompile(`(?i)(?:/responses(?:[?"'\s]|$)|responses endpoint)`)
+var codexResponsesEndpointPattern = regexp.MustCompile(`(?i)(?:/responses(?:[?,"'\s]|$)|responses endpoint)`)
 
 var codexCapacityRules = backendcapacity.Rules{
 	Kinds: []string{

@@ -87,6 +87,13 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			wantKind: "http_404",
 		},
 		{
+			name:     "responses URL followed by diagnostic metadata",
+			err:      &TurnFailedError{Status: "failed", Body: `{"message":"unexpected status 404 Not Found, url: https://chatgpt.com/backend-api/codex/responses, request id: example"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeProviderOutage,
+			wantKind: "http_404",
+		},
+		{
 			name: "model not found at responses endpoint",
 			err:  &TurnFailedError{Status: "failed", Body: `{"status":404,"message":"model not found at responses endpoint","code":"model_not_found"}`},
 		},
