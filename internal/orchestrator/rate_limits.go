@@ -115,7 +115,7 @@ func replaceRESTConsumerBudgets(current []telemetry.RESTBudget, replacement []te
 }
 
 func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
-	if usage.TotalRequests == 0 && len(usage.Requests) == 0 && !usage.RateLimited {
+	if usage.TotalRequests == 0 && len(usage.Requests) == 0 && len(usage.Divergences) == 0 && !usage.RateLimited {
 		return nil
 	}
 

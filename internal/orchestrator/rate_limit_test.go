@@ -449,6 +449,53 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	}
 }
 
+func TestRESTUsageSummaryPresence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		usage      connector.RESTRateLimitUsage
+		want       bool
+		divergence string
+	}{
+		{name: "empty"},
+		{
+			name: "divergence only",
+			usage: connector.RESTRateLimitUsage{Divergences: []connector.RESTUsageDivergence{{
+				CredentialIdentity: "github-rest:shared",
+				Resource:           "core",
+				Attribution:        connector.RESTDivergenceExpectedShared,
+				ObservedRequests:   12,
+				AttributedRequests: 12,
+			}}},
+			want:       true,
+			divergence: "github-rest:shared",
+		},
+		{
+			name:  "rate limited only",
+			usage: connector.RESTRateLimitUsage{RateLimited: true},
+			want:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := restUsageSummary(tt.usage)
+			if (got != nil) != tt.want {
+				t.Fatalf("restUsageSummary() = %#v, want present %t", got, tt.want)
+			}
+			if tt.divergence == "" {
+				return
+			}
+			if len(got.Divergences) != 1 || got.Divergences[0].CredentialIdentity != tt.divergence {
+				t.Fatalf("restUsageSummary().Divergences = %#v, want credential %q", got.Divergences, tt.divergence)
+			}
+		})
+	}
+}
+
 func TestReplaceRESTConsumerBudgetsPreservesWorkerBudget(t *testing.T) {
 	t.Parallel()
 
