@@ -8197,6 +8197,12 @@ func restContributorStatus(contributor telemetry.RESTUsageContributor) string {
 	if contributor.RateLimited {
 		return "rate limited"
 	}
+	if contributor.BudgetGate == "fanout_cap" {
+		return "fanout deferred"
+	}
+	if contributor.BudgetGate == "reserve" {
+		return "reserve held"
+	}
 	if contributor.LastStatus > 0 {
 		return formatInt(int64(contributor.LastStatus))
 	}
@@ -8251,6 +8257,13 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		view.Detail = "GitHub secondary endpoint throttle is active for " + families + ". " + primaryContext + ". " + retrySentence + "."
 		return view
 	}
+	if localDeferral := gitHubAPILocalRESTDeferral(snapshot.RateLimits); localDeferral != "" {
+		view.State = gitHubAPIHealthStateWarning
+		view.Label = localDeferral
+		view.Summary = gitHubAPIRESTPrimaryContext(snapshot.RateLimits) + "."
+		view.Detail = gitHubAPILocalRESTDeferralDetail(snapshot.RateLimits)
+		return view
+	}
 	if gitHubAPITrackerDegraded(snapshot) {
 		view.State = gitHubAPIHealthStateWarning
 		view.Label = "GitHub tracker degraded"
@@ -8286,6 +8299,37 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 	view.Summary = primarySummary
 	view.Detail = gitHubAPIHealthyDetail(snapshot)
 	return view
+}
+
+func gitHubAPILocalRESTDeferral(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.RESTUsage == nil {
+		return ""
+	}
+	switch {
+	case limits.RESTUsage.FanoutDeferred && limits.RESTUsage.ReserveHeld:
+		return "GitHub REST local deferrals active"
+	case limits.RESTUsage.FanoutDeferred:
+		return "GitHub REST fanout deferred"
+	case limits.RESTUsage.ReserveHeld:
+		return "GitHub REST reserve held"
+	default:
+		return ""
+	}
+}
+
+func gitHubAPILocalRESTDeferralDetail(limits *telemetry.RateLimits) string {
+	primary := gitHubAPIRESTPrimaryContext(limits)
+	if limits == nil || limits.RESTUsage == nil {
+		return primary + "."
+	}
+	switch {
+	case limits.RESTUsage.FanoutDeferred && limits.RESTUsage.ReserveHeld:
+		return "Internal REST fanout capacity and the provider quota reserve floor deferred local work. " + primary + "."
+	case limits.RESTUsage.FanoutDeferred:
+		return "The internal REST fanout cap deferred local work without a provider rate-limit response. " + primary + "."
+	default:
+		return "The provider quota reserve floor deferred local work before exhaustion. " + primary + "."
+	}
 }
 
 func gitHubAPITrackerDegraded(snapshot telemetry.Snapshot) bool {
@@ -8541,6 +8585,9 @@ func gitHubAPIContributorBackedOff(snapshot telemetry.Snapshot, contributor tele
 }
 
 func gitHubAPIContributorHasBackoffSignal(contributor telemetry.RESTUsageContributor) bool {
+	if contributor.BudgetGate != "" {
+		return false
+	}
 	return contributor.RateLimited || contributor.LastStatus == httpStatusTooManyRequests || contributor.RetryAfterMS > 0
 }
 
@@ -8820,7 +8867,7 @@ func gitHubAPIHealthEndpointRows(snapshot telemetry.Snapshot) []gitHubAPIHealthE
 	usage := snapshot.RateLimits.RESTUsage
 	rows := make([]gitHubAPIHealthEndpointRow, 0, len(usage.Contributors))
 	for _, contributor := range usage.Contributors {
-		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) && contributor.BudgetGate == "" {
 			continue
 		}
 		rows = append(rows, gitHubAPIHealthEndpointRow{
@@ -8837,13 +8884,19 @@ func gitHubAPIHealthEndpointRows(snapshot telemetry.Snapshot) []gitHubAPIHealthE
 
 func gitHubAPIEndpointFamily(contributor telemetry.RESTUsageContributor) string {
 	family := strings.TrimSpace(contributor.EndpointFamily)
-	if family != "" {
-		return family
+	if family == "" {
+		family = "REST endpoints"
 	}
-	return "REST endpoints"
+	if scope := strings.TrimSpace(contributor.BudgetScope); scope != "" {
+		return scope + ": " + family
+	}
+	return family
 }
 
 func gitHubAPIEndpointStatus(contributor telemetry.RESTUsageContributor) string {
+	if contributor.BudgetGate != "" {
+		return restContributorStatus(contributor)
+	}
 	if contributor.LastStatus > 0 {
 		return formatInt(int64(contributor.LastStatus))
 	}

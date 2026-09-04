@@ -301,7 +301,7 @@ func (c *Connector) handleNativeDependencyWriteError(ctx context.Context, repo s
 }
 
 func nativeDependencyRetryableError(err error) bool {
-	return errors.Is(err, ErrRateLimited) || errors.Is(err, ErrRESTBudgetReserved)
+	return errors.Is(err, ErrRateLimited) || restFanoutOrReserveDeferred(err)
 }
 
 func nativeDependencyUnavailableError(err error) bool {

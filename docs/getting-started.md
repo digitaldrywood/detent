@@ -263,7 +263,11 @@ Detent persists a last-known board snapshot beside the runtime database every
 tracker hydration completes. `server.board_snapshot_stale_after_seconds`
 controls the maximum cache age; older snapshots are ignored.
 
-Set `github_rest_fanout_max_requests` to `0` to disable the per-cycle fanout cap while retaining the REST remaining-reserve guard.
+`github_rest_fanout_max_requests` caps each bounded REST operation independently,
+so dependency hydration cannot consume the capacity reserved for scheduled
+admission reconciliation. Reaching the cap defers that operation locally and
+does not report a GitHub rate-limit response. Set it to `0` to disable fanout
+caps while retaining the REST remaining-reserve guard.
 
 Tag-based projects can opt into release cadence in the same workflow file:
 

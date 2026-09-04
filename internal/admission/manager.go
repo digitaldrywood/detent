@@ -54,6 +54,7 @@ const (
 	admissionDeclineCriteriaNotMet         = "criteria_not_met"
 	admissionDispositionProposed           = "proposed"
 	admissionDispositionDeclined           = "declined"
+	admissionRESTFanoutScope               = "backlog_admission"
 	maxRationaleSize                       = 16 * 1024
 	maxEffortRationaleSize                 = 2 * 1024
 )
@@ -120,6 +121,7 @@ type Result struct {
 	Skipped         map[string]int
 	Truncated       map[string]int
 	DeferredReason  string
+	ResumeAt        time.Time
 	ProposalReason  string
 }
 
@@ -231,7 +233,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	for {
-		next, scheduled, err := m.nextScheduled(ctx)
+		attempt, scheduled, err := m.nextScheduledAttempt(ctx)
 		if err != nil {
 			m.logger.ErrorContext(ctx, "backlog admission schedule lookup failed", "error", err)
 			timer := time.NewTimer(time.Minute)
@@ -253,7 +255,7 @@ func (m *Manager) Run(ctx context.Context) error {
 				continue
 			}
 		}
-		timer := time.NewTimer(max(next.Sub(m.now()), 0))
+		timer := time.NewTimer(max(attempt.RunAt.Sub(m.now()), 0))
 		select {
 		case <-ctx.Done():
 			stopTimer(timer)
@@ -262,7 +264,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			stopTimer(timer)
 			continue
 		case <-timer.C:
-			m.runAndLog(ctx, next)
+			m.runAndLog(ctx, attempt.ScheduledFor)
 		}
 	}
 }
@@ -286,18 +288,24 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 		return newResult(), nil
 	}
 	if scheduled {
-		schedule, err := cron.ParseStandard(settings.Config.Schedule)
+		resuming, err := m.resumingScheduledRun(ctx, settings.ProjectID, scheduledFor)
 		if err != nil {
 			return newResult(), err
 		}
-		if next := schedule.Next(baseline); !next.Equal(scheduledFor) {
-			return newResult(), nil
+		if !resuming {
+			schedule, err := cron.ParseStandard(settings.Config.Schedule)
+			if err != nil {
+				return newResult(), err
+			}
+			if next := schedule.Next(baseline); !next.Equal(scheduledFor) {
+				return newResult(), nil
+			}
 		}
 	}
 	result, err := m.runOnce(ctx, settings, scheduledFor, scheduled)
 	completedAt := m.now()
 	m.mu.Lock()
-	if completedAt.After(m.baseline) {
+	if result.ResumeAt.IsZero() && completedAt.After(m.baseline) {
 		m.baseline = completedAt
 	}
 	m.mu.Unlock()
@@ -311,6 +319,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	result = newResult()
 	result.ProjectID = strings.TrimSpace(settings.ProjectID)
 	startedAt := m.now().UTC()
+	var cleanupErr error
 	record := admissionmodel.RunRecord{
 		ProjectID:    settings.ProjectID,
 		ScheduledFor: scheduledFor.UTC(),
@@ -318,6 +327,18 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		Outcome:      "completed",
 	}
 	defer func() {
+		if deferral, ok := connector.ErrorLocalDeferral(runErr); ok {
+			result.DeferredReason = deferral.Reason
+			if scheduled && deferral.RetryAfter > 0 {
+				result.ResumeAt = m.now().UTC().Add(deferral.RetryAfter)
+			}
+			runErr = nil
+		}
+		runErr = errors.Join(runErr, cleanupErr)
+		if cleanupErr != nil {
+			result.DeferredReason = ""
+			result.ResumeAt = time.Time{}
+		}
 		record.CompletedAt = m.now().UTC()
 		record.CandidatesFound = result.CandidatesFound
 		record.Candidates = result.Candidates
@@ -325,6 +346,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		record.Skipped = cloneCounts(result.Skipped)
 		record.Truncated = cloneCounts(result.Truncated)
 		record.DeferredReason = result.DeferredReason
+		record.ResumeAt = result.ResumeAt
 		record.ProposalReason = result.ProposalReason
 		record.Issues = make([]admissionmodel.IssueRecord, 0, len(result.Proposals))
 		for _, proposal := range result.Proposals {
@@ -340,6 +362,8 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		}
 		if runErr != nil {
 			record.Outcome = "failed"
+		}
+		if runErr != nil {
 			record.Error = runErr.Error()
 		}
 		if err := m.store.RecordAdmissionRun(context.WithoutCancel(ctx), record); err != nil {
@@ -368,7 +392,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	commentsRemaining := settings.Config.MaxProposalsPerRun
 	autoAdmitsRemaining := settings.Config.MaxProposalsPerRun
 	commentsRemaining, autoAdmitsRemaining, err = m.reconcileOpenProposals(
-		ctx,
+		connector.WithRESTFanoutBudget(ctx, admissionRESTFanoutScope+"_reconciliation"),
 		settings,
 		commentsRemaining,
 		autoAdmitsRemaining,
@@ -400,10 +424,11 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		return result, nil
 	}
 	defer func() {
-		runErr = errors.Join(runErr, release())
+		cleanupErr = release()
 	}()
 
-	candidates, readerTruncations, itemsRead, readerFiltered, err := readAdmissionCandidates(ctx, settings.Issues, settings.Config)
+	candidateCtx := connector.WithRESTFanoutBudget(ctx, admissionRESTFanoutScope+"_candidates")
+	candidates, readerTruncations, itemsRead, readerFiltered, err := readAdmissionCandidates(candidateCtx, settings.Issues, settings.Config)
 	if err != nil {
 		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
 	}
@@ -425,7 +450,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	sortCandidates(candidates, settings)
 	var truncatedCandidates int
 	candidates, commentsRemaining, truncatedCandidates, err = m.unproposedCandidates(
-		ctx,
+		candidateCtx,
 		settings,
 		candidates,
 		result.Skipped,
@@ -495,7 +520,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	if proposalErr != nil {
 		return result, proposalErr
 	}
-	return m.executeEvaluations(ctx, settings, candidates, evaluations, result, commentsRemaining, autoAdmitsRemaining, startedAt)
+	return m.executeEvaluations(connector.WithRESTFanoutBudget(ctx, admissionRESTFanoutScope+"_evaluation"), settings, candidates, evaluations, result, commentsRemaining, autoAdmitsRemaining, startedAt)
 }
 
 func candidateReadLimit(maxCandidates int) int {
@@ -1176,11 +1201,7 @@ func (m *Manager) executeEvaluations(
 	if len(evaluations) != len(candidates) {
 		return result, fmt.Errorf("%w: got %d evaluations for %d candidates", ErrInvalidOutput, len(evaluations), len(candidates))
 	}
-	ids := make([]string, 0, len(candidates))
 	candidateByID := issueMap(candidates)
-	for _, candidate := range candidates {
-		ids = append(ids, candidate.ID)
-	}
 	evaluationByID := make(map[string]AgentEvaluation, len(evaluations))
 	for _, evaluation := range evaluations {
 		issueID := strings.TrimSpace(evaluation.IssueID)
@@ -1223,44 +1244,66 @@ func (m *Manager) executeEvaluations(
 		}
 		evaluationByID[issueID] = evaluation
 	}
-	fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, ids)
+	open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
 	if err != nil {
-		return result, fmt.Errorf("revalidate backlog admission candidates: %w", err)
+		return result, err
 	}
-	type evaluationPlan struct {
-		issue          connector.Issue
-		stale          bool
-		classification *admissionDeclineClassification
-		proposal       *admissionmodel.Proposal
-	}
-	freshByID := issueMap(fresh)
-	plans := make([]evaluationPlan, 0, len(candidates))
-	proposalCount := 0
 	for _, original := range candidates {
 		issueID := strings.TrimSpace(original.ID)
 		evaluation := evaluationByID[issueID]
-		current, currentFound := freshByID[issueID]
+		fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{issueID})
+		if err != nil {
+			return result, fmt.Errorf("revalidate backlog admission candidate %s: %w", original.Identifier, err)
+		}
+		current, currentFound := issueMap(fresh)[issueID]
 		if !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
 			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
-			plans = append(plans, evaluationPlan{issue: original, stale: true})
+			result.Skipped["stale_or_ineligible"]++
 			continue
 		}
-		if classification, declined := classifyNonDeliverable(current); declined {
-			plans = append(plans, evaluationPlan{issue: current, classification: &classification})
-			continue
-		}
-		if evaluation.Disposition == admissionDispositionDeclined {
+		var classification *admissionDeclineClassification
+		if declineClassification, declined := classifyNonDeliverable(current); declined {
+			classification = &declineClassification
+		} else if evaluation.Disposition == admissionDispositionDeclined {
 			failed := evaluation.Findings[0]
 			confidence := *evaluation.Confidence
-			classification := admissionDeclineClassification{
+			declineClassification := admissionDeclineClassification{
 				reason:          admissionDeclineCriteriaNotMet,
 				detail:          failed.Rationale,
 				confidence:      &confidence,
 				failedDimension: failed.Dimension,
 				failedCriterion: failed.CriterionQuote,
 			}
-			plans = append(plans, evaluationPlan{issue: current, classification: &classification})
+			classification = &declineClassification
+		}
+		if classification != nil {
+			decline, created, err := m.createAdmissionDecline(ctx, settings, current, *classification, at)
+			if err != nil {
+				return result, err
+			}
+			if classification.reason == admissionDeclineCriteriaNotMet {
+				result.Skipped[admissionDeclineCriteriaNotMet]++
+				continue
+			}
+			commented, err := m.ensureAdmissionDeclineComment(
+				ctx,
+				settings.Issues,
+				current,
+				decline,
+				created,
+				commentsRemaining > 0,
+			)
+			if err != nil {
+				return result, err
+			}
+			if commented {
+				commentsRemaining--
+			}
+			result.Skipped["non_deliverable"]++
 			continue
+		}
+		if open >= settings.Config.MaxOpenProposals {
+			return result, errors.New("backlog admission proposal capacity changed during evaluation")
 		}
 		proposal := admissionmodel.Proposal{
 			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
@@ -1280,48 +1323,6 @@ func (m *Manager) executeEvaluations(
 			CreatedAt:         at,
 			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
 		}
-		plans = append(plans, evaluationPlan{issue: current, proposal: &proposal})
-		proposalCount++
-	}
-	open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
-	if err != nil {
-		return result, err
-	}
-	if open+proposalCount > settings.Config.MaxOpenProposals {
-		return result, errors.New("backlog admission proposal capacity changed during evaluation")
-	}
-	for _, plan := range plans {
-		if plan.stale {
-			result.Skipped["stale_or_ineligible"]++
-			continue
-		}
-		if plan.classification != nil {
-			decline, created, err := m.createAdmissionDecline(ctx, settings, plan.issue, *plan.classification, at)
-			if err != nil {
-				return result, err
-			}
-			if plan.classification.reason == admissionDeclineCriteriaNotMet {
-				result.Skipped[admissionDeclineCriteriaNotMet]++
-				continue
-			}
-			commented, err := m.ensureAdmissionDeclineComment(
-				ctx,
-				settings.Issues,
-				plan.issue,
-				decline,
-				created,
-				commentsRemaining > 0,
-			)
-			if err != nil {
-				return result, err
-			}
-			if commented {
-				commentsRemaining--
-			}
-			result.Skipped["non_deliverable"]++
-			continue
-		}
-		proposal := *plan.proposal
 		created, err := m.store.CreateAdmissionProposal(ctx, proposal)
 		if err != nil {
 			return result, err
@@ -1330,18 +1331,19 @@ func (m *Manager) executeEvaluations(
 			result.Skipped["unchanged_open_proposal"]++
 			continue
 		}
+		open++
 		result.Proposals = append(result.Proposals, proposal)
 		if commentsRemaining > 0 {
-			if err := m.commentProposal(ctx, settings, proposal, plan.issue); err != nil {
+			if err := m.commentProposal(ctx, settings, proposal, current); err != nil {
 				return result, err
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, plan.issue.Labels) {
+		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
 			if err := m.admitProposal(
 				ctx,
 				settings,
-				plan.issue,
+				current,
 				proposal,
 				automaticAdmissionDecision(settings.Issues, proposal, at),
 			); err != nil {
@@ -1637,26 +1639,56 @@ func admissionRejectCommand(proposalID string) string {
 	return "/detent admission reject " + strings.TrimSpace(proposalID)
 }
 
+type scheduledAttempt struct {
+	RunAt        time.Time
+	ScheduledFor time.Time
+}
+
 func (m *Manager) nextScheduled(ctx context.Context) (time.Time, bool, error) {
+	attempt, scheduled, err := m.nextScheduledAttempt(ctx)
+	return attempt.RunAt, scheduled, err
+}
+
+func (m *Manager) nextScheduledAttempt(ctx context.Context) (scheduledAttempt, bool, error) {
 	m.mu.RLock()
 	settings := cloneSettings(m.settings)
 	baseline := m.baseline
 	m.mu.RUnlock()
 	if !settings.Config.Enabled {
-		return time.Time{}, false, nil
+		return scheduledAttempt{}, false, nil
 	}
 	latest, ok, err := m.store.LatestAdmissionRun(ctx, settings.ProjectID)
 	if err != nil {
-		return time.Time{}, false, err
+		return scheduledAttempt{}, false, err
+	}
+	if ok && resumableAdmissionRun(latest) {
+		runAt := latest.ResumeAt
+		if now := m.now(); runAt.Before(now) {
+			runAt = now
+		}
+		return scheduledAttempt{RunAt: runAt, ScheduledFor: latest.ScheduledFor}, true, nil
 	}
 	if ok && latest.CompletedAt.After(baseline) {
 		baseline = latest.CompletedAt
 	}
 	schedule, err := cron.ParseStandard(settings.Config.Schedule)
 	if err != nil {
-		return time.Time{}, false, err
+		return scheduledAttempt{}, false, err
 	}
-	return schedule.Next(baseline), true, nil
+	next := schedule.Next(baseline)
+	return scheduledAttempt{RunAt: next, ScheduledFor: next}, true, nil
+}
+
+func (m *Manager) resumingScheduledRun(ctx context.Context, projectID string, scheduledFor time.Time) (bool, error) {
+	latest, ok, err := m.store.LatestAdmissionRun(ctx, projectID)
+	if err != nil || !ok {
+		return false, err
+	}
+	return resumableAdmissionRun(latest) && latest.ScheduledFor.Equal(scheduledFor) && !m.now().Before(latest.ResumeAt), nil
+}
+
+func resumableAdmissionRun(run admissionmodel.RunRecord) bool {
+	return run.Outcome == "deferred" && run.DeferredReason == connector.LocalDeferralReasonRESTFanoutCap && !run.ResumeAt.IsZero()
 }
 
 func acquireCapacity(ctx context.Context, settings Settings, now time.Time) (func() error, bool, string, error) {
@@ -2348,6 +2380,7 @@ func (m *Manager) logScheduledCompletion(ctx context.Context, result Result) {
 		"truncated", len(result.Truncated) > 0,
 		"truncations", result.Truncated,
 		"deferred_reason", result.DeferredReason,
+		"resume_at", result.ResumeAt,
 		"proposal_reason", result.ProposalReason,
 	)
 }

@@ -261,7 +261,7 @@ func TestConnectorFiniteFanoutPreservesPriorityWithPaginatedHydration(t *testing
 	if issues[0].PullRequest == nil || issues[0].PullRequest.HydrationUnavailableReason != "" {
 		t.Fatalf("priority PullRequest = %#v, want complete hydration", issues[0].PullRequest)
 	}
-	if issues[1].PullRequest == nil || issues[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
+	if issues[1].PullRequest == nil || issues[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTFanoutDeferred {
 		t.Fatalf("tail PullRequest = %#v, want deferred hydration", issues[1].PullRequest)
 	}
 }

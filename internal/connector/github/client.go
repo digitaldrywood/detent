@@ -32,6 +32,7 @@ const (
 	restFanoutCostUnitsPerRequest       = int64(4)
 	restConditionalFanoutCostUnits      = int64(1)
 	restRateLimitResetSkew              = 5 * time.Second
+	restFanoutDeferralRetry             = 30 * time.Second
 	restBudgetGateFanoutCap             = "fanout_cap"
 	restBudgetGateReserve               = "reserve"
 	restDivergenceMinUnexplained        = int64(10)
@@ -82,6 +83,8 @@ type Client struct {
 	restDivergences        *restDivergenceRegistry
 	restRequests           map[string]connector.RESTEndpointUsage
 	restFanoutUnits        int64
+	restReserveHeld        bool
+	restFanoutDeferred     bool
 	restCache              map[string]restCacheEntry
 	conditionalRequests    bool
 	restBackoffUntil       time.Time
@@ -302,7 +305,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	if err := c.restBackoffError(backoffKey, now); err != nil {
 		return "", false, err
 	}
-	if err := c.restBudgetPolicyError(credentialIdentity, http.MethodGet, path, false, now); err != nil {
+	if err := c.restBudgetPolicyError(ctx, credentialIdentity, http.MethodGet, path, false, now); err != nil {
 		return "", false, err
 	}
 
@@ -466,8 +469,8 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		)
 		return nil, err
 	}
-	if err := c.restBudgetPolicyError(credentialIdentity, method, path, conditional, now); err != nil {
-		c.logger.DebugContext(ctx, "github rest budget reserved",
+	if err := c.restBudgetPolicyError(ctx, credentialIdentity, method, path, conditional, now); err != nil {
+		c.logger.DebugContext(ctx, "github rest request deferred",
 			"method", strings.ToUpper(strings.TrimSpace(method)),
 			"path", path,
 			"endpoint_family", restEndpointFamily(method, path),
@@ -768,12 +771,14 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 		}
 	}
 	usage := connector.RESTRateLimitUsage{
-		RateLimit:    rateLimit,
-		HasRateLimit: c.hasRestRateLimit,
-		Requests:     sortedRESTEndpointUsages(c.restRequests),
-		Budgets:      sortedRESTRateLimitBudgets(c.restBudgets),
-		Divergences:  c.restDivergences.snapshots(c.restDivergenceKeys),
-		BackoffUntil: backoffUntil,
+		RateLimit:      rateLimit,
+		HasRateLimit:   c.hasRestRateLimit,
+		Requests:       sortedRESTEndpointUsages(c.restRequests),
+		Budgets:        sortedRESTRateLimitBudgets(c.restBudgets),
+		Divergences:    c.restDivergences.snapshots(c.restDivergenceKeys),
+		BackoffUntil:   backoffUntil,
+		ReserveHeld:    c.restReserveHeld,
+		FanoutDeferred: c.restFanoutDeferred,
 	}
 	for _, request := range usage.Requests {
 		usage.TotalRequests += request.Count
@@ -786,6 +791,8 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	}
 	c.restRequests = nil
 	c.restFanoutUnits = 0
+	c.restReserveHeld = false
+	c.restFanoutDeferred = false
 	c.restRateLimitStatus = false
 	return usage
 }
@@ -806,10 +813,12 @@ func (c *Client) RESTRateLimitStatus() connector.RESTRateLimitUsage {
 		}
 	}
 	usage := connector.RESTRateLimitUsage{
-		RateLimit:    rateLimit,
-		HasRateLimit: c.hasRestRateLimit,
-		BackoffUntil: backoffUntil,
-		RateLimited:  c.restRateLimitStatus || backoffUntil.After(now),
+		RateLimit:      rateLimit,
+		HasRateLimit:   c.hasRestRateLimit,
+		BackoffUntil:   backoffUntil,
+		RateLimited:    c.restRateLimitStatus || backoffUntil.After(now),
+		ReserveHeld:    c.restReserveHeld,
+		FanoutDeferred: c.restFanoutDeferred,
 	}
 	return usage
 }
@@ -856,7 +865,7 @@ func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
 	return policy
 }
 
-func (c *Client) restBudgetPolicyError(credentialIdentity string, method string, path string, conditional bool, now time.Time) error {
+func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity string, method string, path string, conditional bool, now time.Time) error {
 	family := restEndpointFamily(method, path)
 	if !restFanoutEndpointFamily(family) {
 		return nil
@@ -870,13 +879,38 @@ func (c *Client) restBudgetPolicyError(credentialIdentity string, method string,
 	if conditional {
 		requestCost = restConditionalFanoutCostUnits
 	}
-	if c.restPolicy.FanoutMaxRequests > 0 &&
-		c.restFanoutUnits+requestCost > c.restPolicy.FanoutMaxRequests*restFanoutCostUnitsPerRequest {
-		c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, restBudgetGateFanoutCap, rateLimit, hasRateLimit, now)
-		return &StatusError{
-			StatusCode: http.StatusTooManyRequests,
-			Body:       "REST fanout request cap reached for " + family,
-			Err:        ErrRESTBudgetReserved,
+	budget, scoped := connector.RESTFanoutBudgetFromContext(ctx)
+	budgetScope := "refresh"
+	fanoutUnits := c.restFanoutUnits
+	reservedScoped := false
+	if scoped {
+		budgetScope = budget.Scope()
+	}
+	if c.restPolicy.FanoutMaxRequests > 0 {
+		maxUnits := c.restPolicy.FanoutMaxRequests * restFanoutCostUnitsPerRequest
+		if scoped {
+			var allowed bool
+			fanoutUnits, allowed = budget.Reserve(maxUnits, requestCost)
+			if !allowed {
+				c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
+				return &RESTFanoutDeferralError{
+					EndpointFamily: family,
+					BudgetScope:    budgetScope,
+					FanoutCount:    float64(fanoutUnits) / float64(restFanoutCostUnitsPerRequest),
+					FanoutCap:      c.restPolicy.FanoutMaxRequests,
+					RetryAfter:     restFanoutDeferralRetry,
+				}
+			}
+			reservedScoped = true
+		} else if fanoutUnits+requestCost > maxUnits {
+			c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
+			return &RESTFanoutDeferralError{
+				EndpointFamily: family,
+				BudgetScope:    budgetScope,
+				FanoutCount:    float64(fanoutUnits) / float64(restFanoutCostUnitsPerRequest),
+				FanoutCap:      c.restPolicy.FanoutMaxRequests,
+				RetryAfter:     restFanoutDeferralRetry,
+			}
 		}
 	}
 	if c.restPolicy.MinRemainingReserve > 0 &&
@@ -885,14 +919,19 @@ func (c *Client) restBudgetPolicyError(credentialIdentity string, method string,
 		rateLimit.Limit > 0 &&
 		!restRateLimitSnapshotExpired(rateLimit, now) &&
 		rateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
-		c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, restBudgetGateReserve, rateLimit, hasRateLimit, now)
+		if reservedScoped {
+			budget.Add(-requestCost)
+		}
+		c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateReserve, fanoutUnits, rateLimit, hasRateLimit, now)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       "REST remaining budget is reserved for shared GitHub work",
 			Err:        ErrRESTBudgetReserved,
 		}
 	}
-	c.restFanoutUnits += requestCost
+	if !scoped {
+		c.restFanoutUnits += requestCost
+	}
 	return nil
 }
 
@@ -913,8 +952,8 @@ func (c *Client) restRateLimitForResourceLocked(resource string) (connector.REST
 	return connector.RESTRateLimit{}, false
 }
 
-func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, method string, path string, family string, branch string, rateLimit connector.RESTRateLimit, hasRateLimit bool, now time.Time) {
-	fanoutCount := float64(c.restFanoutUnits) / float64(restFanoutCostUnitsPerRequest)
+func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, method string, path string, family string, budgetScope string, branch string, fanoutUnits int64, rateLimit connector.RESTRateLimit, hasRateLimit bool, now time.Time) {
+	fanoutCount := float64(fanoutUnits) / float64(restFanoutCostUnitsPerRequest)
 	snapshotAge := "unknown"
 	if !rateLimit.UpdatedAt.IsZero() {
 		age := now.Sub(rateLimit.UpdatedAt)
@@ -926,13 +965,13 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 	if c.restRequests == nil {
 		c.restRequests = make(map[string]connector.RESTEndpointUsage)
 	}
-	requestKey := restCredentialFamilyKey(credentialIdentity, family)
+	requestKey := restCredentialFamilyKey(credentialIdentity, family) + "\x00" + budgetScope
 	request := c.restRequests[requestKey]
 	request.CredentialIdentity = credentialIdentity
 	request.EndpointFamily = family
+	request.BudgetScope = budgetScope
+	request.BudgetGate = branch
 	request.Count++
-	request.RateLimited = true
-	request.LastStatus = http.StatusTooManyRequests
 	if hasRateLimit {
 		request.Limit = rateLimit.Limit
 		request.Used = rateLimit.Used
@@ -942,11 +981,19 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		request.RetryAfter = rateLimit.RetryAfter
 	}
 	c.restRequests[requestKey] = request
+	message := "github rest reserve floor held"
+	if branch == restBudgetGateFanoutCap {
+		message = "github rest fanout deferred"
+		c.restFanoutDeferred = true
+	} else {
+		c.restReserveHeld = true
+	}
 	c.logger.Warn(
-		"github rest budget preserved",
+		message,
 		"method", strings.ToUpper(strings.TrimSpace(method)),
 		"path", path,
 		"endpoint_family", family,
+		"budget_scope", budgetScope,
 		"credential_identity", credentialIdentity,
 		"resource", rateLimit.Resource,
 		"remaining", rateLimit.Remaining,
@@ -994,6 +1041,11 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	resourceHeader := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
 	resource := restRateLimitResourceName(resourceHeader, family)
 	sharedBackoff := rateLimited && (restShouldApplySharedBackoff(family, remaining, hasRemaining) || !headerRateLimited)
+	fanoutBudget, _ := connector.RESTFanoutBudgetFromContext(ctx)
+	budgetScope := "refresh"
+	if fanoutBudget != nil {
+		budgetScope = fanoutBudget.Scope()
+	}
 
 	var resetAt time.Time
 	if hasReset {
@@ -1078,10 +1130,11 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	if c.restRequests == nil {
 		c.restRequests = make(map[string]connector.RESTEndpointUsage)
 	}
-	requestKey := restCredentialFamilyKey(credentialIdentity, family)
+	requestKey := restCredentialFamilyKey(credentialIdentity, family) + "\x00" + budgetScope
 	request := c.restRequests[requestKey]
 	request.CredentialIdentity = credentialIdentity
 	request.EndpointFamily = family
+	request.BudgetScope = budgetScope
 	request.Count++
 	if conditional {
 		request.Conditional++
@@ -1091,7 +1144,12 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	} else {
 		request.Billable++
 		if conditional && restFanoutEndpointFamily(family) {
-			c.restFanoutUnits += restFanoutCostUnitsPerRequest - restConditionalFanoutCostUnits
+			additionalCost := restFanoutCostUnitsPerRequest - restConditionalFanoutCostUnits
+			if fanoutBudget != nil {
+				fanoutBudget.Add(additionalCost)
+			} else {
+				c.restFanoutUnits += additionalCost
+			}
 		}
 	}
 	request.LastStatus = status
@@ -1827,7 +1885,13 @@ func sortedRESTEndpointUsages(usages map[string]connector.RESTEndpointUsage) []c
 		if out[i].CredentialIdentity != out[j].CredentialIdentity {
 			return out[i].CredentialIdentity < out[j].CredentialIdentity
 		}
-		return out[i].EndpointFamily < out[j].EndpointFamily
+		if out[i].EndpointFamily != out[j].EndpointFamily {
+			return out[i].EndpointFamily < out[j].EndpointFamily
+		}
+		if out[i].BudgetScope != out[j].BudgetScope {
+			return out[i].BudgetScope < out[j].BudgetScope
+		}
+		return out[i].BudgetGate < out[j].BudgetGate
 	})
 	return out
 }
@@ -2186,6 +2250,8 @@ func restBackoffReason(err error) string {
 		}
 	}
 	switch {
+	case errors.Is(err, ErrRESTFanoutDeferred):
+		return "github_rest_fanout_cap"
 	case errors.Is(err, ErrRESTBudgetReserved):
 		return "rest_budget_reserved"
 	case errors.Is(err, ErrRateLimited):

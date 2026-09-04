@@ -125,6 +125,8 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 		NotModifiedRequests: usage.NotModifiedRequests,
 		BillableRequests:    usage.BillableRequests,
 		RateLimited:         usage.RateLimited,
+		ReserveHeld:         usage.ReserveHeld,
+		FanoutDeferred:      usage.FanoutDeferred,
 		Contributors:        make([]telemetry.RESTUsageContributor, 0, len(usage.Requests)),
 		Divergences:         make([]telemetry.RESTUsageDivergence, 0, len(usage.Divergences)),
 	}
@@ -137,6 +139,8 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 			Consumer:           telemetry.RESTConsumerOrchestrator,
 			CredentialIdentity: request.CredentialIdentity,
 			EndpointFamily:     request.EndpointFamily,
+			BudgetScope:        request.BudgetScope,
+			BudgetGate:         request.BudgetGate,
 			Count:              request.Count,
 			Conditional:        request.Conditional,
 			NotModified:        request.NotModified,
@@ -264,12 +268,16 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 	billableRequests := int64(0)
 	notModifiedRequests := int64(0)
 	rateLimited := false
+	reserveHeld := false
+	fanoutDeferred := false
 	var contributors []telemetry.RESTUsageContributor
 	if cycle.Usage != nil {
 		totalRequests = cycle.Usage.TotalRequests
 		billableRequests = cycle.Usage.BillableRequests
 		notModifiedRequests = cycle.Usage.NotModifiedRequests
 		rateLimited = cycle.Usage.RateLimited
+		reserveHeld = cycle.Usage.ReserveHeld
+		fanoutDeferred = cycle.Usage.FanoutDeferred
 		contributors = cycle.Usage.Contributors
 	}
 
@@ -280,6 +288,8 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 		"billable_request_count", billableRequests,
 		"not_modified_request_count", notModifiedRequests,
 		"rate_limited", rateLimited,
+		"reserve_held", reserveHeld,
+		"fanout_deferred", fanoutDeferred,
 		"remaining", cycle.Bucket.Remaining,
 		"limit", cycle.Bucket.Limit,
 		"reset_at", resetAt,

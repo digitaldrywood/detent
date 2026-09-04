@@ -103,8 +103,8 @@ func TestClientRESTConditionalRequestsReserveConservativeFanoutCost(t *testing.T
 		if index < 4 && err != nil {
 			t.Fatalf("conditional REST() request %d error = %v", index+1, err)
 		}
-		if index == 4 && !errors.Is(err, ErrRESTBudgetReserved) {
-			t.Fatalf("conditional REST() request 5 error = %v, want ErrRESTBudgetReserved", err)
+		if index == 4 && !errors.Is(err, ErrRESTFanoutDeferred) {
+			t.Fatalf("conditional REST() request 5 error = %v, want ErrRESTFanoutDeferred", err)
 		}
 	}
 	if calls.Load() != 4 {

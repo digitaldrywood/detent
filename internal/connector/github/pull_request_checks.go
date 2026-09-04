@@ -154,7 +154,7 @@ func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequ
 }
 
 func pullRequestHydrationThrottleError(err error) bool {
-	return errors.Is(err, ErrRateLimited) || errors.Is(err, ErrRESTBudgetReserved)
+	return errors.Is(err, ErrRateLimited) || restFanoutOrReserveDeferred(err)
 }
 
 func (c *Connector) logStaleSuccessfulCheckRuns(ctx context.Context, repo pullRequestRepo, sha string, checks []connector.PullRequestCheck) {

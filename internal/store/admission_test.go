@@ -186,7 +186,9 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 		ScheduledFor:    now,
 		StartedAt:       now.Add(time.Minute),
 		CompletedAt:     now.Add(2 * time.Minute),
-		Outcome:         "completed",
+		Outcome:         "deferred",
+		DeferredReason:  "github_rest_fanout_cap",
+		ResumeAt:        now.Add(3 * time.Minute),
 		ProposalReason:  "criteria_not_met",
 		CandidatesFound: 4,
 		Candidates:      2,
@@ -208,6 +210,8 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", got, ok, err)
 	}
 	if got.CandidatesFound != 4 || got.Candidates != 2 || got.Proposed != 1 ||
+		got.Outcome != "deferred" || got.DeferredReason != "github_rest_fanout_cap" ||
+		!got.ResumeAt.Equal(record.ResumeAt) ||
 		got.ProposalReason != "criteria_not_met" ||
 		got.Skipped["author"] != 1 || got.Truncated["candidates"] != 1 ||
 		len(got.Issues) != 1 || got.Issues[0].ProposalID != "proposal-expiring" {

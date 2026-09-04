@@ -434,6 +434,59 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 		},
 		{
+			name: "internal fanout deferral preserves healthy provider quota",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4610, Used: 390, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						FanoutDeferred: true,
+						Contributors: []telemetry.RESTUsageContributor{{
+							EndpointFamily: "issue dependencies",
+							BudgetScope:    "backlog_admission_reconciliation",
+							BudgetGate:     "fanout_cap",
+							Count:          80,
+							RetryAfterMS:   (30 * time.Second).Milliseconds(),
+						}},
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateWarning,
+			wantLabel:       "GitHub REST fanout deferred",
+			wantSummaryPart: "Primary REST quota is healthy: 4,610/5,000 remaining",
+			wantDetailParts: []string{
+				"internal REST fanout cap deferred local work",
+				"without a provider rate-limit response",
+			},
+		},
+		{
+			name: "reserve hold is distinct from provider exhaustion",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 1250, Used: 3750, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						ReserveHeld: true,
+						Contributors: []telemetry.RESTUsageContributor{{
+							EndpointFamily: "issue comments",
+							BudgetScope:    "backlog_admission_reconciliation",
+							BudgetGate:     "reserve",
+							Count:          1,
+						}},
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateWarning,
+			wantLabel:       "GitHub REST reserve held",
+			wantSummaryPart: "Primary REST quota is healthy: 1,250/5,000 remaining",
+			wantDetailParts: []string{
+				"provider quota reserve floor deferred local work",
+				"before exhaustion",
+			},
+		},
+		{
 			name: "never observed graphql stays at rest",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -737,6 +790,48 @@ func TestRESTBudgetContributorRowsPreserveCredentialAndEndpointWindows(t *testin
 	}
 	if got := restBudgetCredentialCount(limits); got != 2 {
 		t.Fatalf("restBudgetCredentialCount() = %d, want 2", got)
+	}
+}
+
+func TestRESTContributorStatusDistinguishesProviderAndLocalGates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		contributor telemetry.RESTUsageContributor
+		want        string
+	}{
+		{name: "provider rate limit", contributor: telemetry.RESTUsageContributor{RateLimited: true, LastStatus: 429}, want: "rate limited"},
+		{name: "fanout cap", contributor: telemetry.RESTUsageContributor{BudgetGate: "fanout_cap"}, want: "fanout deferred"},
+		{name: "reserve floor", contributor: telemetry.RESTUsageContributor{BudgetGate: "reserve"}, want: "reserve held"},
+		{name: "provider response", contributor: telemetry.RESTUsageContributor{LastStatus: 200}, want: "200"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := restContributorStatus(tt.contributor); got != tt.want {
+				t.Fatalf("restContributorStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{RESTUsage: &telemetry.RESTUsage{
+			FanoutDeferred: true,
+			Contributors: []telemetry.RESTUsageContributor{{
+				EndpointFamily: "issue comments",
+				BudgetScope:    "backlog_admission_reconciliation",
+				BudgetGate:     "fanout_cap",
+				Count:          1,
+				RetryAfterMS:   (30 * time.Second).Milliseconds(),
+			}},
+		}},
+	}
+	rows := gitHubAPIHealthEndpointRows(snapshot)
+	if len(rows) != 1 || rows[0].Status != "fanout deferred" ||
+		rows[0].EndpointFamily != "backlog_admission_reconciliation: issue comments" {
+		t.Fatalf("gitHubAPIHealthEndpointRows() = %#v", rows)
 	}
 }
 

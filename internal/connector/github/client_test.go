@@ -1157,16 +1157,16 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 		t.Fatalf("REST() pull requests error = %v", err)
 	}
 	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil)
-	if !errors.Is(err, ErrRESTBudgetReserved) {
-		t.Fatalf("REST() capped fanout error = %v, want ErrRESTBudgetReserved", err)
+	if !errors.Is(err, ErrRESTFanoutDeferred) {
+		t.Fatalf("REST() capped fanout error = %v, want ErrRESTFanoutDeferred", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("REST calls = %d, want only first request sent", calls.Load())
 	}
 
 	usage := client.FlushRESTRateLimitUsage()
-	if usage.TotalRequests != 2 || !usage.RateLimited {
-		t.Fatalf("FlushRESTRateLimitUsage() totals = requests %d rate_limited %v, want 2 true", usage.TotalRequests, usage.RateLimited)
+	if usage.TotalRequests != 2 || usage.RateLimited || !usage.FanoutDeferred || usage.ReserveHeld {
+		t.Fatalf("FlushRESTRateLimitUsage() = %#v, want local fanout deferral only", usage)
 	}
 	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 1 {
 		t.Fatalf("pull requests usage count = %d, want 1; usage = %#v", got, usage.Requests)
@@ -1174,10 +1174,103 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 	if got := restEndpointUsageCount(usage.Requests, "check runs"); got != 1 {
 		t.Fatalf("check runs usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
 	}
-	for _, want := range []string{"gate_branch=fanout_cap", "fanout_count=1", "snapshot_age="} {
+	for _, want := range []string{`msg="github rest fanout deferred"`, "gate_branch=fanout_cap", "budget_scope=refresh", "fanout_count=1", "snapshot_age="} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("throttle log missing %q:\n%s", want, logs.String())
 		}
+	}
+}
+
+func TestClientRESTFanoutBudgetsIsolateProjectOperations(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "390")
+		w.Header().Set("X-RateLimit-Remaining", "4610")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: 1},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	hydration := connector.WithRESTFanoutBudget(context.Background(), "fastestbanners_dependency_hydration")
+	if err := client.REST(hydration, http.MethodGet, "/repos/fastestbanners/app/issues/1/dependencies/blocked_by", nil, nil); err != nil {
+		t.Fatalf("dependency hydration error = %v", err)
+	}
+	err = client.REST(hydration, http.MethodGet, "/repos/fastestbanners/app/issues/2/dependencies/blocked_by", nil, nil)
+	if !errors.Is(err, ErrRESTFanoutDeferred) {
+		t.Fatalf("dependency hydration cap error = %v, want ErrRESTFanoutDeferred", err)
+	}
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		t.Fatalf("dependency hydration cap error = %#v, want no HTTP status", statusErr)
+	}
+	deferral, ok := connector.ErrorLocalDeferral(err)
+	if !ok || deferral.Reason != "github_rest_fanout_cap" || deferral.Scope != "fastestbanners_dependency_hydration" || deferral.RetryAfter != restFanoutDeferralRetry {
+		t.Fatalf("ErrorLocalDeferral() = %#v, %t", deferral, ok)
+	}
+
+	admission := connector.WithRESTFanoutBudget(context.Background(), "leadpipe_backlog_admission")
+	if err := client.REST(admission, http.MethodGet, "/repos/leadpipe/app/issues?state=open", nil, nil); err != nil {
+		t.Fatalf("independently budgeted admission error = %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("outbound REST calls = %d, want hydration plus admission", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.RateLimited || usage.ReserveHeld || !usage.FanoutDeferred || usage.RateLimit.Remaining != 4610 {
+		t.Fatalf("FlushRESTRateLimitUsage() = %#v, want healthy provider plus local deferral", usage)
+	}
+}
+
+func TestSortedRESTEndpointUsagesUsesBudgetTieBreakers(t *testing.T) {
+	tests := []struct {
+		name   string
+		usages map[string]connector.RESTEndpointUsage
+		want   string
+	}{
+		{
+			name: "budget scope",
+			usages: map[string]connector.RESTEndpointUsage{
+				"second": {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "refresh"},
+				"first":  {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "admission"},
+			},
+			want: "admission/|refresh/",
+		},
+		{
+			name: "budget gate",
+			usages: map[string]connector.RESTEndpointUsage{
+				"second": {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "admission", BudgetGate: "reserve"},
+				"first":  {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "admission", BudgetGate: "fanout_cap"},
+			},
+			want: "admission/fanout_cap|admission/reserve",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sortedRESTEndpointUsages(tt.usages)
+			keys := make([]string, 0, len(got))
+			for _, usage := range got {
+				keys = append(keys, usage.BudgetScope+"/"+usage.BudgetGate)
+			}
+			if joined := strings.Join(keys, "|"); joined != tt.want {
+				t.Fatalf("sorted budget keys = %q, want %q", joined, tt.want)
+			}
+		})
 	}
 }
 
@@ -1216,8 +1309,8 @@ func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
 		t.Fatalf("REST() repository issues error = %v", err)
 	}
 	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, nil)
-	if !errors.Is(err, ErrRESTBudgetReserved) {
-		t.Fatalf("REST() capped fanout error = %v, want ErrRESTBudgetReserved", err)
+	if !errors.Is(err, ErrRESTFanoutDeferred) {
+		t.Fatalf("REST() capped fanout error = %v, want ErrRESTFanoutDeferred", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("REST calls = %d, want only repository issues request sent", calls.Load())

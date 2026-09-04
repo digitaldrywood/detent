@@ -2030,15 +2030,15 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 		}
 	}
 	usage := c.client.FlushRESTRateLimitUsage()
-	if !usage.RateLimited {
-		t.Fatalf("RESTRateLimitUsage.RateLimited = false, want reserved budget throttle")
+	if usage.RateLimited || !usage.ReserveHeld || usage.FanoutDeferred {
+		t.Fatalf("RESTRateLimitUsage = %#v, want reserve-floor hold only", usage)
 	}
 	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 1 {
 		t.Fatalf("pull requests usage count = %d, want synthetic throttle; usage = %#v", got, usage.Requests)
 	}
 }
 
-func TestConnectorAttachPullRequestsRotatesAfterRESTBudgetReservation(t *testing.T) {
+func TestConnectorAttachPullRequestsRotatesAfterRESTFanoutDeferral(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -2090,8 +2090,8 @@ func TestConnectorAttachPullRequestsRotatesAfterRESTBudgetReservation(t *testing
 	if first[0].PullRequest == nil || first[0].PullRequest.HydrationUnavailableReason != "" {
 		t.Fatalf("first pass issue 1 PullRequest = %#v, want hydrated", first[0].PullRequest)
 	}
-	if first[1].PullRequest == nil || first[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
-		t.Fatalf("first pass issue 2 PullRequest = %#v, want budget reservation", first[1].PullRequest)
+	if first[1].PullRequest == nil || first[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTFanoutDeferred {
+		t.Fatalf("first pass issue 2 PullRequest = %#v, want fanout deferral", first[1].PullRequest)
 	}
 	c.FlushRESTRateLimitUsage()
 
@@ -2102,8 +2102,8 @@ func TestConnectorAttachPullRequestsRotatesAfterRESTBudgetReservation(t *testing
 	if second[1].PullRequest == nil || second[1].PullRequest.HydrationUnavailableReason != "" {
 		t.Fatalf("second pass issue 2 PullRequest = %#v, want rotated hydration", second[1].PullRequest)
 	}
-	if second[0].PullRequest == nil || second[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
-		t.Fatalf("second pass issue 1 PullRequest = %#v, want rotated budget reservation", second[0].PullRequest)
+	if second[0].PullRequest == nil || second[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTFanoutDeferred {
+		t.Fatalf("second pass issue 1 PullRequest = %#v, want rotated fanout deferral", second[0].PullRequest)
 	}
 
 	mu.Lock()
@@ -2167,8 +2167,8 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 	if err := c.attachPullRequests(context.Background(), first); err != nil {
 		t.Fatalf("attachPullRequests() first error = %v", err)
 	}
-	if first[1].PullRequest == nil || first[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
-		t.Fatalf("first pass branch issue PullRequest = %#v, want budget reservation", first[1].PullRequest)
+	if first[1].PullRequest == nil || first[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTFanoutDeferred {
+		t.Fatalf("first pass branch issue PullRequest = %#v, want fanout deferral", first[1].PullRequest)
 	}
 	c.FlushRESTRateLimitUsage()
 
@@ -2179,8 +2179,8 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 	if second[1].PullRequest == nil || second[1].PullRequest.HydrationUnavailableReason != "" || second[1].PullRequest.Number != 202 {
 		t.Fatalf("second pass branch issue PullRequest = %#v, want prioritized hydration", second[1].PullRequest)
 	}
-	if second[0].PullRequest == nil || second[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
-		t.Fatalf("second pass linked issue PullRequest = %#v, want rotated budget reservation", second[0].PullRequest)
+	if second[0].PullRequest == nil || second[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTFanoutDeferred {
+		t.Fatalf("second pass linked issue PullRequest = %#v, want rotated fanout deferral", second[0].PullRequest)
 	}
 
 	mu.Lock()
@@ -5749,8 +5749,8 @@ func TestConnectorHydratePullRequestIncludesWorkflowAndAnnotationsInRESTFanoutCa
 	if err != nil {
 		t.Fatalf("HydratePullRequest() error = %v", err)
 	}
-	if got.PullRequest == nil || got.PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
-		t.Fatalf("PullRequest = %#v, want REST budget reservation", got.PullRequest)
+	if got.PullRequest == nil || got.PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTFanoutDeferred {
+		t.Fatalf("PullRequest = %#v, want REST fanout deferral", got.PullRequest)
 	}
 	if requests := server.requests(); len(requests) != 4 {
 		t.Fatalf("outbound REST requests = %d, want fanout cap 4; requests = %#v", len(requests), requests)

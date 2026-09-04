@@ -2024,7 +2024,7 @@ func GitHubAPIHealthDetails(snapshot telemetry.Snapshot) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 149, "</section><section class=\"dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5\" aria-label=\"GitHub endpoint backoff details\"><div class=\"flex min-w-0 items-start justify-between gap-3\"><div class=\"min-w-0\"><h3 class=\"text-sm font-semibold text-text\">Affected endpoints</h3><p class=\"text-sm text-sec\">Endpoint families currently paused by secondary REST throttling.</p></div><span class=\"shrink-0 rounded-md bg-elev px-2 py-1 font-mono text-xs text-sec\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 149, "</section><section class=\"dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5\" aria-label=\"GitHub REST endpoint details\"><div class=\"flex min-w-0 items-start justify-between gap-3\"><div class=\"min-w-0\"><h3 class=\"text-sm font-semibold text-text\">Affected endpoints</h3><p class=\"text-sm text-sec\">Endpoint families affected by provider throttles or local REST gates.</p></div><span class=\"shrink-0 rounded-md bg-elev px-2 py-1 font-mono text-xs text-sec\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
