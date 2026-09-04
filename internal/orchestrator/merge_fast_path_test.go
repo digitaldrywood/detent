@@ -220,6 +220,58 @@ func TestMergingFastPathMissingRequiredChecksRoutesToRework(t *testing.T) {
 	}
 }
 
+func TestMergingFastPathUnresolvedReviewThreadsRouteToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 13, 5, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-unresolved-review-threads", []string{"bug"}, &connector.PullRequest{
+		Number:         2124,
+		URL:            "https://github.test/digitaldrywood/detent/pull/2124",
+		BranchName:     "detent/unresolved-review-threads",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "head-unresolved-review-threads",
+		UnresolvedReviewThreads: []connector.PullRequestReviewThread{
+			{Path: "internal/orchestrator/autopromote_tick.go", Line: 126},
+			{Path: "internal/orchestrator/run_completion.go", Line: 1582},
+		},
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#2103"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	tracker, state := completeMergeFastPathTestRun(t, issue, now, 1, gate.Config{})
+
+	if len(tracker.merges) != 0 {
+		t.Fatalf("merges = %#v, want none with unresolved review threads", tracker.merges)
+	}
+	if got, want := tracker.reviewThreadHydrations, []string{issue.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("review thread hydrations = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one Rework routing comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"reason: unresolved_review_threads",
+		"unresolved_review_threads: 2",
+		"first_unresolved_review_thread: internal/orchestrator/autopromote_tick.go:126",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment = %q, want fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after Rework handoff", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after Rework handoff", issue.ID)
+	}
+}
+
 func TestMergingFastPathChangedHeadReappliesCITriggerBeforeMerge(t *testing.T) {
 	t.Parallel()
 
