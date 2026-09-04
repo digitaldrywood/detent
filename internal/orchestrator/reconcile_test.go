@@ -826,6 +826,62 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 			t.Fatalf("cleanup failure logs = %q, want %q", logs.String(), want)
 		}
 	}
+	snapshot := state.Snapshot(now)
+	if len(snapshot.CleanupFaults) != 1 || snapshot.CleanupFaults[0].AffectedPathCount != 1 {
+		t.Fatalf("CleanupFaults = %+v, want one affected path", snapshot.CleanupFaults)
+	}
+}
+
+func TestWorkspaceResidualReconciliationRetriesAndProtectsActiveIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	active := connector.Issue{ID: "issue-active", Identifier: "digitaldrywood/detent#2141", State: "In Progress"}
+	cfg := normalizeConfig(Config{
+		Project:                       scheduler.ProjectCandidate{ID: "detent"},
+		ActiveStates:                  []string{"In Progress"},
+		ObservedStates:                []string{"Blocked"},
+		TerminalStates:                []string{"Done"},
+		WorkspaceCleanupSweepInterval: time.Hour,
+	})
+	state := newState(cfg)
+	state.BoardIssues = []connector.Issue{active}
+	reaper := &residualCleanupReaper{
+		cleanupSweepReaper: &cleanupSweepReaper{},
+		results: []WorkspaceReconcileResult{
+			{Failures: []runpkg.WorkspaceCleanupFailure{{Path: "/workspaces/residual", Error: "permission denied"}}},
+			{Removed: 1},
+		},
+		errors: []error{errors.New("permission denied"), nil},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: &runningStateConnector{},
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.reapWorkspacesIfDue(t.Context(), &state, now)
+	if len(reaper.active) != 1 || len(reaper.active[0]) != 1 || reaper.active[0][0].ID != active.ID {
+		t.Fatalf("first reconciliation active issues = %+v", reaper.active)
+	}
+	if len(state.CleanupFailures) != 1 {
+		t.Fatalf("CleanupFailures = %+v, want one failure", state.CleanupFailures)
+	}
+	if _, ok := recentStateEvent(state, "workspace_residual_cleanup_failed"); !ok {
+		t.Fatalf("RecentEvents = %+v, want residual cleanup failure", state.RecentEvents)
+	}
+
+	orch.reapWorkspacesIfDue(t.Context(), &state, now.Add(time.Minute))
+	if len(reaper.active) != 2 {
+		t.Fatalf("reconciliation calls = %d, want retry", len(reaper.active))
+	}
+	if len(state.CleanupFailures) != 0 {
+		t.Fatalf("CleanupFailures after retry = %+v, want none", state.CleanupFailures)
+	}
+	if _, ok := recentStateEvent(state, "workspace_residual_cleanup_succeeded"); !ok {
+		t.Fatalf("RecentEvents = %+v, want residual cleanup success", state.RecentEvents)
+	}
 }
 
 func TestTickMarksClosedCompletedRunningIssueDoneBeforeReaping(t *testing.T) {
@@ -1207,6 +1263,22 @@ type cleanupSweepReaper struct {
 	result WorkspaceReapResult
 	err    error
 	issues []connector.Issue
+}
+
+type residualCleanupReaper struct {
+	*cleanupSweepReaper
+	results []WorkspaceReconcileResult
+	errors  []error
+	active  [][]connector.Issue
+}
+
+func (r *residualCleanupReaper) ReconcileWorkspaces(_ context.Context, active []connector.Issue) (WorkspaceReconcileResult, error) {
+	r.active = append(r.active, cloneIssues(active))
+	index := len(r.active) - 1
+	if index >= len(r.results) {
+		index = len(r.results) - 1
+	}
+	return r.results[index], r.errors[index]
 }
 
 func (r *cleanupSweepReaper) ReapWorkspace(_ context.Context, issue connector.Issue) (WorkspaceReapResult, error) {

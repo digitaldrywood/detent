@@ -55,6 +55,28 @@ type sourceOperationLock struct {
 	permit chan struct{}
 }
 
+type workspaceProcessScanner func(context.Context, string) ([]int, error)
+
+func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
+	pids, err := scan(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	owned := make([]int, 0, len(pids))
+	seen := make(map[int]struct{}, len(pids))
+	for _, pid := range pids {
+		if pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		if _, ok := seen[pid]; ok {
+			continue
+		}
+		seen[pid] = struct{}{}
+		owned = append(owned, pid)
+	}
+	return owned, nil
+}
+
 type Backend interface {
 	Create(context.Context, Issue) (Info, error)
 	Cleanup(context.Context, string) error
@@ -140,6 +162,7 @@ const (
 )
 
 type CleanupResult struct {
+	Path      string
 	Worktrees int
 	Branches  int
 	Processes int
@@ -147,6 +170,23 @@ type CleanupResult struct {
 
 type IssueCleaner interface {
 	CleanupIssue(context.Context, Issue) (CleanupResult, error)
+}
+
+type CleanupFailure struct {
+	Path  string
+	Error string
+}
+
+type ReconcileResult struct {
+	Removed           int
+	ActiveSkipped     int
+	RegisteredSkipped int
+	UnownedSkipped    int
+	Failures          []CleanupFailure
+}
+
+type ResidualReconciler interface {
+	ReconcileResiduals(context.Context, []Issue) (ReconcileResult, error)
 }
 
 type Issue struct {
@@ -184,12 +224,14 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
-	root       string
-	sourceRoot string
-	autoBranch bool
-	hooks      Hooks
-	logger     *slog.Logger
-	createMu   sync.Mutex
+	root               string
+	sourceRoot         string
+	autoBranch         bool
+	hooks              Hooks
+	logger             *slog.Logger
+	createMu           sync.Mutex
+	removeOwnedPath    func(string, string) error
+	scanWorkspacePaths workspaceProcessScanner
 }
 
 type PathError struct {
@@ -379,11 +421,13 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 	}
 
 	return &LocalGit{
-		root:       root,
-		sourceRoot: sourceRoot,
-		autoBranch: opts.AutoBranch,
-		hooks:      hooks,
-		logger:     logger,
+		root:               root,
+		sourceRoot:         sourceRoot,
+		autoBranch:         opts.AutoBranch,
+		hooks:              hooks,
+		logger:             logger,
+		removeOwnedPath:    removeWorkspacePath,
+		scanWorkspacePaths: workspaceProcessIDs,
 	}, nil
 }
 
@@ -501,24 +545,30 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		return CleanupResult{}, err
 	}
 
-	result := CleanupResult{}
+	result := CleanupResult{Path: info.Path}
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
-		return CleanupResult{}, err
+		return result, err
 	}
 	if !exists {
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
 		if pruneErr != nil {
-			return CleanupResult{}, pruneErr
+			return result, pruneErr
 		}
 		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch)
 		if branchErr != nil {
-			return CleanupResult{}, branchErr
+			return result, branchErr
 		}
 		if branchRemoved {
 			result.Branches = 1
 		}
+		if err := l.removeOwnershipRecord(info.Path); err != nil {
+			return result, err
+		}
 		return result, nil
+	}
+	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
+		return result, err
 	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
 	if isDir && l.isSourceWorktree(ctx, info.Path) {
@@ -528,18 +578,21 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 	}
 
 	if err := l.removePath(ctx, info.Path); err != nil {
-		return CleanupResult{}, err
+		return result, err
 	}
 	result.Worktrees = 1
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
-		return CleanupResult{}, err
+		return result, err
 	}
 	branchRemoved, err := l.deleteBranch(ctx, info.Branch)
 	if err != nil {
-		return CleanupResult{}, err
+		return result, err
 	}
 	if branchRemoved {
 		result.Branches = 1
+	}
+	if err := l.removeOwnershipRecord(info.Path); err != nil {
+		return result, err
 	}
 	return result, nil
 }
@@ -1403,8 +1456,24 @@ func (l *LocalGit) removePath(ctx context.Context, path string) error {
 		if l.isGitWorkspace(ctx, path) {
 			return fmt.Errorf("refusing to remove git workspace not managed by source: %s", path)
 		}
-		if err := removeWorkspacePath(l.root, path); err != nil {
-			return err
+		if owned, ownershipErr := l.cleanupOwnershipRecorded(ctx, path); ownershipErr != nil {
+			return ownershipErr
+		} else if !owned {
+			return fmt.Errorf("refusing to remove unregistered workspace without Detent ownership evidence: %s", path)
+		}
+		if err := l.removeOwnedPath(l.root, path); err != nil {
+			return &workspaceRemovalError{path: path, remediation: workspaceRemovalRemediation, err: err}
+		}
+		return nil
+	}
+	if exists, _, err := pathExists(path); err != nil {
+		return err
+	} else if exists {
+		if !sourceWorktree {
+			return fmt.Errorf("refusing to remove residual workspace without pre-removal source ownership: %s", path)
+		}
+		if err := l.removeOwnedPath(l.root, path); err != nil {
+			return &workspaceRemovalError{path: path, remediation: workspaceRemovalRemediation, err: err}
 		}
 	}
 	return nil
@@ -1422,7 +1491,7 @@ func (l *LocalGit) retrySourceWorktreeRemoveAfterPermissionRemediation(ctx conte
 		}
 	}
 	if !l.isSourceWorktree(ctx, path) {
-		if retryErr := removeWorkspacePath(l.root, path); retryErr != nil {
+		if retryErr := l.removeOwnedPath(l.root, path); retryErr != nil {
 			return &workspaceRemovalError{
 				path:        path,
 				remediation: workspaceRemovalRemediation,
@@ -1436,6 +1505,13 @@ func (l *LocalGit) retrySourceWorktreeRemoveAfterPermissionRemediation(ctx conte
 			path:        path,
 			remediation: workspaceRemovalRemediation,
 			err:         retryErr,
+		}
+	}
+	if exists, _, retryErr := pathExists(path); retryErr != nil {
+		return &workspaceRemovalError{path: path, remediation: workspaceRemovalRemediation, err: retryErr}
+	} else if exists {
+		if retryErr := l.removeOwnedPath(l.root, path); retryErr != nil {
+			return &workspaceRemovalError{path: path, remediation: workspaceRemovalRemediation, err: retryErr}
 		}
 	}
 	return nil
@@ -1464,6 +1540,11 @@ func removeWorkspacePath(root string, path string) error {
 				err:         retryErr,
 			}
 		}
+	}
+	if exists, _, err := pathExists(path); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("workspace path still exists after removal: %s", path)
 	}
 	return nil
 }

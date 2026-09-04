@@ -114,11 +114,20 @@ non-running issue can still clean up an existing Detent workspace without
 waiting for the idle cleanup sweep. The idle sweep interval still controls
 non-terminal observed workspace cleanup.
 
-Detent emits cleanup diagnostics in `/api/v1/state` under `events` and in
-published telemetry snapshots. A successful cleanup records
+Before deregistering a terminal Git worktree, Detent records a compact
+ownership marker under the configured workspace root. The idle sweep uses
+these markers to reconcile residual Detent directories without recursively
+scanning the root. Reconciliation skips paths for active issues, registered
+worktrees, active processes, and paths whose ownership marker cannot be
+validated against the configured source repository.
+
+Detent emits cleanup diagnostics in `/api/v1/state` and `/health` under
+`workspace_cleanup_failures`. The field reports the affected path count and
+last error without calculating directory sizes. A successful cleanup records
 `workspace_reap_succeeded` with `worktrees=`, `branches=`, and `processes=`
-counts. Cleanup failures record `workspace_reap_failed`, leave the workspace
-eligible for a later retry, and keep the diagnostic visible in recent events.
+counts. Cleanup failures record `workspace_reap_failed`, preserve the
+ownership marker for a later retry, and keep the diagnostic visible until
+reconciliation succeeds.
 If Detent completes a terminal run but no workspace reaper is configured, it
 records `workspace_reap_unverified`.
 

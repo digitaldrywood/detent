@@ -6513,6 +6513,39 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 	}
 }
 
+func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeResidualWorkspaceBackend{
+		fakeWorkspaceBackend: &fakeWorkspaceBackend{},
+		result: workspace.ReconcileResult{
+			Removed:       1,
+			ActiveSkipped: 2,
+			Failures:      []workspace.CleanupFailure{{Path: "/workspaces/residual", Error: "permission denied"}},
+		},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: &fakeCodexClient{},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	active := []connector.Issue{{ID: "issue-2140", Identifier: "digitaldrywood/detent#2140"}}
+
+	result, err := runner.ReconcileWorkspaces(t.Context(), active)
+	if err != nil {
+		t.Fatalf("ReconcileWorkspaces() error = %v", err)
+	}
+	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.Failures) != 1 {
+		t.Fatalf("ReconcileWorkspaces() = %+v", result)
+	}
+	if len(workspaceBackend.active) != 1 || workspaceBackend.active[0].ProjectID != "default" || workspaceBackend.active[0].Identifier != active[0].Identifier {
+		t.Fatalf("ReconcileResiduals() active issues = %+v", workspaceBackend.active)
+	}
+}
+
 type committingAgentBackend struct {
 	request AgentTurnRequest
 }
@@ -6595,6 +6628,18 @@ type fakeWorkspaceBackend struct {
 	recoveryStates []workspace.RecoveryState
 	recoveryErr    error
 	recoveryCalls  int
+}
+
+type fakeResidualWorkspaceBackend struct {
+	*fakeWorkspaceBackend
+	active []workspace.Issue
+	result workspace.ReconcileResult
+	err    error
+}
+
+func (b *fakeResidualWorkspaceBackend) ReconcileResiduals(_ context.Context, active []workspace.Issue) (workspace.ReconcileResult, error) {
+	b.active = append([]workspace.Issue(nil), active...)
+	return b.result, b.err
 }
 
 type fakeDeliverableWorkspaceBackend struct {

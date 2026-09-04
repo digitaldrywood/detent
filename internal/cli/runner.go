@@ -970,6 +970,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.SchedulerDecisions = append(current.SchedulerDecisions, next.SchedulerDecisions...)
 	current.Dispatch = mergeFleetDispatchStatus(current.Dispatch, next.Dispatch, next.GeneratedAt)
 	current.DispatchStalls = append(current.DispatchStalls, next.DispatchStalls...)
+	current.CleanupFaults = append(current.CleanupFaults, next.CleanupFaults...)
 	if !next.Release.IsZero() {
 		current.Releases = append(current.Releases, next.Release)
 		if current.Release.IsZero() {
@@ -1467,6 +1468,11 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	for i := range snapshot.StrandedActiveIssues {
 		if strings.TrimSpace(snapshot.StrandedActiveIssues[i].ProjectID) == "" {
 			snapshot.StrandedActiveIssues[i].ProjectID = projectID
+		}
+	}
+	for i := range snapshot.CleanupFaults {
+		if strings.TrimSpace(snapshot.CleanupFaults[i].ProjectID) == "" {
+			snapshot.CleanupFaults[i].ProjectID = projectID
 		}
 	}
 	return snapshot

@@ -242,6 +242,10 @@ type WorkspaceReapResult = runpkg.WorkspaceReapResult
 
 type WorkspaceReaper = runpkg.WorkspaceReaper
 
+type WorkspaceReconciler = runpkg.WorkspaceReconciler
+
+type WorkspaceReconcileResult = runpkg.WorkspaceReconcileResult
+
 type RuntimeUpdate struct {
 	Config         Config
 	Connector      connector.Connector

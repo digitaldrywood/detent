@@ -3088,6 +3088,7 @@ func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (Work
 	if cleaner, ok := r.workspace.(workspace.IssueCleaner); ok {
 		result, err := cleaner.CleanupIssue(ctx, workspaceIssue)
 		return WorkspaceReapResult{
+			Path:      result.Path,
 			Worktrees: result.Worktrees,
 			Branches:  result.Branches,
 			Processes: result.Processes,
@@ -3097,6 +3098,32 @@ func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (Work
 		return WorkspaceReapResult{}, err
 	}
 	return WorkspaceReapResult{}, nil
+}
+
+func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connector.Issue) (WorkspaceReconcileResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reconciler, ok := r.workspace.(workspace.ResidualReconciler)
+	if !ok {
+		return WorkspaceReconcileResult{}, nil
+	}
+	active := make([]workspace.Issue, 0, len(activeIssues))
+	for _, issue := range activeIssues {
+		active = append(active, workspaceIssue(r.projectID, issue))
+	}
+	result, err := reconciler.ReconcileResiduals(ctx, active)
+	failures := make([]WorkspaceCleanupFailure, 0, len(result.Failures))
+	for _, failure := range result.Failures {
+		failures = append(failures, WorkspaceCleanupFailure{Path: failure.Path, Error: failure.Error})
+	}
+	return WorkspaceReconcileResult{
+		Removed:           result.Removed,
+		ActiveSkipped:     result.ActiveSkipped,
+		RegisteredSkipped: result.RegisteredSkipped,
+		UnownedSkipped:    result.UnownedSkipped,
+		Failures:          failures,
+	}, err
 }
 
 func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime, BudgetChecker, DispatchEstimator) {
