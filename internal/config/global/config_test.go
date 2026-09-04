@@ -267,9 +267,11 @@ global:
     poll_interval_ms: 250
   io:
     pressure_full_avg10_threshold: 7.5
+    degraded_max_concurrent_agents: 2
     poll_interval_ms: 500
   cpu:
     pressure_some_avg10_threshold: 85
+    degraded_max_concurrent_agents: 3
     poll_interval_ms: 750
 projects:
   - id: detent
@@ -289,10 +291,10 @@ projects:
 	if cfg.Global.Memory != wantGlobal {
 		t.Fatalf("Global.Memory = %#v, want %#v", cfg.Global.Memory, wantGlobal)
 	}
-	if want := (IO{PressureFullAvg10Threshold: 7.5, PollIntervalMS: 500}); cfg.Global.IO != want {
+	if want := (IO{PressureFullAvg10Threshold: 7.5, DegradedMaxConcurrentAgents: 2, PollIntervalMS: 500}); cfg.Global.IO != want {
 		t.Fatalf("Global.IO = %#v, want %#v", cfg.Global.IO, want)
 	}
-	if want := (CPU{PressureSomeAvg10Threshold: 85, PollIntervalMS: 750}); cfg.Global.CPU != want {
+	if want := (CPU{PressureSomeAvg10Threshold: 85, DegradedMaxConcurrentAgents: 3, PollIntervalMS: 750}); cfg.Global.CPU != want {
 		t.Fatalf("Global.CPU = %#v, want %#v", cfg.Global.CPU, want)
 	}
 	project := cfg.Projects[0]
@@ -1489,9 +1491,11 @@ global:
     poll_interval_ms: fast
   io:
     pressure_full_avg10_threshold: -1
+    degraded_max_concurrent_agents: -1
     poll_interval_ms: never
   cpu:
     pressure_some_avg10_threshold: false
+    degraded_max_concurrent_agents: many
     poll_interval_ms: 0
 projects:
   - id: detent
@@ -1507,8 +1511,10 @@ projects:
 				"global.memory.pressure_some_avg60_threshold: must be a positive number",
 				"global.memory.poll_interval_ms: must be a positive integer",
 				"global.io.pressure_full_avg10_threshold: must be a positive number",
+				"global.io.degraded_max_concurrent_agents: must be an integer greater than or equal to 0",
 				"global.io.poll_interval_ms: must be a positive integer",
 				"global.cpu.pressure_some_avg10_threshold: must be a positive number",
+				"global.cpu.degraded_max_concurrent_agents: must be an integer greater than or equal to 0",
 				"global.cpu.poll_interval_ms: must be a positive integer",
 				"projects[0].memory.max_agent_rss_bytes: must be a positive integer",
 			},

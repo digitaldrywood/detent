@@ -18,6 +18,7 @@ const (
 	DispatchGateReasonReservedForHigherPriority        = "reserved_for_higher_priority_state"
 	DispatchGateReasonReservedForHigherPriorityProject = "reserved_for_higher_priority_project"
 	DispatchGateReasonSelectedProjectWaiting           = "selected_project_waiting"
+	DispatchGateReasonPressureCapacityFull             = "pressure_capacity_full"
 )
 
 type ProjectDispatchGate interface {
@@ -51,10 +52,13 @@ type DispatchGateDecision struct {
 	SharedCapacity       int
 	SharedUsed           int
 	SharedAvailable      int
+	PressureCapacity     int
+	PressureUsed         int
+	PressureAvailable    int
 }
 
 type poolCapacityAdmission struct {
-	allow    func(int, int) bool
+	allow    func(int, int, SlotRequest) string
 	complete func(int)
 }
 
@@ -409,9 +413,14 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		return Slot{}, false, g.decisionLocked(project.ID, req, reason), nil
 	}
 	currentUsed := g.capacitySnapshotLocked("").globalUsed
+	if req.PressureCapacity > 0 && currentUsed+req.Weight > req.PressureCapacity {
+		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPressureCapacityFull), nil
+	}
 	projectedUsed := currentUsed - g.preemptionWeightLocked(selected.preemptions) + req.Weight
-	if g.admit != nil && !g.admit.allow(currentUsed, projectedUsed) {
-		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull), nil
+	if g.admit != nil {
+		if reason := g.admit.allow(currentUsed, projectedUsed, req); reason != "" {
+			return Slot{}, false, g.decisionLocked(project.ID, req, reason), nil
+		}
 	}
 	if err := g.preemptProjectsLocked(selected.preemptions); err != nil {
 		delete(g.selected, project.ID)
@@ -710,6 +719,9 @@ func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, r
 		StateCapacity:        stats.stateCapacity,
 		StateUsed:            stats.stateUsed,
 		StateAvailable:       nonNegativeInt(stats.stateCapacity - stats.stateUsed),
+		PressureCapacity:     req.PressureCapacity,
+		PressureUsed:         stats.globalUsed,
+		PressureAvailable:    nonNegativeInt(req.PressureCapacity - stats.globalUsed),
 		LowerPriorityRunning: g.lowerPriorityRunningLocked(req.Priority),
 		ReadyProjects:        len(g.ready),
 		RunningProjects:      len(g.running),
@@ -924,10 +936,11 @@ func normalizeSlotRequest(req SlotRequest) (SlotRequest, error) {
 		return SlotRequest{}, err
 	}
 	return SlotRequest{
-		State:    slot.State,
-		Host:     slot.Host,
-		Weight:   slot.Weight,
-		Priority: slot.Priority,
+		State:            slot.State,
+		Host:             slot.Host,
+		Weight:           slot.Weight,
+		Priority:         slot.Priority,
+		PressureCapacity: normalizedCapacity(req.PressureCapacity),
 	}, nil
 }
 

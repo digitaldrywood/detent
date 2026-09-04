@@ -2966,6 +2966,83 @@ func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
 	}
 }
 
+func TestRecordDispatchGateRefusalPersistsPressureCapacity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		configure  func(*State)
+		wantReason string
+	}{
+		{
+			name: "IO degraded capacity",
+			configure: func(state *State) {
+				state.IOPressure = telemetry.IOPressure{
+					CapacityConstrained: true, EffectiveMaxConcurrentAgents: 1,
+					ConstrainedSince: now.Add(-5 * time.Minute), ConstrainedForMS: 300000,
+				}
+			},
+			wantReason: "I/O pressure has limited admission to 1 concurrent agent for 5m0s",
+		},
+		{
+			name: "CPU degraded capacity",
+			configure: func(state *State) {
+				state.CPUPressure = telemetry.CPUPressure{
+					CapacityConstrained: true, EffectiveMaxConcurrentAgents: 2,
+					ConstrainedSince: now.Add(-time.Minute), ConstrainedForMS: 60000,
+				}
+			},
+			wantReason: "CPU pressure has limited admission to 2 concurrent agents for 1m0s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 4, Project: scheduler.ProjectCandidate{ID: "detent"}})
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+			state := newState(cfg)
+			tt.configure(&state)
+			orch.recordDispatchGateRefusal(
+				t.Context(),
+				&state,
+				dispatchTestIssue("issue-pressure", "Todo"),
+				1,
+				"",
+				now,
+				scheduler.DispatchGateDecision{
+					PoolName: scheduler.DefaultPoolName, Reason: scheduler.DispatchGateReasonPressureCapacityFull,
+					GlobalCapacity: 4, GlobalUsed: 1, GlobalAvailable: 3,
+					PressureCapacity: 1, PressureUsed: 1,
+				},
+				projectStateSlotStats{capacity: 4},
+			)
+
+			if len(attempts.decisions) != 1 {
+				t.Fatalf("scheduler decisions = %#v, want one", attempts.decisions)
+			}
+			decision := attempts.decisions[0]
+			if decision.Reason != scheduler.DispatchGateReasonPressureCapacityFull || decision.WaitReason != tt.wantReason {
+				t.Fatalf("pressure decision = %#v", decision)
+			}
+			for _, fragment := range []string{
+				`"pressure_capacity":1`,
+				`"pressure_used":1`,
+				`"pressure_available":0`,
+				`"pressure_constrained_for_ms":`,
+				`"pressure_reason":`,
+			} {
+				if !strings.Contains(decision.CapacitySnapshotJSON, fragment) {
+					t.Fatalf("capacity snapshot %q missing %q", decision.CapacitySnapshotJSON, fragment)
+				}
+			}
+		})
+	}
+}
+
 func TestRecordDispatchGateRefusalSamplesEquivalentCandidates(t *testing.T) {
 	t.Parallel()
 

@@ -32,6 +32,8 @@ type dispatchGateSampleKey struct {
 	reason            string
 	globalCapacity    int
 	capacityExhausted bool
+	pressureCapacity  int
+	pressureExhausted bool
 	holders           string
 }
 
@@ -169,6 +171,9 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 		"shared_capacity", decision.SharedCapacity,
 		"shared_used", decision.SharedUsed,
 		"shared_available", decision.SharedAvailable,
+		"pressure_capacity", decision.PressureCapacity,
+		"pressure_used", decision.PressureUsed,
+		"pressure_available", decision.PressureAvailable,
 		"project_state_capacity", projectStats.capacity,
 		"project_state_used", projectStats.used,
 		"project_state_available", projectStats.available,
@@ -214,12 +219,20 @@ func (o *Orchestrator) recordDispatchGateRefusal(
 		reason:            reason,
 		globalCapacity:    decision.GlobalCapacity,
 		capacityExhausted: decision.GlobalAvailable == 0,
+		pressureCapacity:  decision.PressureCapacity,
+		pressureExhausted: decision.PressureCapacity > 0 && decision.PressureAvailable == 0,
 		holders:           strings.Join(decision.Holders, "\x00"),
 	}
 	if !o.reserveDispatchGateSample(key, now) {
 		return
 	}
 
+	waitReason := reason
+	if reason == scheduler.DispatchGateReasonPressureCapacityFull {
+		if constraint, ok := activeHostPressureConstraint(state); ok {
+			waitReason = hostPressureWaitReason(state, constraint.reason)
+		}
+	}
 	record := store.SchedulerDecision{
 		ProjectID:            strings.TrimSpace(o.cfg.Project.ID),
 		IssueID:              strings.TrimSpace(issue.ID),
@@ -233,8 +246,8 @@ func (o *Orchestrator) recordDispatchGateRefusal(
 		AttemptNumber:        attempt,
 		WorkerHost:           strings.TrimSpace(workerHost),
 		DecisionAt:           now,
-		WaitReason:           reason,
-		CapacitySnapshotJSON: o.dispatchGateCapacitySnapshotJSON(issue, decision, projectStats),
+		WaitReason:           waitReason,
+		CapacitySnapshotJSON: o.dispatchGateCapacitySnapshotJSON(state, issue, decision, projectStats),
 		MetadataJSON: marshalWorkAttemptJSON(map[string]any{
 			"decision_kind":           "dispatch_gate_refusal",
 			"sample_interval_seconds": int64(dispatchGateSampleInterval / time.Second),
@@ -279,6 +292,7 @@ func (o *Orchestrator) releaseDispatchGateSample(key dispatchGateSampleKey, samp
 }
 
 func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
+	state *State,
 	issue connector.Issue,
 	decision scheduler.DispatchGateDecision,
 	projectStats projectStateSlotStats,
@@ -287,7 +301,7 @@ func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
 	if poolName == "" {
 		poolName = scheduler.DefaultPoolName
 	}
-	return marshalWorkAttemptJSON(map[string]any{
+	snapshot := map[string]any{
 		"project_id":              strings.TrimSpace(o.cfg.Project.ID),
 		"pool":                    poolName,
 		"pool_capacity":           decision.GlobalCapacity,
@@ -304,7 +318,16 @@ func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
 		"lower_priority_running":  decision.LowerPriorityRunning,
 		"ready_projects":          decision.ReadyProjects,
 		"running_projects":        decision.RunningProjects,
-	})
+		"pressure_capacity":       decision.PressureCapacity,
+		"pressure_used":           decision.PressureUsed,
+		"pressure_available":      decision.PressureAvailable,
+	}
+	if constraint, ok := activeHostPressureConstraint(state); ok {
+		snapshot["pressure_reason"] = constraint.reason
+		snapshot["pressure_constrained_since"] = constraint.constrainedAt
+		snapshot["pressure_constrained_for_ms"] = constraint.constrainedFor.Milliseconds()
+	}
+	return marshalWorkAttemptJSON(snapshot)
 }
 
 func normalizeDispatchGateHolders(holders []string) []string {

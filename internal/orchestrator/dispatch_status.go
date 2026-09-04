@@ -95,7 +95,10 @@ func projectDispatchStatusFromCycle(
 			}
 			if attempted {
 				waitReasonCode = strings.TrimSpace(outcome.reason)
-				waitReason = schedulerDecisionWaitReason(outcome.reason)
+				waitReason = strings.TrimSpace(outcome.waitReason)
+				if waitReason == "" {
+					waitReason = schedulerDecisionWaitReason(outcome.reason)
+				}
 				if outcome.reason == projectFailureBreakerDispatchPaused {
 					status.EligibleCandidateCount++
 				}

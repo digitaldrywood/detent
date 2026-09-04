@@ -161,13 +161,15 @@ type ProjectMemory struct {
 }
 
 type IO struct {
-	PressureFullAvg10Threshold float64 `yaml:"pressure_full_avg10_threshold"`
-	PollIntervalMS             int     `yaml:"poll_interval_ms"`
+	PressureFullAvg10Threshold  float64 `yaml:"pressure_full_avg10_threshold"`
+	DegradedMaxConcurrentAgents int     `yaml:"degraded_max_concurrent_agents,omitempty"`
+	PollIntervalMS              int     `yaml:"poll_interval_ms"`
 }
 
 type CPU struct {
-	PressureSomeAvg10Threshold float64 `yaml:"pressure_some_avg10_threshold"`
-	PollIntervalMS             int     `yaml:"poll_interval_ms"`
+	PressureSomeAvg10Threshold  float64 `yaml:"pressure_some_avg10_threshold"`
+	DegradedMaxConcurrentAgents int     `yaml:"degraded_max_concurrent_agents,omitempty"`
+	PollIntervalMS              int     `yaml:"poll_interval_ms"`
 }
 
 func (m Memory) Normalized() Memory {
@@ -1395,6 +1397,9 @@ func pressureErrors(value any, prefix string, thresholdKey string) []string {
 	if value, ok := pressure["poll_interval_ms"]; ok && !positiveInteger(value) {
 		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
 	}
+	if value, ok := pressure["degraded_max_concurrent_agents"]; ok {
+		problems = append(problems, optionalNonNegativeIntegerError(value, prefix+".degraded_max_concurrent_agents")...)
+	}
 	return problems
 }
 
@@ -1406,6 +1411,9 @@ func ioPressureProblems(pressure IO, prefix string) []string {
 	if pressure.PollIntervalMS <= 0 {
 		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
 	}
+	if pressure.DegradedMaxConcurrentAgents < 0 {
+		problems = append(problems, prefix+".degraded_max_concurrent_agents: must be a non-negative integer")
+	}
 	return problems
 }
 
@@ -1416,6 +1424,9 @@ func cpuPressureProblems(pressure CPU, prefix string) []string {
 	}
 	if pressure.PollIntervalMS <= 0 {
 		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
+	}
+	if pressure.DegradedMaxConcurrentAgents < 0 {
+		problems = append(problems, prefix+".degraded_max_concurrent_agents: must be a non-negative integer")
 	}
 	return problems
 }

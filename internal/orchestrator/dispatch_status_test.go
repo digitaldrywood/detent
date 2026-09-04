@@ -135,6 +135,16 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantCode:    dispatchIssueFailureBackendCapacityPaused,
 		},
 		{
+			name:        "pressure capacity rejection preserves duration detail",
+			candidates:  []connector.Issue{alpha},
+			decisions:   []dispatchPlanDecision{{Issue: alpha, Selected: true}},
+			outcomes:    dispatchStatusOutcomes(alpha, dispatchIssueOutcome{reason: dispatchIssueFailureIOPressure, waitReason: "I/O pressure has limited admission to 1 concurrent agent for 5m0s"}),
+			wantCount:   1,
+			wantSkipped: 1,
+			wantReason:  "I/O pressure has limited admission to 1 concurrent agent for 5m0s",
+			wantCode:    dispatchIssueFailureIOPressure,
+		},
+		{
 			name:        "failed selection does not advance dispatch",
 			candidates:  []connector.Issue{alpha},
 			decisions:   []dispatchPlanDecision{{Issue: alpha, Selected: true}},

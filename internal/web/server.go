@@ -1270,7 +1270,7 @@ func (s *Server) health(c echo.Context) error {
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.DispatchHeld || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
