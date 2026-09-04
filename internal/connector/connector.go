@@ -144,6 +144,7 @@ type PullRequestMerger interface {
 type PullRequestMergeQueue interface {
 	InspectPullRequestMergeQueue(context.Context, Issue) (PullRequestMergeQueueStatus, error)
 	EnqueuePullRequest(context.Context, Issue) (PullRequestMergeQueueEntry, error)
+	DequeuePullRequest(context.Context, PullRequestMergeQueueEntry) error
 }
 
 type PullRequestMergeQueueStatus struct {

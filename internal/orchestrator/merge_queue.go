@@ -46,6 +46,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
 		issueID := strings.TrimSpace(candidate.ID)
+		if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+			o.reconcileReviewThreadGatedNativeMergeQueue(ctx, state, out, candidate, queue, now)
+			continue
+		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
@@ -111,6 +115,44 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		})
 	}
 	return out
+}
+
+func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueue(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	issue connector.Issue,
+	queue connector.PullRequestMergeQueue,
+	now time.Time,
+) {
+	issueID := strings.TrimSpace(issue.ID)
+	status, err := queue.InspectPullRequestMergeQueue(ctx, issue)
+	if err != nil {
+		state.nativeMergeQueueDeferred[issueID] = struct{}{}
+		o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
+		return
+	}
+	if status.Entry == nil {
+		delete(state.nativeMergeQueueEntries, issueID)
+		clearNativeMergeQueueEntry(issues, issueID)
+		return
+	}
+	entry := *status.Entry
+	if err := queue.DequeuePullRequest(ctx, entry); err != nil {
+		state.nativeMergeQueueDeferred[issueID] = struct{}{}
+		cacheNativeMergeQueueEntry(state, issueID, entry, now)
+		applyNativeMergeQueueEntry(issues, issueID, entry)
+		o.logNativeMergeQueueFailure(issue, "dequeue_failed", err)
+		return
+	}
+	delete(state.nativeMergeQueueEntries, issueID)
+	clearNativeMergeQueueEntry(issues, issueID)
+	o.logNativeMergeQueueDequeued(issue, entry)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_native_queue_dequeued",
+		Message: "dequeued " + issueLabel(issue) + " from the native merge queue",
+	})
 }
 
 func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
@@ -236,6 +278,16 @@ func (o *Orchestrator) logNativeMergeQueueDelegated(issue connector.Issue, entry
 		"queue_position", entry.Position,
 		"queue_depth", entry.Depth,
 		"estimated_time_to_merge_seconds", entry.EstimatedTimeToMergeSeconds,
+	)...)
+}
+
+func (o *Orchestrator) logNativeMergeQueueDequeued(issue connector.Issue, entry connector.PullRequestMergeQueueEntry) {
+	if o.logger == nil {
+		return
+	}
+	o.logger.Info("merge_worker_native_queue_dequeued", mergeWorkerLogAttrs(issue,
+		"queue_entry_id", entry.ID,
+		"queue_state", entry.State,
 	)...)
 }
 

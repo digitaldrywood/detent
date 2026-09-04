@@ -69,6 +69,7 @@ const (
 	graphQLQueryAddProjectItem  = "add_project_item"
 	graphQLQueryMergeQueue      = "merge_queue"
 	graphQLQueryEnqueuePR       = "enqueue_pull_request"
+	graphQLQueryDequeuePR       = "dequeue_pull_request"
 	graphQLQueryRateLimitProbe  = "rate_limit_probe"
 )
 

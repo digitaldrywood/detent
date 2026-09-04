@@ -591,6 +591,10 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 	return c.github.EnqueuePullRequest(ctx, issue)
 }
 
+func (c *Connector) DequeuePullRequest(ctx context.Context, entry connector.PullRequestMergeQueueEntry) error {
+	return c.github.DequeuePullRequest(ctx, entry)
+}
+
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	return c.github.HydratePullRequest(ctx, issue)
 }
