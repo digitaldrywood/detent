@@ -32,6 +32,11 @@ GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
 GOSEC_PATCH ?= scripts/gosec-v2.28.0-deterministic.patch
 GOSEC_DETERMINISM_RUNS ?= 8
 GO_TEST := env -u DETENT_API_TOKEN go test
+GOLANGCI_LINT_VERSION_FILE := .golangci-version
+GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
+GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
+GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)
+GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 # G115: existing conversions are bounded or intentionally preserve platform/API widths.
 # G301: shared runtime, service, and artifact directories intentionally require traversal access.
 # G304: Detent intentionally reads operator-selected config, workflow, and workspace paths.
@@ -119,8 +124,12 @@ visual-e2e-update: build
 	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
-lint:
-	golangci-lint run --timeout=5m
+lint: $(GOLANGCI_LINT)
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=5m
+
+$(GOLANGCI_LINT):
+	@mkdir -p "$(GOLANGCI_LINT_DIR)"
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 vet:
 	go vet ./...
@@ -166,12 +175,11 @@ db-migrate:
 		echo "No migrations directory at $(MIGRATIONS_DIR); skipping database migration."; \
 	fi
 
-setup:
+setup: $(GOLANGCI_LINT)
 	go install github.com/air-verse/air@latest
 	go install github.com/a-h/templ/cmd/templ@v0.3.1001
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 	go install github.com/pressly/goose/v3/cmd/goose@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
 	@if [ -f package.json ]; then npm install; fi
 
 clean:
