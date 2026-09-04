@@ -78,6 +78,26 @@ type BacklogAdmissionDownstreamOutcome struct {
 	UpdatedAt        string         `json:"updated_at"`
 }
 
+type BacklogAdmissionMalformedResult struct {
+	ID                   int64          `json:"id"`
+	ProjectID            string         `json:"project_id"`
+	IssueID              string         `json:"issue_id"`
+	IssueIdentifier      string         `json:"issue_identifier"`
+	IssueURL             string         `json:"issue_url"`
+	CandidateFingerprint string         `json:"candidate_fingerprint"`
+	PromptFingerprint    string         `json:"prompt_fingerprint"`
+	ProposalFingerprint  string         `json:"proposal_fingerprint"`
+	ErrorFingerprint     string         `json:"error_fingerprint"`
+	ErrorClass           string         `json:"error_class"`
+	ErrorCode            string         `json:"error_code"`
+	OutputExcerpt        string         `json:"output_excerpt"`
+	AttemptCount         int64          `json:"attempt_count"`
+	Status               string         `json:"status"`
+	FirstSeenAt          string         `json:"first_seen_at"`
+	LastSeenAt           string         `json:"last_seen_at"`
+	ResolvedAt           sql.NullString `json:"resolved_at"`
+}
+
 type BacklogAdmissionProposal struct {
 	ID                 string         `json:"id"`
 	ProjectID          string         `json:"project_id"`
@@ -122,6 +142,7 @@ type BacklogAdmissionRun struct {
 	Error                sql.NullString `json:"error"`
 	ProposalReason       sql.NullString `json:"proposal_reason"`
 	ResumeAt             sql.NullString `json:"resume_at"`
+	MalformedJson        string         `json:"malformed_json"`
 }
 
 type BudgetOverride struct {

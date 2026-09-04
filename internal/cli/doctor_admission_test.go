@@ -89,6 +89,31 @@ CREATE TABLE backlog_admission_downstream_outcomes (
 INSERT INTO backlog_admission_downstream_outcomes (
   project_id, completed_at, rework_count, review_churn_count, spend_usd
 ) VALUES ('detent', '2026-07-29T11:00:00Z', 2, 3, 4.5);
+CREATE TABLE backlog_admission_malformed_results (
+  id INTEGER PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  issue_id TEXT NOT NULL,
+  issue_identifier TEXT,
+  candidate_fingerprint TEXT NOT NULL,
+  prompt_fingerprint TEXT NOT NULL,
+  proposal_fingerprint TEXT NOT NULL,
+  error_fingerprint TEXT NOT NULL,
+  error_class TEXT NOT NULL,
+  error_code TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL,
+  output_excerpt TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+INSERT INTO backlog_admission_malformed_results (
+  project_id, issue_id, issue_identifier, candidate_fingerprint, prompt_fingerprint,
+  proposal_fingerprint, error_fingerprint, error_class, error_code, attempt_count,
+  output_excerpt, status, last_seen_at
+) VALUES (
+  'detent', 'issue-malformed', 'digitaldrywood/detent#1600', 'candidate-fingerprint',
+  'prompt-fingerprint', 'proposal-fingerprint', 'error-fingerprint', 'schema',
+  'unknown_field', 4, '{"unexpected":"<redacted>"}', 'blocked', '2026-07-29T10:04:00Z'
+);
 CREATE TABLE workflow_phase_events (
   id INTEGER PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -133,6 +158,7 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		"truncated=candidate_cap:8",
 		"issues=digitaldrywood/detent#1535",
 		"awaiting_decision=digitaldrywood/detent#1586(confidence=88%,age=2h0m0s,expires_in=166h0m0s)",
+		"blocked_malformed=digitaldrywood/detent#1600(class=schema,code=unknown_field,attempts=4,proposal_fingerprint=proposal-fingerprint,error_fingerprint=error-fingerprint,excerpt=\"{\\\"unexpected\\\":\\\"<redacted>\\\"}\")",
 		"origins=admission:1,routine:1,unknown:1",
 		"proposal_outcomes=accepted:1,expired:1",
 		"average_decision_seconds=accepted:60,expired:604800",
@@ -165,6 +191,11 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 	if len(diagnostic.OpenProposals) != 1 || diagnostic.OpenProposals[0].Identifier != "digitaldrywood/detent#1586" ||
 		diagnostic.OpenProposals[0].AgeSeconds != 7200 {
 		t.Fatalf("open proposals = %#v", diagnostic.OpenProposals)
+	}
+	if len(diagnostic.MalformedBlocked) != 1 ||
+		diagnostic.MalformedBlocked[0].CandidateFingerprint != "candidate-fingerprint" ||
+		diagnostic.MalformedBlocked[0].PromptFingerprint != "prompt-fingerprint" {
+		t.Fatalf("blocked malformed results = %#v", diagnostic.MalformedBlocked)
 	}
 }
 
