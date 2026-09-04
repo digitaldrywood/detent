@@ -156,7 +156,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
-	reviewThreadQueueIssues := o.reconcileReviewThreadGatedNativeMergeQueueIssues(
+	reviewThreadQueueIssues := o.reconcileUnsafeNativeMergeQueueIssues(
 		ctx,
 		state,
 		mergeIssueSlices(fetched.status, fetched.candidates),

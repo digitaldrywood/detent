@@ -86,6 +86,7 @@ type State struct {
 	nativeMergeQueueEntries  map[string]nativeMergeQueueEntry
 	nativeMergeQueueRepos    map[string]nativeMergeQueueRepository
 	nativeMergeQueueDeferred map[string]struct{}
+	nativeMergeQueueChecks   map[string]time.Time
 	TransientCheckRetries    map[string]TransientCheckRetry
 	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
 	BudgetRefusals           map[string]BudgetRefusal
@@ -395,6 +396,7 @@ func newState(cfg Config) State {
 		nativeMergeQueueEntries:  map[string]nativeMergeQueueEntry{},
 		nativeMergeQueueRepos:    map[string]nativeMergeQueueRepository{},
 		nativeMergeQueueDeferred: map[string]struct{}{},
+		nativeMergeQueueChecks:   map[string]time.Time{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
@@ -483,6 +485,7 @@ func (s State) clone() State {
 		nativeMergeQueueEntries:  cloneNativeMergeQueueEntries(s.nativeMergeQueueEntries),
 		nativeMergeQueueRepos:    maps.Clone(s.nativeMergeQueueRepos),
 		nativeMergeQueueDeferred: maps.Clone(s.nativeMergeQueueDeferred),
+		nativeMergeQueueChecks:   maps.Clone(s.nativeMergeQueueChecks),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),

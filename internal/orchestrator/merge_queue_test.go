@@ -416,7 +416,7 @@ func TestNativeMergeQueueCandidateRejectsNonAtomicSecurityAuditGate(t *testing.T
 	}
 }
 
-func TestReconcileReviewThreadGatedNativeMergeQueueIssues(t *testing.T) {
+func TestReconcileUnsafeNativeMergeQueueIssues(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
@@ -471,7 +471,7 @@ func TestReconcileReviewThreadGatedNativeMergeQueueIssues(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
 
-			queued := orch.reconcileReviewThreadGatedNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, nil, now)
+			queued := orch.reconcileUnsafeNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, nil, now)
 
 			if tracker.inspections != 1 || len(tracker.enqueued) != 0 {
 				t.Fatalf("native queue activity = %d inspections and %#v enqueues, want one inspection and no enqueue", tracker.inspections, tracker.enqueued)
@@ -494,7 +494,7 @@ func TestReconcileReviewThreadGatedNativeMergeQueueIssues(t *testing.T) {
 	}
 }
 
-func TestTickReconcilesReviewThreadGatedNativeQueueBeforeStaleMerging(t *testing.T) {
+func TestTickReconcilesUnsafeNativeQueueBeforeStaleMerging(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 16, 0, 0, 0, time.UTC)
@@ -563,7 +563,7 @@ func TestTickReconcilesReviewThreadGatedNativeQueueBeforeStaleMerging(t *testing
 	}
 }
 
-func TestTickReconcilesReviewThreadGatedNativeQueueWithoutObservedStatus(t *testing.T) {
+func TestTickReconcilesUnsafeNativeQueueWithoutObservedStatus(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 17, 0, 0, 0, time.UTC)
@@ -614,7 +614,7 @@ func TestTickReconcilesReviewThreadGatedNativeQueueWithoutObservedStatus(t *test
 	}
 }
 
-func TestTickReconcilesReviewThreadGatedNativeQueueAfterLeavingMerging(t *testing.T) {
+func TestTickReconcilesUnsafeNativeQueueAfterLeavingMerging(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 17, 15, 0, 0, time.UTC)
@@ -667,7 +667,7 @@ func TestTickReconcilesReviewThreadGatedNativeQueueAfterLeavingMerging(t *testin
 	}
 }
 
-func TestReconcileReviewThreadGatedNativeQueueRetriesAfterLeavingMerging(t *testing.T) {
+func TestReconcileUnsafeNativeQueueRetriesAfterLeavingMerging(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 17, 30, 0, 0, time.UTC)
@@ -689,7 +689,7 @@ func TestReconcileReviewThreadGatedNativeQueueRetriesAfterLeavingMerging(t *test
 	orch := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 
-	orch.reconcileReviewThreadGatedNativeMergeQueueIssues(
+	orch.reconcileUnsafeNativeMergeQueueIssues(
 		t.Context(),
 		&state,
 		[]connector.Issue{current},
@@ -701,7 +701,7 @@ func TestReconcileReviewThreadGatedNativeQueueRetriesAfterLeavingMerging(t *test
 	}
 
 	tracker.inspectErr = nil
-	orch.reconcileReviewThreadGatedNativeMergeQueueIssues(
+	orch.reconcileUnsafeNativeMergeQueueIssues(
 		t.Context(),
 		&state,
 		[]connector.Issue{current},
@@ -714,6 +714,113 @@ func TestReconcileReviewThreadGatedNativeQueueRetriesAfterLeavingMerging(t *test
 	}
 	if _, ok := state.nativeMergeQueueDeferred[previous.ID]; ok {
 		t.Fatalf("nativeMergeQueueDeferred[%q] remains after successful retry", previous.ID)
+	}
+}
+
+func TestReconcileNativeMergeQueueAfterSecurityAuditEnabled(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 45, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(408, "success")
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-408", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+			Kind:          gate.KindArtifact,
+			SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
+		}},
+		ActiveStates: []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileUnsafeNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{issue},
+		nil,
+		now,
+	)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+}
+
+func TestReconcileNativeMergeQueueRecoversDepartedIssueAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(409, "success")
+	issue.State = "Rework"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-409", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates:         []string{"Rework", "Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileUnsafeNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{issue},
+		nil,
+		now,
+	)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+}
+
+func TestReconcileNativeMergeQueueCachesEmptyRecoveryInspection(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 15, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(410, "success")
+	issue.State = "Human Review"
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindHumanReview}},
+		ActiveStates:         []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	for _, checkedAt := range []time.Time{now, now.Add(time.Minute), now.Add(nativeMergeQueueEntryRefresh)} {
+		orch.reconcileUnsafeNativeMergeQueueIssues(
+			t.Context(),
+			&state,
+			[]connector.Issue{issue},
+			nil,
+			checkedAt,
+		)
+	}
+
+	if tracker.inspections != 2 {
+		t.Fatalf("native queue inspections = %d, want 2", tracker.inspections)
+	}
+	if len(tracker.dequeued) != 0 {
+		t.Fatalf("dequeued entries = %#v, want none", tracker.dequeued)
 	}
 }
 

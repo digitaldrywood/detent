@@ -36,12 +36,12 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	if state == nil {
 		return out
 	}
-	if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+	if nativeMergeQueueCleanupRequired(o.cfg) {
 		return out
 	}
 	state.nativeMergeQueueDeferred = map[string]struct{}{}
 	queue, ok := o.connector.(connector.PullRequestMergeQueue)
-	if !ok || !o.cfg.MergeFastPathEnabled {
+	if !ok {
 		return out
 	}
 	pruneNativeMergeQueueEntries(state, out)
@@ -116,7 +116,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
-func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueueIssues(
+func (o *Orchestrator) reconcileUnsafeNativeMergeQueueIssues(
 	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
@@ -129,8 +129,11 @@ func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueueIssues(
 	}
 	previousDeferred := state.nativeMergeQueueDeferred
 	state.nativeMergeQueueDeferred = map[string]struct{}{}
-	if !gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+	if !nativeMergeQueueCleanupRequired(o.cfg) {
 		return out
+	}
+	if state.nativeMergeQueueChecks == nil {
+		state.nativeMergeQueueChecks = map[string]time.Time{}
 	}
 	queue, ok := o.connector.(connector.PullRequestMergeQueue)
 	if !ok {
@@ -143,20 +146,28 @@ func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueueIssues(
 		}
 	}
 	for _, issue := range out {
-		if !reviewThreadGatedNativeMergeQueueCleanupCandidate(issue, state, previousMerging, previousDeferred) {
+		if !nativeMergeQueueCleanupCandidate(issue, state, previousMerging, previousDeferred, now) {
 			continue
 		}
-		o.reconcileReviewThreadGatedNativeMergeQueue(ctx, state, out, issue, queue, now)
+		o.reconcileUnsafeNativeMergeQueue(ctx, state, out, issue, queue, now)
 	}
 	pruneNativeMergeQueueEntries(state, out)
+	pruneNativeMergeQueueInspections(state, out)
 	return out
 }
 
-func reviewThreadGatedNativeMergeQueueCleanupCandidate(
+func nativeMergeQueueCleanupRequired(cfg Config) bool {
+	return !cfg.MergeFastPathEnabled ||
+		gateRequiresPullRequest(cfg.AutoPromote.Gate) ||
+		gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled
+}
+
+func nativeMergeQueueCleanupCandidate(
 	issue connector.Issue,
 	state *State,
 	previousMerging map[string]struct{},
 	previousDeferred map[string]struct{},
+	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
@@ -174,10 +185,24 @@ func reviewThreadGatedNativeMergeQueueCleanupCandidate(
 	if _, ok := previousDeferred[issueID]; ok {
 		return true
 	}
-	return issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil
+	if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
+		return true
+	}
+	if !nativeMergeQueueRecoveryCandidate(issue) {
+		return false
+	}
+	checkedAt, checked := state.nativeMergeQueueChecks[issueID]
+	return !checked || now.Sub(checkedAt) >= nativeMergeQueueEntryRefresh
 }
 
-func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueue(
+func nativeMergeQueueRecoveryCandidate(issue connector.Issue) bool {
+	if issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
+		return false
+	}
+	return pullRequestRepository(issue) != "" && pullRequestNumber(issue) > 0
+}
+
+func (o *Orchestrator) reconcileUnsafeNativeMergeQueue(
 	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
@@ -192,6 +217,7 @@ func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueue(
 		o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
 		return
 	}
+	state.nativeMergeQueueChecks[issueID] = now
 	if status.Entry == nil {
 		delete(state.nativeMergeQueueEntries, issueID)
 		clearNativeMergeQueueEntry(issues, issueID)
@@ -263,6 +289,23 @@ func pruneNativeMergeQueueEntries(state *State, issues []connector.Issue) {
 		}
 		if _, ok := active[issueID]; !ok {
 			delete(state.nativeMergeQueueEntries, issueID)
+		}
+	}
+}
+
+func pruneNativeMergeQueueInspections(state *State, issues []connector.Issue) {
+	active := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			active[issueID] = struct{}{}
+		}
+	}
+	for issueID := range state.nativeMergeQueueChecks {
+		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
+			continue
+		}
+		if _, ok := active[issueID]; !ok {
+			delete(state.nativeMergeQueueChecks, issueID)
 		}
 	}
 }
