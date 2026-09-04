@@ -95,6 +95,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBoardScheduledPacingSnapshot()
 	case "board-degraded-health-banners":
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
+	case "board-dispatch-fault":
+		snapshot = demoBoardDispatchFaultSnapshot()
 	case "board-alerts-heavy":
 		snapshot = demoBoardAlertsHeavySnapshot()
 	case "admission-proposals-one":
@@ -453,6 +455,53 @@ func demoBoardAlertsHeavySnapshot() telemetry.Snapshot {
 	return snapshot
 }
 
+func demoBoardDispatchFaultSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	allSkippedSince := now.Add(-3 * time.Hour)
+	lastSelectedAt := now.Add(-4 * time.Hour)
+	secondsSinceLastSelected := int64(4 * time.Hour / time.Second)
+	const waitReason = "issue does not match authorization selector: missing required label `detent`"
+	stall := telemetry.DispatchStatus{
+		ProjectID:                demoPrimaryProjectID,
+		CandidateCount:           4,
+		EligibleCandidateCount:   0,
+		SkippedCount:             4,
+		WaitReason:               waitReason,
+		WaitReasonCode:           "authorization_selector_declined",
+		AllSkippedSince:          &allSkippedSince,
+		LastSelectedAt:           &lastSelectedAt,
+		SecondsSinceLastSelected: &secondsSinceLastSelected,
+		StallDurationSeconds:     int64(3 * time.Hour / time.Second),
+		ObservedAt:               now,
+		Stalled:                  true,
+		NeedsHumanAttention:      true,
+		Class:                    observability.ClassFault,
+	}
+	for index := range snapshot.Projects {
+		if snapshot.Projects[index].Project.ID == demoPrimaryProjectID {
+			snapshot.Projects[index].Dispatch = stall
+		}
+	}
+	snapshot.DispatchStalls = nil
+	snapshot.SchedulerDecisions = make([]telemetry.SchedulerDecision, 0, stall.CandidateCount)
+	for number := 5301; number <= 5304; number++ {
+		identifier := "digitaldrywood/detent-core#" + strconv.Itoa(number)
+		snapshot.SchedulerDecisions = append(snapshot.SchedulerDecisions, telemetry.SchedulerDecision{
+			ProjectID:  demoPrimaryProjectID,
+			IssueID:    "demo-dispatch-fault-" + strconv.Itoa(number),
+			Identifier: identifier,
+			IssueURL:   demoIssueURL(identifier),
+			Lane:       "Todo",
+			Result:     "skipped",
+			Reason:     "authorization_selector_declined",
+			DecisionAt: now.Add(-time.Hour),
+			WaitReason: waitReason,
+		})
+	}
+	return snapshot
+}
+
 func demoBoardStalenessWarningsSnapshot(count int) telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	snapshot.StalenessWarnings = make([]telemetry.StalenessWarning, 0, count)
@@ -659,6 +708,22 @@ func demoBoardRampActiveRecoveriesSnapshot() telemetry.Snapshot {
 func demoBoardScheduledPacingSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	now := snapshot.GeneratedAt
+	pacing := telemetry.DispatchStatus{
+		ProjectID:              demoPrimaryProjectID,
+		CandidateCount:         3,
+		EligibleCandidateCount: 3,
+		SkippedCount:           3,
+		WaitReason:             "provider rate window is pacing dispatch until the next reset",
+		WaitReasonCode:         "provider_rate_window_backpressure",
+		ObservedAt:             now,
+		Stalled:                true,
+		Class:                  observability.ClassDiagnostic,
+	}
+	for index := range snapshot.Projects {
+		if snapshot.Projects[index].Project.ID == demoPrimaryProjectID {
+			snapshot.Projects[index].Dispatch = pacing
+		}
+	}
 	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
 		{ProjectID: demoPrimaryProjectID, Kind: "github_rest", Reason: "remaining 288 at or below dispatch floor", Status: "waiting", StartedAt: now.Add(-3 * time.Minute), ResumeAt: now.Add(14 * time.Minute), MaxConcurrent: 6},
 		{ProjectID: "docs-site", Kind: "github_rest", Reason: "remaining 296 at or below dispatch floor", Status: "waiting", StartedAt: now.Add(-2 * time.Minute), ResumeAt: now.Add(14 * time.Minute), MaxConcurrent: 6},

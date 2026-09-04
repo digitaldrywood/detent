@@ -574,6 +574,78 @@ test("board shows only health states needing attention", async ({
   await capturePageAndAttach(page, "board-alerts-expanded.png", testInfo);
 });
 
+test("board surfaces dispatch faults with affected cards and clears by morph", async ({
+  page,
+  context,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-dispatch-fault",
+    route: "/",
+    waitSelector: "#board-alerts",
+    viewport: desktopViewport,
+  });
+
+  const snapshot = page.locator("#snapshot");
+  const bar = page.locator("#board-alerts");
+  await expect(bar).toContainText("Dispatch stalled (1 project)");
+  await expect(bar).toHaveAttribute("data-board-alert-tone", "err");
+  await page.locator("#board-alerts-toggle").click();
+
+  const overlay = page.locator("body > #board-alerts-overlay");
+  const fault = overlay.locator('[data-board-alert="dispatch-stall"]');
+  await expect(fault).toContainText(
+    "issue does not match authorization selector: missing required label `detent`",
+  );
+  await expect(fault).toContainText("4 candidates skipped for 3h");
+  for (let number = 5301; number <= 5304; number += 1) {
+    const identifier = `digitaldrywood/detent-core#${number}`;
+    await expect(fault.getByRole("link", { name: identifier })).toHaveAttribute(
+      "href",
+      `https://github.test/digitaldrywood/detent-core/issues/${number}`,
+    );
+  }
+
+  const healthyPage = await context.newPage();
+  await healthyPage.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "fleet-healthy-parallel-work",
+  });
+  await healthyPage.goto(`${screenshotsRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  const healthySnapshot = await healthyPage.locator("#snapshot").innerHTML();
+  await healthyPage.close();
+
+  await snapshot.evaluate((element) => {
+    window.__detentDispatchFaultSnapshot = element;
+  });
+  await sseMorphSnapshot(page, healthySnapshot);
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+  expect(
+    await snapshot.evaluate(
+      (element) => window.__detentDispatchFaultSnapshot === element,
+    ),
+  ).toBe(true);
+  await expect(overlay).toBeHidden();
+});
+
+test("board keeps self-healing dispatch waits out of fault alerts", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-scheduled-pacing",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(
+    page.locator('[data-board-alert="dispatch-stall"]'),
+  ).toHaveCount(0);
+  await expect(page.locator("#snapshot")).not.toContainText("Dispatch stalled");
+});
+
 test("board lane picker hides and restores lanes", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,

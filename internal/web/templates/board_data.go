@@ -143,12 +143,7 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 }
 
 func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	faults := make([]telemetry.DispatchStatus, 0, len(snapshot.DispatchStalls))
-	for _, stall := range snapshot.DispatchStalls {
-		if dispatchConditionClass(stall) == observability.ClassFault {
-			faults = append(faults, stall)
-		}
-	}
+	faults := boardFaultDispatchStalls(snapshot)
 	if len(faults) == 0 {
 		return boardAlert{}, false
 	}
@@ -162,12 +157,33 @@ func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		if stall.LastSelectedAt != nil {
 			detail += " · last dispatch selected " + formatDuration(float64(valueOrZero(stall.SecondsSinceLastSelected))) + " ago"
 		}
-		rows = append(rows, boardAlertDetailRow{
-			ID:      "board-alert-dispatch-stall-" + boardAlertRowSlug(projectID, index),
-			Label:   projectID,
-			Summary: "Needs human attention",
-			Detail:  detail + " · wait reason: " + strings.TrimSpace(stall.WaitReason),
-		})
+		detail += " · wait reason: " + strings.TrimSpace(stall.WaitReason)
+		decisions := boardDispatchStallDecisions(snapshot.SchedulerDecisions, stall)
+		if len(decisions) == 0 {
+			rows = append(rows, boardAlertDetailRow{
+				ID:      "board-alert-dispatch-stall-" + boardAlertRowSlug(projectID, index),
+				Label:   projectID,
+				Summary: "Needs human attention",
+				Detail:  detail,
+			})
+			continue
+		}
+		for decisionIndex, decision := range decisions {
+			label := strings.TrimSpace(decision.Identifier)
+			if label == "" {
+				label = strings.TrimSpace(decision.IssueID)
+			}
+			if label == "" {
+				label = "Affected card"
+			}
+			rows = append(rows, boardAlertDetailRow{
+				ID:      "board-alert-dispatch-stall-" + boardAlertRowSlug(projectID+"-"+label, index+decisionIndex),
+				Label:   label,
+				Link:    strings.TrimSpace(decision.IssueURL),
+				Summary: projectID + " · needs human attention · affected card",
+				Detail:  detail,
+			})
+		}
 	}
 	rows, overflow := capBoardAlertRows(rows)
 	return boardAlert{
@@ -181,6 +197,76 @@ func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
 	}, true
+}
+
+func boardFaultDispatchStalls(snapshot telemetry.Snapshot) []telemetry.DispatchStatus {
+	faults := make([]telemetry.DispatchStatus, 0, len(snapshot.DispatchStalls)+len(snapshot.Projects))
+	seen := map[string]struct{}{}
+	appendFault := func(status telemetry.DispatchStatus, fallbackProjectID string) {
+		if strings.TrimSpace(status.ProjectID) == "" {
+			status.ProjectID = strings.TrimSpace(fallbackProjectID)
+		}
+		if !status.Stalled || !status.NeedsHumanAttention || dispatchConditionClass(status) != observability.ClassFault {
+			return
+		}
+		key := strings.ToLower(strings.TrimSpace(status.ProjectID))
+		if key == "" {
+			key = "fleet"
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		faults = append(faults, status)
+	}
+	for _, stall := range snapshot.DispatchStalls {
+		appendFault(stall, snapshot.Project.ID)
+	}
+	for _, project := range snapshot.Projects {
+		appendFault(project.Dispatch, project.Project.ID)
+	}
+	if len(snapshot.Projects) == 0 {
+		appendFault(snapshot.Dispatch, snapshot.Project.ID)
+	}
+	return faults
+}
+
+func boardDispatchStallDecisions(decisions []telemetry.SchedulerDecision, stall telemetry.DispatchStatus) []telemetry.SchedulerDecision {
+	projectID := strings.TrimSpace(stall.ProjectID)
+	reason := strings.TrimSpace(stall.WaitReasonCode)
+	seen := map[string]struct{}{}
+	matched := make([]telemetry.SchedulerDecision, 0, stall.CandidateCount)
+	for _, decision := range decisions {
+		if !strings.EqualFold(strings.TrimSpace(decision.Result), "skipped") || strings.TrimSpace(decision.Reason) != reason {
+			continue
+		}
+		decisionProjectID := strings.TrimSpace(decision.ProjectID)
+		if projectID != "" && decisionProjectID != "" && !strings.EqualFold(decisionProjectID, projectID) {
+			continue
+		}
+		if stall.AllSkippedSince != nil && !decision.DecisionAt.IsZero() && decision.DecisionAt.Before(*stall.AllSkippedSince) {
+			continue
+		}
+		key := strings.TrimSpace(decision.IssueID)
+		if key == "" {
+			key = strings.TrimSpace(decision.Identifier)
+		}
+		if key == "" {
+			key = strings.TrimSpace(decision.IssueURL)
+		}
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		matched = append(matched, decision)
+		if stall.CandidateCount > 0 && len(matched) == stall.CandidateCount {
+			break
+		}
+	}
+	return matched
 }
 
 func valueOrZero(value *int64) int64 {

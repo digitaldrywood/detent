@@ -2903,7 +2903,7 @@ func TestBoardAlertsRenderOnlyFaultConditions(t *testing.T) {
 		{
 			name: "total selector exclusion",
 			snapshot: telemetry.Snapshot{GeneratedAt: now, DispatchStalls: []telemetry.DispatchStatus{{
-				ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, Stalled: true, WaitReasonCode: "authorization_selector_declined", WaitReason: "authorization selector excludes every candidate",
+				ProjectID: "detent", CandidateCount: 8, SkippedCount: 8, Stalled: true, NeedsHumanAttention: true, Class: observability.ClassFault, WaitReasonCode: "authorization_selector_declined", WaitReason: "authorization selector excludes every candidate",
 			}}},
 			want: 1,
 		},
@@ -3125,25 +3125,124 @@ func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 	t.Parallel()
 
 	const authorizationDetail = "issue does not match authorization selector: missing required label `detent`"
+	now := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	allSkippedSince := now.Add(-3 * time.Hour)
 	secondsSinceLastSelected := int64(14_400)
-	alerts := boardAlerts(telemetry.Snapshot{DispatchStalls: []telemetry.DispatchStatus{{
+	stall := telemetry.DispatchStatus{
 		ProjectID:                "detent",
-		CandidateCount:           8,
+		CandidateCount:           4,
+		EligibleCandidateCount:   0,
+		SkippedCount:             4,
 		WaitReason:               authorizationDetail,
 		WaitReasonCode:           "authorization_selector_declined",
+		AllSkippedSince:          &allSkippedSince,
 		SecondsSinceLastSelected: &secondsSinceLastSelected,
 		StallDurationSeconds:     10_800,
 		Stalled:                  true,
 		NeedsHumanAttention:      true,
-	}}})
+		Class:                    observability.ClassFault,
+	}
+	decisions := make([]telemetry.SchedulerDecision, 0, 4)
+	for number := 2111; number <= 2114; number++ {
+		decisions = append(decisions, telemetry.SchedulerDecision{
+			ProjectID:  "detent",
+			IssueID:    "issue-" + strconv.Itoa(number),
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(number),
+			IssueURL:   "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(number),
+			Result:     "skipped",
+			Reason:     "authorization_selector_declined",
+			DecisionAt: now.Add(-time.Hour),
+		})
+	}
+	alerts := boardAlerts(telemetry.Snapshot{
+		Projects: []telemetry.ProjectSnapshot{{
+			Project:  telemetry.Project{ID: "detent"},
+			Dispatch: stall,
+		}},
+		SchedulerDecisions: decisions,
+	})
 	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindDispatchStall || alerts[0].Tone != primitives.KindErr {
 		t.Fatalf("boardAlerts() = %#v, want one dispatch-stall error", alerts)
 	}
-	combined := alerts[0].TerseSummary + " " + alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
-	for _, want := range []string{"Dispatch stalled", "human attention", "8 candidates", "3h", authorizationDetail} {
-		if !strings.Contains(combined, want) {
-			t.Fatalf("dispatch alert = %q, want containing %q", combined, want)
+	var combined strings.Builder
+	combined.WriteString(alerts[0].TerseSummary)
+	combined.WriteString(" ")
+	combined.WriteString(alerts[0].DetailSummary)
+	for _, row := range alerts[0].DetailRows {
+		combined.WriteString(" ")
+		combined.WriteString(row.Label)
+		combined.WriteString(" ")
+		combined.WriteString(row.Summary)
+		combined.WriteString(" ")
+		combined.WriteString(row.Detail)
+		combined.WriteString(" ")
+		combined.WriteString(row.Link)
+	}
+	for _, want := range []string{"Dispatch stalled", "human attention", "4 candidates", "3h", authorizationDetail, "digitaldrywood/detent#2111", "digitaldrywood/detent#2114"} {
+		if !strings.Contains(combined.String(), want) {
+			t.Fatalf("dispatch alert = %q, want containing %q", combined.String(), want)
 		}
+	}
+}
+
+func TestBoardAlertsExcludeSelfHealingDispatchConditions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status telemetry.DispatchStatus
+	}{
+		{
+			name: "capacity wait",
+			status: telemetry.DispatchStatus{
+				Stalled: true, NeedsHumanAttention: false, Class: observability.ClassDiagnostic, WaitReasonCode: "global_capacity_full",
+			},
+		},
+		{
+			name: "rate window pacing",
+			status: telemetry.DispatchStatus{
+				Stalled: true, NeedsHumanAttention: false, Class: observability.ClassDiagnostic, WaitReasonCode: "provider_rate_window_backpressure",
+			},
+		},
+		{
+			name: "reservation wait",
+			status: telemetry.DispatchStatus{
+				Stalled: true, NeedsHumanAttention: false, Class: observability.ClassDiagnostic, WaitReasonCode: "priority_reservation",
+			},
+		},
+		{
+			name: "fault without human attention",
+			status: telemetry.DispatchStatus{
+				Stalled: true, NeedsHumanAttention: false, Class: observability.ClassFault, WaitReasonCode: "authorization_selector_declined",
+			},
+		},
+		{
+			name: "human attention without fault",
+			status: telemetry.DispatchStatus{
+				Stalled: true, NeedsHumanAttention: true, Class: observability.ClassDiagnostic, WaitReasonCode: "global_capacity_full",
+			},
+		},
+		{
+			name: "resumed fault",
+			status: telemetry.DispatchStatus{
+				Stalled: false, NeedsHumanAttention: true, Class: observability.ClassFault, WaitReasonCode: "authorization_selector_declined",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.status.ProjectID = "detent"
+			alerts := boardAlerts(telemetry.Snapshot{Projects: []telemetry.ProjectSnapshot{{
+				Project:  telemetry.Project{ID: "detent"},
+				Dispatch: tt.status,
+			}}})
+			for _, alert := range alerts {
+				if alert.Kind == boardAlertKindDispatchStall {
+					t.Fatalf("boardAlerts() = %#v, want no dispatch-stall alert", alerts)
+				}
+			}
+		})
 	}
 }
 

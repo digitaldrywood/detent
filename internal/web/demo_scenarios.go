@@ -148,6 +148,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "board-scheduled-pacing", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-scheduled-pacing", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "diagnostics-scheduled-pacing", Route: "/diagnostics", WaitSelector: "#diagnostics-conditions", Page: "diagnostics", Variant: "board-scheduled-pacing"},
 		{ID: "board-degraded-health-banners", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-degraded-health-banners", KanbanMode: workflowconfig.KanbanModeReadOnly},
+		{ID: "board-dispatch-fault", Route: "/", WaitSelector: "#board-alerts", Page: "fleet-kanban", Variant: "board-dispatch-fault", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "board-alerts-heavy", Route: "/", WaitSelector: "#board-alerts", Page: "fleet-kanban", Variant: "board-alerts-heavy", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "board-admission-proposals-zero", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "healthy", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "board-admission-proposals-one", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "admission-proposals-one", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
