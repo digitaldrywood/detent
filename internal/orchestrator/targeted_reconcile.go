@@ -78,7 +78,7 @@ func (o *Orchestrator) applyTargetedReconcile(
 	if running, ok := state.Running[issue.ID]; ok &&
 		(!stateIn(running.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates)) {
 		if hadRunning {
-			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, priorRunning, running.Issue.State)
+			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, priorRunning, running.Issue)
 			if receiptErr != nil {
 				if o.logger != nil {
 					o.logger.Warn("targeted lane mutation receipt lookup failed", "issue_id", issue.ID, "error", receiptErr)

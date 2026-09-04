@@ -643,6 +643,45 @@ func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
 	}
 }
 
+func TestDetentLaneWriteEchoKeepsWriter(t *testing.T) {
+	t.Parallel()
+
+	for _, target := range []string{"Blocked", "Rework", "Merging"} {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			requestedAt := time.Date(2026, 9, 4, 4, 11, 0, 0, time.UTC)
+			trackerAt := requestedAt.Add(2 * time.Second)
+			issue := laneRevocationIssue("echo", "digitaldrywood/detent#2138", "In Progress")
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			tracker := &workflowMetricsConnector{stateEnteredAt: trackerAt, stateEnteredAtFound: true}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker, workflowMetrics: metrics}
+			state := newState(orch.cfg)
+			state.BoardIssues = []connector.Issue{issue}
+			if err := orch.updateIssueState(t.Context(), &state, issue, target, requestedAt, "machine_transition"); err != nil {
+				t.Fatal(err)
+			}
+			issue.State = target
+			issue.StageUpdatedAt = &trackerAt
+			issue.StageUpdatedActor = connector.IssueActor{Login: "shared-token", Kind: "User"}
+			state.BoardIssues = []connector.Issue{issue}
+			orch.refreshCurrentLaneEntries(t.Context(), &state, requestedAt.Add(time.Minute))
+			if got := len(metrics.snapshot()); got != 2 {
+				t.Fatalf("events after write echo = %d, want only the original exit and entry", got)
+			}
+			if got := laneRevocationAttribution(&state, issue); got.Origin != provenance.OriginDetent || got.Basis != provenance.BasisDetentOperation {
+				t.Fatalf("write echo attribution = %#v, want Detent", got)
+			}
+			later := trackerAt.Add(time.Minute)
+			issue.StageUpdatedAt = &later
+			state.BoardIssues = []connector.Issue{issue}
+			orch.refreshCurrentLaneEntries(t.Context(), &state, later)
+			if got := laneRevocationAttribution(&state, issue); got.Origin != provenance.OriginIndeterminate {
+				t.Fatalf("later shared-token reentry attribution = %#v, want indeterminate", got)
+			}
+		})
+	}
+}
+
 func TestUpdateIssueStateByIDCapturesReworkLesson(t *testing.T) {
 	t.Parallel()
 

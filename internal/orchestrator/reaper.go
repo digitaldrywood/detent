@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type workspaceCleanupDiagnostic interface {
@@ -86,6 +87,7 @@ func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *S
 			slog.Int("affected_path_count", len(state.CleanupFailures)),
 			slog.Int("removed", result.Removed),
 			slog.Int("active_skipped", result.ActiveSkipped),
+			slog.Int("preserved_skipped", result.PreservedSkipped),
 			slog.Int("registered_skipped", result.RegisteredSkipped),
 			slog.Int("unowned_skipped", result.UnownedSkipped),
 			slog.Any("error", err),
@@ -370,6 +372,14 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		return false
 	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
+	if errors.Is(err, workspace.ErrWorkspacePreserved) {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_reap_preserved",
+			Message: "workspace retained for " + issueLabel(issue) + ": " + err.Error(),
+		})
+		return false
+	}
 	if err != nil {
 		args := []any{
 			slog.String("issue_id", issue.ID),

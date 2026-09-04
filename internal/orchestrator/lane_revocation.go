@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (
@@ -23,7 +24,8 @@ const (
 	laneRevocationDetentErrorClass           = "detent_lane_revoked"
 	laneRevocationCompletionFenceUnavailable = "completion_fence_unavailable"
 	laneRevocationDeliveredClassification    = "delivered_before_revocation"
-	laneRevocationDiscardedClassification    = "unpushed_work_discarded"
+	laneRevocationPreservedClassification    = "unpushed_work_preserved"
+	laneRevocationUnverifiedClassification   = "work_preservation_unverified"
 	laneRevocationEmptyClassification        = "revoked_without_work"
 	laneRevocationDeliveryReceiptKind        = "pushed_work_product"
 )
@@ -51,21 +53,25 @@ type laneRevocationOutcome struct {
 }
 
 type pendingLaneRevocation struct {
-	issue         connector.Issue
-	fromState     string
-	toState       string
-	reason        string
-	origin        provenance.Origin
-	requestedAt   time.Time
-	generation    uint64
-	running       Running
-	completion    *runpkg.Completion
-	workerProcess procgroup.Identity
-	reapOutcome   procgroup.TerminationOutcome
-	reapDone      bool
-	reapErr       error
-	mutation      store.LaneMutationReceipt
-	mutationRead  bool
+	issue            connector.Issue
+	fromState        string
+	toState          string
+	reason           string
+	origin           provenance.Origin
+	requestedAt      time.Time
+	generation       uint64
+	running          Running
+	completion       *runpkg.Completion
+	workerProcess    procgroup.Identity
+	reapOutcome      procgroup.TerminationOutcome
+	reapDone         bool
+	reapErr          error
+	mutation         store.LaneMutationReceipt
+	mutationRead     bool
+	attribution      provenance.Attribution
+	preservation     *workspace.Preservation
+	preservationRead bool
+	preservationErr  error
 }
 
 func (o *Orchestrator) beginLaneRevocation(
@@ -141,6 +147,7 @@ func (o *Orchestrator) beginLaneRevocationWithMutation(
 		running:      running,
 		mutation:     receipt,
 		mutationRead: receipt.ID == 0,
+		attribution:  attribution,
 	}
 	o.pendingLaneRevocations[issueID] = pending
 	state.Running[issueID] = running
@@ -162,6 +169,10 @@ func (o *Orchestrator) beginLaneRevocationWithMutation(
 			"from_state", fromState,
 			"to_state", running.Issue.State,
 			"reason", pending.reason,
+			"lane_change_origin", pending.origin,
+			"lane_change_initiator", attribution.Initiator,
+			"lane_change_basis", attribution.Basis,
+			"lane_mutation_receipt_id", receipt.ID,
 			"grace", o.workerReapGrace,
 		)
 	}
@@ -275,6 +286,9 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 	if completedAt.IsZero() {
 		completedAt = o.clockNow().UTC()
 	}
+	if !o.preserveLaneRevocationWorkspace(ctx, state, pending, completedAt) {
+		return
+	}
 	o.heartbeats.remove(event.IssueID)
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	running.globalSlot = scheduler.Slot{}
@@ -292,25 +306,34 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 	running.Tokens = tokens
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	receipt := laneRevocationReceipt(event, running, completedAt)
-	outcome := classifyLaneRevocation(receipt, laneRevocationProducedWork(event, running, tokens), pending.reason, pending.origin)
+	workProduced := laneRevocationProducedWork(event, running, tokens) || laneRevocationLocalWork(pending.preservation)
+	outcome := classifyLaneRevocation(receipt, pending.preservation, workProduced, pending.reason, pending.origin)
 	metadata := map[string]any{"lane_revocation": map[string]any{
-		"classification":  outcome.classification,
-		"generation":      pending.generation,
-		"from_state":      pending.fromState,
-		"to_state":        pending.toState,
-		"reason":          pending.reason,
-		"origin":          pending.origin,
-		"requested_at":    pending.requestedAt,
-		"reap_outcome":    pending.reapOutcome,
-		"work_discarded":  outcome.workDiscarded,
-		"output_tokens":   tokens.OutputTokens,
-		"total_tokens":    tokens.TotalTokens,
-		"runtime_seconds": tokens.RuntimeSeconds,
-		"turns":           running.TurnCount,
-		"files_changed":   running.DiffStats.FilesChanged,
+		"classification":   outcome.classification,
+		"generation":       pending.generation,
+		"from_state":       pending.fromState,
+		"to_state":         pending.toState,
+		"reason":           pending.reason,
+		"origin":           pending.origin,
+		"provenance":       pending.attribution,
+		"mutation_receipt": pending.mutation,
+		"requested_at":     pending.requestedAt,
+		"reap_outcome":     pending.reapOutcome,
+		"work_discarded":   outcome.workDiscarded,
+		"output_tokens":    tokens.OutputTokens,
+		"total_tokens":     tokens.TotalTokens,
+		"runtime_seconds":  tokens.RuntimeSeconds,
+		"turns":            running.TurnCount,
+		"files_changed":    running.DiffStats.FilesChanged,
 	}}
 	if receipt != nil {
 		metadata["delivery_receipt"] = receipt
+	}
+	if pending.preservation != nil {
+		metadata["workspace_preservation"] = pending.preservation
+	}
+	if pending.preservationErr != nil {
+		metadata["workspace_preservation_error"] = pending.preservationErr.Error()
 	}
 	attemptCompleted := o.completeDurableWorkAttemptWithSessionState(
 		ctx,
@@ -372,7 +395,9 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 			RuntimeIdentity: running.RuntimeIdentity,
 		}
 		o.recordEfficiencyReceipt(ctx, running.Issue, completedAt)
-		o.reapWorkspace(ctx, state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates), completedAt)
+		if !workProduced || pending.preservation != nil && pending.preservation.Preserved {
+			o.reapWorkspace(ctx, state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates), completedAt)
+		}
 	}
 	if o.logger != nil {
 		o.logger.Info(
@@ -388,9 +413,42 @@ func (o *Orchestrator) finishLaneRevocation(ctx context.Context, state *State, p
 	}
 }
 
+func (o *Orchestrator) preserveLaneRevocationWorkspace(ctx context.Context, state *State, pending *pendingLaneRevocation, at time.Time) bool {
+	if pending.preservationRead {
+		return true
+	}
+	preserver, ok := o.reaper.(runpkg.WorkspacePreserver)
+	if !ok {
+		pending.preservationErr = runpkg.ErrWorkspacePreservationUnavailable
+		pending.preservationRead = true
+		return true
+	}
+	preservationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	preservation, err := preserver.PreserveWorkspace(preservationCtx, pending.issue)
+	pending.preservation = &preservation
+	pending.preservationErr = err
+	pending.preservationRead = err == nil || preservation.Preserved ||
+		errors.Is(err, workspace.ErrMissingWorkspace) || errors.Is(err, runpkg.ErrWorkspacePreservationUnavailable)
+	if !pending.preservationRead {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      at,
+			Event:   "worker_lane_preservation_failed",
+			Message: "retaining worker ownership for " + issueLabel(pending.issue) + " until workspace preservation succeeds: " + err.Error(),
+		})
+	}
+	return pending.preservationRead
+}
+
+func laneRevocationLocalWork(preservation *workspace.Preservation) bool {
+	return preservation != nil && (preservation.UnpushedCommits > 0 || len(preservation.TrackedPaths) > 0 || len(preservation.UntrackedPaths) > 0)
+}
+
 func laneRevocationAttribution(state *State, issue connector.Issue) provenance.Attribution {
 	if state != nil {
-		if attribution, ok := state.laneProvenance[workflowLaneEntryKey(issue)]; ok {
+		key := workflowLaneEntryKey(issue)
+		current := issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || !issue.StageUpdatedAt.After(state.laneEntries[key])
+		if attribution, ok := state.laneProvenance[key]; ok && current {
 			attribution = provenance.Prepare(attribution)
 			if provenance.NormalizeOrigin(attribution.Origin) != provenance.OriginIndeterminate {
 				return attribution
@@ -436,7 +494,7 @@ func laneRevocationReceipt(event runpkg.Completion, running Running, completedAt
 	return receipt
 }
 
-func classifyLaneRevocation(receipt *laneRevocationDeliveryReceipt, workProduced bool, reason string, origin provenance.Origin) laneRevocationOutcome {
+func classifyLaneRevocation(receipt *laneRevocationDeliveryReceipt, preservation *workspace.Preservation, workProduced bool, reason string, origin provenance.Origin) laneRevocationOutcome {
 	if receipt != nil && receipt.Schema == 1 && receipt.Kind == laneRevocationDeliveryReceiptKind {
 		return laneRevocationOutcome{
 			classification:    laneRevocationDeliveredClassification,
@@ -459,10 +517,15 @@ func classifyLaneRevocation(receipt *laneRevocationDeliveryReceipt, workProduced
 		activityEvent:     "worker_lane_revoked",
 	}
 	if workProduced {
-		outcome.classification = laneRevocationDiscardedClassification
-		outcome.activityEvent = "worker_lane_output_discarded"
+		outcome.classification = laneRevocationUnverifiedClassification
+		outcome.activityEvent = "worker_lane_preservation_unverified"
+		outcome.statusMessage = "worker stopped; workspace preservation could not be verified"
 		outcome.comment = true
-		outcome.workDiscarded = true
+		if preservation != nil && preservation.Preserved {
+			outcome.classification = laneRevocationPreservedClassification
+			outcome.activityEvent = "worker_lane_workspace_preserved"
+			outcome.statusMessage = "worker stopped; local workspace retained for recovery"
+		}
 	}
 	return outcome
 }
@@ -495,8 +558,8 @@ func (o *Orchestrator) reportLaneRevocationOutcome(
 	message := "worker for " + issueLabel(running.Issue) + " was stopped after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
 	if outcome.terminalState == store.WorkAttemptTerminalDelivered {
 		message = "pushed work for " + issueLabel(running.Issue) + " was preserved after finalization was rejected by a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
-	} else if outcome.workDiscarded {
-		message = "unpushed worker output for " + issueLabel(running.Issue) + " was discarded after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
+	} else if outcome.classification == laneRevocationPreservedClassification {
+		message = "local workspace for " + issueLabel(running.Issue) + " was retained after a " + origin + " lane change from " + pending.fromState + " to " + pending.toState
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      at,
@@ -530,9 +593,12 @@ func laneRevocationOutcomeComment(
 	if outcome.terminalState == store.WorkAttemptTerminalDelivered {
 		b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. Your work was pushed but finalization was rejected; the pushed work remains available.")
 		b.WriteString("\n\n- reason: worker_lane_revocation_delivery_preserved")
+	} else if outcome.classification == laneRevocationPreservedClassification {
+		b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. The local workspace is retained for recovery, including unpushed commits and uncommitted files. Finalization was rejected; the work has not been delivered.")
+		b.WriteString("\n\n- reason: worker_lane_revocation_workspace_preserved")
 	} else {
-		b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. The session produced work that was not pushed and could not be delivered.")
-		b.WriteString("\n\n- reason: worker_lane_revocation_output_discarded")
+		b.WriteString("Detent stopped this worker after the tracker moved the issue out of a worker-owned lane. Workspace preservation could not be verified. The session's output is not evidence that local work was discarded.")
+		b.WriteString("\n\n- reason: worker_lane_revocation_preservation_unverified")
 	}
 	b.WriteString("\n- classification: ")
 	b.WriteString(outcome.classification)
@@ -540,6 +606,30 @@ func laneRevocationOutcomeComment(
 	b.WriteString(pending.reason)
 	b.WriteString("\n- lane_change_origin: ")
 	b.WriteString(string(provenance.NormalizeOrigin(pending.origin)))
+	b.WriteString("\n- lane_change_initiator: ")
+	b.WriteString(string(pending.attribution.Initiator))
+	b.WriteString("\n- lane_change_basis: ")
+	b.WriteString(string(pending.attribution.Basis))
+	if pending.attribution.Actor != nil {
+		b.WriteString("\n- lane_change_actor: ")
+		b.WriteString(pending.attribution.Actor.Login)
+	}
+	if pending.mutation.ID > 0 {
+		b.WriteString("\n- lane_mutation_receipt_id: ")
+		b.WriteString(strconv.FormatInt(pending.mutation.ID, 10))
+		b.WriteString("\n- lane_mutation_disposition: ")
+		b.WriteString(string(pending.mutation.Disposition))
+	}
+	if pending.preservation != nil {
+		b.WriteString("\n- workspace_path: ")
+		b.WriteString(pending.preservation.Path)
+		b.WriteString("\n- workspace_head: ")
+		b.WriteString(pending.preservation.HeadSHA)
+	}
+	if pending.preservationErr != nil {
+		b.WriteString("\n- preservation_error: ")
+		b.WriteString(pending.preservationErr.Error())
+	}
 	b.WriteString("\n- from_state: ")
 	b.WriteString(pending.fromState)
 	b.WriteString("\n- to_state: ")

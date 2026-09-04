@@ -189,13 +189,15 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		}
 		return errors.Join(err, o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerFailed, at, err))
 	}
-	receiptErr := o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerApplied, at, nil)
-	if metadata.BlockedRecovery != nil {
-		mutationAt, ok := o.confirmTrackerStateTransition(ctx, issueID, issue, targetState)
+	transitionAt := at
+	if normalizeState(issue.State) != normalizeState(targetState) {
+		mutationAt, ok := o.confirmTrackerStateTransition(ctx, issueID, issue, targetState, metadata.BlockedRecovery != nil)
 		if ok {
 			metadata.TrackerMutationAt = mutationAt.Format(time.RFC3339Nano)
+			transitionAt = mutationAt
 		}
 	}
+	receiptErr := o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerApplied, transitionAt, nil)
 	if stateIn(targetState, o.cfg.TerminalStates) {
 		terminalIssue := cloneIssue(issue)
 		if strings.TrimSpace(terminalIssue.ID) == "" {
@@ -212,8 +214,8 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		}
 		o.clearMergeRequiredCheckStreaks(ctx, terminalIssue)
 	}
-	updateIssueStateSnapshots(state, issueID, issue, targetState, at)
-	recordIssueStateMutationProvenance(state, issueID, issue, targetState, at, reason, metadata)
+	updateIssueStateSnapshots(state, issueID, issue, targetState, transitionAt)
+	recordIssueStateMutationProvenance(state, issueID, issue, targetState, transitionAt, reason, metadata)
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
@@ -222,7 +224,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		o.captureReworkLesson(issue, at, reason)
 	}
 	if leased {
-		o.applyLaneMutationDisposition(ctx, state, running, receipt, issue, at)
+		o.applyLaneMutationDisposition(ctx, state, running, receipt, issue, transitionAt)
 	}
 	return receiptErr
 }
@@ -232,6 +234,7 @@ func (o *Orchestrator) confirmTrackerStateTransition(
 	issueID string,
 	issue connector.Issue,
 	targetState string,
+	allowStateFetch bool,
 ) (time.Time, bool) {
 	transitioned := cloneIssue(issue)
 	transitioned.ID = strings.TrimSpace(firstNonBlank(transitioned.ID, issueID))
@@ -247,6 +250,9 @@ func (o *Orchestrator) confirmTrackerStateTransition(
 		} else if found && !transition.EnteredAt.IsZero() {
 			return transition.EnteredAt.UTC(), true
 		}
+	}
+	if !allowStateFetch {
+		return time.Time{}, false
 	}
 
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
@@ -437,6 +443,7 @@ func recordIssueStateMutationProvenance(
 func workflowLaneMutationAttribution(reason string, metadata workflowLaneMetadata) provenance.Attribution {
 	attribution := metadata.Provenance
 	if attribution.Origin == "" {
+		attribution = provenance.AttributionFromSource(provenance.SourceDetentInstance, provenance.Actor{})
 		attribution.Origin = workflowOriginForReason(reason)
 	}
 	return provenance.Prepare(attribution)

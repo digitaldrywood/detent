@@ -62,6 +62,62 @@ func TestLiveLeaseLaneMutationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestLaneMutationReceiptDistinguishesEchoFromLaterReentry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		later     bool
+		restarted bool
+	}{
+		{name: "cached Detent echo"},
+		{name: "persisted Detent echo", restarted: true},
+		{name: "cached later operator reentry", later: true},
+		{name: "persisted later operator reentry", later: true, restarted: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 4, 4, 11, 0, 0, time.UTC)
+			issue := laneRevocationIssue("echo-owner", "digitaldrywood/detent#2138", "In Progress")
+			parked := cloneIssue(issue)
+			parked.State = "Human Review"
+			cfg := laneMutationTestConfig()
+			runtimeStore, attemptID := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, runtimeStore, &recordingWorkAttemptStore{}, now)
+			state := newState(cfg)
+			runCtx, stop := context.WithCancelCause(t.Context())
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID, Generation: 38, stop: stop}
+			if err := orch.updateIssueState(t.Context(), &state, issue, parked.State, now, "gate_transition", laneMutationPreserveOwnership); err != nil {
+				t.Fatal(err)
+			}
+			observedAt := now
+			if tt.later {
+				observedAt = observedAt.Add(time.Minute)
+			}
+			parked.StageUpdatedAt = &observedAt
+			parked.StageUpdatedActor = connector.IssueActor{Login: "shared-token", Kind: "User"}
+			tracker.stateIssues = []connector.Issue{parked}
+			if tt.restarted {
+				running := state.Running[issue.ID]
+				running.laneMutation = store.LaneMutationReceipt{}
+				state.Running[issue.ID] = running
+			}
+			orch.reconcileRunningIssues(t.Context(), &state, observedAt)
+			if revoked := errors.Is(context.Cause(runCtx), runpkg.ErrLaneRevoked); revoked != tt.later {
+				t.Fatalf("revoked = %v, want %v", revoked, tt.later)
+			}
+			if tt.later {
+				pending := orch.pendingLaneRevocations[issue.ID]
+				if pending == nil || pending.origin != provenance.OriginIndeterminate || pending.mutation.ID != 0 {
+					t.Fatalf("later shared-token change borrowed previous Detent attribution: %#v", pending)
+				}
+			}
+		})
+	}
+}
+
 func TestGatePromotionReceiptSurvivesRestartAndCompletionFence(t *testing.T) {
 	t.Parallel()
 

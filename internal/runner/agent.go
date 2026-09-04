@@ -3121,6 +3121,7 @@ func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connect
 	return WorkspaceReconcileResult{
 		Removed:           result.Removed,
 		ActiveSkipped:     result.ActiveSkipped,
+		PreservedSkipped:  result.PreservedSkipped,
 		RegisteredSkipped: result.RegisteredSkipped,
 		UnownedSkipped:    result.UnownedSkipped,
 		CompletedPaths:    result.CompletedPaths,

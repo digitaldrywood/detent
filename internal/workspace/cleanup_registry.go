@@ -28,6 +28,7 @@ type cleanupOwnershipRecord struct {
 	Identifier      string `json:"identifier,omitempty"`
 	Branch          string `json:"branch,omitempty"`
 	SourceCommonDir string `json:"source_common_dir"`
+	Preserve        bool   `json:"preserve,omitempty"`
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
@@ -60,6 +61,13 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 	}
 	if record.Identifier != "" && issueKey(issue) != record.Key {
 		return fmt.Errorf("cleanup ownership issue does not match workspace key %q", record.Key)
+	}
+	previous, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(path))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read previous cleanup ownership: %w", err)
+	}
+	if l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(path), previous) {
+		record.Preserve = previous.Preserve
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {
 		return fmt.Errorf("record cleanup ownership: %w", err)
@@ -226,6 +234,10 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 		}
 		if _, active := activeKeys[record.Key]; active {
 			result.ActiveSkipped++
+			continue
+		}
+		if record.Preserve {
+			result.PreservedSkipped++
 			continue
 		}
 		exists, _, statErr := pathExists(record.Path)

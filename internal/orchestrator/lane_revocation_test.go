@@ -113,6 +113,20 @@ func TestLaneRevocationPreservesTrackerDestination(t *testing.T) {
 	}
 }
 
+func TestLaneRevocationDoesNotInferWorkLoss(t *testing.T) {
+	t.Parallel()
+
+	for _, origin := range []provenance.Origin{provenance.OriginHuman, provenance.OriginDetent, provenance.OriginAgent, provenance.OriginIndeterminate} {
+		t.Run(string(origin), func(t *testing.T) {
+			t.Parallel()
+			outcome := classifyLaneRevocation(nil, nil, true, laneRevocationStateChanged, origin)
+			if outcome.workDiscarded {
+				t.Fatal("revocation declares unpushed output discarded without inspecting or removing the workspace")
+			}
+		})
+	}
+}
+
 func TestLaneRevocationPreservesPushedWork(t *testing.T) {
 	t.Parallel()
 
@@ -275,12 +289,12 @@ func TestClassifyLaneRevocationDrivesAllOutcomeSurfaces(t *testing.T) {
 		{
 			name:          "genuinely unpushed work",
 			workProduced:  true,
-			wantClass:     laneRevocationDiscardedClassification,
+			wantClass:     laneRevocationUnverifiedClassification,
 			wantTerminal:  store.WorkAttemptTerminalLaneRevoked,
 			wantSession:   runpkg.FinalStateLaneRevoked,
-			wantEvent:     "worker_lane_output_discarded",
+			wantEvent:     "worker_lane_preservation_unverified",
 			wantComment:   true,
-			wantDiscarded: true,
+			wantDiscarded: false,
 		},
 		{
 			name:         "revoked before work",
@@ -295,7 +309,7 @@ func TestClassifyLaneRevocationDrivesAllOutcomeSurfaces(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := classifyLaneRevocation(tt.receipt, tt.workProduced, laneRevocationStateChanged, provenance.OriginHuman)
+			got := classifyLaneRevocation(tt.receipt, nil, tt.workProduced, laneRevocationStateChanged, provenance.OriginHuman)
 			if got.classification != tt.wantClass || got.terminalState != tt.wantTerminal || got.sessionFinalState != tt.wantSession {
 				t.Fatalf("classification = %#v, want class %q terminal %q session %q", got, tt.wantClass, tt.wantTerminal, tt.wantSession)
 			}
@@ -447,7 +461,7 @@ func TestCompletionLaneHandshakeClassifiesCurrentAttempt(t *testing.T) {
 	}
 }
 
-func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
+func TestLaneRevocationRecordsOriginAndUnverifiedWork(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 18, 19, 20, 0, 0, time.UTC)
@@ -589,19 +603,19 @@ func TestLaneRevocationRecordsOriginAndDiscardedWork(t *testing.T) {
 			if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil {
 				t.Fatalf("decode worker metadata: %v", err)
 			}
-			if metadata.LaneRevocation.Origin != tt.wantOrigin || !metadata.LaneRevocation.WorkDiscarded || metadata.LaneRevocation.OutputTokens != 13_422 {
-				t.Fatalf("lane revocation metadata = %#v, want origin %q and discarded output", metadata.LaneRevocation, tt.wantOrigin)
+			if metadata.LaneRevocation.Origin != tt.wantOrigin || metadata.LaneRevocation.WorkDiscarded || metadata.LaneRevocation.OutputTokens != 13_422 {
+				t.Fatalf("lane revocation metadata = %#v, want origin %q without declaring discarded output", metadata.LaneRevocation, tt.wantOrigin)
 			}
 			if len(tracker.comments) != 1 {
-				t.Fatalf("comments = %#v, want discarded-work notice", tracker.comments)
+				t.Fatalf("comments = %#v, want preservation-unverified notice", tracker.comments)
 			}
 			for _, fragment := range []string{tt.wantReason, "lane_change_origin: " + string(tt.wantOrigin), "output_tokens: 13422", "runtime_seconds: 397"} {
 				if !strings.Contains(tracker.comments[0].body, fragment) {
 					t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
 				}
 			}
-			if !hasLaneRevocationEvent(state.RecentEvents, "worker_lane_output_discarded") {
-				t.Fatalf("RecentEvents = %#v, want discarded output event", state.RecentEvents)
+			if !hasLaneRevocationEvent(state.RecentEvents, "worker_lane_preservation_unverified") {
+				t.Fatalf("RecentEvents = %#v, want preservation-unverified event", state.RecentEvents)
 			}
 		})
 	}
