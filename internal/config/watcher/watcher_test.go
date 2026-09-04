@@ -480,7 +480,11 @@ func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
 	if update.Value.Global.MaxConcurrentAgents != 3 {
 		t.Fatalf("MaxConcurrentAgents = %d, want 3", update.Value.Global.MaxConcurrentAgents)
 	}
-	runtime.waitForAdd(t, nextDir)
+	resolvedNextPath, err := filepath.EvalSymlinks(nextPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	runtime.waitForAdd(t, filepath.Dir(resolvedNextPath))
 }
 
 func TestFileWatcherReconcilesMissedEvents(t *testing.T) {
@@ -625,6 +629,95 @@ func TestFileWatcherReconcilesMissedEvents(t *testing.T) {
 					t.Fatalf("MaxConcurrentAgents = %d, want %d", update.Value.Global.MaxConcurrentAgents, step.want)
 				}
 			}
+		})
+	}
+}
+
+func TestFileWatcherObservesContentChangesWithUnchangedMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		replace bool
+		poll    bool
+	}{
+		{name: "write event"},
+		{name: "write poll", poll: true},
+		{name: "replacement event", replace: true},
+		{name: "replacement poll", replace: true, poll: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime := newControlledFileRuntime()
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			writeGlobalConfig(t, path, 2)
+			modifiedAt := time.Unix(1700000000, 0)
+			if err := os.Chtimes(path, modifiedAt, modifiedAt); err != nil {
+				t.Fatalf("Chtimes() error = %v", err)
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Stat() error = %v", err)
+			}
+			w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
+				return globalconfig.Read(path)
+			}, runtime.option(), withFileIntervals(time.Hour, time.Hour))
+			if err != nil {
+				t.Fatalf("NewFile() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			updates, err := w.Watch(ctx)
+			if err != nil {
+				t.Fatalf("Watch() error = %v", err)
+			}
+
+			writePath := path
+			if test.replace {
+				writePath += ".tmp"
+			}
+			writeGlobalConfig(t, writePath, 5)
+			if err := os.Chtimes(writePath, modifiedAt, modifiedAt); err != nil {
+				t.Fatalf("Chtimes() error = %v", err)
+			}
+			if test.replace {
+				if err := os.Rename(writePath, path); err != nil {
+					t.Fatalf("Rename() error = %v", err)
+				}
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Stat() error = %v", err)
+			}
+			if before.Size() != after.Size() || before.Mode() != after.Mode() || !before.ModTime().Equal(after.ModTime()) {
+				t.Fatal("rewrite changed metadata")
+			}
+			if test.poll {
+				runtime.fireTicker(t, filePollTicker)
+			} else {
+				runtime.sendEvent(t, path)
+			}
+			runtime.waitForReset(t)
+			runtime.fireTimer(t)
+			update := receiveFileUpdate(t, updates)
+			if update.Err != nil {
+				t.Fatalf("update error = %v", update.Err)
+			}
+			if update.Value.Global.MaxConcurrentAgents != 5 {
+				t.Fatalf("MaxConcurrentAgents = %d, want 5", update.Value.Global.MaxConcurrentAgents)
+			}
+
+			runtime.sendEvent(t, path)
+			runtime.sendEvent(t, path+".unwatched")
+			select {
+			case <-runtime.timer.resets:
+				t.Fatal("duplicate observation reset debounce")
+			default:
+			}
+			cancel()
+			waitForFileUpdatesClosed(t, updates)
 		})
 	}
 }

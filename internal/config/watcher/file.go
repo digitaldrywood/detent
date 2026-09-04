@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -104,6 +105,7 @@ type fileStamp struct {
 	modTime time.Time
 	size    int64
 	mode    os.FileMode
+	digest  [sha256.Size]byte
 	err     string
 }
 
@@ -476,6 +478,14 @@ func (s *fileWatchState) captureStamps() []fileStamp {
 			stamp.modTime = info.ModTime()
 			stamp.size = info.Size()
 			stamp.mode = info.Mode()
+			if info.Mode().IsRegular() {
+				content, readErr := os.ReadFile(file.path)
+				if readErr != nil {
+					stamp.err = readErr.Error()
+				} else {
+					stamp.digest = sha256.Sum256(content)
+				}
+			}
 		}
 		stamps = append(stamps, stamp)
 	}
