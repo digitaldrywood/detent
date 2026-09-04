@@ -206,6 +206,7 @@ type Server struct {
 	assets              staticAssets
 	projects            *projectSmallMultipleRecorder
 	snapshots           *snapshotEnrichmentCache
+	stateEndpoints      *stateEndpointRecorder
 	spendRegressions    *spendRegressionMonitor
 	kanbanMutations     *kanbanstate.MutationTracker
 	kanbanRefreshes     *kanbanRefreshFeedbackTracker
@@ -336,6 +337,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		assets:              newStaticAssets(cfg.staticDir()),
 		projects:            newProjectSmallMultipleRecorder(),
 		snapshots:           newSnapshotEnrichmentCache(),
+		stateEndpoints:      newStateEndpointRecorder(),
 		spendRegressions:    newSpendRegressionMonitor(),
 		kanbanMutations:     kanbanstate.NewMutationTracker(),
 		kanbanRefreshes:     newKanbanRefreshFeedbackTracker(),
@@ -1261,6 +1263,7 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
+	stateEndpoints := s.stateEndpoints.health()
 	faultDispatchStalls := faultDispatchStatuses(dispatchStalls)
 	actionableBreakers := faultFailureBreakers(failureBreakers)
 	actionableOutages := faultBackendOutages(backendOutages)
@@ -1274,6 +1277,9 @@ func (s *Server) health(c echo.Context) error {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
+			status = "needs_attention"
+		}
+		if stateEndpoints.Fleet.Status == "degraded" || stateEndpoints.Project.Status == "degraded" {
 			status = "needs_attention"
 		}
 	}
@@ -1320,6 +1326,7 @@ func (s *Server) health(c echo.Context) error {
 		AgentMemory:            agentMemory,
 		SnapshotGeneratedAt:    snapshotGeneratedAt,
 		SnapshotAgeSeconds:     snapshotAgeSeconds,
+		StateEndpoints:         stateEndpoints,
 		TickLiveness:           tickLiveness,
 		OrphanedAgentProcesses: orphanedProcesses,
 	})
@@ -1807,6 +1814,7 @@ type healthResponse struct {
 	AgentMemory            []healthAgentMemory              `json:"agent_memory"`
 	SnapshotGeneratedAt    time.Time                        `json:"snapshot_generated_at,omitzero"`
 	SnapshotAgeSeconds     int64                            `json:"snapshot_age_seconds"`
+	StateEndpoints         healthStateEndpoints             `json:"state_endpoints"`
 	TickLiveness           []telemetry.TickLiveness         `json:"tick_liveness"`
 	OrphanedAgentProcesses telemetry.OrphanedAgentProcesses `json:"orphaned_agent_processes"`
 }

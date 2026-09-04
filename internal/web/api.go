@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -29,7 +30,155 @@ const (
 	manualRefreshStatusID              = "manual-refresh-status"
 	gitHubAPIManualRefreshStatusID     = "github-api-manual-refresh-status"
 	manualRefreshStatusIDFormField     = "manual_refresh_status_id"
+	stateEndpointTargetLatency         = 500 * time.Millisecond
 )
+
+type stateEndpointKind string
+
+const (
+	stateEndpointFleet   stateEndpointKind = "fleet"
+	stateEndpointProject stateEndpointKind = "project"
+)
+
+type stateEndpointRecorder struct {
+	mu      sync.Mutex
+	fleet   stateEndpointObservation
+	project stateEndpointObservation
+}
+
+type stateEndpointObservation struct {
+	requestCount         uint64
+	inFlight             int64
+	lastLatency          time.Duration
+	maxLatency           time.Duration
+	slowRequestCount     uint64
+	timeoutCount         uint64
+	canceledRequestCount uint64
+	lastCompletedAt      time.Time
+	lastSlowAt           time.Time
+	lastTimeoutAt        time.Time
+	lastCanceledAt       time.Time
+	lastOutcome          string
+}
+
+type healthStateEndpoints struct {
+	Fleet   healthStateEndpoint `json:"fleet"`
+	Project healthStateEndpoint `json:"project"`
+}
+
+type healthStateEndpoint struct {
+	Status               string    `json:"status"`
+	TargetLatencyMS      int64     `json:"target_latency_ms"`
+	RequestCount         uint64    `json:"request_count"`
+	InFlight             int64     `json:"in_flight"`
+	LastLatencyMS        int64     `json:"last_latency_ms"`
+	MaxLatencyMS         int64     `json:"max_latency_ms"`
+	SlowRequestCount     uint64    `json:"slow_request_count"`
+	TimeoutCount         uint64    `json:"timeout_count"`
+	CanceledRequestCount uint64    `json:"canceled_request_count"`
+	LastOutcome          string    `json:"last_outcome"`
+	LastCompletedAt      time.Time `json:"last_completed_at,omitzero"`
+	LastSlowAt           time.Time `json:"last_slow_at,omitzero"`
+	LastTimeoutAt        time.Time `json:"last_timeout_at,omitzero"`
+	LastCanceledAt       time.Time `json:"last_canceled_at,omitzero"`
+}
+
+func newStateEndpointRecorder() *stateEndpointRecorder {
+	return &stateEndpointRecorder{}
+}
+
+func (r *stateEndpointRecorder) begin(kind stateEndpointKind) func(context.Context) {
+	if r == nil {
+		return func(context.Context) {}
+	}
+
+	startedAt := time.Now()
+	r.mu.Lock()
+	observation := r.observation(kind)
+	observation.requestCount++
+	observation.inFlight++
+	r.mu.Unlock()
+
+	return func(ctx context.Context) {
+		completedAt := time.Now().UTC()
+		latency := time.Since(startedAt)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		observation := r.observation(kind)
+		observation.inFlight--
+		observation.lastLatency = latency
+		observation.lastCompletedAt = completedAt
+		if latency > observation.maxLatency {
+			observation.maxLatency = latency
+		}
+		if latency >= stateEndpointTargetLatency {
+			observation.slowRequestCount++
+			observation.lastSlowAt = completedAt
+		}
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			observation.timeoutCount++
+			observation.lastTimeoutAt = completedAt
+			observation.lastOutcome = "timeout"
+		case errors.Is(ctx.Err(), context.Canceled):
+			observation.canceledRequestCount++
+			observation.lastCanceledAt = completedAt
+			observation.lastOutcome = "canceled"
+		case latency >= stateEndpointTargetLatency:
+			observation.lastOutcome = "slow"
+		default:
+			observation.lastOutcome = "ok"
+		}
+	}
+}
+
+func (r *stateEndpointRecorder) observation(kind stateEndpointKind) *stateEndpointObservation {
+	if kind == stateEndpointProject {
+		return &r.project
+	}
+	return &r.fleet
+}
+
+func (r *stateEndpointRecorder) health() healthStateEndpoints {
+	if r == nil {
+		return healthStateEndpoints{
+			Fleet:   stateEndpointHealth(stateEndpointObservation{}),
+			Project: stateEndpointHealth(stateEndpointObservation{}),
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return healthStateEndpoints{
+		Fleet:   stateEndpointHealth(r.fleet),
+		Project: stateEndpointHealth(r.project),
+	}
+}
+
+func stateEndpointHealth(observation stateEndpointObservation) healthStateEndpoint {
+	status := "idle"
+	if observation.requestCount > 0 {
+		status = "ok"
+		if observation.lastOutcome == "timeout" || observation.lastOutcome == "slow" || (observation.lastOutcome == "canceled" && observation.lastLatency >= stateEndpointTargetLatency) {
+			status = "degraded"
+		}
+	}
+	return healthStateEndpoint{
+		Status:               status,
+		TargetLatencyMS:      stateEndpointTargetLatency.Milliseconds(),
+		RequestCount:         observation.requestCount,
+		InFlight:             observation.inFlight,
+		LastLatencyMS:        observation.lastLatency.Milliseconds(),
+		MaxLatencyMS:         observation.maxLatency.Milliseconds(),
+		SlowRequestCount:     observation.slowRequestCount,
+		TimeoutCount:         observation.timeoutCount,
+		CanceledRequestCount: observation.canceledRequestCount,
+		LastOutcome:          observation.lastOutcome,
+		LastCompletedAt:      observation.lastCompletedAt,
+		LastSlowAt:           observation.lastSlowAt,
+		LastTimeoutAt:        observation.lastTimeoutAt,
+		LastCanceledAt:       observation.lastCanceledAt,
+	}
+}
 
 type Refresher interface {
 	RequestRefresh(context.Context) (RefreshResponse, error)
@@ -62,6 +211,9 @@ type WorkAttemptRecovery interface {
 }
 
 func (s *Server) apiState(c echo.Context) error {
+	complete := s.stateEndpoints.begin(stateEndpointFleet)
+	defer func() { complete(c.Request().Context()) }()
+
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
@@ -76,12 +228,17 @@ func (s *Server) apiState(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
+	var enrichment stateEnrichmentAPIResponse
 	if !snapshot.Shutdown.Draining {
-		snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
+		snapshot, enrichment = s.stateSnapshot(snapshot)
 		snapshot = s.withManualRefresh(snapshot)
+	} else {
+		enrichment = stateEnrichmentAPIResponse{Status: "omitted", DegradedReason: "enrichment omitted while draining"}
 	}
 
-	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), now, s.instanceName(), s.build))
+	response := stateResponse(snapshot, generatedAt(snapshot, now), now, s.instanceName(), s.build)
+	response.Enrichment = enrichment
+	return c.JSON(http.StatusOK, response)
 }
 
 func (s *Server) apiProject(c echo.Context) error {
@@ -105,6 +262,9 @@ func projectAPIParam(c echo.Context, suffix string) (string, bool) {
 }
 
 func (s *Server) apiProjectState(c echo.Context, projectID string) error {
+	complete := s.stateEndpoints.begin(stateEndpointProject)
+	defer func() { complete(c.Request().Context()) }()
+
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
@@ -122,7 +282,12 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
-	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
+	var enrichment stateEnrichmentAPIResponse
+	if !snapshot.Shutdown.Draining {
+		snapshot, enrichment = s.stateSnapshot(snapshot)
+	} else {
+		enrichment = stateEnrichmentAPIResponse{Status: "omitted", DegradedReason: "enrichment omitted while draining"}
+	}
 	projects := s.cachedProjectSmallMultiples(snapshot)
 	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
@@ -136,7 +301,35 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 	})
 	scopedSnapshot = s.withManualRefresh(scopedSnapshot)
 
-	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), now, s.instanceName(), s.build))
+	response := stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), now, s.instanceName(), s.build)
+	response.Enrichment = enrichment
+	return c.JSON(http.StatusOK, response)
+}
+
+func (s *Server) stateSnapshot(snapshot telemetry.Snapshot) (telemetry.Snapshot, stateEnrichmentAPIResponse) {
+	enriched, ok, completedAt, loading := s.snapshots.lookup(snapshot)
+	if ok {
+		return enriched, readyStateEnrichment(snapshot.GeneratedAt)
+	}
+
+	status := "omitted"
+	reason := "latest enrichment is not cached; slow enrichment is omitted"
+	if loading {
+		status = "pending"
+		reason = "latest enrichment is pending; slow enrichment is omitted"
+	}
+	return snapshot, stateEnrichmentAPIResponse{
+		Status:                       status,
+		CompletedSnapshotGeneratedAt: completedAt,
+		DegradedReason:               reason,
+	}
+}
+
+func readyStateEnrichment(generatedAt time.Time) stateEnrichmentAPIResponse {
+	return stateEnrichmentAPIResponse{
+		Status:                       "ready",
+		CompletedSnapshotGeneratedAt: generatedAt,
+	}
 }
 
 func (s *Server) apiTimeSeries(c echo.Context) error {
@@ -462,6 +655,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 	return stateAPIResponse{
 		GeneratedAt:        generatedAt,
 		SnapshotAgeSeconds: snapshot.AgeSeconds(observedAt),
+		Enrichment:         readyStateEnrichment(snapshot.GeneratedAt),
 		Status:             runtimeStatus(snapshot),
 		Shutdown:           shutdownResponse(snapshot.Shutdown),
 		Update:             snapshot.Update,
@@ -1434,6 +1628,7 @@ func snapshotErrorResponse(generatedAt time.Time, code string, message string) s
 type stateAPIResponse struct {
 	GeneratedAt        time.Time                    `json:"generated_at"`
 	SnapshotAgeSeconds int64                        `json:"snapshot_age_seconds"`
+	Enrichment         stateEnrichmentAPIResponse   `json:"enrichment"`
 	Status             string                       `json:"status"`
 	Shutdown           shutdownAPIResponse          `json:"shutdown"`
 	Update             telemetry.Update             `json:"update,omitzero"`
@@ -1470,6 +1665,12 @@ type stateAPIResponse struct {
 	StalenessWarnings  []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
 	CleanupFaults      []telemetry.CleanupFault     `json:"workspace_cleanup_failures,omitempty"`
 	Budget             budgetAPIResponse            `json:"budget"`
+}
+
+type stateEnrichmentAPIResponse struct {
+	Status                       string    `json:"status"`
+	CompletedSnapshotGeneratedAt time.Time `json:"completed_snapshot_generated_at,omitzero"`
+	DegradedReason               string    `json:"degraded_reason,omitempty"`
 }
 
 type shutdownAPIResponse struct {

@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
-const projectStatePerformanceDeadline = 2 * time.Second
+const projectStatePerformanceDeadline = 500 * time.Millisecond
 
 func BenchmarkProjectStateAPIWarmStoreChangingSnapshot(b *testing.B) {
 	server, snapshotHub, snapshot := newProjectStatePerformanceServer(b, 5000, 2600)

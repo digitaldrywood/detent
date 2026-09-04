@@ -1252,10 +1252,11 @@ components:
       enum: [available, live, last_known, expired, unavailable, corrupt]
     State:
       type: object
-      required: [generated_at, snapshot_age_seconds, status, shutdown, instance, projects, stats, board]
+      required: [generated_at, snapshot_age_seconds, enrichment, status, shutdown, instance, projects, stats, board]
       properties:
         generated_at: {type: string, format: date-time}
         snapshot_age_seconds: {type: integer, format: int64, minimum: 0}
+        enrichment: {$ref: "#/components/schemas/StateEnrichment"}
         status: {type: string, enum: [running, draining]}
         shutdown: {$ref: "#/components/schemas/GenericObject"}
         instance: {$ref: "#/components/schemas/GenericObject"}
@@ -1265,6 +1266,15 @@ components:
         stats: {$ref: "#/components/schemas/GenericObject"}
         board: {$ref: "#/components/schemas/GenericObject"}
       additionalProperties: true
+    StateEnrichment:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, pending, omitted]
+        completed_snapshot_generated_at: {type: string, format: date-time}
+        degraded_reason: {type: string}
     TimeSeries:
       type: object
       description: Bucketed time-series response; metric arrays evolve additively.

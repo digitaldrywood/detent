@@ -57,16 +57,35 @@ func (s *Server) cachedEnrichedSnapshot(ctx context.Context, snapshot telemetry.
 }
 
 func (c *snapshotEnrichmentCache) get(snapshot telemetry.Snapshot) (telemetry.Snapshot, bool) {
+	enriched, cached, _, _ := c.lookup(snapshot)
+	return enriched, cached
+}
+
+func (c *snapshotEnrichmentCache) lookup(snapshot telemetry.Snapshot) (telemetry.Snapshot, bool, time.Time, bool) {
 	if c == nil {
-		return telemetry.Snapshot{}, false
+		return telemetry.Snapshot{}, false, time.Time{}, false
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.cached || !reflect.DeepEqual(c.raw, snapshot) {
-		return telemetry.Snapshot{}, false
+	lastCompletedAt := time.Time{}
+	if c.cached {
+		lastCompletedAt = c.raw.GeneratedAt
 	}
-	return c.enriched, true
+	if !c.cached || !sameSnapshotForEnrichment(c.raw, snapshot) {
+		return telemetry.Snapshot{}, false, lastCompletedAt, c.loading
+	}
+	return c.enriched, true, lastCompletedAt, c.loading
+}
+
+func sameSnapshotForEnrichment(left telemetry.Snapshot, right telemetry.Snapshot) bool {
+	if left.Seq != right.Seq {
+		return false
+	}
+	if !left.GeneratedAt.Equal(right.GeneratedAt) {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func (c *snapshotEnrichmentCache) enrich(ctx context.Context, snapshot telemetry.Snapshot, enrich func(context.Context, telemetry.Snapshot) telemetry.Snapshot) telemetry.Snapshot {
@@ -76,7 +95,7 @@ func (c *snapshotEnrichmentCache) enrich(ctx context.Context, snapshot telemetry
 
 	c.mu.Lock()
 	for {
-		if c.cached && reflect.DeepEqual(c.raw, snapshot) {
+		if c.cached && sameSnapshotForEnrichment(c.raw, snapshot) {
 			enriched := c.enriched
 			c.mu.Unlock()
 			return enriched
