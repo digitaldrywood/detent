@@ -652,8 +652,13 @@ func (p dispatchPlanner) previewCurrentHeadCIWait(
 		state.Retry[issue.ID] = retry
 		return retry, false
 	}
+	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, now)
 	retry.Issue = cloneIssue(issue)
 	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	if retry.Wait.StartedAt.IsZero() || !retry.Wait.StartedAt.Equal(timing.CIWaitStartedAt) {
+		retry.Wait.StartedAt = timing.CIWaitStartedAt
+		retry.Wait.PollCount = 0
+	}
 	retry.Wait.PollCount++
 	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
 	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, p.cfg.ContinuationRetryDelay)

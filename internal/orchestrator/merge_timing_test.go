@@ -237,8 +237,9 @@ func TestMarkMergeStartedPreservesCurrentHeadCIWaitDeadline(t *testing.T) {
 		Identifier: "digitaldrywood/detent#1634",
 		State:      "Merging",
 		PullRequest: &connector.PullRequest{
-			Number: 1636,
-			State:  "OPEN",
+			Number:  1636,
+			State:   "OPEN",
+			HeadSHA: "current-head",
 		},
 	}
 	state := newState(normalizeConfig(Config{}))
@@ -252,6 +253,116 @@ func TestMarkMergeStartedPreservesCurrentHeadCIWaitDeadline(t *testing.T) {
 	}
 	if !got.MergeStartedAt.Equal(retryStart) {
 		t.Fatalf("MergeStartedAt = %s, want current attempt start %s", got.MergeStartedAt, retryStart)
+	}
+}
+
+func TestMarkMergeStartedResetsCurrentHeadCIWaitDeadlineAfterRepromotion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		previousPromotion  time.Time
+		currentPromotion   time.Time
+		prematureTimeoutAt time.Time
+	}{
+		{
+			name:               "first recorded repromotion",
+			previousPromotion:  time.Date(2026, 9, 4, 3, 4, 50, 0, time.UTC),
+			currentPromotion:   time.Date(2026, 9, 4, 5, 14, 36, 0, time.UTC),
+			prematureTimeoutAt: time.Date(2026, 9, 4, 5, 19, 46, 0, time.UTC),
+		},
+		{
+			name:               "second recorded repromotion",
+			previousPromotion:  time.Date(2026, 9, 4, 5, 14, 36, 0, time.UTC),
+			currentPromotion:   time.Date(2026, 9, 4, 6, 22, 35, 0, time.UTC),
+			prematureTimeoutAt: time.Date(2026, 9, 4, 6, 37, 40, 0, time.UTC),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:             "issue-2112-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Identifier:     "digitaldrywood/detent#2112",
+				State:          "Merging",
+				StageUpdatedAt: &tt.currentPromotion,
+				PullRequest: &connector.PullRequest{
+					Number:  2125,
+					State:   "OPEN",
+					HeadSHA: "eea58aa203f4a754081156460be2e4bcc56f8c48",
+				},
+			}
+			state := newState(normalizeConfig(Config{}))
+			state.MergeTimings[issue.ID] = MergeTiming{
+				EnteredMergingAt:          tt.previousPromotion,
+				MergeWorkerSlotAcquiredAt: tt.previousPromotion,
+				MergeStartedAt:            tt.previousPromotion,
+				CIWaitStartedAt:           tt.previousPromotion,
+			}
+			orch := &Orchestrator{}
+
+			got := orch.markMergeStarted(&state, issue, tt.currentPromotion)
+
+			if !got.EnteredMergingAt.Equal(tt.currentPromotion) {
+				t.Fatalf("EnteredMergingAt = %s, want current promotion %s", got.EnteredMergingAt, tt.currentPromotion)
+			}
+			if !got.CIWaitStartedAt.Equal(tt.currentPromotion) {
+				t.Fatalf("CIWaitStartedAt = %s, want current promotion %s", got.CIWaitStartedAt, tt.currentPromotion)
+			}
+			if orch.mergeWorkerCurrentHeadCIWaitExceeded(&state, issue, tt.prematureTimeoutAt) {
+				t.Fatalf("current-head CI wait exceeded at %s after promotion at %s", tt.prematureTimeoutAt, tt.currentPromotion)
+			}
+		})
+	}
+}
+
+func TestCurrentHeadCIWaitDeadlineReconcilesObservedHead(t *testing.T) {
+	t.Parallel()
+
+	firstStart := time.Date(2026, 9, 4, 6, 22, 35, 0, time.UTC)
+	newHeadStart := firstStart.Add(15 * time.Minute)
+	tests := []struct {
+		name        string
+		currentHead string
+		wantStart   time.Time
+	}{
+		{name: "same head preserves deadline", currentHead: "old-head", wantStart: firstStart},
+		{name: "new head resets deadline", currentHead: "new-head", wantStart: newHeadStart},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{
+				ID:         "issue-current-head-change-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Identifier: "digitaldrywood/detent#2112",
+				State:      "Merging",
+				PullRequest: &connector.PullRequest{
+					Number:  2125,
+					State:   "OPEN",
+					HeadSHA: "old-head",
+				},
+			}
+			state := newState(normalizeConfig(Config{}))
+			orch := &Orchestrator{}
+
+			orch.markMergeStarted(&state, issue, firstStart)
+			issue.PullRequest.HeadSHA = tt.currentHead
+			if orch.mergeWorkerCurrentHeadCIWaitExceeded(&state, issue, newHeadStart) {
+				t.Fatalf("current-head CI wait exceeded at %s", newHeadStart)
+			}
+			got := state.MergeTimings[issue.ID]
+
+			if got.CIWaitHeadSHA != tt.currentHead {
+				t.Fatalf("CIWaitHeadSHA = %q, want %q", got.CIWaitHeadSHA, tt.currentHead)
+			}
+			if !got.CIWaitStartedAt.Equal(tt.wantStart) {
+				t.Fatalf("CIWaitStartedAt = %s, want %s", got.CIWaitStartedAt, tt.wantStart)
+			}
+		})
 	}
 }
 

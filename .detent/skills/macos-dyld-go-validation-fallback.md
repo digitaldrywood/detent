@@ -16,6 +16,8 @@ Confirm that the failure precedes application startup before changing code:
 
 Run the repository's exact validation target in a Linux container when Docker is healthy. Mount the worktree, the worktree's shared Git metadata at its original absolute path, and Detent-scoped module, build, and tool caches. Pass `safe.directory` through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, and `GIT_CONFIG_VALUE_0` so generators can resolve repository-relative paths without changing global Git configuration.
 
+Run the validation container with an init process when tests spawn descendants. Without `--init`, exited orphan processes can remain observable as PID 1's unreaped zombies and make process-group cleanup tests report surviving workers after successful termination. Confirm this signature by repeating the focused test with and without container init before changing subprocess code.
+
 Run the container as the workspace owner. Use workspace-owned temporary directories for `node_modules` and npm cache; anonymous Docker volumes default to root ownership. Prefer repository-pinned prebuilt tools when host file-table pressure makes large `go install` dependency trees fail.
 
 Keep test `TMPDIR` on an executable container-local tmpfs. A Docker Desktop bind mount can change fsnotify behavior and create duplicate file events that do not occur on a native Linux filesystem. When the gate creates disposable Git repositories, scope `safe.directory=*` to the ephemeral container so those repositories remain usable without changing host Git configuration.

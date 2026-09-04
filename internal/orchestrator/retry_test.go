@@ -598,6 +598,10 @@ func TestDispatchReadyIssuesPollsCurrentHeadCIWithoutWorkerAdmission(t *testing.
 				if !ok || !strings.Contains(blocked.Reason, pendingCheck) {
 					t.Fatalf("Blocked[%q] = %#v, want pending check at one-hour bound", issue.ID, blocked)
 				}
+				timing := state.MergeTimings[issue.ID]
+				if !timing.MergeFailedAt.Equal(now) || !timing.CIWaitFinishedAt.Equal(now) {
+					t.Fatalf("MergeTimings[%q] = %#v, want failed CI wait closed at %s", issue.ID, timing, now)
+				}
 			}
 		})
 	}
