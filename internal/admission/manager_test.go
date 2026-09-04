@@ -1931,6 +1931,7 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 	if err != nil || len(initial.Proposals) != 2 {
 		t.Fatalf("initial RunOnce() = %#v, %v, want two proposals", initial, err)
 	}
+	initialRunnerCalls := agent.calls
 	open, err := backend.OpenAdmissionProposals(t.Context(), settings.ProjectID, 0)
 	if err != nil || len(open) != 2 {
 		t.Fatalf("OpenAdmissionProposals() = %#v, %v, want two proposals", open, err)
@@ -1984,8 +1985,8 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 	if got := countAdmissionStateUpdates(tracker.Events(), settings.Config.TargetState); got != 2 {
 		t.Fatalf("target state updates after resume = %d, want 2", got)
 	}
-	if agent.calls != 1 {
-		t.Fatalf("runner calls = %d, want original proposal run only", agent.calls)
+	if agent.calls != initialRunnerCalls {
+		t.Fatalf("runner calls = %d, want %d original candidate evaluations only", agent.calls, initialRunnerCalls)
 	}
 	latest, found, err := backend.LatestAdmissionRun(t.Context(), settings.ProjectID)
 	if err != nil || !found || latest.Outcome != "completed" ||
@@ -2041,11 +2042,12 @@ func TestManagerScheduledEvaluationFanoutDeferralCheckpointsBeforeResume(t *test
 	if err != nil || completed.DeferredReason != "" || !completed.ResumeAt.IsZero() || len(completed.Proposals) != 1 {
 		t.Fatalf("resumed run = %#v, %v", completed, err)
 	}
-	if agent.calls != 2 || len(agent.candidateIDs) != 2 || len(agent.candidateIDs[0]) != 2 || len(agent.candidateIDs[1]) != 1 {
+	if agent.calls != 3 || len(agent.candidateIDs) != 3 || len(agent.candidateIDs[0]) != 1 ||
+		len(agent.candidateIDs[1]) != 1 || len(agent.candidateIDs[2]) != 1 {
 		t.Fatalf("runner calls = %d candidates = %#v", agent.calls, agent.candidateIDs)
 	}
-	if agent.candidateIDs[1][0] == firstProposalID {
-		t.Fatalf("resumed candidate = %q, want candidate not already checkpointed", agent.candidateIDs[1][0])
+	if agent.candidateIDs[2][0] == firstProposalID || agent.candidateIDs[2][0] != agent.candidateIDs[1][0] {
+		t.Fatalf("resumed candidate = %q, want interrupted candidate %q rather than checkpointed candidate %q", agent.candidateIDs[2][0], agent.candidateIDs[1][0], firstProposalID)
 	}
 	open, err := backend.OpenAdmissionProposals(t.Context(), settings.ProjectID, 0)
 	if err != nil || len(open) != 2 {
