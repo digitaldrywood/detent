@@ -316,6 +316,7 @@ type Orchestrator struct {
 	hydrationWarned         bool
 	ownershipStartupLogged  bool
 	dispatchStartMu         sync.Mutex
+	capacityClearMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
 	dispatchClosed          atomic.Bool
@@ -722,7 +723,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	defer close(o.done)
+	defer func() {
+		o.capacityClearMu.Lock()
+		defer o.capacityClearMu.Unlock()
+		close(o.done)
+	}()
 	defer o.markGlobalProjectIdle()
 	watchdogCtx, stopWatchdog := context.WithCancel(ctx)
 	watchdogDone := make(chan struct{})
@@ -916,6 +921,8 @@ func (o *Orchestrator) RequestBackendCapacityClear(ctx context.Context, scope st
 		scope: strings.TrimSpace(scope),
 		at:    o.clockNow(),
 	}
+	o.capacityClearMu.Lock()
+	defer o.capacityClearMu.Unlock()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

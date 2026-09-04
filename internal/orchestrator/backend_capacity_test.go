@@ -803,6 +803,52 @@ func TestRequestBackendCapacityClearUsesBoundedQueue(t *testing.T) {
 	}
 }
 
+func TestRequestBackendCapacityClearLifecycle(t *testing.T) {
+	t.Parallel()
+
+	for _, scenario := range []string{"nil context", "canceled", "stopped", "shutdown during request"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+
+			orch, err := New(Config{}, Dependencies{Connector: memory.New(memory.Config{}), Runner: FakeRunner{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ctx context.Context
+			var wantErr error
+			switch scenario {
+			case "canceled":
+				canceled, cancel := context.WithCancel(t.Context())
+				cancel()
+				ctx = canceled
+				wantErr = context.Canceled
+			case "stopped", "shutdown during request":
+				runCtx, stop := context.WithCancel(t.Context())
+				stop()
+				if scenario == "stopped" {
+					if err := orch.Run(runCtx); !errors.Is(err, context.Canceled) {
+						t.Fatalf("Run() error = %v", err)
+					}
+				} else {
+					orch.now = func() time.Time {
+						if err := orch.Run(runCtx); !errors.Is(err, context.Canceled) {
+							t.Errorf("Run() error = %v", err)
+						}
+						return time.Now()
+					}
+				}
+				wantErr = ErrStopped
+			}
+			if err := orch.RequestBackendCapacityClear(ctx, "codex"); !errors.Is(err, wantErr) {
+				t.Fatalf("RequestBackendCapacityClear() error = %v, want %v", err, wantErr)
+			}
+			if wantErr != nil && len(orch.capacityClearRequests) != 0 {
+				t.Fatal("rejected request remained queued")
+			}
+		})
+	}
+}
+
 type capacityClearBusyConnector struct {
 	connector.Connector
 	entered chan struct{}
