@@ -772,7 +772,7 @@ func TestTickCancelledNonRunningIssueReapsWorkspaceEvenBeforeNextSweep(t *testin
 	}
 }
 
-func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
+func TestTickTerminalWorkspaceCleanupPreservesUnpushedWork(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
@@ -793,9 +793,9 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 	state := newState(cfg)
 	tracker := &runningStateConnector{issuesByState: []connector.Issue{cancelled}}
 	workspacePath := "/tmp/detent-workspaces/digitaldrywood_detent_588"
-	remediation := "chmod workspace cache directories and rerun cleanup"
+	remediation := "commit and push retained work, or inspect and remove it manually, then rerun cleanup"
 	reaper := &cleanupSweepReaper{err: cleanupDiagnosticError{
-		message:     "remove worktree: permission denied",
+		message:     "workspace has unpreserved work: contains commits not reachable from any remote",
 		path:        workspacePath,
 		remediation: remediation,
 	}}
@@ -816,7 +816,7 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("RecentEvents = %#v, want workspace_reap_failed", state.RecentEvents)
 	}
-	for _, want := range []string{"digitaldrywood/detent#588", "reason=cancelled", "permission denied"} {
+	for _, want := range []string{"digitaldrywood/detent#588", "reason=cancelled", "unpreserved work"} {
 		if !strings.Contains(event.Message, want) {
 			t.Fatalf("cleanup failure event message = %q, want %q", event.Message, want)
 		}

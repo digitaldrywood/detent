@@ -478,10 +478,14 @@ local-only repositories without an `origin` continue to use `HEAD`.
 
 `workspace.cleanup_idle_ttl_ms` controls how long non-active observed
 workspaces can sit idle before cleanup. Terminal issues are cleaned on the next
-poll when observed. `workspace.cleanup_sweep_interval_ms` controls the startup
-and periodic idle cleanup cadence. `detent doctor` reports a warning when a
-local Git workspace root reaches 50 retained workspace directories. Counts
-below that boundary are not surfaced as a routine finding.
+poll when observed, but terminal status does not bypass the cleanup safety
+check: Detent preserves worktrees with uncommitted or untracked changes and
+managed branches with commits not reachable from any remote. The cleanup
+failure is reported with the workspace path and remediation. The
+`workspace.cleanup_sweep_interval_ms` setting controls the startup and periodic
+idle cleanup cadence. `detent doctor` reports a warning when a local Git
+workspace root reaches 50 retained workspace directories. Counts below that
+boundary are not surfaced as a routine finding.
 
 `polling.interval_ms` defaults to `120000` and must be at least `60000`.
 `polling.conditional` defaults to `true`. GitHub label and issue-field trackers
