@@ -149,8 +149,9 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 
 func (c *Client) graphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any, allowTokenRefresh bool) error {
 	queryType = graphQLQueryType(queryType, query)
+	lookup := graphQLLookup(query)
 	trackerRead := graphQLTrackerRead(queryType, query)
-	if err := c.graphQLLookupBackoffError(queryType, trackerRead, time.Now()); err != nil {
+	if err := c.graphQLLookupBackoffError(queryType, lookup, time.Now()); err != nil {
 		return err
 	}
 	token, err := c.tokenSource.Token(ctx)
@@ -246,7 +247,9 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
 		return err
 	}
-	c.clearGraphQLRateLimitStatus()
+	if queryType != graphQLQueryRateLimitProbe {
+		c.clearGraphQLRateLimitStatus()
+	}
 	if out == nil {
 		return nil
 	}
@@ -334,7 +337,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, receivedAt, false)
+	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest text response", http.MethodGet, path, family, resp.StatusCode)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
@@ -414,7 +417,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, receivedAt, false)
+	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
@@ -521,7 +524,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, receivedAt, conditional)
+	c.recordRESTRateLimitFromHeaders(backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
 	if resp.StatusCode == http.StatusNotModified {
 		if !conditional {
 			return nil, ErrInvalidResponse
@@ -677,8 +680,8 @@ func (c *Client) clearGraphQLRateLimitStatus() {
 	c.mu.Unlock()
 }
 
-func (c *Client) graphQLLookupBackoffError(queryType string, trackerRead bool, now time.Time) error {
-	if !trackerRead || queryType == graphQLQueryRateLimitProbe {
+func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now time.Time) error {
+	if !lookup || queryType == graphQLQueryRateLimitProbe {
 		return nil
 	}
 	c.mu.RLock()
@@ -975,17 +978,18 @@ func (c *Client) rememberRESTBackoffKey(backoffKey string) {
 	c.mu.Unlock()
 }
 
-func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, credentialIdentity string, method string, path string, status int, headers http.Header, now time.Time, conditional bool) {
+func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, credentialIdentity string, method string, path string, status int, headers http.Header, body []byte, now time.Time, conditional bool) {
 	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
 	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
 	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
 	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
 	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
-	rateLimited := restStatusRateLimited(status, headers)
+	headerRateLimited := restStatusRateLimited(status, headers, nil)
+	rateLimited := restStatusRateLimited(status, headers, body)
 	family := restEndpointFamily(method, path)
 	resourceHeader := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
 	resource := restRateLimitResourceName(resourceHeader, family)
-	sharedBackoff := rateLimited && restShouldApplySharedBackoff(family, remaining, hasRemaining)
+	sharedBackoff := rateLimited && (restShouldApplySharedBackoff(family, remaining, hasRemaining) || !headerRateLimited)
 
 	var resetAt time.Time
 	if hasReset {
@@ -1125,7 +1129,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, credentialIde
 			"path", path,
 			"endpoint_family", family,
 			"request_purpose", restRequestPurpose(method, path),
-			"backoff_reason", restRateLimitKindFromHeaders(status, headers),
+			"backoff_reason", restRateLimitKind(status, headers, body),
 			"retry_after_seconds", int64(backoffUntil.Sub(now)/time.Second),
 			"remaining", remaining,
 		)
@@ -1524,7 +1528,7 @@ func classifyStatusAt(status int, headers http.Header, body []byte, now time.Tim
 	case status == http.StatusForbidden && githubCommentingDisabled(body):
 		base = ErrResourceExhausted
 	case status == http.StatusForbidden:
-		if strings.TrimSpace(headers.Get("Retry-After")) != "" || headers.Get("X-RateLimit-Remaining") == "0" {
+		if restStatusRateLimited(status, headers, body) {
 			base = ErrRateLimited
 		} else {
 			base = ErrAuthenticationFailed
@@ -1543,7 +1547,7 @@ func classifyStatusAt(status int, headers http.Header, body []byte, now time.Tim
 		Err:        base,
 	}
 	if errors.Is(base, ErrRateLimited) {
-		statusErr.RateLimitKind = restRateLimitKindFromHeaders(status, headers)
+		statusErr.RateLimitKind = restRateLimitKind(status, headers, body)
 		statusErr.RetryAfter, _ = parseRetryAfter(headers.Get("Retry-After"), now)
 		if reset, ok := int64Header(headers, "X-RateLimit-Reset"); ok {
 			statusErr.ResetAt = time.Unix(reset, 0).UTC()
@@ -1559,19 +1563,31 @@ func githubCommentingDisabled(body []byte) bool {
 	)
 }
 
-func restStatusRateLimited(status int, headers http.Header) bool {
+func githubRateLimitExceeded(body []byte) bool {
+	var response struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(response.Message)), "rate limit")
+}
+
+func restStatusRateLimited(status int, headers http.Header, body []byte) bool {
 	switch status {
 	case http.StatusTooManyRequests:
 		return true
 	case http.StatusForbidden:
-		return strings.TrimSpace(headers.Get("Retry-After")) != "" || headers.Get("X-RateLimit-Remaining") == "0"
+		return strings.TrimSpace(headers.Get("Retry-After")) != "" ||
+			headers.Get("X-RateLimit-Remaining") == "0" ||
+			githubRateLimitExceeded(body)
 	default:
 		return false
 	}
 }
 
-func restRateLimitKindFromHeaders(status int, headers http.Header) string {
-	if !restStatusRateLimited(status, headers) {
+func restRateLimitKind(status int, headers http.Header, body []byte) string {
+	if !restStatusRateLimited(status, headers, body) {
 		return ""
 	}
 	if remaining, ok := int64Header(headers, "X-RateLimit-Remaining"); ok && remaining <= 0 {
@@ -1714,8 +1730,12 @@ func graphQLQueryType(queryType string, query string) string {
 	return "graphql"
 }
 
+func graphQLLookup(query string) bool {
+	return !strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "mutation")
+}
+
 func graphQLTrackerRead(queryType string, query string) bool {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "mutation") {
+	if !graphQLLookup(query) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(queryType)) {

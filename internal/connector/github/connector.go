@@ -276,8 +276,14 @@ func (c *Connector) GraphQLRateLimitStatus() string {
 }
 
 func (c *Connector) ProbeGraphQLRateLimit(ctx context.Context) (connector.GraphQLRateLimit, error) {
-	if err := c.client.GraphQLWithType(ctx, graphQLQueryRateLimitProbe, graphQLRateLimitProbeQuery, nil, nil); err != nil {
+	var response struct {
+		RateLimit *struct{} `json:"rateLimit"`
+	}
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryRateLimitProbe, graphQLRateLimitProbeQuery, nil, &response); err != nil {
 		return connector.GraphQLRateLimit{}, err
+	}
+	if response.RateLimit == nil {
+		return connector.GraphQLRateLimit{}, ErrInvalidResponse
 	}
 	rateLimit, ok := c.client.GraphQLRateLimit()
 	if !ok {
@@ -294,6 +300,12 @@ func (c *Connector) ProbeRESTRateLimit(ctx context.Context, minimumRemaining int
 	}
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
 		return connector.RESTRateLimit{}, classifyStatusAt(result.StatusCode, result.Headers, []byte(result.FullBody), c.now())
+	}
+	if _, ok := int64Header(result.Headers, "X-RateLimit-Limit"); !ok {
+		return connector.RESTRateLimit{}, ErrInvalidResponse
+	}
+	if _, ok := int64Header(result.Headers, "X-RateLimit-Remaining"); !ok {
+		return connector.RESTRateLimit{}, ErrInvalidResponse
 	}
 	usage := c.client.RESTRateLimitStatus()
 	if !usage.HasRateLimit {

@@ -90,11 +90,12 @@ func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		statusCode int
-		headers    http.Header
-		body       string
-		reserve    int64
+		name              string
+		statusCode        int
+		headers           http.Header
+		body              string
+		reserve           int64
+		followupQueryType string
 	}{
 		{
 			name:       "rate limit response",
@@ -123,6 +124,13 @@ func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
 			},
 			body:    `{"data":{"viewer":{"login":"octocat"}}}`,
 			reserve: 1000,
+		},
+		{
+			name:              "merge queue lookup",
+			statusCode:        http.StatusTooManyRequests,
+			headers:           http.Header{"Retry-After": []string{"30"}},
+			body:              `{"message":"API rate limit already exceeded"}`,
+			followupQueryType: graphQLQueryMergeQueue,
 		},
 	}
 
@@ -154,7 +162,11 @@ func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
 			}
 
 			for call := range 2 {
-				err = client.GraphQL(context.Background(), "query { viewer { login } rateLimit { limit used remaining cost resetAt } }", nil, nil)
+				queryType := ""
+				if call > 0 {
+					queryType = tt.followupQueryType
+				}
+				err = client.GraphQLWithType(context.Background(), queryType, "query { viewer { login } rateLimit { limit used remaining cost resetAt } }", nil, nil)
 				if call == 0 && tt.statusCode == http.StatusOK {
 					if err != nil {
 						t.Fatalf("first GraphQL() error = %v", err)
@@ -167,6 +179,142 @@ func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
 			}
 			if got := calls.Load(); got != 1 {
 				t.Fatalf("GraphQL HTTP calls = %d, want 1 after rate limit signal", got)
+			}
+		})
+	}
+}
+
+func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		call func(context.Context, *Client) error
+	}{
+		{
+			name: "graphql",
+			call: func(ctx context.Context, client *Client) error {
+				return client.GraphQL(ctx, "query { viewer { login } }", nil, nil)
+			},
+		},
+		{
+			name: "rest",
+			call: func(ctx context.Context, client *Client) error {
+				return client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/issues/1/comments", nil, nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"API rate limit already exceeded"}`))
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := NewClient(ClientConfig{
+				Endpoint:    server.URL,
+				TokenSource: StaticTokenSource("test-token"),
+				HTTPClient:  server.Client(),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			for call := range 2 {
+				err := tt.call(context.Background(), client)
+				if !errors.Is(err, ErrRateLimited) {
+					t.Fatalf("call %d error = %v, want ErrRateLimited", call+1, err)
+				}
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("HTTP calls = %d, want 1 after rate limit signal", got)
+			}
+		})
+	}
+}
+
+func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		seed      func(context.Context, *Connector) error
+		probe     func(context.Context, *Connector) error
+		backedOff func(*Connector) bool
+	}{
+		{
+			name: "graphql",
+			seed: func(ctx context.Context, conn *Connector) error {
+				return conn.client.GraphQL(ctx, "query { viewer { login } }", nil, nil)
+			},
+			probe: func(ctx context.Context, conn *Connector) error {
+				_, err := conn.ProbeGraphQLRateLimit(ctx)
+				return err
+			},
+			backedOff: func(conn *Connector) bool {
+				return conn.GraphQLRateLimitStatus() == connector.GraphQLRateLimitStatusBackoff
+			},
+		},
+		{
+			name: "rest",
+			seed: func(ctx context.Context, conn *Connector) error {
+				return conn.client.REST(ctx, http.MethodGet, "/user", nil, nil)
+			},
+			probe: func(ctx context.Context, conn *Connector) error {
+				_, err := conn.ProbeRESTRateLimit(ctx, 1000)
+				return err
+			},
+			backedOff: func(conn *Connector) bool {
+				return conn.RESTRateLimitStatus().RateLimited
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if calls.Add(1) == 1 {
+					w.Header().Set("Retry-After", "60")
+					w.Header().Set("X-RateLimit-Limit", "5000")
+					w.Header().Set("X-RateLimit-Remaining", "4000")
+					w.Header().Set("X-RateLimit-Used", "1000")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"message":"API rate limit already exceeded"}`))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			t.Cleanup(server.Close)
+
+			conn, err := NewConnector(Config{
+				Endpoint:    server.URL,
+				TokenSource: StaticTokenSource("test-token"),
+				HTTPClient:  server.Client(),
+			})
+			if err != nil {
+				t.Fatalf("NewConnector() error = %v", err)
+			}
+			if err := tt.seed(context.Background(), conn); !errors.Is(err, ErrRateLimited) {
+				t.Fatalf("seed error = %v, want ErrRateLimited", err)
+			}
+			if err := tt.probe(context.Background(), conn); !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("probe error = %v, want ErrInvalidResponse", err)
+			}
+			if !tt.backedOff(conn) {
+				t.Fatal("rate limit backoff cleared without a fresh quota response")
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("HTTP calls = %d, want seed and probe", got)
 			}
 		})
 	}
