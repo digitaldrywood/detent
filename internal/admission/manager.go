@@ -59,6 +59,7 @@ const (
 	maxEffortRationaleSize                 = 2 * 1024
 	malformedAdmissionAttemptLimit         = 4
 	malformedAdmissionExcerptSize          = 512
+	admissionCandidateFingerprintVersion   = "admission-candidate-v1"
 	admissionPromptFingerprintVersion      = "admission-prompt-v1"
 )
 
@@ -505,7 +506,14 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	validCandidates := make([]connector.Issue, 0, len(candidates))
 	evaluations := make([]AgentEvaluation, 0, len(candidates))
 	for _, candidate := range candidates {
-		evaluation, failure, deferredReason := m.evaluateCandidate(ctx, settings, candidate, startedAt)
+		evaluation, failure, deferredReason, err := m.evaluateCandidate(ctx, settings, candidate, startedAt)
+		if err != nil {
+			return result, fmt.Errorf(
+				"evaluate backlog admission candidate %s: transport runner_error: %w",
+				candidate.Identifier,
+				err,
+			)
+		}
 		if deferredReason != "" {
 			result.DeferredReason = deferredReason
 			return result, nil
@@ -544,7 +552,7 @@ func (m *Manager) evaluateCandidate(
 	settings Settings,
 	candidate connector.Issue,
 	startedAt time.Time,
-) (AgentEvaluation, *malformedEvaluation, string) {
+) (AgentEvaluation, *malformedEvaluation, string, error) {
 	collector := &proposalCollector{}
 	runResult, err := settings.Runner.Run(ctx, runner.RunRequest{
 		Issue:            admissionIssue(settings.ProjectID),
@@ -556,23 +564,19 @@ func (m *Manager) evaluateCandidate(
 	})
 	if err != nil {
 		if runner.IsCapacityError(err) {
-			return AgentEvaluation{}, nil, "agent_backend_capacity"
+			return AgentEvaluation{}, nil, "agent_backend_capacity", nil
 		}
-		return AgentEvaluation{}, &malformedEvaluation{
-			errorClass: "transport",
-			errorCode:  "runner_error",
-			output:     []byte(err.Error()),
-		}, ""
+		return AgentEvaluation{}, nil, "", err
 	}
 	if runResult.BudgetRefusal != nil {
-		return AgentEvaluation{}, nil, "budget"
+		return AgentEvaluation{}, nil, "budget", nil
 	}
 	if runResult.FinalState != "" && runResult.FinalState != runner.FinalStateCompleted {
 		return AgentEvaluation{}, &malformedEvaluation{
 			errorClass: "model",
 			errorCode:  "incomplete_final_state",
 			output:     []byte(runResult.Output),
-		}, ""
+		}, "", nil
 	}
 	evaluations, raw, proposalErr := collector.result()
 	if len(evaluations) == 0 && proposalErr == nil {
@@ -581,14 +585,14 @@ func (m *Manager) evaluateCandidate(
 	}
 	if proposalErr != nil {
 		class, code := classifyMalformedEvaluation(proposalErr)
-		return AgentEvaluation{}, &malformedEvaluation{errorClass: class, errorCode: code, output: raw}, ""
+		return AgentEvaluation{}, &malformedEvaluation{errorClass: class, errorCode: code, output: raw}, "", nil
 	}
 	if len(evaluations) != 1 {
 		return AgentEvaluation{}, &malformedEvaluation{
 			errorClass: "schema",
 			errorCode:  "evaluation_count",
 			output:     raw,
-		}, ""
+		}, "", nil
 	}
 	evaluation, err := validateCandidateEvaluation(settings, candidate, evaluations[0])
 	if err != nil {
@@ -596,9 +600,9 @@ func (m *Manager) evaluateCandidate(
 			errorClass: "schema",
 			errorCode:  "invalid_evaluation",
 			output:     raw,
-		}, ""
+		}, "", nil
 	}
-	return evaluation, nil, ""
+	return evaluation, nil, "", nil
 }
 
 func (m *Manager) recordMalformedResult(
@@ -2174,7 +2178,7 @@ type admissionFingerprints struct {
 }
 
 func admissionEvaluationFingerprints(settings Settings, candidate connector.Issue) admissionFingerprints {
-	candidateFingerprint := issueFingerprint(candidate)
+	candidateFingerprint := admissionCandidateFingerprint(candidate)
 	promptParts := []string{
 		admissionPromptFingerprintVersion,
 		settings.ProjectID,
@@ -2202,6 +2206,20 @@ func admissionEvaluationFingerprints(settings Settings, candidate connector.Issu
 			promptFingerprint,
 		),
 	}
+}
+
+func admissionCandidateFingerprint(candidate connector.Issue) string {
+	agentCandidate := admissionCandidate(candidate)
+	parts := []string{
+		admissionCandidateFingerprintVersion,
+		agentCandidate.ID,
+		agentCandidate.Identifier,
+		agentCandidate.Title,
+		agentCandidate.Description,
+		agentCandidate.State,
+		agentCandidate.AuthorID,
+	}
+	return stableAdmissionFingerprint(append(parts, agentCandidate.Labels...)...)
 }
 
 func admissionErrorFingerprint(errorClass string, errorCode string, output []byte) string {
@@ -2372,15 +2390,7 @@ func admissionRequest(settings Settings, candidates []connector.Issue) *runner.A
 	}
 	agentCandidates := make([]runner.AdmissionCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		agentCandidates = append(agentCandidates, runner.AdmissionCandidate{
-			ID:          candidate.ID,
-			Identifier:  candidate.Identifier,
-			Title:       candidate.Title,
-			Description: candidate.Description,
-			State:       candidate.State,
-			AuthorID:    candidate.AuthorID,
-			Labels:      append([]string(nil), candidate.Labels...),
-		})
+		agentCandidates = append(agentCandidates, admissionCandidate(candidate))
 	}
 	return &runner.AdmissionRequest{
 		Schedule:        settings.Config.Schedule,
@@ -2392,6 +2402,18 @@ func admissionRequest(settings Settings, candidates []connector.Issue) *runner.A
 		EffortText:      settings.EffortRubric.Text,
 		AllowedEfforts:  append([]string(nil), settings.EffortRubric.Efforts...),
 		Candidates:      agentCandidates,
+	}
+}
+
+func admissionCandidate(candidate connector.Issue) runner.AdmissionCandidate {
+	return runner.AdmissionCandidate{
+		ID:          candidate.ID,
+		Identifier:  candidate.Identifier,
+		Title:       candidate.Title,
+		Description: candidate.Description,
+		State:       candidate.State,
+		AuthorID:    candidate.AuthorID,
+		Labels:      append([]string(nil), candidate.Labels...),
 	}
 }
 

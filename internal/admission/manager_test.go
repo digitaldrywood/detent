@@ -3342,6 +3342,70 @@ func TestManagerAcceptsCorrectedAdmissionBeforeMalformedLimit(t *testing.T) {
 	}
 }
 
+func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 45, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	agent := &malformedAdmissionRunner{malformedOutputs: []string{
+		`{`,
+		`[`,
+		`{"evaluations":`,
+		`{"evaluations":[`,
+	}}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, agent),
+		openManagerTestStore(t),
+		func() time.Time { return now },
+	)
+
+	for attempt := 1; attempt <= 4; attempt++ {
+		result, err := manager.RunOnce(t.Context())
+		if err != nil || len(result.Malformed) != 1 || result.Malformed[0].AttemptCount != attempt {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+	}
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || result.Skipped["malformed_output_blocked"] != 1 || agent.calls != 4 {
+		t.Fatalf("RunOnce() after bound = %#v, %v; runner calls = %d", result, err, agent.calls)
+	}
+}
+
+func TestManagerRecoversAfterRunnerErrors(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 50, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	wantErr := errors.New("backend authentication failed")
+	agent := &recoveringAdmissionRunner{errorsRemaining: 4, err: wantErr}
+	backend := openManagerTestStore(t)
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, agent),
+		backend,
+		func() time.Time { return now },
+	)
+
+	for attempt := 1; attempt <= 4; attempt++ {
+		result, err := manager.RunOnce(t.Context())
+		if !errors.Is(err, wantErr) || len(result.Malformed) != 0 {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+	}
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID || agent.calls != 5 {
+		t.Fatalf("corrected RunOnce() = %#v, %v; runner calls = %d", result, err, agent.calls)
+	}
+	runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 5)
+	if err != nil || len(runs) != 5 || runs[1].Outcome != "failed" || len(runs[1].Malformed) != 0 ||
+		!strings.Contains(runs[1].Error, "runner_error") {
+		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+	}
+}
+
 func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -3564,9 +3628,51 @@ func TestAdmissionEvaluationFingerprintsChangeWithMaterialInput(t *testing.T) {
 		wantPromptChange    bool
 	}{
 		{
+			name: "candidate id",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.ID += "-changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate identifier",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Identifier += "-changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate title",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Title += " changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
 			name: "candidate body",
 			change: func(_ *Settings, issue *connector.Issue) {
 				issue.Description += " changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate state",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.State += " changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate author",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.AuthorID += "changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate labels",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Labels = append(append([]string(nil), issue.Labels...), "changed")
 			},
 			wantCandidateChange: true,
 		},
@@ -3715,14 +3821,45 @@ func (r staticAdmissionRunner) Run(context.Context, runner.RunRequest) (runner.R
 type malformedAdmissionRunner struct {
 	malformedCalls   int
 	malformedIssueID string
+	malformedOutputs []string
 	calls            int
 }
 
 func (r *malformedAdmissionRunner) Run(_ context.Context, request runner.RunRequest) (runner.RunResult, error) {
 	r.calls++
 	if r.calls <= r.malformedCalls ||
+		r.calls <= len(r.malformedOutputs) ||
 		(len(request.Admission.Candidates) > 0 && request.Admission.Candidates[0].ID == r.malformedIssueID) {
-		return runner.RunResult{Output: `{`, FinalState: runner.FinalStateCompleted}, nil
+		output := `{`
+		if r.calls <= len(r.malformedOutputs) {
+			output = r.malformedOutputs[r.calls-1]
+		}
+		return runner.RunResult{Output: output, FinalState: runner.FinalStateCompleted}, nil
+	}
+	evaluations := make([]AgentEvaluation, 0, len(request.Admission.Candidates))
+	for _, candidate := range request.Admission.Candidates {
+		evaluations = append(evaluations, admissionProposalEvaluation(candidate.ID))
+	}
+	raw, err := json.Marshal(struct {
+		Evaluations []AgentEvaluation `json:"evaluations"`
+	}{Evaluations: evaluations})
+	if err != nil {
+		return runner.RunResult{}, err
+	}
+	return runner.RunResult{Output: string(raw), FinalState: runner.FinalStateCompleted}, nil
+}
+
+type recoveringAdmissionRunner struct {
+	errorsRemaining int
+	err             error
+	calls           int
+}
+
+func (r *recoveringAdmissionRunner) Run(_ context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	r.calls++
+	if r.errorsRemaining > 0 {
+		r.errorsRemaining--
+		return runner.RunResult{}, r.err
 	}
 	evaluations := make([]AgentEvaluation, 0, len(request.Admission.Candidates))
 	for _, candidate := range request.Admission.Candidates {

@@ -891,16 +891,19 @@ func (s *sqliteStore) RecordAdmissionMalformedResult(
 	if err != nil {
 		return admissionmodel.MalformedResult{}, err
 	}
-	status := admissionmodel.MalformedRetryable
-	if attemptLimit == 1 {
-		status = admissionmodel.MalformedBlocked
-	}
 	row := s.db.QueryRowContext(ctx, `
 INSERT INTO backlog_admission_malformed_results (
   project_id, issue_id, issue_identifier, issue_url, candidate_fingerprint,
   prompt_fingerprint, proposal_fingerprint, error_fingerprint, error_class,
   error_code, output_excerpt, attempt_count, status, first_seen_at, last_seen_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, next_attempt,
+         CASE WHEN next_attempt >= ? THEN 'blocked' ELSE 'retryable' END, ?, ?
+FROM (
+  SELECT COALESCE(MAX(attempt_count), 0) + 1 AS next_attempt
+  FROM backlog_admission_malformed_results
+  WHERE project_id = ? AND proposal_fingerprint = ? AND status <> 'resolved'
+)
+WHERE true
 ON CONFLICT(project_id, proposal_fingerprint, error_fingerprint) DO UPDATE SET
   issue_id = excluded.issue_id,
   issue_identifier = excluded.issue_identifier,
@@ -910,15 +913,8 @@ ON CONFLICT(project_id, proposal_fingerprint, error_fingerprint) DO UPDATE SET
   error_class = excluded.error_class,
   error_code = excluded.error_code,
   output_excerpt = excluded.output_excerpt,
-  attempt_count = CASE
-    WHEN backlog_admission_malformed_results.status = 'resolved' THEN 1
-    ELSE backlog_admission_malformed_results.attempt_count + 1
-  END,
-  status = CASE
-    WHEN backlog_admission_malformed_results.status <> 'resolved'
-      AND backlog_admission_malformed_results.attempt_count + 1 >= ? THEN 'blocked'
-    ELSE 'retryable'
-  END,
+  attempt_count = excluded.attempt_count,
+  status = excluded.status,
   first_seen_at = CASE
     WHEN backlog_admission_malformed_results.status = 'resolved' THEN excluded.first_seen_at
     ELSE backlog_admission_malformed_results.first_seen_at
@@ -940,10 +936,11 @@ RETURNING project_id, issue_id, issue_identifier, issue_url, candidate_fingerpri
 		strings.TrimSpace(record.ErrorClass),
 		strings.TrimSpace(record.ErrorCode),
 		record.OutputExcerpt,
-		status,
-		seenAt,
-		seenAt,
 		attemptLimit,
+		seenAt,
+		seenAt,
+		strings.TrimSpace(record.ProjectID),
+		strings.TrimSpace(record.ProposalFingerprint),
 	)
 	stored, err := scanAdmissionMalformedResult(row.Scan)
 	if err != nil {

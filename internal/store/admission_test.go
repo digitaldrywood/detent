@@ -255,19 +255,27 @@ func TestAdmissionMalformedResultLifecycle(t *testing.T) {
 		OutputExcerpt:        `{"token":"<redacted>"}`,
 	}
 
-	for attempt := 1; attempt <= 4; attempt++ {
-		record.LastSeenAt = now.Add(time.Duration(attempt) * time.Minute)
+	errorFingerprints := []string{
+		"error-fingerprint-1",
+		"error-fingerprint-2",
+		"error-fingerprint-3",
+		"error-fingerprint-4",
+	}
+	for attempt, errorFingerprint := range errorFingerprints {
+		record.ErrorFingerprint = errorFingerprint
+		record.OutputExcerpt = `{"variation":"` + errorFingerprint + `"}`
+		record.LastSeenAt = now.Add(time.Duration(attempt+1) * time.Minute)
 		stored, err := backend.RecordAdmissionMalformedResult(ctx, record, 4)
 		if err != nil {
-			t.Fatalf("RecordAdmissionMalformedResult() attempt %d error = %v", attempt, err)
+			t.Fatalf("RecordAdmissionMalformedResult() attempt %d error = %v", attempt+1, err)
 		}
 		wantStatus := admissionmodel.MalformedRetryable
-		if attempt == 4 {
+		if attempt == len(errorFingerprints)-1 {
 			wantStatus = admissionmodel.MalformedBlocked
 		}
-		if stored.AttemptCount != attempt || stored.Status != wantStatus ||
+		if stored.AttemptCount != attempt+1 || stored.Status != wantStatus ||
 			stored.OutputExcerpt != record.OutputExcerpt {
-			t.Fatalf("attempt %d stored = %#v", attempt, stored)
+			t.Fatalf("attempt %d stored = %#v", attempt+1, stored)
 		}
 	}
 
