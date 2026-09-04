@@ -327,9 +327,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		Outcome:      "completed",
 	}
 	defer func() {
-		localDeferred := false
 		if deferral, ok := connector.ErrorLocalDeferral(runErr); ok {
-			localDeferred = true
 			result.DeferredReason = deferral.Reason
 			if scheduled && deferral.RetryAfter > 0 {
 				result.ResumeAt = m.now().UTC().Add(deferral.RetryAfter)
@@ -337,6 +335,10 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 			runErr = nil
 		}
 		runErr = errors.Join(runErr, cleanupErr)
+		if cleanupErr != nil {
+			result.DeferredReason = ""
+			result.ResumeAt = time.Time{}
+		}
 		record.CompletedAt = m.now().UTC()
 		record.CandidatesFound = result.CandidatesFound
 		record.Candidates = result.Candidates
@@ -358,7 +360,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		if result.DeferredReason != "" {
 			record.Outcome = "deferred"
 		}
-		if runErr != nil && !localDeferred {
+		if runErr != nil {
 			record.Outcome = "failed"
 		}
 		if runErr != nil {
@@ -1199,11 +1201,7 @@ func (m *Manager) executeEvaluations(
 	if len(evaluations) != len(candidates) {
 		return result, fmt.Errorf("%w: got %d evaluations for %d candidates", ErrInvalidOutput, len(evaluations), len(candidates))
 	}
-	ids := make([]string, 0, len(candidates))
 	candidateByID := issueMap(candidates)
-	for _, candidate := range candidates {
-		ids = append(ids, candidate.ID)
-	}
 	evaluationByID := make(map[string]AgentEvaluation, len(evaluations))
 	for _, evaluation := range evaluations {
 		issueID := strings.TrimSpace(evaluation.IssueID)
@@ -1246,44 +1244,66 @@ func (m *Manager) executeEvaluations(
 		}
 		evaluationByID[issueID] = evaluation
 	}
-	fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, ids)
+	open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
 	if err != nil {
-		return result, fmt.Errorf("revalidate backlog admission candidates: %w", err)
+		return result, err
 	}
-	type evaluationPlan struct {
-		issue          connector.Issue
-		stale          bool
-		classification *admissionDeclineClassification
-		proposal       *admissionmodel.Proposal
-	}
-	freshByID := issueMap(fresh)
-	plans := make([]evaluationPlan, 0, len(candidates))
-	proposalCount := 0
 	for _, original := range candidates {
 		issueID := strings.TrimSpace(original.ID)
 		evaluation := evaluationByID[issueID]
-		current, currentFound := freshByID[issueID]
+		fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{issueID})
+		if err != nil {
+			return result, fmt.Errorf("revalidate backlog admission candidate %s: %w", original.Identifier, err)
+		}
+		current, currentFound := issueMap(fresh)[issueID]
 		if !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
 			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
-			plans = append(plans, evaluationPlan{issue: original, stale: true})
+			result.Skipped["stale_or_ineligible"]++
 			continue
 		}
-		if classification, declined := classifyNonDeliverable(current); declined {
-			plans = append(plans, evaluationPlan{issue: current, classification: &classification})
-			continue
-		}
-		if evaluation.Disposition == admissionDispositionDeclined {
+		var classification *admissionDeclineClassification
+		if declineClassification, declined := classifyNonDeliverable(current); declined {
+			classification = &declineClassification
+		} else if evaluation.Disposition == admissionDispositionDeclined {
 			failed := evaluation.Findings[0]
 			confidence := *evaluation.Confidence
-			classification := admissionDeclineClassification{
+			declineClassification := admissionDeclineClassification{
 				reason:          admissionDeclineCriteriaNotMet,
 				detail:          failed.Rationale,
 				confidence:      &confidence,
 				failedDimension: failed.Dimension,
 				failedCriterion: failed.CriterionQuote,
 			}
-			plans = append(plans, evaluationPlan{issue: current, classification: &classification})
+			classification = &declineClassification
+		}
+		if classification != nil {
+			decline, created, err := m.createAdmissionDecline(ctx, settings, current, *classification, at)
+			if err != nil {
+				return result, err
+			}
+			if classification.reason == admissionDeclineCriteriaNotMet {
+				result.Skipped[admissionDeclineCriteriaNotMet]++
+				continue
+			}
+			commented, err := m.ensureAdmissionDeclineComment(
+				ctx,
+				settings.Issues,
+				current,
+				decline,
+				created,
+				commentsRemaining > 0,
+			)
+			if err != nil {
+				return result, err
+			}
+			if commented {
+				commentsRemaining--
+			}
+			result.Skipped["non_deliverable"]++
 			continue
+		}
+		if open >= settings.Config.MaxOpenProposals {
+			return result, errors.New("backlog admission proposal capacity changed during evaluation")
 		}
 		proposal := admissionmodel.Proposal{
 			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
@@ -1303,48 +1323,6 @@ func (m *Manager) executeEvaluations(
 			CreatedAt:         at,
 			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
 		}
-		plans = append(plans, evaluationPlan{issue: current, proposal: &proposal})
-		proposalCount++
-	}
-	open, err := m.store.CountOpenAdmissionProposals(ctx, settings.ProjectID)
-	if err != nil {
-		return result, err
-	}
-	if open+proposalCount > settings.Config.MaxOpenProposals {
-		return result, errors.New("backlog admission proposal capacity changed during evaluation")
-	}
-	for _, plan := range plans {
-		if plan.stale {
-			result.Skipped["stale_or_ineligible"]++
-			continue
-		}
-		if plan.classification != nil {
-			decline, created, err := m.createAdmissionDecline(ctx, settings, plan.issue, *plan.classification, at)
-			if err != nil {
-				return result, err
-			}
-			if plan.classification.reason == admissionDeclineCriteriaNotMet {
-				result.Skipped[admissionDeclineCriteriaNotMet]++
-				continue
-			}
-			commented, err := m.ensureAdmissionDeclineComment(
-				ctx,
-				settings.Issues,
-				plan.issue,
-				decline,
-				created,
-				commentsRemaining > 0,
-			)
-			if err != nil {
-				return result, err
-			}
-			if commented {
-				commentsRemaining--
-			}
-			result.Skipped["non_deliverable"]++
-			continue
-		}
-		proposal := *plan.proposal
 		created, err := m.store.CreateAdmissionProposal(ctx, proposal)
 		if err != nil {
 			return result, err
@@ -1353,18 +1331,19 @@ func (m *Manager) executeEvaluations(
 			result.Skipped["unchanged_open_proposal"]++
 			continue
 		}
+		open++
 		result.Proposals = append(result.Proposals, proposal)
 		if commentsRemaining > 0 {
-			if err := m.commentProposal(ctx, settings, proposal, plan.issue); err != nil {
+			if err := m.commentProposal(ctx, settings, proposal, current); err != nil {
 				return result, err
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, plan.issue.Labels) {
+		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
 			if err := m.admitProposal(
 				ctx,
 				settings,
-				plan.issue,
+				current,
 				proposal,
 				automaticAdmissionDecision(settings.Issues, proposal, at),
 			); err != nil {

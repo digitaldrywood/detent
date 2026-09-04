@@ -1885,7 +1885,13 @@ func sortedRESTEndpointUsages(usages map[string]connector.RESTEndpointUsage) []c
 		if out[i].CredentialIdentity != out[j].CredentialIdentity {
 			return out[i].CredentialIdentity < out[j].CredentialIdentity
 		}
-		return out[i].EndpointFamily < out[j].EndpointFamily
+		if out[i].EndpointFamily != out[j].EndpointFamily {
+			return out[i].EndpointFamily < out[j].EndpointFamily
+		}
+		if out[i].BudgetScope != out[j].BudgetScope {
+			return out[i].BudgetScope < out[j].BudgetScope
+		}
+		return out[i].BudgetGate < out[j].BudgetGate
 	})
 	return out
 }

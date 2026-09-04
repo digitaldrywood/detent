@@ -1993,6 +1993,108 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 	}
 }
 
+func TestManagerScheduledEvaluationFanoutDeferralCheckpointsBeforeResume(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	current := now
+	tracker := memory.New(memory.Config{
+		Issues: []connector.Issue{
+			admissionIssueFixture("issue-1", "DD-1", 1, now),
+			admissionIssueFixture("issue-2", "DD-2", 2, now),
+		},
+		Stateful: true,
+		Now:      func() time.Time { return current },
+	})
+	capped := &fanoutCappedAdmissionIssueStore{IssueStore: tracker, maxRequests: 1}
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(capped, agent)
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return current })
+
+	attempt, scheduled, err := manager.nextScheduledAttempt(t.Context())
+	if err != nil || !scheduled {
+		t.Fatalf("nextScheduledAttempt() = %#v, %t, %v", attempt, scheduled, err)
+	}
+	current = attempt.ScheduledFor
+	partial, err := manager.run(t.Context(), attempt.ScheduledFor, true)
+	if err != nil {
+		t.Fatalf("scheduled run error = %v", err)
+	}
+	wantResumeAt := current.Add(30 * time.Second)
+	if partial.DeferredReason != "github_rest_fanout_cap" || !partial.ResumeAt.Equal(wantResumeAt) || len(partial.Proposals) != 1 {
+		t.Fatalf("partial result = %#v, want one checkpointed proposal and resume at %s", partial, wantResumeAt)
+	}
+	if capped.deferrals != 1 || capped.deferredScope != admissionRESTFanoutScope+"_evaluation" {
+		t.Fatalf("evaluation deferrals = %d scope = %q", capped.deferrals, capped.deferredScope)
+	}
+	firstProposalID := partial.Proposals[0].IssueID
+
+	restartedSettings := admissionTestSettings(tracker, agent)
+	restarted := newAdmissionTestManager(t, restartedSettings, backend, func() time.Time { return current })
+	resumedAttempt, scheduled, err := restarted.nextScheduledAttempt(t.Context())
+	if err != nil || !scheduled || !resumedAttempt.RunAt.Equal(wantResumeAt) ||
+		!resumedAttempt.ScheduledFor.Equal(attempt.ScheduledFor) {
+		t.Fatalf("resumed nextScheduledAttempt() = %#v, %t, %v", resumedAttempt, scheduled, err)
+	}
+	current = wantResumeAt
+	completed, err := restarted.run(t.Context(), resumedAttempt.ScheduledFor, true)
+	if err != nil || completed.DeferredReason != "" || !completed.ResumeAt.IsZero() || len(completed.Proposals) != 1 {
+		t.Fatalf("resumed run = %#v, %v", completed, err)
+	}
+	if agent.calls != 2 || len(agent.candidateIDs) != 2 || len(agent.candidateIDs[0]) != 2 || len(agent.candidateIDs[1]) != 1 {
+		t.Fatalf("runner calls = %d candidates = %#v", agent.calls, agent.candidateIDs)
+	}
+	if agent.candidateIDs[1][0] == firstProposalID {
+		t.Fatalf("resumed candidate = %q, want candidate not already checkpointed", agent.candidateIDs[1][0])
+	}
+	open, err := backend.OpenAdmissionProposals(t.Context(), settings.ProjectID, 0)
+	if err != nil || len(open) != 2 {
+		t.Fatalf("OpenAdmissionProposals() = %#v, %v, want two unique proposals", open, err)
+	}
+	latest, found, err := backend.LatestAdmissionRun(t.Context(), settings.ProjectID)
+	if err != nil || !found || latest.Outcome != "completed" ||
+		!latest.ScheduledFor.Equal(attempt.ScheduledFor) || !latest.ResumeAt.IsZero() {
+		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", latest, found, err)
+	}
+}
+
+func TestManagerCleanupFailureOverridesScheduledFanoutDeferral(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	current := now
+	tracker := memory.New(memory.Config{
+		Issues: []connector.Issue{
+			admissionIssueFixture("issue-1", "DD-1", 1, now),
+			admissionIssueFixture("issue-2", "DD-2", 2, now),
+		},
+		Stateful: true,
+		Now:      func() time.Time { return current },
+	})
+	capped := &fanoutCappedAdmissionIssueStore{IssueStore: tracker, maxRequests: 1}
+	backend := openManagerTestStore(t)
+	releaseErr := errors.New("release admission capacity")
+	scheduler := &capacityScheduler{releaseErr: releaseErr}
+	settings := admissionTestSettings(capped, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings.Scheduler = scheduler
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return current })
+
+	attempt, scheduled, err := manager.nextScheduledAttempt(t.Context())
+	if err != nil || !scheduled {
+		t.Fatalf("nextScheduledAttempt() = %#v, %t, %v", attempt, scheduled, err)
+	}
+	current = attempt.ScheduledFor
+	result, err := manager.run(t.Context(), attempt.ScheduledFor, true)
+	if !errors.Is(err, releaseErr) {
+		t.Fatalf("scheduled run error = %v, want %v", err, releaseErr)
+	}
+	if result.DeferredReason != "" || !result.ResumeAt.IsZero() || scheduler.releases != 1 {
+		t.Fatalf("result = %#v releases = %d, want failed non-resumable cleanup", result, scheduler.releases)
+	}
+	latest, found, err := backend.LatestAdmissionRun(t.Context(), settings.ProjectID)
+	if err != nil || !found || latest.Outcome != "failed" || latest.DeferredReason != "" ||
+		!latest.ResumeAt.IsZero() || !strings.Contains(latest.Error, releaseErr.Error()) {
+		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", latest, found, err)
+	}
+}
+
 func TestAcquireCapacityReleaseClearsDerivedAdmissionReservation(t *testing.T) {
 	t.Parallel()
 
@@ -3349,6 +3451,29 @@ type deferringAdmissionIssueStore struct {
 	commentCalls     int
 	deferred         bool
 	deferredScope    string
+}
+
+type fanoutCappedAdmissionIssueStore struct {
+	IssueStore
+	maxRequests   int64
+	deferrals     int
+	deferredScope string
+}
+
+func (s *fanoutCappedAdmissionIssueStore) FetchIssueStatesByIDs(
+	ctx context.Context,
+	issueIDs []string,
+) ([]connector.Issue, error) {
+	if budget, ok := connector.RESTFanoutBudgetFromContext(ctx); ok {
+		for range issueIDs {
+			if _, allowed := budget.Reserve(s.maxRequests, 1); !allowed {
+				s.deferrals++
+				s.deferredScope = budget.Scope()
+				return nil, admissionFanoutDeferralError{scope: s.deferredScope}
+			}
+		}
+	}
+	return s.IssueStore.FetchIssueStatesByIDs(ctx, issueIDs)
 }
 
 func (s *deferringAdmissionIssueStore) FetchIssueComments(

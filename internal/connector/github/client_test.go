@@ -1236,6 +1236,44 @@ func TestClientRESTFanoutBudgetsIsolateProjectOperations(t *testing.T) {
 	}
 }
 
+func TestSortedRESTEndpointUsagesUsesBudgetTieBreakers(t *testing.T) {
+	tests := []struct {
+		name   string
+		usages map[string]connector.RESTEndpointUsage
+		want   string
+	}{
+		{
+			name: "budget scope",
+			usages: map[string]connector.RESTEndpointUsage{
+				"second": {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "refresh"},
+				"first":  {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "admission"},
+			},
+			want: "admission/|refresh/",
+		},
+		{
+			name: "budget gate",
+			usages: map[string]connector.RESTEndpointUsage{
+				"second": {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "admission", BudgetGate: "reserve"},
+				"first":  {CredentialIdentity: "credential", EndpointFamily: "issues", BudgetScope: "admission", BudgetGate: "fanout_cap"},
+			},
+			want: "admission/fanout_cap|admission/reserve",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sortedRESTEndpointUsages(tt.usages)
+			keys := make([]string, 0, len(got))
+			for _, usage := range got {
+				keys = append(keys, usage.BudgetScope+"/"+usage.BudgetGate)
+			}
+			if joined := strings.Join(keys, "|"); joined != tt.want {
+				t.Fatalf("sorted budget keys = %q, want %q", joined, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
 	t.Parallel()
 
