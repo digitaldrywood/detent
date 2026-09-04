@@ -46,6 +46,7 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 		{name: "no history", projectID: "agent-lab", variant: "no-history"},
 		{name: "one board staleness warning", variant: "board-staleness-one"},
 		{name: "twenty board staleness warnings", variant: "board-staleness-twenty"},
+		{name: "board dispatch fault", variant: "board-dispatch-fault"},
 		{name: "settings empty", variant: "settings-empty"},
 		{name: "settings long paths", variant: "settings-long-paths"},
 		{name: "settings missing", variant: "settings-missing"},
@@ -88,6 +89,28 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 			assertSnapshotProjectIDs(t, snapshot)
 			assertSnapshotIssueIDs(t, snapshot)
 		})
+	}
+}
+
+func TestBoardDispatchFaultScenarioUsesProjectDispatchPayload(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotForScenario("", "board-dispatch-fault")
+	if len(snapshot.DispatchStalls) != 0 {
+		t.Fatalf("DispatchStalls = %#v, want project-only dispatch payload", snapshot.DispatchStalls)
+	}
+	var status telemetry.DispatchStatus
+	for _, project := range snapshot.Projects {
+		if project.Project.ID == demoPrimaryProjectID {
+			status = project.Dispatch
+			break
+		}
+	}
+	if status.Class != observability.ClassFault || !status.Stalled || !status.NeedsHumanAttention || status.SkippedCount != 4 {
+		t.Fatalf("project dispatch = %#v, want four-card human-attention fault", status)
+	}
+	if len(snapshot.SchedulerDecisions) != status.SkippedCount {
+		t.Fatalf("scheduler decisions = %d, want %d affected cards", len(snapshot.SchedulerDecisions), status.SkippedCount)
 	}
 }
 
