@@ -121,6 +121,7 @@ type BacklogAdmissionRun struct {
 	IssuesJson           string         `json:"issues_json"`
 	Error                sql.NullString `json:"error"`
 	ProposalReason       sql.NullString `json:"proposal_reason"`
+	ResumeAt             sql.NullString `json:"resume_at"`
 }
 
 type BudgetOverride struct {

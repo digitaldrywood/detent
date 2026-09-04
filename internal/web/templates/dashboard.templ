@@ -415,11 +415,11 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 				</div>
 			}
 		</section>
-		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="GitHub endpoint backoff details">
+		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="GitHub REST endpoint details">
 			<div class="flex min-w-0 items-start justify-between gap-3">
 				<div class="min-w-0">
 					<h3 class="text-sm font-semibold text-text">Affected endpoints</h3>
-					<p class="text-sm text-sec">Endpoint families currently paused by secondary REST throttling.</p>
+					<p class="text-sm text-sec">Endpoint families affected by provider throttles or local REST gates.</p>
 				</div>
 				<span class="shrink-0 rounded-md bg-elev px-2 py-1 font-mono text-xs text-sec">{ formatInt(int64(len(gitHubAPIHealth(snapshot).Endpoints))) }</span>
 			</div>

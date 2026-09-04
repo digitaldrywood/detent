@@ -293,6 +293,15 @@ the run ledger instead of making the bounded result look complete. A run defers
 instead of queueing when project or fleet capacity is unavailable or its agent
 would exceed the configured daily budget.
 
+GitHub REST fanout is budgeted independently for proposal reconciliation,
+candidate discovery, and evaluation. If one of those local budgets is
+exhausted, the scheduled occurrence checkpoints its completed proposal and
+state transitions, records a retry time, and resumes the same occurrence after
+backoff. Restarting Detent preserves that retry; already-admitted proposals are
+not admitted or commented twice. This local deferral remains distinct from a
+provider rate-limit response and from the configured REST reserve floor in
+health telemetry and logs.
+
 Before an admission agent runs, Detent declines tracker, intake, study, and
 research artifacts without an explicit completion contract, plus bodies that
 are predominantly cross-issue task lists. The body marker

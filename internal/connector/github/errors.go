@@ -35,6 +35,7 @@ var (
 	ErrProjectNotFound             = errors.New("github project not found")
 	ErrRateLimited                 = connector.NewRetryableError("github rate limited")
 	ErrResourceExhausted           = fmt.Errorf("github resource exhausted: %w", connector.ErrResourceExhausted)
+	ErrRESTFanoutDeferred          = connector.NewRetryableError("github rest fanout deferred")
 	ErrRESTBudgetReserved          = connector.NewRetryableError("github rest budget reserved")
 	ErrStatusFieldNotFound         = errors.New("github status field not found")
 	ErrStatusOptionNotFound        = errors.New("github status option not found")
@@ -82,6 +83,36 @@ type StatusError struct {
 	RateLimitKind string
 	RetryAfter    time.Duration
 	ResetAt       time.Time
+}
+
+type RESTFanoutDeferralError struct {
+	EndpointFamily string
+	BudgetScope    string
+	FanoutCount    float64
+	FanoutCap      int64
+	RetryAfter     time.Duration
+}
+
+func (e *RESTFanoutDeferralError) Error() string {
+	if e == nil {
+		return ErrRESTFanoutDeferred.Error()
+	}
+	return fmt.Sprintf("%s: endpoint family %s reached request cap %d", ErrRESTFanoutDeferred, strings.TrimSpace(e.EndpointFamily), e.FanoutCap)
+}
+
+func (e *RESTFanoutDeferralError) Unwrap() error {
+	return ErrRESTFanoutDeferred
+}
+
+func (e *RESTFanoutDeferralError) LocalDeferral() connector.LocalDeferral {
+	if e == nil {
+		return connector.LocalDeferral{}
+	}
+	return connector.LocalDeferral{
+		Reason:     connector.LocalDeferralReasonRESTFanoutCap,
+		Scope:      e.BudgetScope,
+		RetryAfter: e.RetryAfter,
+	}
 }
 
 func (e *StatusError) Error() string {

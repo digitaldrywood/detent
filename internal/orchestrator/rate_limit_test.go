@@ -496,6 +496,32 @@ func TestRESTUsageSummaryPresence(t *testing.T) {
 	}
 }
 
+func TestRESTUsageSummaryPreservesLocalDeferralClassification(t *testing.T) {
+	t.Parallel()
+
+	usage := restUsageSummary(connector.RESTRateLimitUsage{
+		HasRateLimit:   true,
+		FanoutDeferred: true,
+		Requests: []connector.RESTEndpointUsage{{
+			EndpointFamily: "issue comments",
+			BudgetScope:    "backlog_admission_reconciliation",
+			BudgetGate:     "fanout_cap",
+			Count:          1,
+			RetryAfter:     30 * time.Second,
+		}},
+		TotalRequests: 1,
+	})
+	if usage == nil || usage.RateLimited || !usage.FanoutDeferred || usage.ReserveHeld {
+		t.Fatalf("restUsageSummary() = %#v, want fanout-only local deferral", usage)
+	}
+	if len(usage.Contributors) != 1 ||
+		usage.Contributors[0].BudgetScope != "backlog_admission_reconciliation" ||
+		usage.Contributors[0].BudgetGate != "fanout_cap" ||
+		usage.Contributors[0].LastStatus != 0 {
+		t.Fatalf("contributors = %#v, want typed local fanout gate without HTTP status", usage.Contributors)
+	}
+}
+
 func TestReplaceRESTConsumerBudgetsPreservesWorkerBudget(t *testing.T) {
 	t.Parallel()
 
@@ -1714,6 +1740,39 @@ func TestGitHubRESTLookupBackoffUsesRESTProbe(t *testing.T) {
 	}
 	if tracker.restProbeCalls != 2 || tracker.probeCalls != 0 {
 		t.Fatalf("probe calls = REST %d GraphQL %d, want REST 2 GraphQL 0", tracker.restProbeCalls, tracker.probeCalls)
+	}
+}
+
+func TestGitHubRESTFanoutDeferralDoesNotStartLookupBackoff(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "leadpipe"},
+		MaxConcurrentAgents:  4,
+		GitHubRESTMinReserve: 1000,
+	})
+	tracker := &rateLimitConnector{
+		restStatus: connector.RESTRateLimitUsage{
+			HasRateLimit:   true,
+			FanoutDeferred: true,
+			RateLimit: connector.RESTRateLimit{
+				Limit:     5000,
+				Used:      390,
+				Remaining: 4610,
+				ResetAt:   resetAt,
+			},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	state := newState(cfg)
+
+	if orch.githubLookupBackoffGate(t.Context(), &state, now) {
+		t.Fatal("githubLookupBackoffGate() = true for a local fanout deferral")
+	}
+	if _, _, active := githubLookupBackoff(state.BackendOutages); active {
+		t.Fatalf("BackendOutages = %#v, want no provider lookup backoff", state.BackendOutages)
 	}
 }
 

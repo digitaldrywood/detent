@@ -66,6 +66,8 @@ type RESTRateLimit struct {
 type RESTEndpointUsage struct {
 	CredentialIdentity string
 	EndpointFamily     string
+	BudgetScope        string
+	BudgetGate         string
 	Count              int64
 	Conditional        int64
 	NotModified        int64
@@ -116,6 +118,8 @@ type RESTRateLimitUsage struct {
 	NotModifiedRequests int64
 	BillableRequests    int64
 	RateLimited         bool
+	ReserveHeld         bool
+	FanoutDeferred      bool
 	BackoffUntil        time.Time
 }
 

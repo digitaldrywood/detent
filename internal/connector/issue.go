@@ -155,6 +155,7 @@ const (
 	PullRequestHydrationReasonRateLimited         = "rate_limited"
 	PullRequestHydrationReasonSecondaryThrottled  = "secondary_throttled"
 	PullRequestHydrationReasonPrimaryExhausted    = "primary_exhausted"
+	PullRequestHydrationReasonRESTFanoutDeferred  = "rest_fanout_deferred"
 	PullRequestHydrationReasonRESTBudgetReserved  = "rest_budget_reserved"
 	PullRequestHydrationReasonChecksUnavailable   = "checks_unavailable"
 	PullRequestHydrationReasonStaleCachedPullData = "stale_cached_pull_request"

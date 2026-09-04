@@ -1571,6 +1571,8 @@ type RESTUsage struct {
 	NotModifiedRequests int64                  `json:"not_modified_requests,omitempty"`
 	BillableRequests    int64                  `json:"billable_requests,omitempty"`
 	RateLimited         bool                   `json:"rate_limited,omitempty"`
+	ReserveHeld         bool                   `json:"reserve_held,omitempty"`
+	FanoutDeferred      bool                   `json:"fanout_deferred,omitempty"`
 	BackoffUntil        *time.Time             `json:"backoff_until,omitempty"`
 	Contributors        []RESTUsageContributor `json:"contributors,omitempty"`
 	Divergences         []RESTUsageDivergence  `json:"divergences,omitempty"`
@@ -1600,6 +1602,8 @@ type RESTUsageContributor struct {
 	Consumer           string     `json:"consumer,omitempty"`
 	CredentialIdentity string     `json:"credential_identity,omitempty"`
 	EndpointFamily     string     `json:"endpoint_family"`
+	BudgetScope        string     `json:"budget_scope,omitempty"`
+	BudgetGate         string     `json:"budget_gate,omitempty"`
 	Count              int64      `json:"count"`
 	Conditional        int64      `json:"conditional,omitempty"`
 	NotModified        int64      `json:"not_modified,omitempty"`

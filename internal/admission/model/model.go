@@ -69,6 +69,7 @@ type RunRecord struct {
 	CompletedAt     time.Time
 	Outcome         string
 	DeferredReason  string
+	ResumeAt        time.Time
 	ProposalReason  string
 	CandidatesFound int
 	Candidates      int

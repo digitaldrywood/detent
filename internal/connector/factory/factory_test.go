@@ -282,8 +282,8 @@ func TestFactoryGitHubConnectorUsesConfiguredLogger(t *testing.T) {
 		t.Fatalf("FetchStatusDrift() first error = %v", err)
 	}
 	_, err = driftReader.FetchStatusDrift(context.Background())
-	if !errors.Is(err, githubconnector.ErrRESTBudgetReserved) {
-		t.Fatalf("FetchStatusDrift() error = %v, want ErrRESTBudgetReserved", err)
+	if !errors.Is(err, githubconnector.ErrRESTFanoutDeferred) {
+		t.Fatalf("FetchStatusDrift() error = %v, want ErrRESTFanoutDeferred", err)
 	}
 	if strings.Contains(defaultLogs.String(), "github rest budget preserved") {
 		t.Fatalf("default logger received connector warning:\n%s", defaultLogs.String())

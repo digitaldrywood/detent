@@ -180,7 +180,7 @@ func (c *Connector) attachBranchPullRequests(
 	if err != nil {
 		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
 			cursor := ""
-			if errors.Is(err, ErrRESTBudgetReserved) {
+			if restFanoutOrReserveDeferred(err) {
 				cursor = firstUnattachedBranchPullRequestCandidate(issues, candidates)
 			}
 			markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
@@ -254,7 +254,7 @@ func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []c
 	for _, repo := range repos {
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
-			if errors.Is(err, ErrRESTBudgetReserved) {
+			if restFanoutOrReserveDeferred(err) {
 				continue
 			}
 			return err
@@ -698,7 +698,7 @@ func (c *Connector) attachLinkedPullRequests(
 		}
 		hydration := hydrations[hydrationIndex]
 		if hydration.state.Reason != "" {
-			if hydration.state.Reason == connector.PullRequestHydrationReasonRESTBudgetReserved && nextCursor == "" {
+			if pullRequestHydrationBudgetDeferred(hydration.state.Reason) && nextCursor == "" {
 				nextCursor = candidate.Identifier
 			}
 			if hydration.pullRequest.Number <= 0 {
@@ -786,7 +786,7 @@ func (c *Connector) attachMatchingPullRequests(
 						hydrated[pullRequest.Number] = pullRequest
 						attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
 						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-						if errors.Is(err, ErrRESTBudgetReserved) {
+						if restFanoutOrReserveDeferred(err) {
 							return candidate.Identifier, nil
 						}
 						return "", nil
@@ -799,7 +799,7 @@ func (c *Connector) attachMatchingPullRequests(
 						hydrated[pullRequest.Number] = hydratedPullRequest
 						attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
 						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-						if errors.Is(err, ErrRESTBudgetReserved) {
+						if restFanoutOrReserveDeferred(err) {
 							return candidate.Identifier, nil
 						}
 						return "", nil
@@ -989,6 +989,8 @@ func (c *Connector) currentPullRequestHydrationState(repo pullRequestRepo) (pull
 
 func (c *Connector) pullRequestHydrationStateForError(repo pullRequestRepo, err error) pullRequestHydrationState {
 	switch {
+	case errors.Is(err, ErrRESTFanoutDeferred):
+		return pullRequestHydrationState{Reason: connector.PullRequestHydrationReasonRESTFanoutDeferred}
 	case errors.Is(err, ErrRESTBudgetReserved):
 		return pullRequestHydrationState{Reason: connector.PullRequestHydrationReasonRESTBudgetReserved}
 	case errors.Is(err, ErrRateLimited):
@@ -1008,6 +1010,14 @@ func (c *Connector) pullRequestHydrationStateForError(repo pullRequestRepo, err 
 	default:
 		return pullRequestHydrationState{}
 	}
+}
+
+func restFanoutOrReserveDeferred(err error) bool {
+	return errors.Is(err, ErrRESTFanoutDeferred) || errors.Is(err, ErrRESTBudgetReserved)
+}
+
+func pullRequestHydrationBudgetDeferred(reason string) bool {
+	return reason == connector.PullRequestHydrationReasonRESTFanoutDeferred || reason == connector.PullRequestHydrationReasonRESTBudgetReserved
 }
 
 func (c *Connector) tripPullRequestHydrationCircuit(repo pullRequestRepo, retryAfter time.Duration) pullRequestHydrationState {
