@@ -2,9 +2,11 @@ package watcher
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -27,22 +29,27 @@ type FileUpdate[T any] struct {
 type FileOption func(*fileOptions)
 
 type FileWatcher[T any] struct {
-	path       string
-	files      []watchedFile
-	dirs       []string
-	debounce   time.Duration
-	loader     FileLoader[T]
-	logger     *slog.Logger
-	newWatcher fileWatcherFactory
-	newTimer   fileTimerFactory
+	path          string
+	files         []watchedFile
+	debounce      time.Duration
+	retryInterval time.Duration
+	pollInterval  time.Duration
+	loader        FileLoader[T]
+	logger        *slog.Logger
+	newWatcher    fileWatcherFactory
+	newTimer      fileTimerFactory
+	newTicker     fileTickerFactory
 }
 
 type fileOptions struct {
-	debounce   time.Duration
-	logger     *slog.Logger
-	watchPaths []string
-	newWatcher fileWatcherFactory
-	newTimer   fileTimerFactory
+	debounce      time.Duration
+	retryInterval time.Duration
+	pollInterval  time.Duration
+	logger        *slog.Logger
+	watchPaths    []string
+	newWatcher    fileWatcherFactory
+	newTimer      fileTimerFactory
+	newTicker     fileTickerFactory
 }
 
 type watchedFile struct {
@@ -75,6 +82,39 @@ type standardFileTimer struct {
 
 type fileTimerFactory func(time.Duration) fileTimer
 
+type fileTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type standardFileTicker struct {
+	ticker *time.Ticker
+}
+
+type fileTickerKind uint8
+
+const (
+	filePollTicker fileTickerKind = iota
+	fileRetryTicker
+)
+
+type fileTickerFactory func(fileTickerKind, time.Duration) fileTicker
+
+type fileStamp struct {
+	target  string
+	modTime time.Time
+	size    int64
+	mode    os.FileMode
+	digest  [sha256.Size]byte
+	err     string
+}
+
+type fileWatchState struct {
+	files       []watchedFile
+	watchedDirs map[string]struct{}
+	stamps      []fileStamp
+}
+
 func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*FileWatcher[T], error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -90,18 +130,27 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 	}
 
 	cfg := fileOptions{
-		debounce:   defaultDebounce,
-		logger:     slog.Default(),
-		newWatcher: newFileEventWatcher,
+		debounce:      defaultDebounce,
+		retryInterval: defaultFileWatchRetryInterval,
+		pollInterval:  defaultFilePollInterval,
+		logger:        slog.Default(),
+		newWatcher:    newFileEventWatcher,
 		newTimer: func(duration time.Duration) fileTimer {
 			return &standardFileTimer{timer: time.NewTimer(duration)}
 		},
+		newTicker: newFileTicker,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	if cfg.debounce <= 0 {
 		cfg.debounce = defaultDebounce
+	}
+	if cfg.retryInterval <= 0 {
+		cfg.retryInterval = defaultFileWatchRetryInterval
+	}
+	if cfg.pollInterval <= 0 {
+		cfg.pollInterval = defaultFilePollInterval
 	}
 	if cfg.logger == nil {
 		cfg.logger = slog.Default()
@@ -113,6 +162,9 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 		cfg.newTimer = func(duration time.Duration) fileTimer {
 			return &standardFileTimer{timer: time.NewTimer(duration)}
 		}
+	}
+	if cfg.newTicker == nil {
+		cfg.newTicker = newFileTicker
 	}
 
 	path = filepath.Clean(absolute)
@@ -134,20 +186,17 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 		seen[additionalPath] = struct{}{}
 		files = append(files, watchedFile{path: additionalPath, target: resolveWatchPath(additionalPath)})
 	}
-	watchPaths := make([]string, 0, len(files)*2)
-	for _, file := range files {
-		watchPaths = append(watchPaths, file.path, file.target)
-	}
-
 	return &FileWatcher[T]{
-		path:       path,
-		files:      files,
-		dirs:       watchDirs(watchPaths...),
-		debounce:   cfg.debounce,
-		loader:     loader,
-		logger:     cfg.logger,
-		newWatcher: cfg.newWatcher,
-		newTimer:   cfg.newTimer,
+		path:          path,
+		files:         files,
+		debounce:      cfg.debounce,
+		retryInterval: cfg.retryInterval,
+		pollInterval:  cfg.pollInterval,
+		loader:        loader,
+		logger:        cfg.logger,
+		newWatcher:    cfg.newWatcher,
+		newTimer:      cfg.newTimer,
+		newTicker:     cfg.newTicker,
 	}, nil
 }
 
@@ -187,10 +236,30 @@ func (t *standardFileTimer) Stop() bool {
 	return t.timer.Stop()
 }
 
-func withFileRuntime(newWatcher fileWatcherFactory, newTimer fileTimerFactory) FileOption {
+func newFileTicker(_ fileTickerKind, duration time.Duration) fileTicker {
+	return &standardFileTicker{ticker: time.NewTicker(duration)}
+}
+
+func (t *standardFileTicker) C() <-chan time.Time {
+	return t.ticker.C
+}
+
+func (t *standardFileTicker) Stop() {
+	t.ticker.Stop()
+}
+
+func withFileRuntime(newWatcher fileWatcherFactory, newTimer fileTimerFactory, newTicker fileTickerFactory) FileOption {
 	return func(opts *fileOptions) {
 		opts.newWatcher = newWatcher
 		opts.newTimer = newTimer
+		opts.newTicker = newTicker
+	}
+}
+
+func withFileIntervals(retryInterval, pollInterval time.Duration) FileOption {
+	return func(opts *fileOptions) {
+		opts.retryInterval = retryInterval
+		opts.pollInterval = pollInterval
 	}
 }
 
@@ -242,19 +311,27 @@ func (w *FileWatcher[T]) Watch(ctx context.Context) (<-chan FileUpdate[T], error
 	if err != nil {
 		return nil, fmt.Errorf("create config watcher: %w", err)
 	}
-	for _, dir := range w.dirs {
-		if err := fsWatcher.Add(dir); err != nil {
-			closeErr := fsWatcher.Close()
-			return nil, errors.Join(fmt.Errorf("watch config directory %s: %w", dir, err), closeErr)
-		}
+
+	state := newFileWatchState(w.files)
+	pending, err := state.syncWatchPaths(fsWatcher)
+	if err != nil {
+		closeErr := fsWatcher.Close()
+		return nil, errors.Join(err, closeErr)
 	}
+	state.stamps = state.captureStamps()
 
 	updates := make(chan FileUpdate[T], 1)
-	go w.run(ctx, fsWatcher, updates)
+	go w.run(ctx, fsWatcher, state, pending, updates)
 	return updates, nil
 }
 
-func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher fileEventWatcher, updates chan<- FileUpdate[T]) {
+func (w *FileWatcher[T]) run(
+	ctx context.Context,
+	fsWatcher fileEventWatcher,
+	state *fileWatchState,
+	pending bool,
+	updates chan<- FileUpdate[T],
+) {
 	defer close(updates)
 	defer func() {
 		if err := fsWatcher.Close(); err != nil {
@@ -263,11 +340,48 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher fileEventWatcher, up
 	}()
 
 	timer := w.newTimer(w.debounce)
-	if !timer.Stop() {
-		<-timer.C()
-	}
+	stopFileTimer(timer)
+	defer stopFileTimer(timer)
+	pollTicker := w.newTicker(filePollTicker, w.pollInterval)
+	defer pollTicker.Stop()
+
 	var timerC <-chan time.Time
+	var retryTicker fileTicker
+	var retryC <-chan time.Time
 	var lastUpdate *FileUpdate[T]
+	setRetry := func(needed bool) {
+		if needed && retryTicker == nil {
+			retryTicker = w.newTicker(fileRetryTicker, w.retryInterval)
+			retryC = retryTicker.C()
+			return
+		}
+		if !needed && retryTicker != nil {
+			retryTicker.Stop()
+			retryTicker = nil
+			retryC = nil
+		}
+	}
+	defer func() {
+		if retryTicker != nil {
+			retryTicker.Stop()
+		}
+	}()
+	setRetry(pending)
+
+	observe := func() {
+		needsRetry, err := state.syncWatchPaths(fsWatcher)
+		if err != nil {
+			w.logger.Warn("watch config directory failed; retrying", "path", w.path, "error", err)
+		}
+		setRetry(needsRetry)
+		stamps := state.captureStamps()
+		if slices.Equal(stamps, state.stamps) {
+			return
+		}
+		state.stamps = stamps
+		resetTimer(timer, w.debounce)
+		timerC = timer.C()
+	}
 
 	for {
 		select {
@@ -277,16 +391,18 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher fileEventWatcher, up
 			if !ok {
 				return
 			}
-			if w.matches(event) {
-				w.refreshWatchPath(fsWatcher.Add)
-				resetTimer(timer, w.debounce)
-				timerC = timer.C()
+			if state.matches(event) {
+				observe()
 			}
 		case err, ok := <-fsWatcher.Errors():
 			if !ok {
 				return
 			}
 			w.send(ctx, updates, FileUpdate[T]{Path: w.path, Err: err, WatcherErr: true, At: time.Now()})
+		case <-pollTicker.C():
+			observe()
+		case <-retryC:
+			observe()
 		case <-timerC:
 			timerC = nil
 			update := w.reload(ctx)
@@ -300,12 +416,19 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher fileEventWatcher, up
 	}
 }
 
-func (w *FileWatcher[T]) matches(event fsnotify.Event) bool {
+func newFileWatchState(files []watchedFile) *fileWatchState {
+	return &fileWatchState{
+		files:       slices.Clone(files),
+		watchedDirs: make(map[string]struct{}),
+	}
+}
+
+func (s *fileWatchState) matches(event fsnotify.Event) bool {
 	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove|fsnotify.Chmod) == 0 {
 		return false
 	}
 	name := filepath.Clean(event.Name)
-	for _, file := range w.files {
+	for _, file := range s.files {
 		if name == file.path || name == file.target {
 			return true
 		}
@@ -313,36 +436,60 @@ func (w *FileWatcher[T]) matches(event fsnotify.Event) bool {
 	return false
 }
 
-func (w *FileWatcher[T]) refreshWatchPath(addDir func(string) error) {
-	for index := range w.files {
-		watchPath := resolveWatchPath(w.files[index].path)
-		if watchPath == w.files[index].target {
+func (s *fileWatchState) syncWatchPaths(fsWatcher fileEventWatcher) (bool, error) {
+	for index := range s.files {
+		s.files[index].target = resolveWatchPath(s.files[index].path)
+	}
+
+	pending := false
+	var watchErr error
+	for _, dir := range watchDirsForFiles(s.files) {
+		if _, ok := s.watchedDirs[dir]; ok {
 			continue
 		}
-
-		w.files[index].target = watchPath
-		for _, dir := range watchDirs(w.files[index].path, watchPath) {
-			if hasWatchDir(w.dirs, dir) {
-				continue
+		if err := fsWatcher.Add(dir); err != nil {
+			pending = true
+			if !errors.Is(err, os.ErrNotExist) {
+				watchErr = errors.Join(watchErr, fmt.Errorf("watch config directory %s: %w", dir, err))
 			}
-			if addDir != nil {
-				if err := addDir(dir); err != nil {
-					w.logger.Warn("watch config symlink target directory failed",
-						"path", w.files[index].path,
-						"target", watchPath,
-						"dir", dir,
-						"error", err,
-					)
-					continue
-				}
-			}
-			w.dirs = append(w.dirs, dir)
+			continue
 		}
+		s.watchedDirs[dir] = struct{}{}
 	}
+	return pending, watchErr
 }
 
-func hasWatchDir(dirs []string, dir string) bool {
-	return slices.Contains(dirs, dir)
+func watchDirsForFiles(files []watchedFile) []string {
+	paths := make([]string, 0, len(files)*2)
+	for _, file := range files {
+		paths = append(paths, file.path, file.target)
+	}
+	return watchDirs(paths...)
+}
+
+func (s *fileWatchState) captureStamps() []fileStamp {
+	stamps := make([]fileStamp, 0, len(s.files))
+	for _, file := range s.files {
+		stamp := fileStamp{target: file.target}
+		info, err := os.Stat(file.path)
+		if err != nil {
+			stamp.err = err.Error()
+		} else {
+			stamp.modTime = info.ModTime()
+			stamp.size = info.Size()
+			stamp.mode = info.Mode()
+			if info.Mode().IsRegular() {
+				content, readErr := os.ReadFile(file.path)
+				if readErr != nil {
+					stamp.err = readErr.Error()
+				} else {
+					stamp.digest = sha256.Sum256(content)
+				}
+			}
+		}
+		stamps = append(stamps, stamp)
+	}
+	return stamps
 }
 
 func (w *FileWatcher[T]) reload(ctx context.Context) FileUpdate[T] {
