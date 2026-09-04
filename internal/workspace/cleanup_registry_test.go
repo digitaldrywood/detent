@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -16,11 +17,15 @@ func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
+	hookCommand := "mkdir -p node_modules/pkg uploads .local/state && touch node_modules/pkg/index.js uploads/generated.bin .local/state/cache"
+	if runtime.GOOS == "windows" {
+		hookCommand = "mkdir node_modules\\pkg uploads .local\\state && type nul > node_modules\\pkg\\index.js && type nul > uploads\\generated.bin && type nul > .local\\state\\cache"
+	}
 	backend, err := NewLocalGit(LocalGitOptions{
 		Root:       root,
 		SourceRoot: source,
 		AutoBranch: true,
-		Hooks:      Hooks{AfterCreate: "mkdir -p node_modules/pkg uploads .local/state && touch node_modules/pkg/index.js uploads/generated.bin .local/state/cache"},
+		Hooks:      Hooks{AfterCreate: hookCommand},
 	})
 	if err != nil {
 		t.Fatalf("NewLocalGit() error = %v", err)
