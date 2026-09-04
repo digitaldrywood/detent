@@ -18,4 +18,6 @@ Run the repository's exact validation target in a Linux container when Docker is
 
 Run the container as the workspace owner. Use workspace-owned temporary directories for `node_modules` and npm cache; anonymous Docker volumes default to root ownership. Prefer repository-pinned prebuilt tools when host file-table pressure makes large `go install` dependency trees fail.
 
+Keep test `TMPDIR` on an executable container-local tmpfs. A Docker Desktop bind mount can change fsnotify behavior and create duplicate file events that do not occur on a native Linux filesystem. When the gate creates disposable Git repositories, scope `safe.directory=*` to the ephemeral container so those repositories remain usable without changing host Git configuration.
+
 Re-run generation with Git repository detection enabled and confirm that unrelated generated files remain unchanged. Record both the native startup evidence and the successful exact containerized gate in the handoff.
