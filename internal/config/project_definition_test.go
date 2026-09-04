@@ -180,6 +180,51 @@ func TestLoadProjectDefinitionUsesConfiguredExternalRoot(t *testing.T) {
 	}
 }
 
+func TestLoadProjectDefinitionWorkspaceCleanupConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		cleanup       string
+		wantIdleTTL   int
+		wantSweepTime int
+	}{
+		{
+			name:          "omitted cleanup uses safe defaults",
+			wantIdleTTL:   86400000,
+			wantSweepTime: 600000,
+		},
+		{
+			name:          "configured cleanup is preserved",
+			cleanup:       "  cleanup_idle_ttl_ms: 172800000\n  cleanup_sweep_interval_ms: 300000\n",
+			wantIdleTTL:   172800000,
+			wantSweepTime: 300000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			workflowPath := filepath.Join(dir, "WORKFLOW.md")
+			writeProjectDefinitionTestFile(t, workflowPath, "Project instructions.\n", 0o644)
+			writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\nworkspace:\n  cache_strategy: shared\n  auto_branch: true\n"+tt.cleanup, 0o644)
+			writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.local.yaml"), "schema: 1\nworkspace:\n  root: "+filepath.Join(dir, "workspaces")+"\n  source_root: "+filepath.Join(dir, "source")+"\n", 0o600)
+
+			workflow, err := LoadProjectDefinition(workflowPath)
+			if err != nil {
+				t.Fatalf("LoadProjectDefinition() error = %v", err)
+			}
+			if workflow.Config.Workspace.CleanupIdleTTLMS != tt.wantIdleTTL {
+				t.Fatalf("CleanupIdleTTLMS = %d, want %d", workflow.Config.Workspace.CleanupIdleTTLMS, tt.wantIdleTTL)
+			}
+			if workflow.Config.Workspace.CleanupSweepIntervalMS != tt.wantSweepTime {
+				t.Fatalf("CleanupSweepIntervalMS = %d, want %d", workflow.Config.Workspace.CleanupSweepIntervalMS, tt.wantSweepTime)
+			}
+		})
+	}
+}
+
 func writeProjectDefinitionTestFile(t *testing.T, path string, content string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

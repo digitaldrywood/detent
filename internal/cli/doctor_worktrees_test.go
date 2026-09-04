@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,5 +95,63 @@ func TestParseDoctorGitWorktrees(t *testing.T) {
 		if got[index] != want[index] {
 			t.Fatalf("worktrees[%d] = %#v, want %#v", index, got[index], want[index])
 		}
+	}
+}
+
+func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		count      int
+		wantCheck  bool
+		wantStatus doctorStatus
+		wantDetail string
+		wantHint   string
+	}{
+		{
+			name:  "below threshold is not surfaced",
+			count: doctorWorkspaceCountWarningThreshold - 1,
+		},
+		{
+			name:       "threshold needs attention",
+			count:      doctorWorkspaceCountWarningThreshold,
+			wantCheck:  true,
+			wantStatus: doctorWarn,
+			wantDetail: "50 retained workspace directories",
+			wantHint:   "Confirm workspace cleanup is running",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, ".detent"), 0o700); err != nil {
+				t.Fatalf("Mkdir(.detent) error = %v", err)
+			}
+			for index := range tt.count {
+				if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("issue-%d", index)), 0o700); err != nil {
+					t.Fatalf("Mkdir(workspace) error = %v", err)
+				}
+			}
+
+			check, ok := checkDoctorWorkspaceGrowth("pyroapex", root)
+			if ok != tt.wantCheck {
+				t.Fatalf("check present = %t, want %t: %#v", ok, tt.wantCheck, check)
+			}
+			if !tt.wantCheck {
+				return
+			}
+			if check.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", check.Status, tt.wantStatus, check)
+			}
+			if !strings.Contains(check.Detail, tt.wantDetail) {
+				t.Fatalf("Detail = %q, want containing %q", check.Detail, tt.wantDetail)
+			}
+			if tt.wantHint != "" && !strings.Contains(check.Hint, tt.wantHint) {
+				t.Fatalf("Hint = %q, want containing %q", check.Hint, tt.wantHint)
+			}
+		})
 	}
 }

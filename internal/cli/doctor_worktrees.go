@@ -4,15 +4,61 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
+const doctorWorkspaceCountWarningThreshold = 50
+
 type doctorGitWorktree struct {
 	Path   string
 	Branch string
+}
+
+func checkDoctorWorkspaceGrowth(projectID string, workspaceRoot string) (doctorCheck, bool) {
+	name := "Project " + projectID + " workspace growth"
+	resolvedRoot, err := expandDoctorWorkspacePath(workspaceRoot)
+	if err != nil || strings.TrimSpace(workspaceRoot) == "" {
+		if err == nil {
+			err = errors.New("workspace.root is not configured")
+		}
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("cannot inspect workspace growth: %v", err),
+			Hint:   "Set workspace.root to the directory Detent owns, then rerun detent doctor.",
+		}, true
+	}
+	entries, err := os.ReadDir(resolvedRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return doctorCheck{}, false
+	}
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("cannot inspect workspace.root %s: %v", resolvedRoot, err),
+			Hint:   "Verify workspace.root is readable, then rerun detent doctor.",
+		}, true
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.Name() != ".detent" && entry.IsDir() {
+			count++
+		}
+	}
+	if count < doctorWorkspaceCountWarningThreshold {
+		return doctorCheck{}, false
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorWarn,
+		Detail: fmt.Sprintf("workspace.root %s contains %d retained workspace directories and reached the %d-directory warning threshold", resolvedRoot, count, doctorWorkspaceCountWarningThreshold),
+		Hint:   "Confirm workspace cleanup is running and inspect active work before removing stale workspaces.",
+	}, true
 }
 
 func checkDoctorExternalBranchWorktrees(
