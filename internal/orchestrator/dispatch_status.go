@@ -137,14 +137,50 @@ func projectDispatchStatusFromCycle(
 	if mixedWaitReasonDetail {
 		status.WaitReason = schedulerDecisionWaitReason(commonWaitReasonCode)
 	}
-	if previous.CandidateFingerprint == status.CandidateFingerprint &&
-		dispatchStatusWaitReasonMatches(previous, status) &&
-		previous.AllSkippedSince != nil && !previous.AllSkippedSince.IsZero() {
-		status.AllSkippedSince = cloneTimePointer(previous.AllSkippedSince)
-	} else {
-		status.AllSkippedSince = &now
+	allSkippedSince := now
+	continuousStarvation := previous.CandidateCount > 0 &&
+		previous.SelectedCount == 0 &&
+		previous.SkippedCount == previous.CandidateCount
+	matchingRefusalWindow := previous.CandidateFingerprint == status.CandidateFingerprint &&
+		dispatchStatusWaitReasonMatches(previous, status)
+	if continuousStarvation || matchingRefusalWindow {
+		if previous.AllSkippedSince != nil && !previous.AllSkippedSince.IsZero() && previous.AllSkippedSince.Before(allSkippedSince) {
+			allSkippedSince = *previous.AllSkippedSince
+		}
 	}
+	if candidateReadySince, ok := dispatchCandidateReadySince(candidates, identities, now); ok {
+		if previous.LastSelectedAt != nil &&
+			!previous.LastSelectedAt.IsZero() &&
+			previous.LastSelectedAt.After(candidateReadySince) &&
+			!previous.LastSelectedAt.After(now) {
+			candidateReadySince = *previous.LastSelectedAt
+		}
+		if candidateReadySince.Before(allSkippedSince) {
+			allSkippedSince = candidateReadySince
+		}
+	}
+	status.AllSkippedSince = &allSkippedSince
 	return status
+}
+
+func dispatchCandidateReadySince(candidates []connector.Issue, identities []string, now time.Time) (time.Time, bool) {
+	tracked := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		tracked[identity] = struct{}{}
+	}
+	readySince := time.Time{}
+	for _, candidate := range candidates {
+		if _, ok := tracked[workflowIssueIdentityKey(candidate)]; !ok ||
+			candidate.StageUpdatedAt == nil ||
+			candidate.StageUpdatedAt.IsZero() ||
+			candidate.StageUpdatedAt.After(now) {
+			continue
+		}
+		if readySince.IsZero() || candidate.StageUpdatedAt.Before(readySince) {
+			readySince = candidate.StageUpdatedAt.UTC()
+		}
+	}
+	return readySince, !readySince.IsZero()
 }
 
 func dispatchStatusWaitReasonMatches(previous store.ProjectDispatchStatus, current store.ProjectDispatchStatus) bool {

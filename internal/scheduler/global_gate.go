@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	maxPriorityLaneBypasses                            = 1
 	DispatchGateReasonGranted                          = "granted"
 	DispatchGateReasonGlobalCapacityFull               = "global_capacity_full"
 	DispatchGateReasonOutsideActiveWindow              = "outside_active_window"
@@ -80,7 +81,8 @@ type selectedProjectSlot struct {
 }
 
 type projectCycleState struct {
-	idle bool
+	idle           bool
+	observedDemand bool
 }
 
 type GlobalDispatchGate struct {
@@ -88,14 +90,15 @@ type GlobalDispatchGate struct {
 	global   GlobalScheduler
 	admit    *poolCapacityAdmission
 
-	mu             sync.Mutex
-	ready          map[string]readyProjectSlot
-	running        map[uint64]runningProjectSlot
-	selected       map[string]selectedProjectSlot
-	projects       map[string]ProjectCandidate
-	pausedProjects map[string]struct{}
-	projectCycles  map[string]projectCycleState
-	dispatchPauses int
+	mu               sync.Mutex
+	ready            map[string]readyProjectSlot
+	running          map[uint64]runningProjectSlot
+	selected         map[string]selectedProjectSlot
+	projects         map[string]ProjectCandidate
+	pausedProjects   map[string]struct{}
+	projectCycles    map[string]projectCycleState
+	priorityBypasses map[string]int
+	dispatchPauses   int
 }
 
 func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
@@ -104,14 +107,15 @@ func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate)
 
 func newGlobalDispatchGate(poolName string, global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
 	gate := &GlobalDispatchGate{
-		poolName:       normalizePoolName(poolName),
-		global:         global,
-		ready:          map[string]readyProjectSlot{},
-		running:        map[uint64]runningProjectSlot{},
-		selected:       map[string]selectedProjectSlot{},
-		projects:       map[string]ProjectCandidate{},
-		pausedProjects: map[string]struct{}{},
-		projectCycles:  map[string]projectCycleState{},
+		poolName:         normalizePoolName(poolName),
+		global:           global,
+		ready:            map[string]readyProjectSlot{},
+		running:          map[uint64]runningProjectSlot{},
+		selected:         map[string]selectedProjectSlot{},
+		projects:         map[string]ProjectCandidate{},
+		pausedProjects:   map[string]struct{}{},
+		projectCycles:    map[string]projectCycleState{},
+		priorityBypasses: map[string]int{},
 	}
 	gate.SetProjects(projects)
 	return gate
@@ -174,6 +178,7 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 			delete(g.ready, project.ID)
 			delete(g.selected, project.ID)
 			delete(g.projectCycles, project.ID)
+			delete(g.priorityBypasses, project.ID)
 			continue
 		}
 		next[project.ID] = project
@@ -185,6 +190,7 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 		delete(g.ready, projectID)
 		delete(g.selected, projectID)
 		delete(g.projectCycles, projectID)
+		delete(g.priorityBypasses, projectID)
 	}
 	for projectID := range g.projectCycles {
 		if _, ok := next[projectID]; !ok {
@@ -231,6 +237,7 @@ func (g *GlobalDispatchGate) Reconfigure(cfg Config) error {
 	clear(g.selected)
 	if previousMode != g.global.Mode() {
 		clear(g.projectCycles)
+		clear(g.priorityBypasses)
 	}
 	return nil
 }
@@ -249,21 +256,24 @@ func (g *GlobalDispatchGate) BeginProjectCycle(project ProjectCandidate) {
 	if _, paused := g.pausedProjects[project.ID]; paused {
 		delete(g.ready, project.ID)
 		delete(g.selected, project.ID)
+		delete(g.priorityBypasses, project.ID)
 		g.projectCycles[project.ID] = projectCycleState{idle: true}
 		return
 	}
 
 	g.projects[project.ID] = project
-	delete(g.ready, project.ID)
 	delete(g.selected, project.ID)
-	g.projectCycles[project.ID] = projectCycleState{}
-	if g.global.Mode() != ModeStrictPriority {
-		delete(g.projectCycles, project.ID)
+	if g.global.Mode() == ModeStrictPriority {
+		delete(g.ready, project.ID)
+	} else if ready, readyOK := g.ready[project.ID]; readyOK {
+		ready.ProjectCandidate = project
+		g.ready[project.ID] = ready
 	}
+	g.projectCycles[project.ID] = projectCycleState{}
 }
 
 func (g *GlobalDispatchGate) EndProjectCycle(projectID string) {
-	if g == nil || g.global == nil || g.global.Mode() != ModeStrictPriority {
+	if g == nil || g.global == nil {
 		return
 	}
 	projectID = normalizeProjectID(projectID)
@@ -274,8 +284,21 @@ func (g *GlobalDispatchGate) EndProjectCycle(projectID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	cycle, cycleOK := g.projectCycles[projectID]
 	_, waiting := g.ready[projectID]
-	g.projectCycles[projectID] = projectCycleState{idle: !waiting}
+	if g.global.Mode() == ModeStrictPriority {
+		g.projectCycles[projectID] = projectCycleState{idle: !waiting}
+	} else {
+		if cycleOK && !cycle.observedDemand {
+			delete(g.ready, projectID)
+			delete(g.selected, projectID)
+			waiting = false
+		}
+		delete(g.projectCycles, projectID)
+	}
+	if !waiting {
+		delete(g.priorityBypasses, projectID)
+	}
 }
 
 func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
@@ -292,6 +315,7 @@ func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
 	if _, paused := g.pausedProjects[project.ID]; paused {
 		delete(g.ready, project.ID)
 		delete(g.selected, project.ID)
+		delete(g.priorityBypasses, project.ID)
 		g.projectCycles[project.ID] = projectCycleState{idle: true}
 		return
 	}
@@ -300,6 +324,7 @@ func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
 	ready := g.ready[project.ID]
 	ready.ProjectCandidate = project
 	g.ready[project.ID] = ready
+	g.observeProjectCycleDemandLocked(project.ID)
 	if g.global.Mode() == ModeStrictPriority {
 		g.projectCycles[project.ID] = projectCycleState{}
 	}
@@ -319,6 +344,7 @@ func (g *GlobalDispatchGate) MarkIdle(project ProjectCandidate) {
 
 	delete(g.ready, projectID)
 	delete(g.selected, projectID)
+	delete(g.priorityBypasses, projectID)
 	if g.global != nil && g.global.Mode() == ModeStrictPriority {
 		g.projectCycles[projectID] = projectCycleState{idle: true}
 	}
@@ -369,6 +395,7 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	if _, paused := g.pausedProjects[project.ID]; paused {
 		delete(g.ready, project.ID)
 		delete(g.selected, project.ID)
+		delete(g.priorityBypasses, project.ID)
 		g.projectCycles[project.ID] = projectCycleState{idle: true}
 		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
 	}
@@ -381,10 +408,15 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	if !status.Open {
 		delete(g.ready, project.ID)
 		delete(g.selected, project.ID)
+		delete(g.priorityBypasses, project.ID)
 		g.projectCycles[project.ID] = projectCycleState{idle: true}
 		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonOutsideActiveWindow), nil
 	}
-	g.ready[project.ID] = readyProjectSlot{ProjectCandidate: project, request: req}
+	ready := g.ready[project.ID]
+	ready.ProjectCandidate = project
+	ready.request = req
+	g.ready[project.ID] = ready
+	g.observeProjectCycleDemandLocked(project.ID)
 	if g.dispatchPauses > 0 {
 		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
 	}
@@ -464,6 +496,7 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	if g.admit != nil {
 		g.admit.complete(g.capacitySnapshotLocked("").globalUsed)
 	}
+	g.recordPriorityLaneDispatchLocked(project.ID, req.Priority)
 
 	decision := g.decisionLocked(project.ID, req, DispatchGateReasonGranted)
 	delete(g.ready, project.ID)
@@ -478,6 +511,16 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		slot: slot,
 	}
 	return slot, true, decision, nil
+}
+
+func (g *GlobalDispatchGate) observeProjectCycleDemandLocked(projectID string) {
+	cycle, ok := g.projectCycles[projectID]
+	if !ok {
+		return
+	}
+	cycle.observedDemand = true
+	cycle.idle = false
+	g.projectCycles[projectID] = cycle
 }
 
 func (g *GlobalDispatchGate) preemptionWeightLocked(preemptions []RunningProject) int {
@@ -583,6 +626,16 @@ func (g *GlobalDispatchGate) reconcileSelectionsLocked() {
 		selected.request = ready.request
 		g.selected[projectID] = selected
 	}
+	if g.global.Mode() != ModeStrictPriority && g.hasPriorityRescueReadyLocked() {
+		if g.hasUnselectedPriorityRescueReadyLocked() {
+			for projectID := range g.selected {
+				if g.priorityBypasses[projectID] < maxPriorityLaneBypasses {
+					delete(g.selected, projectID)
+				}
+			}
+		}
+		return
+	}
 
 	bestPriority, ok := g.bestReadyPriorityLocked()
 	if !ok {
@@ -668,6 +721,7 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 	// has picked, so ranking alone fills slots highest-priority-first and then
 	// keeps going down the list until capacity runs out.
 	strictProjectRank, strict := g.bestStrictReadyProjectRankLocked()
+	priorityRescue := false
 	bestPriority := 0
 	first := true
 	for _, ready := range g.ready {
@@ -679,6 +733,9 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 		}
 		if maxWeight >= 0 && ready.request.Weight > maxWeight {
 			continue
+		}
+		if !strict && g.priorityBypasses[ready.ID] >= maxPriorityLaneBypasses {
+			priorityRescue = true
 		}
 		if first || ready.request.Priority < bestPriority {
 			bestPriority = ready.request.Priority
@@ -701,7 +758,10 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 		if maxWeight >= 0 && ready.request.Weight > maxWeight {
 			continue
 		}
-		if ready.request.Priority != bestPriority {
+		if priorityRescue && g.priorityBypasses[ready.ID] < maxPriorityLaneBypasses {
+			continue
+		}
+		if !priorityRescue && ready.request.Priority != bestPriority {
 			continue
 		}
 		projects = append(projects, ready.ProjectCandidate)
@@ -755,9 +815,49 @@ func (g *GlobalDispatchGate) pruneClosedReadyProjectsLocked(now time.Time) error
 		}
 		delete(g.ready, projectID)
 		delete(g.selected, projectID)
+		delete(g.priorityBypasses, projectID)
 		g.projectCycles[projectID] = projectCycleState{idle: true}
 	}
 	return nil
+}
+
+func (g *GlobalDispatchGate) recordPriorityLaneDispatchLocked(projectID string, priority int) {
+	delete(g.priorityBypasses, projectID)
+	if g.global.Mode() == ModeStrictPriority {
+		return
+	}
+	for waitingID, ready := range g.ready {
+		if waitingID == projectID || ready.request.Priority <= priority {
+			continue
+		}
+		if _, selected := g.selected[waitingID]; selected {
+			continue
+		}
+		if g.priorityBypasses[waitingID] < maxPriorityLaneBypasses {
+			g.priorityBypasses[waitingID]++
+		}
+	}
+}
+
+func (g *GlobalDispatchGate) hasPriorityRescueReadyLocked() bool {
+	for projectID := range g.ready {
+		if g.priorityBypasses[projectID] >= maxPriorityLaneBypasses {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *GlobalDispatchGate) hasUnselectedPriorityRescueReadyLocked() bool {
+	for projectID := range g.ready {
+		if g.priorityBypasses[projectID] < maxPriorityLaneBypasses {
+			continue
+		}
+		if _, selected := g.selected[projectID]; !selected {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *GlobalDispatchGate) hasHigherPriorityRunningProjectLocked(project ProjectCandidate) bool {

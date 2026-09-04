@@ -90,6 +90,23 @@ Project weights are relative scheduling weights. Higher weights receive a
 larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `0` is highest and `4` is lowest.
 
+Lifecycle-state priority is preferred within each pool. In `weighted`,
+`fair_share`, and `round_robin` pools, a ready project bypassed by one
+higher-priority lane dispatch becomes rescue-eligible. Rescue-eligible projects
+receive reservations before another priority-only reservation, while the
+pool's configured project scheduler chooses among equally eligible projects.
+With `R` continuously ready projects, a project receives a reservation within
+at most `R` dispatch opportunities after its first higher-lane bypass. The
+`strict` scheduler does not apply this bound and can intentionally starve lower
+project or lifecycle priorities.
+
+Readiness remains eligible for bypass accounting while a project scans its
+current candidates and is cleared when that scan finds no demand. Dispatch
+stall age survives restarts and refusal-reason changes by using the later of
+the project's last successful selection and its oldest current candidate's
+lane-entry time. A newly ready project therefore does not inherit idle time
+from an older selection.
+
 `global.agent_pools` defines independent agent-capacity partitions. Each
 project belongs to exactly one pool through `projects[].pool`. A project with
 no `pool` uses the implicit `default` pool, whose capacity is
