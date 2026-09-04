@@ -1067,13 +1067,13 @@ func (o *Orchestrator) parkInstantFailure(
 		ctx,
 		issue,
 		running.Mode,
-		"instant_failure_circuit_breaker",
+		instantFailureCircuitBreakerCause,
 		blockedRecoveryPredicateFingerprintChange,
 		"Todo",
 		running.DiffStats,
 	)
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker", metadata, laneMutationRevokeWorker); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, instantFailureCircuitBreakerLaneReason, metadata, laneMutationRevokeWorker); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"instant fail circuit breaker state transition failed",
@@ -1104,13 +1104,17 @@ func (o *Orchestrator) parkInstantFailure(
 		state.Blocked = map[string]Blocked{}
 	}
 	state.Blocked[issue.ID] = Blocked{
-		Issue:          issue,
-		Reason:         instantFailureBlockedReasonPrefix + failure.Error,
-		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
-		RecoveryTarget: "Todo",
-		BlockedAt:      event.CompletedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
+		Issue:                   issue,
+		Reason:                  instantFailureBlockedReasonPrefix + failure.Error,
+		RecoveryAction:          "defer",
+		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
+		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
+		RecoveryRemedy:          BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
+		RecoveryReachability:    blockedRecoveryReachability("defer"),
+		RecoveryIntentResumable: true,
+		BlockedAt:               event.CompletedAt,
+		Source:                  BlockedSourceProjectStatus,
+		Recovery:                metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
@@ -1201,13 +1205,17 @@ func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
 	}
 	reason := tokenCeilingFailureReason(ceilingErr)
 	state.Blocked[issue.ID] = Blocked{
-		Issue:          issue,
-		Reason:         reason,
-		RecoveryReason: blockedRecoveryPredicateFingerprintChange,
-		RecoveryTarget: "Rework",
-		BlockedAt:      event.CompletedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
+		Issue:                   issue,
+		Reason:                  reason,
+		RecoveryAction:          "defer",
+		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
+		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
+		RecoveryRemedy:          BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
+		RecoveryReachability:    blockedRecoveryReachability("defer"),
+		RecoveryIntentResumable: true,
+		BlockedAt:               event.CompletedAt,
+		Source:                  BlockedSourceProjectStatus,
+		Recovery:                metadata.BlockedRecovery,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
@@ -1255,7 +1263,7 @@ func tokenCeilingFailureComment(
 	if targetState = strings.TrimSpace(targetState); targetState != "" {
 		b.WriteString("\n\nIssue parked in `")
 		b.WriteString(targetState)
-		b.WriteString("` until its recovery fingerprint changes.")
+		b.WriteString("` until the configured breaker cooldown ends.")
 	}
 	b.WriteString("\n\n- issue: ")
 	b.WriteString(issueLabel(issue))
@@ -1269,7 +1277,7 @@ func tokenCeilingFailureComment(
 	b.WriteString(strconv.FormatInt(ceilingErr.CeilingTokens, 10))
 	b.WriteString("\n- ceiling_source: ")
 	b.WriteString(strings.TrimSpace(ceilingErr.Source))
-	b.WriteString("\n\nChoose one recovery: split the issue into narrower work, apply the label configured by `agent.max_session_token_override_label` for a deliberate per-issue bypass, or raise `agent.max_session_tokens` (and `agent.max_session_context_multiplier` when it is the active guard). Detent requeues the issue once the responsible model, backend, issue, or configuration fingerprint changes.")
+	b.WriteString("\n\nBefore the cooldown ends, split the issue into narrower work, apply the label configured by `agent.max_session_token_override_label` for a deliberate per-issue bypass, or raise `agent.max_session_tokens` (and `agent.max_session_context_multiplier` when it is the active guard). Detent then returns the issue to its prior lane automatically.")
 	return b.String()
 }
 
@@ -1387,13 +1395,17 @@ func (o *Orchestrator) parkRepeatedFailure(
 		state.Blocked = map[string]Blocked{}
 	}
 	blocked := Blocked{
-		Issue:          issue,
-		Reason:         repeatedFailureBlockedReasonPrefix + failure.Error,
-		RecoveryReason: recoveryPredicate,
-		RecoveryTarget: recoveryTarget,
-		BlockedAt:      event.CompletedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
+		Issue:                   issue,
+		Reason:                  repeatedFailureBlockedReasonPrefix + failure.Error,
+		RecoveryAction:          "defer",
+		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
+		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
+		RecoveryRemedy:          BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
+		RecoveryReachability:    blockedRecoveryReachability("defer"),
+		RecoveryIntentResumable: true,
+		BlockedAt:               event.CompletedAt,
+		Source:                  BlockedSourceProjectStatus,
+		Recovery:                metadata.BlockedRecovery,
 	}
 	if budgetPark {
 		blocked.Reason = githubRESTBudgetStatusMessage("waiting for capacity", budgetEvidence)
@@ -1450,7 +1462,7 @@ func repeatedFailureComment(issue connector.Issue, err error, failure RepeatedFa
 	if budgetPark {
 		b.WriteString("\n\nDetent returns the issue to its prior lane once per GitHub REST exhaustion episode after remaining capacity rises above the recorded worker reserve.")
 	} else {
-		b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail. Detent requeues the issue when the cause fingerprint changes.")
+		b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail before the breaker cooldown ends. Detent then returns the issue to its prior lane automatically.")
 	}
 	return b.String()
 }
@@ -1480,7 +1492,7 @@ func instantFailureComment(issue connector.Issue, err error, failure InstantFail
 		b.WriteString(body)
 		b.WriteString("\n```")
 	}
-	b.WriteString("\n\nFix the pinned agent model or backend configuration. Detent requeues the issue when the cause fingerprint changes.")
+	b.WriteString("\n\nFix the pinned agent model or backend configuration before the breaker cooldown ends. Detent then returns the issue to its prior lane automatically.")
 	return b.String()
 }
 

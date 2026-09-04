@@ -70,13 +70,13 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 	if blocked.Issue.State != blockedStatusState {
 		t.Fatalf("Blocked[%q].Issue.State = %q, want %q", issue.ID, blocked.Issue.State, blockedStatusState)
 	}
-	if blocked.RecoveryReason != blockedRecoveryPredicateFingerprintChange || blocked.RecoveryTarget != "Rework" {
-		t.Fatalf("Blocked[%q] recovery = %q to %q, want fingerprint recovery to Rework", issue.ID, blocked.RecoveryReason, blocked.RecoveryTarget)
+	if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != blockedRecoveryReasonBreakerCooldownActive || blocked.RecoveryTarget != "In Progress" {
+		t.Fatalf("Blocked[%q] recovery = %q/%q to %q, want cooldown recovery to In Progress", issue.ID, blocked.RecoveryAction, blocked.RecoveryReason, blocked.RecoveryTarget)
 	}
 	if blocked.Recovery == nil ||
 		blocked.Recovery.Owner != blockedRecoveryOwnerOrchestrator ||
 		blocked.Recovery.Cause != "token_ceiling_circuit_breaker" ||
-		blocked.Recovery.Predicate != blockedRecoveryPredicateFingerprintChange ||
+		blocked.Recovery.Predicate != blockedRecoveryPredicateBreakerCooldown ||
 		blocked.Recovery.CauseFingerprint == "" {
 		t.Fatalf("Blocked[%q].Recovery = %#v, want durable token-ceiling predicate", issue.ID, blocked.Recovery)
 	}
@@ -87,7 +87,7 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 	laneMetadata, ok := workflowLaneMetadataFromJSON(events[1].MetadataJSON)
 	if !ok || laneMetadata.BlockedRecovery == nil ||
 		laneMetadata.BlockedRecovery.Cause != "token_ceiling_circuit_breaker" ||
-		laneMetadata.BlockedRecovery.Predicate != blockedRecoveryPredicateFingerprintChange ||
+		laneMetadata.BlockedRecovery.Predicate != blockedRecoveryPredicateBreakerCooldown ||
 		laneMetadata.BlockedRecovery.CauseFingerprint == "" {
 		t.Fatalf("workflow recovery metadata = %#v, want durable token-ceiling predicate", laneMetadata.BlockedRecovery)
 	}

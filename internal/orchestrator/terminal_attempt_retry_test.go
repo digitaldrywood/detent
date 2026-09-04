@@ -632,7 +632,7 @@ func TestReconcileTerminalAttemptRetryStatesBoundsDurableFailures(t *testing.T) 
 			attempts:     terminalRetryFailureAttempts("issue-at-limit", now, retryLimit),
 			wantState:    "Blocked",
 			wantBlocked:  true,
-			wantRecovery: "fingerprint_changed",
+			wantRecovery: blockedRecoveryReasonBreakerCooldownActive,
 		},
 		{
 			name: "successful completion resets the sequence",
@@ -702,8 +702,8 @@ func TestReconcileTerminalAttemptRetryStatesBoundsDurableFailures(t *testing.T) 
 			if ok != tt.wantBlocked {
 				t.Fatalf("Blocked[%q] present = %v, want %v: %#v", issue.ID, ok, tt.wantBlocked, blocked)
 			}
-			if tt.wantBlocked && (blocked.RecoveryReason != tt.wantRecovery || blocked.Recovery == nil) {
-				t.Fatalf("Blocked[%q] = %#v, want durable fingerprint recovery", issue.ID, blocked)
+			if tt.wantBlocked && (blocked.RecoveryReason != tt.wantRecovery || blocked.Recovery == nil || blocked.Recovery.Predicate != blockedRecoveryPredicateBreakerCooldown) {
+				t.Fatalf("Blocked[%q] = %#v, want durable breaker cooldown recovery", issue.ID, blocked)
 			}
 		})
 	}

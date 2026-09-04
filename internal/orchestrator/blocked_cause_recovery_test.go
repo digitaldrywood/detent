@@ -310,7 +310,7 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			wantTransition: true,
 		},
 		{
-			name:                  "unchanged no-progress cause",
+			name:                  "unchanged generic cause",
 			predicate:             blockedRecoveryPredicateFingerprintChange,
 			parked:                runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-same", Health: "ready", WorkspaceStatus: "missing"},
 			current:               runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "config-same", Health: "ready", WorkspaceStatus: "missing"},
@@ -388,7 +388,7 @@ func TestCauseBlockedRecoveryPersistsAndBoundsFingerprintAttempts(t *testing.T) 
 			parkedAt := time.Date(2026, 7, 29, 18, 30, 0, 0, time.UTC)
 			cause := tt.cause
 			if cause == "" {
-				cause = noProgressLimitReason
+				cause = "configuration_guard"
 			}
 			metadata := parkOrch.newBlockedRecoveryMetadata(
 				t.Context(),
@@ -505,7 +505,7 @@ func TestCauseBlockedRecoveryCooldownSurvivesRestart(t *testing.T) {
 	restarted := blockedCauseTestOrchestrator(tracker)
 	restarted.workflowMetrics = metrics
 	restarted.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{
-		ConfigFingerprint: "config-after",
+		ConfigFingerprint: "config-before",
 		Health:            "ready",
 	}}
 	state := newState(restarted.cfg)
@@ -520,10 +520,211 @@ func TestCauseBlockedRecoveryCooldownSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestBreakerRecoveryUsesCurrentPark(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		stale bool
+	}{
+		{name: "each cooldown restores the issue"},
+		{name: "stale lane history cannot restore a new park", stale: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch.workflowMetrics = metrics
+			issue := dependencyAutoUnblockIssue("issue-current-park", blockedStatusState)
+			parkedAt := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			for episode := range 2 {
+				at := parkedAt.Add(time.Duration(episode) * 2 * defaultBreakerParkCooldown)
+				issue.StageUpdatedAt = timePointer(at)
+				if tt.stale {
+					issue.StageUpdatedAt = timePointer(at.Add(time.Hour))
+				}
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID,
+					Identifier: issue.Identifier, IssueURL: issue.URL,
+					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: blockedStatusState,
+					PreviousPhaseName: "In Progress", Reason: instantFailureCircuitBreakerLaneReason,
+					Status: "entered", StartedAt: at, MetadataJSON: "{}",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				state := newState(orch.cfg)
+				orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, at.Add(time.Hour+defaultBreakerParkCooldown))
+				want := episode + 1
+				if tt.stale {
+					want = 0
+				}
+				if len(tracker.updates) != want {
+					t.Fatalf("episode %d: updates = %#v, want %d; recovery = %#v", episode, tracker.updates, want, state.Blocked[issue.ID])
+				}
+			}
+		})
+	}
+}
+
+func TestBreakerRecoveryMetadataRemembersPreviousLane(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		cause string
+	}{
+		{name: "instant failure", cause: instantFailureCircuitBreakerCause},
+		{name: "repeated failure", cause: repeatedFailureCircuitBreakerCause},
+		{name: "token ceiling", cause: "token_ceiling_circuit_breaker"},
+		{name: "terminal attempt retry", cause: terminalAttemptRetryLimitCause},
+		{name: "workspace preparation retry", cause: workspacePreparationRetryLimitCause},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), "In Progress")
+			orch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+			metadata := orch.newBlockedRecoveryMetadata(
+				t.Context(),
+				issue,
+				RunModeImplement,
+				tt.cause,
+				blockedRecoveryPredicateFingerprintChange,
+				"Todo",
+				DiffStats{},
+			)
+
+			if metadata.BlockedRecovery.Predicate != blockedRecoveryPredicateBreakerCooldown {
+				t.Fatalf("predicate = %q, want breaker_cooldown_elapsed", metadata.BlockedRecovery.Predicate)
+			}
+			if metadata.BlockedRecovery.TargetState != issue.State {
+				t.Fatalf("target state = %q, want previous lane %q", metadata.BlockedRecovery.TargetState, issue.State)
+			}
+		})
+	}
+}
+
+func TestCauseBlockedRecoveryDerivesSchedulerBreakerPark(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		metadataJSON func(connector.Issue) string
+	}{
+		{name: "missing metadata", metadataJSON: func(connector.Issue) string { return "{}" }},
+		{
+			name: "incomplete metadata",
+			metadataJSON: func(issue connector.Issue) string {
+				return workflowLaneMetadataJSON(issue, workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{}})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := dependencyAutoUnblockIssue("issue-derived-breaker-park-"+strings.ReplaceAll(tt.name, " ", "-"), blockedStatusState)
+			issue.StageUpdatedAt = timePointer(parkedAt)
+			issue.BlockedBy = []connector.BlockedRef{{Source: connector.BlockedRefSourceNative}}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+				ProjectID:         defaultWorkflowMetricsProjectID,
+				IssueID:           issue.ID,
+				Identifier:        issue.Identifier,
+				IssueURL:          issue.URL,
+				PhaseType:         store.WorkflowPhaseTypeLane,
+				PhaseName:         blockedStatusState,
+				PreviousPhaseName: "In Progress",
+				Reason:            instantFailureCircuitBreakerLaneReason,
+				Status:            "entered",
+				StartedAt:         parkedAt,
+				MetadataJSON:      tt.metadataJSON(issue),
+			}); err != nil {
+				t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+			}
+
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			orch.cfg.DependencySource = "native_only"
+			orch.workflowMetrics = metrics
+			state := newState(orch.cfg)
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(2*time.Minute))
+
+			blocked := state.Blocked[issue.ID]
+			if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != blockedRecoveryReasonBreakerCooldownActive || blocked.NeedsHumanAttention {
+				t.Fatalf("blocked recovery = %#v, want machine-deferred breaker cooldown", blocked)
+			}
+			if blocked.Recovery == nil || blocked.Recovery.Predicate != blockedRecoveryPredicateBreakerCooldown || blocked.RecoveryTarget != "In Progress" {
+				t.Fatalf("blocked recovery metadata = %#v, target = %q", blocked.Recovery, blocked.RecoveryTarget)
+			}
+
+			restartedTracker := &dependencyAutoUnblockConnector{}
+			restarted := blockedCauseTestOrchestrator(restartedTracker)
+			restarted.cfg.DependencySource = "native_only"
+			restarted.workflowMetrics = metrics
+			restartedState := newState(restarted.cfg)
+			restarted.recoverBlockedIssues(t.Context(), &restartedState, []connector.Issue{issue}, parkedAt.Add(time.Minute+defaultBreakerParkCooldown))
+
+			if len(restartedTracker.updates) != 1 || restartedTracker.updates[0].state != "In Progress" {
+				t.Fatalf("post-cooldown updates = %#v, want previous lane In Progress", restartedTracker.updates)
+			}
+		})
+	}
+}
+
+func TestCauseBlockedRecoveryLogsSchedulerParkDerivationFailure(t *testing.T) {
+	t.Parallel()
+
+	parkedAt := time.Date(2026, 9, 3, 15, 0, 0, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-invalid-breaker-park", blockedStatusState)
+	issue.StageUpdatedAt = timePointer(parkedAt)
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    blockedStatusState,
+		Reason:       "instant_fail_circuit_breaker",
+		Status:       "entered",
+		StartedAt:    parkedAt,
+		MetadataJSON: "{}",
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+
+	var logs bytes.Buffer
+	orch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+	orch.workflowMetrics = metrics
+	orch.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	state := newState(orch.cfg)
+	orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
+
+	blocked := state.Blocked[issue.ID]
+	if blocked.RecoveryReason != "scheduler_park_recovery_unavailable" {
+		t.Fatalf("recovery reason = %q, want scheduler_park_recovery_unavailable", blocked.RecoveryReason)
+	}
+	for _, want := range []string{
+		"msg=\"scheduler breaker recovery derivation failed\"",
+		"reason=previous_lane_unavailable",
+		"lane_reason=instant_fail_circuit_breaker",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
 func TestBreakerParkCauseIncludesRetryCycleLimits(t *testing.T) {
 	t.Parallel()
 
-	for _, cause := range []string{terminalAttemptRetryLimitCause, workspacePreparationRetryLimitCause} {
+	for _, cause := range []string{instantFailureCircuitBreakerCause, terminalAttemptRetryLimitCause, workspacePreparationRetryLimitCause} {
 		if !breakerParkCause(cause) {
 			t.Fatalf("breakerParkCause(%q) = false, want true", cause)
 		}
@@ -560,12 +761,11 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 			wantSurfaceParts: []string{"transient GitHub REST budget", "remaining=940/5000", "reserve=1250"},
 		},
 		{
-			name:          "non-transient failure stays parked",
-			errorMessage:  "run agent turn: runner transport closed",
-			remaining:     4927,
-			wantAction:    "hold",
-			wantReason:    "cause_unchanged",
-			recoveryAfter: defaultBreakerParkCooldown,
+			name:           "non-transient failure recovers after cooldown",
+			errorMessage:   "run agent turn: runner transport closed",
+			remaining:      4927,
+			wantTransition: true,
+			recoveryAfter:  defaultBreakerParkCooldown,
 		},
 		{
 			name:             "same exhaustion episode does not rearm twice",
@@ -601,6 +801,7 @@ func TestRepeatedFailureParkRecoveryUsesRecordedRESTBudgetFailures(t *testing.T)
 				"Todo",
 				DiffStats{},
 			)
+			metadata.BlockedRecovery.TargetState = "In Progress"
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			if tt.consumed {
 				signature := githubRESTBudgetRecoverySignature(githubRESTBudgetEvidence{
@@ -904,6 +1105,7 @@ func TestRepeatedFailureLegacyRESTBudgetParkRecoversAfterTrackerTransitionDelay(
 				"Todo",
 				DiffStats{},
 			)
+			metadata.BlockedRecovery.Predicate = blockedRecoveryPredicateFingerprintChange
 			if tt.parkOwner != "" {
 				metadata.BlockedRecovery.Owner = tt.parkOwner
 			}
@@ -1223,7 +1425,7 @@ func TestCauseBlockedRecoveryRebaselinesLegacyFingerprint(t *testing.T) {
 	}{
 		{
 			name:      "fingerprint change resumes after a later cause change",
-			cause:     noProgressLimitReason,
+			cause:     "configuration_guard",
 			predicate: blockedRecoveryPredicateFingerprintChange,
 		},
 		{
