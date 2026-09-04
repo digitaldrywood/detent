@@ -1907,6 +1907,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	if mode == RunModeImplement {
+		_, result.DiffStats.RecoveryStateExpected = runWorkspace.(workspace.RecoveryStateProvider)
 		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
 			applyRecoveryState(&result.DiffStats, recoveryState)
 		}
@@ -4928,8 +4929,10 @@ func applyRecoveryState(diffStats *DiffStats, state *workspace.RecoveryState) {
 	diffStats.UnpushedCommits = state.UnpushedCommits
 	diffStats.UnpushedCommitRefs = append([]string(nil), state.UnpushedCommitRefs...)
 	diffStats.TrackedPaths = append([]string(nil), state.TrackedPaths...)
+	diffStats.UntrackedPaths = append([]string(nil), state.UntrackedPaths...)
 	diffStats.CommitsNotInPullRequest = append([]string(nil), state.CommitsNotInPullRequest...)
 	diffStats.PullRequestComparisonAvailable = state.PullRequestComparisonAvailable
+	diffStats.RecoveryStateAvailable = true
 	diffStats.HeadSHA = strings.TrimSpace(state.HeadSHA)
 }
 
@@ -4940,8 +4943,11 @@ func diffStatsEmpty(diffStats DiffStats) bool {
 		diffStats.UnpushedCommits == 0 &&
 		len(diffStats.UnpushedCommitRefs) == 0 &&
 		len(diffStats.TrackedPaths) == 0 &&
+		len(diffStats.UntrackedPaths) == 0 &&
 		len(diffStats.CommitsNotInPullRequest) == 0 &&
 		!diffStats.PullRequestComparisonAvailable &&
+		!diffStats.RecoveryStateExpected &&
+		!diffStats.RecoveryStateAvailable &&
 		diffStats.CommitsAhead == 0 &&
 		!diffStats.RemoteBranchExists &&
 		!diffStats.DeliveryStateChecked &&

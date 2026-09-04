@@ -244,6 +244,7 @@ type BlockedRecoverySnapshot struct {
 	UnpushedCommits                int
 	UnpushedCommitRefs             []string
 	TrackedPaths                   []string
+	UntrackedPaths                 []string
 	CommitsNotInPullRequest        []string
 	PullRequestComparisonAvailable bool
 	Health                         string
@@ -797,8 +798,11 @@ type DiffStats struct {
 	UnpushedCommits                int
 	UnpushedCommitRefs             []string
 	TrackedPaths                   []string
+	UntrackedPaths                 []string
 	CommitsNotInPullRequest        []string
 	PullRequestComparisonAvailable bool
+	RecoveryStateExpected          bool
+	RecoveryStateAvailable         bool
 	CommitsAhead                   int
 	RemoteBranchExists             bool
 	DeliveryStateChecked           bool

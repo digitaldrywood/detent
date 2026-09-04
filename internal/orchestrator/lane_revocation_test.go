@@ -414,6 +414,7 @@ func TestCompletionLaneHandshakeClassifiesCurrentAttempt(t *testing.T) {
 					PullRequestUpdated:    !tt.wantRevoked,
 					PullRequestHeadPushed: !tt.wantRevoked,
 					TurnStarted:           true,
+					DiffStats:             runpkg.DiffStats{Status: "clean", RecoveryStateExpected: true, RecoveryStateAvailable: true},
 				},
 			}
 			if tt.wantRevoked {

@@ -72,6 +72,10 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
+	untrackedPaths, err := gitUntrackedPaths(ctx, normalized.Path)
+	if err != nil {
+		return RecoveryState{}, err
+	}
 	head, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return RecoveryState{}, fmt.Errorf("git resolve recovery head: %w", err)
@@ -94,6 +98,7 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 		UnpushedCommits:                unpushedCommits,
 		UnpushedCommitRefs:             unpushedCommitRefs,
 		TrackedPaths:                   trackedPaths,
+		UntrackedPaths:                 untrackedPaths,
 		CommitsNotInPullRequest:        commitsNotInPullRequest,
 		PullRequestComparisonAvailable: comparisonAvailable,
 	}, nil
@@ -246,6 +251,14 @@ func gitTrackedPaths(ctx context.Context, workspacePath string) ([]string, error
 	output, err := runGitAt(ctx, workspacePath, "diff", "--name-only", "--no-ext-diff", "-z", "HEAD", "--")
 	if err != nil {
 		return nil, fmt.Errorf("git list tracked workspace changes: %w", err)
+	}
+	return boundedNULFields(output, recoveryEvidenceLimit, false), nil
+}
+
+func gitUntrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
+	output, err := runGitAt(ctx, workspacePath, "ls-files", "--others", "--exclude-standard", "-z", "--")
+	if err != nil {
+		return nil, fmt.Errorf("git list untracked workspace changes: %w", err)
 	}
 	return boundedNULFields(output, recoveryEvidenceLimit, false), nil
 }

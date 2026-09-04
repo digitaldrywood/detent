@@ -1021,6 +1021,11 @@ func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
 		RecoveryState: &workspace.RecoveryState{
 			UnpushedCommits: 1,
 			DiffStat:        workspace.DiffStat{Files: 4, Added: 12, Removed: 3},
+			TrackedPaths:    []string{"internal/worker.go"},
+			UntrackedPaths:  []string{"worker.log"},
+			UnpushedCommitRefs: []string{
+				"abc123 fix: preserve work",
+			},
 		},
 	})
 	if err != nil {
@@ -1029,9 +1034,18 @@ func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
 	for _, want := range []string{
 		"## Existing workspace recovery",
 		"unpushed commits: 1",
-		"uncommitted changes: 4 files, +12/-3",
-		"validate and preserve the existing work",
-		"push the branch and open or update the pull request",
+		"diffstat: 4 files, +12/-3",
+		"tracked paths: `internal/worker.go`",
+		"untracked paths: `worker.log`",
+		"`abc123 fix: preserve work`",
+		"completion cannot be accepted",
+		"commit and publish",
+		"discard stray artifacts",
+		"completion_cleanliness_resolution: committed",
+		"completion_cleanliness_resolution: discarded",
+		"under `fields:`",
+		"`status: blocked`",
+		"Do not repeat `status: complete`",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

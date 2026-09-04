@@ -114,8 +114,11 @@ type implementProgressDiffStats struct {
 	UnpushedCommits                int      `json:"unpushed_commits,omitempty"`
 	UnpushedCommitRefs             []string `json:"unpushed_commit_refs,omitempty"`
 	TrackedPaths                   []string `json:"tracked_paths,omitempty"`
+	UntrackedPaths                 []string `json:"untracked_paths,omitempty"`
 	CommitsNotInPullRequest        []string `json:"commits_not_in_pull_request,omitempty"`
 	PullRequestComparisonAvailable bool     `json:"pull_request_comparison_available,omitempty"`
+	RecoveryStateExpected          bool     `json:"recovery_state_expected,omitempty"`
+	RecoveryStateAvailable         bool     `json:"recovery_state_available,omitempty"`
 	HeadSHA                        string   `json:"head_sha,omitempty"`
 	Fingerprint                    string   `json:"fingerprint,omitempty"`
 	Status                         string   `json:"status,omitempty"`
@@ -824,8 +827,11 @@ func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgr
 		UnpushedCommits:                diffStats.UnpushedCommits,
 		UnpushedCommitRefs:             append([]string(nil), diffStats.UnpushedCommitRefs...),
 		TrackedPaths:                   append([]string(nil), diffStats.TrackedPaths...),
+		UntrackedPaths:                 append([]string(nil), diffStats.UntrackedPaths...),
 		CommitsNotInPullRequest:        append([]string(nil), diffStats.CommitsNotInPullRequest...),
 		PullRequestComparisonAvailable: diffStats.PullRequestComparisonAvailable,
+		RecoveryStateExpected:          diffStats.RecoveryStateExpected,
+		RecoveryStateAvailable:         diffStats.RecoveryStateAvailable,
 		HeadSHA:                        strings.TrimSpace(diffStats.HeadSHA),
 		Fingerprint:                    strings.TrimSpace(diffStats.Fingerprint),
 		Status:                         strings.TrimSpace(diffStats.Status),
@@ -833,7 +839,7 @@ func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgr
 }
 
 func implementProgressRecordedStrandedEvidence(diffStats implementProgressDiffStats) bool {
-	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
+	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.UntrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
 }
 
 func implementProgressSignatureUsable(signature autoPromoteReworkSignature) bool {
@@ -858,6 +864,7 @@ func implementProgressOperationalWorkspaceClean(diffStats DiffStats) bool {
 		diffStats.UnpushedCommits == 0 &&
 		diffStats.CommitsAhead == 0 &&
 		len(diffStats.TrackedPaths) == 0 &&
+		len(diffStats.UntrackedPaths) == 0 &&
 		len(diffStats.CommitsNotInPullRequest) == 0
 }
 
@@ -875,7 +882,7 @@ func implementProgressReconcilePullRequestEvidence(diffStats DiffStats, pullRequ
 
 func implementProgressUnpushedClassification(diffStats DiffStats, pullRequest *connector.PullRequest) (bool, string) {
 	if pullRequest != nil {
-		if len(diffStats.TrackedPaths) > 0 {
+		if len(diffStats.TrackedPaths) > 0 || len(diffStats.UntrackedPaths) > 0 {
 			return true, ""
 		}
 		if diffStats.PullRequestComparisonAvailable {
@@ -1188,11 +1195,12 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 }
 
 func implementProgressStrandedEvidence(diffStats DiffStats) bool {
-	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
+	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.UntrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
 }
 
 func appendStrandedWorkEvidence(b *strings.Builder, diffStats DiffStats) {
 	appendQuotedEvidence(b, "tracked_paths", diffStats.TrackedPaths)
+	appendQuotedEvidence(b, "untracked_paths", diffStats.UntrackedPaths)
 	appendQuotedEvidence(b, "commits_not_in_pull_request", diffStats.CommitsNotInPullRequest)
 	if len(diffStats.CommitsNotInPullRequest) == 0 {
 		appendQuotedEvidence(b, "unpushed_commit_refs", diffStats.UnpushedCommitRefs)

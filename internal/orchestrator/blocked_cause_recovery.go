@@ -48,6 +48,7 @@ type blockedCauseSignals struct {
 	UnpushedCommits                int               `json:"unpushed_commits,omitempty"`
 	UnpushedCommitRefs             []string          `json:"unpushed_commit_refs,omitempty"`
 	TrackedPaths                   []string          `json:"tracked_paths,omitempty"`
+	UntrackedPaths                 []string          `json:"untracked_paths,omitempty"`
 	CommitsNotInPullRequest        []string          `json:"commits_not_in_pull_request,omitempty"`
 	PullRequestComparisonAvailable bool              `json:"pull_request_comparison_available,omitempty"`
 	Health                         string            `json:"health,omitempty"`
@@ -140,6 +141,7 @@ func (o *Orchestrator) blockedCauseSignals(
 		snapshot.WorkspaceFiles = fallback.FilesChanged
 		snapshot.UnpushedCommitRefs = append([]string(nil), fallback.UnpushedCommitRefs...)
 		snapshot.TrackedPaths = append([]string(nil), fallback.TrackedPaths...)
+		snapshot.UntrackedPaths = append([]string(nil), fallback.UntrackedPaths...)
 		snapshot.CommitsNotInPullRequest = append([]string(nil), fallback.CommitsNotInPullRequest...)
 		snapshot.PullRequestComparisonAvailable = fallback.PullRequestComparisonAvailable
 		snapshot.WorkspaceStatus = "present"
@@ -156,6 +158,7 @@ func (o *Orchestrator) blockedCauseSignals(
 		UnpushedCommits:                snapshot.UnpushedCommits,
 		UnpushedCommitRefs:             append([]string(nil), snapshot.UnpushedCommitRefs...),
 		TrackedPaths:                   append([]string(nil), snapshot.TrackedPaths...),
+		UntrackedPaths:                 append([]string(nil), snapshot.UntrackedPaths...),
 		CommitsNotInPullRequest:        append([]string(nil), snapshot.CommitsNotInPullRequest...),
 		PullRequestComparisonAvailable: snapshot.PullRequestComparisonAvailable,
 		Health:                         strings.TrimSpace(snapshot.Health),
@@ -819,8 +822,8 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	if !signals.WorkspacePresent || strings.TrimSpace(signals.WorkspaceStatus) != "present" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
 		return "workspace_head_unavailable"
 	}
-	if len(signals.TrackedPaths) > 0 {
-		return "workspace_tracked_changes_present"
+	if len(signals.TrackedPaths) > 0 || len(signals.UntrackedPaths) > 0 {
+		return "workspace_changes_present"
 	}
 	if signals.PullRequestComparisonAvailable {
 		if len(signals.CommitsNotInPullRequest) > 0 {

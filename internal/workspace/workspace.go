@@ -118,6 +118,7 @@ type RecoveryState struct {
 	UnpushedCommits                int
 	UnpushedCommitRefs             []string
 	TrackedPaths                   []string
+	UntrackedPaths                 []string
 	CommitsNotInPullRequest        []string
 	PullRequestComparisonAvailable bool
 }

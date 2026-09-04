@@ -600,7 +600,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 	progress, gateWaitReason := completedReworkGateWaitProgress(running, progress, o.cfg, finalState)
 	running.Issue = progress.Issue
-	if terminalState == store.WorkAttemptTerminalSuccess && implementCompletionHasDurableProgress(running, progress) {
+	completionEvidence := progress.WorkspaceDiffStats
+	if !diffStatsPresent(completionEvidence) {
+		completionEvidence = running.DiffStats
+	}
+	completionCleanliness := o.evaluateCompletionCleanliness(ctx, running, running.Issue, completionEvidence)
+	completionRejected := completionCleanliness.Attempted && completionCleanliness.Outcome != completionCleanlinessAccepted
+	if terminalState == store.WorkAttemptTerminalSuccess && !completionRejected && implementCompletionHasDurableProgress(running, progress) {
 		resetWorkerFailureBreakers(state, event.IssueID)
 	}
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
@@ -622,6 +628,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
 	}
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
+	if completionRejected {
+		accepted = false
+		acceptedReason = ""
+	}
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
 	if evidenceWarning != "" {
 		spendProgress.Warning = evidenceWarning
@@ -662,9 +672,21 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		phase = "blocked"
 		statusMessage = "artifact gate convergence breaker tripped"
 	}
+	if completionRejected {
+		phase = "completion_rejected"
+		statusMessage = "completion rejected because workspace is not clean"
+	}
+	if completionCleanliness.Block {
+		terminalState = store.WorkAttemptTerminalNoProgress
+		phase = "blocked"
+		statusMessage = "dirty completion requires human resolution"
+		errorClass = dirtyCompletionEscalationReason
+		errorMessage = dirtyCompletionEscalationReason
+	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
 		implementCompletionProgressMetadata(progress),
+		completionCleanlinessMetadata(completionCleanliness),
 		spendProgressMetadata(spendProgress),
 		artifactGateConvergenceMetadata(artifactConvergence),
 		deliverableCommandEvidenceMetadata(event.Result),
@@ -698,6 +720,32 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if artifactConvergence.Tripped {
 		o.parkArtifactGateConvergence(ctx, state, running.Issue, running.Attempt, event.CompletedAt, artifactConvergence)
+		return
+	}
+	if completionCleanliness.Block {
+		if attemptCompleted && o.blockCompletionCleanliness(ctx, state, event, running, completionCleanliness) {
+			return
+		}
+		if !attemptCompleted {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "dirty_completion_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dirty completion persistence failed",
+			})
+			return
+		}
+	}
+	if completionRejected {
+		if !attemptCompleted {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "dirty_completion_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dirty completion persistence failed",
+			})
+			return
+		}
+		o.commentCompletionCleanlinessRejection(ctx, running.Issue, completionCleanliness)
+		o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, dirtyCompletionReason, running.WorkerHost)
 		return
 	}
 
