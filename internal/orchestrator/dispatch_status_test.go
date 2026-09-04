@@ -224,6 +224,80 @@ func TestProjectDispatchStatusMixedProjects(t *testing.T) {
 	}
 }
 
+func TestDispatchStatusSnapshotUsesLastSelectionForStarvationAge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 41, 0, 0, time.UTC)
+	lastSelectedAt := now.Add(-48 * time.Hour)
+	allSkippedSince := now.Add(-30 * time.Minute)
+	candidate := dispatchTestIssue("todo", "Todo")
+	candidate.StageUpdatedAt = dispatchStatusTimePointer(now.Add(-72 * time.Hour))
+	previous := store.ProjectDispatchStatus{
+		ProjectID:       "pyroapex",
+		CandidateCount:  1,
+		SkippedCount:    1,
+		WaitReason:      "global capacity full",
+		WaitReasonCode:  "global_capacity_full",
+		AllSkippedSince: &allSkippedSince,
+		LastSelectedAt:  &lastSelectedAt,
+	}
+	status := projectDispatchStatusFromCycle(
+		previous,
+		"pyroapex",
+		[]connector.Issue{candidate},
+		[]dispatchPlanDecision{{Issue: candidate, SkipReason: "reserved_for_higher_priority_state"}},
+		nil,
+		now,
+	)
+
+	got := dispatchStatusSnapshot(status, 2*time.Hour, now)
+	if status.AllSkippedSince == nil || !status.AllSkippedSince.Equal(lastSelectedAt) {
+		t.Fatalf("AllSkippedSince = %#v, want durable last selection %s", status.AllSkippedSince, lastSelectedAt)
+	}
+	if !got.Stalled {
+		t.Fatalf("Stalled = false, want true after %s without a selection", now.Sub(lastSelectedAt))
+	}
+	if got.StallDurationSeconds != int64(48*time.Hour/time.Second) {
+		t.Fatalf("StallDurationSeconds = %d, want %d", got.StallDurationSeconds, int64(48*time.Hour/time.Second))
+	}
+}
+
+func TestDispatchStatusSnapshotDoesNotCountIdleTimeAsStarvation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 41, 0, 0, time.UTC)
+	lastSelectedAt := now.Add(-48 * time.Hour)
+	candidate := dispatchTestIssue("todo", "Todo")
+	status := projectDispatchStatusFromCycle(
+		store.ProjectDispatchStatus{ProjectID: "pyroapex", LastSelectedAt: &lastSelectedAt},
+		"pyroapex",
+		[]connector.Issue{candidate},
+		[]dispatchPlanDecision{{Issue: candidate, SkipReason: "reserved_for_higher_priority_state"}},
+		nil,
+		now,
+	)
+
+	got := dispatchStatusSnapshot(status, 2*time.Hour, now)
+	if got.Stalled {
+		t.Fatal("Stalled = true, want false for newly waiting work after an idle interval")
+	}
+	if status.AllSkippedSince == nil || !status.AllSkippedSince.Equal(now) {
+		t.Fatalf("AllSkippedSince = %#v, want current refusal time %s", status.AllSkippedSince, now)
+	}
+
+	status = projectDispatchStatusFromCycle(
+		status,
+		"pyroapex",
+		[]connector.Issue{candidate},
+		[]dispatchPlanDecision{{Issue: candidate, SkipReason: "reserved_for_higher_priority_state"}},
+		nil,
+		now.Add(time.Minute),
+	)
+	if status.AllSkippedSince == nil || !status.AllSkippedSince.Equal(now) {
+		t.Fatalf("second AllSkippedSince = %#v, want refusal window start %s", status.AllSkippedSince, now)
+	}
+}
+
 func dispatchStatusOutcomes(issue connector.Issue, outcome dispatchIssueOutcome) map[string]dispatchIssueOutcome {
 	return map[string]dispatchIssueOutcome{workflowIssueIdentityKey(issue): outcome}
 }
