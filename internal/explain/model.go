@@ -166,6 +166,7 @@ type Eligibility struct {
 }
 
 type EligibilityDecision struct {
+	Historical bool             `json:"historical,omitempty"`
 	EvidenceID string           `json:"evidence_id"`
 	Source     string           `json:"source"`
 	State      EligibilityState `json:"state"`

@@ -257,7 +257,7 @@ func TestServiceReportsOnlyRecordedEligibility(t *testing.T) {
 		{name: "no recorded decision", want: EligibilityUnknown},
 		{name: "scheduler refusal", decisions: []store.SchedulerDecision{{ID: 2, ProjectID: "detent", IssueID: "issue-1", Result: store.SchedulerDecisionResultSkipped, Reason: "capacity", DecisionAt: now}}, want: EligibilityRefused, refusals: 1},
 		{name: "scheduler selection", decisions: []store.SchedulerDecision{{ID: 3, ProjectID: "detent", IssueID: "issue-1", Result: store.SchedulerDecisionResultSelected, Selected: true, DecisionAt: now}}, want: EligibilityEligible},
-		{name: "admission rejection", proposals: []admissionmodel.Proposal{{ID: "proposal-1", ProjectID: "detent", IssueID: "issue-1", Status: admissionmodel.ProposalRejected, ResolvedAt: now}}, want: EligibilityRefused, refusals: 1},
+		{name: "admission rejection", proposals: []admissionmodel.Proposal{{ID: "proposal-1", ProjectID: "detent", IssueID: "issue-1", Status: admissionmodel.ProposalRejected, ResolvedAt: now}}, want: EligibilityUnknown, refusals: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -270,6 +270,9 @@ func TestServiceReportsOnlyRecordedEligibility(t *testing.T) {
 			got, err := newTestService(now, reader).Explain(context.Background(), Query{ProjectID: "detent", IssueID: "issue-1"})
 			if err != nil {
 				t.Fatalf("Explain() error = %v", err)
+			}
+			if len(tt.proposals) > 0 && (got.Eligibility.Latest == nil || !got.Eligibility.Latest.Historical || !got.Eligibility.Latest.At.Equal(now)) {
+				t.Fatalf("admission history lacks historical timestamp: %+v", got.Eligibility)
 			}
 			if got.Eligibility.State != tt.want || len(got.Eligibility.Refusals) != tt.refusals {
 				t.Fatalf("eligibility = %#v, want state %q refusals %d", got.Eligibility, tt.want, tt.refusals)

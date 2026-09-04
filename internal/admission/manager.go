@@ -60,7 +60,7 @@ const (
 	malformedAdmissionAttemptLimit         = 4
 	malformedAdmissionExcerptSize          = 512
 	admissionCandidateFingerprintVersion   = "admission-candidate-v1"
-	admissionPromptFingerprintVersion      = "admission-prompt-v1"
+	admissionPromptFingerprintVersion      = "admission-prompt-v2"
 )
 
 var (
@@ -105,21 +105,23 @@ type IssueStore interface {
 }
 
 type Settings struct {
-	ProjectID          string
-	Config             config.BacklogAdmission
-	Criteria           config.AdmissionCriteria
-	EffortRubric       config.AdmissionEffortRubric
-	DispatchStates     []string
-	DispatchLabels     []string
-	PrioritizeBlockers bool
-	Runner             runner.Backend
-	Issues             IssueStore
-	Scheduler          scheduler.Scheduler
-	GlobalDispatchGate scheduler.ProjectDispatchGate
-	ProjectCandidate   scheduler.ProjectCandidate
-	TerminalStates     []string
-	ReworkState        string
-	ScheduleRuns       schedulehealth.Recorder
+	DependencyReadiness string
+	dependencies        map[string]*runner.AdmissionDependencies
+	ProjectID           string
+	Config              config.BacklogAdmission
+	Criteria            config.AdmissionCriteria
+	EffortRubric        config.AdmissionEffortRubric
+	DispatchStates      []string
+	DispatchLabels      []string
+	PrioritizeBlockers  bool
+	Runner              runner.Backend
+	Issues              IssueStore
+	Scheduler           scheduler.Scheduler
+	GlobalDispatchGate  scheduler.ProjectDispatchGate
+	ProjectCandidate    scheduler.ProjectCandidate
+	TerminalStates      []string
+	ReworkState         string
+	ScheduleRuns        schedulehealth.Recorder
 }
 
 type Result struct {
@@ -327,6 +329,7 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 }
 
 func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
+	settings.dependencies = make(map[string]*runner.AdmissionDependencies)
 	result = newResult()
 	result.ProjectID = strings.TrimSpace(settings.ProjectID)
 	startedAt := m.now().UTC()
@@ -853,6 +856,15 @@ func (m *Manager) reconcileOpenProposals(
 				continue
 			}
 		}
+		if admissionSourceEligible(issue, settings.Config) {
+			changed, err := m.supersedeChangedDependencies(ctx, settings, issue, proposal, at, false)
+			if err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			if changed {
+				continue
+			}
+		}
 		if decided && decision.Outcome == admissionmodel.ProposalAccepted {
 			if reason := inactiveProposalResolution(issue, settings.TerminalStates); reason != "" {
 				decision.Outcome = admissionmodel.ProposalSuperseded
@@ -1011,15 +1023,21 @@ func (m *Manager) unproposedCandidates(
 	candidateLimit int,
 	result *Result,
 ) ([]connector.Issue, int, int, error) {
+	if settings.dependencies == nil {
+		settings.dependencies = make(map[string]*runner.AdmissionDependencies)
+	}
 	out := make([]connector.Issue, 0, min(len(candidates), candidateLimit))
 	processed := 0
 	truncated := 0
 	for _, candidate := range candidates {
+		if len(admissionDependencyReferences(candidate)) > 0 {
+			settings.dependencies[candidate.ID] = resolveAdmissionDependencies(ctx, settings, candidate, at)
+		}
 		history, err := m.store.AdmissionProposalHistory(ctx, settings.ProjectID, candidate.ID)
 		if err != nil {
 			return nil, commentsRemaining, truncated, err
 		}
-		fingerprint := issueFingerprint(candidate)
+		fingerprint := issueFingerprint(candidate, settings.dependencies[candidate.ID])
 		suppress := false
 		for _, proposal := range history {
 			if proposal.Status == admissionmodel.ProposalAccepted {
@@ -1052,7 +1070,7 @@ func (m *Manager) unproposedCandidates(
 			}
 			continue
 		}
-		decline, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, candidate.ID, fingerprint)
+		decline, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, candidate.ID, issueFingerprint(candidate))
 		if err != nil {
 			return nil, commentsRemaining, truncated, err
 		}
@@ -1063,7 +1081,7 @@ func (m *Manager) unproposedCandidates(
 			ctx,
 			settings.ProjectID,
 			candidate.ID,
-			criteriaDeclineFingerprint(candidate, settings.Criteria),
+			criteriaDeclineFingerprint(candidate, settings.Criteria, settings.dependencies[candidate.ID]),
 		)
 		if err != nil {
 			return nil, commentsRemaining, truncated, err
@@ -1128,7 +1146,7 @@ func (m *Manager) createAdmissionDecline(
 	classification admissionDeclineClassification,
 	at time.Time,
 ) (admissionmodel.Decline, bool, error) {
-	fingerprint := admissionDeclineFingerprint(issue, classification, settings.Criteria)
+	fingerprint := admissionDeclineFingerprint(issue, classification, settings.Criteria, settings.dependencies[issue.ID])
 	decline := admissionmodel.Decline{
 		ID:              admissionDeclineID(settings.ProjectID, issue.ID, fingerprint),
 		ProjectID:       settings.ProjectID,
@@ -1350,6 +1368,9 @@ func (m *Manager) executeEvaluations(
 	autoAdmitsRemaining int,
 	at time.Time,
 ) (Result, error) {
+	if settings.dependencies == nil {
+		settings.dependencies = make(map[string]*runner.AdmissionDependencies)
+	}
 	if len(evaluations) != len(candidates) {
 		return result, fmt.Errorf("%w: got %d evaluations for %d candidates", ErrInvalidOutput, len(evaluations), len(candidates))
 	}
@@ -1382,11 +1403,15 @@ func (m *Manager) executeEvaluations(
 			return result, fmt.Errorf("revalidate backlog admission candidate %s: %w", original.Identifier, err)
 		}
 		current, currentFound := issueMap(fresh)[issueID]
-		if !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
+		originalFingerprint := issueFingerprint(original, settings.dependencies[issueID])
+		dependencies := resolveAdmissionDependencies(ctx, settings, current, m.now().UTC())
+		if !currentFound || originalFingerprint != issueFingerprint(current, dependencies) ||
 			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
 			result.Skipped["stale_or_ineligible"]++
 			continue
 		}
+		settings.dependencies[issueID] = dependencies
+		evaluation = admissionDependencyFindings(evaluation, dependencies)
 		var classification *admissionDeclineClassification
 		if declineClassification, declined := classifyNonDeliverable(current); declined {
 			classification = &declineClassification
@@ -1432,13 +1457,13 @@ func (m *Manager) executeEvaluations(
 			return result, errors.New("backlog admission proposal capacity changed during evaluation")
 		}
 		proposal := admissionmodel.Proposal{
-			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current), at),
+			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current, dependencies), at),
 			ProjectID:         settings.ProjectID,
 			IssueID:           current.ID,
 			IssueIdentifier:   current.Identifier,
 			IssueURL:          current.URL,
 			TargetState:       settings.Config.TargetState,
-			Fingerprint:       issueFingerprint(current),
+			Fingerprint:       issueFingerprint(current, dependencies),
 			CriteriaSection:   settings.Criteria.Section,
 			CriteriaText:      settings.Criteria.Text,
 			Findings:          evaluation.Findings,
@@ -1575,6 +1600,12 @@ func (m *Manager) admitProposal(
 		return fmt.Errorf("revalidate admitted backlog issue %s: %w", proposal.IssueIdentifier, err)
 	}
 	current, found := issueMap(issues)[proposal.IssueID]
+	if found {
+		changed, err := m.supersedeChangedDependencies(ctx, settings, current, proposal, m.now().UTC(), true)
+		if err != nil || changed {
+			return err
+		}
+	}
 	eligible := found && admissionSourceEligible(current, settings.Config)
 	if decision.Automatic {
 		eligible = found && autoAdmitCandidateEligible(current, settings.Config) &&
@@ -2163,12 +2194,12 @@ func appendRecommendedEffortBlock(body string, effort string) string {
 	return body + "```detent-agent\nschema: 1\neffort: " + effort + "\n```\n"
 }
 
-func issueFingerprint(issue connector.Issue) string {
+func issueFingerprint(issue connector.Issue, dependencies ...*runner.AdmissionDependencies) string {
 	sum := sha256.Sum256([]byte(
 		strconv.Itoa(len(issue.Title)) + ":" + issue.Title +
 			strconv.Itoa(len(issue.Description)) + ":" + issue.Description,
 	))
-	return hex.EncodeToString(sum[:])
+	return dependencyFingerprint(hex.EncodeToString(sum[:]), dependencies...)
 }
 
 type admissionFingerprints struct {
@@ -2178,7 +2209,7 @@ type admissionFingerprints struct {
 }
 
 func admissionEvaluationFingerprints(settings Settings, candidate connector.Issue) admissionFingerprints {
-	candidateFingerprint := admissionCandidateFingerprint(candidate)
+	candidateFingerprint := dependencyFingerprint(admissionCandidateFingerprint(candidate), settings.dependencies[candidate.ID])
 	promptParts := []string{
 		admissionPromptFingerprintVersion,
 		settings.ProjectID,
@@ -2271,9 +2302,9 @@ func redactAdmissionOutput(raw []byte) string {
 	return excerpt
 }
 
-func criteriaDeclineFingerprint(issue connector.Issue, criteria config.AdmissionCriteria) string {
+func criteriaDeclineFingerprint(issue connector.Issue, criteria config.AdmissionCriteria, dependencies ...*runner.AdmissionDependencies) string {
 	sum := sha256.Sum256([]byte(
-		issueFingerprint(issue) + "\x00" +
+		issueFingerprint(issue, dependencies...) + "\x00" +
 			strconv.Itoa(len(criteria.Section)) + ":" + criteria.Section +
 			strconv.Itoa(len(criteria.Text)) + ":" + criteria.Text,
 	))
@@ -2284,9 +2315,10 @@ func admissionDeclineFingerprint(
 	issue connector.Issue,
 	classification admissionDeclineClassification,
 	criteria config.AdmissionCriteria,
+	dependencies ...*runner.AdmissionDependencies,
 ) string {
 	if classification.reason == admissionDeclineCriteriaNotMet {
-		return criteriaDeclineFingerprint(issue, criteria)
+		return criteriaDeclineFingerprint(issue, criteria, dependencies...)
 	}
 	return issueFingerprint(issue)
 }
@@ -2306,6 +2338,7 @@ func proposalComment(
 	var b strings.Builder
 	failedDimensions := failedAdmissionDimensions(proposal.Findings, criteria)
 	b.WriteString("## Detent backlog admission proposal\n\n")
+	fmt.Fprintf(&b, "Evaluated at %s. This is historical evaluation evidence; present readiness is rechecked before admission.\n\n", proposal.CreatedAt.UTC().Format(time.RFC3339))
 	b.WriteString("Proposal `")
 	b.WriteString(proposal.ID)
 	b.WriteString("` recommends moving this issue to **")
@@ -2390,7 +2423,9 @@ func admissionRequest(settings Settings, candidates []connector.Issue) *runner.A
 	}
 	agentCandidates := make([]runner.AdmissionCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		agentCandidates = append(agentCandidates, admissionCandidate(candidate))
+		agentCandidate := admissionCandidate(candidate)
+		agentCandidate.Dependencies = settings.dependencies[candidate.ID]
+		agentCandidates = append(agentCandidates, agentCandidate)
 	}
 	return &runner.AdmissionRequest{
 		Schedule:        settings.Config.Schedule,

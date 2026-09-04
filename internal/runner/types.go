@@ -643,13 +643,30 @@ type AdmissionDimension struct {
 }
 
 type AdmissionCandidate struct {
-	ID          string   `json:"id"`
-	Identifier  string   `json:"identifier"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	State       string   `json:"state"`
-	AuthorID    string   `json:"author_id,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
+	Dependencies *AdmissionDependencies `json:"dependencies,omitempty"`
+	ID           string                 `json:"id"`
+	Identifier   string                 `json:"identifier"`
+	Title        string                 `json:"title"`
+	Description  string                 `json:"description"`
+	State        string                 `json:"state"`
+	AuthorID     string                 `json:"author_id,omitempty"`
+	Labels       []string               `json:"labels,omitempty"`
+}
+
+type AdmissionDependencies struct {
+	ObservedAt time.Time             `json:"observed_at"`
+	Readiness  string                `json:"readiness"`
+	Ready      bool                  `json:"ready"`
+	References []AdmissionDependency `json:"references"`
+}
+
+type AdmissionDependency struct {
+	Identifier       string `json:"identifier"`
+	State            string `json:"state,omitempty"`
+	Closed           bool   `json:"closed"`
+	PullRequestState string `json:"pull_request_state,omitempty"`
+	Ready            bool   `json:"ready"`
+	Error            string `json:"error,omitempty"`
 }
 
 type AgentOverrideRejectionHandler func([]AgentOverrideRejection) error

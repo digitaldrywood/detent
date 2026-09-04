@@ -182,6 +182,7 @@ func BuildAdmissionPrompt(issue connector.Issue, request AdmissionRequest, opts 
 	if strings.TrimSpace(request.EffortText) != "" {
 		b.WriteString("For every `proposed` evaluation, choose `recommended_effort` only from `allowed_efforts` using the project-owned `effort_text`, and provide a concise `effort_rationale`. Do not include effort fields on `declined` evaluations.\n\n")
 	}
+	b.WriteString("When a candidate includes dependencies, use that tracker evidence as of observed_at for dependency readiness. A Depends on or Blocked by declaration alone is not an open blocker. A ready dependency satisfies the configured dependency rule even when its declaration remains in the body. Unresolved references and resolution errors fail closed. Preserve independent human prerequisites and every other unmet criterion. Historical proposals or refusals are observations at their evaluation time, not evidence of present readiness.\n\n")
 	b.WriteString("```json\n")
 	b.Write(raw)
 	b.WriteString("\n```\n\nUse the `propose_backlog_admission` tool exactly once for every supplied candidate. Do not move issues or create comments. If the tool is unavailable, return only JSON in the form `{\"evaluations\":[{\"issue_id\":\"...\",\"disposition\":\"proposed\",\"findings\":[{\"dimension\":\"...\",\"criterion_quote\":\"...\",\"matched\":true,\"rationale\":\"...\"}],\"confidence\":0.0")

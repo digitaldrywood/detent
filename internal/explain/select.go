@@ -550,6 +550,7 @@ func buildEligibility(collected collectedEvidence) Eligibility {
 		decisions = append(decisions, EligibilityDecision{
 			EvidenceID: "admission:" + strings.TrimSpace(proposal.ID),
 			Source:     "admission",
+			Historical: true,
 			State:      state,
 			Outcome:    string(proposal.Status),
 			Reason:     strings.TrimSpace(proposal.ResolutionReason),
@@ -565,7 +566,9 @@ func buildEligibility(collected collectedEvidence) Eligibility {
 	if len(decisions) > 0 {
 		latest := decisions[0]
 		eligibility.Latest = &latest
-		eligibility.State = latest.State
+		if !latest.Historical {
+			eligibility.State = latest.State
+		}
 	}
 	for _, decision := range decisions {
 		if decision.State == EligibilityRefused {

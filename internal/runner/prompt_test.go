@@ -1259,3 +1259,30 @@ func TestBuildPromptIgnoresUnreadableLessons(t *testing.T) {
 		t.Fatalf("prompt included unreadable lessons:\n%s", prompt)
 	}
 }
+
+func TestBuildAdmissionPromptUsesCurrentDependencyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, ready := range []bool{false, true} {
+		t.Run(strconv.FormatBool(ready), func(t *testing.T) {
+			observedAt := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			request := AdmissionRequest{Candidates: []AdmissionCandidate{{
+				ID: "dependent", Description: "Blocked by: #10\nA human must provide credentials.",
+				Dependencies: &AdmissionDependencies{ObservedAt: observedAt, Readiness: "terminal_or_merged", Ready: ready, References: []AdmissionDependency{{Identifier: "owner/repo#10", Closed: ready, Ready: ready}}},
+			}}}
+			prompt, err := BuildAdmissionPrompt(connector.Issue{Identifier: "project"}, request, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				`"observed_at":"2026-09-04T12:00:00Z"`, `"ready":` + strconv.FormatBool(ready),
+				"A Depends on or Blocked by declaration alone is not an open blocker.",
+				"A ready dependency satisfies the configured dependency rule even when its declaration remains in the body.",
+				"Preserve independent human prerequisites", "A human must provide credentials.",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt lacks %q", want)
+				}
+			}
+		})
+	}
+}
