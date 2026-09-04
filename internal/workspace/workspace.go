@@ -37,12 +37,11 @@ const quarantineTimestampFormat = "20060102T150405.000000000Z"
 const quarantineAccumulationWarningThreshold = 5
 
 var (
-	ErrHookFailed                  = errors.New("workspace hook failed")
-	ErrMissingWorkspace            = errors.New("workspace missing")
-	ErrUnsafePath                  = errors.New("unsafe workspace path")
-	ErrUnsupportedBackend          = errors.New("unsupported workspace backend")
-	ErrWorktreeInvariant           = errors.New("workspace worktree invariant failed")
-	ErrWorkspaceHasUnpreservedWork = errors.New("workspace has unpreserved work")
+	ErrHookFailed         = errors.New("workspace hook failed")
+	ErrMissingWorkspace   = errors.New("workspace missing")
+	ErrUnsafePath         = errors.New("unsafe workspace path")
+	ErrUnsupportedBackend = errors.New("unsupported workspace backend")
+	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
 )
 
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
@@ -273,11 +272,6 @@ type workspaceRemovalError struct {
 	err         error
 }
 
-type workspacePreservationError struct {
-	path   string
-	detail string
-}
-
 type worktreeCreationError struct {
 	err error
 }
@@ -316,22 +310,6 @@ func (e *workspaceRemovalError) WorkspacePath() string {
 
 func (e *workspaceRemovalError) Remediation() string {
 	return e.remediation
-}
-
-func (e *workspacePreservationError) Error() string {
-	return fmt.Sprintf("%s: %s: %s; remediation: %s", ErrWorkspaceHasUnpreservedWork, e.path, e.detail, workspacePreservationRemediation)
-}
-
-func (e *workspacePreservationError) Unwrap() error {
-	return ErrWorkspaceHasUnpreservedWork
-}
-
-func (e *workspacePreservationError) WorkspacePath() string {
-	return e.path
-}
-
-func (e *workspacePreservationError) Remediation() string {
-	return workspacePreservationRemediation
 }
 
 func (e *CommandError) Error() string {
@@ -529,9 +507,6 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		return CleanupResult{}, err
 	}
 	if !exists {
-		if err := l.ensureBranchSafeForCleanup(ctx, info.Path, info.Branch); err != nil {
-			return CleanupResult{}, err
-		}
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
 		if pruneErr != nil {
 			return CleanupResult{}, pruneErr
@@ -546,17 +521,10 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		return result, nil
 	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
-	sourceWorktree := isDir && l.isSourceWorktree(ctx, info.Path)
-	if sourceWorktree {
+	if isDir && l.isSourceWorktree(ctx, info.Path) {
 		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue); err != nil {
 			l.logger.Warn("workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 		}
-		if err := l.ensureWorkspaceSafeForCleanup(ctx, info.Path); err != nil {
-			return CleanupResult{}, err
-		}
-	}
-	if err := l.ensureBranchSafeForCleanup(ctx, info.Path, info.Branch); err != nil {
-		return CleanupResult{}, err
 	}
 
 	if err := l.removePath(ctx, info.Path); err != nil {
@@ -574,57 +542,6 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		result.Branches = 1
 	}
 	return result, nil
-}
-
-const workspacePreservationRemediation = "commit and push retained work, or inspect and remove it manually, then rerun cleanup"
-
-func (l *LocalGit) ensureWorkspaceSafeForCleanup(ctx context.Context, path string) error {
-	dirty, err := l.worktreeHasChanges(ctx, path)
-	if err != nil {
-		return fmt.Errorf("inspect workspace before cleanup: %w", err)
-	}
-	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidence(ctx, path)
-	if err != nil {
-		return fmt.Errorf("inspect workspace commits before cleanup: %w", err)
-	}
-	return workspacePreservationFailure(path, "workspace", dirty, unpushedCommits, unpushedCommitRefs)
-}
-
-func (l *LocalGit) ensureBranchSafeForCleanup(ctx context.Context, path string, branch string) error {
-	branch = strings.TrimSpace(branch)
-	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, "detent/") {
-		return nil
-	}
-	exists, err := l.branchExists(ctx, branch)
-	if err != nil || !exists {
-		return err
-	}
-	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidenceForRevision(ctx, l.sourceRoot, branch)
-	if err != nil {
-		return fmt.Errorf("inspect workspace branch before cleanup: %w", err)
-	}
-	return workspacePreservationFailure(path, fmt.Sprintf("branch %q", branch), false, unpushedCommits, unpushedCommitRefs)
-}
-
-func workspacePreservationFailure(path string, subject string, dirty bool, unpushedCommits int, unpushedCommitRefs []string) error {
-	details := make([]string, 0, 2)
-	if dirty {
-		details = append(details, "contains uncommitted or untracked changes")
-	}
-	if unpushedCommits > 0 {
-		detail := fmt.Sprintf("contains %d commits not reachable from any remote", unpushedCommits)
-		if len(unpushedCommitRefs) > 0 {
-			detail += ": " + strings.Join(unpushedCommitRefs, "; ")
-		}
-		details = append(details, detail)
-	}
-	if len(details) == 0 {
-		return nil
-	}
-	return &workspacePreservationError{
-		path:   path,
-		detail: subject + " " + strings.Join(details, " and "),
-	}
 }
 
 func (l *LocalGit) BeforeRun(ctx context.Context, info Info, issue Issue) error {

@@ -217,10 +217,6 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 }
 
 func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string) (int, []string, error) {
-	return gitUnpushedCommitEvidenceForRevision(ctx, workspacePath, "HEAD")
-}
-
-func gitUnpushedCommitEvidenceForRevision(ctx context.Context, workspacePath string, revision string) (int, []string, error) {
 	remoteRefs, err := runGitAt(ctx, workspacePath, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes")
 	if err != nil {
 		return 0, nil, fmt.Errorf("git list remote refs: %w", err)
@@ -228,7 +224,7 @@ func gitUnpushedCommitEvidenceForRevision(ctx context.Context, workspacePath str
 	if strings.TrimSpace(remoteRefs) == "" {
 		return 0, nil, nil
 	}
-	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", revision, "--not", "--remotes")
+	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	if err != nil {
 		return 0, nil, fmt.Errorf("git count unpushed commits: %w", err)
 	}
@@ -239,7 +235,7 @@ func gitUnpushedCommitEvidenceForRevision(ctx context.Context, workspacePath str
 	if count == 0 {
 		return 0, nil, nil
 	}
-	refs, err := gitCommitEvidence(ctx, workspacePath, revision, "--not", "--remotes")
+	refs, err := gitCommitEvidence(ctx, workspacePath, "HEAD", "--not", "--remotes")
 	if err != nil {
 		return 0, nil, fmt.Errorf("git list unpushed commits: %w", err)
 	}
