@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -101,6 +102,262 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 				t.Fatalf("current = %#v, want %#v", reloader.current, tt.wantCurrent)
 			}
 		})
+	}
+}
+
+func TestGlobalConfigReloaderUsesLatestFileSnapshot(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	stale := current
+	stale.Global.MaxConcurrentAgents = 4
+	latest := current
+	latest.Global.MaxConcurrentAgents = 6
+	if err := globalconfig.Write(path, latest); err != nil {
+		t.Fatalf("Write(latest) error = %v", err)
+	}
+	latest, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(latest) error = %v", err)
+	}
+
+	manager := &globalReloadManager{}
+	reloaded := []globalconfig.Config{}
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: manager,
+		onReload: func(cfg globalconfig.Config) {
+			reloaded = append(reloaded, cfg)
+		},
+	}
+	reloader.handle(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  path,
+		Value: stale,
+	})
+
+	if manager.calls != 1 {
+		t.Fatalf("manager calls = %d, want 1", manager.calls)
+	}
+	if want := project.ManagerConfigFromGlobal(latest); !reflect.DeepEqual(manager.config, want) {
+		t.Fatalf("manager config = %#v, want latest %#v", manager.config, want)
+	}
+	if !reflect.DeepEqual(reloader.current, latest) {
+		t.Fatalf("current = %#v, want latest %#v", reloader.current, latest)
+	}
+	if !reflect.DeepEqual(reloaded, []globalconfig.Config{latest}) {
+		t.Fatalf("reload callbacks = %#v, want latest only", reloaded)
+	}
+}
+
+func TestSyncLatestGlobalConfigReconcilesMissedWatchEvent(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	latest := current
+	latest.Global.MaxConcurrentAgents = 6
+	if err := globalconfig.Write(path, latest); err != nil {
+		t.Fatalf("Write(latest) error = %v", err)
+	}
+	latest, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(latest) error = %v", err)
+	}
+
+	manager := &globalReloadManager{}
+	reloader := &globalConfigReloader{current: current, manager: manager}
+	syncLatestGlobalConfig(context.Background(), path, reloader)
+
+	if manager.calls != 1 {
+		t.Fatalf("manager calls = %d, want 1", manager.calls)
+	}
+	if !reflect.DeepEqual(reloader.current, latest) {
+		t.Fatalf("current = %#v, want latest %#v", reloader.current, latest)
+	}
+}
+
+func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	first := current
+	first.Global.MaxConcurrentAgents = 4
+	if err := globalconfig.Write(path, first); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	first, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(first) error = %v", err)
+	}
+
+	manager := newBlockingGlobalReloadManager()
+	manager.results = []project.ReconcileResult{
+		{DrainedSessions: []project.ReconcileSession{{ProjectID: "alpha", Identifier: "alpha#1"}}},
+		{DrainedSessions: []project.ReconcileSession{{ProjectID: "alpha", Identifier: "alpha#2"}}},
+	}
+	reloaded := []globalconfig.Config{}
+	applied := []int{}
+	var logs bytes.Buffer
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: manager,
+		applyRuntime: func(cfg globalconfig.Config) error {
+			applied = append(applied, cfg.Global.MaxConcurrentAgents)
+			return nil
+		},
+		onReload: func(cfg globalconfig.Config) {
+			reloaded = append(reloaded, cfg)
+		},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reloader.handle(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+			Path:  path,
+			Value: first,
+		})
+	}()
+
+	select {
+	case <-manager.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first reconciliation")
+	}
+	latest := current
+	latest.Global.MaxConcurrentAgents = 6
+	if err := globalconfig.Write(path, latest); err != nil {
+		t.Fatalf("Write(latest) error = %v", err)
+	}
+	latest, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(latest) error = %v", err)
+	}
+	close(manager.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for converged reconciliation")
+	}
+
+	if len(manager.configs) != 2 || manager.configs[0].Projects[0].ID != "alpha" || manager.configs[1].Projects[0].ID != "alpha" {
+		t.Fatalf("manager configs = %#v, want two alpha reconciliations", manager.configs)
+	}
+	if !reflect.DeepEqual(applied, []int{4, 6}) {
+		t.Fatalf("applied runtime capacities = %v, want [4 6]", applied)
+	}
+	if !reflect.DeepEqual(reloader.current, latest) {
+		t.Fatalf("current = %#v, want latest %#v", reloader.current, latest)
+	}
+	if !reflect.DeepEqual(reloaded, []globalconfig.Config{latest}) {
+		t.Fatalf("reload callbacks = %#v, want latest only", reloaded)
+	}
+	for _, identifier := range []string{"alpha#1", "alpha#2"} {
+		if !strings.Contains(logs.String(), identifier) {
+			t.Fatalf("completion logs missing drained session %q:\n%s", identifier, logs.String())
+		}
+	}
+}
+
+func TestGlobalConfigReloaderLogsReconciliationLifecycleAndDrainedSessions(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	next := current
+	next.Global.CPU.PressureSomeAvg10Threshold = 95
+	if err := globalconfig.Write(path, next); err != nil {
+		t.Fatalf("Write(next) error = %v", err)
+	}
+	next, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(next) error = %v", err)
+	}
+
+	var logs bytes.Buffer
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: &globalReloadManager{result: project.ReconcileResult{
+			Changed: []project.ID{"alpha"},
+			DrainedSessions: []project.ReconcileSession{{
+				ProjectID:         "alpha",
+				IssueID:           "2058",
+				Identifier:        "digitaldrywood/pyroapex#2058",
+				WorkAttemptID:     7755,
+				DetentSessionID:   9900,
+				ProviderSessionID: "thread-2058-turn-1",
+			}},
+		}},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	reloader.handle(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{Path: path, Value: next})
+
+	for _, want := range []string{
+		"global config reconciliation started",
+		"global config reconciliation completed",
+		"global.cpu.pressure_some_avg10_threshold",
+		"drained_sessions",
+		"digitaldrywood/pyroapex#2058",
+		"9900",
+		"thread-2058-turn-1",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("reconciliation logs missing %q:\n%s", want, logs.String())
+		}
 	}
 }
 
@@ -264,6 +521,9 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		}},
 		{name: "fair share", field: "global.fair_share", mutate: func(cfg *globalconfig.Config) { cfg.Global.FairShare = map[string]any{"half_life": "2h"} }},
 		{name: "startup", field: "global.startup", mutate: func(cfg *globalconfig.Config) { cfg.Global.Startup = map[string]any{"jitter_seconds": 1} }},
+		{name: "memory pressure", field: "global.memory.pressure_some_avg60_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.Memory.PressureSomeAvg60Threshold = 12 }},
+		{name: "IO pressure", field: "global.io.pressure_full_avg10_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.IO.PressureFullAvg10Threshold = 7 }},
+		{name: "CPU pressure", field: "global.cpu.pressure_some_avg10_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.CPU.PressureSomeAvg10Threshold = 95 }},
 	}
 
 	for _, tt := range tests {
@@ -526,7 +786,22 @@ func TestLogGlobalConfigChangesRedactsDashboardToken(t *testing.T) {
 type globalReloadManager struct {
 	calls  int
 	config project.ManagerConfig
+	result project.ReconcileResult
 	err    error
+}
+
+type blockingGlobalReloadManager struct {
+	started chan struct{}
+	release chan struct{}
+	configs []project.ManagerConfig
+	results []project.ReconcileResult
+}
+
+func newBlockingGlobalReloadManager() *blockingGlobalReloadManager {
+	return &blockingGlobalReloadManager{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
 }
 
 type globalReloadFairShareStore struct{}
@@ -545,7 +820,29 @@ func (m *globalReloadManager) Reconcile(
 ) (project.ReconcileResult, error) {
 	m.calls++
 	m.config = cfg
-	return project.ReconcileResult{Added: []project.ID{"bravo"}}, m.err
+	return m.result, m.err
+}
+
+func (m *blockingGlobalReloadManager) Reconcile(
+	ctx context.Context,
+	cfg project.ManagerConfig,
+) (project.ReconcileResult, error) {
+	m.configs = append(m.configs, cfg)
+	call := len(m.configs)
+	result := project.ReconcileResult{}
+	if call <= len(m.results) {
+		result = m.results[call-1]
+	}
+	if call != 1 {
+		return result, nil
+	}
+	close(m.started)
+	select {
+	case <-ctx.Done():
+		return project.ReconcileResult{}, ctx.Err()
+	case <-m.release:
+		return result, nil
+	}
 }
 
 func reloadTestConfig(path string, maxConcurrentAgents int, projects []globalconfig.Project) globalconfig.Config {

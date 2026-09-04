@@ -61,6 +61,122 @@ func TestRecordedBuildHostPressureHoldsAdmission(t *testing.T) {
 	}
 }
 
+func TestRuntimePressureThresholdReloadReevaluatesCachedSample(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 20, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		configureInitial func(*Config, *Orchestrator)
+		configureReload  func(*Config)
+		constrained      func(State) bool
+		threshold        func(State) float64
+		constraintSince  func(State) time.Time
+		wantThreshold    float64
+	}{
+		{
+			name: "memory",
+			configureInitial: func(cfg *Config, orch *Orchestrator) {
+				cfg.MemoryPressureSomeAvg60Max = 10
+				cfg.MemoryPressurePollInterval = time.Second
+				orch.readMemoryPressure = pressureReader(now, hostpressure.Sample{Some: hostpressure.Pressure{Avg60: 11}}, nil)
+			},
+			configureReload: func(cfg *Config) {
+				cfg.MemoryPressureSomeAvg60Max = 12
+				cfg.MemoryPressurePollInterval = time.Hour
+			},
+			constrained: func(state State) bool {
+				return state.MemoryPressure.DispatchHeld
+			},
+			threshold: func(state State) float64 {
+				return state.MemoryPressure.SomeAvg60Max
+			},
+			constraintSince: func(State) time.Time {
+				return time.Time{}
+			},
+			wantThreshold: 12,
+		},
+		{
+			name: "IO",
+			configureInitial: func(cfg *Config, orch *Orchestrator) {
+				cfg.IOPressureFullAvg10Max = 5
+				cfg.IOPressurePollInterval = time.Second
+				orch.readIOPressure = pressureReader(now, hostpressure.Sample{Full: hostpressure.Pressure{Avg10: 6}}, nil)
+			},
+			configureReload: func(cfg *Config) {
+				cfg.IOPressureFullAvg10Max = 7
+				cfg.IOPressurePollInterval = time.Hour
+			},
+			constrained: func(state State) bool {
+				return state.IOPressure.CapacityConstrained || state.IOPressure.DispatchHeld
+			},
+			threshold: func(state State) float64 {
+				return state.IOPressure.FullAvg10Max
+			},
+			constraintSince: func(state State) time.Time {
+				return state.IOPressure.ConstrainedSince
+			},
+			wantThreshold: 7,
+		},
+		{
+			name: "CPU",
+			configureInitial: func(cfg *Config, orch *Orchestrator) {
+				cfg.CPUPressureSomeAvg10Max = 80
+				cfg.CPUPressurePollInterval = time.Second
+				orch.readCPUPressure = pressureReader(now, hostpressure.Sample{Some: hostpressure.Pressure{Avg10: 90}}, nil)
+			},
+			configureReload: func(cfg *Config) {
+				cfg.CPUPressureSomeAvg10Max = 100
+				cfg.CPUPressurePollInterval = time.Hour
+			},
+			constrained: func(state State) bool {
+				return state.CPUPressure.CapacityConstrained || state.CPUPressure.DispatchHeld
+			},
+			threshold: func(state State) float64 {
+				return state.CPUPressure.SomeAvg10Max
+			},
+			constraintSince: func(state State) time.Time {
+				return state.CPUPressure.ConstrainedSince
+			},
+			wantThreshold: 100,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Config{PollInterval: time.Hour, MaxConcurrentAgents: 1}
+			orch := Orchestrator{now: func() time.Time { return now }}
+			tt.configureInitial(&cfg, &orch)
+			cfg = normalizeConfig(cfg)
+			orch.cfg = cfg
+			orch.supervisor = newTestSupervisor(t, FakeRunner{}, cfg)
+			state := newState(cfg)
+			orch.observeHostPressure(t.Context(), &state, now)
+			if !tt.constrained(state) {
+				t.Fatalf("initial pressure = %#v, want constrained", state)
+			}
+
+			reloaded := cfg
+			tt.configureReload(&reloaded)
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			orch.applyRuntimeUpdate(&state, RuntimeUpdate{Config: reloaded}, ticker)
+
+			if tt.constrained(state) {
+				t.Fatalf("reloaded pressure = %#v, want cached sample admitted", state)
+			}
+			if got := tt.threshold(state); got != tt.wantThreshold {
+				t.Fatalf("threshold = %v, want %v", got, tt.wantThreshold)
+			}
+			if since := tt.constraintSince(state); !since.IsZero() {
+				t.Fatalf("ConstrainedSince = %s, want zero", since)
+			}
+		})
+	}
+}
+
 func TestObserveIOAndCPUPressureControlsAdmission(t *testing.T) {
 	t.Parallel()
 

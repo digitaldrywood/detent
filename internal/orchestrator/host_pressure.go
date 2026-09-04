@@ -190,6 +190,80 @@ func refreshCPUPressureCapacity(pressure *telemetry.CPUPressure, degraded int) {
 	}
 }
 
+func refreshCachedHostPressure(state *State, previous Config, current Config, now time.Time) {
+	refreshCachedMemoryPressure(&state.MemoryPressure, previous.MemoryPressureSomeAvg60Max, current.MemoryPressureSomeAvg60Max)
+	refreshCachedIOPressure(
+		&state.IOPressure,
+		previous.IOPressureFullAvg10Max,
+		current.IOPressureFullAvg10Max,
+		current.IOPressureDegradedMaxAgents,
+		now,
+	)
+	refreshCachedCPUPressure(
+		&state.CPUPressure,
+		previous.CPUPressureSomeAvg10Max,
+		current.CPUPressureSomeAvg10Max,
+		current.CPUPressureDegradedMaxAgents,
+		now,
+	)
+}
+
+func refreshCachedMemoryPressure(pressure *telemetry.MemoryPressure, previousThreshold float64, threshold float64) {
+	pressure.SomeAvg60Max = threshold
+	if threshold <= 0 {
+		pressure.DispatchHeld = false
+		return
+	}
+	if !pressure.Supported || previousThreshold == threshold {
+		return
+	}
+	pressure.DispatchHeld = pressure.Some.Avg60 > threshold
+}
+
+func refreshCachedIOPressure(
+	pressure *telemetry.IOPressure,
+	previousThreshold float64,
+	threshold float64,
+	degraded int,
+	now time.Time,
+) {
+	wasConstrained := pressure.CapacityConstrained || pressure.DispatchHeld
+	pressure.FullAvg10Max = threshold
+	if previousThreshold != threshold || threshold <= 0 {
+		constrained := pressure.Supported && threshold > 0 && pressure.Full.Avg10 > threshold
+		pressure.ConstrainedSince, pressure.ConstrainedForMS = pressureConstraintDuration(
+			wasConstrained,
+			pressure.ConstrainedSince,
+			constrained,
+			now,
+		)
+		pressure.CapacityConstrained = constrained
+	}
+	refreshIOPressureCapacity(pressure, degraded)
+}
+
+func refreshCachedCPUPressure(
+	pressure *telemetry.CPUPressure,
+	previousThreshold float64,
+	threshold float64,
+	degraded int,
+	now time.Time,
+) {
+	wasConstrained := pressure.CapacityConstrained || pressure.DispatchHeld
+	pressure.SomeAvg10Max = threshold
+	if previousThreshold != threshold || threshold <= 0 {
+		constrained := pressure.Supported && threshold > 0 && pressure.Some.Avg10 > threshold
+		pressure.ConstrainedSince, pressure.ConstrainedForMS = pressureConstraintDuration(
+			wasConstrained,
+			pressure.ConstrainedSince,
+			constrained,
+			now,
+		)
+		pressure.CapacityConstrained = constrained
+	}
+	refreshCPUPressureCapacity(pressure, degraded)
+}
+
 func refreshIOPressureDuration(pressure *telemetry.IOPressure, now time.Time) {
 	if pressure == nil || !pressure.CapacityConstrained || pressure.ConstrainedSince.IsZero() {
 		return
