@@ -131,6 +131,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	nativeQueueTerminalIssues := o.fetchUnsafeNativeMergeQueueTerminalIssues(ctx, state, now, reserve)
 	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
@@ -159,7 +160,10 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	reviewThreadQueueIssues := o.reconcileUnsafeNativeMergeQueueIssues(
 		ctx,
 		state,
-		mergeIssueSlices(fetched.status, fetched.candidates),
+		mergeIssueSlices(
+			mergeIssueSlices(fetched.status, fetched.candidates),
+			nativeQueueTerminalIssues,
+		),
 		previous.pipeline,
 		now,
 	)

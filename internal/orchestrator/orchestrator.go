@@ -1202,6 +1202,9 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		o.ownershipStartupLogged = false
 	}
 	o.cfg = cfg
+	if nativeMergeQueueCleanupRequired(cfg) {
+		state.nativeQueueSweepPending = true
+	}
 	now := time.Now
 	if o.now != nil {
 		now = o.now
