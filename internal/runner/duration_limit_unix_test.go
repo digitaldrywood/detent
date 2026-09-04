@@ -15,70 +15,85 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestRunnerSessionCancellationReapsEscapedWorkspaceProcess(t *testing.T) {
-	workspacePath := t.TempDir()
-	lockPath := filepath.Join(workspacePath, "gate.lock")
-	durationLimit := &controlledDurationLimit{}
-	command, readyReader, readyWriter := workspaceLockCommand(t, workspacePath, lockPath)
-	backend := &orphanLockAgentBackend{
-		command:       command,
-		readyReader:   readyReader,
-		readyWriter:   readyWriter,
-		expireSession: durationLimit.Expire,
-	}
-	t.Cleanup(func() {
-		if backend.command.Process != nil {
-			_ = backend.command.Process.Kill()
-		}
-		if backend.waitDone != nil {
-			<-backend.waitDone
-		}
-	})
-	var reaped int
-	var reapErr error
-
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}},
-			Prompt: "Work",
-		},
-		Workspace: &fakeWorkspaceBackend{
-			info: workspace.Info{Path: workspacePath, Key: "issue-orphan-lock"},
-		},
-		AgentBackend:    backend,
-		sessionLimit:    durationLimit.Context,
-		WorkerReapGrace: 5 * time.Second,
-		ReapWorkspaceProcesses: func(ctx context.Context, path string, grace time.Duration) (int, error) {
-			reaped, reapErr = workspace.ReapProcesses(ctx, path, grace)
-			return reaped, reapErr
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
+func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
+	tests := []struct {
+		name      string
+		completed bool
+		wantErr   error
+	}{
+		{name: "completed turn abandons command", completed: true},
+		{name: "session cancellation", wantErr: ErrSessionDurationExceeded},
 	}
 
-	_, runErr := runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-orphan-lock",
-			Identifier: "digitaldrywood/detent#2081",
-		},
-	})
-	if !errors.Is(runErr, ErrSessionDurationExceeded) {
-		t.Fatalf("Run() error = %v, want ErrSessionDurationExceeded", runErr)
-	}
-	if reapErr != nil || reaped != 1 {
-		t.Fatalf("workspace reap = (%d, %v), want (1, nil)", reaped, reapErr)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workspacePath := t.TempDir()
+			lockPath := filepath.Join(workspacePath, "gate.lock")
+			durationLimit := &controlledDurationLimit{}
+			command, readyReader, readyWriter := workspaceLockCommand(t, workspacePath, lockPath)
+			backend := &orphanLockAgentBackend{
+				command:       command,
+				readyReader:   readyReader,
+				readyWriter:   readyWriter,
+				expireSession: durationLimit.Expire,
+				completed:     tt.completed,
+			}
+			t.Cleanup(func() {
+				if backend.command.Process != nil {
+					_ = backend.command.Process.Kill()
+				}
+				if backend.waitDone != nil {
+					<-backend.waitDone
+				}
+			})
+			var reaped int
+			var reapErr error
 
-	select {
-	case <-backend.waitDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("workspace lock holder survived session cancellation")
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}},
+					Prompt: "Work",
+				},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: workspacePath, Key: "issue-orphan-lock"},
+				},
+				AgentBackend:    backend,
+				sessionLimit:    durationLimit.Context,
+				WorkerReapGrace: 5 * time.Second,
+				ReapWorkspaceProcesses: func(ctx context.Context, path string, grace time.Duration) (int, error) {
+					reaped, reapErr = workspace.ReapProcesses(ctx, path, grace)
+					return reaped, reapErr
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, runErr := runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-orphan-lock",
+					Identifier: "digitaldrywood/detent#2116",
+				},
+			})
+			if !errors.Is(runErr, tt.wantErr) {
+				t.Fatalf("Run() error = %v, want %v", runErr, tt.wantErr)
+			}
+			if reapErr != nil || reaped != 1 {
+				t.Fatalf("workspace reap = (%d, %v), want (1, nil)", reaped, reapErr)
+			}
+
+			select {
+			case <-backend.waitDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("workspace lock holder survived terminal session")
+			}
+			assertLockAvailable(t, lockPath)
+		})
 	}
-	assertLockAvailable(t, lockPath)
 }
 
 func TestWorkspaceLockProcess(t *testing.T) {
@@ -111,11 +126,19 @@ type orphanLockAgentBackend struct {
 	readyReader   *os.File
 	readyWriter   *os.File
 	expireSession func()
+	completed     bool
 	waitDone      chan struct{}
 }
 
-func (b *orphanLockAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *orphanLockAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	if err := b.command.Start(); err != nil {
+		return AgentTurnResult{}, err
+	}
+	identity, err := procgroup.Inspect(b.command)
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := onUpdate(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: identity}); err != nil {
 		return AgentTurnResult{}, err
 	}
 	if err := b.readyWriter.Close(); err != nil {
@@ -128,6 +151,9 @@ func (b *orphanLockAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest
 	}()
 	if _, err := io.ReadFull(b.readyReader, make([]byte, 1)); err != nil {
 		return AgentTurnResult{}, err
+	}
+	if b.completed {
+		return AgentTurnResult{}, nil
 	}
 	b.expireSession()
 	<-ctx.Done()

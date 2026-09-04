@@ -232,19 +232,27 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 			t.Parallel()
 			startedAt := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
 			identity := procgroup.Identity{PID: 1885, GroupID: 1885, StartedAt: startedAt}
+			workspacePath := t.TempDir()
+			var logs bytes.Buffer
 			processStore := &durationReapSessionStore{
 				fakeSessionStore: &fakeSessionStore{sessionID: 1885},
 				process: store.WorkerProcess{SessionID: 1885, WorkerProcessIdentity: store.WorkerProcessIdentity{
 					PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt,
 				}},
 			}
+			workspaceReaped := ""
 			runner, err := NewRunner(Dependencies{
 				Workflow:     config.Workflow{Prompt: "Work"},
-				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-terminal-worker"}},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: workspacePath, Key: "issue-terminal-worker"}},
 				AgentBackend: terminalWorkerAgentBackend{identity: identity, err: tt.turnErr},
 				Store:        processStore,
+				Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 				ReapWorkerProcess: func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
 					return procgroup.TerminationOutcomeAlreadyExited, nil
+				},
+				ReapWorkspaceProcesses: func(_ context.Context, path string, _ time.Duration) (int, error) {
+					workspaceReaped = path
+					return 0, nil
 				},
 			})
 			if err != nil {
@@ -259,6 +267,19 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 			}
 			if len(processStore.reaps) != 1 || processStore.reaps[0].Reason != tt.wantReason || processStore.reaps[0].Outcome != store.WorkerProcessOutcomeAlreadyExited {
 				t.Fatalf("reap records = %#v, want reason %q", processStore.reaps, tt.wantReason)
+			}
+			if workspaceReaped != workspacePath {
+				t.Fatalf("reaped workspace = %q, want %q", workspaceReaped, workspacePath)
+			}
+			for _, want := range []string{
+				"event=worker_orphan_processes_reaped",
+				"issue_identifier=digitaldrywood/detent#1885",
+				"reason=" + tt.wantReason,
+				"count=0",
+			} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("logs missing %q:\n%s", want, logs.String())
+				}
 			}
 		})
 	}

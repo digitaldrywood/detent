@@ -5193,14 +5193,19 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			Branch: "detent/digitaldrywood_detent_522",
 		},
 	}
+	processStartedAt := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	validatorBackend := &fakeCodexClient{
-		updates: []AgentUpdate{{
-			Type:  AgentUpdateMessageDelta,
-			Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
-		}},
+		updates: []AgentUpdate{
+			{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 2116, GroupID: 2116, StartedAt: processStartedAt}},
+			{
+				Type:  AgentUpdateMessageDelta,
+				Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
+			},
+		},
 		result: AgentTurnResult{ThreadID: "validator-thread", TurnID: "validator-turn"},
 	}
 	codeBackend := &fakeCodexClient{}
+	workspaceReaped := ""
 
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
@@ -5232,6 +5237,10 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			"codex-code":      codeBackend,
 			"codex-validator": validatorBackend,
 		},
+		ReapWorkspaceProcesses: func(_ context.Context, path string, _ time.Duration) (int, error) {
+			workspaceReaped = path
+			return 0, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -5256,6 +5265,9 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 
 	if !result.Submitted || result.Verdict != gate.ValidatorVerdictPass || result.Score != 0.93 {
 		t.Fatalf("Validate() result = %#v, want submitted pass score 0.93", result)
+	}
+	if workspaceReaped != workspacePath {
+		t.Fatalf("reaped workspace = %q, want %q", workspaceReaped, workspacePath)
 	}
 	if result.Summary != "Acceptance criteria are covered." {
 		t.Fatalf("Summary = %q, want parsed summary", result.Summary)

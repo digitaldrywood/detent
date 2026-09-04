@@ -1076,6 +1076,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
+	workerProcessObserved := false
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
@@ -1086,6 +1087,9 @@ func (r *Runner) runAgentTurn(
 		}
 		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
 			turnStarted = true
+		}
+		if update.Type == AgentUpdateProcessStarted && update.WorkerProcess.PID > 0 {
+			workerProcessObserved = true
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
 		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
@@ -1134,13 +1138,14 @@ func (r *Runner) runAgentTurn(
 		runRequest.Issue,
 		workerProcessReapReason(ctx, turnErr),
 	)
-	workspaceReapErr := r.reapCancelledWorkspaceProcesses(
+	workspaceReapErr := r.reapWorkspaceProcessesAfterTurn(
 		ctx,
 		info.Path,
 		detentSessionID,
 		runRequest.WorkAttemptID,
 		runRequest.Issue,
 		turnErr,
+		workerProcessObserved,
 	)
 	workerReapErr := errors.Join(processReapErr, workspaceReapErr)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
@@ -2804,6 +2809,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	var output strings.Builder
 	usage := newSessionTokenUsage(false)
+	workerProcessObserved := false
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
@@ -2826,6 +2832,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
+		}
+		if update.Type == AgentUpdateProcessStarted && update.WorkerProcess.PID > 0 {
+			workerProcessObserved = true
 		}
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
@@ -2871,13 +2880,14 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		req.Issue,
 		workerProcessReapReason(sessionCtx, turnErr),
 	)
-	workspaceReapErr := r.reapCancelledWorkspaceProcesses(
+	workspaceReapErr := r.reapWorkspaceProcessesAfterTurn(
 		sessionCtx,
 		info.Path,
 		sessionID,
 		runReq.WorkAttemptID,
 		req.Issue,
 		turnErr,
+		workerProcessObserved,
 	)
 	workerReapErr := errors.Join(processReapErr, workspaceReapErr)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
@@ -3306,19 +3316,20 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 	return nil
 }
 
-func (r *Runner) reapCancelledWorkspaceProcesses(
+func (r *Runner) reapWorkspaceProcessesAfterTurn(
 	ctx context.Context,
 	workspacePath string,
 	sessionID int64,
 	workAttemptID int64,
 	issue connector.Issue,
 	turnErr error,
+	workerProcessObserved bool,
 ) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	combined := errors.Join(context.Cause(ctx), turnErr)
-	if !workerSessionCanceled(combined) {
+	if !workerProcessObserved && !workerSessionCanceled(combined) {
 		return nil
 	}
 
