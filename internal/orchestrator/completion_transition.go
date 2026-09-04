@@ -35,6 +35,13 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		if !ok {
 			continue
 		}
+		if gateRequiresPullRequest(cfg.Gate) {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				continue
+			}
+		}
 		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
 			normalizeState(completed.Issue.State) != normalizeState(issue.State) {
 			continue
@@ -189,14 +196,21 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	cfg AutoPromoteConfig,
 	now time.Time,
 ) (bool, connector.Issue) {
-	if !cfg.Enabled || cfg.QuietDuration != 0 || normalizeState(reviewState) != normalizeState(cfg.SourceState) {
+	if normalizeState(reviewState) != normalizeState(cfg.SourceState) {
 		return false, connector.Issue{}
 	}
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = completedFinalState
 	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue.ID)
-	decision := EvaluateAutoPromote(issue, summary, cfg, now)
+	unresolvedReviewThreads := gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0
+	if !unresolvedReviewThreads && (!cfg.Enabled || cfg.QuietDuration != 0) {
+		return false, connector.Issue{}
+	}
+	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	if !unresolvedReviewThreads {
+		decision = EvaluateAutoPromote(issue, summary, cfg, now)
+	}
 	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 	}
@@ -291,13 +305,16 @@ func completedActiveReviewTargetState(
 	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate), operationalCompletionAccepted) {
 		return ""
 	}
+	if !completedActiveFinalStateReviewEligible(finalState, reviewState) {
+		return ""
+	}
+	if !operationalCompletionAccepted && gateRequiresPullRequest(cfg.Gate) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+		return reviewState
+	}
 	if !completedActiveShouldEnterReview(issue, cfg, operationalCompletionAccepted) {
 		return ""
 	}
-	if completedActiveFinalStateReviewEligible(finalState, reviewState) {
-		return reviewState
-	}
-	return ""
+	return reviewState
 }
 
 func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig, operationalCompletionAccepted bool) bool {

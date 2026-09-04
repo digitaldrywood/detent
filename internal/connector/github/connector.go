@@ -54,6 +54,7 @@ const (
 	graphQLQueryEpicChildren    = "epic_children"
 	graphQLQueryIssueParents    = "issue_parents"
 	graphQLQueryPullRequests    = "pull_requests"
+	graphQLQueryReviewThreads   = "pull_request_review_threads"
 	graphQLQueryBlockedReasons  = "blocked_reasons"
 	graphQLQueryIssueLookup     = "issue_lookup"
 	graphQLQueryProjectItem     = "project_item"
@@ -472,6 +473,7 @@ var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestCommentReader = (*Connector)(nil)
 var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
+var _ connector.PullRequestReviewThreadHydrator = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)

@@ -33,8 +33,10 @@ type pullRequestStatusCacheEntry struct {
 }
 
 type pullRequestStatus struct {
-	ci      pullRequestCI
-	reviews pullRequestCodexReviews
+	ci                      pullRequestCI
+	reviews                 pullRequestCodexReviews
+	unresolvedReviewThreads []connector.PullRequestReviewThread
+	reviewThreadsHydrated   bool
 }
 
 type pullRequestHydrationState struct {
@@ -233,8 +235,10 @@ func newPullRequestStatusCacheKey(repo pullRequestRepo, number int, headSHA stri
 
 func clonePullRequestStatus(status pullRequestStatus) pullRequestStatus {
 	return pullRequestStatus{
-		ci:      clonePullRequestCI(status.ci),
-		reviews: clonePullRequestCodexReviews(status.reviews),
+		ci:                      clonePullRequestCI(status.ci),
+		reviews:                 clonePullRequestCodexReviews(status.reviews),
+		unresolvedReviewThreads: append([]connector.PullRequestReviewThread(nil), status.unresolvedReviewThreads...),
+		reviewThreadsHydrated:   status.reviewThreadsHydrated,
 	}
 }
 

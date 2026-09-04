@@ -352,6 +352,13 @@
 #             queue_seconds: 0
 #             # tracker.issues[].pull_request.transient_failed_checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
 #             duration_seconds: 0
+#         # tracker.issues[].pull_request.unresolved_review_threads | type: list<object> | default: [] | required: No | validation: None
+#         unresolved_review_threads:
+#           -
+#             # tracker.issues[].pull_request.unresolved_review_threads[].path | type: string | default: none | required: No | validation: None
+#             path: null
+#             # tracker.issues[].pull_request.unresolved_review_threads[].line | type: integer | default: 0 when configured | required: No | validation: None
+#             line: 0
 #         # tracker.issues[].pull_request.codex_review_state | type: string | default: none | required: No | validation: None
 #         codex_review_state: null
 #         # tracker.issues[].pull_request.codex_review_source | type: string | default: none | required: No | validation: None

@@ -149,25 +149,26 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
-	NodeID                     string                            `json:"id"`
-	Number                     int                               `json:"number"`
-	URL                        string                            `json:"url"`
-	State                      string                            `json:"state"`
-	MergeableState             string                            `json:"mergeableState"`
-	Draft                      bool                              `json:"draft"`
-	Labels                     []string                          `json:"labels"`
-	ActivityAt                 *time.Time                        `json:"activityAt"`
-	HeadRefName                string                            `json:"headRefName"`
-	BaseRefName                string                            `json:"baseRefName"`
-	HeadSHA                    string                            `json:"headSHA"`
-	BaseSHA                    string                            `json:"baseRefOid"`
-	HydrationUnavailableReason string                            `json:"-"`
-	HydrationDegradedReason    string                            `json:"-"`
-	HydrationNextRetryAt       *time.Time                        `json:"-"`
-	Commits                    nodeConnection[pullRequestCommit] `json:"commits"`
-	LatestReviews              nodeConnection[pullRequestReview] `json:"latestReviews"`
-	CodexReviews               pullRequestCodexReviews           `json:"-"`
-	CI                         pullRequestCI                     `json:"-"`
+	NodeID                     string                              `json:"id"`
+	Number                     int                                 `json:"number"`
+	URL                        string                              `json:"url"`
+	State                      string                              `json:"state"`
+	MergeableState             string                              `json:"mergeableState"`
+	Draft                      bool                                `json:"draft"`
+	Labels                     []string                            `json:"labels"`
+	ActivityAt                 *time.Time                          `json:"activityAt"`
+	HeadRefName                string                              `json:"headRefName"`
+	BaseRefName                string                              `json:"baseRefName"`
+	HeadSHA                    string                              `json:"headSHA"`
+	BaseSHA                    string                              `json:"baseRefOid"`
+	HydrationUnavailableReason string                              `json:"-"`
+	HydrationDegradedReason    string                              `json:"-"`
+	HydrationNextRetryAt       *time.Time                          `json:"-"`
+	Commits                    nodeConnection[pullRequestCommit]   `json:"commits"`
+	LatestReviews              nodeConnection[pullRequestReview]   `json:"latestReviews"`
+	UnresolvedReviewThreads    []connector.PullRequestReviewThread `json:"-"`
+	CodexReviews               pullRequestCodexReviews             `json:"-"`
+	CI                         pullRequestCI                       `json:"-"`
 }
 
 type pullRequestCommit struct {
@@ -190,6 +191,14 @@ type pullRequestReview struct {
 	Author      *actor     `json:"author"`
 	CommitID    string     `json:"commitId"`
 	SubmittedAt *time.Time `json:"submittedAt"`
+}
+
+type pullRequestReviewThread struct {
+	IsResolved   bool   `json:"isResolved"`
+	IsOutdated   bool   `json:"isOutdated"`
+	Path         string `json:"path"`
+	Line         int    `json:"line"`
+	OriginalLine int    `json:"originalLine"`
 }
 
 type pullRequestCodexReviews struct {

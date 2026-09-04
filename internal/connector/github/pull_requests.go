@@ -55,6 +55,20 @@ const (
 	minimumCodexReviewCommitPrefixLength      = 7
 )
 
+const pullRequestReviewThreadsQuery = `
+query DetentGitHubPullRequestReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
+	repository(owner: $owner, name: $name) {
+		pullRequest(number: $number) {
+			headRefOid
+			reviewThreads(first: 100, after: $after) {
+				pageInfo { hasNextPage endCursor }
+				nodes { isResolved isOutdated path line originalLine }
+			}
+		}
+	}
+	rateLimit { limit used remaining cost resetAt }
+}`
+
 var (
 	codexReviewSummaryStatusPattern = regexp.MustCompile(`^✅\s+\*\*Completed\*\*\s+<relative-time datetime="([^"]+)">([^<]+)</relative-time>$`)
 	codexReviewSummaryCommitPattern = regexp.MustCompile("^`([0-9a-fA-F]{7,40})`$")
@@ -915,6 +929,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		StaleSuccessfulChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.StaleSuccessfulChecks...),
 		RequiredCheckFailures:        append([]connector.PullRequestCheck(nil), pullRequest.CI.RequiredFailures...),
 		TransientFailedChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.TransientFailures...),
+		UnresolvedReviewThreads:      append([]connector.PullRequestReviewThread(nil), pullRequest.UnresolvedReviewThreads...),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
 		CodexReviewSource:            pullRequestCodexReviewSource(pullRequest),
 		CodexReviewAPIState:          pullRequestCodexReviewAPIState(pullRequest),
@@ -1228,6 +1243,109 @@ func applyPullRequestStatus(pullRequest *pullRequestNode, status pullRequestStat
 	}}}
 	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: clonePullRequestReviews(status.reviews.CurrentHead)}
 	pullRequest.CodexReviews = clonePullRequestCodexReviews(status.reviews)
+	pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), status.unresolvedReviewThreads...)
+}
+
+func (c *Connector) HydratePullRequestReviewThreads(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	repo, number, ok := hydratedPullRequestRef(issue)
+	if !ok || issue.PullRequest == nil || normalizeStateName(issue.PullRequest.State) != "open" {
+		return issue, nil
+	}
+	if c.pullRequests != nil {
+		status, found := c.pullRequests.Get(repo, number, issue.PullRequest.HeadSHA)
+		if found && status.reviewThreadsHydrated {
+			return issueWithPullRequestReviewThreads(issue, status.unresolvedReviewThreads), nil
+		}
+	}
+	threads, err := c.fetchPullRequestReviewThreads(ctx, repo, number, issue.PullRequest.HeadSHA)
+	if err != nil {
+		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+			issue = issueWithPullRequestReviewThreads(issue, nil)
+			issue.PullRequest.HydrationUnavailableReason = state.Reason
+			issue.PullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
+			return issue, nil
+		}
+		return issue, err
+	}
+	issue = issueWithPullRequestReviewThreads(issue, threads)
+	if c.pullRequests != nil {
+		if status, found := c.pullRequests.Get(repo, number, issue.PullRequest.HeadSHA); found {
+			status.unresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), threads...)
+			status.reviewThreadsHydrated = true
+			c.pullRequests.Set(repo, number, issue.PullRequest.HeadSHA, status)
+		}
+	}
+	return issue, nil
+}
+
+func issueWithPullRequestReviewThreads(issue connector.Issue, threads []connector.PullRequestReviewThread) connector.Issue {
+	if issue.PullRequest == nil {
+		return issue
+	}
+	pullRequest := *issue.PullRequest
+	pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), threads...)
+	issue.PullRequest = &pullRequest
+	return issue
+}
+
+func (c *Connector) fetchPullRequestReviewThreads(
+	ctx context.Context,
+	repo pullRequestRepo,
+	number int,
+	headSHA string,
+) ([]connector.PullRequestReviewThread, error) {
+	headSHA = strings.TrimSpace(headSHA)
+	if !validPullRequestRepo(repo) || number <= 0 || headSHA == "" {
+		return nil, ErrInvalidResponse
+	}
+	var after *string
+	threads := []connector.PullRequestReviewThread{}
+	for {
+		var response struct {
+			Repository *struct {
+				PullRequest *struct {
+					HeadSHA       string                                  `json:"headRefOid"`
+					ReviewThreads nodeConnection[pullRequestReviewThread] `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryReviewThreads, pullRequestReviewThreadsQuery, map[string]any{
+			"owner":  repo.Owner,
+			"name":   repo.Name,
+			"number": number,
+			"after":  after,
+		}, &response); err != nil {
+			return nil, fmt.Errorf("fetch github pull request review threads: %w", err)
+		}
+		if response.Repository == nil || response.Repository.PullRequest == nil {
+			return nil, ErrInvalidResponse
+		}
+		if strings.TrimSpace(response.Repository.PullRequest.HeadSHA) != headSHA {
+			return nil, fmt.Errorf("%w: pull request head changed while fetching review threads", ErrInvalidResponse)
+		}
+		connection := response.Repository.PullRequest.ReviewThreads
+		for _, thread := range connection.Nodes {
+			if thread.IsResolved {
+				continue
+			}
+			line := thread.Line
+			if line <= 0 {
+				line = thread.OriginalLine
+			}
+			threads = append(threads, connector.PullRequestReviewThread{
+				Path: strings.TrimSpace(thread.Path),
+				Line: line,
+			})
+		}
+		if !connection.PageInfo.HasNextPage {
+			return threads, nil
+		}
+		cursor := strings.TrimSpace(connection.PageInfo.EndCursor)
+		if cursor == "" {
+			return nil, ErrInvalidResponse
+		}
+		after = &cursor
+	}
 }
 
 func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) (pullRequestCodexReviews, error) {

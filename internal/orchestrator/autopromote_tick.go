@@ -117,6 +117,13 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		if gateRequiresPullRequest(cfg.Gate) {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				continue
+			}
+		}
 
 		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
 		summary := AutoPromoteSummaryFromIssue(issue)
@@ -961,6 +968,13 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 
 		if normalizeState(issue.State) != "todo" {
 			continue
+		}
+		if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				continue
+			}
 		}
 		summary := AutoPromoteSummaryFromIssue(issue)
 		if !summary.PullRequestPresent {
@@ -1908,6 +1922,9 @@ func staleTodoPullRequestDecision(
 		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
 	}
 	cfg = normalizeAutoPromoteConfig(cfg)
+	if gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0 {
+		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	}
 	if !cfg.Enabled {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
 	}
@@ -2768,8 +2785,38 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	summary.CIStatus = pullRequest.CIStatus
 	summary.ReviewState = pullRequest.CodexReviewState
 	summary.FailedChecks = autoPromoteFailedChecksFromPullRequest(pullRequest)
+	summary.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), pullRequest.UnresolvedReviewThreads...)
 	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)
 	return summary
+}
+
+func (o *Orchestrator) hydrateAutoPromoteReviewThreads(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
+	hydrator, ok := o.connector.(connector.PullRequestReviewThreadHydrator)
+	if !ok || issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
+		return issue, true
+	}
+	hydrated, err := hydrator.HydratePullRequestReviewThreads(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"pull request review thread hydration failed",
+				"issue_id", strings.TrimSpace(issue.ID),
+				"identifier", issue.Identifier,
+				"pull_request", pullRequestNumber(issue),
+				"error", err,
+			)
+		}
+		return issue, false
+	}
+	if hydrated.PullRequest != nil && pullRequestHydrationUnavailableReason(hydrated.PullRequest) != "" {
+		o.logAutoPromoteDecision(
+			hydrated,
+			autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable),
+			"",
+		)
+		return hydrated, false
+	}
+	return hydrated, true
 }
 
 func pullRequestHydrationUnavailableReason(pullRequest *connector.PullRequest) string {
@@ -3365,6 +3412,13 @@ func autoPromoteComment(
 			b.WriteString(": current-head CI is failing")
 		case AutoPromoteReasonMergeConflicts:
 			b.WriteString(": linked PR has merge conflicts")
+		case AutoPromoteReasonUnresolvedReviewThreads:
+			b.WriteString(": linked PR has ")
+			b.WriteString(strconv.Itoa(len(summary.UnresolvedReviewThreads)))
+			b.WriteString(" unresolved review thread")
+			if len(summary.UnresolvedReviewThreads) != 1 {
+				b.WriteString("s")
+			}
 		case AutoPromoteReasonWorkpadStatusInvalid:
 			b.WriteString(": workpad status is invalid")
 		}
@@ -3398,6 +3452,14 @@ func autoPromoteComment(
 		b.WriteString("\n- failed_checks: ")
 		b.WriteString(failedChecks)
 	}
+	if len(summary.UnresolvedReviewThreads) > 0 {
+		b.WriteString("\n- unresolved_review_threads: ")
+		b.WriteString(strconv.Itoa(len(summary.UnresolvedReviewThreads)))
+		if location := pullRequestReviewThreadLocation(summary.UnresolvedReviewThreads[0]); location != "" {
+			b.WriteString("\n- first_unresolved_review_thread: ")
+			b.WriteString(location)
+		}
+	}
 	if evidence := strings.TrimSpace(decision.OperationalEvidence); evidence != "" {
 		b.WriteString("\n- completion_kind: ")
 		b.WriteString(workpad.CompletionOperational)
@@ -3415,6 +3477,17 @@ func autoPromoteComment(
 	}
 
 	return b.String()
+}
+
+func pullRequestReviewThreadLocation(thread connector.PullRequestReviewThread) string {
+	path := strings.TrimSpace(thread.Path)
+	if path == "" {
+		return ""
+	}
+	if thread.Line > 0 {
+		return fmt.Sprintf("%s:%d", path, thread.Line)
+	}
+	return path
 }
 
 func appendAutoPromoteWorkpadCommentFields(b *strings.Builder, decision AutoPromoteDecision) {
@@ -3474,6 +3547,14 @@ func autoPromoteReworkLimitComment(
 	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
 		b.WriteString("\n- failed_checks: ")
 		b.WriteString(failedChecks)
+	}
+	if len(summary.UnresolvedReviewThreads) > 0 {
+		b.WriteString("\n- unresolved_review_threads: ")
+		b.WriteString(strconv.Itoa(len(summary.UnresolvedReviewThreads)))
+		if location := pullRequestReviewThreadLocation(summary.UnresolvedReviewThreads[0]); location != "" {
+			b.WriteString("\n- first_unresolved_review_thread: ")
+			b.WriteString(location)
+		}
 	}
 
 	if len(decision.Findings) > 0 {

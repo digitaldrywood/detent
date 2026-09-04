@@ -203,6 +203,37 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			},
 		},
 		{
+			name: "routes unresolved review threads to rework",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			},
+			issue: autoPromoteTickIssue("issue-unresolved-review-threads", []string{"bug"}, &connector.PullRequest{
+				Number:   2103,
+				URL:      "https://github.test/digitaldrywood/detent/pull/2104",
+				State:    "OPEN",
+				CIStatus: "pass",
+				UnresolvedReviewThreads: []connector.PullRequestReviewThread{
+					{Path: "internal/orchestrator/autopromote.go", Line: 181},
+					{Path: "internal/connector/github/pull_requests.go", Line: 1092},
+				},
+			}),
+			wantUpdates: []autoPromoteTickUpdate{{
+				issueID: "issue-unresolved-review-threads",
+				state:   "Rework",
+			}},
+			wantCommentFragments: []string{
+				"Auto-promote routed this issue from Human Review to Rework: linked PR has 2 unresolved review threads.",
+				"reason: unresolved_review_threads",
+				"unresolved_review_threads: 2",
+				"first_unresolved_review_thread: internal/orchestrator/autopromote.go:181",
+			},
+			wantLogFragments: []string{
+				"reason=unresolved_review_threads",
+				"target_state=Rework",
+			},
+		},
+		{
 			name: "routes conflicting pull request to rework",
 			cfg: AutoPromoteConfig{
 				Enabled:       true,
@@ -2581,7 +2612,22 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	})
 	conflicting.State = "Todo"
 	conflicting.Identifier = "digitaldrywood/creswoodcorners-phone#32"
-	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{ready, conflicting}}
+	unresolved := autoPromoteTickIssue("issue-unresolved-todo", []string{"bug"}, &connector.PullRequest{
+		Number:                 39,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/39",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+		UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+			Path: "internal/orchestrator/autopromote_tick.go",
+			Line: 976,
+		}},
+	})
+	unresolved.State = "Todo"
+	unresolved.Identifier = "digitaldrywood/creswoodcorners-phone#34"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{ready, conflicting, unresolved}}
 	var logs strings.Builder
 	orch := &Orchestrator{
 		cfg:       cfg,
@@ -2595,11 +2641,15 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	wantUpdates := []autoPromoteTickUpdate{
 		{issueID: "issue-ready-todo", state: "Merging"},
 		{issueID: "issue-conflicting-todo", state: "Rework"},
+		{issueID: "issue-unresolved-todo", state: "Rework"},
 	}
 	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
 		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
 	}
-	if len(tracker.comments) != 2 {
+	if want := []string{"issue-ready-todo", "issue-conflicting-todo", "issue-unresolved-todo"}; !reflect.DeepEqual(tracker.reviewThreadHydrations, want) {
+		t.Fatalf("review thread hydrations = %#v, want %#v", tracker.reviewThreadHydrations, want)
+	}
+	if len(tracker.comments) != 3 {
 		t.Fatalf("comments = %#v, want stale todo reconciliation comments", tracker.comments)
 	}
 	wantComments := map[string][]string{
@@ -2614,6 +2664,13 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 			"mergeable_state: dirty",
 			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/38",
 		},
+		"issue-unresolved-todo": {
+			"Auto-promote routed this issue from Todo to Rework: linked PR has 1 unresolved review thread.",
+			"reason: unresolved_review_threads",
+			"unresolved_review_threads: 1",
+			"first_unresolved_review_thread: internal/orchestrator/autopromote_tick.go:976",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/39",
+		},
 	}
 	for _, comment := range tracker.comments {
 		for _, fragment := range wantComments[comment.issueID] {
@@ -2626,10 +2683,25 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 		"stale_todo_pr_reconciled",
 		"reason=ready",
 		"reason=merge_conflicts",
+		"reason=unresolved_review_threads",
 	} {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func TestStaleTodoPullRequestDecisionRoutesUnresolvedThreadsWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	decision := staleTodoPullRequestDecision(
+		connector.Issue{},
+		AutoPromoteSummary{UnresolvedReviewThreads: []connector.PullRequestReviewThread{{Path: "main.go", Line: 10}}},
+		AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		time.Time{},
+	)
+	if decision.Action != AutoPromoteActionRework || decision.Reason != AutoPromoteReasonUnresolvedReviewThreads {
+		t.Fatalf("decision = %#v, want unresolved review thread rework", decision)
 	}
 }
 
@@ -6396,21 +6468,22 @@ func (r *autoPromoteWorkflowMetricsRecorder) snapshot() []store.WorkflowPhaseEve
 }
 
 type autoPromoteTickConnector struct {
-	stateIssues           []connector.Issue
-	candidateIssues       []connector.Issue
-	candidateIssuesSet    bool
-	candidateByStates     [][]string
-	fetchByStatesRequests [][]string
-	fetchComments         []string
-	fetchIdentifiers      [][]string
-	issueComments         map[string][]connector.IssueComment
-	resolvedIssues        []connector.Issue
-	updates               []autoPromoteTickUpdate
-	comments              []autoPromoteTickComment
-	prComments            []autoPromoteTickComment
-	setFields             []autoPromoteTickSetField
-	reruns                []autoPromoteTickRerun
-	updateErr             error
+	stateIssues            []connector.Issue
+	candidateIssues        []connector.Issue
+	candidateIssuesSet     bool
+	candidateByStates      [][]string
+	fetchByStatesRequests  [][]string
+	fetchComments          []string
+	fetchIdentifiers       [][]string
+	issueComments          map[string][]connector.IssueComment
+	resolvedIssues         []connector.Issue
+	updates                []autoPromoteTickUpdate
+	comments               []autoPromoteTickComment
+	prComments             []autoPromoteTickComment
+	setFields              []autoPromoteTickSetField
+	reruns                 []autoPromoteTickRerun
+	updateErr              error
+	reviewThreadHydrations []string
 }
 
 type autoPromoteTickMergeConnector struct {
@@ -6488,6 +6561,11 @@ func (c *autoPromoteTickConnector) FetchIssueStatesByIdentifiers(_ context.Conte
 		}
 	}
 	return issues, nil
+}
+
+func (c *autoPromoteTickConnector) HydratePullRequestReviewThreads(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	c.reviewThreadHydrations = append(c.reviewThreadHydrations, strings.TrimSpace(issue.ID))
+	return cloneIssue(issue), nil
 }
 
 func (c *autoPromoteTickConnector) CreateComment(_ context.Context, issueID string, body string) error {

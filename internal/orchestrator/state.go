@@ -730,6 +730,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		pullRequest.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.StaleSuccessfulChecks...)
 		pullRequest.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), issue.PullRequest.RequiredCheckFailures...)
 		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)
+		pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), issue.PullRequest.UnresolvedReviewThreads...)
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		pullRequest.Labels = cloneStringSlice(issue.PullRequest.Labels)
 		cloned.PullRequest = &pullRequest

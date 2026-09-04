@@ -134,6 +134,7 @@ type PullRequest struct {
 	StaleSuccessfulChecks        []PullRequestCheck          `json:"stale_successful_checks,omitempty" yaml:"stale_successful_checks,omitempty"`
 	RequiredCheckFailures        []PullRequestCheck          `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
 	TransientFailedChecks        []PullRequestCheck          `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
+	UnresolvedReviewThreads      []PullRequestReviewThread   `json:"unresolved_review_threads,omitempty" yaml:"unresolved_review_threads,omitempty"`
 	CodexReviewState             string                      `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
 	CodexReviewSource            string                      `json:"codex_review_source,omitempty" yaml:"codex_review_source,omitempty"`
 	CodexReviewAPIState          string                      `json:"codex_review_api_state,omitempty" yaml:"codex_review_api_state,omitempty"`
@@ -175,6 +176,11 @@ type PullRequestCheck struct {
 type PullRequestFinding struct {
 	Body string `json:"body,omitempty" yaml:"body,omitempty"`
 	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+	Line int    `json:"line,omitempty" yaml:"line,omitempty"`
+}
+
+type PullRequestReviewThread struct {
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
 	Line int    `json:"line,omitempty" yaml:"line,omitempty"`
 }

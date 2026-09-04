@@ -5095,6 +5095,118 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchPullRequestReviewThreads(t *testing.T) {
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"headRefOid":"head-sha","reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[{"isResolved":false,"path":"internal/orchestrator/autopromote.go","line":181,"originalLine":180},{"isResolved":true,"path":"internal/connector/issue.go","line":107,"originalLine":107}]}}}}}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"headRefOid":"head-sha","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"isOutdated":true,"path":"internal/connector/github/pull_requests.go","line":null,"originalLine":1092}]}}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	got, err := c.fetchPullRequestReviewThreads(t.Context(), pullRequestRepo{Owner: "example", Name: "repo"}, 42, "head-sha")
+	if err != nil {
+		t.Fatalf("fetchPullRequestReviewThreads() error = %v", err)
+	}
+	want := []connector.PullRequestReviewThread{
+		{Path: "internal/orchestrator/autopromote.go", Line: 181},
+		{Path: "internal/connector/github/pull_requests.go", Line: 1092},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fetchPullRequestReviewThreads() = %#v, want %#v", got, want)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if variables := requests[1]["variables"].(map[string]any); variables["after"] != "cursor-1" {
+		t.Fatalf("second request after = %v, want cursor-1", variables["after"])
+	}
+}
+
+func TestConnectorHydratePullRequestReviewThreadsCachesByHead(t *testing.T) {
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"headRefOid":"head-one","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"internal/orchestrator/autopromote.go","line":181,"originalLine":181}]}}}}}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"headRefOid":"head-two","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	repo := pullRequestRepo{Owner: "example", Name: "repo"}
+	c.pullRequests.Set(repo, 42, "head-one", pullRequestStatus{ci: pullRequestCI{State: "SUCCESS"}})
+	c.pullRequests.Set(repo, 42, "head-two", pullRequestStatus{ci: pullRequestCI{State: "SUCCESS"}})
+	issue := connector.Issue{
+		Identifier:   "example/repo#41",
+		PRRepository: "example/repo",
+		PullRequest: &connector.PullRequest{
+			Number:  42,
+			State:   "OPEN",
+			HeadSHA: "head-one",
+		},
+	}
+
+	first, err := c.HydratePullRequestReviewThreads(t.Context(), issue)
+	if err != nil {
+		t.Fatalf("first HydratePullRequestReviewThreads() error = %v", err)
+	}
+	second, err := c.HydratePullRequestReviewThreads(t.Context(), issue)
+	if err != nil {
+		t.Fatalf("second HydratePullRequestReviewThreads() error = %v", err)
+	}
+	want := []connector.PullRequestReviewThread{{Path: "internal/orchestrator/autopromote.go", Line: 181}}
+	if !reflect.DeepEqual(first.PullRequest.UnresolvedReviewThreads, want) || !reflect.DeepEqual(second.PullRequest.UnresolvedReviewThreads, want) {
+		t.Fatalf("hydrated review threads = first %#v second %#v, want %#v", first.PullRequest.UnresolvedReviewThreads, second.PullRequest.UnresolvedReviewThreads, want)
+	}
+
+	changedHead := issue
+	pullRequest := *issue.PullRequest
+	pullRequest.HeadSHA = "head-two"
+	changedHead.PullRequest = &pullRequest
+	resolved, err := c.HydratePullRequestReviewThreads(t.Context(), changedHead)
+	if err != nil {
+		t.Fatalf("changed-head HydratePullRequestReviewThreads() error = %v", err)
+	}
+	if len(resolved.PullRequest.UnresolvedReviewThreads) != 0 {
+		t.Fatalf("changed-head unresolved review threads = %#v, want none", resolved.PullRequest.UnresolvedReviewThreads)
+	}
+	if got := len(server.requests()); got != 2 {
+		t.Fatalf("request count = %d, want one query per head", got)
+	}
+	for _, headSHA := range []string{"head-one", "head-two"} {
+		status, ok := c.pullRequests.Get(repo, 42, headSHA)
+		if !ok || status.ci.State != "SUCCESS" || !status.reviewThreadsHydrated {
+			t.Fatalf("cached status for %s = %#v, %t", headSHA, status, ok)
+		}
+	}
+}
+
+func TestConnectorFetchPullRequestReviewThreadsRejectsChangedHead(t *testing.T) {
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/",
+		body:   `{"data":{"repository":{"pullRequest":{"headRefOid":"new-head","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	_, err := c.fetchPullRequestReviewThreads(t.Context(), pullRequestRepo{Owner: "example", Name: "repo"}, 42, "old-head")
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("fetchPullRequestReviewThreads() error = %v, want ErrInvalidResponse", err)
+	}
+}
+
 func TestConnectorLookupPullRequestByHeadUsesExactCurrentHead(t *testing.T) {
 	t.Parallel()
 

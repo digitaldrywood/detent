@@ -37,6 +37,7 @@ type AutoPromoteSummary struct {
 	CIStatus                              string
 	ReviewState                           string
 	FailedChecks                          []string
+	UnresolvedReviewThreads               []connector.PullRequestReviewThread
 	P1Findings                            []AutoPromoteFinding
 	Validator                             gate.ValidatorResult
 	SecurityAudit                         securityaudit.Evaluation
@@ -79,6 +80,7 @@ const (
 	AutoPromoteReasonPullRequestHydrationUnavailable AutoPromoteReason = "pull_request_hydration_unavailable"
 	AutoPromoteReasonMergeConflicts                  AutoPromoteReason = "merge_conflicts"
 	AutoPromoteReasonCINotGreen                      AutoPromoteReason = "ci_not_green"
+	AutoPromoteReasonUnresolvedReviewThreads         AutoPromoteReason = "unresolved_review_threads"
 	AutoPromoteReasonCodexReviewMissing              AutoPromoteReason = "automated_review_missing"
 	AutoPromoteReasonP1Findings                      AutoPromoteReason = "p1_findings"
 	AutoPromoteReasonCodexReviewNotQuiet             AutoPromoteReason = "codex_review_not_quiet"
@@ -183,6 +185,9 @@ func EvaluateAutoPromote(
 		if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
 			strings.TrimSpace(summary.PullRequestHydrationDegradedReason) != "" {
 			return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
+		}
+		if len(summary.UnresolvedReviewThreads) > 0 {
+			return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
 		}
 	}
 	if status, ok := artifactStatusFieldFromIssue(issue, cfg.Gate.Artifact.StatusField); ok {
