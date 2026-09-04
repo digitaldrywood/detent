@@ -47,6 +47,10 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
 	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
+	state.FailureBreaker.Class = "runner_error:systemic"
+	state.FailureBreaker.Count = 2
+	state.FailureBreaker.CanaryIssueID = issue.ID
+	state.FailureBreaker.ResumeAt = now
 	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	instantFailures := map[string]InstantFailure{issue.ID: state.InstantFailures[issue.ID]}
 	repeatedFailures := map[string]RepeatedFailure{issue.ID: state.RepeatedFailures[issue.ID]}
@@ -89,8 +93,17 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Wait.Kind != workerGitHubTokenResolutionWaitKind {
 		t.Fatalf("retry = %#v, want same-attempt token-resolution wait", retry)
 	}
-	if !reflect.DeepEqual(state.InstantFailures, instantFailures) || !reflect.DeepEqual(state.RepeatedFailures, repeatedFailures) || !reflect.DeepEqual(state.FailureBreaker, failureBreaker) {
+	if !reflect.DeepEqual(state.InstantFailures, instantFailures) || !reflect.DeepEqual(state.RepeatedFailures, repeatedFailures) || !reflect.DeepEqual(state.FailureBreaker.Failures, failureBreaker.Failures) || state.FailureBreaker.Class != failureBreaker.Class || state.FailureBreaker.Count != failureBreaker.Count {
 		t.Fatalf("failure budgets changed: instant=%#v repeated=%#v project=%#v", state.InstantFailures, state.RepeatedFailures, state.FailureBreaker)
+	}
+	if !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != "" || !state.FailureBreaker.ResumeAt.Equal(now.Add(45*time.Second)) {
+		t.Fatalf("failure breaker = %#v, want active breaker with bounded canary backoff", state.FailureBreaker)
+	}
+	if projectFailureBreakerAllowsDispatch(&state, now.Add(44*time.Second)) {
+		t.Fatal("failure breaker admitted another canary before token-resolution backoff elapsed")
+	}
+	if !projectFailureBreakerAllowsDispatch(&state, now.Add(45*time.Second)) {
+		t.Fatal("failure breaker did not admit a new canary after token-resolution backoff")
 	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
 		t.Fatalf("issue %q was blocked by machine-recoverable token resolution", issue.ID)
