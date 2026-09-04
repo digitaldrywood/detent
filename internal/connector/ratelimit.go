@@ -1,6 +1,9 @@
 package connector
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 const (
 	GraphQLRateLimitStatusUnknown   = "unknown"
@@ -40,6 +43,14 @@ type RateLimitReporter interface {
 type GraphQLRateLimitUsageReporter interface {
 	ResetGraphQLRateLimitUsage()
 	FlushGraphQLRateLimitUsage() GraphQLRateLimitUsage
+}
+
+type GraphQLRateLimitStatusReporter interface {
+	GraphQLRateLimitStatus() string
+}
+
+type GraphQLRateLimitProber interface {
+	ProbeGraphQLRateLimit(context.Context) (GraphQLRateLimit, error)
 }
 
 type RESTRateLimit struct {
@@ -90,4 +101,12 @@ type RESTRateLimitUsage struct {
 
 type RESTRateLimitUsageReporter interface {
 	FlushRESTRateLimitUsage() RESTRateLimitUsage
+}
+
+type RESTRateLimitStatusReporter interface {
+	RESTRateLimitStatus() RESTRateLimitUsage
+}
+
+type RESTRateLimitProber interface {
+	ProbeRESTRateLimit(context.Context, int64) (RESTRateLimit, error)
 }

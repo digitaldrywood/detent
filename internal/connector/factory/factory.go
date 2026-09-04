@@ -32,6 +32,7 @@ type Config struct {
 	HTTPMaxIdleConnsPerHost     int
 	HTTPIdleConnTimeoutMS       int
 	GitHubRESTMinReserve        int
+	GitHubGraphQLMinReserve     int
 	GitHubRESTFanoutMaxRequests int
 	GitHubRESTDebugLogging      bool
 	GitHubUnstartedSeconds      int
@@ -86,6 +87,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
 			},
 			RESTMinRemainingReserve:    cfg.GitHubRESTMinReserve,
+			GraphQLMinRemainingReserve: cfg.GitHubGraphQLMinReserve,
 			RESTFanoutMaxRequests:      cfg.GitHubRESTFanoutMaxRequests,
 			RESTDebugLogging:           cfg.GitHubRESTDebugLogging,
 			UnstartedThreshold:         time.Duration(cfg.GitHubUnstartedSeconds) * time.Second,
@@ -135,6 +137,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 					IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
 				},
 				RESTMinRemainingReserve:    cfg.GitHubRESTMinReserve,
+				GraphQLMinRemainingReserve: cfg.GitHubGraphQLMinReserve,
 				RESTFanoutMaxRequests:      cfg.GitHubRESTFanoutMaxRequests,
 				RESTDebugLogging:           cfg.GitHubRESTDebugLogging,
 				UnstartedThreshold:         time.Duration(cfg.GitHubUnstartedSeconds) * time.Second,

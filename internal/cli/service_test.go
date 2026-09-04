@@ -5,15 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -218,6 +222,58 @@ func TestStatusCommandManualStoppedIsSuccessful(t *testing.T) {
 	}
 	if status.ServiceManager != servicepkg.ManagerManual || status.Expected {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
+	t.Parallel()
+
+	nextProbeAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/state" {
+			t.Fatalf("request path = %q, want /api/v1/state", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"backend_outages": []telemetry.BackendOutage{{
+				BackendID:     "github-lookups",
+				Kind:          "github_lookup_backoff",
+				Trigger:       "github_graphql_rate_limit",
+				Reason:        "GitHub GraphQL returned a rate-limit response",
+				ResumeAt:      nextProbeAt,
+				NextProbeAt:   &nextProbeAt,
+				ProbeAttempts: 3,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	runner := statusServiceRunner{
+		ServiceRunner: &serviceRunnerStub{status: servicepkg.Status{State: servicepkg.StateRunning}},
+		fallbackURL:   server.URL,
+		httpDo:        server.Client().Do,
+	}
+	status, err := runner.Status(t.Context())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if len(status.BackendOutages) != 1 || status.BackendOutages[0].ProbeAttempts != 3 {
+		t.Fatalf("BackendOutages = %#v, want active lookup backoff", status.BackendOutages)
+	}
+
+	var output bytes.Buffer
+	if err := writeServiceStatusText(&output, status); err != nil {
+		t.Fatalf("writeServiceStatusText() error = %v", err)
+	}
+	for _, want := range []string{
+		"GitHub lookup backoff:",
+		"trigger=github_graphql_rate_limit",
+		"step=3",
+		"next probe=2026-09-03T18:30:00Z",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, output.String())
+		}
 	}
 }
 

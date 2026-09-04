@@ -328,6 +328,7 @@ const (
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
 	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
 	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
+	dispatchIssueFailureGitHubLookupPaused    = "github_lookup_backoff"
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
 	dispatchIssueFailureGitHubMonitor         = "worker_github_budget_monitor_unavailable"
@@ -451,6 +452,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	runMode := o.dispatchMode(ctx, state, issue)
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
 	capacityScope, capacityProbeKey, capacityPaused := o.backendCapacityDispatch(state, capacityRequest, now)
+	if o.scheduling == nil && !githubLookupBackoffAllowsDispatch(state, capacityProbeKey) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubLookupPaused}
+	}
 	if capacityPaused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureBackendCapacityPaused}
 	}

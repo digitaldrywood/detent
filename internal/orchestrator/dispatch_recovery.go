@@ -10,6 +10,7 @@ import (
 
 const (
 	dispatchRecoveryGitHubREST            = "github_rest"
+	dispatchRecoveryGitHubLookup          = "github_lookup"
 	dispatchRecoveryPullRequestHydration  = "pull_request_hydration"
 	dispatchRecoveryBackendCapacity       = "backend_capacity"
 	dispatchRecoveryTrackerUnavailable    = connector.TrackerUnavailableCondition

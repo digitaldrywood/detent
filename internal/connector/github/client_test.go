@@ -86,6 +86,176 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 	}
 }
 
+func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		headers    http.Header
+		body       string
+		reserve    int64
+	}{
+		{
+			name:       "rate limit response",
+			statusCode: http.StatusTooManyRequests,
+			headers:    http.Header{"Retry-After": []string{"30"}},
+			body:       `{"message":"API rate limit already exceeded"}`,
+		},
+		{
+			name:       "forbidden exhausted",
+			statusCode: http.StatusForbidden,
+			headers: http.Header{
+				"X-RateLimit-Limit":     []string{"5000"},
+				"X-RateLimit-Remaining": []string{"0"},
+				"X-RateLimit-Reset":     []string{"2082758400"},
+			},
+			body: `{"message":"API rate limit already exceeded"}`,
+		},
+		{
+			name:       "header remaining below reserve",
+			statusCode: http.StatusOK,
+			headers: http.Header{
+				"X-RateLimit-Limit":     []string{"5000"},
+				"X-RateLimit-Remaining": []string{"1000"},
+				"X-RateLimit-Used":      []string{"4000"},
+				"X-RateLimit-Reset":     []string{"2082758400"},
+			},
+			body:    `{"data":{"viewer":{"login":"octocat"}}}`,
+			reserve: 1000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				for key, values := range tt.headers {
+					for _, value := range values {
+						w.Header().Add(key, value)
+					}
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := NewClient(ClientConfig{
+				Endpoint:                   server.URL,
+				TokenSource:                StaticTokenSource("test-token"),
+				HTTPClient:                 server.Client(),
+				GraphQLMinRemainingReserve: tt.reserve,
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			for call := range 2 {
+				err = client.GraphQL(context.Background(), "query { viewer { login } rateLimit { limit used remaining cost resetAt } }", nil, nil)
+				if call == 0 && tt.statusCode == http.StatusOK {
+					if err != nil {
+						t.Fatalf("first GraphQL() error = %v", err)
+					}
+					continue
+				}
+				if !errors.Is(err, ErrRateLimited) {
+					t.Fatalf("GraphQL() call %d error = %v, want ErrRateLimited", call+1, err)
+				}
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("GraphQL HTTP calls = %d, want 1 after rate limit signal", got)
+			}
+		})
+	}
+}
+
+func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"API rate limit already exceeded"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"item-1"}},"viewer":{"login":"octocat"}}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("first GraphQL() error = %v, want ErrRateLimited", err)
+	}
+	if err := client.GraphQLWithType(context.Background(), graphQLQueryUpdateField, "mutation { updateProjectV2ItemFieldValue { projectV2Item { id } } }", nil, nil); err != nil {
+		t.Fatalf("mutation GraphQL() error = %v", err)
+	}
+	if err := client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil); err != nil {
+		t.Fatalf("GraphQL() after successful mutation error = %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("GraphQL HTTP calls = %d, want rate limit, mutation, recovered lookup", got)
+	}
+}
+
+func TestConnectorProbeRESTRateLimitClearsRecoveredBackoff(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"API rate limit already exceeded"}`))
+			return
+		}
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "2000")
+		w.Header().Set("X-RateLimit-Used", "3000")
+		w.Header().Set("X-RateLimit-Reset", "2082758400")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	conn, err := NewConnector(Config{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+	if err := conn.client.REST(context.Background(), http.MethodGet, "/user", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("REST() error = %v, want ErrRateLimited", err)
+	}
+	rateLimit, err := conn.ProbeRESTRateLimit(context.Background(), 1000)
+	if err != nil {
+		t.Fatalf("ProbeRESTRateLimit() error = %v", err)
+	}
+	if rateLimit.Remaining != 2000 {
+		t.Fatalf("ProbeRESTRateLimit().Remaining = %d, want 2000", rateLimit.Remaining)
+	}
+	if err := conn.client.REST(context.Background(), http.MethodGet, "/user", nil, nil); err != nil {
+		t.Fatalf("REST() after recovery error = %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("HTTP calls = %d, want rate limit, probe, recovered request", got)
+	}
+}
+
 func TestClientTrackerAvailabilityClassification(t *testing.T) {
 	t.Parallel()
 
@@ -700,6 +870,10 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("REST calls = %d, want 2 before local backoff", calls.Load())
+	}
+	status := client.RESTRateLimitStatus()
+	if !status.RateLimited || status.RateLimit.Remaining != 0 || status.BackoffUntil.IsZero() {
+		t.Fatalf("RESTRateLimitStatus() = %#v, want active exhausted backoff", status)
 	}
 
 	usage := client.FlushRESTRateLimitUsage()
@@ -1873,7 +2047,7 @@ func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
 		t.Fatalf("GraphQLRateLimit().RetryAfter = %s, want 2m", rateLimit.RetryAfter)
 	}
 
-	err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+	err = client.GraphQLWithType(context.Background(), graphQLQueryRateLimitProbe, "query { viewer { login } }", nil, nil)
 	if err != nil {
 		t.Fatalf("GraphQL() error = %v", err)
 	}

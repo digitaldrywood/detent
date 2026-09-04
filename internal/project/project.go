@@ -2190,6 +2190,7 @@ func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHub
 		HTTPMaxIdleConnsPerHost:     cfg.Tracker.HTTPMaxIdleConnsPerHost,
 		HTTPIdleConnTimeoutMS:       cfg.Tracker.HTTPIdleConnTimeoutMS,
 		GitHubRESTMinReserve:        cfg.Tracker.GitHubRESTMinReserve,
+		GitHubGraphQLMinReserve:     cfg.Tracker.GitHubGraphQLMinReserve,
 		GitHubRESTFanoutMaxRequests: cfg.Tracker.GitHubRESTFanoutMaxRequests,
 		GitHubUnstartedSeconds:      cfg.Tracker.GitHubUnstartedSeconds,
 		GitHubRESTDebugLogging:      cfg.Tracker.GitHubRESTDebugLogging,

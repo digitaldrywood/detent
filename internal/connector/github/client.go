@@ -47,6 +47,7 @@ type ClientConfig struct {
 	Endpoint                   string
 	TokenSource                TokenSource
 	HTTPClient                 HTTPClient
+	GraphQLMinRemainingReserve int64
 	RESTPolicy                 RESTBudgetPolicy
 	DisableConditionalRequests bool
 	RESTDebugLogging           bool
@@ -63,6 +64,7 @@ type Client struct {
 	restEndpoint           string
 	tokenSource            TokenSource
 	httpClient             HTTPClient
+	graphQLMinReserve      int64
 	restPolicy             RESTBudgetPolicy
 	restDebugLogging       bool
 	logger                 *slog.Logger
@@ -83,6 +85,7 @@ type Client struct {
 	restBackoffUntil       time.Time
 	restBackoffKey         string
 	restBackoffs           *restBackoffRegistry
+	restRateLimitStatus    bool
 	hasRestRateLimit       bool
 	authHealth             connector.AuthHealth
 	hasAuthHealth          bool
@@ -126,6 +129,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		restEndpoint:        restEndpoint,
 		tokenSource:         cfg.TokenSource,
 		httpClient:          httpClient,
+		graphQLMinReserve:   max(cfg.GraphQLMinRemainingReserve, 0),
 		restPolicy:          normalizeRESTBudgetPolicy(cfg.RESTPolicy),
 		restDebugLogging:    cfg.RESTDebugLogging,
 		logger:              logger,
@@ -144,6 +148,11 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 }
 
 func (c *Client) graphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any, allowTokenRefresh bool) error {
+	queryType = graphQLQueryType(queryType, query)
+	trackerRead := graphQLTrackerRead(queryType, query)
+	if err := c.graphQLLookupBackoffError(queryType, trackerRead, time.Now()); err != nil {
+		return err
+	}
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve github token: %w", err)
@@ -163,8 +172,6 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		return fmt.Errorf("encode github graphql request: %w", err)
 	}
 
-	queryType = graphQLQueryType(queryType, query)
-	trackerRead := graphQLTrackerRead(queryType, query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, &body)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
@@ -239,6 +246,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
 		return err
 	}
+	c.clearGraphQLRateLimitStatus()
 	if out == nil {
 		return nil
 	}
@@ -657,6 +665,57 @@ func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.rateLimit, c.hasRateLimit
 }
 
+func (c *Client) GraphQLRateLimitStatus() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.graphQLRateLimitStatus
+}
+
+func (c *Client) clearGraphQLRateLimitStatus() {
+	c.mu.Lock()
+	c.graphQLRateLimitStatus = ""
+	c.mu.Unlock()
+}
+
+func (c *Client) graphQLLookupBackoffError(queryType string, trackerRead bool, now time.Time) error {
+	if !trackerRead || queryType == graphQLQueryRateLimitProbe {
+		return nil
+	}
+	c.mu.RLock()
+	status := c.graphQLRateLimitStatus
+	rateLimit := c.rateLimit
+	hasRateLimit := c.hasRateLimit
+	reserve := c.graphQLMinReserve
+	c.mu.RUnlock()
+
+	if status == connector.GraphQLRateLimitStatusBackoff || status == connector.GraphQLRateLimitStatusExhausted {
+		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
+	}
+	if reserve > 0 && hasRateLimit && rateLimit.Limit > 0 && rateLimit.Remaining <= reserve && !graphQLRateLimitSnapshotExpired(rateLimit, now) {
+		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL remaining budget is reserved for shared work")
+	}
+	return nil
+}
+
+func graphQLLookupPausedError(rateLimit connector.GraphQLRateLimit, now time.Time, body string) error {
+	retryAfter := rateLimit.RetryAfter
+	if retryAfter <= 0 && rateLimit.ResetAt.After(now) {
+		retryAfter = rateLimit.ResetAt.Sub(now)
+	}
+	return &StatusError{
+		StatusCode:    http.StatusTooManyRequests,
+		Body:          body,
+		Err:           ErrRateLimited,
+		RateLimitKind: restRateLimitKindPrimaryExhausted,
+		RetryAfter:    retryAfter,
+		ResetAt:       rateLimit.ResetAt,
+	}
+}
+
+func graphQLRateLimitSnapshotExpired(rateLimit connector.GraphQLRateLimit, now time.Time) bool {
+	return !rateLimit.ResetAt.IsZero() && now.After(rateLimit.ResetAt.Add(restRateLimitResetSkew))
+}
+
 func (c *Client) ResetGraphQLRateLimitUsage() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -720,7 +779,44 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	}
 	c.restRequests = nil
 	c.restFanoutUnits = 0
+	c.restRateLimitStatus = false
 	return usage
+}
+
+func (c *Client) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	now := time.Now()
+	rateLimit := c.restRateLimit
+	if core, ok := c.restRateLimits["core"]; ok {
+		rateLimit = core
+	}
+	backoffUntil := c.restBackoffUntil
+	if c.restBackoffs != nil && c.restBackoffKey != "" {
+		if shared := c.restBackoffs.until(c.restBackoffKey, now); shared.After(backoffUntil) {
+			backoffUntil = shared
+		}
+	}
+	usage := connector.RESTRateLimitUsage{
+		RateLimit:    rateLimit,
+		HasRateLimit: c.hasRestRateLimit,
+		BackoffUntil: backoffUntil,
+		RateLimited:  c.restRateLimitStatus || backoffUntil.After(now),
+	}
+	return usage
+}
+
+func (c *Client) clearRESTBackoff() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	backoffKey := c.restBackoffKey
+	c.restBackoffUntil = time.Time{}
+	c.restRateLimitStatus = false
+	if c.restBackoffs != nil && backoffKey != "" {
+		c.restBackoffs.clear(backoffKey)
+	}
 }
 
 func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
@@ -902,6 +998,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, credentialIde
 	if backoffKey != "" {
 		c.restBackoffKey = backoffKey
 	}
+	c.restRateLimitStatus = c.restRateLimitStatus || rateLimited
 	snapshot := c.restRateLimit
 	if resource != "" && c.restRateLimits != nil {
 		snapshot = c.restRateLimits[resource]
@@ -1800,6 +1897,15 @@ func (r *restBackoffRegistry) set(key string, until time.Time) {
 	if current := r.untils[key]; current.IsZero() || until.After(current) {
 		r.untils[key] = until
 	}
+}
+
+func (r *restBackoffRegistry) clear(key string) {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.untils, key)
+	r.mu.Unlock()
 }
 
 func restEndpointFamily(method string, path string) string {

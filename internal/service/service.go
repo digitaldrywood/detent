@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -125,20 +126,21 @@ type StartResult struct {
 }
 
 type Status struct {
-	InstallMethod  update.InstallSource `json:"install_method"`
-	ServiceManager ManagerName          `json:"service_manager"`
-	ServiceScope   string               `json:"service_scope,omitempty"`
-	Service        string               `json:"service"`
-	DefinitionPath string               `json:"definition_path,omitempty"`
-	Expected       bool                 `json:"expected_running"`
-	State          State                `json:"state"`
-	PID            int                  `json:"pid,omitempty"`
-	StartedAt      time.Time            `json:"started_at,omitempty"`
-	UptimeSeconds  int64                `json:"uptime_seconds,omitempty"`
-	Version        string               `json:"version"`
-	AutoUpdate     string               `json:"auto_update"`
-	DashboardURL   string               `json:"dashboard_url"`
-	ConfigPath     string               `json:"config_path"`
+	InstallMethod  update.InstallSource      `json:"install_method"`
+	ServiceManager ManagerName               `json:"service_manager"`
+	ServiceScope   string                    `json:"service_scope,omitempty"`
+	Service        string                    `json:"service"`
+	DefinitionPath string                    `json:"definition_path,omitempty"`
+	Expected       bool                      `json:"expected_running"`
+	State          State                     `json:"state"`
+	PID            int                       `json:"pid,omitempty"`
+	StartedAt      time.Time                 `json:"started_at,omitempty"`
+	UptimeSeconds  int64                     `json:"uptime_seconds,omitempty"`
+	Version        string                    `json:"version"`
+	AutoUpdate     string                    `json:"auto_update"`
+	DashboardURL   string                    `json:"dashboard_url"`
+	ConfigPath     string                    `json:"config_path"`
+	BackendOutages []telemetry.BackendOutage `json:"backend_outages,omitempty"`
 }
 
 func (s Status) Running() bool {

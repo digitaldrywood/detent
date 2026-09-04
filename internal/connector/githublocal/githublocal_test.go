@@ -724,6 +724,22 @@ func (b *recordingGitHubBackend) GraphQLRateLimit() (connector.GraphQLRateLimit,
 	return connector.GraphQLRateLimit{}, false
 }
 
+func (b *recordingGitHubBackend) GraphQLRateLimitStatus() string {
+	return ""
+}
+
+func (b *recordingGitHubBackend) ProbeGraphQLRateLimit(context.Context) (connector.GraphQLRateLimit, error) {
+	return connector.GraphQLRateLimit{}, nil
+}
+
+func (b *recordingGitHubBackend) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	return connector.RESTRateLimitUsage{}
+}
+
+func (b *recordingGitHubBackend) ProbeRESTRateLimit(context.Context, int64) (connector.RESTRateLimit, error) {
+	return connector.RESTRateLimit{}, nil
+}
+
 func (b *recordingGitHubBackend) AuthHealth() (connector.AuthHealth, bool) {
 	return connector.AuthHealth{}, false
 }

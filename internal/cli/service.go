@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,8 +23,11 @@ import (
 	"github.com/spf13/cobra"
 
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/update"
 )
+
+const serviceStatusSnapshotTimeout = 2 * time.Second
 
 type ServiceRunner interface {
 	Start(context.Context, servicepkg.StartOptions) (servicepkg.StartResult, error)
@@ -33,6 +39,7 @@ type ServiceFactory func(servicepkg.Config) (ServiceRunner, error)
 type statusServiceRunner struct {
 	ServiceRunner
 	fallbackURL string
+	httpDo      func(*http.Request) (*http.Response, error)
 }
 
 func defaultServiceFactory(cfg servicepkg.Config) (ServiceRunner, error) {
@@ -175,8 +182,11 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		arguments = append(arguments[:len(arguments)-1], "--port", strconv.Itoa(resolvedPort.Value), "--headless")
 	}
 	factory := opts.service
+	statusHTTPDo := opts.httpDo
 	if factory == nil {
 		factory = defaultServiceFactory
+	} else {
+		statusHTTPDo = nil
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
 	runner, err := factory(servicepkg.Config{
@@ -194,7 +204,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		return nil, err
 	}
 	if cmd.Name() == "status" {
-		return statusServiceRunner{ServiceRunner: runner, fallbackURL: dashboardURL}, nil
+		return statusServiceRunner{ServiceRunner: runner, fallbackURL: dashboardURL, httpDo: statusHTTPDo}, nil
 	}
 	return runner, nil
 }
@@ -208,7 +218,38 @@ func (r statusServiceRunner) Status(ctx context.Context) (servicepkg.Status, err
 	if port, ok := installedServicePort(status.ServiceManager, status.DefinitionPath); ok {
 		status.DashboardURL = "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(port))
 	}
+	if status.Running() {
+		status.BackendOutages = r.backendOutages(ctx, status.DashboardURL)
+	}
 	return status, nil
+}
+
+func (r statusServiceRunner) backendOutages(ctx context.Context, dashboardURL string) []telemetry.BackendOutage {
+	if r.httpDo == nil {
+		return nil
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(dashboardURL))
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return nil
+	}
+	client := &DashboardReadClient{
+		baseURL: baseURL,
+		http:    dashboardHTTPClientFunc(r.httpDo),
+		timeout: serviceStatusSnapshotTimeout,
+	}
+	state, err := client.State(ctx, "")
+	if err != nil {
+		return nil
+	}
+	raw, err := json.Marshal(state.field("backend_outages"))
+	if err != nil {
+		return nil
+	}
+	var outages []telemetry.BackendOutage
+	if err := json.Unmarshal(raw, &outages); err != nil {
+		return nil
+	}
+	return outages
 }
 
 func installedServicePort(manager servicepkg.ManagerName, path string) (int, bool) {
@@ -491,6 +532,22 @@ func writeServiceStatusText(out io.Writer, status servicepkg.Status) error {
 		"Dashboard: "+status.DashboardURL,
 		"Config: "+status.ConfigPath,
 	)
+	for _, outage := range status.BackendOutages {
+		if outage.Kind != "github_lookup_backoff" {
+			continue
+		}
+		nextProbeAt := outage.ResumeAt
+		if outage.NextProbeAt != nil {
+			nextProbeAt = *outage.NextProbeAt
+		}
+		lines = append(lines, fmt.Sprintf(
+			"GitHub lookup backoff: trigger=%s step=%d next probe=%s reason=%s",
+			outage.Trigger,
+			outage.ProbeAttempts,
+			nextProbeAt.Format(time.RFC3339),
+			outage.Reason,
+		))
+	}
 	if status.DefinitionPath != "" {
 		lines = append(lines, "Definition: "+status.DefinitionPath)
 	}

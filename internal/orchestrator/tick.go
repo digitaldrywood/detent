@@ -77,6 +77,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}()
 
 	o.syncGitHubRESTCapacityOutage(state, now)
+	if o.scheduling == nil && o.githubLookupBackoffGate(ctx, state, now) {
+		return
+	}
 	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
 		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
 		if o.scheduling == nil {
@@ -107,10 +110,19 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}
 	timing.next("status_drift")
 	o.refreshStatusDrift(ctx, state, now, reserve)
+	if o.scheduling == nil && o.observeGitHubLookupBackoff(state, now) {
+		return
+	}
 	timing.next("release")
 	o.evaluateRelease(ctx, state, now)
 	timing.next("active_runs")
 	o.refreshActiveRuns(ctx, state, now, reserve)
+	if o.scheduling == nil {
+		o.syncGitHubLookupBackoff(state, now)
+		if _, outage, active := githubLookupBackoff(state.BackendOutages); active && outage.LastProbeResult != githubLookupProbeResultProviderDue {
+			return
+		}
+	}
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}

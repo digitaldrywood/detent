@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,11 @@ query DetentGitHubProjectURL($projectId: ID!) {
     __typename
     ... on ProjectV2 { url }
   }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const graphQLRateLimitProbeQuery = `
+query DetentGitHubRateLimitProbe {
   rateLimit { limit used remaining cost resetAt }
 }`
 
@@ -62,6 +68,7 @@ const (
 	graphQLQueryAddProjectItem  = "add_project_item"
 	graphQLQueryMergeQueue      = "merge_queue"
 	graphQLQueryEnqueuePR       = "enqueue_pull_request"
+	graphQLQueryRateLimitProbe  = "rate_limit_probe"
 )
 
 type Config struct {
@@ -87,6 +94,7 @@ type Config struct {
 	HTTPClient                 HTTPClient
 	HTTPTransport              HTTPTransportConfig
 	RESTMinRemainingReserve    int
+	GraphQLMinRemainingReserve int
 	RESTFanoutMaxRequests      int
 	RESTDebugLogging           bool
 	UnstartedThreshold         time.Duration
@@ -189,9 +197,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 	}
 
 	client, err := NewClient(ClientConfig{
-		Endpoint:    cfg.Endpoint,
-		TokenSource: tokenSource,
-		HTTPClient:  httpClient,
+		Endpoint:                   cfg.Endpoint,
+		TokenSource:                tokenSource,
+		HTTPClient:                 httpClient,
+		GraphQLMinRemainingReserve: int64(cfg.GraphQLMinRemainingReserve),
 		RESTPolicy: RESTBudgetPolicy{
 			MinRemainingReserve: int64(cfg.RESTMinRemainingReserve),
 			FanoutMaxRequests:   int64(cfg.RESTFanoutMaxRequests),
@@ -262,6 +271,40 @@ func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.client.GraphQLRateLimit()
 }
 
+func (c *Connector) GraphQLRateLimitStatus() string {
+	return c.client.GraphQLRateLimitStatus()
+}
+
+func (c *Connector) ProbeGraphQLRateLimit(ctx context.Context) (connector.GraphQLRateLimit, error) {
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryRateLimitProbe, graphQLRateLimitProbeQuery, nil, nil); err != nil {
+		return connector.GraphQLRateLimit{}, err
+	}
+	rateLimit, ok := c.client.GraphQLRateLimit()
+	if !ok {
+		return connector.GraphQLRateLimit{}, ErrInvalidResponse
+	}
+	c.client.clearGraphQLRateLimitStatus()
+	return rateLimit, nil
+}
+
+func (c *Connector) ProbeRESTRateLimit(ctx context.Context, minimumRemaining int64) (connector.RESTRateLimit, error) {
+	result, err := c.client.restProbe(ctx, http.MethodGet, "/rate_limit", nil)
+	if err != nil {
+		return connector.RESTRateLimit{}, err
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return connector.RESTRateLimit{}, classifyStatusAt(result.StatusCode, result.Headers, []byte(result.FullBody), c.now())
+	}
+	usage := c.client.RESTRateLimitStatus()
+	if !usage.HasRateLimit {
+		return connector.RESTRateLimit{}, ErrInvalidResponse
+	}
+	if usage.RateLimit.Remaining > minimumRemaining {
+		c.client.clearRESTBackoff()
+	}
+	return usage.RateLimit, nil
+}
+
 func (c *Connector) AuthHealth() (connector.AuthHealth, bool) {
 	if c == nil || c.client == nil {
 		return connector.AuthHealth{}, false
@@ -279,6 +322,10 @@ func (c *Connector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage
 
 func (c *Connector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	return c.client.FlushRESTRateLimitUsage()
+}
+
+func (c *Connector) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	return c.client.RESTRateLimitStatus()
 }
 
 func (c *Connector) LiveConnections() int {
@@ -417,5 +464,9 @@ var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
 var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
+var _ connector.GraphQLRateLimitStatusReporter = (*Connector)(nil)
+var _ connector.GraphQLRateLimitProber = (*Connector)(nil)
 var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
+var _ connector.RESTRateLimitStatusReporter = (*Connector)(nil)
+var _ connector.RESTRateLimitProber = (*Connector)(nil)
 var _ connector.AuthHealthReporter = (*Connector)(nil)

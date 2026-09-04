@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -44,8 +45,8 @@ func TestTickPausesUntilGitHubGraphQLResetWhenRemainingLow(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 1 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want 1", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 during lookup backoff", tracker.fetchCandidateCalls)
 	}
 	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
 		t.Fatalf("RateLimits = %#v, want GitHub GraphQL snapshot", state.RateLimits)
@@ -53,11 +54,14 @@ func TestTickPausesUntilGitHubGraphQLResetWhenRemainingLow(t *testing.T) {
 	if state.RateLimits.GitHubGraphQL.Remaining != 25 || state.RateLimits.GitHubGraphQL.Cost != 4 {
 		t.Fatalf("GitHubGraphQL = %#v, want remaining 25 cost 4", state.RateLimits.GitHubGraphQL)
 	}
-	if state.PollInterval != 17*time.Minute {
-		t.Fatalf("PollInterval = %s, want reset pause 17m", state.PollInterval)
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
+		t.Fatalf("PollInterval = %s, want jittered initial backoff between 24s and 36s", state.PollInterval)
 	}
-	if !state.NextRefreshAt.Equal(resetAt) {
-		t.Fatalf("NextRefreshAt = %v, want %v", state.NextRefreshAt, resetAt)
+	if !state.NextRefreshAt.Equal(now.Add(state.PollInterval)) {
+		t.Fatalf("NextRefreshAt = %v, want %v", state.NextRefreshAt, now.Add(state.PollInterval))
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerGraphQL || outage.ProbeAttempts != 1 {
+		t.Fatalf("BackendOutages = %#v, want first GraphQL lookup backoff", state.BackendOutages)
 	}
 }
 
@@ -92,8 +96,8 @@ func TestTickSkipsConnectorPollingDuringGitHubGraphQLPause(t *testing.T) {
 	if tracker.fetchByStatesCalls != 0 {
 		t.Fatalf("FetchIssuesByStates() calls = %d, want 0 during pause", tracker.fetchByStatesCalls)
 	}
-	if state.PollInterval != 10*time.Minute {
-		t.Fatalf("PollInterval = %s, want reset pause 10m", state.PollInterval)
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
+		t.Fatalf("PollInterval = %s, want jittered initial backoff between 24s and 36s", state.PollInterval)
 	}
 }
 
@@ -122,8 +126,8 @@ func TestTickPausesForGitHubGraphQLRetryAfterWithPrimaryRemaining(t *testing.T) 
 
 	orch.tick(context.Background(), &state, now)
 
-	if state.PollInterval != 2*time.Minute {
-		t.Fatalf("PollInterval = %s, want retry-after pause 2m", state.PollInterval)
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
+		t.Fatalf("PollInterval = %s, want jittered initial backoff between 24s and 36s", state.PollInterval)
 	}
 	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
 		t.Fatalf("RateLimits = %#v, want GitHub GraphQL retry-after snapshot", state.RateLimits)
@@ -432,8 +436,8 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	if state.RateLimits.GitHubRESTBudgets[0].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[1].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[0].ResetAt.Equal(*state.RateLimits.GitHubRESTBudgets[1].ResetAt) {
 		t.Fatalf("GitHubRESTBudgets = %#v, want distinct endpoint reset windows", state.RateLimits.GitHubRESTBudgets)
 	}
-	if state.PollInterval != time.Minute {
-		t.Fatalf("PollInterval = %s, want REST retry-after pause 1m", state.PollInterval)
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
+		t.Fatalf("PollInterval = %s, want jittered initial lookup backoff between 24s and 36s", state.PollInterval)
 	}
 }
 
@@ -836,8 +840,8 @@ func TestTickDetectsGitHubRESTExhaustionBeforeDispatch(t *testing.T) {
 	if _, ok := activeGitHubRESTCapacityOutage(&state, now); !ok {
 		t.Fatalf("BackendOutages = %#v, want active GitHub REST outage", state.BackendOutages)
 	}
-	if state.PollInterval != 30*time.Minute || !state.NextRefreshAt.Equal(resetAt) {
-		t.Fatalf("refresh = interval %s next %v, want reset at %v", state.PollInterval, state.NextRefreshAt, resetAt)
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second || !state.NextRefreshAt.Equal(now.Add(state.PollInterval)) {
+		t.Fatalf("refresh = interval %s next %v, want jittered initial lookup backoff", state.PollInterval, state.NextRefreshAt)
 	}
 }
 
@@ -907,7 +911,7 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 	}
 }
 
-func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
+func TestTickBacksOffAllGitHubWorkBelowRESTReserve(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -932,18 +936,17 @@ func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 		},
 	}
 	tracker := &rateLimitConnector{}
-	var logs bytes.Buffer
 	orch := &Orchestrator{
 		cfg:       cfg,
 		connector: tracker,
 		reaper:    rateLimitWorkspaceReaper{},
-		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 1 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want minimal active candidate fetch", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want no lookups below REST reserve", tracker.fetchCandidateCalls)
 	}
 	if tracker.fetchByStatesCalls != 0 {
 		t.Fatalf("FetchIssuesByStates() calls = %d, want no cleanup or observed sweep", tracker.fetchByStatesCalls)
@@ -951,23 +954,9 @@ func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 	if tracker.fetchByStatesLimitCalls != 0 {
 		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want no observed probe during reserve", tracker.fetchByStatesLimitCalls)
 	}
-	if !rateLimitRecentEventContains(state.RecentEvents, "github_budget_reserved", "preserve shared budget") {
-		t.Fatalf("RecentEvents = %#v, want github budget reserve event", state.RecentEvents)
-	}
-	if !rateLimitRecentEventContains(state.RecentEvents, "github_rest_capacity_paused", "resuming at") {
-		t.Fatalf("RecentEvents = %#v, want GitHub REST dispatch pause event", state.RecentEvents)
-	}
-	logOutput := logs.String()
-	for _, want := range []string{
-		"github polling degraded to preserve shared budget",
-		"workspace cleanup skipped to preserve shared github budget",
-		"observed status polling skipped to preserve shared github budget",
-		"rest_remaining=900",
-		"rest_reserve=1000",
-	} {
-		if !strings.Contains(logOutput, want) {
-			t.Fatalf("log output missing %q:\n%s", want, logOutput)
-		}
+	_, outage, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || outage.Trigger != githubLookupTriggerREST || outage.ProbeAttempts != 1 {
+		t.Fatalf("BackendOutages = %#v, want first REST-triggered lookup backoff", state.BackendOutages)
 	}
 }
 
@@ -1029,7 +1018,7 @@ func TestGitHubBudgetReserveDecisionUsesCurrentRateLimitWindow(t *testing.T) {
 	}
 }
 
-func TestTickAllowsConditionalPollingBelowRESTReserve(t *testing.T) {
+func TestTickBacksOffConditionalPollingBelowRESTReserve(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -1061,17 +1050,15 @@ func TestTickAllowsConditionalPollingBelowRESTReserve(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if base.fetchCandidateCalls != 1 || base.fetchByStatesCalls != 1 {
-		t.Fatalf("fetch calls = candidates %d states %d, want one conditional cycle", base.fetchCandidateCalls, base.fetchByStatesCalls)
+	if base.fetchCandidateCalls != 0 || base.fetchByStatesCalls != 0 {
+		t.Fatalf("fetch calls = candidates %d states %d, want no conditional cycle during backoff", base.fetchCandidateCalls, base.fetchByStatesCalls)
 	}
-	for _, event := range state.RecentEvents {
-		if event.Event == "github_budget_reserved" {
-			t.Fatalf("RecentEvents = %#v, want no reserve skip for conditional polling", state.RecentEvents)
-		}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerREST {
+		t.Fatalf("BackendOutages = %#v, want REST-triggered lookup backoff", state.BackendOutages)
 	}
 }
 
-func TestTickClearsStaleBlockedStatusWhenCandidateResumesBelowGitHubReserve(t *testing.T) {
+func TestTickDefersStaleBlockedStatusReconciliationBelowGitHubReserve(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -1115,8 +1102,8 @@ func TestTickClearsStaleBlockedStatusWhenCandidateResumesBelowGitHubReserve(t *t
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 1 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want minimal active candidate fetch", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want no lookup during backoff", tracker.fetchCandidateCalls)
 	}
 	if tracker.fetchByStatesCalls != 0 {
 		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
@@ -1124,11 +1111,11 @@ func TestTickClearsStaleBlockedStatusWhenCandidateResumesBelowGitHubReserve(t *t
 	if tracker.fetchByStatesLimitCalls != 0 {
 		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want observed probe skipped", tracker.fetchByStatesLimitCalls)
 	}
-	if len(state.BoardIssues) != 1 || state.BoardIssues[0].ID != issue.ID || state.BoardIssues[0].State != "In Progress" {
-		t.Fatalf("BoardIssues = %#v, want resumed In Progress candidate", state.BoardIssues)
+	if len(state.BoardIssues) != 0 {
+		t.Fatalf("BoardIssues = %#v, want prior snapshot preserved without lookup", state.BoardIssues)
 	}
-	if _, ok := state.Blocked[issue.ID]; ok {
-		t.Fatalf("Blocked[%q] still tracked after candidate resumed In Progress during budget reserve", issue.ID)
+	if _, ok := state.Blocked[issue.ID]; !ok {
+		t.Fatalf("Blocked[%q] cleared without tracker lookup", issue.ID)
 	}
 }
 
@@ -1160,8 +1147,8 @@ func TestTickSkipsObservedPollingBelowGraphQLReserve(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 1 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want minimal active candidate fetch", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want no lookup during backoff", tracker.fetchCandidateCalls)
 	}
 	if tracker.fetchByStatesCalls != 0 {
 		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
@@ -1412,6 +1399,329 @@ func TestTickPrioritizesStatusDriftBeforeBulkTrackerReads(t *testing.T) {
 	}
 }
 
+func TestTickStopsBulkTrackerReadsAfterGraphQLRateLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:               30 * time.Second,
+		ActiveStates:               []string{"Todo", "In Progress"},
+		TerminalStates:             []string{"Done"},
+		GitHubGraphQLMinReserve:    1000,
+		GitHubGraphQLWarnRemaining: 1500,
+	})
+	state := newState(cfg)
+	tracker := &orderedTickConnector{
+		rateLimitConnector: &rateLimitConnector{},
+		statusDriftErr:     errors.New("API rate limit already exceeded"),
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 after status drift rate limit", tracker.fetchCandidateCalls)
+	}
+	if got := tracker.calls; len(got) != 1 || got[0] != "status_drift" {
+		t.Fatalf("tracker call order = %#v, want only status drift", got)
+	}
+}
+
+func TestTickStopsBulkTrackerReadsAfterRESTRateLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        30 * time.Second,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		MaxConcurrentAgents: 1,
+	})
+	state := newState(cfg)
+	tracker := &orderedTickConnector{
+		rateLimitConnector: &rateLimitConnector{},
+		statusDriftErr:     errors.New("API rate limit already exceeded"),
+		statusDriftREST:    true,
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 after REST rate limit", tracker.fetchCandidateCalls)
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerREST {
+		t.Fatalf("BackendOutages = %#v, want REST-triggered lookup backoff", state.BackendOutages)
+	}
+}
+
+func TestGitHubLookupBackoffDelay(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		attempt int
+		minimum time.Duration
+		maximum time.Duration
+	}{
+		{name: "initial", attempt: 1, minimum: 24 * time.Second, maximum: 36 * time.Second},
+		{name: "second", attempt: 2, minimum: 48 * time.Second, maximum: 72 * time.Second},
+		{name: "fifth", attempt: 5, minimum: 384 * time.Second, maximum: 576 * time.Second},
+		{name: "capped", attempt: 20, minimum: 12 * time.Minute, maximum: 15 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := githubLookupBackoffDelay(tt.attempt, "detent\x00github")
+			if got < tt.minimum || got > tt.maximum {
+				t.Fatalf("githubLookupBackoffDelay(%d) = %s, want %s..%s", tt.attempt, got, tt.minimum, tt.maximum)
+			}
+			if repeated := githubLookupBackoffDelay(tt.attempt, "detent\x00github"); repeated != got {
+				t.Fatalf("repeated delay = %s, want deterministic %s", repeated, got)
+			}
+		})
+	}
+}
+
+func TestGitHubLookupBackoffAllowsDispatch(t *testing.T) {
+	t.Parallel()
+
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	tests := []struct {
+		name             string
+		state            *State
+		capacityProbeKey string
+		want             bool
+	}{
+		{name: "no state", want: true},
+		{name: "no outage", state: &State{}, want: true},
+		{
+			name: "provider outage without lookup state",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				providerScope.Key(): {Scope: providerScope},
+			}},
+			want: true,
+		},
+		{
+			name: "rate limit blocks provider canary",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				githubLookupBackoffScope.Key(): {
+					Scope:           githubLookupBackoffScope,
+					Kind:            githubLookupBackoffKind,
+					Trigger:         githubLookupTriggerGraphQL,
+					LastProbeResult: githubLookupProbeResultBackingOff,
+				},
+			}},
+			capacityProbeKey: "codex",
+		},
+		{
+			name: "provider canary due",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				githubLookupBackoffScope.Key(): {
+					Scope:           githubLookupBackoffScope,
+					Kind:            githubLookupBackoffKind,
+					Trigger:         githubLookupTriggerProvider,
+					LastProbeResult: githubLookupProbeResultProviderDue,
+				},
+			}},
+			capacityProbeKey: "codex",
+			want:             true,
+		},
+		{
+			name: "ordinary attempt while provider canary due",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				githubLookupBackoffScope.Key(): {
+					Scope:           githubLookupBackoffScope,
+					Kind:            githubLookupBackoffKind,
+					Trigger:         githubLookupTriggerProvider,
+					LastProbeResult: githubLookupProbeResultProviderDue,
+				},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := githubLookupBackoffAllowsDispatch(tt.state, tt.capacityProbeKey); got != tt.want {
+				t.Fatalf("githubLookupBackoffAllowsDispatch() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitHubLookupBackoffProbesAndRecoversGradually(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		Project:                 scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:     4,
+		GitHubGraphQLMinReserve: 1000,
+	})
+	tracker := &rateLimitConnector{
+		rateLimitStatus: connector.GraphQLRateLimitStatusExhausted,
+		probeRateLimits: []connector.GraphQLRateLimit{
+			{Limit: 5000, Used: 4000, Remaining: 1000, ResetAt: resetAt},
+			{Limit: 5000, Used: 3999, Remaining: 1001, ResetAt: resetAt},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	var logs bytes.Buffer
+	orch.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	state := newState(cfg)
+
+	if !orch.githubLookupBackoffGate(context.Background(), &state, now) {
+		t.Fatal("initial githubLookupBackoffGate() = false, want backoff")
+	}
+	_, first, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || first.ProbeAttempts != 1 {
+		t.Fatalf("first backoff = %#v, want attempt 1", first)
+	}
+	tracker.rateLimitStatus = ""
+	if !orch.githubLookupBackoffGate(context.Background(), &state, first.NextProbeAt.Add(-time.Nanosecond)) {
+		t.Fatal("githubLookupBackoffGate() before probe = false, want backoff")
+	}
+	if tracker.probeCalls != 0 {
+		t.Fatalf("probe calls before deadline = %d, want 0", tracker.probeCalls)
+	}
+	if !orch.githubLookupBackoffGate(context.Background(), &state, first.NextProbeAt) {
+		t.Fatal("low-capacity githubLookupBackoffGate() = false, want continued backoff")
+	}
+	_, second, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || second.ProbeAttempts != 2 || !second.NextProbeAt.After(first.NextProbeAt) {
+		t.Fatalf("second backoff = %#v, want later attempt 2", second)
+	}
+	if orch.githubLookupBackoffGate(context.Background(), &state, second.NextProbeAt) {
+		t.Fatal("healthy githubLookupBackoffGate() = true, want recovery")
+	}
+	if _, _, active := githubLookupBackoff(state.BackendOutages); active {
+		t.Fatalf("BackendOutages = %#v, want lookup backoff cleared", state.BackendOutages)
+	}
+	recovery := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
+	if recovery.Status != dispatchRecoveryStatusRamping || recovery.Limit != 1 {
+		t.Fatalf("DispatchRecoveries[%q] = %#v, want one-at-a-time ramp", dispatchRecoveryGitHubLookup, recovery)
+	}
+	for _, want := range []string{"github lookup backoff scheduled", "trigger=github_graphql_rate_limit", "delay=", "next_probe_at="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log output missing %q:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestGitHubRESTLookupBackoffUsesRESTProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:  4,
+		GitHubRESTMinReserve: 1000,
+	})
+	tracker := &rateLimitConnector{
+		restStatus: connector.RESTRateLimitUsage{
+			RateLimited:  true,
+			BackoffUntil: now.Add(time.Minute),
+		},
+		restProbeRateLimits: []connector.RESTRateLimit{
+			{Limit: 5000, Used: 4000, Remaining: 1000, ResetAt: resetAt},
+			{Limit: 5000, Used: 3999, Remaining: 1001, ResetAt: resetAt},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	state := newState(cfg)
+
+	if !orch.githubLookupBackoffGate(context.Background(), &state, now) {
+		t.Fatal("initial githubLookupBackoffGate() = false, want REST backoff")
+	}
+	_, first, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || first.Trigger != githubLookupTriggerREST {
+		t.Fatalf("first backoff = %#v, want REST trigger", first)
+	}
+	if !orch.githubLookupBackoffGate(context.Background(), &state, first.NextProbeAt) {
+		t.Fatal("low-capacity REST probe recovered backoff")
+	}
+	_, second, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || second.ProbeAttempts != 2 {
+		t.Fatalf("second backoff = %#v, want attempt 2", second)
+	}
+	if orch.githubLookupBackoffGate(context.Background(), &state, second.NextProbeAt) {
+		t.Fatal("healthy REST probe kept backoff active")
+	}
+	if tracker.restProbeCalls != 2 || tracker.probeCalls != 0 {
+		t.Fatalf("probe calls = REST %d GraphQL %d, want REST 2 GraphQL 0", tracker.restProbeCalls, tracker.probeCalls)
+	}
+}
+
+func TestTickBacksOffGitHubLookupsDuringProviderOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        30 * time.Second,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		MaxConcurrentAgents: 2,
+	})
+	state := newState(cfg)
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	state.BackendOutages[providerScope.Key()] = BackendOutage{
+		Scope:       providerScope,
+		Kind:        string(backendcapacity.ErrorTypeUsageLimit),
+		Reason:      "provider responses unavailable",
+		DetectedAt:  now.Add(-time.Minute),
+		ResumeAt:    now.Add(5 * time.Minute),
+		NextProbeAt: now.Add(5 * time.Minute),
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 || tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("tracker calls = candidates %d states %d, want none", tracker.fetchCandidateCalls, tracker.fetchByStatesCalls)
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerProvider {
+		t.Fatalf("BackendOutages = %#v, want provider-triggered lookup backoff", state.BackendOutages)
+	}
+}
+
+func TestProviderLookupProbeWindowIsSingleUse(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+	state := newState(cfg)
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	state.BackendOutages[providerScope.Key()] = BackendOutage{
+		Scope:       providerScope,
+		NextProbeAt: now,
+	}
+	state.BackendOutages[githubLookupBackoffScope.Key()] = BackendOutage{
+		Scope:           githubLookupBackoffScope,
+		Kind:            githubLookupBackoffKind,
+		Trigger:         githubLookupTriggerProvider,
+		NextProbeAt:     now,
+		ProbeAttempts:   3,
+		LastProbeResult: githubLookupProbeResultProviderDue,
+	}
+	orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+
+	orch.finalizeGitHubLookupProviderProbe(&state, now)
+
+	_, outage, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || outage.ProbeAttempts != 4 || !outage.NextProbeAt.After(now) || outage.LastProbeResult != githubLookupProbeResultBackingOff {
+		t.Fatalf("lookup backoff = %#v, want next step after one due window", outage)
+	}
+}
+
 func TestTickReconcilesRunningIssuesOnSlowerCadence(t *testing.T) {
 	t.Parallel()
 
@@ -1462,6 +1772,14 @@ type rateLimitConnector struct {
 	hasRateLimit            bool
 	usage                   connector.GraphQLRateLimitUsage
 	restUsage               connector.RESTRateLimitUsage
+	restStatus              connector.RESTRateLimitUsage
+	restProbeRateLimits     []connector.RESTRateLimit
+	restProbeErrs           []error
+	restProbeCalls          int
+	rateLimitStatus         string
+	probeRateLimits         []connector.GraphQLRateLimit
+	probeErrs               []error
+	probeCalls              int
 	resetUsageCalls         int
 	flushUsageCalls         int
 	flushRESTUsageCalls     int
@@ -1492,12 +1810,21 @@ func (c *cleanupProbeConnector) FetchIssueStateProbe(_ context.Context, states [
 
 type orderedTickConnector struct {
 	*rateLimitConnector
-	calls []string
+	calls           []string
+	statusDriftErr  error
+	statusDriftREST bool
 }
 
 func (c *orderedTickConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
 	c.calls = append(c.calls, "status_drift")
-	return connector.StatusDrift{}, nil
+	if c.statusDriftErr != nil {
+		if c.statusDriftREST {
+			c.restStatus = connector.RESTRateLimitUsage{RateLimited: true}
+		} else {
+			c.rateLimitStatus = connector.GraphQLRateLimitStatusExhausted
+		}
+	}
+	return connector.StatusDrift{}, c.statusDriftErr
 }
 
 func (c *orderedTickConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
@@ -1566,6 +1893,22 @@ func (c *rateLimitConnector) GraphQLRateLimit() (connector.GraphQLRateLimit, boo
 	return c.rateLimit, c.hasRateLimit
 }
 
+func (c *rateLimitConnector) GraphQLRateLimitStatus() string {
+	return c.rateLimitStatus
+}
+
+func (c *rateLimitConnector) ProbeGraphQLRateLimit(context.Context) (connector.GraphQLRateLimit, error) {
+	index := c.probeCalls
+	c.probeCalls++
+	if index < len(c.probeErrs) && c.probeErrs[index] != nil {
+		return connector.GraphQLRateLimit{}, c.probeErrs[index]
+	}
+	if index < len(c.probeRateLimits) {
+		return c.probeRateLimits[index], nil
+	}
+	return connector.GraphQLRateLimit{}, errors.New("unexpected GraphQL rate-limit probe")
+}
+
 func (c *rateLimitConnector) ResetGraphQLRateLimitUsage() {
 	c.resetUsageCalls++
 	c.usage = connector.GraphQLRateLimitUsage{}
@@ -1579,6 +1922,26 @@ func (c *rateLimitConnector) FlushGraphQLRateLimitUsage() connector.GraphQLRateL
 func (c *rateLimitConnector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	c.flushRESTUsageCalls++
 	return c.restUsage
+}
+
+func (c *rateLimitConnector) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	return c.restStatus
+}
+
+func (c *rateLimitConnector) ProbeRESTRateLimit(_ context.Context, minimumRemaining int64) (connector.RESTRateLimit, error) {
+	index := c.restProbeCalls
+	c.restProbeCalls++
+	if index < len(c.restProbeErrs) && c.restProbeErrs[index] != nil {
+		return connector.RESTRateLimit{}, c.restProbeErrs[index]
+	}
+	if index < len(c.restProbeRateLimits) {
+		rateLimit := c.restProbeRateLimits[index]
+		if rateLimit.Remaining > minimumRemaining {
+			c.restStatus = connector.RESTRateLimitUsage{}
+		}
+		return rateLimit, nil
+	}
+	return connector.RESTRateLimit{}, errors.New("unexpected REST rate-limit probe")
 }
 
 type rateLimitWorkspaceReaper struct{}
