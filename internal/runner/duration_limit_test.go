@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +117,7 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 
 	startedAt := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
 	identity := procgroup.Identity{PID: 1885, GroupID: 1885, StartedAt: startedAt}
+	workspacePath := t.TempDir()
 	durationLimit := &controlledDurationLimit{}
 	processStore := &durationReapSessionStore{
 		fakeSessionStore: &fakeSessionStore{sessionID: 1885},
@@ -129,15 +132,22 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 	}
 	backend := &durationWorkerAgentBackend{identity: identity, expireSession: durationLimit.Expire}
 	var reaped procgroup.Identity
+	var workspaceReaped string
+	var logs bytes.Buffer
 	runner, err := NewRunner(Dependencies{
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}}, Prompt: "Work"},
-		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-session-lifetime"}},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: workspacePath, Key: "issue-session-lifetime"}},
 		AgentBackend: backend,
 		Store:        processStore,
+		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 		sessionLimit: durationLimit.Context,
 		ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
 			reaped = got
 			return procgroup.TerminationOutcomeKilled, nil
+		},
+		ReapWorkspaceProcesses: func(_ context.Context, path string, _ time.Duration) (int, error) {
+			workspaceReaped = path
+			return 2, nil
 		},
 	})
 	if err != nil {
@@ -151,6 +161,18 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 	if reaped != identity {
 		t.Fatalf("reaped identity = %#v, want %#v", reaped, identity)
 	}
+	if workspaceReaped != workspacePath {
+		t.Fatalf("reaped workspace = %q, want %q", workspaceReaped, workspacePath)
+	}
+	for _, want := range []string{
+		"event=worker_orphan_processes_reaped",
+		"issue_identifier=digitaldrywood/detent#1885",
+		"count=2",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs missing %q:\n%s", want, logs.String())
+		}
+	}
 	if len(processStore.reaps) != 1 {
 		t.Fatalf("reap records = %#v, want one", processStore.reaps)
 	}
@@ -159,6 +181,36 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 	}
 	if processStore.finished.FinalState != FinalStateSessionDurationExceeded {
 		t.Fatalf("final state = %q, want %q", processStore.finished.FinalState, FinalStateSessionDurationExceeded)
+	}
+}
+
+func TestWorkerSessionCanceled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "context canceled", err: context.Canceled, want: true},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "turn duration", err: ErrTurnDurationExceeded, want: true},
+		{name: "session duration", err: ErrSessionDurationExceeded, want: true},
+		{name: "merge fallback budget", err: ErrMergeFallbackBudgetExceeded, want: true},
+		{name: "session turn limit", err: ErrSessionTurnLimitExceeded, want: true},
+		{name: "session no progress", err: ErrSessionNoProgress, want: true},
+		{name: "session memory ceiling", err: ErrSessionMemoryCeilingExceeded, want: true},
+		{name: "ordinary failure", err: errors.New("provider failed")},
+		{name: "success"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := workerSessionCanceled(tt.err); got != tt.want {
+				t.Fatalf("workerSessionCanceled(%v) = %t, want %t", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -173,6 +225,7 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 		{name: "completed", wantReason: "turn_completed"},
 		{name: "failed", turnErr: errors.New("provider failed"), wantReason: "turn_failed"},
 		{name: "cancelled", turnErr: context.Canceled, wantReason: "session_cancelled"},
+		{name: "no progress", turnErr: ErrSessionNoProgress, wantReason: SessionBrakeReasonNoProgress},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
