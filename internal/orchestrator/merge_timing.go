@@ -39,13 +39,17 @@ func (o *Orchestrator) recordMergeQueueEntered(state *State, issue connector.Iss
 		state.MergeTimings = map[string]MergeTiming{}
 	}
 	timing := state.MergeTimings[issueID]
-	if !timing.EnteredMergingAt.IsZero() && timing.MergedAt.IsZero() && timing.MergeFailedAt.IsZero() {
+	enteredAt := mergeQueueEnteredAt(issue, now)
+	newEntry := issue.StageUpdatedAt != nil &&
+		!issue.StageUpdatedAt.IsZero() &&
+		issue.StageUpdatedAt.UTC().After(timing.EnteredMergingAt)
+	if !timing.EnteredMergingAt.IsZero() && timing.MergedAt.IsZero() && timing.MergeFailedAt.IsZero() && !newEntry {
 		return timing
 	}
-	if !timing.MergedAt.IsZero() || !timing.MergeFailedAt.IsZero() {
+	if newEntry || !timing.MergedAt.IsZero() || !timing.MergeFailedAt.IsZero() {
 		timing = MergeTiming{}
 	}
-	timing.EnteredMergingAt = mergeQueueEnteredAt(issue, now)
+	timing.EnteredMergingAt = enteredAt
 	timing = timing.withDurations(now)
 	state.MergeTimings[issueID] = timing
 	o.logMergeTimingInfo("merge_queue_entered", issue, timing, "source", strings.TrimSpace(source))
@@ -148,9 +152,7 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 		timing.BaseRefreshStartedAt = timing.MergeStartedAt
 		timing.BaseRefreshFinishedAt = time.Time{}
 	}
-	if timing.CIWaitStartedAt.IsZero() {
-		timing.CIWaitStartedAt = timing.MergeStartedAt
-	}
+	timing = timing.withCurrentHeadCIWait(issue, timing.MergeStartedAt)
 	timing.CIWaitFinishedAt = time.Time{}
 	timing = timing.withDurations(now)
 	state.MergeTimings[strings.TrimSpace(issue.ID)] = timing
@@ -159,6 +161,38 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 	}
 	o.logMergeTimingInfo("merge_ci_wait_started", issue, timing)
 	return timing
+}
+
+func reconcileMergeWorkerCurrentHeadCIWait(state *State, issue connector.Issue, now time.Time) MergeTiming {
+	if state == nil {
+		return MergeTiming{}
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return MergeTiming{}
+	}
+	if state.MergeTimings == nil {
+		state.MergeTimings = map[string]MergeTiming{}
+	}
+	timing := state.MergeTimings[issueID].withCurrentHeadCIWait(issue, now)
+	state.MergeTimings[issueID] = timing
+	return timing
+}
+
+func (t MergeTiming) withCurrentHeadCIWait(issue connector.Issue, now time.Time) MergeTiming {
+	headSHA := ""
+	if issue.PullRequest != nil {
+		headSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	}
+	headChanged := headSHA != "" && t.CIWaitHeadSHA != "" && headSHA != t.CIWaitHeadSHA
+	if t.CIWaitStartedAt.IsZero() || headChanged {
+		t.CIWaitStartedAt = now.UTC()
+		t.CIWaitFinishedAt = time.Time{}
+	}
+	if headSHA != "" {
+		t.CIWaitHeadSHA = headSHA
+	}
+	return t
 }
 
 func (o *Orchestrator) recordMergeCompleted(state *State, issue connector.Issue, at time.Time, finalState string) MergeTiming {

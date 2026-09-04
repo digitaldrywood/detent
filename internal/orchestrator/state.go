@@ -245,6 +245,7 @@ type MergeTiming struct {
 	MergeStartedAt             time.Time
 	BaseRefreshStartedAt       time.Time
 	BaseRefreshFinishedAt      time.Time
+	CIWaitHeadSHA              string
 	CIWaitStartedAt            time.Time
 	CIWaitFinishedAt           time.Time
 	MergedAt                   time.Time

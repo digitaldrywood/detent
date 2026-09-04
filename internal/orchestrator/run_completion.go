@@ -1658,7 +1658,7 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 		attempt = 1
 	}
 	retryError := mergeWorkerCurrentHeadCIWaitReason(issue)
-	exceeded := o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue.ID, event.CompletedAt)
+	exceeded := o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue, event.CompletedAt)
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError)
@@ -1699,13 +1699,12 @@ func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
 		return retry, false, ""
 	}
 
+	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, now)
 	retry.Issue = cloneIssue(issue)
 	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
-	if retry.Wait.StartedAt.IsZero() {
-		retry.Wait.StartedAt = state.MergeTimings[strings.TrimSpace(issue.ID)].CIWaitStartedAt
-		if retry.Wait.StartedAt.IsZero() {
-			retry.Wait.StartedAt = now.UTC()
-		}
+	if retry.Wait.StartedAt.IsZero() || !retry.Wait.StartedAt.Equal(timing.CIWaitStartedAt) {
+		retry.Wait.StartedAt = timing.CIWaitStartedAt
+		retry.Wait.PollCount = 0
 	}
 	retry.Wait.PollCount++
 	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
@@ -1886,17 +1885,11 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	})
 }
 
-func (o *Orchestrator) mergeWorkerCurrentHeadCIWaitExceeded(state *State, issueID string, completedAt time.Time) bool {
+func (o *Orchestrator) mergeWorkerCurrentHeadCIWaitExceeded(state *State, issue connector.Issue, completedAt time.Time) bool {
 	if state == nil || completedAt.IsZero() {
 		return false
 	}
-	issueID = strings.TrimSpace(issueID)
-	timing := state.MergeTimings[issueID]
-	if timing.CIWaitStartedAt.IsZero() {
-		timing.CIWaitStartedAt = completedAt.UTC()
-		state.MergeTimings[issueID] = timing
-		return false
-	}
+	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, completedAt)
 	return !completedAt.Before(timing.CIWaitStartedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout))
 }
 
@@ -2443,6 +2436,9 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	}
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon exhausted merge worker claim failed", "issue_id", issueID, "error", err)
+	}
+	if state.MergeTimings[issueID].MergeFailedAt.IsZero() {
+		o.recordMergeFailed(state, running.Issue, completedAt, reasonCode, err)
 	}
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
