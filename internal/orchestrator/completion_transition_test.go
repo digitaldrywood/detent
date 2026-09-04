@@ -10,6 +10,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -148,6 +150,20 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 				QuietDuration: 10 * time.Minute,
 				Gate:          gate.Config{Kind: gate.KindCommand},
 			},
+		},
+		{
+			name: "unresolved review threads bypass command gate wait",
+			issue: func() connector.Issue {
+				issue := completionTransitionIssue("In Progress", "OPEN")
+				issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "internal/orchestrator/state.go", Line: 42}}
+				return issue
+			}(),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindCommand},
+			},
+			want: autoPromoteSourceState,
 		},
 		{
 			name:       "zero quiet command gate with review wait advances to human review",
@@ -447,6 +463,312 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	}
 	if len(state.RecentEvents) != 0 {
 		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
+	}
+}
+
+func TestTransitionCompletedActiveIssuesRoutesUnresolvedReviewThreadsToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.PullRequest = &connector.PullRequest{
+		Number:   2104,
+		URL:      "https://github.test/digitaldrywood/detent/pull/2104",
+		State:    "OPEN",
+		CIStatus: "pass",
+		UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+			Path: "internal/orchestrator/autopromote.go",
+			Line: 181,
+		}},
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one rework comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Auto-promote routed this issue from In Progress to Rework: linked PR has 1 unresolved review thread.",
+		"reason: unresolved_review_threads",
+		"unresolved_review_threads: 1",
+		"first_unresolved_review_thread: internal/orchestrator/autopromote.go:181",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+}
+
+func TestTransitionCompletedActiveIssuesPreservesReworkBreakerTarget(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 16, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.Identifier = "digitaldrywood/detent#2103"
+	issue.URL = "https://github.test/digitaldrywood/detent/issues/2103"
+	issue.PullRequest = &connector.PullRequest{
+		Number:   2124,
+		URL:      "https://github.test/digitaldrywood/detent/pull/2124",
+		State:    "OPEN",
+		CIStatus: "pass",
+		HeadSHA:  "head-with-open-thread",
+		UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+			Path: "internal/orchestrator/completion_transition.go",
+			Line: 223,
+		}},
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    "Rework",
+		Reason:       string(AutoPromoteReasonUnresolvedReviewThreads),
+		Status:       "entered",
+		StartedAt:    now.Add(-time.Hour),
+		MetadataJSON: workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			ReworkLimit:   1,
+			Gate:          gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Blocked"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "Blocked" {
+		t.Fatalf("Completed issue state = %q, want Blocked", got)
+	}
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Rework limit was reached") {
+		t.Fatalf("comments = %#v, want one rework-limit handoff", tracker.comments)
+	}
+}
+
+func TestTransitionCompletedReworkIssueParksWhileReviewThreadsRemainUnresolved(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("Rework", "OPEN")
+	issue.PullRequest = &connector.PullRequest{
+		Number:   2104,
+		URL:      "https://github.test/digitaldrywood/detent/pull/2104",
+		State:    "OPEN",
+		CIStatus: "pass",
+		UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+			Path: "internal/orchestrator/completion_transition.go",
+			Line: 211,
+		}},
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if len(result.dispatchCandidates) != 0 || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+		t.Fatalf("result = %#v updates = %#v comments = %#v, want parked without redispatch", result, tracker.updates, tracker.comments)
+	}
+	if _, ok := state.Completed[issue.ID]; !ok {
+		t.Fatalf("Completed[%q] missing while review threads remain unresolved", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing while review threads remain unresolved", issue.ID)
+	}
+	if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
+		t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+	}
+}
+
+func TestTransitionCompletedActiveIssuesWaitsWhenReviewThreadsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 2, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRateLimited
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+		t.Fatalf("result = %#v updates = %#v comments = %#v, want parked without backend transition", result, tracker.updates, tracker.comments)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "In Progress" {
+		t.Fatalf("Completed issue state = %q, want In Progress", got)
+	}
+}
+
+func TestHandleRunResultParksCompletedRunWhenReviewThreadsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 3, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.PullRequest.Number = 2104
+	issue.PullRequest.HeadSHA = "head-sha"
+	issue.PullRequest.CIStatus = "pass"
+	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRateLimited
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:     issue,
+		Attempt:   1,
+		StartedAt: now.Add(-time.Minute),
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result: runpkg.RunResult{
+			FinalState:         FinalStateCompleted,
+			PullRequestUpdated: true,
+		},
+	})
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present while review-thread hydration is pending", issue.ID)
+	}
+	if _, ok := state.Completed[issue.ID]; !ok {
+		t.Fatalf("Completed[%q] missing while review-thread hydration is pending", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing while review-thread hydration is pending", issue.ID)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no backend transition", tracker.updates)
+	}
+	if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
+		t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+	}
+}
+
+func TestTransitionCompletedReworkIssueReturnsToHumanReviewAfterThreadsResolve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 5, 0, 0, time.UTC)
+	issue := completionTransitionIssue("Rework", "OPEN")
+	issue.PullRequest.Number = 2104
+	issue.PullRequest.URL = "https://github.test/digitaldrywood/detent/pull/2104"
+	issue.PullRequest.CIStatus = "pass"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want no rework comment after threads resolve", tracker.comments)
 	}
 }
 

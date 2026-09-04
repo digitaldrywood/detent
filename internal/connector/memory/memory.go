@@ -402,6 +402,7 @@ func (c *Connector) LookupPullRequestByHead(_ context.Context, repository string
 			continue
 		}
 		pullRequest := *issue.PullRequest
+		pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), issue.PullRequest.UnresolvedReviewThreads...)
 		return pullRequest, true, nil
 	}
 	return connector.PullRequest{}, false, nil
@@ -703,6 +704,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		pullRequest.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.StaleSuccessfulChecks...)
 		pullRequest.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), issue.PullRequest.RequiredCheckFailures...)
 		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)
+		pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), issue.PullRequest.UnresolvedReviewThreads...)
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		if issue.PullRequest.Labels != nil {
 			pullRequest.Labels = append([]string{}, issue.PullRequest.Labels...)

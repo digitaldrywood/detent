@@ -1632,6 +1632,27 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.reworkMergeWorkerResult(ctx, state, event, running, issue, reason, nil, "")
 		return true
 	}
+	if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+		var hydrated bool
+		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+		if !hydrated {
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
+			return true
+		}
+		if issue.PullRequest != nil && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+			o.reworkMergeWorkerResult(
+				ctx,
+				state,
+				event,
+				running,
+				issue,
+				string(AutoPromoteReasonUnresolvedReviewThreads),
+				nil,
+				"",
+			)
+			return true
+		}
+	}
 	merger, ok := o.connector.(connector.PullRequestMerger)
 	if !ok {
 		return false
@@ -2369,6 +2390,14 @@ func mergeWorkerReworkComment(issue connector.Issue, reason string, missingCheck
 		b.WriteString("\n```")
 	}
 	if issue.PullRequest != nil {
+		if reason == string(AutoPromoteReasonUnresolvedReviewThreads) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+			b.WriteString("\n- unresolved_review_threads: ")
+			b.WriteString(strconv.Itoa(len(issue.PullRequest.UnresolvedReviewThreads)))
+			if location := pullRequestReviewThreadLocation(issue.PullRequest.UnresolvedReviewThreads[0]); location != "" {
+				b.WriteString("\n- first_unresolved_review_thread: ")
+				b.WriteString(location)
+			}
+		}
 		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
 			b.WriteString("\n- pull request: ")
 			b.WriteString(url)
@@ -2382,7 +2411,11 @@ func mergeWorkerReworkComment(issue connector.Issue, reason string, missingCheck
 			b.WriteString(mergeableState)
 		}
 	}
-	b.WriteString("\n\nRefresh or re-push the current PR head so required checks run, then complete the normal Rework gate.")
+	if reason == string(AutoPromoteReasonUnresolvedReviewThreads) {
+		b.WriteString("\n\nResolve the outstanding review threads, then complete the normal Rework gate.")
+	} else {
+		b.WriteString("\n\nRefresh or re-push the current PR head so required checks run, then complete the normal Rework gate.")
+	}
 	return b.String()
 }
 

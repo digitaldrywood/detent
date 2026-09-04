@@ -86,6 +86,8 @@ type State struct {
 	nativeMergeQueueEntries  map[string]nativeMergeQueueEntry
 	nativeMergeQueueRepos    map[string]nativeMergeQueueRepository
 	nativeMergeQueueDeferred map[string]struct{}
+	nativeQueueRetries       map[string]connector.Issue
+	nativeQueueSweepAt       time.Time
 	TransientCheckRetries    map[string]TransientCheckRetry
 	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
 	BudgetRefusals           map[string]BudgetRefusal
@@ -395,6 +397,7 @@ func newState(cfg Config) State {
 		nativeMergeQueueEntries:  map[string]nativeMergeQueueEntry{},
 		nativeMergeQueueRepos:    map[string]nativeMergeQueueRepository{},
 		nativeMergeQueueDeferred: map[string]struct{}{},
+		nativeQueueRetries:       map[string]connector.Issue{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
@@ -483,6 +486,8 @@ func (s State) clone() State {
 		nativeMergeQueueEntries:  cloneNativeMergeQueueEntries(s.nativeMergeQueueEntries),
 		nativeMergeQueueRepos:    maps.Clone(s.nativeMergeQueueRepos),
 		nativeMergeQueueDeferred: maps.Clone(s.nativeMergeQueueDeferred),
+		nativeQueueRetries:       cloneIssueMap(s.nativeQueueRetries),
+		nativeQueueSweepAt:       s.nativeQueueSweepAt,
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
@@ -730,6 +735,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		pullRequest.StaleSuccessfulChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.StaleSuccessfulChecks...)
 		pullRequest.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), issue.PullRequest.RequiredCheckFailures...)
 		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)
+		pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), issue.PullRequest.UnresolvedReviewThreads...)
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		pullRequest.Labels = cloneStringSlice(issue.PullRequest.Labels)
 		cloned.PullRequest = &pullRequest

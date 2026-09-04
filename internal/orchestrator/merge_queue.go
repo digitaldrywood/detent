@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 const (
 	nativeMergeQueueEntryRefresh     = 2 * time.Minute
 	nativeMergeQueueRepositoryExpiry = 5 * time.Minute
+	nativeMergeQueueTerminalSweep    = 2 * time.Minute
 )
 
 type nativeMergeQueueEntry struct {
@@ -36,9 +38,12 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	if state == nil {
 		return out
 	}
+	if nativeMergeQueueCleanupRequired(o.cfg) {
+		return out
+	}
 	state.nativeMergeQueueDeferred = map[string]struct{}{}
 	queue, ok := o.connector.(connector.PullRequestMergeQueue)
-	if !ok || !o.cfg.MergeFastPathEnabled {
+	if !ok {
 		return out
 	}
 	pruneNativeMergeQueueEntries(state, out)
@@ -113,8 +118,176 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
+func (o *Orchestrator) reconcileUnsafeNativeMergeQueueIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	previous []connector.Issue,
+	now time.Time,
+) []connector.Issue {
+	out := mergeIssueSlices(issues, previous)
+	if state == nil || !nativeMergeQueueCleanupRequired(o.cfg) {
+		return out
+	}
+	queue, ok := o.connector.(connector.PullRequestMergeQueue)
+	if !ok {
+		return out
+	}
+	out = mergeIssueSlices(out, nativeMergeQueueRetryIssues(state.nativeQueueRetries))
+	previousDeferred := state.nativeMergeQueueDeferred
+	state.nativeMergeQueueDeferred = map[string]struct{}{}
+	state.nativeQueueRetries = map[string]connector.Issue{}
+	previousMerging := make(map[string]struct{}, len(previous))
+	for _, issue := range previous {
+		if mergeWorkerIssue(issue) {
+			previousMerging[strings.TrimSpace(issue.ID)] = struct{}{}
+		}
+	}
+	for _, issue := range out {
+		if !nativeMergeQueueCleanupCandidate(issue, state, previousMerging, previousDeferred) {
+			continue
+		}
+		o.reconcileUnsafeNativeMergeQueue(ctx, state, out, issue, queue, now)
+	}
+	pruneNativeMergeQueueEntries(state, out)
+	return out
+}
+
+func nativeMergeQueueCleanupRequired(cfg Config) bool {
+	return !cfg.MergeFastPathEnabled ||
+		gateRequiresPullRequest(cfg.AutoPromote.Gate) ||
+		gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled
+}
+
+func (o *Orchestrator) fetchUnsafeNativeMergeQueueTerminalIssues(
+	ctx context.Context,
+	state *State,
+	now time.Time,
+	reserve githubBudgetReserveDecision,
+) []connector.Issue {
+	if state == nil || !nativeMergeQueueCleanupRequired(o.cfg) {
+		return nil
+	}
+	if !state.nativeQueueSweepAt.IsZero() && now.Sub(state.nativeQueueSweepAt) < nativeMergeQueueTerminalSweep {
+		return nil
+	}
+	if _, ok := o.connector.(connector.PullRequestMergeQueue); !ok {
+		state.nativeQueueSweepAt = now
+		return nil
+	}
+	if reserve.degraded {
+		return nil
+	}
+	states := displayStateNames(o.cfg.TerminalStates)
+	if len(states) == 0 {
+		state.nativeQueueSweepAt = now
+		return nil
+	}
+	issues, err := o.fetchObservedIssuesByStates(ctx, states)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("fetch unsafe native merge queue terminal issues failed", "error", err)
+		}
+		markRefreshError(state, "fetch unsafe native merge queue terminal issues failed: "+err.Error(), now)
+		return nil
+	}
+	state.nativeQueueSweepAt = now
+	return terminalIssues(issues, o.cfg.TerminalStates)
+}
+
+func nativeMergeQueueCleanupCandidate(
+	issue connector.Issue,
+	state *State,
+	previousMerging map[string]struct{},
+	previousDeferred map[string]struct{},
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return false
+	}
+	if mergeWorkerIssue(issue) {
+		return true
+	}
+	if _, ok := state.nativeMergeQueueEntries[issueID]; ok {
+		return true
+	}
+	if _, ok := previousMerging[issueID]; ok {
+		return true
+	}
+	if _, ok := previousDeferred[issueID]; ok {
+		return true
+	}
+	if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
+		return true
+	}
+	return nativeMergeQueueRecoveryCandidate(issue)
+}
+
+func nativeMergeQueueRecoveryCandidate(issue connector.Issue) bool {
+	if issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
+		return false
+	}
+	return pullRequestRepository(issue) != "" && pullRequestNumber(issue) > 0
+}
+
+func (o *Orchestrator) reconcileUnsafeNativeMergeQueue(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	issue connector.Issue,
+	queue connector.PullRequestMergeQueue,
+	now time.Time,
+) {
+	issueID := strings.TrimSpace(issue.ID)
+	status, err := queue.InspectPullRequestMergeQueue(ctx, issue)
+	if err != nil {
+		state.nativeMergeQueueDeferred[issueID] = struct{}{}
+		state.nativeQueueRetries[issueID] = cloneIssue(issue)
+		o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
+		return
+	}
+	if status.Entry == nil {
+		delete(state.nativeMergeQueueEntries, issueID)
+		clearNativeMergeQueueEntry(issues, issueID)
+		return
+	}
+	entry := *status.Entry
+	if err := queue.DequeuePullRequest(ctx, entry); err != nil {
+		state.nativeMergeQueueDeferred[issueID] = struct{}{}
+		state.nativeQueueRetries[issueID] = cloneIssue(issue)
+		cacheNativeMergeQueueEntry(state, issueID, entry, now)
+		applyNativeMergeQueueEntry(issues, issueID, entry)
+		o.logNativeMergeQueueFailure(issue, "dequeue_failed", err)
+		return
+	}
+	delete(state.nativeMergeQueueEntries, issueID)
+	clearNativeMergeQueueEntry(issues, issueID)
+	o.logNativeMergeQueueDequeued(issue, entry)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_native_queue_dequeued",
+		Message: "dequeued " + issueLabel(issue) + " from the native merge queue",
+	})
+}
+
+func nativeMergeQueueRetryIssues(retries map[string]connector.Issue) []connector.Issue {
+	issueIDs := make([]string, 0, len(retries))
+	for issueID := range retries {
+		issueIDs = append(issueIDs, issueID)
+	}
+	sort.Strings(issueIDs)
+	issues := make([]connector.Issue, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		issues = append(issues, cloneIssue(retries[issueID]))
+	}
+	return issues
+}
+
 func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	if gateRequiresPullRequest(cfg.AutoPromote.Gate) {
 		return false
 	}
 	if gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled {
@@ -153,6 +326,9 @@ func pruneNativeMergeQueueEntries(state *State, issues []connector.Issue) {
 		}
 	}
 	for issueID := range state.nativeMergeQueueEntries {
+		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
+			continue
+		}
 		if _, ok := active[issueID]; !ok {
 			delete(state.nativeMergeQueueEntries, issueID)
 		}
@@ -233,6 +409,16 @@ func (o *Orchestrator) logNativeMergeQueueDelegated(issue connector.Issue, entry
 		"queue_position", entry.Position,
 		"queue_depth", entry.Depth,
 		"estimated_time_to_merge_seconds", entry.EstimatedTimeToMergeSeconds,
+	)...)
+}
+
+func (o *Orchestrator) logNativeMergeQueueDequeued(issue connector.Issue, entry connector.PullRequestMergeQueueEntry) {
+	if o.logger == nil {
+		return
+	}
+	o.logger.Info("merge_worker_native_queue_dequeued", mergeWorkerLogAttrs(issue,
+		"queue_entry_id", entry.ID,
+		"queue_state", entry.State,
 	)...)
 }
 

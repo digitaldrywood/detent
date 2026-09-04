@@ -123,6 +123,22 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name:  "unresolved review threads rework before other gates",
+			issue: autoPromoteTestIssue("issue-unresolved-review-threads", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+					Path: "internal/orchestrator/autopromote.go",
+					Line: 181,
+				}},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionRework,
+				Reason: AutoPromoteReasonUnresolvedReviewThreads,
+			},
+		},
+		{
 			name:  "red ci skips when configured",
 			issue: autoPromoteTestIssue("issue-red-ci-skip", nil),
 			cfg: AutoPromoteConfig{

@@ -794,8 +794,16 @@ func (b *recordingGitHubBackend) EnqueuePullRequest(context.Context, connector.I
 	panic("unexpected github EnqueuePullRequest")
 }
 
+func (b *recordingGitHubBackend) DequeuePullRequest(context.Context, connector.PullRequestMergeQueueEntry) error {
+	panic("unexpected github DequeuePullRequest")
+}
+
 func (b *recordingGitHubBackend) HydratePullRequest(context.Context, connector.Issue) (connector.Issue, error) {
 	panic("unexpected github HydratePullRequest")
+}
+
+func (b *recordingGitHubBackend) HydratePullRequestReviewThreads(context.Context, connector.Issue) (connector.Issue, error) {
+	panic("unexpected github HydratePullRequestReviewThreads")
 }
 
 func (b *recordingGitHubBackend) LookupPullRequestByHead(context.Context, string, string, string) (connector.PullRequest, bool, error) {

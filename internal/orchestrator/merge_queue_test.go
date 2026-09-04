@@ -2,7 +2,10 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -40,7 +43,7 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 			autoPromoteTickConnector: &autoPromoteTickConnector{},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgents:  1,
 		MaxConcurrentAgentsByState: map[string]int{
@@ -88,7 +91,7 @@ func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
 	recent.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1749"
 	recentAt := now.Add(-time.Minute)
 	recent.StageUpdatedAt = &recentAt
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgents:  1,
 		MaxConcurrentAgentsByState: map[string]int{
@@ -160,7 +163,7 @@ func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
 			},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		PollInterval:         time.Minute,
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgents:  1,
@@ -215,7 +218,7 @@ func TestDelegateNativeMergeQueueIssuesCachesQueueEntries(t *testing.T) {
 			autoPromoteTickConnector: &autoPromoteTickConnector{},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		ActiveStates:         []string{"Merging"},
 		TerminalStates:       []string{"Done"},
@@ -244,7 +247,7 @@ func TestDelegateNativeMergeQueueIssuesReenqueuesMissingCachedEntry(t *testing.T
 			autoPromoteTickConnector: &autoPromoteTickConnector{},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		ActiveStates:         []string{"Merging"},
 		TerminalStates:       []string{"Done"},
@@ -275,7 +278,7 @@ func TestDelegateNativeMergeQueueIssuesFallsBackWhenCachedQueueDisappears(t *tes
 		},
 		available: &available,
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgentsByState: map[string]int{
 			"Merging": 1,
@@ -318,7 +321,7 @@ func TestDelegateNativeMergeQueueIssuesRecoversExistingEntriesAfterRestart(t *te
 			"issue-212": {ID: "MQE_212", State: "QUEUED", Position: 2, Depth: 2},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		ActiveStates:         []string{"Merging"},
 		TerminalStates:       []string{"Done"},
@@ -347,7 +350,7 @@ func TestDelegateNativeMergeQueueIssuesFallsBackWithoutNativeQueue(t *testing.T)
 		},
 		available: &available,
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgentsByState: map[string]int{
 			"Merging": 1,
@@ -393,7 +396,7 @@ func TestNativeMergeQueueCandidate(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&issue)
 			}
-			if got := nativeMergeQueueCandidate(issue, normalizeConfig(Config{})); got != tt.want {
+			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
 				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
 			}
 		})
@@ -405,11 +408,550 @@ func TestNativeMergeQueueCandidateRejectsNonAtomicSecurityAuditGate(t *testing.T
 
 	issue := nativeMergeQueueTestIssue(402, "success")
 	cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+		Kind:          gate.KindArtifact,
 		SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
 	}}})
 	if nativeMergeQueueCandidate(issue, cfg) {
 		t.Fatal("nativeMergeQueueCandidate() = true, want programmatic exact-head merge")
 	}
+}
+
+func TestReconcileUnsafeNativeMergeQueueIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	queueEntry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-403", State: "QUEUED"}
+	tests := []struct {
+		name           string
+		gateKind       string
+		entry          *connector.PullRequestMergeQueueEntry
+		inspectErr     error
+		dequeueErr     error
+		wantCandidates int
+		wantQueued     bool
+		wantDequeued   int
+	}{
+		{name: "dispatches when no native entry exists", wantCandidates: 1},
+		{name: "dequeues existing native entry before dispatch", entry: &queueEntry, wantCandidates: 1, wantDequeued: 1},
+		{name: "dequeues existing native entry for human review gate", gateKind: gate.KindHumanReview, entry: &queueEntry, wantCandidates: 1, wantDequeued: 1},
+		{name: "defers when queue inspection fails", inspectErr: errors.New("inspect unavailable")},
+		{name: "defers when dequeue fails", entry: &queueEntry, dequeueErr: errors.New("dequeue unavailable"), wantQueued: true, wantDequeued: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := nativeMergeQueueTestIssue(403, "success")
+			gateKind := tt.gateKind
+			if gateKind == "" {
+				gateKind = gate.KindCommand
+			}
+			if gateKind == gate.KindHumanReview {
+				issue.Labels = append(issue.Labels, gate.DefaultApprovalLabel)
+			}
+			tracker := &nativeMergeQueueConnector{
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+					autoPromoteTickConnector: &autoPromoteTickConnector{},
+				},
+				inspectErr: tt.inspectErr,
+				dequeueErr: tt.dequeueErr,
+			}
+			if tt.entry != nil {
+				tracker.entries = map[string]connector.PullRequestMergeQueueEntry{issue.ID: *tt.entry}
+			}
+			cfg := normalizeConfig(Config{
+				MergeFastPathEnabled: false,
+				MaxConcurrentAgentsByState: map[string]int{
+					"Merging": 1,
+				},
+				AutoPromote:  AutoPromoteConfig{Gate: gate.Config{Kind: gateKind}},
+				ActiveStates: []string{"Merging"},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+
+			queued := orch.reconcileUnsafeNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, nil, now)
+
+			if tracker.inspections != 1 || len(tracker.enqueued) != 0 {
+				t.Fatalf("native queue activity = %d inspections and %#v enqueues, want one inspection and no enqueue", tracker.inspections, tracker.enqueued)
+			}
+			if got := len(tracker.dequeued); got != tt.wantDequeued {
+				t.Fatalf("dequeue calls = %d, want %d", got, tt.wantDequeued)
+			}
+			queuedEntry := queued[0].PullRequest.MergeQueueEntry
+			if (queuedEntry != nil) != tt.wantQueued {
+				t.Fatalf("queued entry = %#v, want present %t", queuedEntry, tt.wantQueued)
+			}
+			candidates := orch.mergeWorkerDispatchCandidates(&state, queued, now)
+			if len(candidates) != tt.wantCandidates {
+				t.Fatalf("merge worker candidates = %#v, want %d", candidates, tt.wantCandidates)
+			}
+			if tt.wantCandidates == 1 && candidates[0].ID != issue.ID {
+				t.Fatalf("merge worker candidate = %#v, want issue %q", candidates[0], issue.ID)
+			}
+		})
+	}
+}
+
+func TestTickReconcilesUnsafeNativeQueueBeforeStaleMerging(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 16, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		dequeueErr  error
+		wantUpdates []autoPromoteTickUpdate
+	}{
+		{
+			name:        "dequeues before approval revocation transition",
+			wantUpdates: []autoPromoteTickUpdate{{issueID: "issue-404", state: "Human Review"}},
+		},
+		{
+			name:       "defers approval revocation when dequeue fails",
+			dequeueErr: errors.New("dequeue unavailable"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := nativeMergeQueueTestIssue(404, "success")
+			entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-404", State: "QUEUED"}
+			tracker := &nativeMergeQueueConnector{
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+					autoPromoteTickConnector: &autoPromoteTickConnector{
+						stateIssues:        []connector.Issue{issue},
+						candidateIssuesSet: true,
+					},
+				},
+				dequeueErr: tt.dequeueErr,
+				entries:    map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+			}
+			cfg := normalizeConfig(Config{
+				PollInterval:         time.Minute,
+				MergeFastPathEnabled: false,
+				MaxConcurrentAgents:  1,
+				MaxConcurrentAgentsByState: map[string]int{
+					"Merging": 1,
+				},
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true,
+					Gate:    gate.Config{Kind: gate.KindHumanReview},
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates: []string{"Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+
+			orch.tick(t.Context(), &state, now)
+
+			if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+				t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+			}
+			if !reflect.DeepEqual(tracker.updates, tt.wantUpdates) {
+				t.Fatalf("updates = %#v, want %#v", tracker.updates, tt.wantUpdates)
+			}
+			_, deferred := state.nativeMergeQueueDeferred[issue.ID]
+			if deferred != (tt.dequeueErr != nil) {
+				t.Fatalf("nativeMergeQueueDeferred[%q] present = %t, want %t", issue.ID, deferred, tt.dequeueErr != nil)
+			}
+		})
+	}
+}
+
+func TestTickReconcilesUnsafeNativeQueueWithoutObservedStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 0, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(405, "success")
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-405", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				candidateIssuesSet: true,
+			},
+		},
+		statusErr: errors.New("status unavailable"),
+		entries:   map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: false,
+		MaxConcurrentAgents:  1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{issue}
+
+	orch.tick(t.Context(), &state, now)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+	if len(tracker.enqueued) != 0 {
+		t.Fatalf("enqueued issues = %#v, want none", tracker.enqueued)
+	}
+	if len(state.Pipeline) != 1 || state.Pipeline[0].ID != issue.ID {
+		t.Fatalf("pipeline = %#v, want prior issue %q retained", state.Pipeline, issue.ID)
+	}
+}
+
+func TestTickReconcilesUnsafeNativeQueueAfterLeavingMerging(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 15, 0, 0, time.UTC)
+	previous := nativeMergeQueueTestIssue(406, "success")
+	current := cloneIssue(previous)
+	current.State = "Human Review"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-406", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				stateIssues:        []connector.Issue{current},
+				candidateIssuesSet: true,
+			},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{previous.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: false,
+		MaxConcurrentAgents:  1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Gate: gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{previous}
+	cacheNativeMergeQueueEntry(&state, previous.ID, entry, now.Add(-time.Minute))
+
+	orch.tick(t.Context(), &state, now)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+	if len(state.Pipeline) != 1 || state.Pipeline[0].State != current.State {
+		t.Fatalf("pipeline = %#v, want current %q state retained", state.Pipeline, current.State)
+	}
+	if _, ok := state.nativeMergeQueueEntries[previous.ID]; ok {
+		t.Fatalf("nativeMergeQueueEntries[%q] remains after dequeue", previous.ID)
+	}
+}
+
+func TestReconcileUnsafeNativeQueueRetriesAfterLeavingMerging(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 30, 0, 0, time.UTC)
+	previous := nativeMergeQueueTestIssue(407, "success")
+	current := cloneIssue(previous)
+	current.State = "Human Review"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-407", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		inspectErr: errors.New("inspect unavailable"),
+		entries:    map[string]connector.PullRequestMergeQueueEntry{previous.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		AutoPromote:  AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates: []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileUnsafeNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{current},
+		[]connector.Issue{previous},
+		now,
+	)
+	if _, ok := state.nativeMergeQueueDeferred[previous.ID]; !ok {
+		t.Fatalf("nativeMergeQueueDeferred[%q] missing after inspection failure", previous.ID)
+	}
+
+	tracker.inspectErr = nil
+	orch.reconcileUnsafeNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{current},
+		nil,
+		now.Add(time.Minute),
+	)
+
+	if tracker.inspections != 2 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want two inspections and one dequeue", tracker.inspections, len(tracker.dequeued))
+	}
+	if _, ok := state.nativeMergeQueueDeferred[previous.ID]; ok {
+		t.Fatalf("nativeMergeQueueDeferred[%q] remains after successful retry", previous.ID)
+	}
+}
+
+func TestReconcileNativeMergeQueueAfterSecurityAuditEnabled(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 45, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(408, "success")
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-408", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+			Kind:          gate.KindArtifact,
+			SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
+		}},
+		ActiveStates: []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileUnsafeNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{issue},
+		nil,
+		now,
+	)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+}
+
+func TestReconcileNativeMergeQueueRecoversDepartedIssueAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(409, "success")
+	issue.State = "Rework"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-409", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates:         []string{"Rework", "Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileUnsafeNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{issue},
+		nil,
+		now,
+	)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+}
+
+func TestReconcileNativeMergeQueueRechecksEmptyRecoveryInspection(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 15, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(410, "success")
+	issue.State = "Human Review"
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindHumanReview}},
+		ActiveStates:         []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	for _, checkedAt := range []time.Time{now, now.Add(time.Minute), now.Add(nativeMergeQueueEntryRefresh)} {
+		orch.reconcileUnsafeNativeMergeQueueIssues(
+			t.Context(),
+			&state,
+			[]connector.Issue{issue},
+			nil,
+			checkedAt,
+		)
+	}
+
+	if tracker.inspections != 3 {
+		t.Fatalf("native queue inspections = %d, want 3", tracker.inspections)
+	}
+	if len(tracker.dequeued) != 0 {
+		t.Fatalf("dequeued entries = %#v, want none", tracker.dequeued)
+	}
+}
+
+func TestTickReconcilesUnsafeNativeQueueTerminalIssueAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 30, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(411, "success")
+	issue.State = "Cancelled"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-411", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				stateIssues:        []connector.Issue{issue},
+				candidateIssuesSet: true,
+			},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgents:  1,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates:         []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:       []string{"Merging"},
+		TerminalStates:       []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(t.Context(), &state, now)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+	if state.nativeQueueSweepAt != now {
+		t.Fatalf("nativeQueueSweepAt = %s, want %s", state.nativeQueueSweepAt, now)
+	}
+}
+
+func TestTickPeriodicallyReconcilesUnsafeNativeQueueTerminalIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 40, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(413, "success")
+	issue.State = "Done"
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				stateIssues:        []connector.Issue{issue},
+				candidateIssuesSet: true,
+			},
+		},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgents:  1,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates:         []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:       []string{"Merging"},
+		TerminalStates:       []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(t.Context(), &state, now)
+	tracker.entries = map[string]connector.PullRequestMergeQueueEntry{
+		issue.ID: {ID: "MQE_issue-413", State: "QUEUED"},
+	}
+	orch.tick(t.Context(), &state, now.Add(time.Minute))
+	orch.tick(t.Context(), &state, now.Add(nativeMergeQueueTerminalSweep))
+
+	if tracker.inspections != 2 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want two inspections and one dequeue", tracker.inspections, len(tracker.dequeued))
+	}
+	if state.nativeQueueSweepAt != now.Add(nativeMergeQueueTerminalSweep) {
+		t.Fatalf("nativeQueueSweepAt = %s, want %s", state.nativeQueueSweepAt, now.Add(nativeMergeQueueTerminalSweep))
+	}
+}
+
+func TestReconcileUnsafeNativeQueueRetriesTerminalIssueWithoutRefetch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 45, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(412, "success")
+	issue.State = "Cancelled"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-412", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		inspectErr: errors.New("inspect unavailable"),
+		entries:    map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		TerminalStates:       []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileUnsafeNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, nil, now)
+	if _, ok := state.nativeQueueRetries[issue.ID]; !ok {
+		t.Fatalf("nativeQueueRetries[%q] missing after inspection failure", issue.ID)
+	}
+
+	tracker.inspectErr = nil
+	orch.reconcileUnsafeNativeMergeQueueIssues(t.Context(), &state, nil, nil, now.Add(time.Minute))
+
+	if tracker.inspections != 2 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want two inspections and one dequeue", tracker.inspections, len(tracker.dequeued))
+	}
+	if _, ok := state.nativeQueueRetries[issue.ID]; ok {
+		t.Fatalf("nativeQueueRetries[%q] remains after successful retry", issue.ID)
+	}
+}
+
+func nativeMergeQueueTestConfig(cfg Config) Config {
+	cfg.AutoPromote.Gate.Kind = gate.KindArtifact
+	return normalizeConfig(cfg)
 }
 
 func nativeMergeQueueTestIssue(number int, ciStatus string) connector.Issue {
@@ -433,13 +975,27 @@ func nativeMergeQueueTestIssue(number int, ciStatus string) connector.Issue {
 type nativeMergeQueueConnector struct {
 	*autoPromoteTickMergeConnector
 	available   *bool
+	inspectErr  error
+	dequeueErr  error
+	statusErr   error
 	inspections int
 	entries     map[string]connector.PullRequestMergeQueueEntry
 	enqueued    []string
+	dequeued    []connector.PullRequestMergeQueueEntry
+}
+
+func (c *nativeMergeQueueConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if c.statusErr != nil {
+		return nil, c.statusErr
+	}
+	return c.autoPromoteTickConnector.FetchIssuesByStates(ctx, states)
 }
 
 func (c *nativeMergeQueueConnector) InspectPullRequestMergeQueue(_ context.Context, issue connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
 	c.inspections++
+	if c.inspectErr != nil {
+		return connector.PullRequestMergeQueueStatus{}, c.inspectErr
+	}
 	available := true
 	if c.available != nil {
 		available = *c.available
@@ -462,4 +1018,9 @@ func (c *nativeMergeQueueConnector) EnqueuePullRequest(_ context.Context, issue 
 		EnqueuedAt:                  timePointer(time.Now()),
 		URL:                         "https://github.test/digitaldrywood/detent/queue/main",
 	}, nil
+}
+
+func (c *nativeMergeQueueConnector) DequeuePullRequest(_ context.Context, entry connector.PullRequestMergeQueueEntry) error {
+	c.dequeued = append(c.dequeued, entry)
+	return c.dequeueErr
 }

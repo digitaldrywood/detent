@@ -50,6 +50,14 @@ mutation DetentEnqueuePullRequest($pullRequestId: ID!) {
   rateLimit { limit used remaining cost resetAt }
 }`
 
+const dequeuePullRequestMutation = `
+mutation DetentDequeuePullRequest($mergeQueueEntryId: ID!) {
+  dequeuePullRequest(input: {id: $mergeQueueEntryId}) {
+    mergeQueueEntry { id }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
 type mergeQueueEntryNode struct {
 	ID                   string     `json:"id"`
 	State                string     `json:"state"`
@@ -135,6 +143,33 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 	}
 	entry := connectorMergeQueueEntry(response.EnqueuePullRequest.MergeQueueEntry)
 	return *entry, nil
+}
+
+func (c *Connector) DequeuePullRequest(ctx context.Context, entry connector.PullRequestMergeQueueEntry) error {
+	entryID := strings.TrimSpace(entry.ID)
+	if entryID == "" {
+		return errors.New("dequeue github pull request: missing merge queue entry id")
+	}
+	var response struct {
+		DequeuePullRequest *struct {
+			MergeQueueEntry *struct {
+				ID string `json:"id"`
+			} `json:"mergeQueueEntry"`
+		} `json:"dequeuePullRequest"`
+	}
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryDequeuePR, dequeuePullRequestMutation, map[string]any{
+		"mergeQueueEntryId": entryID,
+	}, &response); err != nil {
+		return fmt.Errorf("dequeue github pull request: %w", err)
+	}
+	if response.DequeuePullRequest == nil || response.DequeuePullRequest.MergeQueueEntry == nil {
+		return errors.New("dequeue github pull request: github returned no merge queue entry")
+	}
+	dequeuedID := strings.TrimSpace(response.DequeuePullRequest.MergeQueueEntry.ID)
+	if dequeuedID != entryID {
+		return fmt.Errorf("dequeue github pull request: github returned merge queue entry %q, want %q", dequeuedID, entryID)
+	}
+	return nil
 }
 
 func connectorMergeQueueEntry(entry *mergeQueueEntryNode) *connector.PullRequestMergeQueueEntry {

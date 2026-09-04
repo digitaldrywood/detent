@@ -35,6 +35,14 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		if !ok {
 			continue
 		}
+		if gateRequiresPullRequest(cfg.Gate) {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				result.transitioned[issueID] = struct{}{}
+				continue
+			}
+		}
 		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
 			normalizeState(completed.Issue.State) != normalizeState(issue.State) {
 			continue
@@ -61,6 +69,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 
 		result.transitioned[issueID] = struct{}{}
 		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
+			if completedActiveReviewThreadsKeepParked(issue, promoted.State, cfg) {
+				continue
+			}
 			if normalizeState(issue.State) == normalizeState(promoted.State) {
 				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
 			} else if mergeWorkerIssue(promoted) {
@@ -106,6 +117,13 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func completedActiveReviewThreadsKeepParked(issue connector.Issue, targetState string, cfg AutoPromoteConfig) bool {
+	return gateRequiresPullRequest(cfg.Gate) &&
+		normalizeState(issue.State) == normalizeState(targetState) &&
+		issue.PullRequest != nil &&
+		len(issue.PullRequest.UnresolvedReviewThreads) > 0
 }
 
 func (o *Orchestrator) transitionActiveArtifactGateWaitIssuesToReview(
@@ -189,14 +207,21 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	cfg AutoPromoteConfig,
 	now time.Time,
 ) (bool, connector.Issue) {
-	if !cfg.Enabled || cfg.QuietDuration != 0 || normalizeState(reviewState) != normalizeState(cfg.SourceState) {
+	if normalizeState(reviewState) != normalizeState(cfg.SourceState) {
 		return false, connector.Issue{}
 	}
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = completedFinalState
 	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue.ID)
-	decision := EvaluateAutoPromote(issue, summary, cfg, now)
+	unresolvedReviewThreads := gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0
+	if !unresolvedReviewThreads && (!cfg.Enabled || cfg.QuietDuration != 0) {
+		return false, connector.Issue{}
+	}
+	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	if !unresolvedReviewThreads {
+		decision = EvaluateAutoPromote(issue, summary, cfg, now)
+	}
 	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 	}
@@ -205,16 +230,17 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 		o.logAutoPromoteDecision(issue, decision, "")
 		return false, connector.Issue{}
 	}
-	promoted := promotedIssue(issue, targetState, now)
 	if normalizeState(issue.State) == normalizeState(targetState) {
+		promoted := promotedIssue(issue, targetState, now)
 		o.logAutoPromoteDecision(issue, decision, targetState)
 		o.logCompletedActiveAutoPromoteSameState(issue, decision, cfg)
 		return true, promoted
 	}
-	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+	effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+	if !applied {
 		return false, connector.Issue{}
 	}
-	return true, promoted
+	return true, promotedIssue(issue, effectiveTargetState, now)
 }
 
 func (o *Orchestrator) finishCompletedActiveReviewTransition(
@@ -291,13 +317,16 @@ func completedActiveReviewTargetState(
 	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate), operationalCompletionAccepted) {
 		return ""
 	}
+	if !completedActiveFinalStateReviewEligible(finalState, reviewState) {
+		return ""
+	}
+	if !operationalCompletionAccepted && gateRequiresPullRequest(cfg.Gate) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+		return reviewState
+	}
 	if !completedActiveShouldEnterReview(issue, cfg, operationalCompletionAccepted) {
 		return ""
 	}
-	if completedActiveFinalStateReviewEligible(finalState, reviewState) {
-		return reviewState
-	}
-	return ""
+	return reviewState
 }
 
 func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig, operationalCompletionAccepted bool) bool {
@@ -399,15 +428,16 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 			o.logAutoPromoteDecision(issue, decision, "")
 			return false, connector.Issue{}
 		}
-		if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+		effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+		if !applied {
 			return false, connector.Issue{}
 		}
-		promoted := promotedIssue(issue, targetState, now)
-		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
+		promoted := promotedIssue(issue, effectiveTargetState, now)
+		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, effectiveTargetState)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "completed_active_gate_wait_timeout",
-			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after auto-promote gate wait timeout",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + effectiveTargetState + " after auto-promote gate wait timeout",
 		})
 		return true, promoted
 	}

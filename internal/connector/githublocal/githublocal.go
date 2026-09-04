@@ -60,6 +60,7 @@ type githubBackend interface {
 	connector.PullRequestCommentReader
 	connector.PullRequestHeadLookup
 	connector.PullRequestHydrator
+	connector.PullRequestReviewThreadHydrator
 	connector.PullRequestMergeQueue
 	connector.PullRequestMerger
 	connector.RateLimitReporter
@@ -133,6 +134,7 @@ var _ connector.PullRequestCommentReader = (*Connector)(nil)
 var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
 var _ connector.PullRequestHeadLookup = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
+var _ connector.PullRequestReviewThreadHydrator = (*Connector)(nil)
 var _ connector.PullRequestLabelReapplier = (*Connector)(nil)
 var _ connector.PullRequestMergeQueue = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
@@ -589,8 +591,16 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 	return c.github.EnqueuePullRequest(ctx, issue)
 }
 
+func (c *Connector) DequeuePullRequest(ctx context.Context, entry connector.PullRequestMergeQueueEntry) error {
+	return c.github.DequeuePullRequest(ctx, entry)
+}
+
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	return c.github.HydratePullRequest(ctx, issue)
+}
+
+func (c *Connector) HydratePullRequestReviewThreads(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	return c.github.HydratePullRequestReviewThreads(ctx, issue)
 }
 
 func (c *Connector) LookupPullRequestByHead(ctx context.Context, repository string, branch string, headSHA string) (connector.PullRequest, bool, error) {

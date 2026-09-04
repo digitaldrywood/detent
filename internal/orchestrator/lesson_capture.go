@@ -72,7 +72,7 @@ func reworkFailureKind(reason string, pullRequest *connector.PullRequest, failed
 		return "ci_failure"
 	case mergeWorkerRequiredChecksMissingReason, mergeWorkerFastPathNotReadyReason:
 		return "ci_signal_missing"
-	case string(AutoPromoteReasonP1Findings), "plan_review_decision":
+	case string(AutoPromoteReasonP1Findings), string(AutoPromoteReasonUnresolvedReviewThreads), "plan_review_decision":
 		return "changes_requested"
 	case string(AutoPromoteReasonValidatorRework), string(AutoPromoteReasonValidatorScoreBelowThreshold), string(AutoPromoteReasonValidatorBlockedSeverity):
 		return "validator_rework"

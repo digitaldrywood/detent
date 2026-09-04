@@ -110,6 +110,88 @@ func TestConnectorEnqueuePullRequest(t *testing.T) {
 	}
 }
 
+func TestConnectorDequeuePullRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		entryID   string
+		response  string
+		wantError string
+		wantCall  bool
+	}{
+		{
+			name:     "dequeues existing entry",
+			entryID:  "MQE_42",
+			response: `{"data":{"dequeuePullRequest":{"mergeQueueEntry":{"id":"MQE_42"}}}}`,
+			wantCall: true,
+		},
+		{
+			name:      "rejects missing entry id",
+			wantError: "missing merge queue entry id",
+		},
+		{
+			name:      "rejects missing mutation result",
+			entryID:   "MQE_42",
+			response:  `{"data":{"dequeuePullRequest":null}}`,
+			wantError: "github returned no merge queue entry",
+			wantCall:  true,
+		},
+		{
+			name:      "rejects missing dequeued entry",
+			entryID:   "MQE_42",
+			response:  `{"data":{"dequeuePullRequest":{"mergeQueueEntry":null}}}`,
+			wantError: "github returned no merge queue entry",
+			wantCall:  true,
+		},
+		{
+			name:      "rejects mismatched dequeued entry",
+			entryID:   "MQE_42",
+			response:  `{"data":{"dequeuePullRequest":{"mergeQueueEntry":{"id":"MQE_99"}}}}`,
+			wantError: `github returned merge queue entry "MQE_99", want "MQE_42"`,
+			wantCall:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var responses []graphqlTestResponse
+			if tt.wantCall {
+				responses = []graphqlTestResponse{{body: tt.response}}
+			}
+			server := newGraphQLTestServer(t, responses)
+			client := newGitHubTestConnector(t, server, Config{})
+			err := client.DequeuePullRequest(context.Background(), connector.PullRequestMergeQueueEntry{ID: tt.entryID})
+			if tt.wantError == "" && err != nil {
+				t.Fatalf("DequeuePullRequest() error = %v", err)
+			}
+			if tt.wantError != "" && (err == nil || !strings.Contains(err.Error(), tt.wantError)) {
+				t.Fatalf("DequeuePullRequest() error = %v, want containing %q", err, tt.wantError)
+			}
+			requests := server.requests()
+			if !tt.wantCall {
+				if len(requests) != 0 {
+					t.Fatalf("requests = %#v, want none", requests)
+				}
+				return
+			}
+			if len(requests) != 1 {
+				t.Fatalf("requests = %#v, want one", requests)
+			}
+			request := requests[0]
+			if !strings.Contains(request["query"].(string), "dequeuePullRequest(input: {id: $mergeQueueEntryId})") {
+				t.Fatalf("query = %q, want dequeuePullRequest mutation", request["query"])
+			}
+			variables := request["variables"].(map[string]any)
+			if variables["mergeQueueEntryId"] != tt.entryID {
+				t.Fatalf("mergeQueueEntryId = %v, want %q", variables["mergeQueueEntryId"], tt.entryID)
+			}
+		})
+	}
+}
+
 func mergeQueueTestTime(value string) *time.Time {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
