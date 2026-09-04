@@ -281,6 +281,64 @@ func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
 	}
 }
 
+func TestServiceRunnerForCommandConfiguresStatusSnapshotHTTP(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configure func(*options)
+		wantHTTP  bool
+	}{
+		{
+			name:     "built-in service factory",
+			wantHTTP: true,
+		},
+		{
+			name: "explicitly injected service factory",
+			configure: func(opts *options) {
+				WithServiceFactory(serviceFactoryFor(&serviceRunnerStub{}))(opts)
+			},
+			wantHTTP: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			cfg, err := globalconfig.DefaultAt(path)
+			if err != nil {
+				t.Fatalf("DefaultAt() error = %v", err)
+			}
+			if err := globalconfig.Write(path, cfg); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+
+			opts := defaultOptions()
+			opts.lookupEnv = func(string) string { return "" }
+			if tt.configure != nil {
+				tt.configure(&opts)
+			}
+			host := ""
+			port := -1
+			cmd := newStatusCommand(&path, &host, &port, opts)
+			cmd.SetContext(t.Context())
+			runner, err := serviceRunnerForCommand(cmd, &path, &host, &port, opts)
+			if err != nil {
+				t.Fatalf("serviceRunnerForCommand() error = %v", err)
+			}
+			statusRunner, ok := runner.(statusServiceRunner)
+			if !ok {
+				t.Fatalf("runner type = %T, want statusServiceRunner", runner)
+			}
+			if got := statusRunner.httpDo != nil; got != tt.wantHTTP {
+				t.Fatalf("status HTTP configured = %t, want %t", got, tt.wantHTTP)
+			}
+		})
+	}
+}
+
 func TestStoppedManagedServiceUsesNonzeroExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -414,7 +472,7 @@ func TestServiceCommandsLoadLegacyWorkflowPort(t *testing.T) {
 	}
 }
 
-func TestStatusCommandResolvesDashboardPort(t *testing.T) {
+func TestStatusCommandResolvesDashboardAddress(t *testing.T) {
 	t.Setenv("PORT", "4200")
 
 	tests := []struct {
@@ -435,16 +493,16 @@ func TestStatusCommandResolvesDashboardPort(t *testing.T) {
 			wantFactoryURL:   "http://localhost:4100",
 		},
 		{
-			name:             "installed unit port",
+			name:             "installed unit concrete host and port",
 			configPort:       4100,
 			writeConfig:      true,
-			definition:       "[Service]\nExecStart=\"/usr/bin/detent\" \"--config\" \"/tmp/global.yaml\" \"--port\" \"4300\" \"--headless\"\n",
+			definition:       "[Service]\nExecStart=\"/usr/bin/detent\" \"--config\" \"/tmp/global.yaml\" \"--host\" \"100.109.187.102\" \"--port\" \"4300\" \"--headless\"\n",
 			manager:          servicepkg.ManagerSystemd,
-			wantDashboardURL: "http://localhost:4300",
+			wantDashboardURL: "http://100.109.187.102:4300",
 			wantFactoryURL:   "http://localhost:4100",
 		},
 		{
-			name:        "installed launchd port",
+			name:        "installed launchd wildcard host and port",
 			configPort:  4100,
 			writeConfig: true,
 			definition: `<?xml version="1.0" encoding="UTF-8"?>
@@ -457,6 +515,8 @@ func TestStatusCommandResolvesDashboardPort(t *testing.T) {
     <string>/usr/local/bin/detent</string>
     <string>--config</string>
     <string>/tmp/global.yaml</string>
+    <string>--host</string>
+    <string>0.0.0.0</string>
     <string>--port</string>
     <string>4400</string>
     <string>--headless</string>
@@ -464,7 +524,7 @@ func TestStatusCommandResolvesDashboardPort(t *testing.T) {
 </dict>
 </plist>`,
 			manager:          servicepkg.ManagerLaunchd,
-			wantDashboardURL: "http://localhost:4400",
+			wantDashboardURL: "http://127.0.0.1:4400",
 			wantFactoryURL:   "http://localhost:4100",
 		},
 		{

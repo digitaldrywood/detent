@@ -187,7 +187,8 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	statusCredential := dashboardAPICredential(cfg.APIToken, opts.lookupEnv)
 	if factory == nil {
 		factory = defaultServiceFactory
-	} else {
+	}
+	if opts.serviceInjected {
 		statusHTTPDo = nil
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
@@ -217,8 +218,8 @@ func (r statusServiceRunner) Status(ctx context.Context) (servicepkg.Status, err
 		return servicepkg.Status{}, err
 	}
 	status.DashboardURL = r.fallbackURL
-	if port, ok := installedServicePort(status.ServiceManager, status.DefinitionPath); ok {
-		status.DashboardURL = "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(port))
+	if dashboardURL, ok := installedServiceDashboardURL(status.ServiceManager, status.DefinitionPath, status.DashboardURL); ok {
+		status.DashboardURL = dashboardURL
 	}
 	if status.Running() {
 		status.BackendOutages = r.backendOutages(ctx, status.DashboardURL)
@@ -255,13 +256,13 @@ func (r statusServiceRunner) backendOutages(ctx context.Context, dashboardURL st
 	return outages
 }
 
-func installedServicePort(manager servicepkg.ManagerName, path string) (int, bool) {
+func installedServiceDashboardURL(manager servicepkg.ManagerName, path string, fallbackURL string) (string, bool) {
 	if strings.TrimSpace(path) == "" {
-		return 0, false
+		return "", false
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return 0, false
+		return "", false
 	}
 	var arguments []string
 	switch manager {
@@ -270,17 +271,31 @@ func installedServicePort(manager servicepkg.ManagerName, path string) (int, boo
 	case servicepkg.ManagerLaunchd:
 		arguments = launchdDefinitionArguments(content)
 	default:
-		return 0, false
+		return "", false
 	}
-	for index, argument := range arguments {
-		if argument == "--port" && index+1 < len(arguments) {
-			return validServicePort(arguments[index+1])
-		}
-		if raw, ok := strings.CutPrefix(argument, "--port="); ok {
-			return validServicePort(raw)
-		}
+	parsed, err := url.Parse(strings.TrimSpace(fallbackURL))
+	if err != nil || parsed.Hostname() == "" {
+		return "", false
 	}
-	return 0, false
+	port, ok := validServicePort(parsed.Port())
+	if !ok {
+		return "", false
+	}
+	host := parsed.Hostname()
+	hostSet := false
+	if installedHost, ok := serviceStringFlag(arguments, "--host"); ok {
+		host = installedHost
+		hostSet = true
+	}
+	portSet := false
+	if installedPort, ok := serviceIntFlag(arguments, "--port"); ok {
+		port = installedPort
+		portSet = true
+	}
+	if !hostSet && !portSet {
+		return "", false
+	}
+	return "http://" + dashboardServerAddr(BootConfig{Host: host, Port: &port}), true
 }
 
 func runningServiceArguments(ctx context.Context, configPath string, opts options) []string {
