@@ -12,10 +12,10 @@ import (
 )
 
 type capacityClearResponse struct {
-	Status  string `json:"status"`
-	Project string `json:"project,omitempty"`
-	Scope   string `json:"scope,omitempty"`
-	Cleared int    `json:"cleared"`
+	Status    string `json:"status"`
+	Project   string `json:"project,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	Requested int    `json:"requested"`
 }
 
 func (s *Server) apiCapacityClear(c echo.Context) error {
@@ -30,9 +30,9 @@ func (s *Server) apiCapacityClear(c echo.Context) error {
 		projects = []*project.Project{selected}
 	}
 
-	cleared := 0
+	requested := 0
 	for _, candidate := range projects {
-		outages, err := candidate.Orchestrator().ClearBackendCapacity(c.Request().Context(), scope)
+		err := candidate.Orchestrator().RequestBackendCapacityClear(c.Request().Context(), scope)
 		if err != nil {
 			if errors.Is(err, orchestrator.ErrStopped) {
 				continue
@@ -40,18 +40,18 @@ func (s *Server) apiCapacityClear(c echo.Context) error {
 			s.logger.Warn("capacity clear failed", "project_id", candidate.ID(), "scope", scope, "error", err)
 			return c.JSON(http.StatusServiceUnavailable, errorResponse("capacity_clear_failed", "capacity outage clear failed"))
 		}
-		cleared += len(outages)
+		requested++
 	}
 
-	s.logger.Info("capacity clear requested", "project_id", projectID, "scope", scope, "cleared", cleared)
+	s.logger.Info("capacity clear requested", "project_id", projectID, "scope", scope, "requested", requested)
 	if c.Request().Header.Get("HX-Request") == "true" {
 		c.Response().Header().Set("HX-Trigger", "capacityCleared")
 		return c.NoContent(http.StatusNoContent)
 	}
-	return c.JSON(http.StatusOK, capacityClearResponse{
-		Status:  "cleared",
-		Project: projectID,
-		Scope:   scope,
-		Cleared: cleared,
+	return c.JSON(http.StatusAccepted, capacityClearResponse{
+		Status:    "requested",
+		Project:   projectID,
+		Scope:     scope,
+		Requested: requested,
 	})
 }

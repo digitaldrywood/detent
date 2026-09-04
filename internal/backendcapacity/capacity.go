@@ -25,6 +25,7 @@ type ErrorType string
 const (
 	ErrorTypeUsageLimit        ErrorType = "usage_limit"
 	ErrorTypeTransientOverload ErrorType = "transient_overload"
+	ErrorTypeProviderOutage    ErrorType = "provider_outage"
 )
 
 var retryAtPattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+(?:at\s+)?([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))(?:\s*\(([A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)\))?`)

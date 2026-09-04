@@ -155,11 +155,18 @@ func (o *Orchestrator) registerBackendOutage(
 	}
 	if strings.TrimSpace(existing.ProbeIssueID) == "" {
 		delay := backendCapacityProbeDelayForAttempt(existing.ProbeAttempts)
+		if backendCapacityProviderOutage(existing) {
+			existing.ResumeAt = observedAt.Add(delay)
+		}
 		existing.NextProbeAt = backendCapacityBoundedProbeAt(existing.ResumeAt, observedAt.Add(delay), observedAt)
 	}
 	state.BackendOutages[key] = existing
 	delete(state.BackendRecoveries, key)
 	return existing
+}
+
+func backendCapacityProviderOutage(outage BackendOutage) bool {
+	return outage.Kind == "http_404" || (len(outage.Kind) == len("http_500") && strings.HasPrefix(outage.Kind, "http_5"))
 }
 
 func backendCapacityProbeDelayForAttempt(attempt int) time.Duration {
@@ -448,6 +455,9 @@ func (o *Orchestrator) recoverBackendCapacityFromStatus(
 		observedAt = o.clockNow()
 	}
 	key, outage, active := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+	if active && backendCapacityProviderOutage(outage) {
+		return
+	}
 	if status.Exhausted {
 		wasActive := active
 		details := status.Details

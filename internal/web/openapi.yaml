@@ -644,11 +644,18 @@ paths:
                 project_id: {type: string}
                 scope: {type: string}
       responses:
-        "200":
-          description: Capacity outage records cleared.
+        "202":
+          description: Capacity outage clear requested.
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Status"}
+              schema:
+                type: object
+                required: [status, requested]
+                properties:
+                  status: {type: string, enum: [requested]}
+                  project: {type: string}
+                  scope: {type: string}
+                  requested: {type: integer}
         "404": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/security-audits/dispositions:

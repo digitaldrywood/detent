@@ -55,16 +55,25 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			wantType: backendcapacity.ErrorTypeTransientOverload,
 		},
 		{
+			name:     "provider responses endpoint http 404",
+			err:      &TurnFailedError{Status: "failed", Body: `{"message":"unexpected status 404 Not Found from responses endpoint"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeProviderOutage,
+			wantKind: "http_404",
+		},
+		{
 			name:     "provider http 529",
 			err:      &TurnFailedError{Status: "failed", Body: `{"status_code":529,"message":"retry later"}`},
 			want:     true,
-			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantType: backendcapacity.ErrorTypeProviderOutage,
+			wantKind: "http_529",
 		},
 		{
 			name:     "provider http 503",
 			err:      &TurnFailedError{Status: "failed", Body: `{"status":503,"message":"retry later"}`},
 			want:     true,
-			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantType: backendcapacity.ErrorTypeProviderOutage,
+			wantKind: "http_503",
 		},
 		{
 			name:     "thread start handshake timeout",
@@ -98,6 +107,10 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 		{
 			name: "invalid request",
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"type":"invalid_request_error"}}`},
+		},
+		{
+			name: "provider http 400",
+			err:  &TurnFailedError{Status: "failed", Body: `{"status":400,"message":"invalid request"}`},
 		},
 		{
 			name: "untyped quota prose with rate telemetry",

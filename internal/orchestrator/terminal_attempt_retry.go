@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -482,7 +483,7 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
 	errorClass := strings.TrimSpace(attempt.ErrorClass)
-	if errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == workerGitHubMonitorErrorClass || errorClass == workerGitHubTokenResolutionErrorClass {
+	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == workerGitHubMonitorErrorClass || errorClass == workerGitHubTokenResolutionErrorClass {
 		return false
 	}
 	if errorClass == githubRESTCapacityError {

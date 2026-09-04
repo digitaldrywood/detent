@@ -2059,6 +2059,55 @@ func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.
 			t.Fatalf("RecordUsageEvent() error = %v", err)
 		}
 	}
+	capacityAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:     "detent",
+		IssueID:       "issue-214",
+		Identifier:    "gopherguides/gopher-ai#214",
+		WorkerType:    "implementation",
+		AttemptNumber: 3,
+		StartedAt:     base.Add(5 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+	capacitySessionID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID: capacityAttemptID,
+		ProjectID:     "detent",
+		IssueID:       "issue-214",
+		Identifier:    "gopherguides/gopher-ai#214",
+		StartedAt:     base.Add(5 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, capacitySessionID, SessionFinish{
+		CompletedAt: base.Add(6 * time.Minute),
+		FinalState:  "failed",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+	if _, err := backend.RecordUsageEvent(ctx, UsageEvent{
+		ProjectID:   "detent",
+		SessionID:   capacitySessionID,
+		IssueID:     "issue-214",
+		Identifier:  "gopherguides/gopher-ai#214",
+		CostUSD:     50,
+		TotalTokens: 5_000,
+		StartedAt:   base.Add(5 * time.Minute),
+		FinishedAt:  base.Add(6 * time.Minute),
+		Outcome:     "failed",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(capacity) error = %v", err)
+	}
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+		AttemptID:     capacityAttemptID,
+		CompletedAt:   base.Add(6 * time.Minute),
+		Status:        WorkAttemptStatusTerminal,
+		TerminalState: WorkAttemptTerminalCapacity,
+		ErrorClass:    "backend_capacity",
+	}); err != nil {
+		t.Fatalf("CompleteWorkAttempt() error = %v", err)
+	}
 
 	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{
 		ProjectID: "detent",
@@ -2073,6 +2122,57 @@ func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.
 	}
 	if !spend.FirstSessionAt.Equal(base.Add(2*time.Minute)) || !spend.LastSessionAt.Equal(base.Add(4*time.Minute)) {
 		t.Fatalf("session range = %s..%s", spend.FirstSessionAt, spend.LastSessionAt)
+	}
+}
+
+func TestIssueSpendSinceExcludesOnlyCapacityAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		terminal WorkAttemptTerminalState
+		wantCost float64
+	}{
+		{terminal: WorkAttemptTerminalCapacity},
+		{terminal: WorkAttemptTerminalFailure, wantCost: 50},
+		{terminal: WorkAttemptTerminalSuccess, wantCost: 50},
+		{terminal: WorkAttemptTerminalTimedOut, wantCost: 50},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.terminal), func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			startedAt := time.Date(2026, 9, 3, 19, 0, 0, 0, time.UTC)
+			attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "detent", IssueID: "issue", WorkerType: "implementation", AttemptNumber: 1, StartedAt: startedAt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(ctx, SessionStart{WorkAttemptID: attemptID, ProjectID: "detent", IssueID: "issue", StartedAt: startedAt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: sessionID, CostUSD: 50, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Minute), Outcome: "failed"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: startedAt.Add(time.Minute), Status: WorkAttemptStatusTerminal, TerminalState: tt.terminal}); err != nil {
+				t.Fatal(err)
+			}
+			spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue", Since: startedAt.Add(-time.Second)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spend.CostUSD != tt.wantCost || spend.TotalTokens != int64(tt.wantCost*100) {
+				t.Fatalf("no-progress spend = %#v, want cost %.2f", spend, tt.wantCost)
+			}
+			costs, err := backend.BudgetCostEvents(ctx, BudgetCostQuery{ProjectIDs: []string{"detent"}, From: startedAt.Add(-time.Second), To: startedAt.Add(time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(costs) != 1 || costs[0].CostUSD != 50 {
+				t.Fatalf("capacity usage disappeared from cost reporting: %#v", costs)
+			}
+		})
 	}
 }
 

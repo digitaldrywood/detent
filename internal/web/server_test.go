@@ -308,6 +308,28 @@ func TestCapacityClearEndpointIsIdempotentWithoutOutages(t *testing.T) {
 	}
 }
 
+func TestCapacityClearEndpointAcceptsAsyncRequest(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/capacity/clear", strings.NewReader(url.Values{
+		"scope": {"codex"},
+	}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	if got := recorder.Body.String(); !strings.Contains(got, `"status":"requested"`) || !strings.Contains(got, `"requested":0`) {
+		t.Fatalf("body = %s", got)
+	}
+}
+
 func TestTrackerAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testing.T) {
 	t.Parallel()
 

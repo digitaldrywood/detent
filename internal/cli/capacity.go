@@ -15,10 +15,11 @@ import (
 )
 
 type capacityClearResult struct {
-	Status  string `json:"status"`
-	Project string `json:"project,omitempty"`
-	Scope   string `json:"scope,omitempty"`
-	Cleared int    `json:"cleared"`
+	Status    string `json:"status"`
+	Project   string `json:"project,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	Cleared   int    `json:"cleared,omitempty"`
+	Requested int    `json:"requested,omitempty"`
 }
 
 type dashboardAddress struct {
@@ -67,6 +68,10 @@ func newCapacityClearCommand(configPath *string, host *string, port *int, opts o
 				return err
 			}
 			return out.Write(func(writer io.Writer) error {
+				if result.Status == "requested" {
+					_, err := fmt.Fprintf(writer, "requested capacity clear for %d project(s)\n", result.Requested)
+					return err
+				}
 				_, err := fmt.Fprintf(writer, "cleared %d capacity outage(s)\n", result.Cleared)
 				return err
 			}, result)

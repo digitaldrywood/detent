@@ -131,6 +131,34 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 	}
 }
 
+func TestTerminalAttemptRetryableFailureExcludesBackendCapacity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		terminal      store.WorkAttemptTerminalState
+		errorClass    string
+		wantRetryable bool
+	}{
+		{name: "ordinary failure", terminal: store.WorkAttemptTerminalFailure, errorClass: workAttemptErrorRunner, wantRetryable: true},
+		{name: "provider capacity", terminal: store.WorkAttemptTerminalCapacity, errorClass: backendcapacity.ErrorClass},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := terminalAttemptRetryableFailure(telemetry.WorkAttempt{
+				TerminalState: string(tt.terminal),
+				ErrorClass:    tt.errorClass,
+			})
+			if got != tt.wantRetryable {
+				t.Fatalf("terminalAttemptRetryableFailure() = %v, want %v", got, tt.wantRetryable)
+			}
+		})
+	}
+}
+
 func TestHandleRunResultPersistsPublishedPushCommandEvidence(t *testing.T) {
 	t.Parallel()
 

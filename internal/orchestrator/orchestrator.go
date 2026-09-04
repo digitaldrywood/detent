@@ -67,10 +67,11 @@ const (
 )
 
 var (
-	ErrMissingConnector      = errors.New("orchestrator connector is required")
-	ErrSchedulingClaimLost   = errors.New("scheduling claim lost")
-	ErrSchedulingUnavailable = errors.New("scheduling source unavailable")
-	ErrStopped               = errors.New("orchestrator stopped")
+	ErrMissingConnector       = errors.New("orchestrator connector is required")
+	ErrSchedulingClaimLost    = errors.New("scheduling claim lost")
+	ErrSchedulingUnavailable  = errors.New("scheduling source unavailable")
+	ErrStopped                = errors.New("orchestrator stopped")
+	ErrCapacityClearQueueFull = errors.New("capacity clear already pending")
 )
 
 type Config struct {
@@ -690,7 +691,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		configUpdates:           make(chan configUpdateRequest),
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
-		capacityClearRequests:   make(chan capacityClearRequest),
+		capacityClearRequests:   make(chan capacityClearRequest, 1),
 		credentialChanges:       make(chan backendCredentialChangeRequest),
 		trackerClearRequests:    make(chan trackerClearRequest),
 		forgeClearRequests:      make(chan forgeClearRequest),
@@ -786,7 +787,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.finishTick(&state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
-			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
+			cleared := o.clearBackendCapacity(&state, request.scope, request.at)
+			if request.reply != nil {
+				request.reply <- capacityClearReply{cleared: cleared}
+			}
 		case request := <-o.credentialChanges:
 			scheduled := o.scheduleBackendCredentialProbe(&state, request.scope, request.at)
 			request.reply <- scheduled
@@ -901,6 +905,33 @@ func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) (
 		return nil, ErrStopped
 	case reply := <-request.reply:
 		return reply.cleared, nil
+	}
+}
+
+func (o *Orchestrator) RequestBackendCapacityClear(ctx context.Context, scope string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := capacityClearRequest{
+		scope: strings.TrimSpace(scope),
+		at:    o.clockNow(),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.capacityClearRequests <- request:
+		return nil
+	default:
+		return ErrCapacityClearQueueFull
 	}
 }
 
