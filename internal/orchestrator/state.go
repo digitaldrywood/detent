@@ -62,6 +62,8 @@ type State struct {
 	ManualRefresh            telemetry.RefreshAttempt
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
+	CleanupFailures          map[string]string
+	CleanupFailureAt         time.Time
 	RecentEvents             []telemetry.ActivityEvent
 	Auth                     connector.AuthHealth
 	StatusDrift              connector.StatusDrift
@@ -409,6 +411,7 @@ func newState(cfg Config) State {
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
+		CleanupFailures:          map[string]string{},
 		laneEntries:              map[string]time.Time{},
 		laneProvenance:           map[string]provenance.Attribution{},
 		planRework:               map[string]struct{}{},
@@ -454,6 +457,8 @@ func (s State) clone() State {
 		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
+		CleanupFailures:          maps.Clone(s.CleanupFailures),
+		CleanupFailureAt:         s.CleanupFailureAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
 		Auth:                     s.Auth,
 		StatusDrift:              cloneStatusDrift(s.StatusDrift),

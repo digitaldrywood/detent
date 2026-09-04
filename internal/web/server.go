@@ -1180,6 +1180,7 @@ func (s *Server) health(c echo.Context) error {
 	ciUnavailable := []telemetry.CICondition{}
 	stalenessWarnings := []telemetry.StalenessWarning{}
 	strandedActiveIssues := []telemetry.StrandedIssue{}
+	cleanupFaults := []telemetry.CleanupFault{}
 	dispatch := telemetry.DispatchStatus{}
 	dispatchStalls := []telemetry.DispatchStatus{}
 	notificationFailures := []healthnotify.Failure{}
@@ -1221,6 +1222,7 @@ func (s *Server) health(c echo.Context) error {
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
 			stalenessWarnings = append(stalenessWarnings, snapshot.StalenessWarnings...)
 			strandedActiveIssues = append(strandedActiveIssues, snapshot.StrandedActiveIssues...)
+			cleanupFaults = append(cleanupFaults, snapshot.CleanupFaults...)
 			dispatch = snapshot.Dispatch
 			dispatchStalls = append(dispatchStalls, snapshot.DispatchStalls...)
 			if snapshot.Shutdown.Draining {
@@ -1268,7 +1270,7 @@ func (s *Server) health(c echo.Context) error {
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.DispatchHeld || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.DispatchHeld || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1305,6 +1307,7 @@ func (s *Server) health(c echo.Context) error {
 		DispatchLoops:          dispatchLoops,
 		StalenessWarnings:      stalenessWarnings,
 		StrandedIssues:         strandedActiveIssues,
+		CleanupFaults:          cleanupFaults,
 		Dispatch:               dispatch,
 		DispatchStalls:         dispatchStalls,
 		NotificationFailures:   notificationFailures,
@@ -1791,6 +1794,7 @@ type healthResponse struct {
 	DispatchLoops          []telemetry.DispatchLoop         `json:"dispatch_loops,omitempty"`
 	StalenessWarnings      []telemetry.StalenessWarning     `json:"staleness_warnings,omitempty"`
 	StrandedIssues         []telemetry.StrandedIssue        `json:"stranded_active_issues,omitempty"`
+	CleanupFaults          []telemetry.CleanupFault         `json:"workspace_cleanup_failures,omitempty"`
 	Dispatch               telemetry.DispatchStatus         `json:"dispatch"`
 	DispatchStalls         []telemetry.DispatchStatus       `json:"dispatch_stalls,omitempty"`
 	NotificationFailures   []healthnotify.Failure           `json:"health_notification_failures,omitempty"`

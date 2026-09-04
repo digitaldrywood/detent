@@ -127,6 +127,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
 		StrandedActiveIssues:    strandedActiveIssues,
+		CleanupFaults:           workspaceCleanupFailureSnapshots(s),
 		OverloadRetriesLastHour: overloadRetriesLastHour(s.WorkAttempts, now),
 		Tokens:                  tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{

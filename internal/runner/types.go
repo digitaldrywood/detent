@@ -261,6 +261,10 @@ type WorkspaceReaper interface {
 	ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error)
 }
 
+type WorkspaceReconciler interface {
+	ReconcileWorkspaces(context.Context, []connector.Issue) (WorkspaceReconcileResult, error)
+}
+
 type DailyBudgetStatusProvider interface {
 	DailyBudgetStatus(context.Context, time.Time) (DailyBudgetStatus, bool, error)
 }
@@ -282,9 +286,24 @@ type IssueBudgetStatus struct {
 }
 
 type WorkspaceReapResult struct {
+	Path      string
 	Worktrees int
 	Branches  int
 	Processes int
+}
+
+type WorkspaceCleanupFailure struct {
+	Path  string
+	Error string
+}
+
+type WorkspaceReconcileResult struct {
+	Removed           int
+	ActiveSkipped     int
+	RegisteredSkipped int
+	UnownedSkipped    int
+	CompletedPaths    []string
+	Failures          []WorkspaceCleanupFailure
 }
 
 type AgentBackend interface {

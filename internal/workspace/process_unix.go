@@ -50,7 +50,6 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
 }
 
-type workspaceProcessScanner func(context.Context, string) ([]int, error)
 type workspaceProcessSignaler func(int, syscall.Signal) error
 type workspaceProcessWaiter func(context.Context, string, time.Duration, workspaceProcessScanner) ([]int, error)
 
@@ -103,26 +102,6 @@ func reapProcessesWithWait(
 		)
 	}
 	return len(reaped), errors.Join(termErr, killErr)
-}
-
-func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
-	pids, err := scan(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	owned := make([]int, 0, len(pids))
-	seen := make(map[int]struct{}, len(pids))
-	for _, pid := range pids {
-		if pid <= 0 || pid == os.Getpid() {
-			continue
-		}
-		if _, ok := seen[pid]; ok {
-			continue
-		}
-		seen[pid] = struct{}{}
-		owned = append(owned, pid)
-	}
-	return owned, nil
 }
 
 func signalWorkspaceProcesses(

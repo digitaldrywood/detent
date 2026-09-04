@@ -496,6 +496,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		Dispatch:           snapshot.Dispatch,
 		DispatchStalls:     append([]telemetry.DispatchStatus(nil), snapshot.DispatchStalls...),
 		StalenessWarnings:  append([]telemetry.StalenessWarning(nil), snapshot.StalenessWarnings...),
+		CleanupFaults:      append([]telemetry.CleanupFault(nil), snapshot.CleanupFaults...),
 		Budget:             budgetResponse(snapshot.Budget),
 	}
 }
@@ -1467,6 +1468,7 @@ type stateAPIResponse struct {
 	Dispatch           telemetry.DispatchStatus     `json:"dispatch"`
 	DispatchStalls     []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
 	StalenessWarnings  []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
+	CleanupFaults      []telemetry.CleanupFault     `json:"workspace_cleanup_failures,omitempty"`
 	Budget             budgetAPIResponse            `json:"budget"`
 }
 

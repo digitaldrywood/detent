@@ -55,6 +55,7 @@ type Snapshot struct {
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
 	StalenessWarnings       []StalenessWarning  `json:"staleness_warnings,omitempty"`
 	StrandedActiveIssues    []StrandedIssue     `json:"stranded_active_issues,omitempty"`
+	CleanupFaults           []CleanupFault      `json:"workspace_cleanup_failures,omitempty"`
 	AdmissionProposals      []AdmissionProposal `json:"admission_proposals_awaiting_decision,omitempty"`
 	OverloadRetriesLastHour int                 `json:"overload_retries_last_hour,omitempty"`
 	Tokens                  Tokens              `json:"tokens"`
@@ -124,6 +125,13 @@ type OrphanedAgentProcess struct {
 	RSSBytes     int64     `json:"rss_bytes"`
 	ProcessCount int       `json:"process_count"`
 	FinalState   string    `json:"final_state,omitempty"`
+}
+
+type CleanupFault struct {
+	ProjectID         string    `json:"project_id,omitempty"`
+	AffectedPathCount int       `json:"affected_path_count"`
+	LastError         string    `json:"last_error"`
+	ObservedAt        time.Time `json:"observed_at"`
 }
 
 func (s Snapshot) AgeSeconds(now time.Time) int64 {

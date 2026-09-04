@@ -6939,6 +6939,40 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	}
 }
 
+func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	observedAt := time.Date(2026, 9, 4, 15, 30, 0, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: observedAt,
+		CleanupFaults: []telemetry.CleanupFault{{
+			ProjectID:         "detent",
+			AffectedPathCount: 3,
+			LastError:         "permission denied",
+			ObservedAt:        observedAt,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	for _, path := range []string{"/api/v1/state", "/health"} {
+		response := requestJSON(t, server, http.MethodGet, path, http.StatusOK)
+		failures := response["workspace_cleanup_failures"].([]any)
+		if len(failures) != 1 || failures[0].(map[string]any)["affected_path_count"] != float64(3) {
+			t.Fatalf("%s workspace cleanup failures = %#v", path, failures)
+		}
+	}
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if health["status"] != "needs_attention" {
+		t.Fatalf("health status = %v, want needs_attention", health["status"])
+	}
+}
+
 func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 	t.Parallel()
 

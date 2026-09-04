@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,23 +24,17 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 	if o.reaper == nil {
 		return
 	}
+	due := state.LastWorkspaceCleanupAt.IsZero() || !now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval))
 
 	if ids := workspaceCleanupIssueIDs(state); len(ids) > 0 {
 		ok, cleaned := o.reapWorkspaceIssueIDs(ctx, state, ids, now)
-		if ok && cleaned {
+		if ok && cleaned && !due {
 			state.LastWorkspaceCleanupAt = now
 			return
 		}
 	}
 
-	states := cleanupFetchStates(o.cfg)
-	if len(states) == 0 {
-		return
-	}
-	if state.LastWorkspaceCleanupAt.IsZero() || !now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
-		if o.reapWorkspaceStates(ctx, state, states, now) {
-			state.LastWorkspaceCleanupAt = now
-		}
+	if due {
 		return
 	}
 
@@ -48,6 +43,106 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		return
 	}
 	o.reapWorkspaceStates(ctx, state, terminalStates, now)
+}
+
+func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state *State, now time.Time) {
+	if o.reaper == nil {
+		return
+	}
+	if !state.LastWorkspaceCleanupAt.IsZero() && now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
+		return
+	}
+	states := cleanupFetchStates(o.cfg)
+	swept := len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
+	reconciled := o.reconcileResidualWorkspaces(ctx, state, now)
+	if swept && reconciled {
+		state.LastWorkspaceCleanupAt = now
+	}
+}
+
+func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *State, now time.Time) bool {
+	reconciler, ok := o.reaper.(WorkspaceReconciler)
+	if !ok {
+		return true
+	}
+	result, err := reconciler.ReconcileWorkspaces(ctx, activeWorkspaceIssues(state, o.cfg.TerminalStates))
+	if state.CleanupFailures == nil {
+		state.CleanupFailures = map[string]string{}
+	}
+	for _, path := range result.CompletedPaths {
+		delete(state.CleanupFailures, strings.TrimSpace(path))
+	}
+	for _, failure := range result.Failures {
+		if path := strings.TrimSpace(failure.Path); path != "" {
+			state.CleanupFailures[path] = strings.TrimSpace(failure.Error)
+		}
+	}
+	if len(result.Failures) > 0 {
+		state.CleanupFailureAt = cleanupEventAt(now)
+	}
+	if err != nil {
+		o.logger.Warn(
+			"workspace residual reconciliation failed",
+			slog.Int("affected_path_count", len(state.CleanupFailures)),
+			slog.Int("removed", result.Removed),
+			slog.Int("active_skipped", result.ActiveSkipped),
+			slog.Int("registered_skipped", result.RegisteredSkipped),
+			slog.Int("unowned_skipped", result.UnownedSkipped),
+			slog.Any("error", err),
+		)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_residual_cleanup_failed",
+			Message: fmt.Sprintf("workspace residual cleanup failed affected_paths=%d: %v", len(state.CleanupFailures), err),
+		})
+		return false
+	}
+	if result.Removed > 0 {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_residual_cleanup_succeeded",
+			Message: fmt.Sprintf("workspace residual cleanup succeeded removed=%d active_skipped=%d", result.Removed, result.ActiveSkipped),
+		})
+	}
+	return true
+}
+
+func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Issue {
+	if state == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	active := []connector.Issue{}
+	appendIssue := func(issue connector.Issue) {
+		if strings.TrimSpace(issue.Identifier) == "" || workspaceIssueTerminal(issue, terminalStates) {
+			return
+		}
+		key := strings.TrimSpace(issue.ID)
+		if key == "" {
+			key = strings.TrimSpace(issue.Identifier)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		active = append(active, issue)
+	}
+	for _, issue := range state.BoardIssues {
+		appendIssue(issue)
+	}
+	for _, issue := range state.Pipeline {
+		appendIssue(issue)
+	}
+	for _, running := range state.Running {
+		appendIssue(running.Issue)
+	}
+	for _, retry := range state.Retry {
+		appendIssue(retry.Issue)
+	}
+	for _, blocked := range state.Blocked {
+		appendIssue(blocked.Issue)
+	}
+	return active
 }
 
 func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, issueIDs []string, now time.Time) (bool, bool) {
@@ -286,6 +381,11 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		if errors.As(err, &diagnostic) {
 			if path := strings.TrimSpace(diagnostic.WorkspacePath()); path != "" {
 				args = append(args, slog.String("workspace_path", path))
+				if state.CleanupFailures == nil {
+					state.CleanupFailures = map[string]string{}
+				}
+				state.CleanupFailures[path] = err.Error()
+				state.CleanupFailureAt = cleanupEventAt(now)
 			}
 			if remediation := strings.TrimSpace(diagnostic.Remediation()); remediation != "" {
 				args = append(args, slog.String("remediation", remediation))
@@ -298,6 +398,9 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 			Message: workspaceReapFailedMessage(issue, reason, err),
 		})
 		return false
+	}
+	if path := strings.TrimSpace(result.Path); path != "" {
+		delete(state.CleanupFailures, path)
 	}
 	state.ReapedWorkspaces[issue.ID] = cleanupEventAt(now)
 	recordStateEvent(state, telemetry.ActivityEvent{
@@ -315,6 +418,22 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		slog.Int("processes", result.Processes),
 	)
 	return true
+}
+
+func workspaceCleanupFailureSnapshots(state State) []telemetry.CleanupFault {
+	if len(state.CleanupFailures) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(state.CleanupFailures))
+	for path := range state.CleanupFailures {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return []telemetry.CleanupFault{{
+		AffectedPathCount: len(paths),
+		LastError:         state.CleanupFailures[paths[0]],
+		ObservedAt:        state.CleanupFailureAt,
+	}}
 }
 
 func cleanupEventAt(now time.Time) time.Time {
