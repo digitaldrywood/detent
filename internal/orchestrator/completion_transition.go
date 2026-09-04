@@ -39,6 +39,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
+				result.transitioned[issueID] = struct{}{}
 				continue
 			}
 		}

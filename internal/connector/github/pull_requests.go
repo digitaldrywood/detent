@@ -1243,19 +1243,12 @@ func applyPullRequestStatus(pullRequest *pullRequestNode, status pullRequestStat
 	}}}
 	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: clonePullRequestReviews(status.reviews.CurrentHead)}
 	pullRequest.CodexReviews = clonePullRequestCodexReviews(status.reviews)
-	pullRequest.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), status.unresolvedReviewThreads...)
 }
 
 func (c *Connector) HydratePullRequestReviewThreads(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	repo, number, ok := hydratedPullRequestRef(issue)
 	if !ok || issue.PullRequest == nil || normalizeStateName(issue.PullRequest.State) != "open" {
 		return issue, nil
-	}
-	if c.pullRequests != nil {
-		status, found := c.pullRequests.Get(repo, number, issue.PullRequest.HeadSHA)
-		if found && status.reviewThreadsHydrated {
-			return issueWithPullRequestReviewThreads(issue, status.unresolvedReviewThreads), nil
-		}
 	}
 	threads, err := c.fetchPullRequestReviewThreads(ctx, repo, number, issue.PullRequest.HeadSHA)
 	if err != nil {
@@ -1268,13 +1261,6 @@ func (c *Connector) HydratePullRequestReviewThreads(ctx context.Context, issue c
 		return issue, err
 	}
 	issue = issueWithPullRequestReviewThreads(issue, threads)
-	if c.pullRequests != nil {
-		if status, found := c.pullRequests.Get(repo, number, issue.PullRequest.HeadSHA); found {
-			status.unresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), threads...)
-			status.reviewThreadsHydrated = true
-			c.pullRequests.Set(repo, number, issue.PullRequest.HeadSHA, status)
-		}
-	}
 	return issue, nil
 }
 

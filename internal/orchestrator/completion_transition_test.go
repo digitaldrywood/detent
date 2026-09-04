@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -545,11 +546,65 @@ func TestTransitionCompletedActiveIssuesWaitsWhenReviewThreadsUnavailable(t *tes
 
 	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
 
-	if len(result.transitioned) != 0 || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
-		t.Fatalf("result = %#v updates = %#v comments = %#v, want no transition", result, tracker.updates, tracker.comments)
+	if _, ok := result.transitioned[issue.ID]; !ok || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+		t.Fatalf("result = %#v updates = %#v comments = %#v, want parked without backend transition", result, tracker.updates, tracker.comments)
 	}
 	if got := state.Completed[issue.ID].Issue.State; got != "In Progress" {
 		t.Fatalf("Completed issue state = %q, want In Progress", got)
+	}
+}
+
+func TestHandleRunResultParksCompletedRunWhenReviewThreadsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 15, 3, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.PullRequest.Number = 2104
+	issue.PullRequest.HeadSHA = "head-sha"
+	issue.PullRequest.CIStatus = "pass"
+	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRateLimited
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:     issue,
+		Attempt:   1,
+		StartedAt: now.Add(-time.Minute),
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result: runpkg.RunResult{
+			FinalState:         FinalStateCompleted,
+			PullRequestUpdated: true,
+		},
+	})
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present while review-thread hydration is pending", issue.ID)
+	}
+	if _, ok := state.Completed[issue.ID]; !ok {
+		t.Fatalf("Completed[%q] missing while review-thread hydration is pending", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing while review-thread hydration is pending", issue.ID)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no backend transition", tracker.updates)
+	}
+	if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
+		t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
 	}
 }
 

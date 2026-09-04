@@ -5131,8 +5131,13 @@ func TestConnectorFetchPullRequestReviewThreads(t *testing.T) {
 	}
 }
 
-func TestConnectorHydratePullRequestReviewThreadsCachesByHead(t *testing.T) {
+func TestConnectorHydratePullRequestReviewThreadsRefreshesMutableState(t *testing.T) {
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"headRefOid":"head-one","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}`,
+		},
 		{
 			method: http.MethodPost,
 			path:   "/",
@@ -5166,9 +5171,12 @@ func TestConnectorHydratePullRequestReviewThreadsCachesByHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second HydratePullRequestReviewThreads() error = %v", err)
 	}
+	if len(first.PullRequest.UnresolvedReviewThreads) != 0 {
+		t.Fatalf("first unresolved review threads = %#v, want none", first.PullRequest.UnresolvedReviewThreads)
+	}
 	want := []connector.PullRequestReviewThread{{Path: "internal/orchestrator/autopromote.go", Line: 181}}
-	if !reflect.DeepEqual(first.PullRequest.UnresolvedReviewThreads, want) || !reflect.DeepEqual(second.PullRequest.UnresolvedReviewThreads, want) {
-		t.Fatalf("hydrated review threads = first %#v second %#v, want %#v", first.PullRequest.UnresolvedReviewThreads, second.PullRequest.UnresolvedReviewThreads, want)
+	if !reflect.DeepEqual(second.PullRequest.UnresolvedReviewThreads, want) {
+		t.Fatalf("second unresolved review threads = %#v, want %#v", second.PullRequest.UnresolvedReviewThreads, want)
 	}
 
 	changedHead := issue
@@ -5182,12 +5190,12 @@ func TestConnectorHydratePullRequestReviewThreadsCachesByHead(t *testing.T) {
 	if len(resolved.PullRequest.UnresolvedReviewThreads) != 0 {
 		t.Fatalf("changed-head unresolved review threads = %#v, want none", resolved.PullRequest.UnresolvedReviewThreads)
 	}
-	if got := len(server.requests()); got != 2 {
-		t.Fatalf("request count = %d, want one query per head", got)
+	if got := len(server.requests()); got != 3 {
+		t.Fatalf("request count = %d, want one fresh query per hydration", got)
 	}
 	for _, headSHA := range []string{"head-one", "head-two"} {
 		status, ok := c.pullRequests.Get(repo, 42, headSHA)
-		if !ok || status.ci.State != "SUCCESS" || !status.reviewThreadsHydrated {
+		if !ok || status.ci.State != "SUCCESS" {
 			t.Fatalf("cached status for %s = %#v, %t", headSHA, status, ok)
 		}
 	}
