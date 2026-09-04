@@ -6883,13 +6883,34 @@ func TestStateAPICachesEnrichmentQueries(t *testing.T) {
 				t.Fatalf("NewServer() error = %v", err)
 			}
 
-			requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
-			requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
-			if got := backend.workflowMetricsCalls.Load(); got != 6 {
-				t.Fatalf("WorkflowMetricsReport() calls = %d, want 6", got)
+			cold := requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
+			if enrichment := cold["enrichment"].(map[string]any); enrichment["status"] != "omitted" {
+				t.Fatalf("cold enrichment = %#v, want omitted", enrichment)
 			}
-			if got := backend.budgetCostCalls.Load(); got != 1 {
-				t.Fatalf("BudgetCostEvents() calls = %d, want 1", got)
+			if got := backend.workflowMetricsCalls.Load(); got != 0 {
+				t.Fatalf("cold WorkflowMetricsReport() calls = %d, want 0", got)
+			}
+			if got := backend.budgetCostCalls.Load(); got != 0 {
+				t.Fatalf("cold BudgetCostEvents() calls = %d, want 0", got)
+			}
+
+			requestDashboardEnrichment(t, server)
+			workflowCalls := backend.workflowMetricsCalls.Load()
+			budgetCalls := backend.budgetCostCalls.Load()
+			if workflowCalls == 0 || budgetCalls == 0 {
+				t.Fatalf("dashboard enrichment calls = workflow %d, budget %d", workflowCalls, budgetCalls)
+			}
+			for range 2 {
+				cached := requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
+				if enrichment := cached["enrichment"].(map[string]any); enrichment["status"] != "ready" {
+					t.Fatalf("cached enrichment = %#v, want ready", enrichment)
+				}
+			}
+			if got := backend.workflowMetricsCalls.Load(); got != workflowCalls {
+				t.Fatalf("cached WorkflowMetricsReport() calls = %d, want %d", got, workflowCalls)
+			}
+			if got := backend.budgetCostCalls.Load(); got != budgetCalls {
+				t.Fatalf("cached BudgetCostEvents() calls = %d, want %d", got, budgetCalls)
 			}
 		})
 	}
@@ -8240,6 +8261,214 @@ func TestAPIStateRespondsDuringDrainWithoutStoreEnrichment(t *testing.T) {
 	}
 }
 
+func TestProjectStateAPIRespondsDuringConcurrentRefreshAndStoreEnrichment(t *testing.T) {
+	t.Parallel()
+
+	const requestDeadline = 500 * time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var logs bytes.Buffer
+	deps := testDeps(t)
+	deps.Store = storeProbe{
+		cycleTimeReport: func(ctx context.Context) (store.CycleTimeReport, error) {
+			startedOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+				return store.CycleTimeReport{}, nil
+			case <-ctx.Done():
+				return store.CycleTimeReport{}, ctx.Err()
+			}
+		},
+	}
+	generatedAt := time.Date(2026, 9, 4, 15, 4, 5, 0, time.UTC)
+	publish := func(index int) {
+		t.Helper()
+		if err := deps.Hub.Publish(telemetry.Snapshot{
+			GeneratedAt: generatedAt.Add(time.Duration(index) * time.Second),
+			Projects: []telemetry.ProjectSnapshot{{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			}},
+		}); err != nil {
+			t.Fatalf("Publish(%d) error = %v", index, err)
+		}
+	}
+	publish(0)
+
+	server, err := web.NewServer(web.Config{
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	enrichmentResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/reports", nil))
+		enrichmentResult <- recorder
+	}()
+	select {
+	case <-started:
+	case <-time.After(requestDeadline):
+		t.Fatal("project state enrichment did not reach the blocked store query")
+	}
+
+	for index := 1; index <= 8; index++ {
+		publish(index)
+		result := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			result <- projectStateRequest(server, context.Background())
+		}()
+		select {
+		case recorder := <-result:
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("request %d status = %d, want %d; body = %s", index, recorder.Code, http.StatusOK, recorder.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("request %d Unmarshal() error = %v", index, err)
+			}
+			if payload["generated_at"] != generatedAt.Add(time.Duration(index)*time.Second).Format(time.RFC3339) {
+				t.Fatalf("request %d generated_at = %#v", index, payload["generated_at"])
+			}
+			enrichment, ok := payload["enrichment"].(map[string]any)
+			if !ok || enrichment["status"] != "pending" {
+				t.Fatalf("request %d enrichment = %#v, want pending", index, payload["enrichment"])
+			}
+		case <-time.After(requestDeadline):
+			t.Fatalf("request %d exceeded %s while enrichment was blocked", index, requestDeadline)
+		}
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceled := projectStateRequest(server, canceledCtx)
+	if canceled.Code != http.StatusOK {
+		t.Fatalf("canceled request status = %d, want %d; body = %s", canceled.Code, http.StatusOK, canceled.Body.String())
+	}
+	if strings.Contains(logs.String(), "context canceled") {
+		t.Fatalf("request cancellation reached enrichment queries:\n%s", logs.String())
+	}
+
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	stateEndpoints, ok := health["state_endpoints"].(map[string]any)
+	if !ok {
+		t.Fatalf("state_endpoints = %#v", health["state_endpoints"])
+	}
+	projectEndpoint, ok := stateEndpoints["project"].(map[string]any)
+	if !ok || projectEndpoint["request_count"].(float64) < 9 || projectEndpoint["target_latency_ms"] != float64(500) {
+		t.Fatalf("project state endpoint telemetry = %#v", stateEndpoints["project"])
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case recorder := <-enrichmentResult:
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("enrichment request status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+	case <-time.After(requestDeadline):
+		t.Fatal("dashboard enrichment request did not complete after store release")
+	}
+}
+
+func TestHealthReportsStateEndpointLatencyAndCancellation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		path               string
+		endpoint           string
+		requestContext     func() (context.Context, context.CancelFunc)
+		wantOutcome        string
+		wantEndpointStatus string
+		wantHealthStatus   string
+		wantTimeouts       float64
+		wantCancellations  float64
+	}{
+		{
+			name:     "fleet cancellation",
+			path:     "/api/v1/state",
+			endpoint: "fleet",
+			requestContext: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			wantOutcome:        "canceled",
+			wantEndpointStatus: "ok",
+			wantHealthStatus:   "ok",
+			wantCancellations:  1,
+		},
+		{
+			name:     "project timeout",
+			path:     "/api/v1/projects/detent/state",
+			endpoint: "project",
+			requestContext: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			wantOutcome:        "timeout",
+			wantEndpointStatus: "degraded",
+			wantHealthStatus:   "needs_attention",
+			wantTimeouts:       1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 9, 4, 15, 4, 5, 0, time.UTC),
+				Projects: []telemetry.ProjectSnapshot{{
+					Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			ctx, cancel := tt.requestContext()
+			defer cancel()
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, tt.path, nil)
+			server.Handler().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("state status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+			}
+
+			health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			if health["status"] != tt.wantHealthStatus || health["ready"] != true || health["lifecycle"] != "ready" {
+				t.Fatalf("health summary = %#v, want ready %s", health, tt.wantHealthStatus)
+			}
+			endpoints := health["state_endpoints"].(map[string]any)
+			endpoint := endpoints[tt.endpoint].(map[string]any)
+			if endpoint["status"] != tt.wantEndpointStatus || endpoint["last_outcome"] != tt.wantOutcome {
+				t.Fatalf("%s endpoint = %#v", tt.endpoint, endpoint)
+			}
+			if endpoint["request_count"] != float64(1) || endpoint["target_latency_ms"] != float64(500) {
+				t.Fatalf("%s endpoint counts = %#v", tt.endpoint, endpoint)
+			}
+			if endpoint["timeout_count"] != tt.wantTimeouts || endpoint["canceled_request_count"] != tt.wantCancellations {
+				t.Fatalf("%s endpoint termination counts = %#v", tt.endpoint, endpoint)
+			}
+		})
+	}
+}
+
+func projectStateRequest(server *web.Server, ctx context.Context) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/projects/detent/state", nil)
+	server.Handler().ServeHTTP(recorder, request)
+	return recorder
+}
+
 func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 	t.Parallel()
 
@@ -9472,7 +9701,7 @@ func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {
 	}
 }
 
-func TestSnapshotEnrichmentDoesNotCacheCanceledContext(t *testing.T) {
+func TestStateRequestCancellationDoesNotReachSnapshotEnrichment(t *testing.T) {
 	t.Parallel()
 
 	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -9506,16 +9735,20 @@ func TestSnapshotEnrichmentDoesNotCacheCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/state", nil)
 	server.Handler().ServeHTTP(rec, req)
+	if got := budgetCalls.Load(); got != 0 {
+		t.Fatalf("BudgetCostEvents calls after canceled state request = %d, want 0", got)
+	}
 
+	requestDashboardEnrichment(t, server)
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	budget := state["budget"].(map[string]any)
 	if reason, ok := budget["degraded_reason"]; ok {
 		t.Fatalf("budget degraded_reason = %#v, want omitted", reason)
 	}
-	if got := budgetCalls.Load(); got < 2 {
-		t.Fatalf("BudgetCostEvents calls = %d, want canceled and healthy calls", got)
+	if got := budgetCalls.Load(); got != 2 {
+		t.Fatalf("BudgetCostEvents calls = %d, want snapshot and project dashboard enrichment calls", got)
 	}
 }
 
@@ -10568,6 +10801,7 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestDashboardEnrichment(t, server)
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	budget := state["budget"].(map[string]any)
 	if budget["enabled"] != true || budget["today_spend_usd"] != float64(3.5) || budget["projected_spend_usd"] != float64(7) {
@@ -10916,6 +11150,7 @@ func TestServerSurfacesFleetSpendWhenBudgetCapsAreDisabled(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestDashboardEnrichment(t, server)
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	budgetState := state["budget"].(map[string]any)
 	if budgetState["enabled"] != false || budgetState["today_spend_usd"] != float64(3.22) {
@@ -10991,6 +11226,7 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 				t.Fatalf("NewServer() error = %v", err)
 			}
 
+			requestDashboardEnrichment(t, server)
 			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 			budget := state["budget"].(map[string]any)
 			if tt.wantReason == "" {
@@ -11368,6 +11604,7 @@ func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestDashboardEnrichment(t, server)
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	window := workflowMetricsWindow(t, state, "24h")
 
@@ -11436,6 +11673,7 @@ func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestDashboardEnrichment(t, server)
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
@@ -11489,7 +11727,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	requestDashboardEnrichment(t, server)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		"SQLite history is empty.",
@@ -11525,7 +11763,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	requestDashboardEnrichment(t, server)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		"Lane trends",
@@ -11571,6 +11809,7 @@ func TestProjectDiagnosticsRendersWorkflowFlowEfficiencyCharts(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestDashboardEnrichment(t, server)
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	window := workflowMetricsWindow(t, state, "24h")
 	inProgress := workflowMetricLane(t, window, "In Progress")
@@ -12463,6 +12702,16 @@ func usageBucket(t *testing.T, rows []any, bucket string) map[string]any {
 	}
 	t.Fatalf("missing bucket %q in %#v", bucket, rows)
 	return nil
+}
+
+func requestDashboardEnrichment(t *testing.T, server *web.Server) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/reports", nil)
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /reports status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
 }
 
 func requestJSON(t *testing.T, server *web.Server, method string, path string, wantStatus int) map[string]any {

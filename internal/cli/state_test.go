@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -212,7 +213,7 @@ func TestStateCommandOutput(t *testing.T) {
 		wantJSONBuild bool
 	}{
 		{name: "JSON projection", args: []string{"--project", "detent"}, wantJSONBuild: true},
-		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Running: 2", "Ready: 3", "Waiting: 4", "Blocked: 1", "Memory PSI some avg60: 0% / 10% threshold (admitting)", "I/O PSI full avg10: 63.64% / 5% threshold (limited to 1 agent for 5m0s)", "CPU PSI some avg10: 91.2% / 80% threshold (holding dispatch)", "Truncated: false"}},
+		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Enrichment status: ready", "Enrichment completed snapshot: 2026-08-08T03:00:00Z", "Running: 2", "Ready: 3", "Waiting: 4", "Blocked: 1", "Memory PSI some avg60: 0% / 10% threshold (admitting)", "I/O PSI full avg10: 63.64% / 5% threshold (limited to 1 agent for 5m0s)", "CPU PSI some avg10: 91.2% / 80% threshold (holding dispatch)", "Truncated: false"}},
 	}
 
 	for _, tt := range tests {
@@ -269,7 +270,7 @@ func TestStateCommandOutput(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &object); err != nil {
 				t.Fatalf("Unmarshal() error = %v; stdout = %s", err, stdout.String())
 			}
-			for _, key := range []string{"generated_at", "refresh", "running", "io_pressure", "cpu_pressure", "truncation"} {
+			for _, key := range []string{"generated_at", "refresh", "enrichment", "running", "io_pressure", "cpu_pressure", "truncation"} {
 				if _, ok := object[key]; !ok {
 					t.Fatalf("JSON output missing %q: %s", key, stdout.String())
 				}
@@ -281,6 +282,56 @@ func TestStateCommandOutput(t *testing.T) {
 				}
 				if instance["version"] != "v1.3.0" || instance["commit"] != "abcdef123456" {
 					t.Fatalf("instance = %#v, want running build", instance)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteStatePrettyReportsEnrichment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		enrichment map[string]any
+		degraded   bool
+		want       []string
+	}{
+		{
+			name:       "ready",
+			enrichment: map[string]any{"status": "ready", "completed_snapshot_generated_at": "2026-08-08T03:00:00Z"},
+			want:       []string{"Enrichment status: ready", "Enrichment completed snapshot: 2026-08-08T03:00:00Z"},
+		},
+		{
+			name:       "pending",
+			enrichment: map[string]any{"status": "pending", "completed_snapshot_generated_at": "2026-08-08T02:59:00Z", "degraded_reason": "refresh in progress"},
+			degraded:   true,
+			want:       []string{"Enrichment status: pending", "Enrichment completed snapshot: 2026-08-08T02:59:00Z", "Enrichment reason: refresh in progress"},
+		},
+		{
+			name:       "omitted",
+			enrichment: map[string]any{"status": "omitted", "degraded_reason": "no completed enrichment available"},
+			degraded:   true,
+			want:       []string{"Enrichment status: omitted", "Enrichment reason: no completed enrichment available"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := DashboardState{payload: map[string]any{
+				"generated_at": "2026-08-08T03:00:00Z",
+				"status":       "running",
+				"enrichment":   tt.enrichment,
+			}}
+			var output bytes.Buffer
+			if err := writeStatePretty(&output, state); err != nil {
+				t.Fatalf("writeStatePretty() error = %v", err)
+			}
+			for _, want := range append([]string{fmt.Sprintf("Degraded: %t", tt.degraded)}, tt.want...) {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("output missing %q:\n%s", want, output.String())
 				}
 			}
 		})
@@ -343,6 +394,7 @@ func stateFixture() map[string]any {
 		"generated_at": "2026-08-08T03:00:00Z",
 		"status":       "running",
 		"instance":     map[string]any{"version": "v1.3.0", "commit": "abcdef123456"},
+		"enrichment":   map[string]any{"status": "ready", "completed_snapshot_generated_at": "2026-08-08T03:00:00Z"},
 		"refresh": map[string]any{
 			"status":              "degraded",
 			"last_refresh_at":     "2026-08-08T02:59:30Z",
