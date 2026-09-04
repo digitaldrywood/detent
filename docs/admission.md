@@ -19,8 +19,9 @@ The agent receives only the resolved criteria and bounded candidate data in a
 fresh read-only session. It emits typed proposals. Detent re-fetches each issue,
 validates every field and verbatim criteria quote, rejects proposals matching no
 dimension, and persists valid records before posting comments. Repeated runs use
-a title/body fingerprint, so the proposal's own comment cannot create a
-duplicate. Unanswered proposals expire; an issue demoted after acceptance is
+a title/body and dependency-state fingerprint, so the proposal's own comment
+cannot create a duplicate. Dependency observations exclude timestamps from the
+fingerprint: fresh reads alone do not cause repeated proposals. Unanswered proposals expire; an issue demoted after acceptance is
 not proposed again.
 
 Before starting the read-only analyst, Detent declines issues that do not
@@ -131,3 +132,26 @@ the decision. `detent doctor` reports that labeled history alongside the origin
 distribution; it does not reduce calibration to a single acceptance
 percentage. It also warns when criteria cannot be resolved, admission has never
 run, tracker limitations apply, or three consecutive runs fail.
+
+## Dependency evidence
+
+Before evaluation, admission resolves normalized blocker references and parser-supported
+`Depends on:` / `Blocked by:` lines through the project's tracker. The input includes
+each dependency's current workflow state, closed flag, attached PR state, resolution
+error, and observation timestamp. `tracker.dependency_auto_unblock.readiness` supplies
+the readiness rule even when automatic unblocking is disabled: `terminal` accepts
+closed issues or configured terminal states; `terminal_or_merged` also accepts an
+attached merged PR. Unavailable references fail closed. Human prerequisites and all
+other admission criteria still apply.
+
+The normal bounded admission pass refreshes dependencies before checking cached
+declines or open proposals. Changed dependency state invalidates the earlier result
+even when the issue body is unchanged. Admission refreshes the evidence again before
+persisting an evaluation and before accepting a proposal. A pending proposal cannot
+move an issue while dependencies remain unresolved. Resolution is limited to 50
+references per candidate; exceeding that bound fails closed with explicit evidence.
+
+Proposal comments and persisted findings label their observation time as historical.
+Operator explanations retain dated admission refusals as history and do not use them
+as proof of present eligibility. No dependency declaration, historical refusal, or
+missing reference is interpreted as proof of current completion or an open blocker.
