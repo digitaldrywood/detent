@@ -338,7 +338,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[3].DiffStats.FilesChanged != 2 || usageUpdates[3].DiffStats.AddedLines != 5 || usageUpdates[3].DiffStats.RemovedLines != 1 {
 		t.Fatalf("fourth usage update DiffStats = %#v, want refreshed diff", usageUpdates[3].DiffStats)
 	}
-	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.HeadSHA != "final-head" || result.DiffStats.Fingerprint != "final-diff" {
+	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.HeadSHA != "final-head" || result.DiffStats.Fingerprint != "final-diff" || !result.DiffStats.RecoveryStateExpected || !result.DiffStats.RecoveryStateAvailable {
 		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed, final head, and final fingerprint", result.DiffStats)
 	}
 	if result.RateLimits == nil || result.RateLimits.LimitID != "codex-primary" {

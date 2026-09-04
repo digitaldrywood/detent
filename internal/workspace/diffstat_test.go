@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -241,7 +242,7 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	}
 }
 
-func TestLocalGitRecoveryStateExcludesUntrackedPathsFromStrandedEvidence(t *testing.T) {
+func TestLocalGitRecoveryStateReportsUntrackedPaths(t *testing.T) {
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -272,8 +273,8 @@ func TestLocalGitRecoveryStateExcludesUntrackedPathsFromStrandedEvidence(t *test
 	if got.DiffStat.Files != 1 || got.UnpushedCommits != 0 {
 		t.Fatalf("RecoveryState() = %+v, want one aggregate diff file and no unpushed commits", got)
 	}
-	if len(got.TrackedPaths) != 0 || len(got.CommitsNotInPullRequest) != 0 || !got.PullRequestComparisonAvailable {
-		t.Fatalf("RecoveryState() stranded evidence = tracked %v commits %v available=%t, want no evidence and available comparison", got.TrackedPaths, got.CommitsNotInPullRequest, got.PullRequestComparisonAvailable)
+	if len(got.TrackedPaths) != 0 || !slices.Equal(got.UntrackedPaths, []string{"session-marker.ses"}) || len(got.CommitsNotInPullRequest) != 0 || !got.PullRequestComparisonAvailable {
+		t.Fatalf("RecoveryState() evidence = tracked %v untracked %v commits %v available=%t", got.TrackedPaths, got.UntrackedPaths, got.CommitsNotInPullRequest, got.PullRequestComparisonAvailable)
 	}
 }
 

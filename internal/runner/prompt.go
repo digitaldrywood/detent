@@ -193,7 +193,7 @@ func BuildAdmissionPrompt(issue connector.Issue, request AdmissionRequest, opts 
 }
 
 func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState) string {
-	if state == nil || (state.UnpushedCommits == 0 && state.DiffStat == (workspace.DiffStat{})) {
+	if state == nil || (state.UnpushedCommits == 0 && state.DiffStat == (workspace.DiffStat{}) && len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0) {
 		return prompt
 	}
 
@@ -205,15 +205,35 @@ func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState)
 		b.WriteString(strconv.Itoa(state.UnpushedCommits))
 	}
 	if state.DiffStat != (workspace.DiffStat{}) {
-		b.WriteString("\n- uncommitted changes: ")
+		b.WriteString("\n- diffstat: ")
 		b.WriteString(strconv.Itoa(state.DiffStat.Files))
 		b.WriteString(" files, +")
 		b.WriteString(strconv.Itoa(state.DiffStat.Added))
 		b.WriteString("/-")
 		b.WriteString(strconv.Itoa(state.DiffStat.Removed))
 	}
-	b.WriteString("\n\nInspect, validate and preserve the existing work. Finish any remaining changes, run the required validation gate, then push the branch and open or update the pull request. Do not claim completion while commits or substantive changes remain only in the local workspace.")
+	appendWorkspaceRecoveryPaths(&b, "tracked paths", state.TrackedPaths)
+	appendWorkspaceRecoveryPaths(&b, "untracked paths", state.UntrackedPaths)
+	appendWorkspaceRecoveryPaths(&b, "unpushed commits", state.UnpushedCommitRefs)
+	b.WriteString("\n\nA prior completion cannot be accepted until you explicitly resolve this state. Inspect every path and choose the correct outcome: commit and publish work that belongs to the issue, discard stray artifacts or mistakes, or update the Workpad to `status: blocked` and state why the files are intentionally left. For a clean retry, add `completion_cleanliness_resolution: committed` or `completion_cleanliness_resolution: discarded` under `fields:` in the current completion block. Do not repeat `status: complete` while the worktree remains dirty. After resolving it, run the required validation gate and update the pull request.")
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + b.String()
+}
+
+func appendWorkspaceRecoveryPaths(b *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	b.WriteString("\n- ")
+	b.WriteString(label)
+	b.WriteString(": ")
+	for index, value := range values {
+		if index > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("`")
+		b.WriteString(strings.TrimSpace(value))
+		b.WriteString("`")
+	}
 }
 
 func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {

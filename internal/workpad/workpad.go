@@ -25,11 +25,12 @@ const (
 	StatusBlocked    = "blocked"
 	StatusComplete   = "complete"
 
-	FieldCompletionKind       = "completion_kind"
-	FieldCompletionEvidence   = "completion_evidence"
-	FieldCompletionAttempt    = "completion_work_attempt_id"
-	FieldCompletionGeneration = "completion_generation"
-	CompletionOperational     = "operational"
+	FieldCompletionKind                  = "completion_kind"
+	FieldCompletionEvidence              = "completion_evidence"
+	FieldCompletionAttempt               = "completion_work_attempt_id"
+	FieldCompletionGeneration            = "completion_generation"
+	FieldCompletionCleanlinessResolution = "completion_cleanliness_resolution"
+	CompletionOperational                = "operational"
 
 	BlockerOwnerOrchestrator = "orchestrator"
 	BlockerOwnerHuman        = "human"

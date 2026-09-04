@@ -52,6 +52,7 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 	snapshot.UnpushedCommits = recovery.UnpushedCommits
 	snapshot.UnpushedCommitRefs = append([]string(nil), recovery.UnpushedCommitRefs...)
 	snapshot.TrackedPaths = append([]string(nil), recovery.TrackedPaths...)
+	snapshot.UntrackedPaths = append([]string(nil), recovery.UntrackedPaths...)
 	snapshot.CommitsNotInPullRequest = append([]string(nil), recovery.CommitsNotInPullRequest...)
 	snapshot.PullRequestComparisonAvailable = recovery.PullRequestComparisonAvailable
 	snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)
