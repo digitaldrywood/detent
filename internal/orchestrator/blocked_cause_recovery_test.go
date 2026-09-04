@@ -567,6 +567,29 @@ func TestBreakerRecoveryUsesCurrentPark(t *testing.T) {
 	}
 }
 
+func TestSpendProgressParkSurfacesCooldownImmediately(t *testing.T) {
+	t.Parallel()
+
+	for _, progressCase := range []string{spendProgressCaseNoPR, spendProgressCaseStatic, spendProgressCaseNoArtifact, spendProgressCaseStaticArtifact} {
+		t.Run(progressCase, func(t *testing.T) {
+			t.Parallel()
+			orch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
+			state := newState(orch.cfg)
+			issue := dependencyAutoUnblockIssue("issue-spend-cooldown", "In Progress")
+			if !orch.blockSpendProgress(t.Context(), &state, Running{Issue: issue}, spendProgressDecision{Case: progressCase}, time.Now()) {
+				t.Fatal("blockSpendProgress() = false")
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != blockedRecoveryReasonBreakerCooldownActive || !blocked.RecoveryIntentResumable || blocked.NeedsHumanAttention {
+				t.Fatalf("recovery = %#v, want automatic cooldown recovery", blocked)
+			}
+			if blocked.RecoveryTarget != issue.State || !strings.Contains(blocked.RecoveryRemedy, "prior lane") {
+				t.Fatalf("target = %q, remedy = %q, want prior lane recovery", blocked.RecoveryTarget, blocked.RecoveryRemedy)
+			}
+		})
+	}
+}
+
 func TestBreakerRecoveryMetadataRemembersPreviousLane(t *testing.T) {
 	t.Parallel()
 
