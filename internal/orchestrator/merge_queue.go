@@ -15,6 +15,7 @@ import (
 const (
 	nativeMergeQueueEntryRefresh     = 2 * time.Minute
 	nativeMergeQueueRepositoryExpiry = 5 * time.Minute
+	nativeMergeQueueTerminalSweep    = 2 * time.Minute
 )
 
 type nativeMergeQueueEntry struct {
@@ -164,11 +165,14 @@ func (o *Orchestrator) fetchUnsafeNativeMergeQueueTerminalIssues(
 	now time.Time,
 	reserve githubBudgetReserveDecision,
 ) []connector.Issue {
-	if state == nil || !state.nativeQueueSweepPending || !nativeMergeQueueCleanupRequired(o.cfg) {
+	if state == nil || !nativeMergeQueueCleanupRequired(o.cfg) {
+		return nil
+	}
+	if !state.nativeQueueSweepAt.IsZero() && now.Sub(state.nativeQueueSweepAt) < nativeMergeQueueTerminalSweep {
 		return nil
 	}
 	if _, ok := o.connector.(connector.PullRequestMergeQueue); !ok {
-		state.nativeQueueSweepPending = false
+		state.nativeQueueSweepAt = now
 		return nil
 	}
 	if reserve.degraded {
@@ -176,7 +180,7 @@ func (o *Orchestrator) fetchUnsafeNativeMergeQueueTerminalIssues(
 	}
 	states := displayStateNames(o.cfg.TerminalStates)
 	if len(states) == 0 {
-		state.nativeQueueSweepPending = false
+		state.nativeQueueSweepAt = now
 		return nil
 	}
 	issues, err := o.fetchObservedIssuesByStates(ctx, states)
@@ -187,7 +191,7 @@ func (o *Orchestrator) fetchUnsafeNativeMergeQueueTerminalIssues(
 		markRefreshError(state, "fetch unsafe native merge queue terminal issues failed: "+err.Error(), now)
 		return nil
 	}
-	state.nativeQueueSweepPending = false
+	state.nativeQueueSweepAt = now
 	return terminalIssues(issues, o.cfg.TerminalStates)
 }
 

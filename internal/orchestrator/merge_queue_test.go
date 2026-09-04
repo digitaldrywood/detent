@@ -861,8 +861,53 @@ func TestTickReconcilesUnsafeNativeQueueTerminalIssueAfterRestart(t *testing.T) 
 	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
 		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
 	}
-	if state.nativeQueueSweepPending {
-		t.Fatal("nativeQueueSweepPending = true after successful terminal sweep")
+	if state.nativeQueueSweepAt != now {
+		t.Fatalf("nativeQueueSweepAt = %s, want %s", state.nativeQueueSweepAt, now)
+	}
+}
+
+func TestTickPeriodicallyReconcilesUnsafeNativeQueueTerminalIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 18, 40, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(413, "success")
+	issue.State = "Done"
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				stateIssues:        []connector.Issue{issue},
+				candidateIssuesSet: true,
+			},
+		},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgents:  1,
+		AutoPromote:          AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates:         []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:       []string{"Merging"},
+		TerminalStates:       []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(t.Context(), &state, now)
+	tracker.entries = map[string]connector.PullRequestMergeQueueEntry{
+		issue.ID: {ID: "MQE_issue-413", State: "QUEUED"},
+	}
+	orch.tick(t.Context(), &state, now.Add(time.Minute))
+	orch.tick(t.Context(), &state, now.Add(nativeMergeQueueTerminalSweep))
+
+	if tracker.inspections != 2 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want two inspections and one dequeue", tracker.inspections, len(tracker.dequeued))
+	}
+	if state.nativeQueueSweepAt != now.Add(nativeMergeQueueTerminalSweep) {
+		t.Fatalf("nativeQueueSweepAt = %s, want %s", state.nativeQueueSweepAt, now.Add(nativeMergeQueueTerminalSweep))
 	}
 }
 
