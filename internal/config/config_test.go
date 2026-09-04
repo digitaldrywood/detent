@@ -122,12 +122,15 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_token_resolution_timeout_ms: 30000\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
 	if workflow.Config.Worker.GitHubToken != "$DETENT_WORKER_GITHUB_TOKEN" {
 		t.Fatalf("Worker.GitHubToken = %q, want environment reference", workflow.Config.Worker.GitHubToken)
+	}
+	if workflow.Config.Worker.GitHubTokenResolutionTimeoutMS != 30000 {
+		t.Fatalf("Worker.GitHubTokenResolutionTimeoutMS = %d, want 30000", workflow.Config.Worker.GitHubTokenResolutionTimeoutMS)
 	}
 	if workflow.Config.Worker.GitHubRESTMinReserve != 1250 {
 		t.Fatalf("Worker.GitHubRESTMinReserve = %d, want 1250", workflow.Config.Worker.GitHubRESTMinReserve)
@@ -166,6 +169,9 @@ func TestWorkerGitHubDefaultReserveBrakesBeforeOrchestrator(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
+	if cfg.Worker.GitHubTokenResolutionTimeoutMS != 15000 {
+		t.Fatalf("Worker.GitHubTokenResolutionTimeoutMS = %d, want 15000", cfg.Worker.GitHubTokenResolutionTimeoutMS)
+	}
 	if cfg.Worker.GitHubRESTMinReserve <= cfg.Tracker.GitHubRESTMinReserve {
 		t.Fatalf("worker reserve = %d, want above orchestrator floor %d", cfg.Worker.GitHubRESTMinReserve, cfg.Tracker.GitHubRESTMinReserve)
 	}
@@ -179,6 +185,13 @@ func TestWorkerGitHubPolicyValidation(t *testing.T) {
 		mutate      func(*Config)
 		wantProblem string
 	}{
+		{
+			name: "token resolution timeout must be positive",
+			mutate: func(cfg *Config) {
+				cfg.Worker.GitHubTokenResolutionTimeoutMS = 0
+			},
+			wantProblem: "worker.github_token_resolution_timeout_ms must be greater than 0",
+		},
 		{
 			name: "reserve must be positive",
 			mutate: func(cfg *Config) {

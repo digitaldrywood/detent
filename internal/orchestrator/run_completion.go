@@ -143,7 +143,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		beforeRefresh := running
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
-			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubBudgetMonitor) {
+			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubBudgetMonitor) && !errors.Is(event.Err, runpkg.ErrWorkerGitHubTokenResolution) {
 				availabilityErr, unavailable := connector.AsTrackerAvailability(err)
 				if unavailable && availabilityErr != nil {
 					o.deferTrackerUnavailableCompletion(ctx, state, event, running, availabilityErr)
@@ -240,6 +240,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
+		return
+	}
 	if o.handleGitHubMonitorCompletion(ctx, state, event, running) {
 		return
 	}

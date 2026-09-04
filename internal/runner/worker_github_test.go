@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -44,7 +45,7 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 		{name: "gh sentinel resolves", workerToken: "gh", orchestratorToken: "ambient-token", resolveGH: func(context.Context) (string, error) { return " ambient-token\n", nil }, wantEnabled: true, wantMode: workerGitHubCredentialShared, wantToken: "ambient-token"},
 		{name: "gh sentinel without orchestrator user token is distinct", workerToken: "gh", resolveGH: func(context.Context) (string, error) { return "ambient-token", nil }, wantEnabled: true, wantMode: workerGitHubCredentialDistinct, wantToken: "ambient-token"},
 		{name: "gh sentinel with different orchestrator token needs principal classification", workerToken: "gh", orchestratorToken: "orchestrator-token", resolveGH: func(context.Context) (string, error) { return "ambient-token", nil }, wantEnabled: true, wantMode: workerGitHubCredentialUnclassified, wantToken: "ambient-token"},
-		{name: "gh sentinel resolution failure", workerToken: "gh", resolveGH: func(context.Context) (string, error) { return "", errors.New("not logged in") }, wantErrText: "resolve worker.github_token via gh auth token: not logged in"},
+		{name: "gh sentinel resolution failure", workerToken: "gh", resolveGH: func(context.Context) (string, error) { return "", errors.New("not logged in") }, wantErrText: "resolve worker.github_token via gh auth token after 3 attempts"},
 		{name: "missing referenced credential", workerToken: "$WORKER_TOKEN", orchestratorToken: "orchestrator-token", wantErrText: "WORKER_TOKEN is empty"},
 	}
 
@@ -99,6 +100,132 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveWorkerGitHubSecretRetries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		resolve      workerGitHubTokenResolver
+		wantToken    string
+		wantCalls    int
+		wantSleeps   []time.Duration
+		wantErr      bool
+		wantDeadline bool
+	}{
+		{
+			name: "transient failures recover",
+			resolve: func() workerGitHubTokenResolver {
+				calls := 0
+				return func(context.Context) (string, error) {
+					calls++
+					if calls < 3 {
+						return "", errors.New("keychain busy")
+					}
+					return "resolved-token", nil
+				}
+			}(),
+			wantToken:  "resolved-token",
+			wantCalls:  3,
+			wantSleeps: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
+		},
+		{
+			name: "per-attempt deadlines exhaust",
+			resolve: func(ctx context.Context) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			},
+			wantCalls:    3,
+			wantSleeps:   []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
+			wantErr:      true,
+			wantDeadline: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			var sleeps []time.Duration
+			resolver := func(ctx context.Context) (string, error) {
+				calls++
+				return tt.resolve(ctx)
+			}
+			token, err := resolveWorkerGitHubSecret(t.Context(), "gh", nil, resolver, workerGitHubTokenResolutionOptions{
+				Timeout:      5 * time.Millisecond,
+				MaxAttempts:  3,
+				RetryBackoff: 10 * time.Millisecond,
+				Sleep: func(_ context.Context, delay time.Duration) error {
+					sleeps = append(sleeps, delay)
+					return nil
+				},
+			})
+			if token != tt.wantToken || (err != nil) != tt.wantErr {
+				t.Fatalf("resolveWorkerGitHubSecret() = %q, %v; want %q, error %t", token, err, tt.wantToken, tt.wantErr)
+			}
+			if calls != tt.wantCalls {
+				t.Fatalf("resolver calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if !slices.Equal(sleeps, tt.wantSleeps) {
+				t.Fatalf("retry sleeps = %v, want %v", sleeps, tt.wantSleeps)
+			}
+			if !tt.wantErr {
+				return
+			}
+			resolutionErr, ok := AsWorkerGitHubTokenResolutionError(err)
+			if !ok || resolutionErr.Attempts != 3 || resolutionErr.Timeout != 5*time.Millisecond {
+				t.Fatalf("error = %#v, want typed resolution error with retry evidence", err)
+			}
+			if tt.wantDeadline && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v, want context deadline exceeded", err)
+			}
+		})
+	}
+}
+
+func TestResolveWorkerGitHubSecretHonorsParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	calls := 0
+	_, err := resolveWorkerGitHubSecret(ctx, "gh", nil, func(context.Context) (string, error) {
+		calls++
+		return "", errors.New("unexpected call")
+	}, workerGitHubTokenResolutionOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolveWorkerGitHubSecret() error = %v, want context canceled", err)
+	}
+	if errors.Is(err, ErrWorkerGitHubTokenResolution) {
+		t.Fatalf("resolveWorkerGitHubSecret() error = %v, parent cancellation classified as infrastructure", err)
+	}
+	if calls != 0 {
+		t.Fatalf("resolver calls = %d, want 0", calls)
+	}
+}
+
+func TestLogWorkerGitHubPolicyErrorUsesResolutionEvent(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	runner := &Runner{
+		projectID: "detent",
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	runner.logWorkerGitHubPolicyError(connector.Issue{
+		ID: "issue-worker-github-token", Identifier: "digitaldrywood/detent#2055",
+	}, &WorkerGitHubTokenResolutionError{
+		Attempts: 3,
+		Timeout:  15 * time.Second,
+		Err:      context.DeadlineExceeded,
+	}, telemetry.WorkAttemptIDKey, int64(2055))
+
+	if !strings.Contains(logs.String(), "worker_github_token_resolution_unavailable") || !strings.Contains(logs.String(), "attempts=3") || !strings.Contains(logs.String(), "timeout_ms=15000") {
+		t.Fatalf("logs = %q, want token-resolution event with retry evidence", logs.String())
+	}
+	if strings.Contains(logs.String(), "worker_github_credential_refused") {
+		t.Fatalf("logs = %q, resolution failure used generic credential-refused event", logs.String())
 	}
 }
 

@@ -303,11 +303,12 @@ type DeliverableElicitationRule struct {
 }
 
 type Worker struct {
-	SSHHosts                   []string `yaml:"ssh_hosts"`
-	MaxConcurrentAgentsPerHost *int     `yaml:"max_concurrent_agents_per_host"`
-	GitHubToken                string   `yaml:"github_token,omitempty"`
-	GitHubRESTMinReserve       int      `yaml:"github_rest_min_remaining_reserve"`
-	GitHubRESTPollIntervalMS   int      `yaml:"github_rest_poll_interval_ms"`
+	SSHHosts                       []string `yaml:"ssh_hosts"`
+	MaxConcurrentAgentsPerHost     *int     `yaml:"max_concurrent_agents_per_host"`
+	GitHubToken                    string   `yaml:"github_token,omitempty"`
+	GitHubTokenResolutionTimeoutMS int      `yaml:"github_token_resolution_timeout_ms"`
+	GitHubRESTMinReserve           int      `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTPollIntervalMS       int      `yaml:"github_rest_poll_interval_ms"`
 }
 
 type Agent struct {
@@ -1391,9 +1392,10 @@ func Default() Config {
 			Source: DependencySourceMerged,
 		},
 		Worker: Worker{
-			SSHHosts:                 []string{},
-			GitHubRESTMinReserve:     1250,
-			GitHubRESTPollIntervalMS: 60000,
+			SSHHosts:                       []string{},
+			GitHubTokenResolutionTimeoutMS: 15000,
+			GitHubRESTMinReserve:           1250,
+			GitHubRESTPollIntervalMS:       60000,
 		},
 		Agent: Agent{
 			MaxConcurrentAgents:          10,
@@ -1557,6 +1559,7 @@ func (c *Config) Validate() error {
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
+	validatePositive("worker.github_token_resolution_timeout_ms", c.Worker.GitHubTokenResolutionTimeoutMS, &problems)
 	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
 	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
 		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")

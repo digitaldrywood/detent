@@ -1341,7 +1341,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
-		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
+		r.logWorkerGitHubPolicyError(req.Issue, err, telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 		return RunResult{}, err
 	}
 	req.workerGitHubActor = workerGitHub.Principal
@@ -2685,7 +2685,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
 	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
-		r.logWorkerEvent(req.Issue, "worker_github_credential_refused", "error", err)
+		r.logWorkerGitHubPolicyError(req.Issue, err)
 		return gate.ValidatorResult{}, err
 	}
 
