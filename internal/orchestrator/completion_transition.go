@@ -230,16 +230,17 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 		o.logAutoPromoteDecision(issue, decision, "")
 		return false, connector.Issue{}
 	}
-	promoted := promotedIssue(issue, targetState, now)
 	if normalizeState(issue.State) == normalizeState(targetState) {
+		promoted := promotedIssue(issue, targetState, now)
 		o.logAutoPromoteDecision(issue, decision, targetState)
 		o.logCompletedActiveAutoPromoteSameState(issue, decision, cfg)
 		return true, promoted
 	}
-	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+	effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+	if !applied {
 		return false, connector.Issue{}
 	}
-	return true, promoted
+	return true, promotedIssue(issue, effectiveTargetState, now)
 }
 
 func (o *Orchestrator) finishCompletedActiveReviewTransition(
@@ -427,15 +428,16 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 			o.logAutoPromoteDecision(issue, decision, "")
 			return false, connector.Issue{}
 		}
-		if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+		effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+		if !applied {
 			return false, connector.Issue{}
 		}
-		promoted := promotedIssue(issue, targetState, now)
-		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
+		promoted := promotedIssue(issue, effectiveTargetState, now)
+		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, effectiveTargetState)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "completed_active_gate_wait_timeout",
-			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after auto-promote gate wait timeout",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + effectiveTargetState + " after auto-promote gate wait timeout",
 		})
 		return true, promoted
 	}

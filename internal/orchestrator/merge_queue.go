@@ -36,6 +36,9 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	if state == nil {
 		return out
 	}
+	if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+		return out
+	}
 	state.nativeMergeQueueDeferred = map[string]struct{}{}
 	queue, ok := o.connector.(connector.PullRequestMergeQueue)
 	if !ok || !o.cfg.MergeFastPathEnabled {
@@ -46,10 +49,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
 		issueID := strings.TrimSpace(candidate.ID)
-		if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
-			o.reconcileReviewThreadGatedNativeMergeQueue(ctx, state, out, candidate, queue, now)
-			continue
-		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
@@ -113,6 +112,31 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			Event:   "merge_worker_native_queue_enqueued",
 			Message: "enqueued " + issueLabel(candidate) + " in the native merge queue",
 		})
+	}
+	return out
+}
+
+func (o *Orchestrator) reconcileReviewThreadGatedNativeMergeQueueIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) []connector.Issue {
+	out := cloneIssues(issues)
+	if state == nil {
+		return out
+	}
+	state.nativeMergeQueueDeferred = map[string]struct{}{}
+	if !gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+		return out
+	}
+	queue, ok := o.connector.(connector.PullRequestMergeQueue)
+	if !ok {
+		return out
+	}
+	pruneNativeMergeQueueEntries(state, out)
+	for _, issue := range staleMergingQueueIssues(out, o.cfg, state, now) {
+		o.reconcileReviewThreadGatedNativeMergeQueue(ctx, state, out, issue, queue, now)
 	}
 	return out
 }

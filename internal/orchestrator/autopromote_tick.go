@@ -1025,6 +1025,9 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 		if issueID == "" {
 			continue
 		}
+		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
+			continue
+		}
 		repository := mergeWorkerRepositoryKey(issue)
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
 			continue
@@ -2989,8 +2992,21 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	targetState string,
 	now time.Time,
 ) bool {
+	_, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+	return applied
+}
+
+func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	summary AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	targetState string,
+	now time.Time,
+) (string, bool) {
 	if normalizeState(issue.State) == normalizeState(targetState) {
-		return false
+		return "", false
 	}
 
 	issueID := strings.TrimSpace(issue.ID)
@@ -3012,7 +3028,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 					"error", err,
 				)
 			}
-			return false
+			return "", false
 		}
 		if limit.Exceeded() {
 			disposition = laneMutationRevokeWorker
@@ -3045,7 +3061,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 				"error", err,
 			)
 		}
-		return false
+		return "", false
 	}
 
 	if strings.TrimSpace(body) != "" {
@@ -3072,7 +3088,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 		Event:   "auto_promote_transition",
 		Message: "auto-promoted " + issueLabel(issue) + " from " + sourceState + " to " + targetState,
 	})
-	return true
+	return targetState, true
 }
 
 func (s autoPromoteReworkLimitSummary) Exceeded() bool {
