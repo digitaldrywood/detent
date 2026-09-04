@@ -1722,6 +1722,44 @@ func TestProviderLookupProbeWindowIsSingleUse(t *testing.T) {
 	}
 }
 
+func TestTickProviderProbeWindowReachesCandidateFetch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        30 * time.Second,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		MaxConcurrentAgents: 1,
+	})
+	state := newState(cfg)
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	state.BackendOutages[providerScope.Key()] = BackendOutage{
+		Scope:       providerScope,
+		NextProbeAt: now,
+	}
+	state.BackendOutages[githubLookupBackoffScope.Key()] = BackendOutage{
+		Scope:         githubLookupBackoffScope,
+		Kind:          githubLookupBackoffKind,
+		Trigger:       githubLookupTriggerProvider,
+		NextProbeAt:   now,
+		ProbeAttempts: 1,
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want provider canary window to reach candidate fetch", tracker.fetchCandidateCalls)
+	}
+	_, outage, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || outage.ProbeAttempts != 2 || outage.LastProbeResult != githubLookupProbeResultBackingOff {
+		t.Fatalf("lookup backoff = %#v, want single-use probe window followed by next step", outage)
+	}
+}
+
 func TestTickReconcilesRunningIssuesOnSlowerCadence(t *testing.T) {
 	t.Parallel()
 

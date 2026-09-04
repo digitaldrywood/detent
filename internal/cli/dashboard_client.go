@@ -121,10 +121,7 @@ func newDashboardReadClient(
 	if err != nil {
 		return nil, fmt.Errorf("resolve dashboard API URL: %w", err)
 	}
-	credential := strings.TrimSpace(opts.lookupEnv("DETENT_API_TOKEN"))
-	if credential == "" {
-		credential = strings.TrimSpace(boot.Global.APIToken)
-	}
+	credential := dashboardAPICredential(boot.Global.APIToken, opts.lookupEnv)
 	if opts.httpDo == nil {
 		return nil, errors.New("dashboard API HTTP client is not configured")
 	}
@@ -135,6 +132,17 @@ func newDashboardReadClient(
 		http:       dashboardHTTPClientFunc(opts.httpDo),
 		timeout:    dashboardReadTimeout,
 	}, nil
+}
+
+func dashboardAPICredential(configured string, lookupEnv func(string) string) string {
+	credential := ""
+	if lookupEnv != nil {
+		credential = strings.TrimSpace(lookupEnv("DETENT_API_TOKEN"))
+	}
+	if credential == "" {
+		credential = strings.TrimSpace(configured)
+	}
+	return credential
 }
 
 func (c *DashboardReadClient) ExplainIssue(ctx context.Context, projectID string, reference string) (explain.IssueExplanation, error) {

@@ -209,8 +209,9 @@ func (o *Orchestrator) observeGitHubLookupBackoff(state *State, now time.Time) b
 	if active {
 		if signal, signaled := o.currentGitHubLookupSignal(state, now); signaled && outage.Trigger == githubLookupTriggerProvider {
 			o.advanceGitHubLookupBackoff(state, outage, signal, now, time.Time{})
+			return true
 		}
-		return true
+		return outage.Trigger != githubLookupTriggerProvider || outage.LastProbeResult != githubLookupProbeResultProviderDue
 	}
 	signal, ok := o.currentGitHubLookupSignal(state, now)
 	if !ok {

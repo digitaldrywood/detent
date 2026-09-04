@@ -233,6 +233,9 @@ func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
 		if r.URL.Path != "/api/v1/state" {
 			t.Fatalf("request path = %q, want /api/v1/state", r.URL.Path)
 		}
+		if got := r.Header.Get("Authorization"); got != "Bearer operator-token" {
+			t.Fatalf("Authorization = %q, want bearer credential", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"backend_outages": []telemetry.BackendOutage{{
@@ -251,6 +254,7 @@ func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
 	runner := statusServiceRunner{
 		ServiceRunner: &serviceRunnerStub{status: servicepkg.Status{State: servicepkg.StateRunning}},
 		fallbackURL:   server.URL,
+		credential:    "operator-token",
 		httpDo:        server.Client().Do,
 	}
 	status, err := runner.Status(t.Context())

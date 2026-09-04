@@ -39,6 +39,7 @@ type ServiceFactory func(servicepkg.Config) (ServiceRunner, error)
 type statusServiceRunner struct {
 	ServiceRunner
 	fallbackURL string
+	credential  string
 	httpDo      func(*http.Request) (*http.Response, error)
 }
 
@@ -183,6 +184,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	}
 	factory := opts.service
 	statusHTTPDo := opts.httpDo
+	statusCredential := dashboardAPICredential(cfg.APIToken, opts.lookupEnv)
 	if factory == nil {
 		factory = defaultServiceFactory
 	} else {
@@ -204,7 +206,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		return nil, err
 	}
 	if cmd.Name() == "status" {
-		return statusServiceRunner{ServiceRunner: runner, fallbackURL: dashboardURL, httpDo: statusHTTPDo}, nil
+		return statusServiceRunner{ServiceRunner: runner, fallbackURL: dashboardURL, credential: statusCredential, httpDo: statusHTTPDo}, nil
 	}
 	return runner, nil
 }
@@ -233,9 +235,10 @@ func (r statusServiceRunner) backendOutages(ctx context.Context, dashboardURL st
 		return nil
 	}
 	client := &DashboardReadClient{
-		baseURL: baseURL,
-		http:    dashboardHTTPClientFunc(r.httpDo),
-		timeout: serviceStatusSnapshotTimeout,
+		baseURL:    baseURL,
+		credential: r.credential,
+		http:       dashboardHTTPClientFunc(r.httpDo),
+		timeout:    serviceStatusSnapshotTimeout,
 	}
 	state, err := client.State(ctx, "")
 	if err != nil {
