@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	defaultDebounce     = 150 * time.Millisecond
-	reloadRetryInterval = 5 * time.Millisecond
+	defaultDebounce               = 150 * time.Millisecond
+	defaultFileWatchRetryInterval = 100 * time.Millisecond
+	defaultFilePollInterval       = 250 * time.Millisecond
+	reloadRetryInterval           = 5 * time.Millisecond
 )
 
 var ErrMissingPath = errors.New("workflow watch path is required")
@@ -152,4 +154,14 @@ func resetTimer(timer fileTimer, debounce time.Duration) {
 		}
 	}
 	timer.Reset(debounce)
+}
+
+func stopFileTimer(timer fileTimer) {
+	if timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C():
+	default:
+	}
 }

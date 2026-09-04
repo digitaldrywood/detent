@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	writeWorkflow(t, path, 62000, "second")
 	runtime.sendEvent(t, path)
 	runtime.waitForReset(t)
-	runtime.fire(t)
+	runtime.fireTimer(t)
 
 	update := receiveUpdate(t, updates)
 	if update.Err != nil {
@@ -325,7 +326,7 @@ func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	writeGlobalConfig(t, path, 4)
 	runtime.sendEvent(t, path)
 	runtime.waitForReset(t)
-	runtime.fire(t)
+	runtime.fireTimer(t)
 
 	update := receiveFileUpdate(t, updates)
 	if update.Err != nil {
@@ -436,6 +437,7 @@ func TestFileWatcherWatchesSymlinkTargetTouches(t *testing.T) {
 func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
 	t.Parallel()
 
+	runtime := newControlledFileRuntime()
 	linkDir := t.TempDir()
 	firstDir := t.TempDir()
 	nextDir := t.TempDir()
@@ -450,9 +452,15 @@ func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
 
 	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
 		return globalconfig.Read(path)
-	})
+	}, runtime.option(), withFileIntervals(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("NewFile() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
 	}
 
 	if err := os.Remove(linkPath); err != nil {
@@ -461,23 +469,301 @@ func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
 	if err := os.Symlink(nextPath, linkPath); err != nil {
 		t.Fatalf("Symlink() retarget error = %v", err)
 	}
+	runtime.fireTicker(t, filePollTicker)
+	runtime.waitForReset(t)
+	runtime.fireTimer(t)
 
-	var added []string
-	w.refreshWatchPath(func(dir string) error {
-		added = append(added, dir)
-		return nil
-	})
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("retarget update error = %v", update.Err)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 3 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 3", update.Value.Global.MaxConcurrentAgents)
+	}
+	runtime.waitForAdd(t, nextDir)
+}
 
-	resolvedNext := resolveWatchPath(linkPath)
-	if w.files[0].target != resolvedNext {
-		t.Fatalf("watchPath = %q, want %q", w.files[0].target, resolvedNext)
+func TestFileWatcherReconcilesMissedEvents(t *testing.T) {
+	t.Parallel()
+
+	type step struct {
+		mutate  func(*testing.T)
+		ticker  fileTickerKind
+		want    int
+		wantErr bool
 	}
-	nextWatchDir := filepath.Dir(resolvedNext)
-	if !hasWatchDir(w.dirs, nextWatchDir) {
-		t.Fatalf("watch dirs = %#v, want %q", w.dirs, nextWatchDir)
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, *controlledFileRuntime) (string, []step)
+	}{
+		{
+			name: "atomic replacement",
+			prepare: func(t *testing.T, _ *controlledFileRuntime) (string, []step) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "global.yaml")
+				writeGlobalConfig(t, path, 2)
+				return path, []step{{
+					mutate: func(t *testing.T) {
+						tmpPath := filepath.Join(dir, ".global.yaml.tmp")
+						writeGlobalConfig(t, tmpPath, 5)
+						if err := os.Rename(tmpPath, path); err != nil {
+							t.Fatalf("Rename() error = %v", err)
+						}
+					},
+					ticker: filePollTicker,
+					want:   5,
+				}}
+			},
+		},
+		{
+			name: "absent parent creation",
+			prepare: func(t *testing.T, runtime *controlledFileRuntime) (string, []step) {
+				path := filepath.Join(t.TempDir(), "missing", "global.yaml")
+				runtime.add = func(dir string) error {
+					_, err := os.Stat(dir)
+					return err
+				}
+				return path, []step{{
+					mutate: func(t *testing.T) {
+						if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+							t.Fatalf("MkdirAll() error = %v", err)
+						}
+						writeGlobalConfig(t, path, 4)
+					},
+					ticker: fileRetryTicker,
+					want:   4,
+				}}
+			},
+		},
+		{
+			name: "symlink target replacement",
+			prepare: func(t *testing.T, _ *controlledFileRuntime) (string, []step) {
+				linkDir := t.TempDir()
+				targetDir := t.TempDir()
+				targetPath := filepath.Join(targetDir, "global.yaml")
+				linkPath := filepath.Join(linkDir, "global.yaml")
+				writeGlobalConfig(t, targetPath, 2)
+				if err := os.Symlink(targetPath, linkPath); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+				return linkPath, []step{{
+					mutate: func(t *testing.T) {
+						tmpPath := filepath.Join(targetDir, ".global.yaml.tmp")
+						writeGlobalConfig(t, tmpPath, 6)
+						if err := os.Rename(tmpPath, targetPath); err != nil {
+							t.Fatalf("Rename() error = %v", err)
+						}
+					},
+					ticker: filePollTicker,
+					want:   6,
+				}}
+			},
+		},
+		{
+			name: "delete and recreate",
+			prepare: func(t *testing.T, _ *controlledFileRuntime) (string, []step) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "global.yaml")
+				writeGlobalConfig(t, path, 2)
+				return path, []step{
+					{
+						mutate: func(t *testing.T) {
+							if err := os.Remove(path); err != nil {
+								t.Fatalf("Remove() error = %v", err)
+							}
+						},
+						ticker:  filePollTicker,
+						wantErr: true,
+					},
+					{
+						mutate: func(t *testing.T) {
+							writeGlobalConfig(t, path, 7)
+						},
+						ticker: filePollTicker,
+						want:   7,
+					},
+				}
+			},
+		},
 	}
-	if len(added) != 1 || added[0] != nextWatchDir {
-		t.Fatalf("added dirs = %#v, want [%q]", added, nextWatchDir)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime := newControlledFileRuntime()
+			path, steps := test.prepare(t, runtime)
+			w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
+				return globalconfig.Read(path)
+			}, runtime.option(), withFileIntervals(time.Hour, time.Hour))
+			if err != nil {
+				t.Fatalf("NewFile() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			updates, err := w.Watch(ctx)
+			if err != nil {
+				t.Fatalf("Watch() error = %v", err)
+			}
+
+			for _, step := range steps {
+				step.mutate(t)
+				runtime.fireTicker(t, step.ticker)
+				runtime.waitForReset(t)
+				runtime.fireTimer(t)
+				update := receiveFileUpdate(t, updates)
+				if step.wantErr {
+					if update.Err == nil {
+						t.Fatal("update error = nil, want file error")
+					}
+					continue
+				}
+				if update.Err != nil {
+					t.Fatalf("update error = %v", update.Err)
+				}
+				if update.Value.Global.MaxConcurrentAgents != step.want {
+					t.Fatalf("MaxConcurrentAgents = %d, want %d", update.Value.Global.MaxConcurrentAgents, step.want)
+				}
+			}
+		})
+	}
+}
+
+func TestFileWatcherDeduplicatesEventAndPollObservations(t *testing.T) {
+	t.Parallel()
+
+	runtime := newControlledFileRuntime()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global.yaml")
+	writeGlobalConfig(t, path, 2)
+	w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	}, runtime.option(), withFileIntervals(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	writeGlobalConfig(t, path, 8)
+	runtime.fireTicker(t, filePollTicker)
+	runtime.waitForReset(t)
+	runtime.sendEvent(t, path)
+	runtime.fireTimer(t)
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 8 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 8", update.Value.Global.MaxConcurrentAgents)
+	}
+	assertNoFileUpdate(t, updates)
+}
+
+func TestFileWatcherCompletesInitialAttachmentBeforeReady(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		addErr  error
+		wantErr bool
+	}{
+		{name: "attached"},
+		{name: "missing directory remains pending", addErr: os.ErrNotExist},
+		{name: "other attachment failure", addErr: errors.New("permission denied"), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime := newControlledFileRuntime()
+			var addCalled atomic.Bool
+			runtime.add = func(string) error {
+				addCalled.Store(true)
+				return test.addErr
+			}
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			writeGlobalConfig(t, path, 2)
+			w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
+				return globalconfig.Read(path)
+			}, runtime.option(), withFileIntervals(time.Hour, time.Hour))
+			if err != nil {
+				t.Fatalf("NewFile() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			updates, err := w.Watch(ctx)
+			if !addCalled.Load() {
+				t.Fatal("Watch() returned before initial attachment attempt")
+			}
+			if test.wantErr {
+				cancel()
+				if err == nil {
+					t.Fatal("Watch() error = nil, want attachment error")
+				}
+				runtime.waitForClosed(t)
+				return
+			}
+			if err != nil {
+				cancel()
+				t.Fatalf("Watch() error = %v", err)
+			}
+			cancel()
+			waitForFileUpdatesClosed(t, updates)
+		})
+	}
+}
+
+func TestFileWatcherCancellationStopsRuntime(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		missingParent bool
+	}{
+		{name: "attached"},
+		{name: "pending attachment", missingParent: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime := newControlledFileRuntime()
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			if test.missingParent {
+				path = filepath.Join(t.TempDir(), "missing", "global.yaml")
+				runtime.add = func(dir string) error {
+					_, err := os.Stat(dir)
+					return err
+				}
+			} else {
+				writeGlobalConfig(t, path, 2)
+			}
+			w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
+				return globalconfig.Read(path)
+			}, runtime.option(), withFileIntervals(time.Hour, time.Hour))
+			if err != nil {
+				t.Fatalf("NewFile() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			updates, err := w.Watch(ctx)
+			if err != nil {
+				t.Fatalf("Watch() error = %v", err)
+			}
+			cancel()
+			waitForFileUpdatesClosed(t, updates)
+			runtime.waitForClosed(t)
+			runtime.poll.waitForStopped(t)
+			if test.missingParent {
+				runtime.retry.waitForStopped(t)
+			}
+			if runtime.timer.stops.Load() < 2 {
+				t.Fatalf("debounce timer stops = %d, want at least 2", runtime.timer.stops.Load())
+			}
+		})
 	}
 }
 
@@ -537,11 +823,24 @@ type controlledFileRuntime struct {
 	events chan fsnotify.Event
 	errors chan error
 	timer  *controlledFileTimer
+	poll   *controlledFileTicker
+	retry  *controlledFileTicker
+	added  chan string
+	closed chan struct{}
+	add    func(string) error
+	close  sync.Once
 }
 
 type controlledFileTimer struct {
 	ticks  chan time.Time
 	resets chan time.Duration
+	stops  atomic.Int32
+}
+
+type controlledFileTicker struct {
+	ticks   chan time.Time
+	stopped chan struct{}
+	stop    sync.Once
 }
 
 func newControlledFileRuntime() *controlledFileRuntime {
@@ -550,8 +849,19 @@ func newControlledFileRuntime() *controlledFileRuntime {
 		errors: make(chan error),
 		timer: &controlledFileTimer{
 			ticks:  make(chan time.Time, 1),
-			resets: make(chan time.Duration, 2),
+			resets: make(chan time.Duration, 8),
 		},
+		poll:   newControlledFileTicker(),
+		retry:  newControlledFileTicker(),
+		added:  make(chan string, 16),
+		closed: make(chan struct{}),
+	}
+}
+
+func newControlledFileTicker() *controlledFileTicker {
+	return &controlledFileTicker{
+		ticks:   make(chan time.Time, 1),
+		stopped: make(chan struct{}),
 	}
 }
 
@@ -559,14 +869,27 @@ func (r *controlledFileRuntime) option() FileOption {
 	return withFileRuntime(
 		func() (fileEventWatcher, error) { return r, nil },
 		func(time.Duration) fileTimer { return r.timer },
+		func(kind fileTickerKind, _ time.Duration) fileTicker {
+			if kind == fileRetryTicker {
+				return r.retry
+			}
+			return r.poll
+		},
 	)
 }
 
-func (r *controlledFileRuntime) Add(string) error {
+func (r *controlledFileRuntime) Add(path string) error {
+	r.added <- path
+	if r.add != nil {
+		return r.add(path)
+	}
 	return nil
 }
 
 func (r *controlledFileRuntime) Close() error {
+	r.close.Do(func() {
+		close(r.closed)
+	})
 	return nil
 }
 
@@ -598,13 +921,53 @@ func (r *controlledFileRuntime) waitForReset(t *testing.T) {
 	}
 }
 
-func (r *controlledFileRuntime) fire(t *testing.T) {
+func (r *controlledFileRuntime) fireTimer(t *testing.T) {
 	t.Helper()
 
 	select {
 	case r.timer.ticks <- time.Now():
 	case <-time.After(time.Second):
 		t.Fatal("timed out firing debounce timer")
+	}
+}
+
+func (r *controlledFileRuntime) fireTicker(t *testing.T, kind fileTickerKind) {
+	t.Helper()
+
+	ticker := r.poll
+	if kind == fileRetryTicker {
+		ticker = r.retry
+	}
+	select {
+	case ticker.ticks <- time.Now():
+	case <-time.After(time.Second):
+		t.Fatal("timed out firing file ticker")
+	}
+}
+
+func (r *controlledFileRuntime) waitForAdd(t *testing.T, want string) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case got := <-r.added:
+			if got == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting to watch directory %q", want)
+		}
+	}
+}
+
+func (r *controlledFileRuntime) waitForClosed(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-r.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for file watcher close")
 	}
 }
 
@@ -618,7 +981,41 @@ func (t *controlledFileTimer) Reset(duration time.Duration) bool {
 }
 
 func (t *controlledFileTimer) Stop() bool {
+	t.stops.Add(1)
 	return true
+}
+
+func (t *controlledFileTicker) C() <-chan time.Time {
+	return t.ticks
+}
+
+func (t *controlledFileTicker) Stop() {
+	t.stop.Do(func() {
+		close(t.stopped)
+	})
+}
+
+func (t *controlledFileTicker) waitForStopped(testingT *testing.T) {
+	testingT.Helper()
+
+	select {
+	case <-t.stopped:
+	case <-time.After(time.Second):
+		testingT.Fatal("timed out waiting for file ticker stop")
+	}
+}
+
+func waitForFileUpdatesClosed[T any](t *testing.T, updates <-chan FileUpdate[T]) {
+	t.Helper()
+
+	select {
+	case _, ok := <-updates:
+		if ok {
+			t.Fatal("updates channel remained open")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for updates channel close")
+	}
 }
 
 func writeWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
