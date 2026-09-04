@@ -17,7 +17,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
-func TestBootRegistryRebuildDispatchesStrandedActiveIssueAfterPoisonedGate(t *testing.T) {
+// A ready higher-priority project that never acquires must not strand real work.
+// This previously required a full gate rebuild to recover: the phantom project
+// held a priority reservation, so the stranded issue could not dispatch at all.
+// Priority now orders contention only, so the issue dispatches immediately and
+// the rebuild path below still recovers it.
+func TestBootRegistryRebuildDispatchesStrandedActiveIssueDespiteReadyHigherPriorityProject(t *testing.T) {
 	t.Parallel()
 
 	configuredProject := globalconfig.Project{ID: "gopher-ai", Weight: 1, Priority: 3}
@@ -44,22 +49,19 @@ func TestBootRegistryRebuildDispatchesStrandedActiveIssueAfterPoisonedGate(t *te
 	poisonedGate.MarkReady(phantom)
 	strandedRunner := newRestartRecoveryRunner()
 	stranded, stopStranded := runRestartRecoveryOrchestrator(t, tracker, strandedRunner, poisonedGate, configuredCandidate)
-	strandedState := restartRecoveryState(t, stranded)
-	if len(strandedState.Running) != 0 {
-		t.Fatalf("Running = %#v, want no live work attempt while gate is poisoned", strandedState.Running)
-	}
-	if !restartRecoveryEventContains(
-		strandedState,
-		"dispatch_slot_wait",
-		"reason="+scheduler.DispatchGateReasonReservedForHigherPriorityProject,
-		"selected_project_id="+phantom.ID,
-	) {
-		t.Fatalf("RecentEvents = %#v, want poisoned priority reservation", strandedState.RecentEvents)
-	}
 	select {
 	case request := <-strandedRunner.started:
-		t.Fatalf("unexpected runner request while gate is poisoned = %#v", request)
-	default:
+		if request.Issue.ID != issue.ID {
+			t.Fatalf("RunRequest.Issue = %#v, want stranded issue %#v", request.Issue, issue)
+		}
+	case <-time.After(5 * time.Second):
+		strandedState := restartRecoveryState(t, stranded)
+		t.Fatalf(
+			"timed out waiting for dispatch while %q was merely ready; capacity was free. Running = %#v, RecentEvents = %#v",
+			phantom.ID,
+			strandedState.Running,
+			strandedState.RecentEvents,
+		)
 	}
 	stopStranded()
 
