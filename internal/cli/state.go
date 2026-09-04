@@ -59,6 +59,7 @@ func classifyStateReadError(err error) error {
 func writeStatePretty(writer io.Writer, state DashboardState) error {
 	status := stateString(state.field("status"))
 	refreshStatus := stateNestedString(state.field("refresh"), "status")
+	enrichmentStatus := stateNestedString(state.field("enrichment"), "status")
 	errorCode := stateNestedString(state.field("error"), "code")
 	if status == "" && errorCode != "" {
 		status = "degraded"
@@ -66,7 +67,7 @@ func writeStatePretty(writer io.Writer, state DashboardState) error {
 	if status == "" {
 		status = "unknown"
 	}
-	degraded := refreshStatus == "degraded" || errorCode != "" || stateRefreshSourceDegraded(state.field("refresh"))
+	degraded := refreshStatus == "degraded" || enrichmentStatus == "pending" || enrichmentStatus == "omitted" || errorCode != "" || stateRefreshSourceDegraded(state.field("refresh"))
 
 	lines := []string{
 		"Status: " + status,
@@ -75,6 +76,15 @@ func writeStatePretty(writer io.Writer, state DashboardState) error {
 	}
 	if refreshStatus != "" {
 		lines = append(lines, "Refresh status: "+refreshStatus)
+	}
+	if enrichmentStatus != "" {
+		lines = append(lines, "Enrichment status: "+enrichmentStatus)
+	}
+	if completedAt := stateNestedString(state.field("enrichment"), "completed_snapshot_generated_at"); completedAt != "" {
+		lines = append(lines, "Enrichment completed snapshot: "+completedAt)
+	}
+	if reason := stateNestedString(state.field("enrichment"), "degraded_reason"); reason != "" {
+		lines = append(lines, "Enrichment reason: "+reason)
 	}
 	if refreshedAt := stateNestedString(state.field("refresh"), "last_refresh_at"); refreshedAt != "" {
 		lines = append(lines, "Last refresh: "+refreshedAt)
