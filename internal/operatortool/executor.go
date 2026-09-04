@@ -305,6 +305,7 @@ func boundedRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 	if rateLimits.RESTUsage != nil {
 		rest := *rateLimits.RESTUsage
 		rest.Contributors = boundedClone(rest.Contributors, MaxItemLimit)
+		rest.Divergences = boundedClone(rest.Divergences, MaxItemLimit)
 		result.RESTUsage = &rest
 	}
 	return &result

@@ -1227,6 +1227,7 @@ func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTU
 	}
 	merged := &telemetry.RESTUsage{}
 	contributors := make(map[string]telemetry.RESTUsageContributor)
+	divergences := make(map[string]telemetry.RESTUsageDivergence)
 	for _, usage := range []*telemetry.RESTUsage{current, incoming} {
 		if usage == nil {
 			continue
@@ -1268,9 +1269,25 @@ func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTU
 			}
 			contributors[key] = existing
 		}
+		for _, divergence := range usage.Divergences {
+			resetAt := ""
+			if divergence.ResetAt != nil {
+				resetAt = divergence.ResetAt.UTC().Format(time.RFC3339Nano)
+			}
+			key := divergence.CredentialIdentity + "\x00" + divergence.Resource + "\x00" + resetAt
+			existing, ok := divergences[key]
+			if !ok || divergence.ObservedRequests > existing.ObservedRequests ||
+				divergence.ObservedRequests == existing.ObservedRequests && divergence.LastObservedAt != nil &&
+					(existing.LastObservedAt == nil || divergence.LastObservedAt.After(*existing.LastObservedAt)) {
+				divergences[key] = cloneRESTUsageDivergence(divergence)
+			}
+		}
 	}
 	for _, contributor := range contributors {
 		merged.Contributors = append(merged.Contributors, contributor)
+	}
+	for _, divergence := range divergences {
+		merged.Divergences = append(merged.Divergences, divergence)
 	}
 	sort.Slice(merged.Contributors, func(i, j int) bool {
 		if restBudgetConsumer(merged.Contributors[i].Consumer) != restBudgetConsumer(merged.Contributors[j].Consumer) {
@@ -1281,7 +1298,30 @@ func mergeFleetRESTUsage(current *telemetry.RESTUsage, incoming *telemetry.RESTU
 		}
 		return merged.Contributors[i].EndpointFamily < merged.Contributors[j].EndpointFamily
 	})
+	sort.Slice(merged.Divergences, func(i, j int) bool {
+		if merged.Divergences[i].CredentialIdentity != merged.Divergences[j].CredentialIdentity {
+			return merged.Divergences[i].CredentialIdentity < merged.Divergences[j].CredentialIdentity
+		}
+		if merged.Divergences[i].Resource != merged.Divergences[j].Resource {
+			return merged.Divergences[i].Resource < merged.Divergences[j].Resource
+		}
+		return timePointerBefore(merged.Divergences[i].ResetAt, merged.Divergences[j].ResetAt)
+	})
 	return merged
+}
+
+func cloneRESTUsageDivergence(divergence telemetry.RESTUsageDivergence) telemetry.RESTUsageDivergence {
+	divergence.WindowStartedAt = cloneTimePointer(divergence.WindowStartedAt)
+	divergence.LastObservedAt = cloneTimePointer(divergence.LastObservedAt)
+	divergence.ResetAt = cloneTimePointer(divergence.ResetAt)
+	return divergence
+}
+
+func timePointerBefore(left *time.Time, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left != nil
+	}
+	return left.Before(*right)
 }
 
 func issueKey(issue telemetry.Issue) string {

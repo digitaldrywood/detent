@@ -1621,7 +1621,10 @@ func TestMergeSnapshotAttributesFleetRESTBudgets(t *testing.T) {
 			GitHubRESTBudgets: []telemetry.RESTBudget{
 				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 4200, ResetAt: &coreReset, ObservedAt: &firstObserved},
 			},
-			RESTUsage: &telemetry.RESTUsage{TotalRequests: 3, BillableRequests: 3},
+			RESTUsage: &telemetry.RESTUsage{
+				TotalRequests: 3, BillableRequests: 3,
+				Divergences: []telemetry.RESTUsageDivergence{{CredentialIdentity: "github-rest:shared", Resource: "core", ObservedRequests: 11, AttributedRequests: 10, LastObservedAt: &firstObserved, ResetAt: &coreReset}},
+			},
 		},
 	})
 	got = mergeSnapshot(got, telemetry.Snapshot{
@@ -1632,7 +1635,10 @@ func TestMergeSnapshotAttributesFleetRESTBudgets(t *testing.T) {
 				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issues", Resource: "core", Limit: 5000, Remaining: 300, ResetAt: &coreReset, ObservedAt: &secondObserved},
 				{CredentialIdentity: "github-rest:search", EndpointFamily: "issue search", Resource: "search", Limit: 30, Remaining: 20, ResetAt: &searchReset, ObservedAt: &secondObserved},
 			},
-			RESTUsage: &telemetry.RESTUsage{TotalRequests: 2, BillableRequests: 1},
+			RESTUsage: &telemetry.RESTUsage{
+				TotalRequests: 2, BillableRequests: 1,
+				Divergences: []telemetry.RESTUsageDivergence{{CredentialIdentity: "github-rest:shared", Resource: "core", ObservedRequests: 22, AttributedRequests: 20, LastObservedAt: &secondObserved, ResetAt: &coreReset}},
+			},
 		},
 	})
 
@@ -1647,6 +1653,9 @@ func TestMergeSnapshotAttributesFleetRESTBudgets(t *testing.T) {
 	}
 	if got.RateLimits.RESTUsage == nil || got.RateLimits.RESTUsage.TotalRequests != 5 || got.RateLimits.RESTUsage.BillableRequests != 4 {
 		t.Fatalf("RESTUsage = %#v, want aggregated project request counts", got.RateLimits.RESTUsage)
+	}
+	if divergences := got.RateLimits.RESTUsage.Divergences; len(divergences) != 1 || divergences[0].AttributedRequests != 20 {
+		t.Fatalf("RESTUsage.Divergences = %#v, want latest shared registry counters without double counting", divergences)
 	}
 	if got.RateLimits.GitHubREST == nil || got.RateLimits.GitHubREST.Remaining != 300 {
 		t.Fatalf("GitHubREST = %#v, want most constrained compatibility bucket", got.RateLimits.GitHubREST)
