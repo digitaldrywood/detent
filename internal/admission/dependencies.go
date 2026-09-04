@@ -78,9 +78,7 @@ func resolveAdmissionDependencies(ctx context.Context, settings Settings, issue 
 			resolutionError = "dependency resolution failed: " + redactAdmissionOutput([]byte(err.Error()))
 		} else {
 			resolutionError = "dependency was not returned by tracker"
-			for _, dependency := range issues {
-				resolved[strings.ToLower(strings.TrimSpace(dependency.Identifier))] = dependency
-			}
+			resolved = indexAdmissionDependencies(issues, refs)
 		}
 	}
 	for _, ref := range refs {
@@ -101,6 +99,34 @@ func resolveAdmissionDependencies(ctx context.Context, settings Settings, issue 
 		evidence.References = append(evidence.References, entry)
 	}
 	return evidence
+}
+
+func indexAdmissionDependencies(issues []connector.Issue, refs []string) map[string]connector.Issue {
+	resolved := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		resolved[strings.ToLower(strings.TrimSpace(issue.Identifier))] = issue
+	}
+	for _, ref := range refs {
+		if _, found := resolved[ref]; found || !strings.HasPrefix(ref, "#") {
+			continue
+		}
+		number, err := strconv.Atoi(strings.TrimPrefix(ref, "#"))
+		if err != nil || number <= 0 {
+			continue
+		}
+		var match connector.Issue
+		matches := 0
+		for _, issue := range issues {
+			if issue.Number == number {
+				match = issue
+				matches++
+			}
+		}
+		if matches == 1 {
+			resolved[ref] = match
+		}
+	}
+	return resolved
 }
 
 func dependencyFingerprint(base string, snapshots ...*runner.AdmissionDependencies) string {

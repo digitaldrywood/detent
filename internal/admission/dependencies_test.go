@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -381,5 +383,63 @@ func TestAdmissionUnchangedDependencyDeclineDoesNotStarveNextCandidate(t *testin
 	result, err := manager.RunOnce(t.Context())
 	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != second.ID {
 		t.Fatalf("result=%+v, %v", result, err)
+	}
+}
+
+func TestAdmissionLocalDependencyNumberAlias(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("dependent", "wi-video-20", 1, now)
+	issue.Description += "\nBlocked by: #3"
+	dependency := connector.Issue{ID: "dependency", Identifier: "wi-video-3", Number: 3, State: "Done"}
+	tracker, err := local.New(local.Config{Path: filepath.Join(t.TempDir(), "tracker.db"), ProjectID: "video", Issues: []connector.Issue{dependency, issue}, ObservedStates: []string{"Backlog"}, TerminalStates: []string{"Done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := tracker.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := tracker.CloseIssue(t.Context(), dependency.ID); err != nil {
+		t.Fatal(err)
+	}
+	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings.TerminalStates = []string{"Done"}
+	evidence := resolveAdmissionDependencies(t.Context(), settings, issue, now)
+	if evidence == nil || !evidence.Ready {
+		t.Fatalf("local #3 evidence=%+v", evidence)
+	}
+	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || !result.Proposals[0].Findings[1].Matched {
+		t.Fatalf("result=%+v, %v", result, err)
+	}
+}
+
+func TestAdmissionDependencyAliasesFailClosed(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		ref    string
+		issues []connector.Issue
+		wantID string
+	}{
+		{name: "canonical", ref: "owner/repo#3", issues: []connector.Issue{{ID: "canonical", Identifier: "OWNER/REPO#3"}}, wantID: "canonical"},
+		{name: "number", ref: "#3", issues: []connector.Issue{{ID: "local", Identifier: "wi-video-3", Number: 3}}, wantID: "local"},
+		{name: "leading zeros", ref: "#003", issues: []connector.Issue{{ID: "local", Identifier: "wi-video-3", Number: 3}}, wantID: "local"},
+		{name: "exact alias wins", ref: "#3", issues: []connector.Issue{{ID: "exact", Identifier: "#3"}, {ID: "local", Identifier: "wi-video-3", Number: 3}}, wantID: "exact"},
+		{name: "cross repository cannot alias local number", ref: "elsewhere/private#3", issues: []connector.Issue{{ID: "local", Identifier: "wi-video-3", Number: 3}}},
+		{name: "ambiguous", ref: "#3", issues: []connector.Issue{{ID: "a", Identifier: "a/repo#3", Number: 3}, {ID: "b", Identifier: "b/repo#3", Number: 3}}},
+		{name: "missing", ref: "#3", issues: []connector.Issue{{ID: "local", Identifier: "wi-video-4", Number: 4}}},
+		{name: "invalid number", ref: "#invalid"},
+		{name: "zero", ref: "#0", issues: []connector.Issue{{Identifier: "wi-video-0"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := indexAdmissionDependencies(tt.issues, []string{tt.ref})
+			if issue, found := got[tt.ref]; (found != (tt.wantID != "")) || issue.ID != tt.wantID {
+				t.Fatalf("resolved=%+v, found=%t, want=%s", issue, found, tt.wantID)
+			}
+		})
 	}
 }
