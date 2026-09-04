@@ -34,13 +34,7 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		}
 	}
 
-	states := cleanupFetchStates(o.cfg)
 	if due {
-		swept := len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
-		reconciled := o.reconcileResidualWorkspaces(ctx, state, now)
-		if swept && reconciled {
-			state.LastWorkspaceCleanupAt = now
-		}
 		return
 	}
 
@@ -51,26 +45,45 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 	o.reapWorkspaceStates(ctx, state, terminalStates, now)
 }
 
+func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state *State, now time.Time) {
+	if o.reaper == nil {
+		return
+	}
+	if !state.LastWorkspaceCleanupAt.IsZero() && now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
+		return
+	}
+	states := cleanupFetchStates(o.cfg)
+	swept := len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
+	reconciled := o.reconcileResidualWorkspaces(ctx, state, now)
+	if swept && reconciled {
+		state.LastWorkspaceCleanupAt = now
+	}
+}
+
 func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *State, now time.Time) bool {
 	reconciler, ok := o.reaper.(WorkspaceReconciler)
 	if !ok {
 		return true
 	}
 	result, err := reconciler.ReconcileWorkspaces(ctx, activeWorkspaceIssues(state, o.cfg.TerminalStates))
-	failures := make(map[string]string, len(result.Failures))
+	if state.CleanupFailures == nil {
+		state.CleanupFailures = map[string]string{}
+	}
+	for _, path := range result.CompletedPaths {
+		delete(state.CleanupFailures, strings.TrimSpace(path))
+	}
 	for _, failure := range result.Failures {
 		if path := strings.TrimSpace(failure.Path); path != "" {
-			failures[path] = strings.TrimSpace(failure.Error)
+			state.CleanupFailures[path] = strings.TrimSpace(failure.Error)
 		}
 	}
-	state.CleanupFailures = failures
-	if len(failures) > 0 {
+	if len(result.Failures) > 0 {
 		state.CleanupFailureAt = cleanupEventAt(now)
 	}
 	if err != nil {
 		o.logger.Warn(
 			"workspace residual reconciliation failed",
-			slog.Int("affected_path_count", len(failures)),
+			slog.Int("affected_path_count", len(state.CleanupFailures)),
 			slog.Int("removed", result.Removed),
 			slog.Int("active_skipped", result.ActiveSkipped),
 			slog.Int("registered_skipped", result.RegisteredSkipped),
@@ -80,7 +93,7 @@ func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *S
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(now),
 			Event:   "workspace_residual_cleanup_failed",
-			Message: fmt.Sprintf("workspace residual cleanup failed affected_paths=%d: %v", len(failures), err),
+			Message: fmt.Sprintf("workspace residual cleanup failed affected_paths=%d: %v", len(state.CleanupFailures), err),
 		})
 		return false
 	}

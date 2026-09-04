@@ -187,6 +187,9 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 			if result.Removed != tt.wantRemoved || result.ActiveSkipped != tt.wantActive || result.RegisteredSkipped != tt.wantRegistered {
 				t.Fatalf("ReconcileResiduals() = %+v, want removed=%d active=%d registered=%d", result, tt.wantRemoved, tt.wantActive, tt.wantRegistered)
 			}
+			if got := len(result.CompletedPaths); got != tt.wantRemoved {
+				t.Fatalf("ReconcileResiduals() completed paths = %d, want %d", got, tt.wantRemoved)
+			}
 			_, statErr := os.Stat(info.Path)
 			if got := statErr == nil; got != tt.wantExists {
 				t.Fatalf("residual workspace exists = %t, want %t, stat error = %v", got, tt.wantExists, statErr)

@@ -182,6 +182,7 @@ type ReconcileResult struct {
 	ActiveSkipped     int
 	RegisteredSkipped int
 	UnownedSkipped    int
+	CompletedPaths    []string
 	Failures          []CleanupFailure
 }
 

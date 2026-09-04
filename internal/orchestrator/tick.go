@@ -245,7 +245,8 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	timing.next("dispatch")
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 	timing.next("publish")
-	if refreshSucceeded(state) {
+	refreshOK := refreshSucceeded(state)
+	if refreshOK {
 		state.BoardIssues = overlayIssueStateSnapshots(
 			boardIssuesFromFetched(fetched),
 			state.tickTransitions.boardIssues,
@@ -255,6 +256,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.markRefreshSucceeded(state, now)
 	}
 	state.Pipeline = overlayIssueStateSnapshots(state.Pipeline, state.tickTransitions.pipeline)
+	if refreshOK {
+		o.reapDueWorkspacesAfterRefresh(ctx, state, now)
+	}
 	completed = true
 }
 

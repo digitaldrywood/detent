@@ -3122,6 +3122,7 @@ func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connect
 		ActiveSkipped:     result.ActiveSkipped,
 		RegisteredSkipped: result.RegisteredSkipped,
 		UnownedSkipped:    result.UnownedSkipped,
+		CompletedPaths:    result.CompletedPaths,
 		Failures:          failures,
 	}, err
 }

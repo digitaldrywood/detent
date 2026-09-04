@@ -6521,7 +6521,10 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 		result: workspace.ReconcileResult{
 			Removed:       1,
 			ActiveSkipped: 2,
-			Failures:      []workspace.CleanupFailure{{Path: "/workspaces/residual", Error: "permission denied"}},
+			CompletedPaths: []string{
+				"/workspaces/removed",
+			},
+			Failures: []workspace.CleanupFailure{{Path: "/workspaces/residual", Error: "permission denied"}},
 		},
 	}
 	runner, err := NewRunner(Dependencies{
@@ -6538,7 +6541,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileWorkspaces() error = %v", err)
 	}
-	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.Failures) != 1 {
+	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.CompletedPaths) != 1 || result.CompletedPaths[0] != "/workspaces/removed" || len(result.Failures) != 1 {
 		t.Fatalf("ReconcileWorkspaces() = %+v", result)
 	}
 	if len(workspaceBackend.active) != 1 || workspaceBackend.active[0].ProjectID != "default" || workspaceBackend.active[0].Identifier != active[0].Identifier {

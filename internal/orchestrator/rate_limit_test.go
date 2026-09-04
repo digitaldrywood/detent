@@ -1252,6 +1252,7 @@ func TestReapWorkspacesFallsBackToStateSweepWhenKnownWorkspaceIssueIDFetchFails(
 	orch.reaper = rateLimitWorkspaceReaper{}
 
 	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+	orch.reapDueWorkspacesAfterRefresh(context.Background(), &state, now)
 
 	if tracker.fetchByIDCalls != 1 {
 		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
@@ -1301,6 +1302,7 @@ func TestReapWorkspacesStillSweepsWhenKnownWorkspaceIsActive(t *testing.T) {
 	orch.reaper = rateLimitWorkspaceReaper{}
 
 	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+	orch.reapDueWorkspacesAfterRefresh(context.Background(), &state, now)
 
 	if tracker.fetchByIDCalls != 1 {
 		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
@@ -1360,6 +1362,7 @@ func TestReapWorkspacesScopesScheduledCleanupFetch(t *testing.T) {
 			orch.reaper = rateLimitWorkspaceReaper{}
 
 			orch.reapWorkspacesIfDue(context.Background(), &state, now)
+			orch.reapDueWorkspacesAfterRefresh(context.Background(), &state, now)
 
 			if tracker.probeCalls != test.wantProbeCalls {
 				t.Fatalf("FetchIssueStateProbe() calls = %d, want %d", tracker.probeCalls, test.wantProbeCalls)

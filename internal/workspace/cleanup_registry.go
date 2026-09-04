@@ -275,7 +275,9 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 		if removeErr := l.removeOwnershipRecord(record.Path); removeErr != nil {
 			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: removeErr.Error()})
 			reconcileErrors = append(reconcileErrors, removeErr)
+			continue
 		}
+		result.CompletedPaths = append(result.CompletedPaths, record.Path)
 	}
 	return result, errors.Join(reconcileErrors...)
 }

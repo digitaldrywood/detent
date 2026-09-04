@@ -850,7 +850,7 @@ func TestWorkspaceResidualReconciliationRetriesAndProtectsActiveIssues(t *testin
 		cleanupSweepReaper: &cleanupSweepReaper{},
 		results: []WorkspaceReconcileResult{
 			{Failures: []runpkg.WorkspaceCleanupFailure{{Path: "/workspaces/residual", Error: "permission denied"}}},
-			{Removed: 1},
+			{Removed: 1, CompletedPaths: []string{"/workspaces/residual"}},
 		},
 		errors: []error{errors.New("permission denied"), nil},
 	}
@@ -861,7 +861,7 @@ func TestWorkspaceResidualReconciliationRetriesAndProtectsActiveIssues(t *testin
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	orch.reapWorkspacesIfDue(t.Context(), &state, now)
+	orch.reapDueWorkspacesAfterRefresh(t.Context(), &state, now)
 	if len(reaper.active) != 1 || len(reaper.active[0]) != 1 || reaper.active[0][0].ID != active.ID {
 		t.Fatalf("first reconciliation active issues = %+v", reaper.active)
 	}
@@ -872,7 +872,7 @@ func TestWorkspaceResidualReconciliationRetriesAndProtectsActiveIssues(t *testin
 		t.Fatalf("RecentEvents = %+v, want residual cleanup failure", state.RecentEvents)
 	}
 
-	orch.reapWorkspacesIfDue(t.Context(), &state, now.Add(time.Minute))
+	orch.reapDueWorkspacesAfterRefresh(t.Context(), &state, now.Add(time.Minute))
 	if len(reaper.active) != 2 {
 		t.Fatalf("reconciliation calls = %d, want retry", len(reaper.active))
 	}
@@ -881,6 +881,78 @@ func TestWorkspaceResidualReconciliationRetriesAndProtectsActiveIssues(t *testin
 	}
 	if _, ok := recentStateEvent(state, "workspace_residual_cleanup_succeeded"); !ok {
 		t.Fatalf("RecentEvents = %+v, want residual cleanup success", state.RecentEvents)
+	}
+}
+
+func TestResidualReconciliationRunsOnlyAfterFreshTrackerStatePublished(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	active := connector.Issue{ID: "issue-active", Identifier: "digitaldrywood/detent#2141", State: "In Progress"}
+	cfg := normalizeConfig(Config{
+		ActiveStates:                  []string{"In Progress"},
+		TerminalStates:                []string{"Done"},
+		WorkspaceCleanupSweepInterval: time.Hour,
+	})
+	state := newState(cfg)
+	reaper := &residualCleanupReaper{
+		cleanupSweepReaper: &cleanupSweepReaper{},
+		results:            []WorkspaceReconcileResult{{ActiveSkipped: 1}},
+		errors:             []error{nil},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: &runningStateConnector{},
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.reapWorkspacesIfDue(t.Context(), &state, now)
+	if len(reaper.active) != 0 {
+		t.Fatalf("pre-refresh reconciliation calls = %d, want 0", len(reaper.active))
+	}
+	state.BoardIssues = []connector.Issue{active}
+	state.LastRefreshAt = now
+	orch.reapDueWorkspacesAfterRefresh(t.Context(), &state, now)
+	if len(reaper.active) != 1 || len(reaper.active[0]) != 1 || reaper.active[0][0].ID != active.ID {
+		t.Fatalf("post-refresh reconciliation active issues = %+v, want current active issue", reaper.active)
+	}
+}
+
+func TestResidualReconciliationPreservesSkippedCleanupFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	const path = "/workspaces/residual"
+	cfg := normalizeConfig(Config{WorkspaceCleanupSweepInterval: time.Hour})
+	state := newState(cfg)
+	state.CleanupFailures[path] = "permission denied"
+	reaper := &residualCleanupReaper{
+		cleanupSweepReaper: &cleanupSweepReaper{},
+		results: []WorkspaceReconcileResult{
+			{RegisteredSkipped: 1},
+			{CompletedPaths: []string{path}},
+		},
+		errors: []error{nil, nil},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: &runningStateConnector{},
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if !orch.reconcileResidualWorkspaces(t.Context(), &state, now) {
+		t.Fatal("skipped reconciliation failed")
+	}
+	if got := state.CleanupFailures[path]; got != "permission denied" {
+		t.Fatalf("skipped cleanup failure = %q, want preserved diagnostic", got)
+	}
+	if !orch.reconcileResidualWorkspaces(t.Context(), &state, now.Add(time.Minute)) {
+		t.Fatal("completed reconciliation failed")
+	}
+	if len(state.CleanupFailures) != 0 {
+		t.Fatalf("completed cleanup failures = %+v, want none", state.CleanupFailures)
 	}
 }
 
