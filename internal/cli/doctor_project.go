@@ -454,6 +454,10 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorFilesystemProjectSkills(id, project, workflow.Config))
 		return checks
 	}
+	setDoctorCurrentCheck("Project " + id + " workspace growth")
+	if growthCheck, ok := checkDoctorWorkspaceGrowth(ctx, id, workflow.Config.Workspace.Root, projectSourceRoot(project, workflow.Config), deps); ok {
+		checks = append(checks, growthCheck)
+	}
 
 	sourceRepoCheckName := "Project " + id + " source repo"
 	setDoctorCurrentCheck(sourceRepoCheckName)

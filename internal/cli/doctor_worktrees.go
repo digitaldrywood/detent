@@ -4,15 +4,114 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
+const doctorWorkspaceCountWarningThreshold = 50
+
 type doctorGitWorktree struct {
 	Path   string
 	Branch string
+}
+
+func checkDoctorWorkspaceGrowth(
+	ctx context.Context,
+	projectID string,
+	workspaceRoot string,
+	sourceRoot string,
+	deps doctorDeps,
+) (doctorCheck, bool) {
+	name := "Project " + projectID + " workspace growth"
+	resolvedRoot, err := expandDoctorWorkspacePath(workspaceRoot)
+	if err != nil || strings.TrimSpace(workspaceRoot) == "" {
+		if err == nil {
+			err = errors.New("workspace.root is not configured")
+		}
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("cannot inspect workspace growth: %v", err),
+			Hint:   "Set workspace.root to the directory Detent owns, then rerun detent doctor.",
+		}, true
+	}
+	entries, err := os.ReadDir(resolvedRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return doctorCheck{}, false
+	}
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("cannot inspect workspace.root %s: %v", resolvedRoot, err),
+			Hint:   "Verify workspace.root is readable, then rerun detent doctor.",
+		}, true
+	}
+	if strings.TrimSpace(sourceRoot) != "" {
+		resolvedSourceRoot, sourceErr := expandDoctorWorkspacePath(sourceRoot)
+		if sourceErr == nil && doctorCanonicalPath(resolvedRoot) == doctorCanonicalPath(resolvedSourceRoot) {
+			return doctorCheck{}, false
+		}
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.Name() != ".detent" && entry.IsDir() {
+			count++
+		}
+	}
+	if count < doctorWorkspaceCountWarningThreshold {
+		return doctorCheck{}, false
+	}
+	detail := fmt.Sprintf("workspace.root %s contains %d retained workspace directories and reached the %d-directory warning threshold", resolvedRoot, count, doctorWorkspaceCountWarningThreshold)
+	if deps.gitWorktrees != nil && strings.TrimSpace(sourceRoot) != "" {
+		unregistered, classificationErr := countDoctorUnregisteredWorkspaceDirectories(ctx, resolvedRoot, sourceRoot, entries, deps)
+		if classificationErr != nil {
+			detail += fmt.Sprintf("; cannot classify unregistered directories: %v", classificationErr)
+		} else {
+			detail += fmt.Sprintf("; %d are not registered with the source repository", unregistered)
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorWarn,
+		Detail: detail,
+		Hint:   "Confirm workspace cleanup is running and inspect active work before removing stale workspaces.",
+	}, true
+}
+
+func countDoctorUnregisteredWorkspaceDirectories(
+	ctx context.Context,
+	resolvedRoot string,
+	sourceRoot string,
+	entries []os.DirEntry,
+	deps doctorDeps,
+) (int, error) {
+	resolvedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+	if err != nil {
+		return 0, err
+	}
+	worktrees, err := deps.gitWorktrees(ctx, resolvedSourceRoot)
+	if err != nil {
+		return 0, err
+	}
+	registered := make(map[string]struct{}, len(worktrees))
+	for _, worktree := range worktrees {
+		registered[doctorCanonicalPath(worktree.Path)] = struct{}{}
+	}
+	unregistered := 0
+	for _, entry := range entries {
+		if entry.Name() == ".detent" || !entry.IsDir() {
+			continue
+		}
+		path := doctorCanonicalPath(filepath.Join(resolvedRoot, entry.Name()))
+		if _, ok := registered[path]; !ok {
+			unregistered++
+		}
+	}
+	return unregistered, nil
 }
 
 func checkDoctorExternalBranchWorktrees(

@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,5 +95,98 @@ func TestParseDoctorGitWorktrees(t *testing.T) {
 		if got[index] != want[index] {
 			t.Fatalf("worktrees[%d] = %#v, want %#v", index, got[index], want[index])
 		}
+	}
+}
+
+func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		count             int
+		registered        int
+		listErr           error
+		sourceMatchesRoot bool
+		wantCheck         bool
+		wantStatus        doctorStatus
+		wantDetail        []string
+		wantHint          string
+	}{
+		{
+			name:  "below threshold is not surfaced",
+			count: doctorWorkspaceCountWarningThreshold - 1,
+		},
+		{
+			name:       "threshold reports unregistered directories",
+			count:      doctorWorkspaceCountWarningThreshold,
+			registered: doctorWorkspaceCountWarningThreshold - 2,
+			wantCheck:  true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"50 retained workspace directories", "2 are not registered with the source repository"},
+			wantHint:   "Confirm workspace cleanup is running",
+		},
+		{
+			name:       "registration failure still reports growth",
+			count:      doctorWorkspaceCountWarningThreshold,
+			listErr:    errors.New("corrupt worktree registry"),
+			wantCheck:  true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"50 retained workspace directories", "cannot classify unregistered directories", "corrupt worktree registry"},
+			wantHint:   "Confirm workspace cleanup is running",
+		},
+		{
+			name:              "source checkout root is not counted as retained workspaces",
+			count:             doctorWorkspaceCountWarningThreshold,
+			sourceMatchesRoot: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			sourceRoot := filepath.Join(t.TempDir(), "source")
+			if tt.sourceMatchesRoot {
+				sourceRoot = root
+			}
+			if err := os.Mkdir(filepath.Join(root, ".detent"), 0o700); err != nil {
+				t.Fatalf("Mkdir(.detent) error = %v", err)
+			}
+			for index := range tt.count {
+				if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("issue-%d", index)), 0o700); err != nil {
+					t.Fatalf("Mkdir(workspace) error = %v", err)
+				}
+			}
+
+			worktrees := []doctorGitWorktree{{Path: sourceRoot, Branch: "main"}}
+			for index := range tt.registered {
+				worktrees = append(worktrees, doctorGitWorktree{
+					Path:   filepath.Join(root, fmt.Sprintf("issue-%d", index)),
+					Branch: fmt.Sprintf("detent/issue-%d", index),
+				})
+			}
+			check, ok := checkDoctorWorkspaceGrowth(t.Context(), "pyroapex", root, sourceRoot, doctorDeps{
+				gitWorktrees: func(context.Context, string) ([]doctorGitWorktree, error) {
+					return worktrees, tt.listErr
+				},
+			})
+			if ok != tt.wantCheck {
+				t.Fatalf("check present = %t, want %t: %#v", ok, tt.wantCheck, check)
+			}
+			if !tt.wantCheck {
+				return
+			}
+			if check.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", check.Status, tt.wantStatus, check)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+				}
+			}
+			if tt.wantHint != "" && !strings.Contains(check.Hint, tt.wantHint) {
+				t.Fatalf("Hint = %q, want containing %q", check.Hint, tt.wantHint)
+			}
+		})
 	}
 }
