@@ -6,9 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type releaseErrorSafetyScheduler struct {
@@ -37,6 +40,9 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(1, 0, 0, "old-output", "same-deliverable", int64(1), "old-receipt", "recut", int64(1), "new-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(0))
 	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(1))
 	f.Add(1, 0, 0, "tracked-output", "changed", int64(1), "same-head", "recut", int64(1), "same-head", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, true, uint8(1))
+	for _, scenario := range []uint8{4, 5, 6, 7} {
+		f.Add(0, 0, 0, "", "clean", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, scenario)
+	}
 
 	f.Fuzz(func(
 		t *testing.T,
@@ -189,6 +195,31 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		}
 		if got := backendCapacityBoundedProbeAt(wantResumeAt, probeAt, now); !got.Equal(wantProbeAt) {
 			t.Fatalf("backendCapacityBoundedProbeAt(%s, %s, %s) = %s, want %s", wantResumeAt, probeAt, now, got, wantProbeAt)
+		}
+
+		scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+		controller := backendCapacityTestController{scope: scope, hasStatus: true, status: runpkg.CapacityStatus{Available: true, Exhausted: hasReset}}
+		capacityOrchestrator := &Orchestrator{capacityController: controller, capacityStatus: controller}
+		capacityState := newState(normalizeConfig(Config{}))
+		kind := []string{"http_404", "http_500", "http_503", "http_599"}[gateScenario%4]
+		capacityState.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, Kind: kind, ProbeAttempts: int(gateScenario % 8)}
+		outage := capacityOrchestrator.registerBackendOutage(&capacityState, &backendcapacity.Error{Scope: scope, Details: backendcapacity.Details{Type: backendcapacity.ErrorTypeProviderOutage, Kind: kind}}, now, true)
+		if want := now.Add(backendCapacityProbeDelayForAttempt(outage.ProbeAttempts)); !outage.NextProbeAt.Equal(want) {
+			t.Fatalf("provider outage next probe = %s, want %s", outage.NextProbeAt, want)
+		}
+		capacityOrchestrator.recoverBackendCapacityFromStatus(&capacityState, Running{CapacityScope: scope}, &telemetry.RateLimits{}, now)
+		if len(capacityState.BackendOutages) != 1 {
+			t.Fatal("quota telemetry cleared a provider HTTP outage")
+		}
+		if _, _, paused := capacityOrchestrator.backendCapacityDispatch(&capacityState, runpkg.RunRequest{}, now); !paused {
+			t.Fatal("provider outage did not pause dispatch")
+		}
+		if terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(store.WorkAttemptTerminalCapacity), ErrorClass: backendcapacity.ErrorClass}) {
+			t.Fatal("provider capacity counted toward retry parking")
+		}
+		capacityOrchestrator.recoverBackendCapacity(&capacityState, Running{CapacityScope: scope, CapacityProbe: true}, outage.NextProbeAt)
+		if _, _, paused := capacityOrchestrator.backendCapacityDispatch(&capacityState, runpkg.RunRequest{}, outage.NextProbeAt); paused {
+			t.Fatal("successful capacity probe did not resume dispatch")
 		}
 
 		createdSeconds %= 1_000_000_000

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 )
 
 const codexCapacityAvailableThresholdPercent = 5
+
+var codexProviderOutageStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(404|5[0-9]{2})\b`)
+var codexResponsesEndpointPattern = regexp.MustCompile(`(?i)(?:/responses(?:[?,"'\s]|$)|responses endpoint)`)
 
 var codexCapacityRules = backendcapacity.Rules{
 	Kinds: []string{
@@ -92,6 +96,9 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	if !ok {
 		return backendcapacity.Details{}, false
 	}
+	if details, ok := codexProviderOutage(err, evidence); ok {
+		return details, true
+	}
 	if details, ok := backendcapacity.ClassifyTransientOverload(evidence, codexOverloadRules); ok {
 		details.Trigger = boundedCapacityTrigger(evidence)
 		return details, true
@@ -105,6 +112,37 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	}
 	details.Trigger = boundedCapacityTrigger(evidence)
 	return details, true
+}
+
+func codexProviderOutage(err error, evidence string) (backendcapacity.Details, bool) {
+	var turnFailed *TurnFailedError
+	if !errors.As(err, &turnFailed) || turnFailed == nil {
+		return backendcapacity.Details{}, false
+	}
+	match := codexProviderOutageStatusPattern.FindStringSubmatch(evidence)
+	if len(match) != 2 {
+		return backendcapacity.Details{}, false
+	}
+	if match[1] == "404" {
+		if !codexResponsesEndpointPattern.MatchString(evidence) {
+			return backendcapacity.Details{}, false
+		}
+		lower := strings.ToLower(evidence)
+		for _, resourceError := range []string{"model_not_found", "model not found", "invalid_model", "invalid model"} {
+			if strings.Contains(lower, resourceError) {
+				return backendcapacity.Details{}, false
+			}
+		}
+		if strings.Contains(lower, "model") && strings.Contains(lower, "does not exist") {
+			return backendcapacity.Details{}, false
+		}
+	}
+	return backendcapacity.Details{
+		Type:    backendcapacity.ErrorTypeProviderOutage,
+		Kind:    "http_" + match[1],
+		Reason:  "provider responses endpoint unavailable",
+		Trigger: boundedCapacityTrigger(evidence),
+	}, true
 }
 
 func startupEvidencePointer(evidence backendcapacity.StartupEvidence, ok bool) *backendcapacity.StartupEvidence {

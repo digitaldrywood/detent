@@ -34,7 +34,8 @@ func TestRunCapacityClear(t *testing.T) {
 			t.Fatalf("form = %#v", request.Form)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(capacityClearResult{Status: "cleared", Project: "detent", Scope: "codex", Cleared: 1})
+		writer.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(writer).Encode(capacityClearResult{Status: "requested", Project: "detent", Scope: "codex", Requested: 1})
 	}))
 	t.Cleanup(server.Close)
 	serverURL, err := url.Parse(server.URL)
@@ -59,7 +60,7 @@ func TestRunCapacityClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCapacityClear() error = %v", err)
 	}
-	if result.Cleared != 1 || result.Project != "detent" || result.Scope != "codex" {
+	if result.Requested != 1 || result.Project != "detent" || result.Scope != "codex" {
 		t.Fatalf("result = %#v", result)
 	}
 }

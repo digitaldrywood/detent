@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/claudecode"
+	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -21,6 +24,87 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+func TestCodexProviderOutagePausesAndRecoversWithoutParking(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{404, 500, 502, 503, 529, 599} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 9, 3, 19, 0, 0, 0, time.UTC)
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			controller := backendCapacityTestController{scope: scope, hasStatus: true, status: runpkg.CapacityStatus{Available: true}}
+			attempts := &terminalRetryWorkAttemptStore{}
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{}}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, FailureBreaker: FailureBreakerConfig{SameClassLimit: 2, Window: time.Hour, Cooldown: time.Hour}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, capacityController: controller, capacityStatus: controller}
+			state := newState(cfg)
+			providerErr := &codex.TurnFailedError{Status: "failed", Body: fmt.Sprintf(`{"message":"unexpected status %d from responses endpoint"}`, status)}
+			details, ok := codex.ClassifyCapacityError(providerErr, nil, now)
+			if !ok || details.Type != backendcapacity.ErrorTypeProviderOutage {
+				t.Fatalf("capacity classification = %#v, %v", details, ok)
+			}
+			for attempt := 1; attempt <= 30; attempt++ {
+				issue := connector.Issue{ID: fmt.Sprintf("issue-%d", attempt%5), State: "In Progress"}
+				tracker.issues[issue.ID] = issue
+				state.Running[issue.ID] = Running{Issue: issue, Attempt: attempt, WorkAttemptID: int64(attempt), CapacityScope: scope, StartedAt: now.Add(-time.Second)}
+				state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Second)}
+				orch.upsertWorkAttemptSnapshot(&state, telemetry.WorkAttempt{AttemptID: int64(attempt), IssueID: issue.ID, Status: string(store.WorkAttemptStatusActive), StartedAt: now.Add(-time.Second)})
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: backendcapacity.NewError(scope, details, providerErr), CompletedAt: now})
+			}
+			if len(state.BackendOutages) != 1 || len(state.Retry) != 5 || len(state.Blocked) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
+				t.Fatalf("outage state = outages %#v retries %#v blocked %#v breaker %#v", state.BackendOutages, state.Retry, state.Blocked, state.FailureBreaker)
+			}
+			if len(attempts.completions) != 30 {
+				t.Fatalf("completed attempts = %d, want 30", len(attempts.completions))
+			}
+			for _, attempt := range attempts.completions {
+				if attempt.TerminalState != store.WorkAttemptTerminalCapacity || attempt.ErrorClass != backendcapacity.ErrorClass {
+					t.Fatalf("completed attempt = %#v", attempt)
+				}
+			}
+			request := runpkg.RunRequest{Issue: connector.Issue{ID: "probe", State: "In Progress"}}
+			if _, _, paused := orch.backendCapacityDispatch(&state, request, now); !paused {
+				t.Fatal("dispatch continued during provider outage")
+			}
+			outage := state.BackendOutages[scope.Key()]
+			for probe := 1; probe <= 5; probe++ {
+				probeAt := outage.NextProbeAt
+				_, key, paused := orch.backendCapacityDispatch(&state, request, probeAt)
+				if paused || key == "" {
+					t.Fatal("due capacity probe did not become eligible")
+				}
+				orch.markBackendCapacityProbe(&state, key, request.Issue.ID, probeAt)
+				if _, _, paused := orch.backendCapacityDispatch(&state, request, probeAt); !paused {
+					t.Fatal("concurrent probe was allowed")
+				}
+				capacityErr, _ := backendcapacity.As(backendcapacity.NewError(scope, details, providerErr))
+				outage = orch.registerBackendOutage(&state, capacityErr, probeAt, true)
+				if want := probeAt.Add(backendCapacityProbeDelayForAttempt(probe)); !outage.NextProbeAt.Equal(want) {
+					t.Fatalf("probe %d next time = %s, want %s", probe, outage.NextProbeAt, want)
+				}
+			}
+			orch.recoverBackendCapacityFromStatus(&state, Running{CapacityScope: scope}, &telemetry.RateLimits{}, outage.LastObservedAt)
+			if len(state.BackendOutages) != 1 {
+				t.Fatal("quota status cleared an HTTP endpoint outage")
+			}
+			recoveredAt := outage.NextProbeAt
+			orch.recoverBackendCapacity(&state, Running{CapacityScope: scope, CapacityProbe: true}, recoveredAt)
+			if len(state.BackendOutages) != 0 || len(state.Blocked) != 0 || state.FailureBreaker.Active() {
+				t.Fatal("successful probe left the provider or cards parked")
+			}
+			if _, _, paused := orch.backendCapacityDispatch(&state, request, recoveredAt); paused {
+				t.Fatal("dispatch remained paused after recovery")
+			}
+			for _, retry := range state.Retry {
+				if !retry.DueAt.Equal(recoveredAt) {
+					t.Fatalf("capacity retry not released: %#v", retry)
+				}
+			}
+		})
+	}
+}
 
 func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 	t.Parallel()
@@ -691,6 +775,145 @@ func TestClearBackendCapacityClearsScopeAndReleasesRetries(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "operator cleared backend capacity outage") || !stateEventExists(state, "backend_capacity_operator_cleared") {
 		t.Fatalf("operator evidence missing: logs %q events %#v", logs.String(), state.RecentEvents)
+	}
+}
+
+func TestRequestBackendCapacityClearUsesBoundedQueue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 19, 0, 0, 0, time.UTC)
+	orch := &Orchestrator{
+		capacityClearRequests: make(chan capacityClearRequest, 1),
+		done:                  make(chan struct{}),
+		now:                   func() time.Time { return now },
+	}
+	if err := orch.RequestBackendCapacityClear(t.Context(), " codex "); err != nil {
+		t.Fatalf("RequestBackendCapacityClear() error = %v", err)
+	}
+	if err := orch.RequestBackendCapacityClear(t.Context(), "codex"); !errors.Is(err, ErrCapacityClearQueueFull) {
+		t.Fatalf("RequestBackendCapacityClear() second error = %v, want %v", err, ErrCapacityClearQueueFull)
+	}
+	request := <-orch.capacityClearRequests
+	if request.scope != "codex" || !request.at.Equal(now) || request.reply != nil {
+		t.Fatalf("capacity clear request = %#v", request)
+	}
+	close(orch.done)
+	if err := orch.RequestBackendCapacityClear(t.Context(), "codex"); !errors.Is(err, ErrStopped) {
+		t.Fatalf("RequestBackendCapacityClear() stopped error = %v, want %v", err, ErrStopped)
+	}
+}
+
+func TestRequestBackendCapacityClearLifecycle(t *testing.T) {
+	t.Parallel()
+
+	for _, scenario := range []string{"nil context", "canceled", "stopped", "shutdown during request"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+
+			orch, err := New(Config{}, Dependencies{Connector: memory.New(memory.Config{}), Runner: FakeRunner{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ctx context.Context
+			var wantErr error
+			switch scenario {
+			case "canceled":
+				canceled, cancel := context.WithCancel(t.Context())
+				cancel()
+				ctx = canceled
+				wantErr = context.Canceled
+			case "stopped", "shutdown during request":
+				runCtx, stop := context.WithCancel(t.Context())
+				stop()
+				if scenario == "stopped" {
+					if err := orch.Run(runCtx); !errors.Is(err, context.Canceled) {
+						t.Fatalf("Run() error = %v", err)
+					}
+				} else {
+					orch.now = func() time.Time {
+						if err := orch.Run(runCtx); !errors.Is(err, context.Canceled) {
+							t.Errorf("Run() error = %v", err)
+						}
+						return time.Now()
+					}
+				}
+				wantErr = ErrStopped
+			}
+			if err := orch.RequestBackendCapacityClear(ctx, "codex"); !errors.Is(err, wantErr) {
+				t.Fatalf("RequestBackendCapacityClear() error = %v, want %v", err, wantErr)
+			}
+			if wantErr != nil && len(orch.capacityClearRequests) != 0 {
+				t.Fatal("rejected request remained queued")
+			}
+		})
+	}
+}
+
+type capacityClearBusyConnector struct {
+	connector.Connector
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *capacityClearBusyConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+		return nil, nil
+	}
+}
+
+func TestRequestBackendCapacityClearWhileRefreshIsBusy(t *testing.T) {
+	t.Parallel()
+
+	tracker := &capacityClearBusyConnector{Connector: memory.New(memory.Config{}), entered: make(chan struct{}, 1), release: make(chan struct{})}
+	orch, err := New(Config{PollInterval: time.Hour}, Dependencies{Connector: tracker, Runner: FakeRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("Run() error = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("orchestrator did not stop")
+		}
+	})
+	select {
+	case <-tracker.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not enter the tracker")
+	}
+	requestCtx, requestCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer requestCancel()
+	if err := orch.RequestBackendCapacityClear(requestCtx, "codex"); err != nil {
+		t.Fatalf("clear request blocked behind refresh: %v", err)
+	}
+	if err := orch.RequestBackendCapacityClear(requestCtx, "codex"); !errors.Is(err, ErrCapacityClearQueueFull) {
+		t.Fatalf("second request = %v, want bounded queue rejection", err)
+	}
+	close(tracker.release)
+	barrier := capacityClearRequest{scope: "codex", reply: make(chan capacityClearReply, 1)}
+	select {
+	case orch.capacityClearRequests <- barrier:
+	case <-requestCtx.Done():
+		t.Fatal("queued clear was not consumed after refresh")
+	}
+	select {
+	case <-barrier.reply:
+	case <-requestCtx.Done():
+		t.Fatal("clear processing did not complete")
 	}
 }
 

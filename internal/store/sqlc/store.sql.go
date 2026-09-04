@@ -2329,17 +2329,20 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 
 const issueSpendSince = `-- name: IssueSpendSince :one
 SELECT
-  CAST(COALESCE(SUM(cost_usd), 0) AS REAL) AS cost_usd,
-  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(usage_events.cost_usd), 0) AS REAL) AS cost_usd,
+  CAST(COALESCE(SUM(usage_events.total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions,
-  CAST(COALESCE(MIN(finished_at), '') AS TEXT) AS first_session_at,
-  CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at
+  CAST(COALESCE(MIN(usage_events.finished_at), '') AS TEXT) AS first_session_at,
+  CAST(COALESCE(MAX(usage_events.finished_at), '') AS TEXT) AS last_session_at
 FROM usage_events
-WHERE project_id = ?1
-  AND started_at > ?2
+LEFT JOIN codex_sessions AS session ON session.id = usage_events.session_id
+LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
+WHERE usage_events.project_id = ?1
+  AND usage_events.started_at > ?2
+  AND lower(trim(COALESCE(attempt.terminal_state, ''))) != 'capacity'
   AND (
-    (?3 != '' AND COALESCE(issue_id, '') = ?3)
-    OR (?4 != '' AND COALESCE(identifier, '') = ?4)
+    (?3 != '' AND COALESCE(usage_events.issue_id, '') = ?3)
+    OR (?4 != '' AND COALESCE(usage_events.identifier, '') = ?4)
   )
 `
 
