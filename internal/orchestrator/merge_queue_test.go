@@ -40,7 +40,7 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 			autoPromoteTickConnector: &autoPromoteTickConnector{},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgents:  1,
 		MaxConcurrentAgentsByState: map[string]int{
@@ -88,7 +88,7 @@ func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
 	recent.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1749"
 	recentAt := now.Add(-time.Minute)
 	recent.StageUpdatedAt = &recentAt
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgents:  1,
 		MaxConcurrentAgentsByState: map[string]int{
@@ -160,7 +160,7 @@ func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
 			},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		PollInterval:         time.Minute,
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgents:  1,
@@ -215,7 +215,7 @@ func TestDelegateNativeMergeQueueIssuesCachesQueueEntries(t *testing.T) {
 			autoPromoteTickConnector: &autoPromoteTickConnector{},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		ActiveStates:         []string{"Merging"},
 		TerminalStates:       []string{"Done"},
@@ -244,7 +244,7 @@ func TestDelegateNativeMergeQueueIssuesReenqueuesMissingCachedEntry(t *testing.T
 			autoPromoteTickConnector: &autoPromoteTickConnector{},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		ActiveStates:         []string{"Merging"},
 		TerminalStates:       []string{"Done"},
@@ -275,7 +275,7 @@ func TestDelegateNativeMergeQueueIssuesFallsBackWhenCachedQueueDisappears(t *tes
 		},
 		available: &available,
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgentsByState: map[string]int{
 			"Merging": 1,
@@ -318,7 +318,7 @@ func TestDelegateNativeMergeQueueIssuesRecoversExistingEntriesAfterRestart(t *te
 			"issue-212": {ID: "MQE_212", State: "QUEUED", Position: 2, Depth: 2},
 		},
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		ActiveStates:         []string{"Merging"},
 		TerminalStates:       []string{"Done"},
@@ -347,7 +347,7 @@ func TestDelegateNativeMergeQueueIssuesFallsBackWithoutNativeQueue(t *testing.T)
 		},
 		available: &available,
 	}
-	cfg := normalizeConfig(Config{
+	cfg := nativeMergeQueueTestConfig(Config{
 		MergeFastPathEnabled: true,
 		MaxConcurrentAgentsByState: map[string]int{
 			"Merging": 1,
@@ -393,7 +393,7 @@ func TestNativeMergeQueueCandidate(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&issue)
 			}
-			if got := nativeMergeQueueCandidate(issue, normalizeConfig(Config{})); got != tt.want {
+			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
 				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
 			}
 		})
@@ -405,11 +405,48 @@ func TestNativeMergeQueueCandidateRejectsNonAtomicSecurityAuditGate(t *testing.T
 
 	issue := nativeMergeQueueTestIssue(402, "success")
 	cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+		Kind:          gate.KindArtifact,
 		SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
 	}}})
 	if nativeMergeQueueCandidate(issue, cfg) {
 		t.Fatal("nativeMergeQueueCandidate() = true, want programmatic exact-head merge")
 	}
+}
+
+func TestDelegateNativeMergeQueueIssuesFallsBackForReviewThreadGate(t *testing.T) {
+	t.Parallel()
+
+	issue := nativeMergeQueueTestIssue(403, "success")
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote:  AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates: []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	queued := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+
+	if tracker.inspections != 0 || len(tracker.enqueued) != 0 {
+		t.Fatalf("native queue activity = %d inspections and %#v enqueues, want none", tracker.inspections, tracker.enqueued)
+	}
+	candidates := orch.mergeWorkerDispatchCandidates(&state, queued, time.Now())
+	if len(candidates) != 1 || candidates[0].ID != issue.ID {
+		t.Fatalf("merge worker candidates = %#v, want review-thread-gated issue %q", candidates, issue.ID)
+	}
+}
+
+func nativeMergeQueueTestConfig(cfg Config) Config {
+	cfg.AutoPromote.Gate.Kind = gate.KindArtifact
+	return normalizeConfig(cfg)
 }
 
 func nativeMergeQueueTestIssue(number int, ciStatus string) connector.Issue {

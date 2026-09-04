@@ -69,6 +69,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 
 		result.transitioned[issueID] = struct{}{}
 		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
+			if completedActiveReviewThreadsKeepParked(issue, promoted.State, cfg) {
+				continue
+			}
 			if normalizeState(issue.State) == normalizeState(promoted.State) {
 				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
 			} else if mergeWorkerIssue(promoted) {
@@ -114,6 +117,13 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func completedActiveReviewThreadsKeepParked(issue connector.Issue, targetState string, cfg AutoPromoteConfig) bool {
+	return gateRequiresPullRequest(cfg.Gate) &&
+		normalizeState(issue.State) == normalizeState(targetState) &&
+		issue.PullRequest != nil &&
+		len(issue.PullRequest.UnresolvedReviewThreads) > 0
 }
 
 func (o *Orchestrator) transitionActiveArtifactGateWaitIssuesToReview(

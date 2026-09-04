@@ -117,6 +117,9 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
 		return false
 	}
+	if gateRequiresPullRequest(cfg.AutoPromote.Gate) {
+		return false
+	}
 	if gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled {
 		return false
 	}

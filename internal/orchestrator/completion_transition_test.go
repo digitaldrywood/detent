@@ -521,6 +521,59 @@ func TestTransitionCompletedActiveIssuesRoutesUnresolvedReviewThreadsToRework(t 
 	}
 }
 
+func TestTransitionCompletedReworkIssueParksWhileReviewThreadsRemainUnresolved(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("Rework", "OPEN")
+	issue.PullRequest = &connector.PullRequest{
+		Number:   2104,
+		URL:      "https://github.test/digitaldrywood/detent/pull/2104",
+		State:    "OPEN",
+		CIStatus: "pass",
+		UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+			Path: "internal/orchestrator/completion_transition.go",
+			Line: 211,
+		}},
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if len(result.dispatchCandidates) != 0 || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+		t.Fatalf("result = %#v updates = %#v comments = %#v, want parked without redispatch", result, tracker.updates, tracker.comments)
+	}
+	if _, ok := state.Completed[issue.ID]; !ok {
+		t.Fatalf("Completed[%q] missing while review threads remain unresolved", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing while review threads remain unresolved", issue.ID)
+	}
+	if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
+		t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+	}
+}
+
 func TestTransitionCompletedActiveIssuesWaitsWhenReviewThreadsUnavailable(t *testing.T) {
 	t.Parallel()
 
