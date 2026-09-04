@@ -2,6 +2,9 @@ package detent_test
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -122,6 +125,100 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if !strings.Contains(makefile, tt.want) {
 				t.Fatalf("Makefile missing %q", tt.want)
+			}
+		})
+	}
+}
+
+func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
+	t.Parallel()
+
+	version := strings.TrimSpace(readNormalizedFile(t, ".golangci-version"))
+	if !strings.HasPrefix(version, "v2.") {
+		t.Fatalf("golangci-lint version = %q, want a v2 release", version)
+	}
+
+	makefile := readNormalizedFile(t, "Makefile")
+	for _, want := range []string{
+		"GOLANGCI_LINT_VERSION_FILE := .golangci-version",
+		"GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))",
+		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
+		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
+		"lint: $(GOLANGCI_LINT)",
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=5m`,
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)`,
+		"setup: $(GOLANGCI_LINT)",
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Fatalf("Makefile missing pinned golangci-lint contract %q", want)
+		}
+	}
+	if strings.Contains(makefile, "cmd/golangci-lint@"+version) {
+		t.Fatal("Makefile must read the golangci-lint version from .golangci-version")
+	}
+
+	workflow := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  lint:", "\n  verify:")
+	for _, want := range []string{
+		"path: tmp/tools/golangci-lint",
+		"hashFiles('.golangci-version')",
+		"run: make lint",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("CI lint job missing pinned golangci-lint contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{"~/go/bin/golangci-lint", "cmd/golangci-lint@"} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("CI lint job bypasses the Makefile pin with %q", forbidden)
+		}
+	}
+}
+
+func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Makefile tooling requires a POSIX shell")
+	}
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cached := range []bool{false, true} {
+		name := "install"
+		if cached {
+			name = "cached"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			write := func(path, content string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(filepath.Join(root, "Makefile"), readNormalizedFile(t, "Makefile"))
+			write(filepath.Join(root, ".golangci-version"), "v2.9.0\n")
+			write(filepath.Join(root, "go.mod"), "module example.com/test\n\ngo 1.26\n\ntoolchain go1.26.6\n")
+			bin := filepath.Join(root, "bin")
+			write(filepath.Join(bin, "golangci-lint"), "#!/bin/sh\necho incompatible ambient linter >&2\nexit 99\n")
+			linter := "#!/bin/sh\nprintf 'pinned:%s:%s\\n' \"$GOTOOLCHAIN\" \"$*\"\n"
+			fixture := filepath.Join(root, "pinned-linter")
+			write(fixture, linter)
+			write(filepath.Join(bin, "go"), "#!/bin/sh\nset -eu\n[ \"$GOTOOLCHAIN\" = go1.26.6 ]\n[ \"$*\" = 'install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0' ]\ncp pinned-linter \"$GOBIN/golangci-lint\"\n")
+			if cached {
+				write(filepath.Join(root, "tmp/tools/golangci-lint/v2.9.0/go1.26.6/golangci-lint"), linter)
+			}
+			cmd := exec.CommandContext(t.Context(), makePath, "lint")
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make lint: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "pinned:go1.26.6:run --timeout=5m") {
+				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
 		})
 	}
