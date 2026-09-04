@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 type requiredStatusCheck struct {
@@ -208,7 +209,12 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			write(fixture, linter)
 			write(filepath.Join(bin, "go"), "#!/bin/sh\nset -eu\n[ \"$GOTOOLCHAIN\" = go1.26.6 ]\n[ \"$*\" = 'install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0' ]\ncp pinned-linter \"$GOBIN/golangci-lint\"\n")
 			if cached {
-				write(filepath.Join(root, "tmp/tools/golangci-lint/v2.9.0/go1.26.6/golangci-lint"), linter)
+				cachedPath := filepath.Join(root, "tmp/tools/golangci-lint/v2.9.0/go1.26.6/golangci-lint")
+				write(cachedPath, linter)
+				old := time.Unix(1, 0)
+				if err := os.Chtimes(cachedPath, old, old); err != nil {
+					t.Fatal(err)
+				}
 			}
 			cmd := exec.CommandContext(t.Context(), makePath, "lint")
 			cmd.Dir = root
@@ -219,6 +225,9 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			}
 			if !strings.Contains(string(output), "pinned:go1.26.6:run --timeout=5m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
+			}
+			if installed := strings.Contains(string(output), "go install"); installed == cached {
+				t.Fatalf("make lint installed = %v, cached = %v: %s", installed, cached, output)
 			}
 		})
 	}

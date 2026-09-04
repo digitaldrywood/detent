@@ -127,7 +127,7 @@ visual-e2e-update: build
 lint: $(GOLANGCI_LINT)
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=5m
 
-$(GOLANGCI_LINT): $(GOLANGCI_LINT_VERSION_FILE) go.mod
+$(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
