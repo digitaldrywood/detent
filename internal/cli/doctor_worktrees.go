@@ -18,7 +18,7 @@ type doctorGitWorktree struct {
 	Branch string
 }
 
-func checkDoctorWorkspaceGrowth(projectID string, workspaceRoot string) (doctorCheck, bool) {
+func checkDoctorWorkspaceGrowth(projectID string, workspaceRoot string, sourceRoot string) (doctorCheck, bool) {
 	name := "Project " + projectID + " workspace growth"
 	resolvedRoot, err := expandDoctorWorkspacePath(workspaceRoot)
 	if err != nil || strings.TrimSpace(workspaceRoot) == "" {
@@ -43,6 +43,12 @@ func checkDoctorWorkspaceGrowth(projectID string, workspaceRoot string) (doctorC
 			Detail: fmt.Sprintf("cannot inspect workspace.root %s: %v", resolvedRoot, err),
 			Hint:   "Verify workspace.root is readable, then rerun detent doctor.",
 		}, true
+	}
+	if strings.TrimSpace(sourceRoot) != "" {
+		resolvedSourceRoot, sourceErr := expandDoctorWorkspacePath(sourceRoot)
+		if sourceErr == nil && doctorCanonicalPath(resolvedRoot) == doctorCanonicalPath(resolvedSourceRoot) {
+			return doctorCheck{}, false
+		}
 	}
 	count := 0
 	for _, entry := range entries {

@@ -102,12 +102,13 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		count      int
-		wantCheck  bool
-		wantStatus doctorStatus
-		wantDetail string
-		wantHint   string
+		name              string
+		count             int
+		sourceMatchesRoot bool
+		wantCheck         bool
+		wantStatus        doctorStatus
+		wantDetail        string
+		wantHint          string
 	}{
 		{
 			name:  "below threshold is not surfaced",
@@ -121,12 +122,21 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 			wantDetail: "50 retained workspace directories",
 			wantHint:   "Confirm workspace cleanup is running",
 		},
+		{
+			name:              "source checkout root is not counted as retained workspaces",
+			count:             doctorWorkspaceCountWarningThreshold,
+			sourceMatchesRoot: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
+			sourceRoot := filepath.Join(t.TempDir(), "source")
+			if tt.sourceMatchesRoot {
+				sourceRoot = root
+			}
 			if err := os.Mkdir(filepath.Join(root, ".detent"), 0o700); err != nil {
 				t.Fatalf("Mkdir(.detent) error = %v", err)
 			}
@@ -136,7 +146,7 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 				}
 			}
 
-			check, ok := checkDoctorWorkspaceGrowth("pyroapex", root)
+			check, ok := checkDoctorWorkspaceGrowth("pyroapex", root, sourceRoot)
 			if ok != tt.wantCheck {
 				t.Fatalf("check present = %t, want %t: %#v", ok, tt.wantCheck, check)
 			}
