@@ -166,13 +166,17 @@ type Eligibility struct {
 }
 
 type EligibilityDecision struct {
-	Historical bool             `json:"historical,omitempty"`
-	EvidenceID string           `json:"evidence_id"`
-	Source     string           `json:"source"`
-	State      EligibilityState `json:"state"`
-	Outcome    string           `json:"outcome"`
-	Reason     string           `json:"reason,omitempty"`
-	At         time.Time        `json:"at"`
+	Historical          bool             `json:"historical,omitempty"`
+	EvidenceID          string           `json:"evidence_id"`
+	Source              string           `json:"source"`
+	State               EligibilityState `json:"state"`
+	Outcome             string           `json:"outcome"`
+	Reason              string           `json:"reason,omitempty"`
+	ReasonCode          string           `json:"reason_code,omitempty"`
+	AttemptNumber       int              `json:"attempt_number,omitempty"`
+	SelectionEvidenceID string           `json:"selection_evidence_id,omitempty"`
+	At                  time.Time        `json:"at"`
+	sequence            int64
 }
 
 type Attempt struct {

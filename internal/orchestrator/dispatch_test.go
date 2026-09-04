@@ -3432,6 +3432,76 @@ func TestDispatchReadyIssuesPersistsEveryCapacitySkip(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesRecordsPostSelectionRefusal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 19, 1, 6, 0, time.UTC)
+	tests := []struct {
+		name      string
+		configure func(*Config, *State)
+		want      string
+	}{
+		{
+			name: "CPU pressure",
+			configure: func(_ *Config, state *State) {
+				state.CPUPressure = telemetry.CPUPressure{
+					Supported:        true,
+					Some:             telemetry.PressureAverages{Avg10: 84.78},
+					SomeAvg10Max:     80,
+					DispatchHeld:     true,
+					ConstrainedSince: now.Add(-time.Minute),
+				}
+			},
+			want: dispatchIssueFailureCPUPressure,
+		},
+		{
+			name: "claim rejected",
+			configure: func(cfg *Config, _ *State) {
+				cfg.Claiming = ClaimingConfig{Enabled: true, LeaseField: "lease"}
+			},
+			want: dispatchIssueFailureClaimFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Project:             scheduler.ProjectCandidate{ID: "detent"},
+			})
+			state := newState(cfg)
+			tt.configure(&cfg, &state)
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts, now: func() time.Time { return now }}
+			issue := dispatchTestIssue("issue-post-selection-refusal", "Todo")
+
+			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+			if len(attempts.starts) != 0 {
+				t.Fatalf("work attempt starts = %#v, want none", attempts.starts)
+			}
+			if len(attempts.decisions) != 2 {
+				t.Fatalf("scheduler decisions = %#v, want selection and refusal", attempts.decisions)
+			}
+			selected := attempts.decisions[0]
+			refused := attempts.decisions[1]
+			if selected.Result != store.SchedulerDecisionResultSelected || !selected.Selected {
+				t.Fatalf("selected decision = %#v", selected)
+			}
+			if refused.Result != store.SchedulerDecisionResultSkipped || refused.Selected || refused.Reason != tt.want {
+				t.Fatalf("refusal decision = %#v, want skipped %q", refused, tt.want)
+			}
+			if !selected.DecisionAt.Equal(refused.DecisionAt) || selected.AttemptNumber != refused.AttemptNumber {
+				t.Fatalf("decision correlation = selected %#v refused %#v", selected, refused)
+			}
+		})
+	}
+}
+
 func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	t.Parallel()
 

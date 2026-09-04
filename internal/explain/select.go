@@ -511,6 +511,20 @@ func selectTransition(events []store.WorkflowPhaseEvent, trustworthySince time.T
 }
 
 func buildEligibility(collected collectedEvidence) Eligibility {
+	type schedulerCycle struct {
+		at      time.Time
+		attempt int
+	}
+	selections := make(map[schedulerCycle]int64, len(collected.schedulerDecisions))
+	for _, decision := range collected.schedulerDecisions {
+		if !decision.Selected && decision.Result != store.SchedulerDecisionResultSelected {
+			continue
+		}
+		cycle := schedulerCycle{at: decision.DecisionAt.UTC(), attempt: decision.AttemptNumber}
+		if decision.ID > selections[cycle] {
+			selections[cycle] = decision.ID
+		}
+	}
 	decisions := make([]EligibilityDecision, 0, len(collected.schedulerDecisions)+len(collected.admissionProposals))
 	for _, decision := range collected.schedulerDecisions {
 		state := EligibilityUnknown
@@ -523,14 +537,24 @@ func buildEligibility(collected collectedEvidence) Eligibility {
 		if state == EligibilityUnknown {
 			continue
 		}
-		decisions = append(decisions, EligibilityDecision{
+		eligibilityDecision := EligibilityDecision{
 			EvidenceID: fmt.Sprintf("scheduler:%d", decision.ID),
 			Source:     "scheduler",
 			State:      state,
 			Outcome:    string(decision.Result),
 			Reason:     firstNonEmpty(decision.WaitReason, decision.Reason),
 			At:         decision.DecisionAt.UTC(),
-		})
+			sequence:   decision.ID,
+		}
+		if state == EligibilityRefused {
+			eligibilityDecision.ReasonCode = strings.TrimSpace(decision.Reason)
+			cycle := schedulerCycle{at: decision.DecisionAt.UTC(), attempt: decision.AttemptNumber}
+			if selectionID := selections[cycle]; selectionID > 0 && selectionID < decision.ID {
+				eligibilityDecision.AttemptNumber = decision.AttemptNumber
+				eligibilityDecision.SelectionEvidenceID = fmt.Sprintf("scheduler:%d", selectionID)
+			}
+		}
+		decisions = append(decisions, eligibilityDecision)
 	}
 	for _, proposal := range collected.admissionProposals {
 		state := EligibilityUnknown
@@ -592,6 +616,12 @@ func compareEligibilityDecisions(left EligibilityDecision, right EligibilityDeci
 		if right.Source == "scheduler" {
 			return 1
 		}
+	}
+	if left.Source == "scheduler" && left.sequence != right.sequence {
+		if left.sequence > right.sequence {
+			return -1
+		}
+		return 1
 	}
 	return -strings.Compare(left.EvidenceID, right.EvidenceID)
 }

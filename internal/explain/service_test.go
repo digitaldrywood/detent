@@ -281,6 +281,49 @@ func TestServiceReportsOnlyRecordedEligibility(t *testing.T) {
 	}
 }
 
+func TestServiceCorrelatesPostSelectionDispatchRefusal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 19, 1, 6, 0, time.UTC)
+	tests := []struct {
+		name   string
+		reason string
+		detail string
+	}{
+		{name: "CPU pressure", reason: "cpu_pressure_high", detail: "CPU pressure is above the admission threshold"},
+		{name: "claim rejected", reason: "claim_failed", detail: "claim_failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := &evidenceReader{
+				observation: liveIssueObservation(now, telemetry.Issue{ID: "issue-1", ProjectID: "detent", State: "Todo"}),
+				decisions: []store.SchedulerDecision{
+					{ID: 9, ProjectID: "detent", IssueID: "issue-1", Result: store.SchedulerDecisionResultSelected, Selected: true, AttemptNumber: 4, DecisionAt: now},
+					{ID: 10, ProjectID: "detent", IssueID: "issue-1", Result: store.SchedulerDecisionResultSkipped, Reason: tt.reason, WaitReason: tt.detail, AttemptNumber: 4, DecisionAt: now},
+				},
+			}
+
+			got, err := newTestService(now, reader).Explain(t.Context(), Query{ProjectID: "detent", IssueID: "issue-1"})
+			if err != nil {
+				t.Fatalf("Explain() error = %v", err)
+			}
+			latest := got.Eligibility.Latest
+			if got.Eligibility.State != EligibilityRefused || latest == nil {
+				t.Fatalf("eligibility = %#v, want refused latest decision", got.Eligibility)
+			}
+			if latest.Outcome != string(store.SchedulerDecisionResultSkipped) || latest.Reason != tt.detail {
+				t.Fatalf("latest eligibility = %#v, want skipped %q", latest, tt.detail)
+			}
+			if latest.ReasonCode != tt.reason || latest.AttemptNumber != 4 || latest.SelectionEvidenceID != "scheduler:9" {
+				t.Fatalf("latest correlation = %#v, want %q attempt 4 selection scheduler:9", latest, tt.reason)
+			}
+		})
+	}
+}
+
 func TestServiceAttemptSessionAndGatePrecedence(t *testing.T) {
 	t.Parallel()
 
