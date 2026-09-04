@@ -201,6 +201,17 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 			URL:        "https://example.test/issues/1",
 			ProposalID: "proposal-expiring",
 		}},
+		Malformed: []admissionmodel.MalformedEvidence{{
+			IssueID:              "issue-malformed",
+			CandidateFingerprint: "candidate-fingerprint",
+			PromptFingerprint:    "prompt-fingerprint",
+			ProposalFingerprint:  "proposal-fingerprint",
+			ErrorFingerprint:     "error-fingerprint",
+			ErrorClass:           "schema",
+			ErrorCode:            "unknown_field",
+			AttemptCount:         4,
+			Status:               admissionmodel.MalformedBlocked,
+		}},
 	}
 	if err := backend.RecordAdmissionRun(ctx, record); err != nil {
 		t.Fatalf("RecordAdmissionRun() error = %v", err)
@@ -214,12 +225,74 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 		!got.ResumeAt.Equal(record.ResumeAt) ||
 		got.ProposalReason != "criteria_not_met" ||
 		got.Skipped["author"] != 1 || got.Truncated["candidates"] != 1 ||
-		len(got.Issues) != 1 || got.Issues[0].ProposalID != "proposal-expiring" {
+		len(got.Issues) != 1 || got.Issues[0].ProposalID != "proposal-expiring" ||
+		len(got.Malformed) != 1 || got.Malformed[0].AttemptCount != 4 ||
+		got.Malformed[0].Status != admissionmodel.MalformedBlocked {
 		t.Fatalf("LatestAdmissionRun() = %#v", got)
 	}
 	runs, err := backend.RecentAdmissionRuns(ctx, "detent", 3)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+	}
+}
+
+func TestAdmissionMalformedResultLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openAdmissionTestStore(t, ctx)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	record := admissionmodel.MalformedResult{
+		ProjectID:            "detent",
+		IssueID:              "issue-1",
+		IssueIdentifier:      "DD-1",
+		CandidateFingerprint: "candidate-fingerprint",
+		PromptFingerprint:    "prompt-fingerprint",
+		ProposalFingerprint:  "proposal-fingerprint",
+		ErrorFingerprint:     "error-fingerprint",
+		ErrorClass:           "schema",
+		ErrorCode:            "unknown_field",
+		OutputExcerpt:        `{"token":"<redacted>"}`,
+	}
+
+	errorFingerprints := []string{
+		"error-fingerprint-1",
+		"error-fingerprint-2",
+		"error-fingerprint-3",
+		"error-fingerprint-4",
+	}
+	for attempt, errorFingerprint := range errorFingerprints {
+		record.ErrorFingerprint = errorFingerprint
+		record.OutputExcerpt = `{"variation":"` + errorFingerprint + `"}`
+		record.LastSeenAt = now.Add(time.Duration(attempt+1) * time.Minute)
+		stored, err := backend.RecordAdmissionMalformedResult(ctx, record, 4)
+		if err != nil {
+			t.Fatalf("RecordAdmissionMalformedResult() attempt %d error = %v", attempt+1, err)
+		}
+		wantStatus := admissionmodel.MalformedRetryable
+		if attempt == len(errorFingerprints)-1 {
+			wantStatus = admissionmodel.MalformedBlocked
+		}
+		if stored.AttemptCount != attempt+1 || stored.Status != wantStatus ||
+			stored.OutputExcerpt != record.OutputExcerpt {
+			t.Fatalf("attempt %d stored = %#v", attempt+1, stored)
+		}
+	}
+
+	blocked, found, err := backend.BlockedAdmissionMalformedResult(ctx, "detent", record.ProposalFingerprint)
+	if err != nil || !found || blocked.AttemptCount != 4 || blocked.Status != admissionmodel.MalformedBlocked {
+		t.Fatalf("BlockedAdmissionMalformedResult() = %#v, %t, %v", blocked, found, err)
+	}
+	if err := backend.ResolveAdmissionMalformedResults(ctx, "detent", record.ProposalFingerprint, now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ResolveAdmissionMalformedResults() error = %v", err)
+	}
+	if blocked, found, err := backend.BlockedAdmissionMalformedResult(ctx, "detent", record.ProposalFingerprint); err != nil || found {
+		t.Fatalf("BlockedAdmissionMalformedResult() after resolve = %#v, %t, %v", blocked, found, err)
+	}
+	record.LastSeenAt = now.Add(6 * time.Minute)
+	stored, err := backend.RecordAdmissionMalformedResult(ctx, record, 4)
+	if err != nil || stored.AttemptCount != 1 || stored.Status != admissionmodel.MalformedRetryable {
+		t.Fatalf("RecordAdmissionMalformedResult() after resolve = %#v, %v", stored, err)
 	}
 }
 

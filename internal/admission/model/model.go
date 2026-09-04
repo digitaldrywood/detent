@@ -77,6 +77,7 @@ type RunRecord struct {
 	Skipped         map[string]int
 	Truncated       map[string]int
 	Issues          []IssueRecord
+	Malformed       []MalformedEvidence
 	Error           string
 }
 
@@ -85,6 +86,48 @@ type IssueRecord struct {
 	Identifier string `json:"identifier,omitempty"`
 	URL        string `json:"url,omitempty"`
 	ProposalID string `json:"proposal_id,omitempty"`
+}
+
+type MalformedStatus string
+
+const (
+	MalformedRetryable MalformedStatus = "retryable"
+	MalformedBlocked   MalformedStatus = "blocked"
+	MalformedResolved  MalformedStatus = "resolved"
+)
+
+type MalformedResult struct {
+	ProjectID            string
+	IssueID              string
+	IssueIdentifier      string
+	IssueURL             string
+	CandidateFingerprint string
+	PromptFingerprint    string
+	ProposalFingerprint  string
+	ErrorFingerprint     string
+	ErrorClass           string
+	ErrorCode            string
+	OutputExcerpt        string
+	AttemptCount         int
+	Status               MalformedStatus
+	FirstSeenAt          time.Time
+	LastSeenAt           time.Time
+	ResolvedAt           time.Time
+}
+
+type MalformedEvidence struct {
+	IssueID              string          `json:"issue_id,omitempty"`
+	IssueIdentifier      string          `json:"issue_identifier,omitempty"`
+	IssueURL             string          `json:"issue_url,omitempty"`
+	CandidateFingerprint string          `json:"candidate_fingerprint"`
+	PromptFingerprint    string          `json:"prompt_fingerprint"`
+	ProposalFingerprint  string          `json:"proposal_fingerprint"`
+	ErrorFingerprint     string          `json:"error_fingerprint"`
+	ErrorClass           string          `json:"error_class"`
+	ErrorCode            string          `json:"error_code"`
+	OutputExcerpt        string          `json:"output_excerpt,omitempty"`
+	AttemptCount         int             `json:"attempt_count"`
+	Status               MalformedStatus `json:"status"`
 }
 
 type Decision struct {

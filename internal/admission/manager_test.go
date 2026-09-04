@@ -325,6 +325,7 @@ func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
 				1,
 				now,
 				1,
+				nil,
 			)
 			if !errors.Is(err, wantErr) {
 				t.Fatalf("unproposedCandidates() error = %v, want %v", err, wantErr)
@@ -1350,7 +1351,7 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 		wantState         string
 		wantBody          string
 		wantBodyUpdates   int
-		wantInvalidOutput bool
+		wantMalformed     bool
 		wantResolution    string
 	}{
 		{
@@ -1360,12 +1361,12 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			wantBody:  "Actionable problem.",
 		},
 		{
-			name:              "required recommendation unavailable fails evaluation",
-			requireEffort:     true,
-			body:              "Actionable problem.",
-			wantState:         "Backlog",
-			wantBody:          "Actionable problem.",
-			wantInvalidOutput: true,
+			name:          "required recommendation unavailable fails evaluation",
+			requireEffort: true,
+			body:          "Actionable problem.",
+			wantState:     "Backlog",
+			wantBody:      "Actionable problem.",
+			wantMalformed: true,
 		},
 		{
 			name:              "required recommendation writes absent block",
@@ -1418,11 +1419,11 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
 
 			result, err := manager.RunOnce(t.Context())
-			if tt.wantInvalidOutput && !errors.Is(err, ErrInvalidOutput) {
-				t.Fatalf("RunOnce() error = %v, want ErrInvalidOutput", err)
-			}
-			if !tt.wantInvalidOutput && err != nil {
+			if err != nil {
 				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if tt.wantMalformed && result.Skipped["malformed_output_retryable"] != 1 {
+				t.Fatalf("RunOnce() result = %#v, want malformed output", result)
 			}
 			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
 			if err != nil || len(issues) != 1 {
@@ -1930,6 +1931,7 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 	if err != nil || len(initial.Proposals) != 2 {
 		t.Fatalf("initial RunOnce() = %#v, %v, want two proposals", initial, err)
 	}
+	initialRunnerCalls := agent.calls
 	open, err := backend.OpenAdmissionProposals(t.Context(), settings.ProjectID, 0)
 	if err != nil || len(open) != 2 {
 		t.Fatalf("OpenAdmissionProposals() = %#v, %v, want two proposals", open, err)
@@ -1983,8 +1985,8 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 	if got := countAdmissionStateUpdates(tracker.Events(), settings.Config.TargetState); got != 2 {
 		t.Fatalf("target state updates after resume = %d, want 2", got)
 	}
-	if agent.calls != 1 {
-		t.Fatalf("runner calls = %d, want original proposal run only", agent.calls)
+	if agent.calls != initialRunnerCalls {
+		t.Fatalf("runner calls = %d, want %d original candidate evaluations only", agent.calls, initialRunnerCalls)
 	}
 	latest, found, err := backend.LatestAdmissionRun(t.Context(), settings.ProjectID)
 	if err != nil || !found || latest.Outcome != "completed" ||
@@ -2040,11 +2042,12 @@ func TestManagerScheduledEvaluationFanoutDeferralCheckpointsBeforeResume(t *test
 	if err != nil || completed.DeferredReason != "" || !completed.ResumeAt.IsZero() || len(completed.Proposals) != 1 {
 		t.Fatalf("resumed run = %#v, %v", completed, err)
 	}
-	if agent.calls != 2 || len(agent.candidateIDs) != 2 || len(agent.candidateIDs[0]) != 2 || len(agent.candidateIDs[1]) != 1 {
+	if agent.calls != 3 || len(agent.candidateIDs) != 3 || len(agent.candidateIDs[0]) != 1 ||
+		len(agent.candidateIDs[1]) != 1 || len(agent.candidateIDs[2]) != 1 {
 		t.Fatalf("runner calls = %d candidates = %#v", agent.calls, agent.candidateIDs)
 	}
-	if agent.candidateIDs[1][0] == firstProposalID {
-		t.Fatalf("resumed candidate = %q, want candidate not already checkpointed", agent.candidateIDs[1][0])
+	if agent.candidateIDs[2][0] == firstProposalID || agent.candidateIDs[2][0] != agent.candidateIDs[1][0] {
+		t.Fatalf("resumed candidate = %q, want interrupted candidate %q rather than checkpointed candidate %q", agent.candidateIDs[2][0], agent.candidateIDs[1][0], firstProposalID)
 	}
 	open, err := backend.OpenAdmissionProposals(t.Context(), settings.ProjectID, 0)
 	if err != nil || len(open) != 2 {
@@ -2667,7 +2670,7 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 	if result, err := collector.handle(t.Context(), runner.AgentToolCall{Name: ProposalToolName, Arguments: []byte("{")}); err != nil || result.Success {
 		t.Fatalf("collector invalid = %#v, %v", result, err)
 	}
-	if _, err := collector.result(); err == nil {
+	if _, _, err := collector.result(); err == nil {
 		t.Fatal("collector result error = nil")
 	}
 
@@ -2794,13 +2797,14 @@ func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 	settings.Config.Authors.Allow = []string{"octocat"}
 	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
 	result, err := manager.RunOnce(context.Background())
-	if !errors.Is(err, ErrInvalidOutput) {
-		t.Fatalf("RunOnce() error = %v, want ErrInvalidOutput", err)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
 	}
 	if got, want := agent.candidateIDs[0], []string{"allowed"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate ids = %#v, want %#v", got, want)
 	}
-	if len(result.Proposals) != 0 || result.Skipped["excluded_label"] != 1 ||
+	if len(result.Proposals) != 0 || result.Skipped["malformed_output_retryable"] != 1 ||
+		result.Skipped["excluded_label"] != 1 ||
 		result.Skipped["author"] != 1 {
 		t.Fatalf("result = %#v", result)
 	}
@@ -2852,7 +2856,7 @@ func TestManagerUnionsLabelCandidatesAndSkipsIneligibleStates(t *testing.T) {
 		result.Skipped["excluded_label"] != 1 {
 		t.Fatalf("skipped = %#v", result.Skipped)
 	}
-	if got, want := agent.candidateIDs[0], []string{"both", "label"}; !reflect.DeepEqual(got, want) {
+	if got, want := agent.candidateIDs, [][]string{{"both"}, {"label"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate ids = %#v, want %#v", got, want)
 	}
 }
@@ -3206,7 +3210,7 @@ func TestManagerRejectsMissingConfidence(t *testing.T) {
 	}}
 	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
 	result, err := manager.RunOnce(context.Background())
-	if !errors.Is(err, ErrInvalidOutput) || len(result.Proposals) != 0 {
+	if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_retryable"] != 1 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -3251,17 +3255,200 @@ func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
 	}
 }
 
+func TestManagerBoundsMalformedAdmissionAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	agent := &malformedAdmissionRunner{malformedCalls: 4}
+	clock := now
+	settings := admissionTestSettings(tracker, agent)
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
+
+	for attempt := 1; attempt <= 4; attempt++ {
+		result, err := manager.RunOnce(t.Context())
+		if err != nil || len(result.Proposals) != 0 {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+		clock = clock.Add(time.Minute)
+	}
+	runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 4)
+	if err != nil || len(runs) != 4 {
+		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+	}
+	for index, run := range runs {
+		wantAttempt := 4 - index
+		if len(run.Malformed) != 1 || run.Malformed[0].AttemptCount != wantAttempt ||
+			run.Malformed[0].ErrorClass != "parse" || run.Malformed[0].ErrorCode != "invalid_json" ||
+			run.Malformed[0].OutputExcerpt != "{" || run.Malformed[0].CandidateFingerprint == "" ||
+			run.Malformed[0].PromptFingerprint == "" || run.Malformed[0].ProposalFingerprint == "" ||
+			run.Malformed[0].ErrorFingerprint == "" {
+			t.Fatalf("run %d malformed evidence = %#v", index, run.Malformed)
+		}
+		if run.Malformed[0].ErrorFingerprint != runs[0].Malformed[0].ErrorFingerprint {
+			t.Fatalf("run %d error fingerprint = %q, want %q", index, run.Malformed[0].ErrorFingerprint, runs[0].Malformed[0].ErrorFingerprint)
+		}
+	}
+	if runs[0].Malformed[0].Status != admissionmodel.MalformedBlocked {
+		t.Fatalf("fourth malformed status = %q, want blocked", runs[0].Malformed[0].Status)
+	}
+
+	manager = newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_blocked"] != 1 {
+		t.Fatalf("RunOnce() after restart = %#v, %v", result, err)
+	}
+	if agent.calls != 4 {
+		t.Fatalf("runner calls = %d, want 4", agent.calls)
+	}
+
+	if err := tracker.UpdateIssueBody(t.Context(), issue.ID, issue.Description+"\n\nCorrected scope."); err != nil {
+		t.Fatalf("UpdateIssueBody() error = %v", err)
+	}
+	clock = clock.Add(time.Minute)
+	result, err = manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID {
+		t.Fatalf("RunOnce() after candidate change = %#v, %v", result, err)
+	}
+	if agent.calls != 5 {
+		t.Fatalf("runner calls = %d, want 5", agent.calls)
+	}
+}
+
+func TestManagerAcceptsCorrectedAdmissionBeforeMalformedLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 30, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	agent := &malformedAdmissionRunner{malformedCalls: 1}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, agent),
+		openManagerTestStore(t),
+		func() time.Time { return now },
+	)
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_retryable"] != 1 {
+		t.Fatalf("first RunOnce() = %#v, %v", result, err)
+	}
+	result, err = manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID {
+		t.Fatalf("corrected RunOnce() = %#v, %v", result, err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("runner calls = %d, want 2", agent.calls)
+	}
+}
+
+func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 45, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	agent := &malformedAdmissionRunner{malformedOutputs: []string{
+		`{`,
+		`[`,
+		`{"evaluations":`,
+		`{"evaluations":[`,
+	}}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, agent),
+		openManagerTestStore(t),
+		func() time.Time { return now },
+	)
+
+	for attempt := 1; attempt <= 4; attempt++ {
+		result, err := manager.RunOnce(t.Context())
+		if err != nil || len(result.Malformed) != 1 || result.Malformed[0].AttemptCount != attempt {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+	}
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || result.Skipped["malformed_output_blocked"] != 1 || agent.calls != 4 {
+		t.Fatalf("RunOnce() after bound = %#v, %v; runner calls = %d", result, err, agent.calls)
+	}
+}
+
+func TestManagerRecoversAfterRunnerErrors(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 50, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	wantErr := errors.New("backend authentication failed")
+	agent := &recoveringAdmissionRunner{errorsRemaining: 4, err: wantErr}
+	backend := openManagerTestStore(t)
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, agent),
+		backend,
+		func() time.Time { return now },
+	)
+
+	for attempt := 1; attempt <= 4; attempt++ {
+		result, err := manager.RunOnce(t.Context())
+		if !errors.Is(err, wantErr) || len(result.Malformed) != 0 {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+	}
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID || agent.calls != 5 {
+		t.Fatalf("corrected RunOnce() = %#v, %v; runner calls = %d", result, err, agent.calls)
+	}
+	runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 5)
+	if err != nil || len(runs) != 5 || runs[1].Outcome != "failed" || len(runs[1].Malformed) != 0 ||
+		!strings.Contains(runs[1].Error, "runner_error") {
+		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+	}
+}
+
+func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 13, 0, 0, 0, time.UTC)
+	issues := []connector.Issue{
+		admissionIssueFixture("issue-1", "DD-1", 1, now),
+		admissionIssueFixture("issue-2", "DD-2", 2, now.Add(time.Minute)),
+	}
+	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	agent := &malformedAdmissionRunner{malformedIssueID: issues[0].ID}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, agent),
+		openManagerTestStore(t),
+		func() time.Time { return now },
+	)
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issues[1].ID {
+		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+	if result.Skipped["malformed_output_retryable"] != 1 || agent.calls != 2 {
+		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+	}
+}
+
 func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name        string
-		evaluations []AgentEvaluation
+		name          string
+		evaluations   []AgentEvaluation
+		wantProposals int
+		wantMalformed int
 	}{
 		{
-			name:        "missing candidate",
-			evaluations: []AgentEvaluation{admissionProposalEvaluation("issue-1")},
+			name:          "missing candidate",
+			evaluations:   []AgentEvaluation{admissionProposalEvaluation("issue-1")},
+			wantProposals: 1,
+			wantMalformed: 1,
 		},
 		{
 			name: "duplicate candidate",
@@ -3269,6 +3456,7 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 				admissionProposalEvaluation("issue-1"),
 				admissionProposalEvaluation("issue-1"),
 			},
+			wantMalformed: 2,
 		},
 		{
 			name: "unknown candidate",
@@ -3276,6 +3464,7 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 				admissionProposalEvaluation("issue-1"),
 				admissionProposalEvaluation("unknown"),
 			},
+			wantMalformed: 2,
 		},
 		{
 			name: "invalid disposition",
@@ -3283,6 +3472,7 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 				admissionProposalEvaluation("issue-1"),
 				admissionProposalEvaluation("issue-2"),
 			},
+			wantMalformed: 2,
 		},
 	}
 	tests[3].evaluations[1].Disposition = "pending"
@@ -3309,14 +3499,15 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 			)
 
 			result, err := manager.RunOnce(t.Context())
-			if !errors.Is(err, ErrInvalidOutput) || result.Candidates != len(issues) || len(result.Proposals) != 0 {
+			if err != nil || result.Candidates != len(issues) ||
+				len(result.Proposals) != tt.wantProposals || len(result.Malformed) != tt.wantMalformed {
 				t.Fatalf("RunOnce() = %#v, %v", result, err)
 			}
 		})
 	}
 }
 
-func TestManagerValidatesEntireEvaluationBatchBeforeSideEffects(t *testing.T) {
+func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -3324,35 +3515,30 @@ func TestManagerValidatesEntireEvaluationBatchBeforeSideEffects(t *testing.T) {
 		admissionIssueFixture("issue-1", "DD-1", 1, now),
 		admissionIssueFixture("issue-2", "DD-2", 2, now),
 	}
-	evaluations := []AgentEvaluation{
-		admissionProposalEvaluation(issues[0].ID),
-		admissionProposalEvaluation(issues[1].ID),
-	}
-	evaluations[1].Confidence = float64Pointer(2)
-	raw, err := json.Marshal(struct {
-		Evaluations []AgentEvaluation `json:"evaluations"`
-	}{Evaluations: evaluations})
-	if err != nil {
-		t.Fatalf("Marshal() error = %v", err)
-	}
 	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
 	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
+		evaluation := admissionProposalEvaluation(request.Admission.Candidates[0].ID)
+		if evaluation.IssueID == issues[1].ID {
+			evaluation.Confidence = float64Pointer(2)
+		}
+		return []AgentProposal{evaluation}
+	}}
 	manager := newAdmissionTestManager(
 		t,
-		admissionTestSettings(tracker, staticAdmissionRunner{output: string(raw)}),
+		admissionTestSettings(tracker, agent),
 		backend,
 		func() time.Time { return now },
 	)
 
 	result, err := manager.RunOnce(t.Context())
-	if !errors.Is(err, ErrInvalidOutput) || len(result.Proposals) != 0 {
+	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issues[0].ID ||
+		len(result.Malformed) != 1 || result.Malformed[0].IssueID != issues[1].ID {
 		t.Fatalf("RunOnce() = %#v, %v", result, err)
 	}
-	for _, issue := range issues {
-		history, historyErr := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
-		if historyErr != nil || len(history) != 0 {
-			t.Fatalf("AdmissionProposalHistory(%s) = %#v, %v", issue.ID, history, historyErr)
-		}
+	history, historyErr := backend.AdmissionProposalHistory(t.Context(), "detent", issues[1].ID)
+	if historyErr != nil || len(history) != 0 {
+		t.Fatalf("AdmissionProposalHistory(%s) = %#v, %v", issues[1].ID, history, historyErr)
 	}
 }
 
@@ -3392,6 +3578,125 @@ func TestParseEvaluationsRequiresTypedEnvelope(t *testing.T) {
 	evaluations, err := parseEvaluations(`{"evaluations":[]}`)
 	if err != nil || len(evaluations) != 0 {
 		t.Fatalf("parseEvaluations(empty) = %#v, %v", evaluations, err)
+	}
+}
+
+func TestAdmissionMalformedEvidence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		raw       string
+		wantClass string
+		wantCode  string
+	}{
+		{name: "syntax", raw: `{`, wantClass: "parse", wantCode: "invalid_json"},
+		{name: "unknown field", raw: `{"unexpected":true}`, wantClass: "schema", wantCode: "unknown_field"},
+		{name: "invalid type", raw: `{"evaluations":"wrong"}`, wantClass: "schema", wantCode: "invalid_type"},
+		{name: "missing envelope", raw: `{}`, wantClass: "schema", wantCode: "invalid_envelope"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseEvaluations(tt.raw)
+			if err == nil {
+				t.Fatalf("parseEvaluations(%q) error = nil", tt.raw)
+			}
+			gotClass, gotCode := classifyMalformedEvaluation(err)
+			if gotClass != tt.wantClass || gotCode != tt.wantCode {
+				t.Fatalf("classifyMalformedEvaluation() = %q, %q, want %q, %q", gotClass, gotCode, tt.wantClass, tt.wantCode)
+			}
+		})
+	}
+
+	secret := "abcdefghijklmnopqrstuvwxyz0123456789SECRET"
+	excerpt := redactAdmissionOutput([]byte(`{"token":"` + secret + `","authorization":"Bearer ` + secret + `","detail":"safe"}`))
+	if strings.Contains(excerpt, secret) || !strings.Contains(excerpt, "<redacted>") || !strings.Contains(excerpt, `"detail":"safe"`) {
+		t.Fatalf("redactAdmissionOutput() = %q", excerpt)
+	}
+}
+
+func TestAdmissionEvaluationFingerprintsChangeWithMaterialInput(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	candidate := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	settings := admissionTestSettings(nil, nil)
+	base := admissionEvaluationFingerprints(settings, candidate)
+	tests := []struct {
+		name                string
+		change              func(*Settings, *connector.Issue)
+		wantCandidateChange bool
+		wantPromptChange    bool
+	}{
+		{
+			name: "candidate id",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.ID += "-changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate identifier",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Identifier += "-changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate title",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Title += " changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate body",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Description += " changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate state",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.State += " changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate author",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.AuthorID += "changed"
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "candidate labels",
+			change: func(_ *Settings, issue *connector.Issue) {
+				issue.Labels = append(append([]string(nil), issue.Labels...), "changed")
+			},
+			wantCandidateChange: true,
+		},
+		{
+			name: "criteria prompt",
+			change: func(settings *Settings, _ *connector.Issue) {
+				settings.Criteria.Text += " changed"
+			},
+			wantPromptChange: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changedSettings := cloneSettings(settings)
+			changedCandidate := candidate
+			tt.change(&changedSettings, &changedCandidate)
+			got := admissionEvaluationFingerprints(changedSettings, changedCandidate)
+			if (got.candidate != base.candidate) != tt.wantCandidateChange ||
+				(got.prompt != base.prompt) != tt.wantPromptChange || got.proposal == base.proposal {
+				t.Fatalf("fingerprints = %#v, base %#v", got, base)
+			}
+		})
 	}
 }
 
@@ -3513,6 +3818,62 @@ type staticAdmissionRunner struct {
 
 func (r staticAdmissionRunner) Run(context.Context, runner.RunRequest) (runner.RunResult, error) {
 	return runner.RunResult{Output: r.output, FinalState: runner.FinalStateCompleted}, nil
+}
+
+type malformedAdmissionRunner struct {
+	malformedCalls   int
+	malformedIssueID string
+	malformedOutputs []string
+	calls            int
+}
+
+func (r *malformedAdmissionRunner) Run(_ context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	r.calls++
+	if r.calls <= r.malformedCalls ||
+		r.calls <= len(r.malformedOutputs) ||
+		(len(request.Admission.Candidates) > 0 && request.Admission.Candidates[0].ID == r.malformedIssueID) {
+		output := `{`
+		if r.calls <= len(r.malformedOutputs) {
+			output = r.malformedOutputs[r.calls-1]
+		}
+		return runner.RunResult{Output: output, FinalState: runner.FinalStateCompleted}, nil
+	}
+	evaluations := make([]AgentEvaluation, 0, len(request.Admission.Candidates))
+	for _, candidate := range request.Admission.Candidates {
+		evaluations = append(evaluations, admissionProposalEvaluation(candidate.ID))
+	}
+	raw, err := json.Marshal(struct {
+		Evaluations []AgentEvaluation `json:"evaluations"`
+	}{Evaluations: evaluations})
+	if err != nil {
+		return runner.RunResult{}, err
+	}
+	return runner.RunResult{Output: string(raw), FinalState: runner.FinalStateCompleted}, nil
+}
+
+type recoveringAdmissionRunner struct {
+	errorsRemaining int
+	err             error
+	calls           int
+}
+
+func (r *recoveringAdmissionRunner) Run(_ context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	r.calls++
+	if r.errorsRemaining > 0 {
+		r.errorsRemaining--
+		return runner.RunResult{}, r.err
+	}
+	evaluations := make([]AgentEvaluation, 0, len(request.Admission.Candidates))
+	for _, candidate := range request.Admission.Candidates {
+		evaluations = append(evaluations, admissionProposalEvaluation(candidate.ID))
+	}
+	raw, err := json.Marshal(struct {
+		Evaluations []AgentEvaluation `json:"evaluations"`
+	}{Evaluations: evaluations})
+	if err != nil {
+		return runner.RunResult{}, err
+	}
+	return runner.RunResult{Output: string(raw), FinalState: runner.FinalStateCompleted}, nil
 }
 
 type capacityScheduler struct {

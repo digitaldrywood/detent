@@ -25,40 +25,41 @@ const (
 )
 
 type doctorAdmissionDiagnostic struct {
-	Schedule              string                    `json:"schedule"`
-	MaximumGapSeconds     int64                     `json:"maximum_gap_seconds,omitempty"`
-	CriteriaSection       string                    `json:"criteria_section"`
-	Dimensions            []string                  `json:"dimensions,omitempty"`
-	NeverRun              bool                      `json:"never_run,omitempty"`
-	ObservedRuns          int                       `json:"observed_runs,omitempty"`
-	CandidateBearingRuns  int                       `json:"candidate_bearing_runs,omitempty"`
-	CandidatesObserved    int                       `json:"candidates_observed,omitempty"`
-	EligibleCandidates    int                       `json:"eligible_candidates_observed,omitempty"`
-	AverageRunSeconds     int64                     `json:"average_run_seconds,omitempty"`
-	AdmissionSessions     int                       `json:"admission_sessions,omitempty"`
-	AverageSessionSeconds int64                     `json:"average_session_seconds,omitempty"`
-	AverageSessionTokens  int64                     `json:"average_session_tokens,omitempty"`
-	LastRun               string                    `json:"last_run,omitempty"`
-	Outcome               string                    `json:"outcome,omitempty"`
-	DeferredReason        string                    `json:"deferred_reason,omitempty"`
-	CandidatesFound       int                       `json:"candidates_found,omitempty"`
-	CandidatesEvaluated   int                       `json:"candidates_evaluated,omitempty"`
-	Proposed              int                       `json:"proposed,omitempty"`
-	Skipped               map[string]int            `json:"skipped,omitempty"`
-	Truncated             map[string]int            `json:"truncated,omitempty"`
-	IssueReferences       []string                  `json:"issue_references,omitempty"`
-	ConsecutiveFailures   int                       `json:"consecutive_failures,omitempty"`
-	LatestError           string                    `json:"latest_error,omitempty"`
-	Warnings              []string                  `json:"warnings,omitempty"`
-	Origins               map[string]int            `json:"origins,omitempty"`
-	ProposalOutcomes      map[string]int            `json:"proposal_outcomes,omitempty"`
-	DecisionSeconds       map[string]int64          `json:"average_decision_seconds,omitempty"`
-	AcceptedCompleted     int                       `json:"accepted_completed,omitempty"`
-	ReworkCount           int                       `json:"rework_count,omitempty"`
-	ReviewChurnCount      int                       `json:"review_churn_count,omitempty"`
-	SpendUSD              float64                   `json:"spend_usd,omitempty"`
-	RepositoryVisibility  string                    `json:"repository_visibility,omitempty"`
-	OpenProposals         []doctorAdmissionProposal `json:"open_proposals_awaiting_decision,omitempty"`
+	Schedule              string                     `json:"schedule"`
+	MaximumGapSeconds     int64                      `json:"maximum_gap_seconds,omitempty"`
+	CriteriaSection       string                     `json:"criteria_section"`
+	Dimensions            []string                   `json:"dimensions,omitempty"`
+	NeverRun              bool                       `json:"never_run,omitempty"`
+	ObservedRuns          int                        `json:"observed_runs,omitempty"`
+	CandidateBearingRuns  int                        `json:"candidate_bearing_runs,omitempty"`
+	CandidatesObserved    int                        `json:"candidates_observed,omitempty"`
+	EligibleCandidates    int                        `json:"eligible_candidates_observed,omitempty"`
+	AverageRunSeconds     int64                      `json:"average_run_seconds,omitempty"`
+	AdmissionSessions     int                        `json:"admission_sessions,omitempty"`
+	AverageSessionSeconds int64                      `json:"average_session_seconds,omitempty"`
+	AverageSessionTokens  int64                      `json:"average_session_tokens,omitempty"`
+	LastRun               string                     `json:"last_run,omitempty"`
+	Outcome               string                     `json:"outcome,omitempty"`
+	DeferredReason        string                     `json:"deferred_reason,omitempty"`
+	CandidatesFound       int                        `json:"candidates_found,omitempty"`
+	CandidatesEvaluated   int                        `json:"candidates_evaluated,omitempty"`
+	Proposed              int                        `json:"proposed,omitempty"`
+	Skipped               map[string]int             `json:"skipped,omitempty"`
+	Truncated             map[string]int             `json:"truncated,omitempty"`
+	IssueReferences       []string                   `json:"issue_references,omitempty"`
+	ConsecutiveFailures   int                        `json:"consecutive_failures,omitempty"`
+	LatestError           string                     `json:"latest_error,omitempty"`
+	Warnings              []string                   `json:"warnings,omitempty"`
+	Origins               map[string]int             `json:"origins,omitempty"`
+	ProposalOutcomes      map[string]int             `json:"proposal_outcomes,omitempty"`
+	DecisionSeconds       map[string]int64           `json:"average_decision_seconds,omitempty"`
+	AcceptedCompleted     int                        `json:"accepted_completed,omitempty"`
+	ReworkCount           int                        `json:"rework_count,omitempty"`
+	ReviewChurnCount      int                        `json:"review_churn_count,omitempty"`
+	SpendUSD              float64                    `json:"spend_usd,omitempty"`
+	RepositoryVisibility  string                     `json:"repository_visibility,omitempty"`
+	OpenProposals         []doctorAdmissionProposal  `json:"open_proposals_awaiting_decision,omitempty"`
+	MalformedBlocked      []doctorAdmissionMalformed `json:"blocked_malformed_results,omitempty"`
 }
 
 type doctorAdmissionProposal struct {
@@ -67,6 +68,19 @@ type doctorAdmissionProposal struct {
 	Confidence       float64 `json:"confidence"`
 	AgeSeconds       int64   `json:"age_seconds"`
 	ExpiresInSeconds int64   `json:"expires_in_seconds"`
+}
+
+type doctorAdmissionMalformed struct {
+	Identifier           string `json:"identifier"`
+	CandidateFingerprint string `json:"candidate_fingerprint"`
+	PromptFingerprint    string `json:"prompt_fingerprint"`
+	ProposalFingerprint  string `json:"proposal_fingerprint"`
+	ErrorFingerprint     string `json:"error_fingerprint"`
+	ErrorClass           string `json:"error_class"`
+	ErrorCode            string `json:"error_code"`
+	AttemptCount         int    `json:"attempt_count"`
+	OutputExcerpt        string `json:"output_excerpt,omitempty"`
+	LastSeenAt           string `json:"last_seen_at"`
 }
 
 func checkDoctorAdmission(
@@ -296,6 +310,9 @@ func readDoctorAdmissionEvidence(
 	if err := readDoctorOpenAdmissionProposals(ctx, db, projectID, observedAt, &diagnostic); err != nil {
 		return diagnostic, err
 	}
+	if err := readDoctorBlockedAdmissionMalformed(ctx, db, projectID, &diagnostic); err != nil {
+		return diagnostic, err
+	}
 	diagnostic.ProposalOutcomes = map[string]int{}
 	diagnostic.DecisionSeconds = map[string]int64{}
 	rows, err := db.QueryContext(ctx, `
@@ -497,6 +514,10 @@ func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, una
 		check.Status = doctorWarn
 		details = append(details, "awaiting_decision="+doctorAdmissionOpenProposals(diagnostic.OpenProposals))
 	}
+	if len(diagnostic.MalformedBlocked) > 0 {
+		check.Status = doctorWarn
+		details = append(details, "blocked_malformed="+doctorAdmissionMalformedResults(diagnostic.MalformedBlocked))
+	}
 	if counts := doctorAdmissionCounts(diagnostic.Origins); counts != "" {
 		details = append(details, "origins="+counts)
 	}
@@ -533,6 +554,69 @@ func doctorAdmissionOpenProposals(proposals []doctorAdmissionProposal) string {
 			formatDoctorConfidence(proposal.Confidence),
 			(time.Duration(proposal.AgeSeconds)*time.Second).String(),
 			(time.Duration(proposal.ExpiresInSeconds)*time.Second).String(),
+		))
+	}
+	return strings.Join(values, ",")
+}
+
+func readDoctorBlockedAdmissionMalformed(
+	ctx context.Context,
+	db doctorTelemetryStore,
+	projectID string,
+	diagnostic *doctorAdmissionDiagnostic,
+) error {
+	rows, err := db.QueryContext(ctx, `
+SELECT COALESCE(issue_identifier, ''), issue_id, candidate_fingerprint,
+       prompt_fingerprint, proposal_fingerprint, error_fingerprint, error_class,
+       error_code, attempt_count, output_excerpt, last_seen_at
+FROM backlog_admission_malformed_results
+WHERE project_id = ? AND status = 'blocked'
+ORDER BY last_seen_at DESC, id DESC`, strings.TrimSpace(projectID))
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table: backlog_admission_malformed_results") {
+			return nil
+		}
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var issueID string
+		var malformed doctorAdmissionMalformed
+		if err := rows.Scan(
+			&malformed.Identifier,
+			&issueID,
+			&malformed.CandidateFingerprint,
+			&malformed.PromptFingerprint,
+			&malformed.ProposalFingerprint,
+			&malformed.ErrorFingerprint,
+			&malformed.ErrorClass,
+			&malformed.ErrorCode,
+			&malformed.AttemptCount,
+			&malformed.OutputExcerpt,
+			&malformed.LastSeenAt,
+		); err != nil {
+			return err
+		}
+		if malformed.Identifier = strings.TrimSpace(malformed.Identifier); malformed.Identifier == "" {
+			malformed.Identifier = strings.TrimSpace(issueID)
+		}
+		diagnostic.MalformedBlocked = append(diagnostic.MalformedBlocked, malformed)
+	}
+	return rows.Err()
+}
+
+func doctorAdmissionMalformedResults(results []doctorAdmissionMalformed) string {
+	values := make([]string, 0, len(results))
+	for _, result := range results {
+		values = append(values, fmt.Sprintf(
+			"%s(class=%s,code=%s,attempts=%d,proposal_fingerprint=%s,error_fingerprint=%s,excerpt=%s)",
+			result.Identifier,
+			result.ErrorClass,
+			result.ErrorCode,
+			result.AttemptCount,
+			result.ProposalFingerprint,
+			result.ErrorFingerprint,
+			strconvQuote(result.OutputExcerpt),
 		))
 	}
 	return strings.Join(values, ",")

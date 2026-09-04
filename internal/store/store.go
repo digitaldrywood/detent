@@ -286,6 +286,9 @@ type AdmissionStore interface {
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
+	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
+	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)
+	ResolveAdmissionMalformedResults(context.Context, string, string, time.Time) error
 }
 
 type AdmissionProposalDecisionReader interface {
