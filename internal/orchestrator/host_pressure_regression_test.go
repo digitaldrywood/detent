@@ -156,26 +156,28 @@ func TestObserveIOAndCPUPressureControlsAdmission(t *testing.T) {
 func TestDispatchRefreshesHostPressureAtAdmission(t *testing.T) {
 	t.Parallel()
 
-	observedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	now := observedAt.Add(time.Second)
+	tickStartedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	observedAt := tickStartedAt.Add(500 * time.Millisecond)
+	admissionTime := tickStartedAt.Add(2 * time.Second)
 	reads := 0
 	orch := &Orchestrator{
 		cfg: Config{IOPressureFullAvg10Max: 5, IOPressurePollInterval: time.Second},
 		readIOPressure: func(context.Context) (hostpressure.Sample, error) {
 			reads++
-			return hostpressure.Sample{Full: hostpressure.Pressure{Avg10: 63.64}, ObservedAt: now}, nil
+			return hostpressure.Sample{Full: hostpressure.Pressure{Avg10: 63.64}, ObservedAt: admissionTime}, nil
 		},
-		now: func() time.Time { return now },
+		now: func() time.Time { return admissionTime },
 	}
 	state := newState(normalizeConfig(orch.cfg))
 	state.IOPressure.ObservedAt = observedAt
+	state.CPUPressure.DispatchHeld = true
 
 	outcome := orch.dispatchIssueWithAdmission(
 		t.Context(),
 		&state,
 		connector.Issue{ID: "digitaldrywood/detent#2085"},
 		0,
-		now,
+		tickStartedAt,
 		"",
 		false,
 		nil,
