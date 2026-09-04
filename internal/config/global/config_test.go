@@ -631,6 +631,8 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 			FairShare: map[string]any{"half_life": "30m"},
 			Startup:   map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
 			Memory:    defaultSettings().Memory,
+			IO:        defaultSettings().IO,
+			CPU:       defaultSettings().CPU,
 			Identity: Identity{
 				Name:          "release-captain",
 				GitHubLogin:   "detent-bot",
