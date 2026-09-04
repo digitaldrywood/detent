@@ -115,8 +115,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		resultErr = errors.Join(resultErr, service.Close())
 	}()
 
-	var listenConfig net.ListenConfig
-	listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddress)
+	listener, err := cfg.listen(ctx, "tcp", cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
 	}

@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,6 +64,7 @@ type Config struct {
 	FullRepairInterval         time.Duration
 
 	validateDatabaseFilesystem func(string) error
+	listen                     func(context.Context, string, string) (net.Listener, error)
 	now                        func() time.Time
 	jitter                     func() float64
 	newLeaseID                 func() string
@@ -114,6 +117,10 @@ func (c Config) normalized() Config {
 	}
 	if c.validateDatabaseFilesystem == nil {
 		c.validateDatabaseFilesystem = validateLocalDatabaseFilesystem
+	}
+	if c.listen == nil {
+		listenConfig := &net.ListenConfig{}
+		c.listen = listenConfig.Listen
 	}
 	if c.now == nil {
 		c.now = time.Now

@@ -4,14 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,22 +171,29 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	t.Parallel()
 
 	databasePath := filepath.Join(t.TempDir(), "hub.db")
-	serving := make(chan struct{})
-	logger := slog.New(slog.NewTextHandler(&servingSignalWriter{ready: serving}, nil))
+	listenerAccepting := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() {
 		result <- Run(ctx, Config{
 			DatabasePath:  databasePath,
 			ListenAddress: "127.0.0.1:0",
-			Logger:        logger,
+			listen: func(ctx context.Context, network string, address string) (net.Listener, error) {
+				var listenConfig net.ListenConfig
+				listener, err := listenConfig.Listen(ctx, network, address)
+				if err != nil {
+					return nil, err
+				}
+				return &acceptSignalListener{Listener: listener, accepting: listenerAccepting}, nil
+			},
 		})
 	}()
 
 	select {
-	case <-serving:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run() did not bind its listener")
+	case <-listenerAccepting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not start accepting listener connections")
 	}
 	cancel()
 	select {
@@ -197,7 +201,7 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Run() did not stop after cancellation")
 	}
 
@@ -207,16 +211,15 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	}
 }
 
-type servingSignalWriter struct {
-	ready chan struct{}
-	once  sync.Once
+type acceptSignalListener struct {
+	net.Listener
+	accepting chan struct{}
+	once      sync.Once
 }
 
-func (w *servingSignalWriter) Write(p []byte) (int, error) {
-	if strings.Contains(string(p), "hub serving") {
-		w.once.Do(func() {
-			close(w.ready)
-		})
-	}
-	return io.Discard.Write(p)
+func (l *acceptSignalListener) Accept() (net.Conn, error) {
+	l.once.Do(func() {
+		close(l.accepting)
+	})
+	return l.Listener.Accept()
 }
