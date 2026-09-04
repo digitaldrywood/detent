@@ -48,6 +48,7 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 		wantBlock      bool
 		withoutLane    bool
 		wantWarning    bool
+		wantSkipped    bool
 	}{
 		{
 			name:           "clean tree",
@@ -68,6 +69,11 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 			wantOutcome:    completionCleanlinessRejected,
 			wantResolution: "required",
 			wantRejected:   1,
+		},
+		{
+			name:        "filesystem artifact output",
+			evidence:    DiffStats{FilesChanged: 1, Fingerprint: "artifact-fingerprint", Status: "changed"},
+			wantSkipped: true,
 		},
 		{
 			name: "unpushed commits without pull request",
@@ -178,13 +184,25 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 			if tt.withoutLane {
 				completionLane = ""
 			}
+			evidence := tt.evidence
+			if !tt.wantSkipped && !evidence.RecoveryStateExpected {
+				evidence.RecoveryStateExpected = true
+				evidence.RecoveryStateAvailable = true
+			}
 			decision := orch.evaluateCompletionCleanliness(t.Context(), Running{
 				Issue:          issue,
 				Mode:           runpkg.RunModeImplement,
 				WorkAttemptID:  2147,
 				Generation:     7,
 				CompletionLane: completionLane,
-			}, issue, tt.evidence)
+			}, issue, evidence)
+
+			if tt.wantSkipped {
+				if decision.Attempted || completionCleanlinessMetadata(decision) != nil {
+					t.Fatalf("evaluateCompletionCleanliness() = %#v, want skipped", decision)
+				}
+				return
+			}
 
 			if !decision.Attempted || decision.Outcome != tt.wantOutcome || decision.Resolution != tt.wantResolution || decision.ConsecutiveRejections != tt.wantRejected || decision.Block != tt.wantBlock {
 				t.Fatalf("evaluateCompletionCleanliness() = %#v", decision)
@@ -272,13 +290,15 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: base.Add(-time.Minute)}
 			diff := DiffStats{
-				FilesChanged:   2,
-				AddedLines:     9,
-				RemovedLines:   3,
-				TrackedPaths:   []string{"internal/worker.go"},
-				UntrackedPaths: []string{"debug.log"},
-				Fingerprint:    "dirty-fingerprint",
-				Status:         "changed",
+				FilesChanged:           2,
+				AddedLines:             9,
+				RemovedLines:           3,
+				TrackedPaths:           []string{"internal/worker.go"},
+				UntrackedPaths:         []string{"debug.log"},
+				RecoveryStateExpected:  true,
+				RecoveryStateAvailable: true,
+				Fingerprint:            "dirty-fingerprint",
+				Status:                 "changed",
 			}
 
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{

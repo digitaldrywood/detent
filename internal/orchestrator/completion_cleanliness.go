@@ -81,6 +81,9 @@ func (o *Orchestrator) evaluateCompletionCleanliness(
 	if !attempted && intentionalStatement == "" {
 		return completionCleanlinessDecision{}
 	}
+	if !evidence.RecoveryStateExpected {
+		return completionCleanlinessDecision{}
+	}
 	decision := completionCleanlinessDecision{
 		Evidence: evidence,
 	}
