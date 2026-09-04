@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -95,7 +94,7 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 	}
 
 	descendantPID := <-beforeTermination
-	if !operatorStopProcessAlive(descendantPID) {
+	if !operatorStopProcessRunning(t.Context(), descendantPID) {
 		t.Fatalf("descendant %d exited before process-group termination", descendantPID)
 	}
 	releaseTermination()
@@ -107,6 +106,28 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 	reaped := processStore.reapedSnapshot()
 	if len(reaped) != 1 || reaped[0].sessionID != runner.sessionID || reaped[0].reap.Outcome != store.WorkerProcessOutcomeTerminated {
 		t.Fatalf("reaped worker processes = %#v", reaped)
+	}
+}
+
+func TestOperatorStopProcessStateRunning(t *testing.T) {
+	tests := []struct {
+		name  string
+		state string
+		want  bool
+	}{
+		{name: "missing process"},
+		{name: "sleeping process", state: "S", want: true},
+		{name: "running foreground process", state: "R+", want: true},
+		{name: "zombie process", state: "Z"},
+		{name: "zombie process with flags", state: "Z+"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := operatorStopProcessStateRunning(tt.state); got != tt.want {
+				t.Fatalf("operatorStopProcessStateRunning(%q) = %v, want %v", tt.state, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -179,7 +200,7 @@ func TestStopRunRefusesStalePersistedProcessIdentity(t *testing.T) {
 		_, stillRunning := state.Running[issue.ID]
 		return stillRunning && strings.Contains(blocked.Reason, "persisted PID, PGID, or start time is stale")
 	})
-	if !operatorStopProcessAlive(identity.PID) {
+	if !operatorStopProcessRunning(t.Context(), identity.PID) {
 		t.Fatal("stale identity refusal terminated the unrelated test process")
 	}
 	if len(processStore.reapedSnapshot()) != 0 {
@@ -330,7 +351,7 @@ func (r *operatorStopDescendantRunner) Run(ctx context.Context, request orchestr
 	<-ctx.Done()
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
-	if operatorStopProcessAlive(descendantPID) {
+	if operatorStopProcessRunning(context.WithoutCancel(ctx), descendantPID) {
 		r.descendantSurvived <- descendantPID
 	} else {
 		r.descendantSurvived <- -descendantPID
@@ -423,7 +444,7 @@ func waitForOperatorStopProcessExit(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if !operatorStopProcessAlive(pid) {
+		if !operatorStopProcessRunning(t.Context(), pid) {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -431,12 +452,20 @@ func waitForOperatorStopProcessExit(t *testing.T, pid int) {
 	t.Fatalf("process %d is still alive", pid)
 }
 
-func operatorStopProcessAlive(pid int) bool {
+func operatorStopProcessRunning(ctx context.Context, pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
+	if err != nil {
+		return false
+	}
+	return operatorStopProcessStateRunning(string(output))
+}
+
+func operatorStopProcessStateRunning(state string) bool {
+	state = strings.TrimSpace(state)
+	return state != "" && !strings.HasPrefix(state, "Z")
 }
 
 func operatorStopShellQuote(value string) string {
