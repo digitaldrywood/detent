@@ -131,12 +131,17 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(refusal.CapacitySnapshotJSON), &capacity); err != nil {
 		t.Fatalf("capacity snapshot JSON error = %v", err)
 	}
+	// selected_project_id reports the project selected for the slot, which is now
+	// the refused project itself. It previously named the reservation holder only
+	// because the removed priority-reservation path stamped it. The holder is
+	// still reported accurately below via capacity["holders"], and the refusal is
+	// still genuine exhaustion: capacity 1, used 1.
 	for key, want := range map[string]any{
 		"pool":                scheduler.DefaultPoolName,
 		"global_capacity":     float64(1),
 		"global_used":         float64(1),
 		"global_available":    float64(0),
-		"selected_project_id": localProject.ID,
+		"selected_project_id": cloudProject.ID,
 	} {
 		if got := capacity[key]; got != want {
 			t.Fatalf("capacity[%q] = %#v, want %#v; snapshot = %s", key, got, want, refusal.CapacitySnapshotJSON)
