@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,23 +161,4 @@ func restartRecoveryState(t *testing.T, orch *orchestrator.Orchestrator) orchest
 		t.Fatalf("Orchestrator.State() error = %v", err)
 	}
 	return state
-}
-
-func restartRecoveryEventContains(state orchestrator.State, event string, fragments ...string) bool {
-	for _, candidate := range state.RecentEvents {
-		if candidate.Event != event {
-			continue
-		}
-		matched := true
-		for _, fragment := range fragments {
-			if !strings.Contains(candidate.Message, fragment) {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
 }
