@@ -212,7 +212,7 @@ func TestStateCommandOutput(t *testing.T) {
 		wantJSONBuild bool
 	}{
 		{name: "JSON projection", args: []string{"--project", "detent"}, wantJSONBuild: true},
-		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Running: 2", "Ready: 3", "Waiting: 4", "Blocked: 1", "Memory PSI some avg60: 0% / 10% threshold (admitting)", "I/O PSI full avg10: 63.64% / 5% threshold (holding dispatch)", "CPU PSI some avg10: 91.2% / 80% threshold (holding dispatch)", "Truncated: false"}},
+		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Running: 2", "Ready: 3", "Waiting: 4", "Blocked: 1", "Memory PSI some avg60: 0% / 10% threshold (admitting)", "I/O PSI full avg10: 63.64% / 5% threshold (limited to 1 agent for 5m0s)", "CPU PSI some avg10: 91.2% / 80% threshold (holding dispatch)", "Truncated: false"}},
 	}
 
 	for _, tt := range tests {
@@ -356,7 +356,8 @@ func stateFixture() map[string]any {
 			"supported": true, "some": map[string]any{"avg60": 0}, "some_avg60_max": 10, "dispatch_held": false,
 		},
 		"io_pressure": map[string]any{
-			"supported": true, "full": map[string]any{"avg10": 63.64}, "full_avg10_max": 5, "dispatch_held": true,
+			"supported": true, "full": map[string]any{"avg10": 63.64}, "full_avg10_max": 5, "dispatch_held": false,
+			"capacity_constrained": true, "degraded_max_concurrent_agents": 1, "effective_max_concurrent_agents": 1, "constrained_for_ms": 300000,
 		},
 		"cpu_pressure": map[string]any{
 			"supported": true, "some": map[string]any{"avg10": 91.2}, "some_avg10_max": 80, "dispatch_held": true,

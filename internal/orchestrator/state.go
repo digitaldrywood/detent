@@ -366,10 +366,12 @@ func newState(cfg Config) State {
 			SomeAvg60Max: cfg.MemoryPressureSomeAvg60Max,
 		},
 		IOPressure: telemetry.IOPressure{
-			FullAvg10Max: cfg.IOPressureFullAvg10Max,
+			FullAvg10Max:                cfg.IOPressureFullAvg10Max,
+			DegradedMaxConcurrentAgents: cfg.IOPressureDegradedMaxAgents,
 		},
 		CPUPressure: telemetry.CPUPressure{
-			SomeAvg10Max: cfg.CPUPressureSomeAvg10Max,
+			SomeAvg10Max:                cfg.CPUPressureSomeAvg10Max,
+			DegradedMaxConcurrentAgents: cfg.CPUPressureDegradedMaxAgents,
 		},
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),

@@ -51,10 +51,11 @@ type Config struct {
 }
 
 type SlotRequest struct {
-	State    string
-	Host     string
-	Weight   int
-	Priority int
+	State            string
+	Host             string
+	Weight           int
+	Priority         int
+	PressureCapacity int
 }
 
 type Slot struct {

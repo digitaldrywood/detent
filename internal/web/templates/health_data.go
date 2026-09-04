@@ -100,7 +100,10 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	}
 	if detail := hostPressureHoldDetail(snapshot); detail != "" {
 		view.Kind = primitives.KindWarn
-		view.Verdict = "Dispatch is waiting for host pressure."
+		view.Verdict = "Dispatch is constrained by host pressure."
+		if snapshot.MemoryPressure.DispatchHeld || snapshot.IOPressure.DispatchHeld || snapshot.CPUPressure.DispatchHeld {
+			view.Verdict = "Dispatch is waiting for host pressure."
+		}
 		view.Detail = detail
 		return view
 	}
@@ -268,24 +271,43 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 }
 
 func hostPressureHoldDetail(snapshot telemetry.Snapshot) string {
-	held := make([]string, 0, 3)
+	constraints := make([]string, 0, 3)
 	if snapshot.MemoryPressure.DispatchHeld {
-		held = append(held, "memory some avg60 "+percentLabel(snapshot.MemoryPressure.Some.Avg60))
+		constraints = append(constraints, "memory some avg60 "+percentLabel(snapshot.MemoryPressure.Some.Avg60)+" holds dispatch")
 	}
-	if snapshot.IOPressure.DispatchHeld {
-		held = append(held, "IO full avg10 "+percentLabel(snapshot.IOPressure.Full.Avg10))
+	if pressure := snapshot.IOPressure; pressure.CapacityConstrained || pressure.DispatchHeld {
+		constraints = append(constraints, hostPressureCapacityDetail(
+			"IO full avg10 "+percentLabel(pressure.Full.Avg10),
+			pressure.DispatchHeld,
+			pressure.EffectiveMaxConcurrentAgents,
+			pressure.ConstrainedForMS,
+		))
 	}
-	if snapshot.CPUPressure.DispatchHeld {
-		held = append(held, "CPU some avg10 "+percentLabel(snapshot.CPUPressure.Some.Avg10))
+	if pressure := snapshot.CPUPressure; pressure.CapacityConstrained || pressure.DispatchHeld {
+		constraints = append(constraints, hostPressureCapacityDetail(
+			"CPU some avg10 "+percentLabel(pressure.Some.Avg10),
+			pressure.DispatchHeld,
+			pressure.EffectiveMaxConcurrentAgents,
+			pressure.ConstrainedForMS,
+		))
 	}
-	if len(held) == 0 {
+	if len(constraints) == 0 {
 		return ""
 	}
-	verb := "exceeds"
-	if len(held) > 1 {
-		verb = "exceed"
+	return strings.Join(constraints, ", ") + "."
+}
+
+func hostPressureCapacityDetail(metric string, held bool, capacity int, constrainedForMS int64) string {
+	detail := metric
+	if held {
+		detail += " holds dispatch"
+	} else {
+		detail += " limits admission to " + boardCountLabel(capacity, "concurrent agent", "concurrent agents")
 	}
-	return strings.Join(held, ", ") + " " + verb + " the configured admission threshold."
+	if constrainedForMS > 0 {
+		detail += " for " + (time.Duration(constrainedForMS) * time.Millisecond).Round(time.Second).String()
+	}
+	return detail
 }
 
 func healthPressureRows(snapshot telemetry.Snapshot) []healthRow {
@@ -295,6 +317,10 @@ func healthPressureRows(snapshot telemetry.Snapshot) []healthRow {
 			"memory",
 			pressure.Supported,
 			pressure.DispatchHeld,
+			pressure.DispatchHeld,
+			0,
+			0,
+			false,
 			pressure.LastError,
 			pressure.ObservedAt,
 			"some avg60",
@@ -308,6 +334,10 @@ func healthPressureRows(snapshot telemetry.Snapshot) []healthRow {
 			"IO",
 			pressure.Supported,
 			pressure.DispatchHeld,
+			pressure.CapacityConstrained,
+			pressure.EffectiveMaxConcurrentAgents,
+			pressure.ConstrainedForMS,
+			true,
 			pressure.LastError,
 			pressure.ObservedAt,
 			"full avg10",
@@ -321,6 +351,10 @@ func healthPressureRows(snapshot telemetry.Snapshot) []healthRow {
 			"CPU",
 			pressure.Supported,
 			pressure.DispatchHeld,
+			pressure.CapacityConstrained,
+			pressure.EffectiveMaxConcurrentAgents,
+			pressure.ConstrainedForMS,
+			true,
 			pressure.LastError,
 			pressure.ObservedAt,
 			"some avg10",
@@ -336,6 +370,10 @@ func healthPressureRow(
 	resource string,
 	supported bool,
 	held bool,
+	constrained bool,
+	effectiveCapacity int,
+	constrainedForMS int64,
+	hysteresis bool,
 	lastError string,
 	observedAt time.Time,
 	metric string,
@@ -366,10 +404,19 @@ func healthPressureRow(
 		row.Status = "Unsupported"
 		row.Detail = "Linux PSI is unavailable on this host"
 		row.Resets = "—"
-	case held:
+	case constrained || held:
 		row.Kind = primitives.KindWarn
 		row.Status = "Holding dispatch"
+		if !held {
+			row.Status = "Limited to " + boardCountLabel(effectiveCapacity, "agent", "agents")
+		}
+		if constrainedForMS > 0 {
+			row.Detail += " · constrained for " + (time.Duration(constrainedForMS) * time.Millisecond).Round(time.Second).String()
+		}
 		row.Resets = "when pressure falls"
+		if hysteresis {
+			row.Resets = "at 80% of threshold"
+		}
 	}
 	return row
 }

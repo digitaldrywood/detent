@@ -173,19 +173,19 @@ func TestProjectOrchestratorConfigIncludesHostPressure(t *testing.T) {
 	project := globalconfig.Project{
 		ID:           "detent",
 		GlobalMemory: globalconfig.Memory{PressureSomeAvg60Threshold: 10, PollIntervalMS: 1000},
-		GlobalIO:     globalconfig.IO{PressureFullAvg10Threshold: 5, PollIntervalMS: 500},
-		GlobalCPU:    globalconfig.CPU{PressureSomeAvg10Threshold: 80, PollIntervalMS: 750},
+		GlobalIO:     globalconfig.IO{PressureFullAvg10Threshold: 5, DegradedMaxConcurrentAgents: 1, PollIntervalMS: 500},
+		GlobalCPU:    globalconfig.CPU{PressureSomeAvg10Threshold: 80, DegradedMaxConcurrentAgents: 2, PollIntervalMS: 750},
 	}
 	got := projectOrchestratorConfig(project, workflowconfig.Default())
 
 	if got.MemoryPressureSomeAvg60Max != 10 || got.MemoryPressurePollInterval != time.Second {
 		t.Fatalf("memory pressure config = %.2f %s", got.MemoryPressureSomeAvg60Max, got.MemoryPressurePollInterval)
 	}
-	if got.IOPressureFullAvg10Max != 5 || got.IOPressurePollInterval != 500*time.Millisecond {
-		t.Fatalf("IO pressure config = %.2f %s", got.IOPressureFullAvg10Max, got.IOPressurePollInterval)
+	if got.IOPressureFullAvg10Max != 5 || got.IOPressureDegradedMaxAgents != 1 || got.IOPressurePollInterval != 500*time.Millisecond {
+		t.Fatalf("IO pressure config = %.2f %d %s", got.IOPressureFullAvg10Max, got.IOPressureDegradedMaxAgents, got.IOPressurePollInterval)
 	}
-	if got.CPUPressureSomeAvg10Max != 80 || got.CPUPressurePollInterval != 750*time.Millisecond {
-		t.Fatalf("CPU pressure config = %.2f %s", got.CPUPressureSomeAvg10Max, got.CPUPressurePollInterval)
+	if got.CPUPressureSomeAvg10Max != 80 || got.CPUPressureDegradedMaxAgents != 2 || got.CPUPressurePollInterval != 750*time.Millisecond {
+		t.Fatalf("CPU pressure config = %.2f %d %s", got.CPUPressureSomeAvg10Max, got.CPUPressureDegradedMaxAgents, got.CPUPressurePollInterval)
 	}
 }
 

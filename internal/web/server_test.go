@@ -7031,12 +7031,16 @@ func TestHealthAndStateReportHostPressureAndAgentRSS(t *testing.T) {
 			ObservedAt:   observedAt,
 		},
 		IOPressure: telemetry.IOPressure{
-			Supported:    true,
-			Some:         telemetry.PressureAverages{Avg10: 78.81},
-			Full:         telemetry.PressureAverages{Avg10: 63.64},
-			FullAvg10Max: 5,
-			DispatchHeld: true,
-			ObservedAt:   observedAt,
+			Supported:                    true,
+			Some:                         telemetry.PressureAverages{Avg10: 78.81},
+			Full:                         telemetry.PressureAverages{Avg10: 63.64},
+			FullAvg10Max:                 5,
+			DegradedMaxConcurrentAgents:  1,
+			EffectiveMaxConcurrentAgents: 1,
+			CapacityConstrained:          true,
+			ConstrainedSince:             now.Add(-5 * time.Minute),
+			ConstrainedForMS:             300000,
+			ObservedAt:                   observedAt,
 		},
 		CPUPressure: telemetry.CPUPressure{
 			Supported:    true,
@@ -7068,7 +7072,7 @@ func TestHealthAndStateReportHostPressureAndAgentRSS(t *testing.T) {
 	if pressure["dispatch_held"] != true || pressure["some"].(map[string]any)["avg60"] != 12.5 {
 		t.Fatalf("health memory_pressure = %#v", pressure)
 	}
-	if pressure := health["io_pressure"].(map[string]any); pressure["dispatch_held"] != true || pressure["full"].(map[string]any)["avg10"] != 63.64 {
+	if pressure := health["io_pressure"].(map[string]any); pressure["dispatch_held"] != false || pressure["capacity_constrained"] != true || pressure["degraded_max_concurrent_agents"] != float64(1) || pressure["effective_max_concurrent_agents"] != float64(1) || pressure["constrained_for_ms"] != float64(300000) || pressure["full"].(map[string]any)["avg10"] != 63.64 {
 		t.Fatalf("health io_pressure = %#v", pressure)
 	}
 	if pressure := health["cpu_pressure"].(map[string]any); pressure["dispatch_held"] != true || pressure["some"].(map[string]any)["avg10"] != 91.2 {
@@ -7083,7 +7087,7 @@ func TestHealthAndStateReportHostPressureAndAgentRSS(t *testing.T) {
 	if state["memory_pressure"].(map[string]any)["dispatch_held"] != true {
 		t.Fatalf("state memory_pressure = %#v", state["memory_pressure"])
 	}
-	if state["io_pressure"].(map[string]any)["dispatch_held"] != true {
+	if pressure := state["io_pressure"].(map[string]any); pressure["dispatch_held"] != false || pressure["capacity_constrained"] != true || pressure["effective_max_concurrent_agents"] != float64(1) {
 		t.Fatalf("state io_pressure = %#v", state["io_pressure"])
 	}
 	if state["cpu_pressure"].(map[string]any)["dispatch_held"] != true {

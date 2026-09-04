@@ -1666,8 +1666,10 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 	cfg.MemoryPressureSomeAvg60Max = memory.PressureSomeAvg60Threshold
 	cfg.MemoryPressurePollInterval = time.Duration(memory.PollIntervalMS) * time.Millisecond
 	cfg.IOPressureFullAvg10Max = project.GlobalIO.PressureFullAvg10Threshold
+	cfg.IOPressureDegradedMaxAgents = project.GlobalIO.DegradedMaxConcurrentAgents
 	cfg.IOPressurePollInterval = time.Duration(project.GlobalIO.PollIntervalMS) * time.Millisecond
 	cfg.CPUPressureSomeAvg10Max = project.GlobalCPU.PressureSomeAvg10Threshold
+	cfg.CPUPressureDegradedMaxAgents = project.GlobalCPU.DegradedMaxConcurrentAgents
 	cfg.CPUPressurePollInterval = time.Duration(project.GlobalCPU.PollIntervalMS) * time.Millisecond
 	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	cfg.Project = scheduler.ProjectCandidate{

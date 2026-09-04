@@ -79,13 +79,32 @@ global:
     poll_interval_ms: 1000
   io:
     pressure_full_avg10_threshold: 5
+    degraded_max_concurrent_agents: 0
     poll_interval_ms: 1000
   cpu:
     pressure_some_avg10_threshold: 80
+    degraded_max_concurrent_agents: 0
     poll_interval_ms: 1000
 ```
 
-The defaults shown above are starting points. IO `full` is the strongest build
+`degraded_max_concurrent_agents` is an opt-in host-wide progress floor for IO
+and CPU pressure. Its default of `0` preserves the conservative hard stop. Set
+it to `1` to allow one worker across all named pools while that signal remains
+constrained. If IO and CPU pressure are active together, the lower configured
+floor wins. The pressure ceiling only blocks new admissions; it never preempts
+running workers, and pool, project/state, worker-host, startup pacing, and
+backend limits can reduce capacity further.
+
+A guard engages only above its configured threshold. Once engaged, IO and CPU
+guards stay constrained until the measured average falls to 80% of the trigger
+threshold, which prevents dispatch from flapping when PSI hovers around the
+boundary. For example, an IO threshold of `5` engages above `5` and recovers at
+or below `4`.
+
+The defaults shown above are starting points, not universal safe values. With
+the default degraded capacity of `0`, the sample IO threshold of `5` is a
+fleet-wide hard stop whenever IO `full avg10` stays above 5%, including when an
+unrelated host process creates the pressure. IO `full` is the strongest build
 host signal because it measures time when every non-idle task is stalled on IO.
 CPU uses `some`, because system-level CPU `full` is defined to report zero.
 Memory `some` remains useful for reclaim and swap pressure, but a compile-heavy
@@ -93,22 +112,28 @@ host can be IO- or CPU-saturated while memory PSI stays at zero. See the
 [Linux PSI interface](https://www.kernel.org/doc/html/latest/accounting/psi.html)
 for the kernel definitions.
 
-Treat `global.max_concurrent_agents` as the hard ceiling and use PSI as the
-dynamic admission brake. Start with the defaults, observe representative
-compile, test, browser, and database workloads, then lower a threshold if the
-interactive host becomes unresponsive before the guard engages. Raising the
-hard ceiling based only on free memory can overload a build host.
+Treat configured pool capacity as the hard ceiling and use PSI as the dynamic
+admission brake. Before enabling a low threshold, observe `/proc/pressure/io`
+and `/proc/pressure/cpu` during representative Detent and unrelated compile,
+test, browser, database, and media workloads. Calibrate the trigger above the
+host's acceptable sustained baseline, then lower it if the interactive host
+becomes unresponsive before the guard engages. Raising the hard ceiling based
+only on free memory can overload a build host.
 
 The ten-second IO and CPU windows respond faster than the sixty-second memory
 window. Keep `global.startup.jitter_seconds` and `max_spawn_per_second`
 conservative enough for those averages to react during service startup; PSI
-then opens and closes admission as contention changes. On systems without PSI,
+then constrains and restores admission as contention changes. On systems without PSI,
 or when a pressure file cannot be read, Detent fails open and reports the
 unsupported or unavailable signal rather than inventing a zero reading.
 
 `detent state`, `/api/v1/state`, `/health`, and the Health dashboard expose the
-current values, thresholds, read errors, and whether each signal is holding
-dispatch under `memory_pressure`, `io_pressure`, and `cpu_pressure`.
+current values, thresholds, read errors, configured degraded capacity,
+effective pressure capacity, constraint start time and duration, and whether
+each signal is holding dispatch under `memory_pressure`, `io_pressure`, and
+`cpu_pressure`. Durable scheduler decisions include pressure capacity, usage,
+availability, reason, and duration. Work-attempt capacity snapshots include the
+active pressure capacity, reason, and duration.
 
 When Detent starts inside tmux, it renames the current window to a compact
 running, ready, waiting, and blocked count summary. It restores the original

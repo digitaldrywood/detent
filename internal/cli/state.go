@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -139,8 +140,26 @@ func statePressureLine(value any, label string, row string, average string, thre
 	status := "admitting"
 	if stateBool(pressure["dispatch_held"]) {
 		status = "holding dispatch"
+	} else if stateBool(pressure["capacity_constrained"]) {
+		effective := stateString(pressure["effective_max_concurrent_agents"])
+		agentLabel := " agents"
+		if effective == "1" {
+			agentLabel = " agent"
+		}
+		status = "limited to " + effective + agentLabel
+	}
+	if durationText := statePressureDuration(pressure["constrained_for_ms"]); durationText != "" {
+		status += " for " + durationText
 	}
 	return fmt.Sprintf("%s PSI %s %s: %s%% / %s%% threshold (%s)", label, row, average, current, threshold, status)
+}
+
+func statePressureDuration(value any) string {
+	milliseconds, err := strconv.ParseInt(stateString(value), 10, 64)
+	if err != nil || milliseconds <= 0 {
+		return ""
+	}
+	return (time.Duration(milliseconds) * time.Millisecond).Round(time.Second).String()
 }
 
 func stateBool(value any) bool {

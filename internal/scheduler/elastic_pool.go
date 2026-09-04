@@ -49,8 +49,8 @@ func reconfigurePoolRuntime(runtime *poolRuntime, cfg PoolConfig) error {
 
 func (r *PoolRegistry) setCapacityAdmission(runtime *poolRuntime) {
 	runtime.gate.admit = &poolCapacityAdmission{
-		allow: func(currentUsed int, projectedUsed int) bool {
-			return r.allowPoolCapacity(runtime, currentUsed, projectedUsed)
+		allow: func(currentUsed int, projectedUsed int, req SlotRequest) string {
+			return r.allowPoolCapacity(runtime, currentUsed, projectedUsed, req)
 		},
 		complete: func(used int) {
 			r.completePoolAdmission(runtime, used)
@@ -62,11 +62,18 @@ func (r *PoolRegistry) allowPoolCapacity(
 	runtime *poolRuntime,
 	currentUsed int,
 	projectedUsed int,
-) bool {
+	req SlotRequest,
+) string {
+	if req.PressureCapacity > 0 {
+		_, currentSharedUsed := r.elasticTotals(runtime, currentUsed)
+		if currentSharedUsed+req.Weight > req.PressureCapacity {
+			return DispatchGateReasonPressureCapacityFull
+		}
+	}
 	sharedCapacity, sharedUsed := r.elasticTotals(runtime, projectedUsed)
 	if projectedUsed <= runtime.guaranteed {
 		if sharedUsed <= sharedCapacity {
-			return true
+			return ""
 		}
 		target := min(runtime.guaranteed, projectedUsed)
 		if target > currentUsed {
@@ -75,22 +82,22 @@ func (r *PoolRegistry) allowPoolCapacity(
 				target,
 			)
 		}
-		return false
+		return DispatchGateReasonGlobalCapacityFull
 	}
 	if projectedUsed > runtime.burstTo || runtime.burstTo == runtime.guaranteed {
-		return false
+		return DispatchGateReasonGlobalCapacityFull
 	}
 	if r.hasReclaimDemand(runtime, currentUsed) ||
 		r.hasGuaranteedReadyDemand(runtime) ||
 		sharedUsed > sharedCapacity {
 		r.elastic.enqueue(runtime.generation)
-		return false
+		return DispatchGateReasonGlobalCapacityFull
 	}
 	if len(r.elastic.borrowers) > 0 && r.elastic.borrowers[0] != runtime.generation {
 		r.elastic.enqueue(runtime.generation)
-		return false
+		return DispatchGateReasonGlobalCapacityFull
 	}
-	return true
+	return ""
 }
 
 func (r *PoolRegistry) completePoolAdmission(runtime *poolRuntime, used int) {
@@ -253,5 +260,7 @@ func (r *PoolRegistry) elasticDecision(
 	decision.SharedCapacity = sharedCapacity
 	decision.SharedUsed = sharedUsed
 	decision.SharedAvailable = max(0, sharedCapacity-sharedUsed)
+	decision.PressureUsed = sharedUsed
+	decision.PressureAvailable = max(0, decision.PressureCapacity-sharedUsed)
 	return decision
 }

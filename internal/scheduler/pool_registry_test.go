@@ -39,6 +39,62 @@ func TestPoolRegistryGrantsIndependentCapacity(t *testing.T) {
 	releasePoolSlots(t, registry, slots)
 }
 
+func TestPoolRegistryPressureCapacityComposesAcrossPools(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		capacity      int
+		wantGranted   bool
+		wantUsed      int
+		wantAvailable int
+	}{
+		{name: "one worker degraded floor", capacity: 1, wantUsed: 1},
+		{name: "two worker degraded floor", capacity: 2, wantGranted: true, wantUsed: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			projects := []scheduler.ProjectCandidate{
+				{ID: "code"},
+				{ID: "video", Pool: "video"},
+			}
+			registry := newPoolRegistry(t,
+				[]scheduler.PoolConfig{
+					poolConfig(scheduler.DefaultPoolName, "round_robin", 2, nil),
+					poolConfig("video", "round_robin", 2, nil),
+				},
+				projects,
+			)
+			request := scheduler.SlotRequest{State: "Todo", PressureCapacity: tt.capacity}
+			first, acquired, _, err := registry.TryAcquireWithDecision(t.Context(), projects[0], request, time.Time{})
+			if err != nil || !acquired {
+				t.Fatalf("first TryAcquireWithDecision() = %t, %v; want grant", acquired, err)
+			}
+
+			second, granted, decision, err := registry.TryAcquireWithDecision(t.Context(), projects[1], request, time.Time{})
+			if err != nil {
+				t.Fatalf("second TryAcquireWithDecision() error = %v", err)
+			}
+			if granted != tt.wantGranted {
+				t.Fatalf("second TryAcquireWithDecision() granted = %t, want %t; decision = %#v", granted, tt.wantGranted, decision)
+			}
+			if decision.PressureCapacity != tt.capacity || decision.PressureUsed != tt.wantUsed || decision.PressureAvailable != tt.wantAvailable {
+				t.Fatalf("pressure decision = %#v, want capacity %d used %d available %d", decision, tt.capacity, tt.wantUsed, tt.wantAvailable)
+			}
+			if !granted && decision.Reason != scheduler.DispatchGateReasonPressureCapacityFull {
+				t.Fatalf("decision reason = %q, want %q", decision.Reason, scheduler.DispatchGateReasonPressureCapacityFull)
+			}
+			if snapshot := registry.PoolSnapshotFor("code"); snapshot.Used != 1 {
+				t.Fatalf("running code slot was preempted: %#v", snapshot)
+			}
+
+			releasePoolSlots(t, registry, []scheduler.Slot{first, second})
+		})
+	}
+}
+
 func TestPoolRegistryWithoutBurstRemainsRigid(t *testing.T) {
 	t.Parallel()
 

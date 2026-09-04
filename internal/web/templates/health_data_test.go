@@ -61,6 +61,19 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Dispatch is waiting for host pressure.",
 		},
 		{
+			name: "degraded pressure capacity explains bounded dispatch",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				IOPressure: telemetry.IOPressure{
+					Supported: true, Full: telemetry.PressureAverages{Avg10: 37}, FullAvg10Max: 5,
+					DegradedMaxConcurrentAgents: 1, EffectiveMaxConcurrentAgents: 1,
+					CapacityConstrained: true, ConstrainedSince: now.Add(-5 * time.Minute), ConstrainedForMS: 300000,
+				},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Dispatch is constrained by host pressure.",
+		},
+		{
 			name: "tracker unavailability requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -225,7 +238,9 @@ func TestHealthRowsSurfaceHostPressure(t *testing.T) {
 			Supported: true, Some: telemetry.PressureAverages{Avg60: 0}, SomeAvg60Max: 10, ObservedAt: now,
 		},
 		IOPressure: telemetry.IOPressure{
-			Supported: true, Some: telemetry.PressureAverages{Avg10: 78.81}, Full: telemetry.PressureAverages{Avg10: 63.64}, FullAvg10Max: 5, DispatchHeld: true, ObservedAt: now,
+			Supported: true, Some: telemetry.PressureAverages{Avg10: 78.81}, Full: telemetry.PressureAverages{Avg10: 63.64}, FullAvg10Max: 5,
+			DegradedMaxConcurrentAgents: 1, EffectiveMaxConcurrentAgents: 1, CapacityConstrained: true,
+			ConstrainedSince: now.Add(-5 * time.Minute), ConstrainedForMS: 300000, ObservedAt: now,
 		},
 		CPUPressure: telemetry.CPUPressure{
 			SomeAvg10Max: 80, LastError: "read /proc/pressure/cpu: permission denied", ObservedAt: now,
@@ -238,7 +253,7 @@ func TestHealthRowsSurfaceHostPressure(t *testing.T) {
 	if rows[0].Status != "Healthy" || !strings.Contains(rows[0].Detail, "some avg60 0.00% / 10.00%") {
 		t.Fatalf("memory row = %#v", rows[0])
 	}
-	if rows[1].Status != "Holding dispatch" || !strings.Contains(rows[1].Detail, "full avg10 63.64% / 5.00%") || !strings.Contains(rows[1].Detail, "some avg10 78.81%") {
+	if rows[1].Status != "Limited to 1 agent" || !strings.Contains(rows[1].Detail, "full avg10 63.64% / 5.00%") || !strings.Contains(rows[1].Detail, "some avg10 78.81%") || !strings.Contains(rows[1].Detail, "constrained for 5m0s") {
 		t.Fatalf("IO row = %#v", rows[1])
 	}
 	if rows[2].Status != "Unavailable" || !strings.Contains(rows[2].Detail, "permission denied") {

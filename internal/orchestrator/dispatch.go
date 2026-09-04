@@ -342,6 +342,7 @@ const (
 type dispatchIssueOutcome struct {
 	dispatched bool
 	reason     string
+	waitReason string
 }
 
 func (o *Orchestrator) dispatchIssue(
@@ -441,11 +442,18 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		return dispatchIssueOutcome{reason: dispatchIssueFailureMemoryPressure}
 	}
 	if state.IOPressure.DispatchHeld {
-		return dispatchIssueOutcome{reason: dispatchIssueFailureIOPressure}
+		return dispatchIssueOutcome{
+			reason:     dispatchIssueFailureIOPressure,
+			waitReason: hostPressureWaitReason(state, dispatchIssueFailureIOPressure),
+		}
 	}
 	if state.CPUPressure.DispatchHeld {
-		return dispatchIssueOutcome{reason: dispatchIssueFailureCPUPressure}
+		return dispatchIssueOutcome{
+			reason:     dispatchIssueFailureCPUPressure,
+			waitReason: hostPressureWaitReason(state, dispatchIssueFailureCPUPressure),
+		}
 	}
+	pressureConstraint, pressureConstrained := activeHostPressureConstraint(state)
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchIssueOutcome{reason: reason}
 	}
@@ -476,7 +484,11 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable}
 	}
 
-	globalSlot, ok, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now)
+	pressureCapacity := 0
+	if pressureConstrained {
+		pressureCapacity = pressureConstraint.capacity
+	}
+	globalSlot, ok, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now, pressureCapacity)
 	if !ok {
 		o.recordDispatchGateRefusal(ctx, state, issue, attempt, workerHost, now, decision, projectStats)
 		o.logSchedulerSlotDecision(issue, "waiting", decision, projectStats)
@@ -486,6 +498,12 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		} else {
 			o.logDispatchSlotWait(issue, decision, projectStats)
 			o.recordDispatchSlotWait(state, issue, decision, projectStats, now)
+		}
+		if decision.Reason == scheduler.DispatchGateReasonPressureCapacityFull && pressureConstrained {
+			return dispatchIssueOutcome{
+				reason:     pressureConstraint.reason,
+				waitReason: hostPressureWaitReason(state, pressureConstraint.reason),
+			}
 		}
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
 	}
@@ -877,6 +895,7 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 	issue connector.Issue,
 	workerHost string,
 	now time.Time,
+	pressureCapacity int,
 ) (scheduler.Slot, bool, scheduler.DispatchGateDecision) {
 	if o.globalDispatchGate == nil {
 		return scheduler.Slot{}, true, scheduler.DispatchGateDecision{
@@ -886,9 +905,10 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 	}
 
 	req := scheduler.SlotRequest{
-		State:    issue.State,
-		Host:     workerHost,
-		Priority: o.dispatchStatePriority(issue.State),
+		State:            issue.State,
+		Host:             workerHost,
+		Priority:         o.dispatchStatePriority(issue.State),
+		PressureCapacity: pressureCapacity,
 	}
 	var (
 		slot     scheduler.Slot

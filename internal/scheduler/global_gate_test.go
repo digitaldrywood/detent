@@ -774,6 +774,47 @@ func TestGlobalDispatchGateHonorsStrictPriorityPreemption(t *testing.T) {
 	}
 }
 
+func TestGlobalDispatchGatePressureCapacityDoesNotPreemptRunningWork(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	low := scheduler.ProjectCandidate{ID: "low", Weight: 1, Priority: 4}
+	urgent := scheduler.ProjectCandidate{ID: "urgent", Weight: 1, Priority: 1}
+
+	lowSlot, acquired, err := gate.TryAcquire(ctx, low, scheduler.SlotRequest{State: "Todo"}, now)
+	if err != nil || !acquired {
+		t.Fatalf("low TryAcquire() = %t, %v; want grant", acquired, err)
+	}
+	preempted := false
+	gate.SetPreempt(lowSlot, func() {
+		preempted = true
+	})
+
+	_, acquired, decision, err := gate.TryAcquireWithDecision(
+		ctx,
+		urgent,
+		scheduler.SlotRequest{State: "Todo", PressureCapacity: 1},
+		now.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("urgent TryAcquireWithDecision() error = %v", err)
+	}
+	if acquired || decision.Reason != scheduler.DispatchGateReasonPressureCapacityFull {
+		t.Fatalf("urgent pressure-limited acquisition = %t, %#v", acquired, decision)
+	}
+	if preempted {
+		t.Fatal("pressure-limited acquisition preempted running work")
+	}
+	if snapshot := gate.PoolSnapshot(); snapshot.Used != 1 {
+		t.Fatalf("running slot after pressure refusal = %#v", snapshot)
+	}
+	if err := gate.Release(lowSlot); err != nil {
+		t.Fatalf("low Release() error = %v", err)
+	}
+}
+
 func TestGlobalDispatchGateStrictProjectPriorityIsIndependentOfDemandOrder(t *testing.T) {
 	t.Parallel()
 

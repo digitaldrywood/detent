@@ -15,11 +15,12 @@ codes, retry timing, and tracker refresh timing.
 
 The Health dashboard also shows host memory, IO, and CPU PSI. Each row includes
 the current governing average, configured threshold, support or read-error
-state, and whether Detent is holding new dispatches. The same data appears in
-`detent state`, `/api/v1/state`, and `/health` as `memory_pressure`,
-`io_pressure`, and `cpu_pressure`. A pressure hold is admission backpressure,
-not a worker failure: existing agents continue while new starts wait for the
-next reading below the threshold.
+state, configured and effective pressure capacity, constraint duration, and
+whether Detent is holding new dispatches. The same data appears in `detent
+state`, `/api/v1/state`, and `/health` as `memory_pressure`, `io_pressure`, and
+`cpu_pressure`. A pressure constraint is admission backpressure, not a worker
+failure: existing agents continue while new starts wait for available degraded
+capacity or pressure recovery.
 
 When an agent backend reports `model_context_window`, Detent also surfaces
 context pressure for running and recent sessions. Context pressure is the

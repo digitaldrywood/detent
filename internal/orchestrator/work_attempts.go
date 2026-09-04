@@ -885,6 +885,12 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	if state != nil && len(state.DispatchRecoveries) > 0 {
 		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, pool.Name, pool.Capacity)
 	}
+	if constraint, ok := activeHostPressureConstraint(state); ok {
+		snapshot["pressure_capacity"] = constraint.capacity
+		snapshot["pressure_reason"] = constraint.reason
+		snapshot["pressure_constrained_since"] = constraint.constrainedAt
+		snapshot["pressure_constrained_for_ms"] = constraint.constrainedFor.Milliseconds()
+	}
 	if state != nil && state.FailureBreaker.Active() {
 		snapshot["project_failure_breaker"] = map[string]any{
 			"class":           state.FailureBreaker.Class,

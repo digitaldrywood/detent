@@ -140,8 +140,10 @@ type Config struct {
 	MemoryPressureSomeAvg60Max    float64
 	MemoryPressurePollInterval    time.Duration
 	IOPressureFullAvg10Max        float64
+	IOPressureDegradedMaxAgents   int
 	IOPressurePollInterval        time.Duration
 	CPUPressureSomeAvg10Max       float64
+	CPUPressureDegradedMaxAgents  int
 	CPUPressurePollInterval       time.Duration
 }
 
@@ -1229,7 +1231,11 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
 	state.MemoryPressure.SomeAvg60Max = cfg.MemoryPressureSomeAvg60Max
 	state.IOPressure.FullAvg10Max = cfg.IOPressureFullAvg10Max
+	state.IOPressure.DegradedMaxConcurrentAgents = cfg.IOPressureDegradedMaxAgents
 	state.CPUPressure.SomeAvg10Max = cfg.CPUPressureSomeAvg10Max
+	state.CPUPressure.DegradedMaxConcurrentAgents = cfg.CPUPressureDegradedMaxAgents
+	refreshIOPressureCapacity(&state.IOPressure, cfg.IOPressureDegradedMaxAgents)
+	refreshCPUPressureCapacity(&state.CPUPressure, cfg.CPUPressureDegradedMaxAgents)
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

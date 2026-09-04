@@ -56,9 +56,11 @@ global:
     poll_interval_ms: 1000
   io:
     pressure_full_avg10_threshold: 5
+    degraded_max_concurrent_agents: 1
     poll_interval_ms: 1000
   cpu:
     pressure_some_avg10_threshold: 80
+    degraded_max_concurrent_agents: 1
     poll_interval_ms: 1000
 projects:
   - id: detent
