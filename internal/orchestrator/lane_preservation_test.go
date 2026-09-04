@@ -21,9 +21,10 @@ func TestLaneRevocationRetainsWorkspaceForEveryWriter(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		source provenance.Source
-		pushed bool
+		name       string
+		source     provenance.Source
+		pushed     bool
+		filesystem bool
 	}{
 		{name: "operator unpushed", source: provenance.SourceHumanSession},
 		{name: "operator pushed", source: provenance.SourceHumanSession, pushed: true},
@@ -31,6 +32,7 @@ func TestLaneRevocationRetainsWorkspaceForEveryWriter(t *testing.T) {
 		{name: "Detent pushed", source: provenance.SourceDetentInstance, pushed: true},
 		{name: "agent unpushed", source: provenance.SourceDetentAgentSession},
 		{name: "external automation unpushed", source: provenance.SourceExternalAutomation},
+		{name: "filesystem artifact", source: provenance.SourceHumanSession, filesystem: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -45,6 +47,9 @@ func TestLaneRevocationRetainsWorkspaceForEveryWriter(t *testing.T) {
 				Path: "/retained/workspace", Branch: "detent/2138", HeadSHA: "abc123", Preserved: true,
 				UnpushedCommits: 1, TrackedPaths: []string{"implementation.go"},
 			}}
+			if tt.filesystem {
+				retention.result = workspace.Preservation{Path: "/retained/workspace", Preserved: true, Files: 1}
+			}
 			cfg := laneMutationTestConfig()
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, reaper: retention,
 				logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}

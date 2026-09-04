@@ -99,7 +99,7 @@ func TestApplyAutoPromoteDecisionUpdatesSnapshotBeforePoll(t *testing.T) {
 				State:          "In Progress",
 				StageUpdatedAt: &previousStageAt,
 			}
-			tracker := &workflowMetricsConnector{name: tt.trackerName}
+			tracker := &workflowMetricsConnector{name: tt.trackerName, stateEnteredAt: transitionAt, stateEnteredAtFound: true}
 			orch := &Orchestrator{connector: tracker}
 			state := newState(Config{})
 			state.BoardIssues = []connector.Issue{cloneIssue(issue)}
@@ -646,14 +646,29 @@ func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
 func TestDetentLaneWriteEchoKeepsWriter(t *testing.T) {
 	t.Parallel()
 
-	for _, target := range []string{"Blocked", "Rework", "Merging"} {
-		t.Run(target, func(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		target          string
+		labelTransition bool
+	}{
+		{"label blocked", "Blocked", true},
+		{"label rework", "Rework", true},
+		{"label merging", "Merging", true},
+		{"project blocked", "Blocked", false},
+		{"project rework", "Rework", false},
+		{"project merging", "Merging", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := tt.target
 			t.Parallel()
 			requestedAt := time.Date(2026, 9, 4, 4, 11, 0, 0, time.UTC)
 			trackerAt := requestedAt.Add(2 * time.Second)
 			issue := laneRevocationIssue("echo", "digitaldrywood/detent#2138", "In Progress")
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
-			tracker := &workflowMetricsConnector{stateEnteredAt: trackerAt, stateEnteredAtFound: true}
+			confirmed := cloneIssue(issue)
+			confirmed.State = target
+			confirmed.StageUpdatedAt = &trackerAt
+			tracker := &workflowMetricsConnector{stateEnteredAt: trackerAt, stateEnteredAtFound: tt.labelTransition, stateIssues: []connector.Issue{confirmed}}
 			orch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker, workflowMetrics: metrics}
 			state := newState(orch.cfg)
 			state.BoardIssues = []connector.Issue{issue}
@@ -911,7 +926,7 @@ func (c *workflowMetricsConnector) FetchIssuesByStates(_ context.Context, states
 
 func (c *workflowMetricsConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
 	c.fetches++
-	return nil, nil
+	return cloneIssues(c.stateIssues), nil
 }
 
 func (c *workflowMetricsConnector) CreateComment(context.Context, string, string) error {

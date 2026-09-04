@@ -441,7 +441,7 @@ func (o *Orchestrator) preserveLaneRevocationWorkspace(ctx context.Context, stat
 }
 
 func laneRevocationLocalWork(preservation *workspace.Preservation) bool {
-	return preservation != nil && (preservation.UnpushedCommits > 0 || len(preservation.TrackedPaths) > 0 || len(preservation.UntrackedPaths) > 0)
+	return preservation != nil && (preservation.Files > 0 || preservation.UnpushedCommits > 0 || len(preservation.TrackedPaths) > 0 || len(preservation.UntrackedPaths) > 0)
 }
 
 func laneRevocationAttribution(state *State, issue connector.Issue) provenance.Attribution {

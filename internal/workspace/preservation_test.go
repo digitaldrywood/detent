@@ -12,13 +12,15 @@ import (
 func TestLocalGitPreservesRevokedWorkAcrossCleanupAndRestart(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range []string{"tracked", "staged", "untracked", "unpushed", "pushed"} {
+	for _, kind := range []string{"tracked", "staged", "untracked", "unpushed", "pushed", "local only"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			source := initSourceRepo(t)
 			remote := initBareRemote(t)
-			runGit(t, source, "remote", "add", "origin", remote)
-			runGit(t, source, "push", "-u", "origin", "main")
+			if kind != "local only" {
+				runGit(t, source, "remote", "add", "origin", remote)
+				runGit(t, source, "push", "-u", "origin", "main")
+			}
 			opts := LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true}
 			backend, err := NewLocalGit(opts)
 			if err != nil {
@@ -37,10 +39,10 @@ func TestLocalGitPreservesRevokedWorkAcrossCleanupAndRestart(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(info.Path, name), content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if kind == "staged" || kind == "unpushed" || kind == "pushed" {
+			if kind == "staged" || kind == "unpushed" || kind == "pushed" || kind == "local only" {
 				runGit(t, info.Path, "add", name)
 			}
-			if kind == "unpushed" || kind == "pushed" {
+			if kind == "unpushed" || kind == "pushed" || kind == "local only" {
 				runGit(t, info.Path, "commit", "-m", "completed implementation")
 			}
 			if kind == "pushed" {
@@ -79,9 +81,12 @@ func TestLocalGitPreservesRevokedWorkAcrossCleanupAndRestart(t *testing.T) {
 				if err != nil || resumed.Path != info.Path || resumed.Created {
 					t.Fatalf("resumed workspace = %#v, error = %v", resumed, err)
 				}
-				if kind != "unpushed" {
+				if kind != "unpushed" && kind != "local only" {
 					runGit(t, info.Path, "add", name)
 					runGit(t, info.Path, "commit", "-m", "publish recovered implementation")
+				}
+				if kind == "local only" {
+					runGit(t, source, "remote", "add", "origin", remote)
 				}
 				runGit(t, info.Path, "push", "-u", "origin", info.Branch)
 				_, cleanupErr = backend.CleanupIssue(t.Context(), issue)
@@ -122,5 +127,71 @@ func TestLocalGitPreservationInspectionFailureKeepsFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(info.Path, "README.md")); err != nil {
 		t.Fatalf("retained file missing: %v", err)
+	}
+}
+
+func TestFilesystemPreservationSurvivesRestartAndResumption(t *testing.T) {
+	t.Parallel()
+	for _, artifact := range []bool{false, true} {
+		name := "empty"
+		if artifact {
+			name = "artifact"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			opts := FilesystemOptions{Root: filepath.Join(t.TempDir(), "workspaces")}
+			backend, err := NewFilesystem(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{ProjectID: "video", ID: "2138", Identifier: "video#2138"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifactPath := filepath.Join(info.Path, "artifacts", "render.mp4")
+			if artifact {
+				if err := os.WriteFile(artifactPath, []byte("completed render"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := backend.DiffStat(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserver, ok := any(backend).(IssuePreserver)
+			if !ok {
+				t.Fatal("filesystem backend does not support preservation")
+			}
+			preserved, err := preserver.PreserveIssue(t.Context(), issue)
+			if err != nil || !preserved.Preserved || preserved.Path != info.Path {
+				t.Fatalf("preservation = %#v, error = %v", preserved, err)
+			}
+			backend, err = NewFilesystem(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, resumed := range []bool{false, true} {
+				if resumed {
+					resumedInfo, err := backend.Create(t.Context(), issue)
+					if err != nil || resumedInfo.Created || resumedInfo.Path != info.Path {
+						t.Fatalf("resumption = %#v, error = %v", resumedInfo, err)
+					}
+				}
+				if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+					t.Fatalf("cleanup error = %v, want preservation", err)
+				}
+			}
+			after, err := backend.DiffStat(t.Context(), info, issue)
+			if err != nil || after != before {
+				t.Fatalf("retained artifact evidence = %#v, error = %v, want %#v", after, err, before)
+			}
+			if artifact {
+				content, err := os.ReadFile(artifactPath)
+				if err != nil || string(content) != "completed render" {
+					t.Fatalf("retained artifact = %q, error = %v", content, err)
+				}
+			}
+		})
 	}
 }

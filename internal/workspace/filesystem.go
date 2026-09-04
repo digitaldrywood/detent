@@ -146,6 +146,9 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !exists {
 		return result, nil
 	}
+	if err := f.checkPreservedWorkspace(info); err != nil {
+		return result, err
+	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, f.logger)
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
 		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))

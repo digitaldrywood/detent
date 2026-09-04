@@ -242,6 +242,7 @@ func (o *Orchestrator) confirmTrackerStateTransition(
 	transitioned.StageUpdatedAt = nil
 	transitioned.StageUpdatedActor = connector.IssueActor{}
 	if reader, ok := o.connector.(connector.IssueStateTransitionReader); ok && reader != nil {
+		allowStateFetch = true
 		transition, found, err := reader.IssueStateTransition(ctx, transitioned)
 		if err != nil {
 			if o.logger != nil {

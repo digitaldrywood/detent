@@ -69,11 +69,15 @@ func TestLaneMutationReceiptDistinguishesEchoFromLaterReentry(t *testing.T) {
 		name      string
 		later     bool
 		restarted bool
+		project   bool
 	}{
 		{name: "cached Detent echo"},
 		{name: "persisted Detent echo", restarted: true},
 		{name: "cached later operator reentry", later: true},
 		{name: "persisted later operator reentry", later: true, restarted: true},
+		{name: "cached project echo", project: true},
+		{name: "persisted project echo", project: true, restarted: true},
+		{name: "later project reentry", project: true, later: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,19 +90,28 @@ func TestLaneMutationReceiptDistinguishesEchoFromLaterReentry(t *testing.T) {
 			runtimeStore, attemptID := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{parked}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, runtimeStore, &recordingWorkAttemptStore{}, now)
+			confirmedAt := now
+			if tt.project {
+				confirmedAt = now.Add(2 * time.Second)
+				parked.StageUpdatedAt = &confirmedAt
+				orch.connector = &workflowMetricsConnector{stateIssues: []connector.Issue{parked}}
+			}
 			state := newState(cfg)
 			runCtx, stop := context.WithCancelCause(t.Context())
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID, Generation: 38, stop: stop}
 			if err := orch.updateIssueState(t.Context(), &state, issue, parked.State, now, "gate_transition", laneMutationPreserveOwnership); err != nil {
 				t.Fatal(err)
 			}
-			observedAt := now
+			observedAt := confirmedAt
 			if tt.later {
 				observedAt = observedAt.Add(time.Minute)
 			}
 			parked.StageUpdatedAt = &observedAt
 			parked.StageUpdatedActor = connector.IssueActor{Login: "shared-token", Kind: "User"}
 			tracker.stateIssues = []connector.Issue{parked}
+			if tt.project {
+				orch.connector.(*workflowMetricsConnector).stateIssues = []connector.Issue{parked}
+			}
 			if tt.restarted {
 				running := state.Running[issue.ID]
 				running.laneMutation = store.LaneMutationReceipt{}
