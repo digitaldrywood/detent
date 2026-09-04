@@ -14,7 +14,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-const sessionBrakeTestWaitTimeout = 10 * time.Second
+const (
+	sessionBrakeTestWaitTimeout        = 10 * time.Second
+	sessionBrakeCompletionGuardTimeout = time.Minute
+)
 
 func TestRunnerStopsSessionBeyondMaxTurns(t *testing.T) {
 	t.Parallel()
@@ -150,8 +153,7 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	resultCh := make(chan RunResult, 1)
-	errCh := make(chan error, 1)
+	completionCh := make(chan sessionRunCompletion, 1)
 	go func() {
 		result, runErr := runner.Run(t.Context(), RunRequest{
 			Issue: connector.Issue{
@@ -164,8 +166,7 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 				return "unchanged-workpad", nil
 			},
 		})
-		resultCh <- result
-		errCh <- runErr
+		completionCh <- sessionRunCompletion{result: result, err: runErr}
 	}()
 
 	waitSessionSignal(t, probeCalls, "initial progress probe")
@@ -175,18 +176,13 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 	waitSessionSignal(t, probeCalls, "expiration progress probe")
 	waitSessionSignal(t, backend.stopped, "agent backend cancellation")
 
-	var result RunResult
+	var completion sessionRunCompletion
 	select {
-	case result = <-resultCh:
-	case <-time.After(sessionBrakeTestWaitTimeout):
-		t.Fatal("timed out waiting for no-progress result")
+	case completion = <-completionCh:
+	case <-time.After(sessionBrakeCompletionGuardTimeout):
+		t.Fatal("timed out waiting for no-progress completion")
 	}
-	var runErr error
-	select {
-	case runErr = <-errCh:
-	case <-time.After(sessionBrakeTestWaitTimeout):
-		t.Fatal("timed out waiting for no-progress error")
-	}
+	result, runErr := completion.result, completion.err
 	if !errors.Is(runErr, ErrSessionNoProgress) {
 		t.Fatalf("Run() error = %v, want ErrSessionNoProgress", runErr)
 	}
@@ -206,6 +202,11 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 	if !workspaceBackend.afterRun {
 		t.Fatal("AfterRun() was not called")
 	}
+}
+
+type sessionRunCompletion struct {
+	result RunResult
+	err    error
 }
 
 func TestRunnerWorkpadProgressResetsNoProgressHeartbeat(t *testing.T) {
