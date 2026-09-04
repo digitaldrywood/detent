@@ -30,6 +30,9 @@ func (s *Server) aiDebugPrompt(c echo.Context) error {
 		if errors.Is(err, errAIDebugNotFound) {
 			return c.JSON(http.StatusNotFound, errorResponse("ai_debug_target_not_found", "AI Debug target not found"))
 		}
+		if errors.Is(err, errAIDebugAmbiguous) {
+			return c.JSON(http.StatusConflict, errorResponse("ai_debug_target_ambiguous", "Multiple issues use that number; use the owner/repo#N form"))
+		}
 		return c.JSON(http.StatusInternalServerError, errorResponse("ai_debug_assembly_failed", "AI Debug prompt could not be assembled"))
 	}
 	prompt, err := projection.Prompt()
@@ -40,6 +43,7 @@ func (s *Server) aiDebugPrompt(c echo.Context) error {
 }
 
 var errAIDebugNotFound = errors.New("AI Debug target not found")
+var errAIDebugAmbiguous = errors.New("AI Debug target is ambiguous")
 
 func (s *Server) aiDebugProjection(ctx context.Context, scope aidebug.Scope, projectID string, issueRef string) (aidebug.Projection, error) {
 	now := s.now().UTC()
@@ -77,9 +81,9 @@ func (s *Server) aiDebugProjection(ctx context.Context, scope aidebug.Scope, pro
 		return projection, nil
 	}
 
-	issue, ok := aiDebugFindIssue(snapshot, projectID, issueRef)
-	if !ok {
-		return aidebug.Projection{}, errAIDebugNotFound
+	issue, err := aiDebugFindIssue(snapshot, projectID, issueRef)
+	if err != nil {
+		return aidebug.Projection{}, err
 	}
 	issueEvidence, gaps, err := s.aiDebugIssueEvidence(ctx, trackedProject, snapshot, issue)
 	if err != nil {
@@ -288,18 +292,30 @@ func (s *Server) aiDebugIssueEvidence(ctx context.Context, trackedProject *proje
 	return evidence, gaps, nil
 }
 
-func aiDebugFindIssue(snapshot telemetry.Snapshot, projectID string, issueRef string) (telemetry.Issue, bool) {
+func aiDebugFindIssue(snapshot telemetry.Snapshot, projectID string, issueRef string) (telemetry.Issue, error) {
 	issueRef = strings.TrimSpace(issueRef)
 	issueNumber, issueNumberErr := strconv.Atoi(issueRef)
+	var numberMatch telemetry.Issue
+	numberMatchCount := 0
 	for _, issue := range aiDebugAllIssues(snapshot) {
 		if strings.TrimSpace(issue.ProjectID) != "" && strings.TrimSpace(issue.ProjectID) != projectID {
 			continue
 		}
-		if issueRef == strings.TrimSpace(issue.ID) || issueRef == strings.TrimSpace(issue.Identifier) || issueRef == strings.TrimSpace(issue.URL) || issueNumberErr == nil && issueNumber > 0 && issue.Number == issueNumber {
-			return issue, true
+		if issueRef == strings.TrimSpace(issue.ID) || issueRef == strings.TrimSpace(issue.Identifier) || issueRef == strings.TrimSpace(issue.URL) {
+			return issue, nil
+		}
+		if issueNumberErr == nil && issueNumber > 0 && issue.Number == issueNumber {
+			numberMatch = issue
+			numberMatchCount++
 		}
 	}
-	return telemetry.Issue{}, false
+	if numberMatchCount == 1 {
+		return numberMatch, nil
+	}
+	if numberMatchCount > 1 {
+		return telemetry.Issue{}, errAIDebugAmbiguous
+	}
+	return telemetry.Issue{}, errAIDebugNotFound
 }
 
 func aiDebugAllIssues(snapshot telemetry.Snapshot) []telemetry.Issue {

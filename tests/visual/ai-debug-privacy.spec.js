@@ -162,6 +162,12 @@ for (const failure of [
     message: "AI Debug target not found",
   },
   {
+    status: 409,
+    title: "AI Debug request failed",
+    code: "ai_debug_target_ambiguous",
+    message: "Multiple issues use that number; use the owner/repo#N form",
+  },
+  {
     status: 500,
     title: "Server error",
     code: "ai_debug_assembly_failed",
