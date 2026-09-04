@@ -481,7 +481,9 @@ workspaces can sit idle before cleanup. Terminal issues are cleaned on the next
 poll when observed. `workspace.cleanup_sweep_interval_ms` controls the startup
 and periodic idle cleanup cadence. `detent doctor` reports a warning when a
 local Git workspace root reaches 50 retained workspace directories. Counts
-below that boundary are not surfaced as a routine finding.
+below that boundary are not surfaced as a routine finding. At or above the
+boundary, the finding also reports how many directories are not registered as
+worktrees with the source repository.
 
 `polling.interval_ms` defaults to `120000` and must be at least `60000`.
 `polling.conditional` defaults to `true`. GitHub label and issue-field trackers

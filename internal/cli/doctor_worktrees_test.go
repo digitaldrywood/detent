@@ -104,10 +104,12 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 	tests := []struct {
 		name              string
 		count             int
+		registered        int
+		listErr           error
 		sourceMatchesRoot bool
 		wantCheck         bool
 		wantStatus        doctorStatus
-		wantDetail        string
+		wantDetail        []string
 		wantHint          string
 	}{
 		{
@@ -115,11 +117,21 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 			count: doctorWorkspaceCountWarningThreshold - 1,
 		},
 		{
-			name:       "threshold needs attention",
+			name:       "threshold reports unregistered directories",
 			count:      doctorWorkspaceCountWarningThreshold,
+			registered: doctorWorkspaceCountWarningThreshold - 2,
 			wantCheck:  true,
 			wantStatus: doctorWarn,
-			wantDetail: "50 retained workspace directories",
+			wantDetail: []string{"50 retained workspace directories", "2 are not registered with the source repository"},
+			wantHint:   "Confirm workspace cleanup is running",
+		},
+		{
+			name:       "registration failure still reports growth",
+			count:      doctorWorkspaceCountWarningThreshold,
+			listErr:    errors.New("corrupt worktree registry"),
+			wantCheck:  true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"50 retained workspace directories", "cannot classify unregistered directories", "corrupt worktree registry"},
 			wantHint:   "Confirm workspace cleanup is running",
 		},
 		{
@@ -146,7 +158,18 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 				}
 			}
 
-			check, ok := checkDoctorWorkspaceGrowth("pyroapex", root, sourceRoot)
+			worktrees := []doctorGitWorktree{{Path: sourceRoot, Branch: "main"}}
+			for index := range tt.registered {
+				worktrees = append(worktrees, doctorGitWorktree{
+					Path:   filepath.Join(root, fmt.Sprintf("issue-%d", index)),
+					Branch: fmt.Sprintf("detent/issue-%d", index),
+				})
+			}
+			check, ok := checkDoctorWorkspaceGrowth(t.Context(), "pyroapex", root, sourceRoot, doctorDeps{
+				gitWorktrees: func(context.Context, string) ([]doctorGitWorktree, error) {
+					return worktrees, tt.listErr
+				},
+			})
 			if ok != tt.wantCheck {
 				t.Fatalf("check present = %t, want %t: %#v", ok, tt.wantCheck, check)
 			}
@@ -156,8 +179,10 @@ func TestCheckDoctorWorkspaceGrowthThreshold(t *testing.T) {
 			if check.Status != tt.wantStatus {
 				t.Fatalf("Status = %s, want %s: %#v", check.Status, tt.wantStatus, check)
 			}
-			if !strings.Contains(check.Detail, tt.wantDetail) {
-				t.Fatalf("Detail = %q, want containing %q", check.Detail, tt.wantDetail)
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+				}
 			}
 			if tt.wantHint != "" && !strings.Contains(check.Hint, tt.wantHint) {
 				t.Fatalf("Hint = %q, want containing %q", check.Hint, tt.wantHint)

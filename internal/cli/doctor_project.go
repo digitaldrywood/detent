@@ -455,7 +455,7 @@ func checkDoctorProjectWithProgress(
 		return checks
 	}
 	setDoctorCurrentCheck("Project " + id + " workspace growth")
-	if growthCheck, ok := checkDoctorWorkspaceGrowth(id, workflow.Config.Workspace.Root, projectSourceRoot(project, workflow.Config)); ok {
+	if growthCheck, ok := checkDoctorWorkspaceGrowth(ctx, id, workflow.Config.Workspace.Root, projectSourceRoot(project, workflow.Config), deps); ok {
 		checks = append(checks, growthCheck)
 	}
 

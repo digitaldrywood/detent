@@ -18,7 +18,13 @@ type doctorGitWorktree struct {
 	Branch string
 }
 
-func checkDoctorWorkspaceGrowth(projectID string, workspaceRoot string, sourceRoot string) (doctorCheck, bool) {
+func checkDoctorWorkspaceGrowth(
+	ctx context.Context,
+	projectID string,
+	workspaceRoot string,
+	sourceRoot string,
+	deps doctorDeps,
+) (doctorCheck, bool) {
 	name := "Project " + projectID + " workspace growth"
 	resolvedRoot, err := expandDoctorWorkspacePath(workspaceRoot)
 	if err != nil || strings.TrimSpace(workspaceRoot) == "" {
@@ -59,12 +65,53 @@ func checkDoctorWorkspaceGrowth(projectID string, workspaceRoot string, sourceRo
 	if count < doctorWorkspaceCountWarningThreshold {
 		return doctorCheck{}, false
 	}
+	detail := fmt.Sprintf("workspace.root %s contains %d retained workspace directories and reached the %d-directory warning threshold", resolvedRoot, count, doctorWorkspaceCountWarningThreshold)
+	if deps.gitWorktrees != nil && strings.TrimSpace(sourceRoot) != "" {
+		unregistered, classificationErr := countDoctorUnregisteredWorkspaceDirectories(ctx, resolvedRoot, sourceRoot, entries, deps)
+		if classificationErr != nil {
+			detail += fmt.Sprintf("; cannot classify unregistered directories: %v", classificationErr)
+		} else {
+			detail += fmt.Sprintf("; %d are not registered with the source repository", unregistered)
+		}
+	}
 	return doctorCheck{
 		Name:   name,
 		Status: doctorWarn,
-		Detail: fmt.Sprintf("workspace.root %s contains %d retained workspace directories and reached the %d-directory warning threshold", resolvedRoot, count, doctorWorkspaceCountWarningThreshold),
+		Detail: detail,
 		Hint:   "Confirm workspace cleanup is running and inspect active work before removing stale workspaces.",
 	}, true
+}
+
+func countDoctorUnregisteredWorkspaceDirectories(
+	ctx context.Context,
+	resolvedRoot string,
+	sourceRoot string,
+	entries []os.DirEntry,
+	deps doctorDeps,
+) (int, error) {
+	resolvedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+	if err != nil {
+		return 0, err
+	}
+	worktrees, err := deps.gitWorktrees(ctx, resolvedSourceRoot)
+	if err != nil {
+		return 0, err
+	}
+	registered := make(map[string]struct{}, len(worktrees))
+	for _, worktree := range worktrees {
+		registered[doctorCanonicalPath(worktree.Path)] = struct{}{}
+	}
+	unregistered := 0
+	for _, entry := range entries {
+		if entry.Name() == ".detent" || !entry.IsDir() {
+			continue
+		}
+		path := doctorCanonicalPath(filepath.Join(resolvedRoot, entry.Name()))
+		if _, ok := registered[path]; !ok {
+			unregistered++
+		}
+	}
+	return unregistered, nil
 }
 
 func checkDoctorExternalBranchWorktrees(
