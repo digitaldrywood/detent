@@ -127,6 +127,8 @@ func aiDebugFleetEvidence(snapshot telemetry.Snapshot) aidebug.FleetEvidence {
 			"backend_outages":     snapshot.BackendOutages,
 			"failure_breakers":    snapshot.FailureBreakers,
 			"memory_pressure":     snapshot.MemoryPressure,
+			"io_pressure":         snapshot.IOPressure,
+			"cpu_pressure":        snapshot.CPUPressure,
 			"dispatch_recoveries": snapshot.DispatchRecoveries,
 		}),
 	}

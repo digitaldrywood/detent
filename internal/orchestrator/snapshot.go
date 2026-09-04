@@ -121,6 +121,8 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s),
 		MemoryPressure:          s.MemoryPressure,
+		IOPressure:              s.IOPressure,
+		CPUPressure:             s.CPUPressure,
 		DispatchLoops:           dispatchLoops,
 		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),

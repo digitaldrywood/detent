@@ -107,4 +107,5 @@ Create the drop-in with `systemctl --user edit detent.service`, then run
 maintenance window. Verify the effective values with
 `systemctl --user show detent.service -p MemoryHigh -p MemoryMax`. These cgroup
 limits protect the host if Detent's per-agent RSS ceiling fails; they do not
-replace the per-agent ceiling or memory-pressure admission control.
+replace the per-agent ceiling or memory, IO, and CPU pressure admission
+controls.

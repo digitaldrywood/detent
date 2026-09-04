@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/hostmemory"
+	"github.com/digitaldrywood/detent/internal/hostpressure"
 )
 
 func TestObserveMemoryPressureControlsAdmission(t *testing.T) {
@@ -23,7 +23,7 @@ func TestObserveMemoryPressureControlsAdmission(t *testing.T) {
 		{name: "below threshold admits", avg60: 9.99, wantSupported: true},
 		{name: "at threshold admits", avg60: 10, wantSupported: true},
 		{name: "above threshold holds", avg60: 10.01, wantSupported: true, wantHeld: true},
-		{name: "unsupported platform admits", readErr: hostmemory.ErrUnsupported},
+		{name: "unsupported platform admits", readErr: hostpressure.ErrUnsupported},
 		{name: "read failure admits", readErr: errors.New("pressure unavailable")},
 	}
 
@@ -34,8 +34,8 @@ func TestObserveMemoryPressureControlsAdmission(t *testing.T) {
 			now := time.Date(2026, 8, 18, 17, 0, 0, 0, time.UTC)
 			orch := &Orchestrator{
 				cfg: Config{MemoryPressureSomeAvg60Max: 10, MemoryPressurePollInterval: time.Second},
-				readMemoryPressure: func(context.Context) (hostmemory.Sample, error) {
-					return hostmemory.Sample{Some: hostmemory.Pressure{Avg60: tt.avg60}, ObservedAt: now}, tt.readErr
+				readMemoryPressure: func(context.Context) (hostpressure.Sample, error) {
+					return hostpressure.Sample{Some: hostpressure.Pressure{Avg60: tt.avg60}, ObservedAt: now}, tt.readErr
 				},
 				now: func() time.Time { return now },
 			}
@@ -58,8 +58,8 @@ func TestObserveMemoryPressureResumesAfterPressureFalls(t *testing.T) {
 	avg60 := 11.0
 	orch := &Orchestrator{
 		cfg: Config{MemoryPressureSomeAvg60Max: 10, MemoryPressurePollInterval: time.Second},
-		readMemoryPressure: func(context.Context) (hostmemory.Sample, error) {
-			return hostmemory.Sample{Some: hostmemory.Pressure{Avg60: avg60}}, nil
+		readMemoryPressure: func(context.Context) (hostpressure.Sample, error) {
+			return hostpressure.Sample{Some: hostpressure.Pressure{Avg60: avg60}}, nil
 		},
 		now: func() time.Time { return now },
 	}

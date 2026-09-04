@@ -62,6 +62,8 @@ type Snapshot struct {
 	Concurrency             ConcurrencyHistory  `json:"concurrency"`
 	LifetimeTotals          LifetimeTotals      `json:"lifetime_totals"`
 	MemoryPressure          MemoryPressure      `json:"memory_pressure"`
+	IOPressure              IOPressure          `json:"io_pressure"`
+	CPUPressure             CPUPressure         `json:"cpu_pressure"`
 	CycleTime               CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics         WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
@@ -72,6 +74,26 @@ type MemoryPressure struct {
 	Some         PressureAverages `json:"some"`
 	Full         PressureAverages `json:"full"`
 	SomeAvg60Max float64          `json:"some_avg60_max"`
+	DispatchHeld bool             `json:"dispatch_held"`
+	ObservedAt   time.Time        `json:"observed_at,omitzero"`
+	LastError    string           `json:"last_error,omitempty"`
+}
+
+type IOPressure struct {
+	Supported    bool             `json:"supported"`
+	Some         PressureAverages `json:"some"`
+	Full         PressureAverages `json:"full"`
+	FullAvg10Max float64          `json:"full_avg10_max"`
+	DispatchHeld bool             `json:"dispatch_held"`
+	ObservedAt   time.Time        `json:"observed_at,omitzero"`
+	LastError    string           `json:"last_error,omitempty"`
+}
+
+type CPUPressure struct {
+	Supported    bool             `json:"supported"`
+	Some         PressureAverages `json:"some"`
+	Full         PressureAverages `json:"full"`
+	SomeAvg10Max float64          `json:"some_avg10_max"`
 	DispatchHeld bool             `json:"dispatch_held"`
 	ObservedAt   time.Time        `json:"observed_at,omitzero"`
 	LastError    string           `json:"last_error,omitempty"`

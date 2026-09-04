@@ -39,6 +39,8 @@ type State struct {
 	StrandedActiveThreshold  time.Duration
 	DispatchStallThreshold   time.Duration
 	MemoryPressure           telemetry.MemoryPressure
+	IOPressure               telemetry.IOPressure
+	CPUPressure              telemetry.CPUPressure
 	AutoPromoteQuietDuration time.Duration
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
@@ -360,6 +362,12 @@ func newState(cfg Config) State {
 		MemoryPressure: telemetry.MemoryPressure{
 			SomeAvg60Max: cfg.MemoryPressureSomeAvg60Max,
 		},
+		IOPressure: telemetry.IOPressure{
+			FullAvg10Max: cfg.IOPressureFullAvg10Max,
+		},
+		CPUPressure: telemetry.CPUPressure{
+			SomeAvg10Max: cfg.CPUPressureSomeAvg10Max,
+		},
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
@@ -422,6 +430,8 @@ func (s State) clone() State {
 		StrandedActiveThreshold:  s.StrandedActiveThreshold,
 		DispatchStallThreshold:   s.DispatchStallThreshold,
 		MemoryPressure:           s.MemoryPressure,
+		IOPressure:               s.IOPressure,
+		CPUPressure:              s.CPUPressure,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),

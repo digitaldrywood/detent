@@ -6981,7 +6981,7 @@ func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 	}
 }
 
-func TestHealthAndStateReportMemoryPressureAndAgentRSS(t *testing.T) {
+func TestHealthAndStateReportHostPressureAndAgentRSS(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -6993,6 +6993,21 @@ func TestHealthAndStateReportMemoryPressureAndAgentRSS(t *testing.T) {
 			Supported:    true,
 			Some:         telemetry.PressureAverages{Avg60: 12.5},
 			SomeAvg60Max: 10,
+			DispatchHeld: true,
+			ObservedAt:   observedAt,
+		},
+		IOPressure: telemetry.IOPressure{
+			Supported:    true,
+			Some:         telemetry.PressureAverages{Avg10: 78.81},
+			Full:         telemetry.PressureAverages{Avg10: 63.64},
+			FullAvg10Max: 5,
+			DispatchHeld: true,
+			ObservedAt:   observedAt,
+		},
+		CPUPressure: telemetry.CPUPressure{
+			Supported:    true,
+			Some:         telemetry.PressureAverages{Avg10: 91.2},
+			SomeAvg10Max: 80,
 			DispatchHeld: true,
 			ObservedAt:   observedAt,
 		},
@@ -7019,6 +7034,12 @@ func TestHealthAndStateReportMemoryPressureAndAgentRSS(t *testing.T) {
 	if pressure["dispatch_held"] != true || pressure["some"].(map[string]any)["avg60"] != 12.5 {
 		t.Fatalf("health memory_pressure = %#v", pressure)
 	}
+	if pressure := health["io_pressure"].(map[string]any); pressure["dispatch_held"] != true || pressure["full"].(map[string]any)["avg10"] != 63.64 {
+		t.Fatalf("health io_pressure = %#v", pressure)
+	}
+	if pressure := health["cpu_pressure"].(map[string]any); pressure["dispatch_held"] != true || pressure["some"].(map[string]any)["avg10"] != 91.2 {
+		t.Fatalf("health cpu_pressure = %#v", pressure)
+	}
 	agents := health["agent_memory"].([]any)
 	if len(agents) != 1 || agents[0].(map[string]any)["rss_bytes"] != float64(7<<30) || agents[0].(map[string]any)["rss_ceiling_bytes"] != float64(8<<30) {
 		t.Fatalf("health agent_memory = %#v", agents)
@@ -7027,6 +7048,12 @@ func TestHealthAndStateReportMemoryPressureAndAgentRSS(t *testing.T) {
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	if state["memory_pressure"].(map[string]any)["dispatch_held"] != true {
 		t.Fatalf("state memory_pressure = %#v", state["memory_pressure"])
+	}
+	if state["io_pressure"].(map[string]any)["dispatch_held"] != true {
+		t.Fatalf("state io_pressure = %#v", state["io_pressure"])
+	}
+	if state["cpu_pressure"].(map[string]any)["dispatch_held"] != true {
+		t.Fatalf("state cpu_pressure = %#v", state["cpu_pressure"])
 	}
 	running := state["running"].([]any)
 	if len(running) != 1 || running[0].(map[string]any)["rss_bytes"] != float64(7<<30) {

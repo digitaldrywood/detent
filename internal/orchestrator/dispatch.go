@@ -333,6 +333,8 @@ const (
 	dispatchIssueFailureGitHubMonitor         = "worker_github_budget_monitor_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
+	dispatchIssueFailureIOPressure            = "io_pressure_high"
+	dispatchIssueFailureCPUPressure           = "cpu_pressure_high"
 	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
 )
 
@@ -433,8 +435,15 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
+	o.observeHostPressure(ctx, state, o.clockNow())
 	if state.MemoryPressure.DispatchHeld {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureMemoryPressure}
+	}
+	if state.IOPressure.DispatchHeld {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureIOPressure}
+	}
+	if state.CPUPressure.DispatchHeld {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureCPUPressure}
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
 		return dispatchIssueOutcome{reason: reason}

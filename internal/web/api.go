@@ -481,6 +481,8 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		Throughput:         throughputResponse(snapshot.Throughput),
 		LifetimeTotals:     lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
 		MemoryPressure:     snapshot.MemoryPressure,
+		IOPressure:         snapshot.IOPressure,
+		CPUPressure:        snapshot.CPUPressure,
 		WorkflowMetrics:    snapshot.WorkflowMetrics,
 		RecentSessions:     recentSessionEntries(snapshot.Completed),
 		RateLimits:         snapshot.RateLimits,
@@ -1450,6 +1452,8 @@ type stateAPIResponse struct {
 	Throughput         throughputAPIResponse        `json:"throughput"`
 	LifetimeTotals     lifetimeTotalsResponse       `json:"lifetime_totals"`
 	MemoryPressure     telemetry.MemoryPressure     `json:"memory_pressure"`
+	IOPressure         telemetry.IOPressure         `json:"io_pressure"`
+	CPUPressure        telemetry.CPUPressure        `json:"cpu_pressure"`
 	WorkflowMetrics    telemetry.WorkflowMetrics    `json:"workflow_metrics"`
 	RecentSessions     []recentSessionAPIResponse   `json:"recent_sessions"`
 	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`

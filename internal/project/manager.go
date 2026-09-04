@@ -123,6 +123,8 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
 		projects[index].GlobalRateWindowPacing = cfg.Global.RateWindowPacing
 		projects[index].GlobalMemory = cfg.Global.Memory
+		projects[index].GlobalIO = cfg.Global.IO
+		projects[index].GlobalCPU = cfg.Global.CPU
 		if cfg.Global.ActiveHours != nil {
 			activeHours := cfg.Global.ActiveHours.Normalize()
 			projects[index].GlobalActiveHours = &activeHours

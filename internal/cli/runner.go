@@ -1011,6 +1011,12 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	if current.MemoryPressure.ObservedAt.IsZero() || next.MemoryPressure.ObservedAt.After(current.MemoryPressure.ObservedAt) {
 		current.MemoryPressure = next.MemoryPressure
 	}
+	if current.IOPressure.ObservedAt.IsZero() || next.IOPressure.ObservedAt.After(current.IOPressure.ObservedAt) {
+		current.IOPressure = next.IOPressure
+	}
+	if current.CPUPressure.ObservedAt.IsZero() || next.CPUPressure.ObservedAt.After(current.CPUPressure.ObservedAt) {
+		current.CPUPressure = next.CPUPressure
+	}
 	return current
 }
 

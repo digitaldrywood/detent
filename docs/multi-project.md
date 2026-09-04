@@ -50,6 +50,16 @@ global:
     jitter_seconds: 10
     max_spawn_per_second: 2
     max_concurrent_starts: 4
+  memory:
+    max_agent_rss_bytes: 8589934592
+    pressure_some_avg60_threshold: 10
+    poll_interval_ms: 1000
+  io:
+    pressure_full_avg10_threshold: 5
+    poll_interval_ms: 1000
+  cpu:
+    pressure_some_avg10_threshold: 80
+    poll_interval_ms: 1000
 projects:
   - id: detent
     pool: code
