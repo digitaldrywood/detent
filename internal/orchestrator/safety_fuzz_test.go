@@ -16,11 +16,17 @@ type releaseErrorSafetyScheduler struct {
 	err error
 }
 
+// ReleaseSlot fails BEFORE delegating, so a failed release leaves the underlying
+// semaphore genuinely occupied. Releasing first and then returning an error made
+// the slot actually free, which meant the old priority reservation -- not real
+// capacity accounting -- was the only thing refusing the next request.
 func (s *releaseErrorSafetyScheduler) ReleaseSlot(slot scheduler.Slot) error {
-	if err := s.GlobalScheduler.ReleaseSlot(slot); err != nil {
+	if s.err != nil {
+		err := s.err
+		s.err = nil
 		return err
 	}
-	return s.err
+	return s.GlobalScheduler.ReleaseSlot(slot)
 }
 
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
@@ -249,23 +255,27 @@ func assertDemandDrivenPriorityReservation(t *testing.T, scenario uint8, now tim
 		gate.EndProjectCycle(higher.ID)
 		requireSafetyGateGrantedAndReleased(t, gate, lower, now)
 	case 2:
+		// Priority never holds idle capacity. A higher-priority project that is
+		// mid-cycle, merely ready, or idle must not refuse a free slot to a
+		// lower-priority project; only a slot it actually holds may.
 		gate.BeginProjectCycle(higher)
-		requireSafetyGateReserved(t, gate, lower, now)
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now)
 		gate.EndProjectCycle(higher.ID)
 		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(time.Second))
 
 		gate.MarkReady(higher)
-		requireSafetyGateReserved(t, gate, lower, now.Add(2*time.Second))
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(2*time.Second))
 		gate.MarkIdle(higher)
 		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(3*time.Second))
 
 		gate.BeginProjectCycle(higher)
 		slot := requireSafetyGateGranted(t, gate, higher, now.Add(4*time.Second))
+		requireSafetyGateReserved(t, gate, lower, now.Add(5*time.Second))
 		gate.EndProjectCycle(higher.ID)
 		if err := gate.Release(slot); err != nil {
 			t.Fatalf("release higher-priority candidate: %v", err)
 		}
-		requireSafetyGateReserved(t, gate, lower, now.Add(5*time.Second))
+		requireSafetyGateGrantedAndReleased(t, gate, lower, now.Add(6*time.Second))
 	case 3:
 		releaseErr := errors.New("release failed")
 		global := &releaseErrorSafetyScheduler{

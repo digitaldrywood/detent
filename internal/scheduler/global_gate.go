@@ -388,11 +388,17 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	if g.dispatchPauses > 0 {
 		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
 	}
+	// Priority orders who wins a contended slot; it never holds an idle one.
+	// This previously denied a slot to a lower-priority project whenever any
+	// higher-priority project was mid-cycle, even with capacity free and even
+	// when that project could never dispatch -- e.g. every candidate declined
+	// by its own authorization selector. That starved the fleet: 8 of 10 slots
+	// idle while two projects waited on a project structurally unable to run.
+	// Free capacity is now always offered; contention is resolved by ranking in
+	// fillSelectionsLocked, and genuine exhaustion still reports
+	// reserved_for_higher_priority_project via ErrNoSlots below.
 	if g.global.Mode() == ModeStrictPriority {
 		g.projectCycles[project.ID] = projectCycleState{}
-		if reservedProjectID, reservedReq, reserved := g.higherPriorityProjectReservationLocked(project, now); reserved {
-			return Slot{}, false, g.projectDecisionLocked(project.ID, req, reservedProjectID, reservedReq), nil
-		}
 	}
 	g.reconcileSelectionsLocked()
 	if err := g.fillSelectionsLocked(ctx, now, true); err != nil {
@@ -407,8 +413,15 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		return Slot{}, false, DispatchGateDecision{}, err
 	}
 
+	// Not being the selected project is not grounds to refuse a free slot. A
+	// selection only records who should win a CONTENDED slot; a project that
+	// holds a selection but is not currently asking must not keep capacity
+	// idle. If real capacity remains, this request takes it and the unclaimed
+	// selection simply wins the next contended round. When capacity is truly
+	// gone, RequestSlot below returns ErrNoSlots and reports the real reason.
 	selected, selectedOK := g.selected[project.ID]
-	if !selectedOK {
+	strictFreeCapacity := g.global.Mode() == ModeStrictPriority && g.unreservedCapacityLocked() >= req.Weight
+	if !selectedOK && !strictFreeCapacity {
 		reason := g.waitReasonLocked(req)
 		return Slot{}, false, g.decisionLocked(project.ID, req, reason), nil
 	}
@@ -630,11 +643,30 @@ func (g *GlobalDispatchGate) fillSelectionsLocked(ctx context.Context, now time.
 	}
 }
 
+func (g *GlobalDispatchGate) bestStrictReadyProjectRankLocked() (int, bool) {
+	best := 0
+	found := false
+	for _, ready := range g.ready {
+		rank := priorityRank(ready.Priority)
+		if !found || rank < best {
+			best = rank
+			found = true
+		}
+	}
+	return best, found && g.global.Mode() == ModeStrictPriority
+}
+
 func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string]struct{}, maxWeight int) ([]ProjectCandidate, map[string]SlotRequest) {
 	if len(g.ready) == 0 {
 		return nil, nil
 	}
 
+	// Priority orders selection; it does not gate it. Filtering the candidate
+	// set down to only the best strict rank meant a merely-ready higher-priority
+	// project excluded every lower-priority project from selection entirely,
+	// even with capacity free. The selection loop already excludes projects it
+	// has picked, so ranking alone fills slots highest-priority-first and then
+	// keeps going down the list until capacity runs out.
 	strictProjectRank, strict := g.bestStrictReadyProjectRankLocked()
 	bestPriority := 0
 	first := true
@@ -681,22 +713,6 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 	return projects, requests
 }
 
-func (g *GlobalDispatchGate) bestStrictReadyProjectRankLocked() (int, bool) {
-	if g.global.Mode() != ModeStrictPriority {
-		return 0, false
-	}
-	bestRank := 0
-	found := false
-	for _, ready := range g.ready {
-		rank := priorityRank(ready.Priority)
-		if !found || rank < bestRank {
-			bestRank = rank
-			found = true
-		}
-	}
-	return bestRank, found
-}
-
 func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, reason string) DispatchGateDecision {
 	stats := g.capacitySnapshotLocked(req.State)
 	selectedProjectID, selectedReq, _ := g.decisionSelectionLocked(projectID)
@@ -726,53 +742,6 @@ func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, r
 		ReadyProjects:        len(g.ready),
 		RunningProjects:      len(g.running),
 	}
-}
-
-func (g *GlobalDispatchGate) projectDecisionLocked(
-	projectID string,
-	req SlotRequest,
-	selectedProjectID string,
-	selectedReq SlotRequest,
-) DispatchGateDecision {
-	decision := g.decisionLocked(projectID, req, DispatchGateReasonReservedForHigherPriorityProject)
-	decision.SelectedProjectID = selectedProjectID
-	decision.SelectedState = selectedReq.State
-	return decision
-}
-
-func (g *GlobalDispatchGate) higherPriorityProjectReservationLocked(
-	project ProjectCandidate,
-	now time.Time,
-) (string, SlotRequest, bool) {
-	projectRank := priorityRank(project.Priority)
-	selectedID := ""
-	selectedRank := 0
-	selectedReq := SlotRequest{}
-	for projectID, candidate := range g.projects {
-		if projectID == project.ID || priorityRank(candidate.Priority) >= projectRank {
-			continue
-		}
-		status, err := candidate.ActiveHoursStatus(now)
-		if err != nil || !status.Open {
-			continue
-		}
-		cycle, ok := g.projectCycles[projectID]
-		if ok && cycle.idle {
-			continue
-		}
-		rank := priorityRank(candidate.Priority)
-		if selectedID != "" && (rank > selectedRank || rank == selectedRank && projectID > selectedID) {
-			continue
-		}
-		selectedID = projectID
-		selectedRank = rank
-		if ready, readyOK := g.ready[projectID]; readyOK {
-			selectedReq = ready.request
-		} else {
-			selectedReq = SlotRequest{}
-		}
-	}
-	return selectedID, selectedReq, selectedID != ""
 }
 
 func (g *GlobalDispatchGate) pruneClosedReadyProjectsLocked(now time.Time) error {

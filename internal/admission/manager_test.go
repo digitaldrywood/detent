@@ -31,13 +31,17 @@ type releaseErrorGlobalScheduler struct {
 	err error
 }
 
+// ReleaseSlot fails BEFORE delegating so a failed release leaves the slot
+// genuinely held. Releasing first and then returning an error freed the slot for
+// real, which meant only the old priority reservation refused the next request
+// rather than actual capacity accounting.
 func (s *releaseErrorGlobalScheduler) ReleaseSlot(slot scheduler.Slot) error {
-	if err := s.GlobalScheduler.ReleaseSlot(slot); err != nil {
+	if s.err != nil {
+		err := s.err
+		s.err = nil
 		return err
 	}
-	err := s.err
-	s.err = nil
-	return err
+	return s.GlobalScheduler.ReleaseSlot(slot)
 }
 
 func TestManagerDisabledRegistersNoSchedule(t *testing.T) {
