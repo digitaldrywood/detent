@@ -1159,25 +1159,23 @@ func TestBoardCardAlwaysRendersPullRequest(t *testing.T) {
 				t.Fatalf("MetaRight = %q, want %q", view.MetaRight, prLabel)
 			}
 			html := renderBoardComponent(t, boardCardView2(view))
-			for _, density := range []string{"cozy", "compact"} {
-				section := boardCardDensitySection(t, html, density)
-				for _, want := range []string{`href="` + prURL + `"`, `>` + prLabel + `</a>`} {
-					if !strings.Contains(section, want) {
-						t.Fatalf("%s card missing %q:\n%s", density, want, section)
-					}
+			for _, want := range []string{`data-board-card-identity`, `href="` + prURL + `"`, `>` + prLabel + `</a>`} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("card missing stable PR identity %q:\n%s", want, html)
 				}
-				if badge := strings.Index(section, `data-kanban-move-disabled-label`); badge >= 0 && strings.Index(section, prLabel) > badge {
-					t.Fatalf("%s card renders move-disabled metadata before %s:\n%s", density, prLabel, section)
-				}
-				if done := strings.Index(section, `aria-label="done"`); done >= 0 && strings.Index(section, prLabel) > done {
-					t.Fatalf("%s card renders done metadata before %s:\n%s", density, prLabel, section)
-				}
+			}
+			identity := strings.Index(html, `data-board-card-identity`)
+			if badge := strings.Index(html, `data-kanban-move-disabled-label`); badge >= 0 && identity > badge {
+				t.Fatalf("card renders move-disabled metadata before identity:\n%s", html)
+			}
+			if done := strings.Index(html, `aria-label="done"`); done >= 0 && identity > done {
+				t.Fatalf("card renders done metadata before identity:\n%s", html)
 			}
 		})
 	}
 }
 
-func TestBoardCardHeaderKeepsPullRequestAfterTruncatingMetadata(t *testing.T) {
+func TestBoardCardIdentityWrapsBeforeTruncatingMetadata(t *testing.T) {
 	t.Parallel()
 
 	card := boardCardView{
@@ -1198,10 +1196,12 @@ func TestBoardCardHeaderKeepsPullRequestAfterTruncatingMetadata(t *testing.T) {
 		name string
 		want string
 	}{
-		{name: "project can shrink to zero", want: `<span class="min-w-0 truncate">digitaldrywood-release-train-platform</span>`},
+		{name: "project wraps", want: `<span class="min-w-0 break-words font-medium leading-tight text-text" data-board-card-project>digitaldrywood-release-train-platform</span>`},
+		{name: "references wrap", want: `class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5" data-board-card-references`},
 		{name: "priority badge preserves an ellipsis", want: `class="inline-flex min-w-7 max-w-24 shrink items-center`},
 		{name: "priority text paints ellipsis", want: `<span class="min-w-0 truncate">priority-medium</span>`},
-		{name: "pull request never shrinks", want: `class="ml-auto flex-none whitespace-nowrap tabular-nums"`},
+		{name: "issue can wrap without truncation", want: `class="flex-none max-w-full break-all text-text"`},
+		{name: "pull request can wrap without truncation", want: `class="flex-none max-w-full break-all tabular-nums"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1209,6 +1209,9 @@ func TestBoardCardHeaderKeepsPullRequestAfterTruncatingMetadata(t *testing.T) {
 				t.Fatalf("board card header missing %q:\n%s", tt.want, html)
 			}
 		})
+	}
+	if strings.Contains(html, `<span class="min-w-0 truncate">digitaldrywood-release-train-platform</span>`) {
+		t.Fatalf("project identity must not truncate:\n%s", html)
 	}
 }
 
@@ -1366,7 +1369,7 @@ func TestBoardSnapshotRendersAwaitingChecksOnlyForGatePendingCards(t *testing.T)
 	}
 }
 
-func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T) {
+func TestLongLocalWorkItemIdentifiersPreserveSurfaceContracts(t *testing.T) {
 	localID := "wi-011cd179bc7ecf36b7197e4b"
 	projectID := "digitaldrywood-video"
 	title := "Local SQLite work item"
@@ -1398,12 +1401,15 @@ func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T)
 	boardHTML := renderBoardComponent(t, BoardSnapshot(data))
 	boardCard := boardCardSection(t, boardHTML, title)
 	for _, want := range []string{
-		`class="flex-none max-w-16 truncate text-text">` + localID,
-		`class="min-w-0 truncate">` + projectID,
+		`class="min-w-0 break-words font-medium leading-tight text-text" data-board-card-project>` + projectID,
+		`class="flex-none max-w-full break-all text-text">` + localID,
 	} {
 		if !strings.Contains(boardCard, want) {
 			t.Fatalf("board card missing %q:\n%s", want, boardCard)
 		}
+	}
+	if strings.Contains(boardCard, `class="flex-none max-w-16 truncate text-text">`+localID) {
+		t.Fatalf("board card truncates local issue identity:\n%s", boardCard)
 	}
 
 	sheetHTML := renderBoardComponent(t, BoardCardSheet(
@@ -2581,6 +2587,76 @@ func TestBoardMoveDisabledLabel(t *testing.T) {
 	}
 }
 
+func TestBoardCardRendersStableIdentityForOperationalStates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*boardCardView)
+	}{
+		{name: "running", mutate: func(card *boardCardView) { card.Running = true }},
+		{name: "retrying", mutate: func(card *boardCardView) { card.Retrying = true }},
+		{name: "waiting", mutate: func(card *boardCardView) { card.Waiting = true }},
+		{name: "blocked", mutate: func(card *boardCardView) { card.State = "Blocked" }},
+		{name: "priority", mutate: func(card *boardCardView) { card.PriorityBadge = "unblocker +12" }},
+		{name: "stale", mutate: func(card *boardCardView) {
+			card.MoveDisabledText = "Tracker snapshot is stale"
+			card.MoveDisabledLabel = "Stale"
+		}},
+		{name: "stranded", mutate: func(card *boardCardView) {
+			card.ExtraChip = true
+			card.ExtraKind = primitives.KindWarn
+			card.ExtraText = "Stranded 12m"
+		}},
+		{name: "done", mutate: func(card *boardCardView) { card.Done = true; card.State = "Done" }},
+		{name: "terminal", mutate: func(card *boardCardView) { card.Terminal = true; card.State = "Cancelled" }},
+		{name: "merging", mutate: func(card *boardCardView) { card.State = "Merging"; card.MergeLaneStatus = "Merge queued" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := boardCardView{
+				DomID:     "card-2162",
+				Project:   "digitaldrywood-release-train-platform",
+				Number:    "#2162",
+				URL:       "https://github.com/digitaldrywood/detent/issues/2162",
+				MetaRight: "PR #2163",
+				PRURL:     "https://github.com/digitaldrywood/detent/pull/2163",
+				Title:     "Keep card identity visible",
+				State:     "In Progress",
+			}
+			tt.mutate(&card)
+			html := renderBoardComponent(t, boardCardView2(card))
+
+			for _, want := range []string{
+				`data-board-card-identity`,
+				`data-board-card-project>digitaldrywood-release-train-platform</span>`,
+				`data-board-card-issue`,
+				`href="https://github.com/digitaldrywood/detent/issues/2162"`,
+				`>#2162</a>`,
+				`data-board-card-pr`,
+				`href="https://github.com/digitaldrywood/detent/pull/2163"`,
+				`>PR #2163</a>`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("card identity missing %q:\n%s", want, html)
+				}
+			}
+			identityStart := strings.Index(html, `data-board-card-identity`)
+			identityEnd := strings.Index(html[identityStart:], `data-board-card-content="cozy"`)
+			if identityEnd < 0 {
+				t.Fatalf("card identity has no secondary boundary:\n%s", html)
+			}
+			identityHTML := html[identityStart : identityStart+identityEnd]
+			if strings.Count(identityHTML, `onclick="event.stopPropagation()"`) != 2 {
+				t.Fatalf("issue and PR links must isolate card clicks:\n%s", identityHTML)
+			}
+		})
+	}
+}
+
 func TestBoardCardSurfacesMoveRefusalInEveryDensity(t *testing.T) {
 	t.Parallel()
 
@@ -2628,20 +2704,6 @@ func renderBoardComponent(t *testing.T, component templ.Component) string {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()
-}
-
-func boardCardDensitySection(t *testing.T, html string, density string) string {
-	t.Helper()
-	marker := `data-board-card-content="` + density + `"`
-	start := strings.Index(html, marker)
-	if start < 0 {
-		t.Fatalf("card missing %s density content:\n%s", density, html)
-	}
-	section := html[start:]
-	if next := strings.Index(section[len(marker):], `data-board-card-content=`); next >= 0 {
-		section = section[:len(marker)+next]
-	}
-	return section
 }
 
 func TestBoardScopeSelectLinksProjectKanbanOnce(t *testing.T) {

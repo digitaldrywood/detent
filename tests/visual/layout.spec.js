@@ -316,7 +316,7 @@ test("board home renders lanes without page overflow", async ({
   await capturePageAndAttach(page, "board-home.png", testInfo);
 });
 
-test("board card metadata truncates before its pull request link", async ({
+test("board card identity wraps while metadata truncates", async ({
   page,
 }, testInfo) => {
   await openScenario(page, {
@@ -330,47 +330,67 @@ test("board card metadata truncates before its pull request link", async ({
   const card = page.locator("article", {
     hasText: "Review deterministic chart colors",
   });
-  const header = card.locator('[data-board-card-content="cozy"]');
-  await header.evaluate((row) => {
-    const project = row.querySelector("span.min-w-0");
+  const identity = card.locator("[data-board-card-identity]");
+  const secondary = card.locator('[data-board-card-content="cozy"]');
+  await card.evaluate((article) => {
+    const project = article.querySelector("[data-board-card-project]");
     project.textContent = "digitaldrywood-release-train-platform";
+    const row = article.querySelector('[data-board-card-content="cozy"]');
     const badge = document.createElement("span");
     badge.className =
       "inline-flex min-w-7 max-w-24 shrink items-center rounded-chip border border-warn/30 bg-warn/15 px-1.5 py-0.5 font-mono text-2xs font-semibold text-warn";
     badge.dataset.boardPriority = "";
     const label = document.createElement("span");
     label.className = "min-w-0 truncate";
-    label.textContent = "priority-medium";
+    label.textContent = "priority-medium-that-yields-space";
     badge.append(label);
-    row.insertBefore(badge, project.nextSibling);
+    row.append(badge);
   });
 
   const assertContained = async () => {
     const layout = await card.evaluate((article) => {
       const row = article.querySelector('[data-board-card-content="cozy"]');
+      const identityBlock = article.querySelector("[data-board-card-identity]");
+      const project = article.querySelector("[data-board-card-project]");
       const priority = row.querySelector("[data-board-priority]");
       const priorityText = priority.firstElementChild;
-      const pullRequest = row.lastElementChild;
+      const pullRequest = article.querySelector("[data-board-card-pr] a");
       const cardRect = article.getBoundingClientRect();
       const rowRect = row.getBoundingClientRect();
+      const identityRect = identityBlock.getBoundingClientRect();
       const pullRequestRect = pullRequest.getBoundingClientRect();
-      const childrenContained = Array.from(row.children).every((child) => {
+      const childrenContained = [
+        identityBlock,
+        project,
+        pullRequest,
+        ...row.children,
+      ].every((child) => {
         const childRect = child.getBoundingClientRect();
         return childRect.left >= cardRect.left && childRect.right <= cardRect.right;
       });
       return {
         cardRight: cardRect.right,
         rowRight: rowRect.right,
+        identityRight: identityRect.right,
         pullRequestRight: pullRequestRect.right,
         childrenContained,
+        projectClientWidth: project.clientWidth,
+        projectScrollWidth: project.scrollWidth,
+        projectTextOverflow: getComputedStyle(project).textOverflow,
         priorityClientWidth: priorityText.clientWidth,
         priorityScrollWidth: priorityText.scrollWidth,
         priorityTextOverflow: getComputedStyle(priorityText).textOverflow,
       };
     });
     expect(layout.rowRight).toBeLessThanOrEqual(layout.cardRight);
+    expect(layout.identityRight).toBeLessThanOrEqual(layout.cardRight);
     expect(layout.pullRequestRight).toBeLessThanOrEqual(layout.cardRight);
     expect(layout.childrenContained).toBe(true);
+    expect(layout.projectClientWidth).toBeGreaterThan(0);
+    expect(layout.projectScrollWidth).toBeLessThanOrEqual(
+      layout.projectClientWidth + 1,
+    );
+    expect(layout.projectTextOverflow).not.toBe("ellipsis");
     expect(layout.priorityClientWidth).toBeGreaterThanOrEqual(12);
     expect(layout.priorityClientWidth).toBeLessThan(layout.priorityScrollWidth);
     expect(layout.priorityTextOverflow).toBe("ellipsis");
@@ -388,13 +408,14 @@ test("board card metadata truncates before its pull request link", async ({
   await expect(page.locator("[data-board-lane-count]")).toHaveText("5/9");
 
   await page.locator('[data-density-choice="compact"]').click();
-  await expect(header).toBeHidden();
+  await expect(secondary).toBeHidden();
+  await expect(identity).toBeVisible();
   await page.locator('[data-density-choice="cozy"]').click();
-  await expect(header).toBeVisible();
+  await expect(secondary).toBeVisible();
   await assertContained();
   await attachScreenshotEvidence(page, "board-card-header-5-lanes.png", testInfo);
   await page.locator('[data-density-choice="comfy"]').click();
-  await expect(header).toBeVisible();
+  await expect(secondary).toBeVisible();
   await assertContained();
 
   await page.locator("#board-lane-picker summary").click();
@@ -821,7 +842,9 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet).toHaveCount(0);
 });
 
-test("pull request link does not open the card detail sheet", async ({ page }) => {
+test("issue and pull request links do not open the card detail sheet", async ({
+  page,
+}) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "kanban-full-integration",
@@ -833,13 +856,21 @@ test("pull request link does not open the card detail sheet", async ({ page }) =
   const card = page.locator("article", {
     hasText: "Review deterministic chart colors",
   });
-  const pullRequest = card
-    .locator('[data-board-card-content="cozy"]')
-    .getByRole("link", { name: "PR #5290", exact: true });
-  const popupPromise = page.waitForEvent("popup");
-  await pullRequest.click();
-  const popup = await popupPromise;
-  await popup.close();
+  const references = [
+    card
+      .locator("[data-board-card-issue]")
+      .getByRole("link", { name: "#5290", exact: true }),
+    card
+      .locator("[data-board-card-pr]")
+      .getByRole("link", { name: "PR #5290", exact: true }),
+  ];
+  for (const reference of references) {
+    const popupPromise = page.waitForEvent("popup");
+    await reference.click();
+    const popup = await popupPromise;
+    await popup.close();
+    await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+  }
 
   await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
 });
