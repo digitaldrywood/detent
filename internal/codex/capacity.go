@@ -17,6 +17,7 @@ import (
 const codexCapacityAvailableThresholdPercent = 5
 
 var codexProviderOutageStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(404|5[0-9]{2})\b`)
+var codexResponsesEndpointPattern = regexp.MustCompile(`(?i)(?:/responses(?:[?"'\s]|$)|responses endpoint)`)
 
 var codexCapacityRules = backendcapacity.Rules{
 	Kinds: []string{
@@ -121,6 +122,20 @@ func codexProviderOutage(err error, evidence string) (backendcapacity.Details, b
 	match := codexProviderOutageStatusPattern.FindStringSubmatch(evidence)
 	if len(match) != 2 {
 		return backendcapacity.Details{}, false
+	}
+	if match[1] == "404" {
+		if !codexResponsesEndpointPattern.MatchString(evidence) {
+			return backendcapacity.Details{}, false
+		}
+		lower := strings.ToLower(evidence)
+		for _, resourceError := range []string{"model_not_found", "model not found", "invalid_model", "invalid model"} {
+			if strings.Contains(lower, resourceError) {
+				return backendcapacity.Details{}, false
+			}
+		}
+		if strings.Contains(lower, "model") && strings.Contains(lower, "does not exist") {
+			return backendcapacity.Details{}, false
+		}
 	}
 	return backendcapacity.Details{
 		Type:    backendcapacity.ErrorTypeProviderOutage,

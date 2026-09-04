@@ -69,6 +69,40 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			wantKind: "http_529",
 		},
 		{
+			name:     "responses URL http 404",
+			err:      &TurnFailedError{Status: "failed", Body: `{"message":"unexpected status 404 Not Found, url: https://chatgpt.com/backend-api/codex/responses"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeProviderOutage,
+			wantKind: "http_404",
+		},
+		{
+			name: "model not found http 404",
+			err:  &TurnFailedError{Status: "failed", Body: `{"status":404,"message":"model not found"}`},
+		},
+		{
+			name:     "responses endpoint missing route",
+			err:      &TurnFailedError{Status: "failed", Body: `{"status":404,"message":"responses endpoint does not exist"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeProviderOutage,
+			wantKind: "http_404",
+		},
+		{
+			name: "model not found at responses endpoint",
+			err:  &TurnFailedError{Status: "failed", Body: `{"status":404,"message":"model not found at responses endpoint","code":"model_not_found"}`},
+		},
+		{
+			name: "missing model at responses URL",
+			err:  &TurnFailedError{Status: "failed", Body: `{"message":"unexpected status 404 Not Found: the model does not exist, url: https://api.openai.com/v1/responses"}`},
+		},
+		{
+			name: "unknown resource http 404",
+			err:  &TurnFailedError{Status: "failed", Body: `{"status":404,"message":"not found"}`},
+		},
+		{
+			name: "missing stored response http 404",
+			err:  &TurnFailedError{Status: "failed", Body: `{"message":"unexpected status 404 Not Found, url: https://api.openai.com/v1/responses/resp_missing"}`},
+		},
+		{
 			name:     "provider http 503",
 			err:      &TurnFailedError{Status: "failed", Body: `{"status":503,"message":"retry later"}`},
 			want:     true,
