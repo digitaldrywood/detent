@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -561,6 +563,57 @@ func TestTickReconcilesReviewThreadGatedNativeQueueBeforeStaleMerging(t *testing
 	}
 }
 
+func TestTickReconcilesReviewThreadGatedNativeQueueWithoutObservedStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 0, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(405, "success")
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-405", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				candidateIssuesSet: true,
+			},
+		},
+		statusErr: errors.New("status unavailable"),
+		entries:   map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: false,
+		MaxConcurrentAgents:  1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{issue}
+
+	orch.tick(t.Context(), &state, now)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+	if len(tracker.enqueued) != 0 {
+		t.Fatalf("enqueued issues = %#v, want none", tracker.enqueued)
+	}
+	if len(state.Pipeline) != 1 || state.Pipeline[0].ID != issue.ID {
+		t.Fatalf("pipeline = %#v, want prior issue %q retained", state.Pipeline, issue.ID)
+	}
+}
+
 func nativeMergeQueueTestConfig(cfg Config) Config {
 	cfg.AutoPromote.Gate.Kind = gate.KindArtifact
 	return normalizeConfig(cfg)
@@ -589,10 +642,18 @@ type nativeMergeQueueConnector struct {
 	available   *bool
 	inspectErr  error
 	dequeueErr  error
+	statusErr   error
 	inspections int
 	entries     map[string]connector.PullRequestMergeQueueEntry
 	enqueued    []string
 	dequeued    []connector.PullRequestMergeQueueEntry
+}
+
+func (c *nativeMergeQueueConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if c.statusErr != nil {
+		return nil, c.statusErr
+	}
+	return c.autoPromoteTickConnector.FetchIssuesByStates(ctx, states)
 }
 
 func (c *nativeMergeQueueConnector) InspectPullRequestMergeQueue(_ context.Context, issue connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
