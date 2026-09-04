@@ -471,7 +471,7 @@ func TestReconcileReviewThreadGatedNativeMergeQueueIssues(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
 
-			queued := orch.reconcileReviewThreadGatedNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			queued := orch.reconcileReviewThreadGatedNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, nil, now)
 
 			if tracker.inspections != 1 || len(tracker.enqueued) != 0 {
 				t.Fatalf("native queue activity = %d inspections and %#v enqueues, want one inspection and no enqueue", tracker.inspections, tracker.enqueued)
@@ -611,6 +611,109 @@ func TestTickReconcilesReviewThreadGatedNativeQueueWithoutObservedStatus(t *test
 	}
 	if len(state.Pipeline) != 1 || state.Pipeline[0].ID != issue.ID {
 		t.Fatalf("pipeline = %#v, want prior issue %q retained", state.Pipeline, issue.ID)
+	}
+}
+
+func TestTickReconcilesReviewThreadGatedNativeQueueAfterLeavingMerging(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 15, 0, 0, time.UTC)
+	previous := nativeMergeQueueTestIssue(406, "success")
+	current := cloneIssue(previous)
+	current.State = "Human Review"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-406", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{
+				stateIssues:        []connector.Issue{current},
+				candidateIssuesSet: true,
+			},
+		},
+		entries: map[string]connector.PullRequestMergeQueueEntry{previous.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:         time.Minute,
+		MergeFastPathEnabled: false,
+		MaxConcurrentAgents:  1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Gate: gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{previous}
+	cacheNativeMergeQueueEntry(&state, previous.ID, entry, now.Add(-time.Minute))
+
+	orch.tick(t.Context(), &state, now)
+
+	if tracker.inspections != 1 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want one each", tracker.inspections, len(tracker.dequeued))
+	}
+	if len(state.Pipeline) != 1 || state.Pipeline[0].State != current.State {
+		t.Fatalf("pipeline = %#v, want current %q state retained", state.Pipeline, current.State)
+	}
+	if _, ok := state.nativeMergeQueueEntries[previous.ID]; ok {
+		t.Fatalf("nativeMergeQueueEntries[%q] remains after dequeue", previous.ID)
+	}
+}
+
+func TestReconcileReviewThreadGatedNativeQueueRetriesAfterLeavingMerging(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 17, 30, 0, 0, time.UTC)
+	previous := nativeMergeQueueTestIssue(407, "success")
+	current := cloneIssue(previous)
+	current.State = "Human Review"
+	entry := connector.PullRequestMergeQueueEntry{ID: "MQE_issue-407", State: "QUEUED"}
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		inspectErr: errors.New("inspect unavailable"),
+		entries:    map[string]connector.PullRequestMergeQueueEntry{previous.ID: entry},
+	}
+	cfg := normalizeConfig(Config{
+		AutoPromote:  AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindCommand}},
+		ActiveStates: []string{"Merging"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	orch.reconcileReviewThreadGatedNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{current},
+		[]connector.Issue{previous},
+		now,
+	)
+	if _, ok := state.nativeMergeQueueDeferred[previous.ID]; !ok {
+		t.Fatalf("nativeMergeQueueDeferred[%q] missing after inspection failure", previous.ID)
+	}
+
+	tracker.inspectErr = nil
+	orch.reconcileReviewThreadGatedNativeMergeQueueIssues(
+		t.Context(),
+		&state,
+		[]connector.Issue{current},
+		nil,
+		now.Add(time.Minute),
+	)
+
+	if tracker.inspections != 2 || len(tracker.dequeued) != 1 {
+		t.Fatalf("native queue activity = %d inspections and %d dequeues, want two inspections and one dequeue", tracker.inspections, len(tracker.dequeued))
+	}
+	if _, ok := state.nativeMergeQueueDeferred[previous.ID]; ok {
+		t.Fatalf("nativeMergeQueueDeferred[%q] remains after successful retry", previous.ID)
 	}
 }
 
