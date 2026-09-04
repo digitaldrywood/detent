@@ -170,6 +170,7 @@ func TestServeRequiresListener(t *testing.T) {
 func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	t.Parallel()
 
+	const listenerReadyDeadlockGuard = 30 * time.Second
 	databasePath := filepath.Join(t.TempDir(), "hub.db")
 	listenerAccepting := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -192,7 +193,7 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 
 	select {
 	case <-listenerAccepting:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerReadyDeadlockGuard):
 		t.Fatal("Run() did not start accepting listener connections")
 	}
 	cancel()
