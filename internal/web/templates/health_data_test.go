@@ -50,6 +50,17 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "All systems nominal.",
 		},
 		{
+			name: "host pressure hold explains dispatch wait",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				IOPressure: telemetry.IOPressure{
+					Supported: true, Full: telemetry.PressureAverages{Avg10: 63.64}, FullAvg10Max: 5, DispatchHeld: true,
+				},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Dispatch is waiting for host pressure.",
+		},
+		{
 			name: "tracker unavailability requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -202,6 +213,36 @@ func TestHealthViewVerdicts(t *testing.T) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
 			}
 		})
+	}
+}
+
+func TestHealthRowsSurfaceHostPressure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	rows := healthPressureRows(telemetry.Snapshot{
+		MemoryPressure: telemetry.MemoryPressure{
+			Supported: true, Some: telemetry.PressureAverages{Avg60: 0}, SomeAvg60Max: 10, ObservedAt: now,
+		},
+		IOPressure: telemetry.IOPressure{
+			Supported: true, Some: telemetry.PressureAverages{Avg10: 78.81}, Full: telemetry.PressureAverages{Avg10: 63.64}, FullAvg10Max: 5, DispatchHeld: true, ObservedAt: now,
+		},
+		CPUPressure: telemetry.CPUPressure{
+			SomeAvg10Max: 80, LastError: "read /proc/pressure/cpu: permission denied", ObservedAt: now,
+		},
+	})
+
+	if len(rows) != 3 {
+		t.Fatalf("pressure rows = %#v, want three", rows)
+	}
+	if rows[0].Status != "Healthy" || !strings.Contains(rows[0].Detail, "some avg60 0.00% / 10.00%") {
+		t.Fatalf("memory row = %#v", rows[0])
+	}
+	if rows[1].Status != "Holding dispatch" || !strings.Contains(rows[1].Detail, "full avg10 63.64% / 5.00%") || !strings.Contains(rows[1].Detail, "some avg10 78.81%") {
+		t.Fatalf("IO row = %#v", rows[1])
+	}
+	if rows[2].Status != "Unavailable" || !strings.Contains(rows[2].Detail, "permission denied") {
+		t.Fatalf("CPU row = %#v", rows[2])
 	}
 }
 

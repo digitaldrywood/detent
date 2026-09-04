@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hostmemory"
+	"github.com/digitaldrywood/detent/internal/hostpressure"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -139,6 +139,10 @@ type Config struct {
 	DispatchStallThreshold        time.Duration
 	MemoryPressureSomeAvg60Max    float64
 	MemoryPressurePollInterval    time.Duration
+	IOPressureFullAvg10Max        float64
+	IOPressurePollInterval        time.Duration
+	CPUPressureSomeAvg10Max       float64
+	CPUPressurePollInterval       time.Duration
 }
 
 type LessonCaptureConfig struct {
@@ -203,7 +207,9 @@ type Dependencies struct {
 	Release              releasepkg.Coordinator
 	GlobalDispatchGate   scheduler.ProjectDispatchGate
 	DispatchPacer        runpkg.DispatchPacer
-	ReadMemoryPressure   func(context.Context) (hostmemory.Sample, error)
+	ReadMemoryPressure   func(context.Context) (hostpressure.Sample, error)
+	ReadIOPressure       func(context.Context) (hostpressure.Sample, error)
+	ReadCPUPressure      func(context.Context) (hostpressure.Sample, error)
 	Now                  func() time.Time
 	Logger               *slog.Logger
 	Retrospector         Retrospector
@@ -264,7 +270,9 @@ type Orchestrator struct {
 	reaper                  WorkspaceReaper
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
-	readMemoryPressure      func(context.Context) (hostmemory.Sample, error)
+	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
+	readIOPressure          func(context.Context) (hostpressure.Sample, error)
+	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
 	validatorMu             sync.Mutex
 	validatorWG             sync.WaitGroup
 	validatorRuns           map[string]struct{}
@@ -594,7 +602,15 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 	readMemoryPressure := deps.ReadMemoryPressure
 	if readMemoryPressure == nil {
-		readMemoryPressure = hostmemory.Read
+		readMemoryPressure = hostpressure.ReadMemory
+	}
+	readIOPressure := deps.ReadIOPressure
+	if readIOPressure == nil {
+		readIOPressure = hostpressure.ReadIO
+	}
+	readCPUPressure := deps.ReadCPUPressure
+	if readCPUPressure == nil {
+		readCPUPressure = hostpressure.ReadCPU
 	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
@@ -631,6 +647,8 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		logger:                  logger,
 		globalDispatchGate:      deps.GlobalDispatchGate,
 		readMemoryPressure:      readMemoryPressure,
+		readIOPressure:          readIOPressure,
+		readCPUPressure:         readCPUPressure,
 		validatorRuns:           map[string]struct{}{},
 		validatorResults:        map[string]validatorStageResult{},
 		validatorFailures:       map[string]validatorStageFailure{},
@@ -1206,6 +1224,8 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
 	state.MemoryPressure.SomeAvg60Max = cfg.MemoryPressureSomeAvg60Max
+	state.IOPressure.FullAvg10Max = cfg.IOPressureFullAvg10Max
+	state.CPUPressure.SomeAvg10Max = cfg.CPUPressureSomeAvg10Max
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

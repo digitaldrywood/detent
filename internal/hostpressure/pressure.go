@@ -1,4 +1,4 @@
-package hostmemory
+package hostpressure
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var ErrUnsupported = errors.New("host memory pressure is unsupported on this platform")
+var ErrUnsupported = errors.New("host pressure is unsupported on this platform")
 
 type Sample struct {
 	Some       Pressure
@@ -26,7 +26,7 @@ type Pressure struct {
 func Parse(value string) (Sample, error) {
 	var sample Sample
 	seen := map[string]bool{}
-	for line := range strings.Lines(value) {
+	for _, line := range strings.Split(value, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
@@ -37,7 +37,7 @@ func Parse(value string) (Sample, error) {
 		}
 		pressure, err := parsePressureFields(fields[1:])
 		if err != nil {
-			return Sample{}, fmt.Errorf("parse memory pressure %s: %w", kind, err)
+			return Sample{}, fmt.Errorf("parse pressure %s: %w", kind, err)
 		}
 		if kind == "some" {
 			sample.Some = pressure
@@ -47,7 +47,7 @@ func Parse(value string) (Sample, error) {
 		seen[kind] = true
 	}
 	if !seen["some"] {
-		return Sample{}, errors.New("parse memory pressure: some row is missing")
+		return Sample{}, errors.New("parse pressure: some row is missing")
 	}
 	return sample, nil
 }

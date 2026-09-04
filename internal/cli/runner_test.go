@@ -1581,6 +1581,33 @@ func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotUsesNewestHostPressureObservations(t *testing.T) {
+	t.Parallel()
+
+	older := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Second)
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		MemoryPressure: telemetry.MemoryPressure{ObservedAt: newer, SomeAvg60Max: 10},
+		IOPressure:     telemetry.IOPressure{ObservedAt: older, FullAvg10Max: 5},
+		CPUPressure:    telemetry.CPUPressure{ObservedAt: newer, SomeAvg10Max: 80},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		MemoryPressure: telemetry.MemoryPressure{ObservedAt: older, SomeAvg60Max: 11},
+		IOPressure:     telemetry.IOPressure{ObservedAt: newer, FullAvg10Max: 6},
+		CPUPressure:    telemetry.CPUPressure{ObservedAt: older, SomeAvg10Max: 81},
+	})
+
+	if got.MemoryPressure.SomeAvg60Max != 10 {
+		t.Fatalf("memory pressure threshold = %.2f, want newest value 10", got.MemoryPressure.SomeAvg60Max)
+	}
+	if got.IOPressure.FullAvg10Max != 6 {
+		t.Fatalf("IO pressure threshold = %.2f, want newest value 6", got.IOPressure.FullAvg10Max)
+	}
+	if got.CPUPressure.SomeAvg10Max != 80 {
+		t.Fatalf("CPU pressure threshold = %.2f, want newest value 80", got.CPUPressure.SomeAvg10Max)
+	}
+}
+
 func TestMergeSnapshotAttributesFleetRESTBudgets(t *testing.T) {
 	t.Parallel()
 

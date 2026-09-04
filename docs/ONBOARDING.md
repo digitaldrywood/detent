@@ -2961,7 +2961,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    during an approved maintenance window. Confirm the effective limits with
    `systemctl --user show detent.service -p MemoryHigh -p MemoryMax`. The cgroup
    limits are defense in depth for the whole service; Detent's per-agent RSS
-   ceiling and memory-pressure admission control remain the primary controls.
+   ceiling and memory, IO, and CPU pressure admission controls remain the
+   primary controls. On build hosts, tune IO `full` and CPU `some` PSI from a
+   representative compile and test workload instead of relying on free memory
+   or memory PSI alone.
 
    When the project defines `hooks.after_create` or other bootstrap hooks,
    dry-run that hook or the equivalent repo bootstrap script from an isolated

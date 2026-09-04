@@ -1186,6 +1186,8 @@ func (s *Server) health(c echo.Context) error {
 	refreshFailures := []telemetry.RefreshFailure{}
 	refresh := telemetry.Refresh{}
 	memoryPressure := telemetry.MemoryPressure{}
+	ioPressure := telemetry.IOPressure{}
+	cpuPressure := telemetry.CPUPressure{}
 	agentMemory := []healthAgentMemory{}
 	latestSnapshot := telemetry.Snapshot{}
 	snapshotGeneratedAt := time.Time{}
@@ -1199,6 +1201,8 @@ func (s *Server) health(c echo.Context) error {
 			snapshotAgeSeconds = snapshot.AgeSeconds(now)
 			refresh = snapshot.Refresh
 			memoryPressure = snapshot.MemoryPressure
+			ioPressure = snapshot.IOPressure
+			cpuPressure = snapshot.CPUPressure
 			for _, running := range snapshot.Running {
 				agentMemory = append(agentMemory, healthAgentMemory{
 					ProjectID:       running.ProjectID,
@@ -1264,7 +1268,7 @@ func (s *Server) health(c echo.Context) error {
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.DispatchHeld || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1308,6 +1312,8 @@ func (s *Server) health(c echo.Context) error {
 		Projects:               projectHealth,
 		Refresh:                refresh,
 		MemoryPressure:         memoryPressure,
+		IOPressure:             ioPressure,
+		CPUPressure:            cpuPressure,
 		AgentMemory:            agentMemory,
 		SnapshotGeneratedAt:    snapshotGeneratedAt,
 		SnapshotAgeSeconds:     snapshotAgeSeconds,
@@ -1792,6 +1798,8 @@ type healthResponse struct {
 	Projects               []healthProject                  `json:"projects,omitempty"`
 	Refresh                telemetry.Refresh                `json:"refresh"`
 	MemoryPressure         telemetry.MemoryPressure         `json:"memory_pressure"`
+	IOPressure             telemetry.IOPressure             `json:"io_pressure"`
+	CPUPressure            telemetry.CPUPressure            `json:"cpu_pressure"`
 	AgentMemory            []healthAgentMemory              `json:"agent_memory"`
 	SnapshotGeneratedAt    time.Time                        `json:"snapshot_generated_at,omitzero"`
 	SnapshotAgeSeconds     int64                            `json:"snapshot_age_seconds"`

@@ -35,6 +35,10 @@ const (
 	DefaultMaxAgentRSSBytes                 int64 = 8 * 1024 * 1024 * 1024
 	DefaultMemoryPressureSomeAvg60Threshold       = 10.0
 	DefaultMemoryPollIntervalMS                   = 1000
+	DefaultIOPressureFullAvg10Threshold           = 5.0
+	DefaultIOPressurePollIntervalMS               = 1000
+	DefaultCPUPressureSomeAvg10Threshold          = 80.0
+	DefaultCPUPressurePollIntervalMS              = 1000
 
 	configFileMode = 0o600
 )
@@ -142,6 +146,8 @@ type Settings struct {
 	FairShare           map[string]any                  `yaml:"fair_share,omitempty"`
 	Startup             map[string]any                  `yaml:"startup,omitempty"`
 	Memory              Memory                          `yaml:"memory,omitempty"`
+	IO                  IO                              `yaml:"io,omitempty"`
+	CPU                 CPU                             `yaml:"cpu,omitempty"`
 }
 
 type Memory struct {
@@ -152,6 +158,16 @@ type Memory struct {
 
 type ProjectMemory struct {
 	MaxAgentRSSBytes *int64 `yaml:"max_agent_rss_bytes,omitempty"`
+}
+
+type IO struct {
+	PressureFullAvg10Threshold float64 `yaml:"pressure_full_avg10_threshold"`
+	PollIntervalMS             int     `yaml:"poll_interval_ms"`
+}
+
+type CPU struct {
+	PressureSomeAvg10Threshold float64 `yaml:"pressure_some_avg10_threshold"`
+	PollIntervalMS             int     `yaml:"poll_interval_ms"`
 }
 
 func (m Memory) Normalized() Memory {
@@ -165,6 +181,26 @@ func (m Memory) Normalized() Memory {
 		m.PollIntervalMS = DefaultMemoryPollIntervalMS
 	}
 	return m
+}
+
+func (p IO) Normalized() IO {
+	if p.PressureFullAvg10Threshold <= 0 {
+		p.PressureFullAvg10Threshold = DefaultIOPressureFullAvg10Threshold
+	}
+	if p.PollIntervalMS <= 0 {
+		p.PollIntervalMS = DefaultIOPressurePollIntervalMS
+	}
+	return p
+}
+
+func (p CPU) Normalized() CPU {
+	if p.PressureSomeAvg10Threshold <= 0 {
+		p.PressureSomeAvg10Threshold = DefaultCPUPressureSomeAvg10Threshold
+	}
+	if p.PollIntervalMS <= 0 {
+		p.PollIntervalMS = DefaultCPUPressurePollIntervalMS
+	}
+	return p
 }
 
 type AgentPool struct {
@@ -200,6 +236,8 @@ type Project struct {
 	GlobalActiveHours        *activehours.Config             `yaml:"-"`
 	GlobalRateWindowPacing   workflowconfig.RateWindowPacing `yaml:"-"`
 	GlobalMemory             Memory                          `yaml:"-"`
+	GlobalIO                 IO                              `yaml:"-"`
+	GlobalCPU                CPU                             `yaml:"-"`
 	IntakeConfigured         bool                            `yaml:"-"`
 }
 
@@ -362,6 +400,8 @@ func Write(path string, cfg Config, opts ...Option) error {
 
 	cfg.Path = expandedPath
 	cfg.Global.Memory = cfg.Global.Memory.Normalized()
+	cfg.Global.IO = cfg.Global.IO.Normalized()
+	cfg.Global.CPU = cfg.Global.CPU.Normalized()
 	if err := cfg.Validate(opts...); err != nil {
 		return err
 	}
@@ -725,6 +765,8 @@ func (c Config) Validate(opts ...Option) error {
 	problems = append(problems, c.Global.Identity.Validate("global.identity")...)
 	problems = append(problems, startupErrors(c.Global.Startup, "global.startup")...)
 	problems = append(problems, memoryProblems(c.Global.Memory, "global.memory")...)
+	problems = append(problems, ioPressureProblems(c.Global.IO, "global.io")...)
+	problems = append(problems, cpuPressureProblems(c.Global.CPU, "global.cpu")...)
 
 	if c.Projects == nil {
 		problems = append(problems, "projects: is required")
@@ -1002,6 +1044,14 @@ func defaultSettings() Settings {
 			PressureSomeAvg60Threshold: DefaultMemoryPressureSomeAvg60Threshold,
 			PollIntervalMS:             DefaultMemoryPollIntervalMS,
 		},
+		IO: IO{
+			PressureFullAvg10Threshold: DefaultIOPressureFullAvg10Threshold,
+			PollIntervalMS:             DefaultIOPressurePollIntervalMS,
+		},
+		CPU: CPU{
+			PressureSomeAvg10Threshold: DefaultCPUPressureSomeAvg10Threshold,
+			PollIntervalMS:             DefaultCPUPressurePollIntervalMS,
+		},
 	}
 }
 
@@ -1117,6 +1167,8 @@ func globalErrors(value any) []string {
 	problems = append(problems, optionalMapErrors(global, "fair_share")...)
 	problems = append(problems, optionalMapErrors(global, "startup")...)
 	problems = append(problems, memoryErrors(global["memory"], "global.memory", false)...)
+	problems = append(problems, pressureErrors(global["io"], "global.io", "pressure_full_avg10_threshold")...)
+	problems = append(problems, pressureErrors(global["cpu"], "global.cpu", "pressure_some_avg10_threshold")...)
 
 	if startup, ok := global["startup"].(map[string]any); ok {
 		problems = append(problems, startupErrors(startup, "global.startup")...)
@@ -1323,6 +1375,46 @@ func memoryProblems(memory Memory, prefix string) []string {
 		problems = append(problems, prefix+".pressure_some_avg60_threshold: must be a positive number")
 	}
 	if memory.PollIntervalMS <= 0 {
+		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
+	}
+	return problems
+}
+
+func pressureErrors(value any, prefix string, thresholdKey string) []string {
+	if value == nil {
+		return nil
+	}
+	pressure, ok := value.(map[string]any)
+	if !ok {
+		return []string{prefix + ": must be a mapping"}
+	}
+	var problems []string
+	if value, ok := pressure[thresholdKey]; ok && !positiveNumber(value) {
+		problems = append(problems, prefix+"."+thresholdKey+": must be a positive number")
+	}
+	if value, ok := pressure["poll_interval_ms"]; ok && !positiveInteger(value) {
+		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
+	}
+	return problems
+}
+
+func ioPressureProblems(pressure IO, prefix string) []string {
+	var problems []string
+	if pressure.PressureFullAvg10Threshold <= 0 {
+		problems = append(problems, prefix+".pressure_full_avg10_threshold: must be a positive number")
+	}
+	if pressure.PollIntervalMS <= 0 {
+		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
+	}
+	return problems
+}
+
+func cpuPressureProblems(pressure CPU, prefix string) []string {
+	var problems []string
+	if pressure.PressureSomeAvg10Threshold <= 0 {
+		problems = append(problems, prefix+".pressure_some_avg10_threshold: must be a positive number")
+	}
+	if pressure.PollIntervalMS <= 0 {
 		problems = append(problems, prefix+".poll_interval_ms: must be a positive integer")
 	}
 	return problems
@@ -2089,6 +2181,18 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 			return Settings{}, fmt.Errorf("global.memory: %w", err)
 		}
 	}
+	ioPressure := settings.IO
+	if attrs["io"] != nil {
+		if err := decodeYAMLValue(attrs["io"], &ioPressure); err != nil {
+			return Settings{}, fmt.Errorf("global.io: %w", err)
+		}
+	}
+	cpuPressure := settings.CPU
+	if attrs["cpu"] != nil {
+		if err := decodeYAMLValue(attrs["cpu"], &cpuPressure); err != nil {
+			return Settings{}, fmt.Errorf("global.cpu: %w", err)
+		}
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
 	settings.RateWindowPacing = rateWindowPacing
@@ -2100,6 +2204,8 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings.FairShare = fairShare
 	settings.Startup = startup
 	settings.Memory = memory
+	settings.IO = ioPressure
+	settings.CPU = cpuPressure
 	return settings, nil
 }
 

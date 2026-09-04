@@ -2205,6 +2205,9 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 					Path: "/shared/global.md",
 				}},
 			},
+			Memory: globalconfig.Memory{MaxAgentRSSBytes: 8 << 30, PressureSomeAvg60Threshold: 10, PollIntervalMS: 1000},
+			IO:     globalconfig.IO{PressureFullAvg10Threshold: 5, PollIntervalMS: 500},
+			CPU:    globalconfig.CPU{PressureSomeAvg10Threshold: 80, PollIntervalMS: 750},
 			Startup: map[string]any{
 				"jitter_seconds":        3,
 				"max_spawn_per_second":  4,
@@ -2235,6 +2238,9 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	}
 	if len(got.Projects[0].GlobalKnowledge.Sources) != 1 || got.Projects[0].GlobalKnowledge.Sources[0].Name != "Global" {
 		t.Fatalf("Projects[0].GlobalKnowledge = %#v, want global source", got.Projects[0].GlobalKnowledge)
+	}
+	if got.Projects[0].GlobalIO != cfg.Global.IO || got.Projects[0].GlobalCPU != cfg.Global.CPU {
+		t.Fatalf("Projects[0] host pressure = IO %#v CPU %#v", got.Projects[0].GlobalIO, got.Projects[0].GlobalCPU)
 	}
 }
 

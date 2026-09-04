@@ -98,6 +98,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail, view.DetailAt, view.DetailRelative = backendCapacityOutageDetailParts(backendFaults[0], snapshot.GeneratedAt)
 		return view
 	}
+	if detail := hostPressureHoldDetail(snapshot); detail != "" {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Dispatch is waiting for host pressure."
+		view.Detail = detail
+		return view
+	}
 	if refreshSnapshotPartiallyFailed(snapshot) {
 		view.Kind = primitives.KindWarn
 		view.Verdict = "Tracker refresh is partially degraded."
@@ -239,6 +245,7 @@ func healthBudgetRows(data DashboardData) []healthRow {
 
 func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows := make([]healthRow, 0, 4)
+	rows = append(rows, healthPressureRows(snapshot)...)
 	for _, stall := range healthFaultDispatchStalls(snapshot.DispatchStalls) {
 		rows = append(rows, healthDispatchStallRow(stall))
 	}
@@ -258,6 +265,113 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func hostPressureHoldDetail(snapshot telemetry.Snapshot) string {
+	held := make([]string, 0, 3)
+	if snapshot.MemoryPressure.DispatchHeld {
+		held = append(held, "memory some avg60 "+percentLabel(snapshot.MemoryPressure.Some.Avg60))
+	}
+	if snapshot.IOPressure.DispatchHeld {
+		held = append(held, "IO full avg10 "+percentLabel(snapshot.IOPressure.Full.Avg10))
+	}
+	if snapshot.CPUPressure.DispatchHeld {
+		held = append(held, "CPU some avg10 "+percentLabel(snapshot.CPUPressure.Some.Avg10))
+	}
+	if len(held) == 0 {
+		return ""
+	}
+	verb := "exceeds"
+	if len(held) > 1 {
+		verb = "exceed"
+	}
+	return strings.Join(held, ", ") + " " + verb + " the configured admission threshold."
+}
+
+func healthPressureRows(snapshot telemetry.Snapshot) []healthRow {
+	rows := make([]healthRow, 0, 3)
+	if pressure := snapshot.MemoryPressure; pressure.SomeAvg60Max > 0 {
+		rows = append(rows, healthPressureRow(
+			"memory",
+			pressure.Supported,
+			pressure.DispatchHeld,
+			pressure.LastError,
+			pressure.ObservedAt,
+			"some avg60",
+			pressure.Some.Avg60,
+			pressure.SomeAvg60Max,
+			"",
+		))
+	}
+	if pressure := snapshot.IOPressure; pressure.FullAvg10Max > 0 {
+		rows = append(rows, healthPressureRow(
+			"IO",
+			pressure.Supported,
+			pressure.DispatchHeld,
+			pressure.LastError,
+			pressure.ObservedAt,
+			"full avg10",
+			pressure.Full.Avg10,
+			pressure.FullAvg10Max,
+			"some avg10 "+percentLabel(pressure.Some.Avg10),
+		))
+	}
+	if pressure := snapshot.CPUPressure; pressure.SomeAvg10Max > 0 {
+		rows = append(rows, healthPressureRow(
+			"CPU",
+			pressure.Supported,
+			pressure.DispatchHeld,
+			pressure.LastError,
+			pressure.ObservedAt,
+			"some avg10",
+			pressure.Some.Avg10,
+			pressure.SomeAvg10Max,
+			"",
+		))
+	}
+	return rows
+}
+
+func healthPressureRow(
+	resource string,
+	supported bool,
+	held bool,
+	lastError string,
+	observedAt time.Time,
+	metric string,
+	current float64,
+	threshold float64,
+	companion string,
+) healthRow {
+	row := healthRow{
+		ID:        "health-host-pressure-" + strings.ToLower(resource),
+		Component: "Host pressure · " + resource,
+		Kind:      primitives.KindOK,
+		Status:    "Healthy",
+		Detail:    metric + " " + percentLabel(current) + " / " + percentLabel(threshold) + " threshold",
+		Resets:    "continuous",
+		DetailAt:  observedAt,
+	}
+	if companion != "" {
+		row.Detail += " · " + companion
+	}
+	switch {
+	case strings.TrimSpace(lastError) != "":
+		row.Kind = primitives.KindWarn
+		row.Status = "Unavailable"
+		row.Detail = strings.TrimSpace(lastError)
+		row.Resets = "on successful read"
+	case !supported:
+		row.Kind = primitives.KindNeutral
+		row.Status = "Unsupported"
+		row.Detail = "Linux PSI is unavailable on this host"
+		row.Resets = "—"
+	case held:
+		row.Kind = primitives.KindWarn
+		row.Status = "Holding dispatch"
+		row.Resets = "when pressure falls"
+	}
+	return row
 }
 
 func healthFaultStalenessWarnings(warnings []telemetry.StalenessWarning) []telemetry.StalenessWarning {

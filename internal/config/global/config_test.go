@@ -235,6 +235,14 @@ func TestDefaultConfig(t *testing.T) {
 		cfg.Global.Memory.PollIntervalMS != DefaultMemoryPollIntervalMS {
 		t.Fatalf("Global.Memory = %#v, want defaults", cfg.Global.Memory)
 	}
+	if cfg.Global.IO.PressureFullAvg10Threshold != DefaultIOPressureFullAvg10Threshold ||
+		cfg.Global.IO.PollIntervalMS != DefaultIOPressurePollIntervalMS {
+		t.Fatalf("Global.IO = %#v, want defaults", cfg.Global.IO)
+	}
+	if cfg.Global.CPU.PressureSomeAvg10Threshold != DefaultCPUPressureSomeAvg10Threshold ||
+		cfg.Global.CPU.PollIntervalMS != DefaultCPUPressurePollIntervalMS {
+		t.Fatalf("Global.CPU = %#v, want defaults", cfg.Global.CPU)
+	}
 	if cfg.Global.Identity.Configured() {
 		t.Fatalf("Global.Identity = %#v, want omitted default", cfg.Global.Identity)
 	}
@@ -243,7 +251,7 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestReadMemorySettingsAndProjectOverride(t *testing.T) {
+func TestReadHostPressureSettingsAndProjectMemoryOverride(t *testing.T) {
 	t.Parallel()
 
 	paths := createProjectFiles(t)
@@ -257,6 +265,12 @@ global:
     max_agent_rss_bytes: 4294967296
     pressure_some_avg60_threshold: 12.5
     poll_interval_ms: 250
+  io:
+    pressure_full_avg10_threshold: 7.5
+    poll_interval_ms: 500
+  cpu:
+    pressure_some_avg10_threshold: 85
+    poll_interval_ms: 750
 projects:
   - id: detent
     workflow: `+paths.workflow+`
@@ -274,6 +288,12 @@ projects:
 	wantGlobal := Memory{MaxAgentRSSBytes: 4294967296, PressureSomeAvg60Threshold: 12.5, PollIntervalMS: 250}
 	if cfg.Global.Memory != wantGlobal {
 		t.Fatalf("Global.Memory = %#v, want %#v", cfg.Global.Memory, wantGlobal)
+	}
+	if want := (IO{PressureFullAvg10Threshold: 7.5, PollIntervalMS: 500}); cfg.Global.IO != want {
+		t.Fatalf("Global.IO = %#v, want %#v", cfg.Global.IO, want)
+	}
+	if want := (CPU{PressureSomeAvg10Threshold: 85, PollIntervalMS: 750}); cfg.Global.CPU != want {
+		t.Fatalf("Global.CPU = %#v, want %#v", cfg.Global.CPU, want)
 	}
 	project := cfg.Projects[0]
 	project.GlobalMemory = cfg.Global.Memory
@@ -1455,7 +1475,7 @@ projects: []
 			},
 		},
 		{
-			name: "invalid memory settings",
+			name: "invalid host resource settings",
 			raw: `apiVersion: detent/v1
 kind: GlobalConfig
 global:
@@ -1465,6 +1485,12 @@ global:
     max_agent_rss_bytes: 0
     pressure_some_avg60_threshold: -1
     poll_interval_ms: fast
+  io:
+    pressure_full_avg10_threshold: -1
+    poll_interval_ms: never
+  cpu:
+    pressure_some_avg10_threshold: false
+    poll_interval_ms: 0
 projects:
   - id: detent
     workflow: ` + paths.workflow + `
@@ -1478,6 +1504,10 @@ projects:
 				"global.memory.max_agent_rss_bytes: must be a positive integer",
 				"global.memory.pressure_some_avg60_threshold: must be a positive number",
 				"global.memory.poll_interval_ms: must be a positive integer",
+				"global.io.pressure_full_avg10_threshold: must be a positive number",
+				"global.io.poll_interval_ms: must be a positive integer",
+				"global.cpu.pressure_some_avg10_threshold: must be a positive number",
+				"global.cpu.poll_interval_ms: must be a positive integer",
 				"projects[0].memory.max_agent_rss_bytes: must be a positive integer",
 			},
 		},

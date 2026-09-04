@@ -1,4 +1,4 @@
-package hostmemory
+package hostpressure
 
 import (
 	"strings"
@@ -6,7 +6,6 @@ import (
 )
 
 func TestParse(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name      string
 		input     string
@@ -15,17 +14,21 @@ func TestParse(t *testing.T) {
 		wantError string
 	}{
 		{
-			name:      "linux pressure sample",
+			name:      "memory or IO pressure sample",
 			input:     "some avg10=1.25 avg60=10.50 avg300=3.00 total=1234\nfull avg10=0.00 avg60=0.25 avg300=0.10 total=42\n",
 			wantAvg60: 10.5,
 			wantTotal: 42,
+		},
+		{
+			name:      "CPU sample without full row",
+			input:     "some avg10=80.00 avg60=75.00 avg300=50.00 total=1234\n",
+			wantAvg60: 75,
 		},
 		{name: "missing some", input: "full avg10=0 avg60=0 avg300=0 total=0\n", wantError: "some row is missing"},
 		{name: "malformed average", input: "some avg10=0 avg60=nope avg300=0 total=0\n", wantError: "avg60"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			got, err := Parse(test.input)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {

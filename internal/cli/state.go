@@ -93,12 +93,67 @@ func writeStatePretty(writer io.Writer, state DashboardState) error {
 			"Blocked: "+stateString(counts["blocked"]),
 		)
 	}
+	for _, pressure := range []struct {
+		label        string
+		field        string
+		row          string
+		average      string
+		thresholdKey string
+	}{
+		{label: "Memory", field: "memory_pressure", row: "some", average: "avg60", thresholdKey: "some_avg60_max"},
+		{label: "I/O", field: "io_pressure", row: "full", average: "avg10", thresholdKey: "full_avg10_max"},
+		{label: "CPU", field: "cpu_pressure", row: "some", average: "avg10", thresholdKey: "some_avg10_max"},
+	} {
+		if line := statePressureLine(state.field(pressure.field), pressure.label, pressure.row, pressure.average, pressure.thresholdKey); line != "" {
+			lines = append(lines, line)
+		}
+	}
 	lines = append(lines, fmt.Sprintf("Truncated: %t", state.Truncation.Truncated))
 	for _, collection := range state.Truncation.Collections {
 		lines = append(lines, fmt.Sprintf("Truncated %s: %d omitted", collection.Path, collection.Omitted))
 	}
 	_, err := fmt.Fprintln(writer, strings.Join(lines, "\n"))
 	return err
+}
+
+func statePressureLine(value any, label string, row string, average string, thresholdKey string) string {
+	pressure, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	threshold := stateString(pressure[thresholdKey])
+	if threshold == "" || threshold == "0" {
+		return ""
+	}
+	if lastError := stateString(pressure["last_error"]); lastError != "" {
+		return label + " PSI: unavailable (" + lastError + ")"
+	}
+	if !stateBool(pressure["supported"]) {
+		return label + " PSI: unsupported"
+	}
+	averages := stateObject(pressure[row])
+	current := stateString(averages[average])
+	if current == "" {
+		current = "0"
+	}
+	status := "admitting"
+	if stateBool(pressure["dispatch_held"]) {
+		status = "holding dispatch"
+	}
+	return fmt.Sprintf("%s PSI %s %s: %s%% / %s%% threshold (%s)", label, row, average, current, threshold, status)
+}
+
+func stateBool(value any) bool {
+	typed, ok := value.(bool)
+	return ok && typed
+}
+
+func stateObject(value any) map[string]any {
+	typed, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return typed
 }
 
 func stateNestedString(value any, key string) string {

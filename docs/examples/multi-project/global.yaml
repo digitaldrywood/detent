@@ -20,6 +20,18 @@ global:
   # Bound total subprocess pressure on this host. Per-project caps below split
   # these five slots between the two repositories.
   max_concurrent_agents: 5
+  # Build hosts are commonly constrained by disk and CPU pressure before RSS.
+  # Hold new admissions while the kernel reports sustained host contention.
+  memory:
+    max_agent_rss_bytes: 8589934592
+    pressure_some_avg60_threshold: 10
+    poll_interval_ms: 1000
+  io:
+    pressure_full_avg10_threshold: 5
+    poll_interval_ms: 1000
+  cpu:
+    pressure_some_avg10_threshold: 80
+    poll_interval_ms: 1000
   # Preserve full width until a fresh provider bucket falls below 20%.
   rate_window_pacing:
     mode: floor

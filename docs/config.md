@@ -64,6 +64,52 @@ The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
 `global.yaml` key.
 
+### Host pressure admission
+
+On Linux, Detent refreshes Pressure Stall Information (PSI) at admission time,
+subject to each signal's configured poll interval. Pressure above any
+configured threshold holds new dispatches; it does not cancel or reap agents
+that are already running.
+
+```yaml
+global:
+  memory:
+    max_agent_rss_bytes: 8589934592
+    pressure_some_avg60_threshold: 10
+    poll_interval_ms: 1000
+  io:
+    pressure_full_avg10_threshold: 5
+    poll_interval_ms: 1000
+  cpu:
+    pressure_some_avg10_threshold: 80
+    poll_interval_ms: 1000
+```
+
+The defaults shown above are starting points. IO `full` is the strongest build
+host signal because it measures time when every non-idle task is stalled on IO.
+CPU uses `some`, because system-level CPU `full` is defined to report zero.
+Memory `some` remains useful for reclaim and swap pressure, but a compile-heavy
+host can be IO- or CPU-saturated while memory PSI stays at zero. See the
+[Linux PSI interface](https://www.kernel.org/doc/html/latest/accounting/psi.html)
+for the kernel definitions.
+
+Treat `global.max_concurrent_agents` as the hard ceiling and use PSI as the
+dynamic admission brake. Start with the defaults, observe representative
+compile, test, browser, and database workloads, then lower a threshold if the
+interactive host becomes unresponsive before the guard engages. Raising the
+hard ceiling based only on free memory can overload a build host.
+
+The ten-second IO and CPU windows respond faster than the sixty-second memory
+window. Keep `global.startup.jitter_seconds` and `max_spawn_per_second`
+conservative enough for those averages to react during service startup; PSI
+then opens and closes admission as contention changes. On systems without PSI,
+or when a pressure file cannot be read, Detent fails open and reports the
+unsupported or unavailable signal rather than inventing a zero reading.
+
+`detent state`, `/api/v1/state`, `/health`, and the Health dashboard expose the
+current values, thresholds, read errors, and whether each signal is holding
+dispatch under `memory_pressure`, `io_pressure`, and `cpu_pressure`.
+
 When Detent starts inside tmux, it renames the current window to a compact
 running, ready, waiting, and blocked count summary. It restores the original
 name on clean shutdown. Set `ops.tmux_window_status: false` to disable this

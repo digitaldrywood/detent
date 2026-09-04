@@ -1089,6 +1089,12 @@ func schedulerDecisionWaitReason(reason string) string {
 		return "worker_host_capacity_full"
 	case dispatchIssueFailureGlobalSlotUnavailable:
 		return scheduler.DispatchGateReasonGlobalCapacityFull
+	case dispatchIssueFailureMemoryPressure:
+		return "memory pressure is above the admission threshold"
+	case dispatchIssueFailureIOPressure:
+		return "IO pressure is above the admission threshold"
+	case dispatchIssueFailureCPUPressure:
+		return "CPU pressure is above the admission threshold"
 	default:
 		return strings.TrimSpace(reason)
 	}

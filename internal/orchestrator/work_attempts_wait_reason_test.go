@@ -35,6 +35,21 @@ func TestSchedulerDecisionWaitReason(t *testing.T) {
 			want:   "worker_host_capacity_full",
 		},
 		{
+			name:   "memory pressure wait",
+			reason: dispatchIssueFailureMemoryPressure,
+			want:   "memory pressure is above the admission threshold",
+		},
+		{
+			name:   "IO pressure wait",
+			reason: dispatchIssueFailureIOPressure,
+			want:   "IO pressure is above the admission threshold",
+		},
+		{
+			name:   "CPU pressure wait",
+			reason: dispatchIssueFailureCPUPressure,
+			want:   "CPU pressure is above the admission threshold",
+		},
+		{
 			name:   "other reason",
 			reason: "provider_backoff",
 			want:   "provider_backoff",
