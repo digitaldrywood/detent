@@ -46,31 +46,51 @@ test("sheet activity and live session leave the dashboard connected", async ({ p
     const card = page.locator("article", {
       hasText: "Keep project, issue, and pull request identity visible with maximal metadata",
     });
-    await card.click();
-    await expect.poll(() => page.evaluate(() => window.sseTrace.some(
-      (event) => event.type === "htmx:sseOpen" && event.url.includes("/activity/events"),
-    ))).toBe(true);
-    await page.getByRole("tab", { name: "Live session", exact: true }).click();
-    await expect.poll(() => page.evaluate(() => window.sseTrace.some(
-      (event) => event.type === "htmx:sseOpen" && event.url.includes("/session/events"),
-    ))).toBe(true);
-    await expect(page.locator("html")).toHaveAttribute("data-detent-connection", "connected");
-    await page.getByRole("button", { name: "Close details", exact: true }).click();
-    await expect(page.locator("[data-live-session-attach]")).toHaveCount(0);
-    await page.evaluate(() => {
-      for (const source of window.sseSources.slice(1)) {
-        const type = source.url.includes("/activity/") ? "board-activity" : "session-activity";
-        source.dispatchEvent(new MessageEvent(type, { data: "" }));
+    const sourceStates = () => page.evaluate(() => window.sseSources.map((source) => ({
+      path: new URL(source.url).pathname,
+      state: source.readyState,
+    })));
+    for (const close of ["button", "escape", "button"]) {
+      await card.click();
+      await expect.poll(async () => (await sourceStates()).filter(
+        (source) => source.path.endsWith("/activity/events") && source.state === 1,
+      ).length).toBe(1);
+      for (let cycle = 0; cycle < 2; cycle++) {
+        await page.getByRole("tab", { name: "Live session", exact: true }).click();
+        await expect.poll(async () => (await sourceStates()).filter(
+          (source) => source.path.endsWith("/session/events") && source.state === 1,
+        ).length).toBe(1);
+        await page.getByRole("tab", { name: "Timeline", exact: true }).click();
+        await expect(page.locator("[data-live-session-attach]")).toHaveCount(0);
+        expect((await sourceStates()).filter(
+          (source) => source.path.endsWith("/session/events"),
+        ).every((source) => source.state === 2)).toBe(true);
+        expect((await sourceStates()).filter(
+          (source) => source.path.endsWith("/activity/events") && source.state === 1,
+        )).toHaveLength(1);
       }
-    });
-    await expect.poll(() => page.evaluate(() => window.sseSources
-      .filter((source) => new URL(source.url).pathname !== "/events")
-      .every((source) => source.readyState === EventSource.CLOSED),
-    )).toBe(true);
-    expect(await page.evaluate(() => window.sseSources[0].readyState)).toBe(1);
-    await expect(page.locator("html")).toHaveAttribute("data-detent-connection", "connected");
-    await expect(page.locator("html")).toHaveAttribute("data-detent-sse-status", "open");
-    await expect(page.locator("#detent-connection-notice")).toBeHidden();
+      await page.getByRole("tab", { name: "Live session", exact: true }).click();
+      await expect.poll(async () => (await sourceStates()).filter(
+        (source) => source.path.endsWith("/session/events") && source.state === 1,
+      ).length).toBe(1);
+      if (close === "escape") await page.keyboard.press("Escape");
+      else await page.getByRole("button", { name: "Close details", exact: true }).click();
+      await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+      const states = await sourceStates();
+      expect(states.filter((source) => source.path !== "/events")
+        .every((source) => source.state === 2)).toBe(true);
+      expect(states.filter((source) => source.path === "/events")).toEqual([
+        { path: "/events", state: 1 },
+      ]);
+      await expect(page.locator("html")).toHaveAttribute("data-detent-connection", "connected");
+      await expect(page.locator("html")).toHaveAttribute("data-detent-sse-status", "open");
+      await expect(page.locator("#detent-connection-notice")).toBeHidden();
+    }
+    const closures = await page.evaluate(() => window.sseTrace.filter(
+      (event) => event.type === "htmx:sseClose",
+    ));
+    expect(closures).toHaveLength(12);
+    expect(closures.every((event) => event.reason === "nodeReplaced")).toBe(true);
     for (const density of ["compact", "cozy"]) await chooseDensity(page, density);
     await testInfo.attach("sheet-sse-trace.json", {
       body: JSON.stringify(await page.evaluate(() => window.sseTrace), null, 2),

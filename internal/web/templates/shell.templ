@@ -608,7 +608,7 @@ templ appShellScript() {
 			function removeDetailSheetChildren(host) {
 				if (!host) return;
 				Array.from(host.children).forEach(function (child) {
-					if (window.htmx) window.htmx.remove(child);
+					if (window.htmx) window.htmx.swap(child, "", { swapStyle: "delete" });
 					else child.remove();
 				});
 			}
@@ -768,12 +768,7 @@ templ appShellScript() {
 						applyDetailSheetTab(sheetHost);
 						if (selectedTab !== "session") {
 							var liveSession = sheetHost.querySelector("[data-board-live-session]");
-							if (liveSession) {
-								Array.from(liveSession.children).forEach(function (child) {
-									if (window.htmx) window.htmx.remove(child);
-									else child.remove();
-								});
-							}
+							removeDetailSheetChildren(liveSession);
 						}
 					}
 					return;
