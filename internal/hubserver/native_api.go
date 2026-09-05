@@ -65,6 +65,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 }
 
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
+	s.registerIntegrationRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	admin := s.requireInstanceAdmin()
@@ -234,9 +235,9 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 	path := c.Path()
 	switch {
 	case strings.HasPrefix(path, "/api/v1/work-items/:id"):
-		query = "SELECT count(*) FROM issues WHERE id = ? AND github_node_id IS NULL"
+		query = "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND p.profile = 'native'"
 	case strings.HasPrefix(path, "/api/v1/leases/:id"):
-		query = "SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id WHERE l.lease_id = ? AND i.github_node_id IS NULL"
+		query = "SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id JOIN projects p ON p.id = i.project_id WHERE l.lease_id = ? AND p.profile = 'native'"
 	case strings.HasPrefix(path, "/api/v1/machines/:id"):
 		query = "SELECT count(*) FROM machines WHERE id = ? AND organization_id IS NOT NULL"
 	default:

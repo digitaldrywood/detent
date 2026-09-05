@@ -407,8 +407,9 @@ Operator-authorized imports supply provider `github`, stable `external_id`,
 `author_id`, optional `author_display_name`, and source `created_at`, `updated_at`
 and `observed_at` timestamps. Local creation/update times remain server times.
 Repeated source IDs return the existing imported record and do not overwrite
-later native edits. Full resumable GitHub import and ownership cutover belong to
-#2187; attaching provenance is not a claim that all external history was imported.
+later native edits. [GitHub profiles and import](github-profiles.md) documents
+resumable history retrieval, explicit cutover, optional summaries and limitations;
+attaching provenance alone is not a claim that all external history was imported.
 
 Workers can edit their own comments. Operators can edit project comments, with
 the editor recorded separately from the original actor and provenance. Explicit

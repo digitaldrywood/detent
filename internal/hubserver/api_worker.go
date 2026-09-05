@@ -445,7 +445,8 @@ LEFT JOIN queue_entries q ON q.id = (
   ORDER BY CASE WHEN candidate.scope = ? THEN 0 ELSE 1 END, candidate.scope, candidate.id
   LIMIT 1
 )
-WHERE lower(trim(i.github_state)) = 'open'
+WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
+	AND NOT EXISTS (SELECT 1 FROM github_imports g WHERE g.work_item_id = i.native_id AND g.intake_pending = 1)
   AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND i.project_id = ? AND p.profile = 'native'))
   AND ws.id IS NOT NULL
   AND ws.terminal = 0

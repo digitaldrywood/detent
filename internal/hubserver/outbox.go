@@ -73,9 +73,11 @@ type WorkflowLabelDesired struct {
 }
 
 type WorkpadDesired struct {
-	Phase  string `json:"phase"`
-	Body   string `json:"body"`
-	Marker string `json:"marker"`
+	Summary     bool   `json:"summary,omitempty"`
+	CloseSource bool   `json:"close_source,omitempty"`
+	Phase       string `json:"phase"`
+	Body        string `json:"body"`
+	Marker      string `json:"marker"`
 }
 
 type MergePullRequestDesired struct {
@@ -103,6 +105,7 @@ type WorkflowStateChange struct {
 }
 
 type OutboxItem struct {
+	Profile         string
 	ID              int64
 	IdempotencyKey  string
 	RepositoryID    int64
@@ -390,6 +393,14 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 		}
 	}()
 
+	profile, enabled, err := repositoryOwnership(ctx, tx, record.repositoryID)
+	if err != nil {
+		return OutboxItem{}, err
+	}
+	if (profile == "native" && record.kind != MutationMergePullRequest) || (!enabled && record.kind == MutationMergePullRequest) {
+		return OutboxItem{}, nativeInvalid("GitHub mutation is not permitted by the project integration profile")
+	}
+
 	existing, found, err := findOutboxByKey(ctx, tx, record.idempotencyKey)
 	if err != nil {
 		return OutboxItem{}, err
@@ -562,10 +573,11 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	err = tx.QueryRowContext(ctx, `
 		SELECT o.id, o.idempotency_key, o.repository_id, r.github_owner, r.github_name,
 		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, 0), o.mutation_kind,
-		       COALESCE(o.target_node_id, ''), o.desired_json, o.status, o.attempts, o.created_at
+		       COALESCE(o.target_node_id, ''), o.desired_json, o.status, o.attempts, o.created_at, p.profile
 		FROM github_outbox o
 		JOIN repositories r ON r.id = o.repository_id
 		LEFT JOIN issues i ON i.id = o.issue_id
+		JOIN projects p ON p.repository_id = r.id
 		WHERE (
 			o.status IN (?, ?)
 			AND (o.next_retry_at IS NULL OR o.next_retry_at <= ?)
@@ -579,7 +591,7 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 		&result.ID, &result.IdempotencyKey, &result.RepositoryID,
 		&result.RepositoryOwner, &result.RepositoryName, &result.IssueID,
 		&result.IssueNumber, &result.Kind, &result.TargetNodeID, &desired,
-		&result.Status, &result.Attempts, &createdAt,
+		&result.Status, &result.Attempts, &createdAt, &result.Profile,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {

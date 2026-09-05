@@ -19,6 +19,9 @@ type hubRunFunc func(context.Context, hubserver.Config) error
 
 func newHubCommand(opts options) *cobra.Command {
 	run := func(ctx context.Context, cfg hubserver.Config) error {
+		if cfg.GitHubDisabled {
+			return hubserver.Run(ctx, cfg)
+		}
 		token, err := opts.ghAuthToken(ctx)
 		if err != nil {
 			return fmt.Errorf("resolve github credentials for hub outbox: %w", err)
@@ -30,8 +33,11 @@ func newHubCommand(opts options) *cobra.Command {
 		if err != nil {
 			return fmt.Errorf("configure github hub outbox client: %w", err)
 		}
-		cfg.OutboxBackend = hubgithub.NewWriter(client)
-		cfg.ReconcileBackend = hubgithub.NewReconciler(client)
+		transport := hubgithub.NewTransport(client)
+		cfg.OutboxBackend = hubgithub.NewWriter(transport)
+		cfg.ReconcileBackend = hubgithub.NewReconciler(transport)
+		cfg.ImportBackend = hubgithub.NewImporter(transport)
+		cfg.GitHubRequestCounts = transport.Counts
 		return hubserver.Run(ctx, cfg)
 	}
 	return newHubCommandWithRun(opts.version, opts.lookupEnv, run)
@@ -50,10 +56,12 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd.AddCommand(newHubServeCommand(version, lookupEnv, run))
 	cmd.AddCommand(newHubRunnerCommand(version, lookupEnv))
 	cmd.AddCommand(newHubPolicyCommand(lookupEnv))
+	cmd.AddCommand(newHubIssueCommand(lookupEnv))
 	return cmd
 }
 
 func newHubServeCommand(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
+	var githubDisabled bool
 	var databasePath string
 	var listenAddress string
 	var tlsCertificateFile string
@@ -97,6 +105,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				return NewValidationError("Hub GitHub webhook secret environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_GITHUB_WEBHOOK_SECRET.", nil)
 			}
 			return run(cmd.Context(), hubserver.Config{
+				GitHubDisabled:             githubDisabled,
 				DatabasePath:               databasePath,
 				ListenAddress:              listenAddress,
 				TLSCertFile:                strings.TrimSpace(tlsCertificateFile),
@@ -116,6 +125,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 		},
 	}
 	cmd.Flags().StringVar(&databasePath, "database", "", "local filesystem path to the Hub SQLite database")
+	cmd.Flags().BoolVar(&githubDisabled, "github-disabled", false, "serve native collaboration without GitHub credentials or transport")
 	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address")
 	cmd.Flags().StringVar(&tlsCertificateFile, "tls-cert", "", "TLS certificate file")
 	cmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS private key file")

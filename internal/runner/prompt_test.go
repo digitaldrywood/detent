@@ -17,6 +17,31 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func TestNativeIssuePromptOwnership(t *testing.T) {
+	t.Parallel()
+	for _, profile := range []string{"native", "github_compatible", ""} {
+		t.Run(profile, func(t *testing.T) {
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#12", Metadata: map[string]string{"hub_profile": profile, "hub_project_id": "prj_example"}}
+			prompt, err := BuildPrompt(config.Workflow{}, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile == "native" {
+				for _, want := range []string{"detent hub issue", "--project prj_example", "Detent-Work-Item: wi_example", "Native approval does not satisfy a required GitHub review"} {
+					if !strings.Contains(prompt, want) {
+						t.Errorf("missing %q", want)
+					}
+				}
+				if strings.Contains(prompt, "Fixes #12") {
+					t.Fatal("native number generated a GitHub closing reference")
+				}
+			} else if strings.Contains(prompt, "Native Detent issue authority") {
+				t.Fatal("compatibility workflow changed")
+			}
+		})
+	}
+}
+
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	t.Parallel()
 

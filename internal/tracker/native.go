@@ -28,9 +28,9 @@ type Provenance struct {
 	ExternalID        string    `json:"external_id"`
 	AuthorID          string    `json:"author_id"`
 	AuthorDisplayName string    `json:"author_display_name,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	ObservedAt        time.Time `json:"observed_at"`
+	CreatedAt         time.Time `json:"created_at,omitzero"`
+	UpdatedAt         time.Time `json:"updated_at,omitzero"`
+	ObservedAt        time.Time `json:"observed_at,omitzero"`
 }
 
 type NativeIssue struct {
