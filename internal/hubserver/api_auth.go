@@ -28,6 +28,7 @@ const (
 )
 
 type apiCredential struct {
+	Hash       string
 	ID         string
 	Name       string
 	Scope      apiScope
@@ -146,6 +147,7 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if err := json.Unmarshal([]byte(operations), &credential.Runner.Operations); err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
+	credential.Hash = hash
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
 	}

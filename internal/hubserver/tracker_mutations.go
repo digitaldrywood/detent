@@ -139,7 +139,7 @@ func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (tra
 	return d.renew(ctx, request, false)
 }
 
-func (d *database) renew(ctx context.Context, request tracker.RenewRequest, policyRequired bool) (lease tracker.Lease, resultErr error) {
+func (d *database) renew(ctx context.Context, request tracker.RenewRequest, policyRequired bool, scopes ...nativeScope) (lease tracker.Lease, resultErr error) {
 	request, err := normalizeRenewRequest(request)
 	if err != nil {
 		return tracker.Lease{}, err
@@ -170,6 +170,14 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	}
 	if err := requireApprovedLeasePolicy(ctx, tx, request.LeaseID, policyRequired); err != nil {
 		return tracker.Lease{}, err
+	}
+	for _, scope := range scopes {
+		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+			return tracker.Lease{}, err
+		}
+		if err := requireLeaseRunner(ctx, tx, request.LeaseID, scope); err != nil {
+			return tracker.Lease{}, err
+		}
 	}
 
 	expiresAt := now.Add(request.TTL)

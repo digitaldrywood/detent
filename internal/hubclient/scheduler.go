@@ -341,10 +341,23 @@ func claimLost(err error) bool {
 }
 
 func schedulingError(err error) error {
-	if err == nil || !errors.Is(err, ErrUnavailable) {
+	if err == nil || !errors.Is(err, ErrUnavailable) && !routingDeferred(err) {
 		return err
 	}
 	return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+}
+
+func routingDeferred(err error) bool {
+	var failure *APIError
+	if !errors.As(err, &failure) {
+		return false
+	}
+	switch failure.Code {
+	case "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "project_access_denied", "claim_not_permitted":
+		return true
+	default:
+		return false
+	}
 }
 
 func queuePriorityName(priority int) string {

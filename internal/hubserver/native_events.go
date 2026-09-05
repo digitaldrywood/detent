@@ -82,12 +82,8 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := tx.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", request.Data.LeaseID).Scan(&pinned); err != nil || pinned != request.Data.PolicyID {
 			return nil, policyMismatch("Run event policy must match the policy pinned to its lease")
 		}
-		var count int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM machines WHERE id = ? AND organization_id = ? AND token_id = ?", lease.session.Machine.ID, scope.organization, scope.credential.ID).Scan(&count); err != nil {
+		if err := requireLeaseRunner(ctx, tx, request.Data.LeaseID, scope); err != nil {
 			return nil, err
-		}
-		if count != 1 {
-			return nil, nativeNotFound()
 		}
 		if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
 			return nil, err

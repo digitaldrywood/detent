@@ -51,6 +51,7 @@ var (
 )
 
 type Dependencies struct {
+	RunnerFleet         RunnerFleet
 	Hub                 *hub.Hub[telemetry.Snapshot]
 	Store               store.Store
 	Registry            *project.Registry
@@ -169,6 +170,7 @@ type Config struct {
 }
 
 type Server struct {
+	runnerFleet         RunnerFleet
 	echo                *echo.Echo
 	hub                 *hub.Hub[telemetry.Snapshot]
 	store               store.Store
@@ -300,6 +302,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	}
 
 	server := &Server{
+		runnerFleet:         deps.RunnerFleet,
 		echo:                e,
 		hub:                 deps.Hub,
 		store:               deps.Store,
@@ -453,6 +456,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/", s.board)
 	s.echo.GET("/live-session", s.boardLiveSessionPage)
 	s.echo.GET("/fleet", s.dashboard)
+	s.echo.GET("/fleet/runners", s.runnerFleetPage)
 	s.echo.GET("/kanban", s.redirectToBoard)
 	s.echo.GET("/health/ui", s.healthDashboard)
 	s.echo.GET("/diagnostics", s.diagnosticsDashboard)
@@ -482,6 +486,8 @@ func (s *Server) registerRoutes() {
 	apiWriteScope := s.requireScope(apikey.ScopeWrite)
 	apiAdminScope := s.requireScope(apikey.ScopeAdmin)
 	apiProjectWriteScope := s.requireProjectScope(apikey.ScopeWrite, "project_id")
+	s.echo.POST("/fleet/runners/:runner", s.updateFleetRunner, apiKeyDashboardMutateAuth, apiAdminScope)
+	s.echo.POST("/fleet/hosts/:machine", s.updateFleetHost, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
@@ -870,18 +876,19 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
 	return templates.DashboardData{
-		Title:           instancePageTitle(instanceName, "Detent"),
-		ApplicationName: applicationName(instanceName),
-		InstanceName:    instanceName,
-		Version:         s.version,
-		Build:           s.build,
-		ConnectorName:   s.connector.Name(),
-		DashboardURL:    s.dashboardURL,
-		Snapshot:        snapshot,
-		Projects:        s.projectSmallMultiples(ctx, snapshot),
-		Kanban:          s.dashboardKanbanData(ctx, "", snapshot),
-		Assets:          s.assets.templatePaths(),
-		ActiveNav:       "fleet",
+		RunnerFleetEnabled: s.runnerFleet != nil,
+		Title:              instancePageTitle(instanceName, "Detent"),
+		ApplicationName:    applicationName(instanceName),
+		InstanceName:       instanceName,
+		Version:            s.version,
+		Build:              s.build,
+		ConnectorName:      s.connector.Name(),
+		DashboardURL:       s.dashboardURL,
+		Snapshot:           snapshot,
+		Projects:           s.projectSmallMultiples(ctx, snapshot),
+		Kanban:             s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:             s.assets.templatePaths(),
+		ActiveNav:          "fleet",
 	}
 }
 
@@ -902,19 +909,20 @@ func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
 	return templates.DashboardData{
-		Title:             instancePageTitle(instanceName, "Detent"),
-		ApplicationName:   applicationName(instanceName),
-		InstanceName:      instanceName,
-		Version:           s.version,
-		Build:             s.build,
-		ConnectorName:     s.connector.Name(),
-		DashboardURL:      s.dashboardURL,
-		Snapshot:          snapshot,
-		Projects:          s.cachedProjectSmallMultiples(snapshot),
-		Kanban:            s.dashboardKanbanData(ctx, "", snapshot),
-		Assets:            s.assets.templatePaths(),
-		ActiveNav:         "fleet",
-		PendingEnrichment: pendingEnrichment,
+		Title:              instancePageTitle(instanceName, "Detent"),
+		ApplicationName:    applicationName(instanceName),
+		InstanceName:       instanceName,
+		Version:            s.version,
+		Build:              s.build,
+		ConnectorName:      s.connector.Name(),
+		DashboardURL:       s.dashboardURL,
+		Snapshot:           snapshot,
+		Projects:           s.cachedProjectSmallMultiples(snapshot),
+		Kanban:             s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:             s.assets.templatePaths(),
+		ActiveNav:          "fleet",
+		PendingEnrichment:  pendingEnrichment,
+		RunnerFleetEnabled: s.runnerFleet != nil,
 	}
 }
 
@@ -988,6 +996,7 @@ func (s *Server) projectDashboardDataFromProjects(
 	}
 	instanceName := s.instanceName()
 	data := templates.DashboardData{
+		RunnerFleetEnabled:        s.runnerFleet != nil,
 		Title:                     instancePageTitle(instanceName, name+" - Detent"),
 		ApplicationName:           applicationName(instanceName),
 		InstanceName:              instanceName,

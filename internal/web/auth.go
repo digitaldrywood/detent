@@ -544,14 +544,18 @@ func (s *Server) apiKeyDashboardToken() string {
 	return apiKeyDashboardTokenPayload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func (s *Server) setAPIKeyDashboardCookie(c echo.Context, token string) {
+func (s *Server) setAPIKeyDashboardCookie(c echo.Context, token string, paths ...string) {
 	if c == nil || c.Request() == nil || strings.TrimSpace(token) == "" {
 		return
+	}
+	path := "/api/v1/keys"
+	if len(paths) > 0 {
+		path = paths[0]
 	}
 	c.SetCookie(&http.Cookie{ // #nosec G124 -- HttpOnly and SameSiteStrict are fixed below; Secure follows the request transport.
 		Name:     apiKeyDashboardCookieName,
 		Value:    token,
-		Path:     "/api/v1/keys",
+		Path:     path,
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		Secure:   c.Request().TLS != nil,

@@ -16,7 +16,7 @@ import (
 )
 
 func newHubRunnerCommand(version string, lookupEnv func(string) string) *cobra.Command {
-	var path, hubURL, organization, enrollmentEnv, displayName string
+	var path, hubURL, organization, enrollmentEnv, displayName, hostIdentityPath string
 	var capacity int
 	command := &cobra.Command{Use: "runner", Short: "Manage a private customer-host runner identity", Example: "detent hub runner init --hub-url https://hub.example.com", Args: NoArgs}
 	command.PersistentFlags().StringVar(&path, "identity-file", "", "absolute private credential file (default: user config directory/detent/runner/identity.json)")
@@ -48,13 +48,22 @@ func newHubRunnerCommand(version string, lookupEnv func(string) string) *cobra.C
 		if err := runnerPrivateLocation(path); err != nil {
 			return err
 		}
-		file, err := runnerauth.Initialize(path, hubURL)
+		var file runnerauth.File
+		if hostIdentityPath != "" {
+			if err := runnerPrivateLocation(hostIdentityPath); err != nil {
+				return err
+			}
+			file, err = runnerauth.InitializeOnHost(path, hubURL, hostIdentityPath)
+		} else {
+			file, err = runnerauth.Initialize(path, hubURL)
+		}
 		if err != nil {
 			return err
 		}
 		return write(cmd, file.Identity)
 	}}
 	initialize.Flags().StringVar(&hubURL, "hub-url", "", "HTTPS Hub URL (loopback HTTP is allowed)")
+	initialize.Flags().StringVar(&hostIdentityPath, "host-identity-file", "", "existing enrolled identity on this host; create a distinct runner sharing its machine ID")
 	enroll := &cobra.Command{Use: "enroll", Short: "Redeem one enrollment token for this host identity", Example: "detent hub runner enroll --organization org_example --display-name 'Build host'", Args: NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		path, err := resolvePath()
 		if err != nil {

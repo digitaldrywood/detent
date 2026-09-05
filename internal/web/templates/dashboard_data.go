@@ -64,6 +64,7 @@ const (
 )
 
 type DashboardData struct {
+	RunnerFleetEnabled        bool
 	Title                     string
 	ApplicationName           string
 	InstanceName              string

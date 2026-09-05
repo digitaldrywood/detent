@@ -30,6 +30,12 @@ templ FleetPage(data DashboardData) {
 // FleetSnapshotV2 is the morph target streamed on SSE ticks for /fleet.
 templ FleetSnapshotV2(data DashboardData) {
 	@updatePendingBanner(data.Snapshot, "")
+	if data.RunnerFleetEnabled {
+		<div class="flex flex-none items-center justify-between gap-3 rounded-card border border-line bg-surface px-3 py-2">
+			<span class="text-xs text-sec">Runner health, routing and shared host capacity</span>
+			<a class="text-xs font-semibold text-accent" href="/fleet/runners">Runners</a>
+		</div>
+	}
 	if boardFirstRun(data) {
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
 	} else if !snapshotCarriesData(data) {

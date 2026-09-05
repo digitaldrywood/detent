@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -171,12 +172,14 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
 	request := struct {
-		ID          tracker.MachineID `json:"id"`
-		Hostname    string            `json:"hostname"`
-		DisplayName string            `json:"display_name"`
-		Capacity    int               `json:"capacity"`
-		Version     string            `json:"version"`
-	}{machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version}
+		ID           tracker.MachineID `json:"id"`
+		Hostname     string            `json:"hostname"`
+		DisplayName  string            `json:"display_name"`
+		Capacity     int               `json:"capacity"`
+		Version      string            `json:"version"`
+		OS           string            `json:"os"`
+		Architecture string            `json:"architecture"`
+	}{machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 

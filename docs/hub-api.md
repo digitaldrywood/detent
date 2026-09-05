@@ -80,14 +80,15 @@ Enrollment redemption accepts its separate one-time bearer token, which cannot c
 | Runner credential | Customer host generates a random 256-bit bearer credential; Hub stores its SHA-256 hash; valid for 24 hours from enrollment or renewal | Administrator revokes the runner; no resurrection by renewal, rotation, generic token rotation or ID reuse |
 | Provider/repository/storage credential | Customer login, keychain, workload identity or private host configuration; may outlive many runner sessions | Customer revokes it at its provider; revoking Hub access does not revoke this credential |
 
-This release binds one logical runner credential to one machine registration.
+Each logical runner has its own credential and an administrator-approved machine binding.
 `runner_` and `machine_` IDs are generated independently of hostname/display name.
 Renaming preserves both IDs. Reinstallation requires new IDs, a new credential
 and explicit enrollment; existing IDs remain reserved after revocation. Another
 enrollment or a legacy registration cannot silently take over an existing ID.
 Copying the private identity file copies bearer authority: never clone it into
-machine images or share it across hosts. Hardware attestation and multiple
-executors sharing a physical-host identity are not implemented here.
+machine images or share it across hosts. Multiple logical runners on one host
+share the same machine ID and capacity ceiling through explicit enrollment
+approval. Hardware attestation is not implemented.
 
 1. On the customer host, run `detent hub runner init --hub-url https://hub.example.com`.
    It prints only runner/machine IDs and stores the credential under the OS user
@@ -144,10 +145,84 @@ executors sharing a physical-host identity are not implemented here.
 
 Grants must explicitly list at least one project and operation. No empty list
 means “all.” Enrolled runners cannot use v1, global health/outbox APIs, tenant
-administration or token-management endpoints. Grant changes require revocation
-and fresh enrollment; generic token grants cannot widen runner authority.
-All claims, lease mutations and events check token-owned machines, organization,
-project and fencing. A supplied `machine_id` or hostname never changes authority.
+administration or token-management endpoints. Administrators may replace project
+access through runner routing settings; operation grants require fresh enrollment.
+Generic token grants cannot widen runner authority. Claims, lease mutations and
+events check the individual runner's binding, organization, project and fencing,
+including when another runner uses the same host. A supplied `machine_id`, tag,
+capability or hostname never changes authority.
+
+## Named runners, host capacity and eligibility
+
+Repository `runners.profiles` declare requirements; they do not register hosts,
+assign tags or grant access. The approved policy descriptor pins the selected
+profile and requirements to each lease. Runner and host names are descriptive;
+selectors always use stable `runner_` and `machine_` IDs.
+
+| Selector | Deterministic behavior |
+| --- | --- |
+| Required tags | Every required tag must be present in administrator-owned runner tags. Tags are trimmed, lowercased, sorted and deduplicated at configuration/edit boundaries; canonical tags are lowercase ASCII tokens, at most 64 characters, with at most 32 distinct tags. |
+| Runner and machine IDs | Every supplied constraint must match exactly, together with all tags. Surrounding whitespace is trimmed in repository configuration; IDs are case-sensitive canonical lowercase tokens. Names never participate. |
+| Empty selector | Any otherwise authorized and eligible executor may claim. Legacy registrations retain this compatibility behavior. |
+| Unknown valid tag or ID | Work stays queued with `selector_no_match`; there is no fallback or selector widening. Invalid syntax is rejected during policy validation. |
+| Renames | Administrator renames preserve stable IDs, grants, tags and active leases. Worker registration/heartbeat cannot overwrite approved names. |
+| OS/architecture | Reported at enrollment, registration and heartbeat for operator visibility. Reports are capabilities, not grants or privileged routing tags. |
+
+Selection, health and capacity are checked within the atomic Hub claim transaction.
+An enrolled runner requires a heartbeat newer than two minutes; timestamps in the
+future fail closed. All unreleased, unexpired leases on a machine count against its
+shared host ceiling, including leases held by other runners and projects. Each
+runner also has an administrator limit and a reported local capacity; the lower
+value applies. The first enrollment initializes the host ceiling from its capacity;
+subsequent shared enrollment and worker reports cannot raise it. Existing local
+pool, project and backend admission limits still apply in addition to Hub limits.
+
+To initialize another runner on the same actual host, choose a separate private
+destination and refer to the existing enrolled identity:
+
+```sh
+detent hub runner init --hub-url https://hub.example.com \
+  --identity-file /private/detent/release-runner.json \
+  --host-identity-file /private/detent/build-runner.json
+```
+
+This generates a new runner ID and credential, retaining only the machine ID.
+The administrator must set `shared_machine: true` in the new enrollment request.
+The host must already belong to that organization. Omitting explicit shared-host
+approval preserves collision rejection; neither an enrollment token nor a new
+credential can take over another runner's leases. Never copy a credential onto
+another computer to simulate a shared host.
+
+| Endpoint | Authority and behavior |
+| --- | --- |
+| `GET /api/v2/organizations/{org}/runners` | Instance administrator: fleet routing, host identity, platform, health, capacity and active-run eligibility. |
+| `GET /api/v2/organizations/{org}/runners/{runner}/routing` | That enrolled runner or instance administrator: public routing and active leases; no secrets. |
+| `PUT /api/v2/organizations/{org}/runners/{runner}/routing` | Instance administrator: `expected_revision`, `display_name`, `tags`, `state`, `capacity_limit`, `project_ids`. Replaces routing/access atomically; stale revisions return `409 revision_conflict`. Empty project access denies every project. |
+| `PUT /api/v2/organizations/{org}/machines/{machine}/routing` | Instance administrator: `expected_revision`, `display_name`, `capacity`. Capacity is shared by all bound runners. |
+| `POST /api/v2/organizations/{org}/projects/{project}/leases/{lease}/validate` | Owning runner: `fencing_token`. Revalidates authority, selectors and pinned policy within one transaction. The customer scheduler checks the returned binding against its private local identity before adopting or renewing work. |
+
+The Fleet page links to runner list/detail and project eligibility. Project views,
+including Runs, link to the same eligibility details. Runner detail includes active
+run policy, selectors, lease expiry and contextual authority exclusions. The configured
+Hub administrator connection can edit routing; an enrolled worker connection sees
+its own runner without edit controls. Dashboard mutation authentication still applies.
+
+| Change or exclusion | New dispatches | Active leases |
+| --- | --- | --- |
+| Draining | `runner_draining`; queued | May validate, renew and finish. |
+| Disabled | `runner_disabled`; queued | Validation, renewal and new Hub mutations are denied. |
+| Required tag removed | `selector_no_match`; queued | Affected validation, renewal and run events are denied. Unrelated tag edits preserve eligibility. |
+| Project access or credential revoked | No authority to dispatch | Further affected operations are denied; ownership never transfers to another runner on the host. |
+| Capacity reduced/full | `runner_capacity` or `host_capacity`; queued | Existing leases retain occupancy until release/expiry; no new lease exceeds the limit. |
+| Offline exact target | `runner_offline` or incompatible-caller `selector_no_match`; queued | Existing fencing and expiry remain authoritative. |
+
+Routing refusals do not create work attempts, consume failure retries or change the
+issue to Failed. The scheduler preserves their structured code as a scheduling
+deferral. Revocation is enforced on Hub operations immediately and on local execution
+at the next pre-start/renewal check. Work already executing on a disconnected host
+cannot be remotely undone; loss of renewal authority cancels the local attempt.
+Routing state, project access, host capacity and individual lease ownership survive
+Hub restart. The schema migration preserves existing identities and lease history.
 
 ## Runner renewal, rotation and revocation
 
@@ -159,7 +234,7 @@ project and fencing. A supplied `machine_id` or hostname never changes authority
 | `POST /api/v2/organizations/{org}/runners/{runner}/renew` | That active runner | Body `{}`; retain credential and extend expiry to 24 hours from Hub time |
 | `POST /api/v2/organizations/{org}/runners/{runner}/rotate` | That active runner | Body `{"credential":"<new host-generated credential>"}`; replace the hash and extend expiry atomically; previous credential stops working immediately |
 | `DELETE /api/v2/organizations/{org}/runners/{runner}` | Instance admin | Revoke all future authenticated access for this identity |
-| `POST /api/v2/organizations/{org}/projects/{project}/machines/{machine}/heartbeat` | Owning runner with `heartbeat` | Strict `display_name`, `capacity`, `version` body; update mutable metadata and liveness |
+| `POST /api/v2/organizations/{org}/projects/{project}/machines/{machine}/heartbeat` | Owning runner with `heartbeat` | `display_name`, `capacity`, `version`, optional `os`/`architecture`; enrolled runners update reported capacity/platform and liveness, preserving administrator-owned names and limits |
 
 Hub time decides validity, with an inclusive start and exclusive expiry boundary.
 An invalid clock or time before issuance fails closed. Times are parsed before
