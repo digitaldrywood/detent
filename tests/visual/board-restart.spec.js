@@ -124,7 +124,9 @@ test("version change after reconnect keeps the board disabled", async ({
     expect(servedVersion).toBeTruthy();
 
     await page.evaluate(() => {
-      document.dispatchEvent(new CustomEvent("htmx:sseError", { bubbles: true }));
+      document.querySelector("[data-detent-dashboard-stream]").dispatchEvent(
+        new CustomEvent("htmx:sseError", { bubbles: true }),
+      );
     });
     await expect(page.locator("html")).toHaveAttribute(
       "data-detent-connection",

@@ -135,6 +135,7 @@ templ DashboardShell(data DashboardShellData) {
 				Attributes: templ.Attributes{
 					"hx-ext":      "sse, morph",
 					"sse-connect": eventsPath(data),
+					"data-detent-dashboard-stream": "",
 				},
 			}) {
 				@dashboardSidebar(data)
@@ -1031,13 +1032,22 @@ templ dashboardSSEMetricsScript() {
 					settleProcessing(target, name);
 				});
 
-				document.addEventListener("htmx:sseOpen", function() {
+				function isDashboardStreamEvent(event) {
+					const target = event.target instanceof Element ? event.target : null;
+					const owner = target && target.closest("[sse-connect], [data-sse-connect]");
+					return owner && owner.hasAttribute("data-detent-dashboard-stream");
+				}
+
+				document.addEventListener("htmx:sseOpen", function(event) {
+					if (!isDashboardStreamEvent(event)) return;
 					document.documentElement.dataset.detentSseStatus = "open";
 				});
-				document.addEventListener("htmx:sseError", function() {
+				document.addEventListener("htmx:sseError", function(event) {
+					if (!isDashboardStreamEvent(event)) return;
 					document.documentElement.dataset.detentSseStatus = "error";
 				});
-				document.addEventListener("htmx:sseClose", function() {
+				document.addEventListener("htmx:sseClose", function(event) {
+					if (!isDashboardStreamEvent(event)) return;
 					document.documentElement.dataset.detentSseStatus = "closed";
 				});
 
