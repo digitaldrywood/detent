@@ -582,8 +582,7 @@ follow-up behavior, not a claim that current backup support implements it.
 ```mermaid
 stateDiagram-v2
     [*] --> Queued
-    Queued --> Deferred: No compatible runner or allocation
-    Deferred --> Queued: Constraint clears
+    Queued --> Queued: Waiting for compatible runner or allocation
     Queued --> Leased: Atomic claim and reservation
     Leased --> Running: Runner validates pinned policy
     Leased --> Queued: Start rejected and reservation released
