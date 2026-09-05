@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -21,35 +22,35 @@ import (
 
 func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 	tests := []struct {
-		name      string
-		completed bool
-		wantErr   error
+		name         string
+		subdirectory string
+		completed    bool
+		wantErr      error
 	}{
 		{name: "completed turn abandons command", completed: true},
 		{name: "session cancellation", wantErr: ErrSessionDurationExceeded},
+		{name: "completed turn in nested directory", subdirectory: "nested", completed: true},
+		{name: "session cancellation in nested directory", subdirectory: "nested", wantErr: ErrSessionDurationExceeded},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			workspacePath := t.TempDir()
+			workingDirectory := filepath.Join(workspacePath, tt.subdirectory)
+			if err := os.MkdirAll(workingDirectory, 0o700); err != nil {
+				t.Fatalf("create command working directory: %v", err)
+			}
 			lockPath := filepath.Join(workspacePath, "gate.lock")
 			durationLimit := &controlledDurationLimit{}
-			command, readyReader, readyWriter := workspaceLockCommand(t, workspacePath, lockPath)
-			backend := &orphanLockAgentBackend{
-				command:       command,
-				readyReader:   readyReader,
-				readyWriter:   readyWriter,
-				expireSession: durationLimit.Expire,
-				completed:     tt.completed,
+			backend := newOrphanLockAgentBackend(t, workingDirectory, lockPath)
+			backend.expireSession = durationLimit.Expire
+			backend.completed = tt.completed
+			observerLockPath := filepath.Join(workspacePath, "observer.lock")
+			observer := newOrphanLockAgentBackend(t, t.TempDir(), observerLockPath)
+			observer.completed = true
+			if _, err := observer.RunTurn(t.Context(), AgentTurnRequest{}, func(AgentUpdate) error { return nil }); err != nil {
+				t.Fatalf("start outside workspace file holder: %v", err)
 			}
-			t.Cleanup(func() {
-				if backend.command.Process != nil {
-					_ = backend.command.Process.Kill()
-				}
-				if backend.waitDone != nil {
-					<-backend.waitDone
-				}
-			})
 			var reaped int
 			var reapErr error
 
@@ -65,6 +66,13 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 				sessionLimit:    durationLimit.Context,
 				WorkerReapGrace: 5 * time.Second,
 				ReapWorkspaceProcesses: func(ctx context.Context, path string, grace time.Duration) (int, error) {
+					t.Logf("workspace holder: pid=%d cwd=%q lock=%q; outside holder: pid=%d cwd=%q lock=%q",
+						backend.command.Process.Pid, backend.command.Dir, lockPath,
+						observer.command.Process.Pid, observer.command.Dir, observerLockPath)
+					if runtime.GOOS != "linux" {
+						output, err := exec.CommandContext(ctx, "lsof", "-FpcRfn", "+D", path).CombinedOutput()
+						t.Logf("workspace file matches before reap: error=%v\n%s", err, output)
+					}
 					reaped, reapErr = workspace.ReapProcesses(ctx, path, grace)
 					return reaped, reapErr
 				},
@@ -83,7 +91,7 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 				t.Fatalf("Run() error = %v, want %v", runErr, tt.wantErr)
 			}
 			if reapErr != nil || reaped != 1 {
-				t.Fatalf("workspace reap = (%d, %v), want (1, nil)", reaped, reapErr)
+				t.Errorf("workspace reap = (%d, %v), want (1, nil)", reaped, reapErr)
 			}
 
 			select {
@@ -92,6 +100,19 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 				t.Fatal("workspace lock holder survived terminal session")
 			}
 			assertLockAvailable(t, lockPath)
+			select {
+			case <-observer.waitDone:
+				t.Fatal("file holder outside the workspace was terminated")
+			default:
+			}
+			observerLock, err := os.OpenFile(observerLockPath, os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatalf("open observer lock: %v", err)
+			}
+			defer observerLock.Close()
+			if err := syscall.Flock(int(observerLock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); !errors.Is(err, syscall.EWOULDBLOCK) {
+				t.Fatalf("outside workspace file holder lock = %v, want EWOULDBLOCK", err)
+			}
 		})
 	}
 }
@@ -128,6 +149,25 @@ type orphanLockAgentBackend struct {
 	expireSession func()
 	completed     bool
 	waitDone      chan struct{}
+}
+
+func newOrphanLockAgentBackend(t *testing.T, workspacePath string, lockPath string) *orphanLockAgentBackend {
+	t.Helper()
+	command, readyReader, readyWriter := workspaceLockCommand(t, workspacePath, lockPath)
+	backend := &orphanLockAgentBackend{
+		command:     command,
+		readyReader: readyReader,
+		readyWriter: readyWriter,
+	}
+	t.Cleanup(func() {
+		if backend.command.Process != nil {
+			_ = backend.command.Process.Kill()
+		}
+		if backend.waitDone != nil {
+			<-backend.waitDone
+		}
+	})
+	return backend
 }
 
 func (b *orphanLockAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
