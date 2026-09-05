@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -638,7 +639,7 @@ func runInstall(t *testing.T, root string, env []string) installRun {
 func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time.Duration) installRun {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "install.sh")
@@ -650,12 +651,160 @@ func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := runInstallerCommand(ctx, cmd)
 	return installRun{
 		stdout: stdout.String(),
 		stderr: stderr.String(),
 		err:    err,
 	}
+}
+
+func TestRunInstallerCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		script     string
+		missing    bool
+		cancelWith error
+		expired    bool
+		wantStage  string
+		wantError  error
+		wantExit   int
+		wantStdout string
+		wantStderr string
+	}{
+		{name: "success", script: "printf stdout; printf stderr >&2", wantStdout: "stdout", wantStderr: "stderr"},
+		{name: "expired before start", expired: true, wantStage: "start", wantError: context.DeadlineExceeded},
+		{name: "start failure", missing: true, wantStage: "start", wantError: os.ErrNotExist},
+		{name: "exit failure", script: "printf stdout; printf stderr >&2; exit 23", wantStage: "wait", wantExit: 23, wantStdout: "stdout", wantStderr: "stderr"},
+		{name: "canceled running command", script: "printf ready; read line <&3", cancelWith: context.Canceled, wantStage: "wait", wantError: context.Canceled, wantStdout: "ready"},
+		{name: "deadline during wait", script: "printf ready; read line <&3", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready"},
+		{name: "descendant holds stdout", script: "(read line <&3) 2>/dev/null & printf stdout; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStdout: "stdout"},
+		{name: "descendant holds stderr", script: "(read line <&3) >/dev/null & printf stderr >&2; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStderr: "stderr"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			if tt.expired {
+				var expire context.CancelFunc
+				ctx, expire = context.WithDeadline(ctx, time.Time{})
+				defer expire()
+			}
+			input, release, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			defer release.Close()
+			exited, inherited, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer exited.Close()
+			defer inherited.Close()
+
+			cmd := exec.CommandContext(ctx, "sh", "-c", tt.script)
+			if tt.missing {
+				cmd = exec.CommandContext(ctx, filepath.Join(t.TempDir(), "missing-command"))
+			}
+			cmd.ExtraFiles = []*os.File{input, inherited}
+			var stdout, stderr strings.Builder
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if tt.cancelWith != nil {
+				cmd.Stdout = installerReadyWriter{output: &stdout, cancel: func() { cancel(tt.cancelWith) }}
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- runInstallerCommand(ctx, cmd) }()
+			select {
+			case err = <-done:
+			case <-time.After(30 * time.Second):
+				cancel(nil)
+				_ = release.Close()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("installer command did not stop after cancellation and pipe release")
+				}
+				t.Fatal("installer command did not finish; output pipe remained open")
+			}
+			_ = inherited.Close()
+			if deadlineErr := exited.SetReadDeadline(time.Now().Add(10 * time.Second)); deadlineErr != nil {
+				t.Fatal(deadlineErr)
+			}
+			if _, readErr := exited.Read(make([]byte, 1)); !errors.Is(readErr, io.EOF) {
+				t.Fatalf("command descendants still hold inherited descriptor: %v", readErr)
+			}
+			if tt.wantStage == "" {
+				if err != nil {
+					t.Fatalf("runInstallerCommand() error = %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantStage) || !strings.Contains(err.Error(), cmd.Path) {
+				t.Fatalf("runInstallerCommand() error = %v, want command path and stage %q", err, tt.wantStage)
+			}
+			if tt.wantError != nil && !errors.Is(err, tt.wantError) {
+				t.Fatalf("runInstallerCommand() error = %v, want %v", err, tt.wantError)
+			}
+			if tt.wantExit != 0 {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != tt.wantExit {
+					t.Fatalf("runInstallerCommand() error = %v, want exit code %d", err, tt.wantExit)
+				}
+			}
+			if stdout.String() != tt.wantStdout || stderr.String() != tt.wantStderr {
+				t.Fatalf("output = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), tt.wantStdout, tt.wantStderr)
+			}
+		})
+	}
+}
+
+type installerReadyWriter struct {
+	output io.Writer
+	cancel context.CancelFunc
+}
+
+func (w installerReadyWriter) Write(p []byte) (int, error) {
+	n, err := w.output.Write(p)
+	w.cancel()
+	return n, err
+}
+
+func runInstallerCommand(ctx context.Context, cmd *exec.Cmd) error {
+	cmd.WaitDelay = time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+
+	started := time.Now()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("command %q args=%q stage=start elapsed=%s: %w", cmd.Path, cmd.Args[1:], time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+	}
+	startDuration := time.Since(started)
+	waiting := time.Now()
+	err := cmd.Wait()
+	if err == nil {
+		return nil
+	}
+	waitDuration := time.Since(waiting)
+	if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+		err = errors.Join(err, fmt.Errorf("clean up command process group: %w", killErr))
+	}
+	stage := "wait"
+	if errors.Is(err, exec.ErrWaitDelay) {
+		stage = "output drain"
+	}
+	return fmt.Errorf("command %q args=%q pid=%d stage=%s start=%s wait=%s: %w", cmd.Path, cmd.Args[1:], cmd.Process.Pid, stage,
+		startDuration.Round(time.Millisecond), waitDuration.Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
 }
 
 func reservePort(t *testing.T) int {
@@ -868,7 +1017,7 @@ func runDetentCommand(t *testing.T, binary string, workdir string, env []string,
 func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []string, args ...string) (string, string, error) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
@@ -880,7 +1029,7 @@ func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []s
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := runInstallerCommand(ctx, cmd)
 	return stdout.String(), stderr.String(), err
 }
 
