@@ -22,6 +22,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const (
@@ -31,6 +32,9 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
 	switch os.Getenv(workflowGitHelperModeEnv) {
 	case "git":
 		os.Exit(runWorkflowGitParentHelper())
