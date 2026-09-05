@@ -680,6 +680,7 @@ type projectKanbanCard struct {
 	PRNumber              int
 	PRRepository          string
 	PRURL                 string
+	PRHeadSHA             string
 	Movable               bool
 	RecentCompletion      bool
 	DisabledText          string
@@ -3233,6 +3234,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		card.PRNumber = issue.PullRequest.Number
 		card.PRURL = strings.TrimSpace(issue.PullRequest.URL)
 		card.PRRepository = pullRequestRepository(issue)
+		card.PRHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
 		card.MergeableState = strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState))
 		card.ConflictReason = projectKanbanPullRequestConflictReason(issue)
 	}

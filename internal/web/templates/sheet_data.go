@@ -12,6 +12,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
+func visualReviewSummaryPath(data DashboardData, card projectKanbanCard) string {
+	values := url.Values{}
+	values.Set("project", projectKanbanCardProjectID(data, card))
+	values.Set("issue", card.IssueID)
+	values.Set("head", card.PRHeadSHA)
+	return "/api/v1/visual-reviews/summary?" + values.Encode()
+}
+
 // sheetSession is the live-session slice of the detail sheet: what the
 // agent is doing right now, or why it is blocked.
 type sheetSession struct {

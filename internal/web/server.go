@@ -162,6 +162,7 @@ type Config struct {
 	GitHubWebhookSecret   string
 	RuntimeDBPath         string
 	RuntimeLogPath        string
+	VisualReviewMediaDir  string
 	ServerAddress         string
 	Demo                  DemoConfig
 	Now                   func() time.Time
@@ -202,6 +203,7 @@ type Server struct {
 	githubWebhookSecret string
 	dbPath              string
 	logPath             string
+	reviewMediaDir      string
 	serverAddr          string
 	assets              staticAssets
 	projects            *projectSmallMultipleRecorder
@@ -333,6 +335,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		githubWebhookSecret: cfg.githubWebhookSecret(kanbanWorkflow),
 		dbPath:              strings.TrimSpace(cfg.RuntimeDBPath),
 		logPath:             strings.TrimSpace(cfg.RuntimeLogPath),
+		reviewMediaDir:      reviewMediaDir(cfg.RuntimeDBPath, cfg.VisualReviewMediaDir),
 		serverAddr:          strings.TrimSpace(cfg.ServerAddress),
 		assets:              newStaticAssets(cfg.staticDir()),
 		projects:            newProjectSmallMultipleRecorder(),
@@ -458,6 +461,8 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/library", s.library)
 	s.echo.GET("/projects/:project_id/issues/:issue_ref", s.issueDetail)
+	s.echo.GET("/projects/:project_id/visual-reviews/:capture_id", s.visualReviewPage)
+	s.echo.GET("/projects/:project_id/visual-reviews/:capture_id/", s.visualReviewPage)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/api-keys", s.apiKeysPage)
@@ -481,6 +486,7 @@ func (s *Server) registerRoutes() {
 	apiWriteScope := s.requireScope(apikey.ScopeWrite)
 	apiAdminScope := s.requireScope(apikey.ScopeAdmin)
 	apiProjectWriteScope := s.requireProjectScope(apikey.ScopeWrite, "project_id")
+	apiProjectReadScope := s.requireProjectScope(apikey.ScopeRead, "project_id")
 	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
@@ -519,6 +525,12 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/ai-debug", s.aiDebugPrompt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/card/core", s.apiBoardCardCore, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/visual-reviews/summary", s.apiVisualReviewSummary, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/projects/:project_id/visual-reviews/:capture_id", s.apiVisualReview, apiDashboardReadAuth, apiProjectReadScope)
+	s.echo.GET("/api/v1/projects/:project_id/visual-reviews/:capture_id/media/:asset_id", s.visualReviewMedia, apiDashboardReadAuth, apiProjectReadScope)
+	s.echo.PUT("/api/v1/projects/:project_id/visual-reviews/:capture_id/draft", s.apiSaveVisualReviewDraft, apiDashboardMutateAuth, apiProjectWriteScope)
+	s.echo.POST("/api/v1/projects/:project_id/visual-reviews/import", s.apiImportVisualReview, apiMutateAuth, apiProjectWriteScope)
+	s.echo.GET("/projects/:project_id/visual-reviews/:capture_id/media/:asset_id", s.visualReviewMedia)
 	s.echo.GET("/api/v1/board/receipt", s.apiBoardReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/conversation", s.apiBoardConversation, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/activity", s.apiBoardActivity, apiDashboardReadAuth, apiReadScope)

@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"strings"
+
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -127,6 +129,26 @@ templ BoardCardSheetHeader(data DashboardData, card projectKanbanCard) {
 	</header>
 }
 
+templ VisualReviewSummary(captureID string, title string, reviewPath string, current bool, detail string) {
+	<section id="visual-review-summary" class="flex min-h-20 flex-col gap-2 rounded-card border border-line bg-elev p-3" aria-label="Visual review evidence">
+		<div class="flex items-center justify-between gap-3">
+			<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Visual review</h3>
+			if current {
+				<span class="rounded-chip bg-ok/15 px-2 py-0.5 text-2xs font-medium text-ok">Current head</span>
+			} else if captureID != "" {
+				<span class="rounded-chip bg-warn/15 px-2 py-0.5 text-2xs font-medium text-warn">Historical only</span>
+			}
+		</div>
+		if captureID == "" {
+			<p class="text-xs text-sec">No visual evidence has been imported for this Human Review item.</p>
+		} else {
+			<p class="text-xs text-text">{ title }</p>
+			<p class="text-xs text-sec">{ detail }</p>
+			<a class="inline-flex min-h-11 items-center justify-center self-start rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent md:min-h-0" href={ templ.SafeURL(reviewPath) }>Review visual evidence</a>
+		}
+	</section>
+}
+
 templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardActions bool) {
 	{{ session := sheetSessionFor(data.Snapshot, card) }}
 	{{ projectID, issueIdentity, scope := boardCardDetailIdentity(data, card) }}
@@ -215,6 +237,21 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 				}
 			}
 		</div>
+		if strings.EqualFold(strings.TrimSpace(card.Stage), "Human Review") && card.HasPullRequest && card.PRHeadSHA != "" {
+			<section
+				id="visual-review-summary"
+				class="flex min-h-20 flex-col gap-2 rounded-card border border-line bg-elev p-3"
+				aria-label="Visual review evidence"
+				aria-busy="true"
+				hx-get={ visualReviewSummaryPath(data, card) }
+				hx-trigger="load"
+				hx-target="this"
+				hx-swap="outerHTML"
+				hx-sync="this:replace"
+			>
+				<p class="text-xs text-sec">Loading visual review evidence…</p>
+			</section>
+		}
 		if card.AttentionLabel != "" || len(card.Blockers) > 0 || card.ConflictReason != "" {
 			<div class="flex flex-col gap-1.5">
 				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Needs attention</h3>

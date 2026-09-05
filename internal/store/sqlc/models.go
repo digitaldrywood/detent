@@ -499,6 +499,45 @@ type ValidatorVerdict struct {
 	NextRetryAt     sql.NullString `json:"next_retry_at"`
 }
 
+type VisualReviewAsset struct {
+	ProjectID  string `json:"project_id"`
+	CaptureID  string `json:"capture_id"`
+	AssetID    string `json:"asset_id"`
+	StorageKey string `json:"storage_key"`
+	Kind       string `json:"kind"`
+	MediaType  string `json:"media_type"`
+	SizeBytes  int64  `json:"size_bytes"`
+	Sha256     string `json:"sha256"`
+	Width      int64  `json:"width"`
+	Height     int64  `json:"height"`
+}
+
+type VisualReviewCapture struct {
+	ProjectID     string `json:"project_id"`
+	IssueID       string `json:"issue_id"`
+	Repository    string `json:"repository"`
+	Pr            int64  `json:"pr"`
+	CaptureID     string `json:"capture_id"`
+	HeadSha       string `json:"head_sha"`
+	BaseSha       string `json:"base_sha"`
+	CapturedAt    string `json:"captured_at"`
+	Title         string `json:"title"`
+	Summary       string `json:"summary"`
+	CoverageNotes string `json:"coverage_notes"`
+	ManifestJson  []byte `json:"manifest_json"`
+	CreatedAt     string `json:"created_at"`
+}
+
+type VisualReviewDraft struct {
+	ProjectID    string `json:"project_id"`
+	CaptureID    string `json:"capture_id"`
+	HeadSha      string `json:"head_sha"`
+	Revision     int64  `json:"revision"`
+	FeedbackJson []byte `json:"feedback_json"`
+	AuditActor   string `json:"audit_actor"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
 type WorkAttempt struct {
 	ID                     int64          `json:"id"`
 	ProjectID              string         `json:"project_id"`

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Visual review</title>
+  <link rel="stylesheet" href="/static/visual-review/style.css">
+  <link rel="stylesheet" href="/static/visual-review/host.css">
+  <script defer src="/static/visual-review/schema.js"></script>
+  <script defer src="/static/visual-review/host-adapter.js"></script>
+  <script defer src="/static/visual-review/viewer.js"></script>
+</head>
+<body>
+  <header><div><p class="eyebrow">VISUAL REVIEW <span class="pill">Detent node-local draft</span></p><h1 id="title">Loading review…</h1><p id="identity"></p></div><div class="header-actions"><button id="export">Export feedback</button><label class="button secondary">Import feedback<input id="import" type="file" accept="application/json,.json" hidden></label></div></header>
+  <div id="notice" role="status" aria-live="polite">Review feedback is an unverified assertion stored on this Detent node. It does not approve or merge a PR.</div>
+  <main><aside><h2>Changed elements</h2><p id="coverage"></p><nav id="changes" aria-label="Changed elements"></nav><details><summary>Coverage & provenance</summary><p id="coverage-notes"></p><ul id="files"></ul></details><details><summary>Review identity</summary><pre id="revision"></pre></details></aside>
+    <section class="workspace" aria-label="Change details"><div class="change-heading"><div><p class="eyebrow" id="change-id"></p><h2 id="change-title"></h2></div><span id="change-status" class="pill"></span></div><p id="description"></p><p id="reason" class="warning" hidden></p><div id="evidence"></div>
+      <section id="annotation-panel"><h3>Annotate evidence</h3><label>Screenshot or video<select id="asset"></select></label><div class="media-tools"><button id="zoom" class="secondary">Open full size</button><span id="image-help">Click to place a pin, or drag to mark an area.</span></div><div id="stage" class="stage"></div><p id="observed"></p><details><summary>Capture details</summary><pre id="source"></pre></details>
+        <form id="annotation-form"><div class="form-row"><label>Annotation type<select id="kind"><option value="note">Note</option><option value="pin">Pin</option><option value="rectangle">Rectangle</option><option value="timestamp">Video timestamp</option></select></label><label>X %<input id="x" type="number" min="0" max="100" step="0.1" value="50"></label><label>Y %<input id="y" type="number" min="0" max="100" step="0.1" value="50"></label><label>Width %<input id="width" type="number" min="0.1" max="100" step="0.1" value="10"></label><label>Height %<input id="height" type="number" min="0.1" max="100" step="0.1" value="10"></label><label>Seconds<input id="time" type="number" min="0" step="0.1" value="0"></label></div><label>Your feedback<textarea id="comment" rows="3" maxlength="20000" placeholder="Describe what should change, and the expected result."></textarea></label><button type="submit">Add annotation</button></form>
+      </section><section><h3>Annotations <span id="count"></span></h3><ol id="annotations"></ol></section>
+    </section>
+    <aside class="review-panel"><h2>Your review</h2><label>Your name<input id="author" maxlength="150" placeholder="Reviewer name (unverified)"></label><label>Recommendation<select id="recommendation"><option value="draft">Still reviewing</option><option value="request-changes">Request changes</option><option value="recommend-approval">Recommend approval</option></select></label><p class="muted">This is node-local review evidence, not an authenticated GitHub approval or Detent merge gate.</p><p id="approval-help"></p><div class="summary-box"><p class="eyebrow">WHAT CHANGED</p><p id="summary"></p></div><section class="round-help"><h3>Historical rounds</h3><p class="muted">Annotations and per-asset approvals stay bound to this exact capture and head. They never transfer to a newer round.</p></section></aside>
+  </main>
+  <dialog id="lightbox" aria-labelledby="modal-title"><div class="modal-header"><div><p class="eyebrow">ANNOTATE IMAGE</p><h2 id="modal-title">Review evidence</h2></div><button id="close-zoom" class="secondary">Done</button></div><p id="modal-notice" role="status" aria-live="polite"></p><div id="full-media"></div></dialog>
+</body>
+</html>
