@@ -1588,6 +1588,9 @@ type boardCardSignal struct {
 }
 
 func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSignal {
+	if view.Done || view.Terminal {
+		return nil
+	}
 	signals := make([]boardCardSignal, 0, 2)
 	add := func(text string, kind primitives.Kind) {
 		if text != "" && len(signals) < 2 {
@@ -1599,14 +1602,18 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 			signals = append(signals, boardCardSignal{Text: text, Kind: kind})
 		}
 	}
+	waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
+	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
 	switch {
 	case strings.HasPrefix(view.ExtraText, "Stranded "):
 		add("Stranded · no worker", primitives.KindWarn)
+	case !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold")):
+		add("Needs review", primitives.KindErr)
 	case len(card.Blockers) > 0:
 		add("Blocked · "+strconv.Itoa(len(card.Blockers)), primitives.KindErr)
-	case boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason):
+	case waiting:
 		add("Waiting", primitives.KindWarn)
-	case card.BlockedReason != "" || card.AttentionLabel != "" || card.BlockedRecoveryAction == "hold":
+	case card.AttentionLabel != "":
 		add("Needs review", primitives.KindErr)
 	case card.ConflictReason != "":
 		add("Merge conflict", primitives.KindWarn)

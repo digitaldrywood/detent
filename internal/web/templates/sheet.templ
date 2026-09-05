@@ -215,7 +215,7 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 				}
 			}
 		</div>
-		if card.AttentionLabel != "" || len(card.Blockers) > 0 || len(card.ClearedBlockers) > 0 || card.ConflictReason != "" {
+		if card.AttentionLabel != "" || len(card.Blockers) > 0 || card.ConflictReason != "" {
 			<div class="flex flex-col gap-1.5">
 				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Needs attention</h3>
 				if card.AttentionLabel != "" {
@@ -224,11 +224,16 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 				for _, blocker := range card.Blockers {
 					<p class="min-w-0 whitespace-pre-wrap break-words text-err [overflow-wrap:anywhere]" data-detail-blocker>{ "blocked — " + blocker }</p>
 				}
-				for _, blocker := range card.ClearedBlockers {
-					@sheetRowValue("Cleared dependency", blocker, "")
-				}
 				if card.ConflictReason != "" {
 					<p class="min-w-0 whitespace-pre-wrap break-words text-warn [overflow-wrap:anywhere]">{ card.ConflictReason }</p>
+				}
+			</div>
+		}
+		if len(card.ClearedBlockers) > 0 {
+			<div class="flex flex-col gap-1.5">
+				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Dependency history</h3>
+				for _, blocker := range card.ClearedBlockers {
+					@sheetRowValue("Cleared dependency", blocker, "")
 				}
 			</div>
 		}

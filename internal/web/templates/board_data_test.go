@@ -4522,6 +4522,9 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		want string
 	}{
 		{name: "blocked beats running and runtime", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Blocked · 2|Running"},
+		{name: "operator hold beats dependency count", view: boardCardView{Running: true}, card: projectKanbanCard{BlockedRecoveryAction: "hold", Blockers: []string{"repo#1"}}, want: "Needs review|Running"},
+		{name: "human recovery beats dependency count", card: projectKanbanCard{BlockedRecoveryReason: "human_blocker", BlockedReason: "operator must repair credentials", Blockers: []string{"repo#1"}}, want: "Needs review"},
+		{name: "deferred dependencies retain count", card: projectKanbanCard{BlockedRecoveryAction: "defer", Blockers: []string{"repo#1"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies do not count", card: projectKanbanCard{Blockers: []string{"repo#1"}, ClearedBlockers: []string{"repo#2 (Done)"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies alone are quiet", card: projectKanbanCard{ClearedBlockers: []string{"repo#2 (Done)"}}, want: ""},
 		{name: "sync error beats merge", view: boardCardView{Work: workItemMetadata{SyncKey: "error", Sync: "Error", SyncKind: primitives.KindErr}, MergeLaneStatus: "CI running"}, want: "Sync error|CI running"},
@@ -4537,6 +4540,8 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		{name: "gate", card: projectKanbanCard{GatePending: true}, want: "Awaiting checks"},
 		{name: "retry", view: boardCardView{Retrying: true}, want: "Awaiting retry"},
 		{name: "failed checks beat running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "CI failed|Running"},
+		{name: "done dependencies are historical", view: boardCardView{Done: true}, card: projectKanbanCard{Blockers: []string{"repo#1"}, CIStatus: "fail"}, want: ""},
+		{name: "terminal waits are historical", view: boardCardView{Terminal: true}, card: projectKanbanCard{WaitDetail: "former wait reason"}, want: ""},
 		{name: "idle lane does not repeat state", view: boardCardView{State: "Todo", AgeFooter: "12m", OriginDetail: "via human", ProgressSummary: "Last turn", ParkSummary: "2 parks"}, want: ""},
 	}
 	for _, tt := range tests {
@@ -4564,7 +4569,7 @@ func TestBoardCardSignalBudget(t *testing.T) {
 func TestBoardCardSheetPreservesSupportingValues(t *testing.T) {
 	t.Parallel()
 
-	for _, count := range []int{1, 8} {
+	for _, count := range []int{0, 1, 8} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			t.Parallel()
 			card := projectKanbanCard{ProjectID: "detent", Stage: "Human Review", Title: "Busy card", WaitDetail: "auto-promote await_review: artifact_status_wait", AuthorID: "author", Origin: "human", OriginActor: "operator", ClearedBlockers: []string{"owner/completed-platform#589 (Done)"}, ParkSummary: telemetry.ParkSummary{AttemptCount: 6, ParkCount: 3}, CompletionProgress: telemetry.CompletionProgress{Outcome: "no_progress", Reason: "full progress reason"}}
@@ -4577,6 +4582,9 @@ func TestBoardCardSheetPreservesSupportingValues(t *testing.T) {
 				if !strings.Contains(html, value) {
 					t.Fatalf("sheet missing full value %q", value)
 				}
+			}
+			if got := strings.Contains(html, ">Needs attention</h3>"); got != (count > 0) {
+				t.Fatalf("Needs attention section = %t, want %t", got, count > 0)
 			}
 			if got := strings.Count(html, "data-detail-blocker>"); got != count {
 				t.Fatalf("sheet has %d readable blocker paragraphs, want %d", got, count)

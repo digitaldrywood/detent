@@ -1185,12 +1185,10 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
   await badge.scrollIntoViewIfNeeded();
   await badge.focus();
   await expect(tooltip).toBeVisible();
-  const tooltipBox = await tooltip.boundingBox();
-  expect(tooltipBox).not.toBeNull();
-  expect(tooltipBox.x).toBeGreaterThanOrEqual(0);
-  expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(
-    narrowViewport.width,
-  );
+  await expect.poll(async () => {
+    const box = await tooltip.boundingBox();
+    return box !== null && box.x >= 0 && box.x + box.width <= narrowViewport.width;
+  }).toBe(true);
 
   let detailCoreRequests = 0;
   page.on("request", (request) => {
