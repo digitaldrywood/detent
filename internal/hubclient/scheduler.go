@@ -14,12 +14,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	ProviderReports   func() ([]providercapacity.Report, error)
 	OrganizationID    tracker.OrganizationID
 	NativeProjects    map[string]tracker.ProjectID
 	Machine           Machine
@@ -30,6 +32,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	providerReports   func() ([]providercapacity.Report, error)
 	claimPolicies     map[string]claimPolicy
 	nativeProjects    map[string]*NativeConnector
 	nativeClaims      map[string]nativeClaim
@@ -67,8 +70,9 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
-		claimPolicies: make(map[string]claimPolicy),
-		client:        client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
+		providerReports: config.ProviderReports,
+		claimPolicies:   make(map[string]claimPolicy),
+		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
 	}
@@ -357,7 +361,7 @@ func routingDeferred(err error) bool {
 		return false
 	}
 	switch failure.Code {
-	case "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "project_access_denied", "claim_not_permitted":
+	case "provider_capacity", "provider_incompatible", "provider_candidate_changed", "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "project_access_denied", "claim_not_permitted":
 		return true
 	default:
 		return false

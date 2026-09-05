@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -524,13 +526,19 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return []connector.Issue{}, nil
 	}
 	if o.scheduling != nil {
-		return o.scheduling.FetchCandidateIssues(ctx, SchedulingRequest{
+		request := SchedulingRequest{
 			Policy:         o.cfg.Policy,
 			ProjectID:      o.cfg.Project.ID,
 			Repository:     o.cfg.SchedulingRepository,
 			WorkflowStates: states,
 			Filter:         o.authorizationFilterHint(),
-		})
+		}
+		if resolver := o.providerCapacity; resolver != nil {
+			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue) (providercapacity.Requirement, error) {
+				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext()})
+			}
+		}
+		return o.scheduling.FetchCandidateIssues(ctx, request)
 	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesFilterFetcher); ok {
 		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, o.authorizationFilterHint())

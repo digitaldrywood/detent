@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -48,6 +49,7 @@ const (
 )
 
 type doctorCheck struct {
+	ProviderCapacity           []providercapacity.View                    `json:"provider_capacity,omitempty"`
 	Name                       string                                     `json:"name"`
 	Status                     doctorStatus                               `json:"status"`
 	Detail                     string                                     `json:"detail"`

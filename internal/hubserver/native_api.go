@@ -93,6 +93,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/versions/:revision", s.getNativeVersion, read)
 	e.GET(nativeBase+"/work-items/:item/comments/:comment/versions/:revision", s.getNativeVersion, read)
 	e.POST(nativeBase+"/claims", s.claimNativeIssue, worker)
+	e.POST(nativeBase+"/claims/preview", s.previewProviderCandidates, worker)
 	e.POST(nativeBase+"/leases/:lease/renew", s.renewNativeLease, worker)
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)

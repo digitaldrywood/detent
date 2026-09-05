@@ -475,74 +475,168 @@ func runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) templ.Component 
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
+		for _, capacity := range r.ProviderCapacity {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "<details class=\"border-t border-line pt-3\" data-provider-capacity=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var28 string
+			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(capacity.Backend)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 79, Col: 87}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "\"><summary class=\"cursor-pointer break-words text-xs text-text\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var29 string
+			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(capacity.Summary())
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 80, Col: 86}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "</summary><p class=\"mt-2 break-words text-xs text-sec\">Models: ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var30 string
+			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(strings.Join(capacity.Models, ", "))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 81, Col: 94}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "</p><p class=\"mt-2 break-words text-xs text-sec\">Shared account: ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var31 string
+			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(capacity.SharedAccountAlias, "Unknown; conservatively shared within this provider"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 82, Col: 168}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "</p><p class=\"mt-2 text-xs text-sec\">Observed: ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var32 string
+			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(capacity.ObservedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 83, Col: 108}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if !capacity.ResetAt.IsZero() {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "<p class=\"mt-2 text-xs text-sec\">Reset hint: ")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var33 string
+				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(capacity.ResetAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 85, Col: 108}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "</p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "</details> ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
 		if view.Eligibility != nil {
 			if len(view.exclusions(r.RunnerID)) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "<p class=\"text-xs text-text\" data-eligible>Eligible for this project</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "<p class=\"text-xs text-text\" data-eligible>Eligible for this project</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 			for _, reason := range view.exclusions(r.RunnerID) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "<p class=\"text-xs text-text\" data-exclusion=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "<p class=\"text-xs text-text\" data-exclusion=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var28 string
-				templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Code)
+				var templ_7745c5c3_Var34 string
+				templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Code)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 83, Col: 61}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 94, Col: 61}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var29 string
-				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Message)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 83, Col: 80}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "</p>")
+				var templ_7745c5c3_Var35 string
+				templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Message)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 94, Col: 80}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 		}
 		if view.Fleet.Editable {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "<details class=\"border-t border-line pt-3\"><summary class=\"cursor-pointer text-xs font-semibold text-accent\">Edit runner and host</summary><form class=\"mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2\" hx-post=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "<details class=\"border-t border-line pt-3\"><summary class=\"cursor-pointer text-xs font-semibold text-accent\">Edit runner and host</summary><form class=\"mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2\" hx-post=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var30 string
-			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs("/fleet/runners/" + r.RunnerID)
+			var templ_7745c5c3_Var36 string
+			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs("/fleet/runners/" + r.RunnerID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 89, Col: 107}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 100, Col: 107}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "\" hx-target=\"#runner-fleet-feedback\" hx-swap=\"innerHTML\"><input type=\"hidden\" name=\"revision\" value=\"")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var31 string
-			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(r.Revision, 10))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 90, Col: 83}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" hx-target=\"#runner-fleet-feedback\" hx-swap=\"innerHTML\"><input type=\"hidden\" name=\"revision\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "\">")
+			var templ_7745c5c3_Var37 string
+			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(r.Revision, 10))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 101, Col: 83}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -554,66 +648,66 @@ func runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) templ.Component 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "<label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">State<select name=\"state\" class=\"rounded border border-line bg-elev p-2 text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "<label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">State<select name=\"state\" class=\"rounded border border-line bg-elev p-2 text-text\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, state := range []string{"active", "draining", "disabled"} {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "<option value=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var32 string
-				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(state)
+				var templ_7745c5c3_Var38 string
+				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(state)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 95, Col: 28}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 106, Col: 28}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				if r.State == state {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, " selected")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, " selected")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, ">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, ">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var33 string
-				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(state)
+				var templ_7745c5c3_Var39 string
+				templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(state)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 95, Col: 69}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 106, Col: 69}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "</option>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "</option>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "</select></label> <label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">Runner capacity limit<input class=\"rounded border border-line bg-elev p-2 text-text\" name=\"capacity_limit\" type=\"number\" min=\"0\" max=\"10000\" required value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</select></label> <label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">Runner capacity limit<input class=\"rounded border border-line bg-elev p-2 text-text\" name=\"capacity_limit\" type=\"number\" min=\"0\" max=\"10000\" required value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var34 string
-			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(r.CapacityLimit))
+			var templ_7745c5c3_Var40 string
+			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(r.CapacityLimit))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 98, Col: 252}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 109, Col: 252}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\"></label>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "\"></label>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -621,33 +715,33 @@ func runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) templ.Component 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "<div class=\"flex items-end\"><button class=\"rounded border border-line bg-elev px-3 py-2 text-xs font-semibold text-text\" type=\"submit\">Save runner</button></div></form><p class=\"mt-3 text-xs text-sec\">Drain allows active runs to finish. Disabling or removing required tags or access stops new work and interrupts affected runs.</p><form class=\"mt-3 grid min-w-0 grid-cols-1 gap-3 border-t border-line pt-3 sm:grid-cols-2\" hx-post=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<div class=\"flex items-end\"><button class=\"rounded border border-line bg-elev px-3 py-2 text-xs font-semibold text-text\" type=\"submit\">Save runner</button></div></form><p class=\"mt-3 text-xs text-sec\">Drain allows active runs to finish. Disabling or removing required tags or access stops new work and interrupts affected runs.</p><form class=\"mt-3 grid min-w-0 grid-cols-1 gap-3 border-t border-line pt-3 sm:grid-cols-2\" hx-post=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var35 string
-			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs("/fleet/hosts/" + string(r.MachineID))
+			var templ_7745c5c3_Var41 string
+			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs("/fleet/hosts/" + string(r.MachineID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 103, Col: 140}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 114, Col: 140}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "\" hx-target=\"#runner-fleet-feedback\" hx-swap=\"innerHTML\"><input type=\"hidden\" name=\"revision\" value=\"")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var36 string
-			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(r.HostRevision, 10))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 104, Col: 87}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "\" hx-target=\"#runner-fleet-feedback\" hx-swap=\"innerHTML\"><input type=\"hidden\" name=\"revision\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "\">")
+			var templ_7745c5c3_Var42 string
+			templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(r.HostRevision, 10))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 115, Col: 87}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -655,190 +749,261 @@ func runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) templ.Component 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "<label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">Capacity shared by all runners<input class=\"rounded border border-line bg-elev p-2 text-text\" name=\"capacity\" type=\"number\" min=\"0\" max=\"10000\" required value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var37 string
-			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(r.HostCapacity))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 106, Col: 254}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "\"></label> <button class=\"w-fit rounded border border-line bg-elev px-3 py-2 text-xs font-semibold text-text\" type=\"submit\">Save host</button></form></details> ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		for _, lease := range r.Leases {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "<details class=\"border-t border-line pt-3\" data-run-eligibility=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var38 string
-			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(string(lease.ID))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 112, Col: 85}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "\"><summary class=\"cursor-pointer text-xs font-semibold text-text\">Run: ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var39 string
-			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(lease.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 113, Col: 86}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</summary><dl class=\"mt-3 grid min-w-0 grid-cols-1 gap-1 text-xs sm:grid-cols-[8rem_1fr]\"><dt class=\"text-sec\">Work item</dt><dd class=\"break-all font-mono text-text\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var40 string
-			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(string(lease.WorkItemID))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 115, Col: 108}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "</dd><dt class=\"text-sec\">Policy</dt><dd class=\"break-all font-mono text-text\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var41 string
-			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(lease.Policy.ID)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 116, Col: 96}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "</dd><dt class=\"text-sec\">Policy revision</dt><dd class=\"break-all font-mono text-text\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var42 string
-			templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(lease.Policy.SourceRevision)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 117, Col: 117}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "</dd><dt class=\"text-sec\">Required tags</dt><dd class=\"break-words text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "<label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">Capacity shared by all runners<input class=\"rounded border border-line bg-elev p-2 text-text\" name=\"capacity\" type=\"number\" min=\"0\" max=\"10000\" required value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var43 string
-			templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(strings.Join(lease.Policy.Requirements.RequiredTags, ", "), "None"))
+			templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(r.HostCapacity))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 118, Col: 165}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 117, Col: 254}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "</dd><dt class=\"text-sec\">Exact runner</dt><dd class=\"break-all font-mono text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "\"></label> <button class=\"w-fit rounded border border-line bg-elev px-3 py-2 text-xs font-semibold text-text\" type=\"submit\">Save host</button></form></details> ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		for _, lease := range r.Leases {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<details class=\"border-t border-line pt-3\" data-run-eligibility=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var44 string
-			templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(lease.Policy.Requirements.RunnerID, "Any authorized runner"))
+			templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(string(lease.ID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 119, Col: 165}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 123, Col: 85}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "</dd><dt class=\"text-sec\">Exact host</dt><dd class=\"break-all font-mono text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "\"><summary class=\"cursor-pointer text-xs font-semibold text-text\">Run: ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var45 string
-			templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(lease.Policy.Requirements.MachineID, "Any authorized host"))
+			templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(lease.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 120, Col: 162}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 124, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "</dd><dt class=\"text-sec\">Lease expires</dt><dd class=\"text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "</summary><dl class=\"mt-3 grid min-w-0 grid-cols-1 gap-1 text-xs sm:grid-cols-[8rem_1fr]\"><dt class=\"text-sec\">Work item</dt><dd class=\"break-all font-mono text-text\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var46 string
-			templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(lease.ExpiresAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+			templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(string(lease.WorkItemID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 121, Col: 123}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 126, Col: 108}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "</dd></dl>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "</dd><dt class=\"text-sec\">Policy</dt><dd class=\"break-all font-mono text-text\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
+			var templ_7745c5c3_Var47 string
+			templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(lease.Policy.ID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 127, Col: 96}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</dd><dt class=\"text-sec\">Policy revision</dt><dd class=\"break-all font-mono text-text\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var48 string
+			templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(lease.Policy.SourceRevision)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 128, Col: 117}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "</dd><dt class=\"text-sec\">Required tags</dt><dd class=\"break-words text-text\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var49 string
+			templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(strings.Join(lease.Policy.Requirements.RequiredTags, ", "), "None"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 129, Col: 165}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "</dd><dt class=\"text-sec\">Exact runner</dt><dd class=\"break-all font-mono text-text\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var50 string
+			templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(lease.Policy.Requirements.RunnerID, "Any authorized runner"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 130, Col: 165}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "</dd><dt class=\"text-sec\">Exact host</dt><dd class=\"break-all font-mono text-text\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var51 string
+			templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(runnerRequirement(lease.Policy.Requirements.MachineID, "Any authorized host"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 131, Col: 162}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "</dd><dt class=\"text-sec\">Lease expires</dt><dd class=\"text-text\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var52 string
+			templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(lease.ExpiresAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 132, Col: 123}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "</dd></dl>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if reservation := lease.ProviderReservation; reservation != nil {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "<p class=\"mt-2 break-words text-xs text-text\" data-provider-selection>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var53 string
+				templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(reservation.Role)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 93}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, " · ")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var54 string
+				templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(reservation.Backend)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 120}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, " · ")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var55 string
+				templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(reservation.Model)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 145}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, " · account ")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var56 string
+				templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(reservation.Report.AccountAlias)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 192}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, ": ")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var57 string
+				templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(reservation.Reason)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 216}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "</p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
 			if len(lease.Exclusions) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "<p class=\"mt-2 text-xs text-text\">Current authority permits this active run.</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "<p class=\"mt-2 text-xs text-text\">Current authority permits this active run.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 			for _, reason := range lease.Exclusions {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "<p class=\"mt-2 text-xs text-text\" data-exclusion=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "<p class=\"mt-2 text-xs text-text\" data-exclusion=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var47 string
-				templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Code)
+				var templ_7745c5c3_Var58 string
+				templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Code)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 127, Col: 67}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 141, Col: 67}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var48 string
-				templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Message)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 127, Col: 86}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</p>")
+				var templ_7745c5c3_Var59 string
+				templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.JoinStringErrs(reason.Message)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 141, Col: 86}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var59))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "</details>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 88, "</details>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 89, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -862,51 +1027,51 @@ func runnerTextField(label, name, value string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var49 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var49 == nil {
-			templ_7745c5c3_Var49 = templ.NopComponent
+		templ_7745c5c3_Var60 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var60 == nil {
+			templ_7745c5c3_Var60 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "<label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 90, "<label class=\"flex min-w-0 flex-col gap-1 text-xs text-sec\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var50 string
-		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		var templ_7745c5c3_Var61 string
+		templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 68}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 149, Col: 68}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "<input class=\"min-w-0 rounded border border-line bg-elev p-2 text-text\" name=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var51 string
-		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(name)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 153}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 91, "<input class=\"min-w-0 rounded border border-line bg-elev p-2 text-text\" name=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "\" value=\"")
+		var templ_7745c5c3_Var62 string
+		templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(name)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 149, Col: 153}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var52 string
-		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(value)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 135, Col: 169}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 92, "\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "\"></label>")
+		var templ_7745c5c3_Var63 string
+		templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 149, Col: 169}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 93, "\"></label>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -930,25 +1095,25 @@ func RunnerFleetFeedback(message string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var53 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var53 == nil {
-			templ_7745c5c3_Var53 = templ.NopComponent
+		templ_7745c5c3_Var64 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var64 == nil {
+			templ_7745c5c3_Var64 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "<p role=\"alert\" class=\"rounded-card border border-line bg-surface p-3 text-sm text-text\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 94, "<p role=\"alert\" class=\"rounded-card border border-line bg-surface p-3 text-sm text-text\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var54 string
-		templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(message)
+		var templ_7745c5c3_Var65 string
+		templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.JoinStringErrs(message)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 139, Col: 99}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/runner_fleet.templ`, Line: 153, Col: 99}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var65))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "</p>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 95, "</p>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

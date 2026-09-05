@@ -140,6 +140,9 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 		if event.Type != "run.started" || data.Sequence != 1 {
 			return false, nativeExecutionConflict("An attempt must begin with run.started at sequence 1")
 		}
+		if err := validateProviderAttempt(ctx, tx, scope, data, now); err != nil {
+			return false, err
+		}
 		var conflicts int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts WHERE lease_id = ? OR (run_id = ? AND work_item_id != ?)`, data.LeaseID, data.RunID, item).Scan(&conflicts); err != nil {
 			return false, err

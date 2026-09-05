@@ -286,6 +286,13 @@ enroll`. The client renews this credential automatically. Its organization,
 machine ID and explicit native projects must match enrollment. See
 [runner onboarding and migration](hub-api.md#scoped-runner-onboarding).
 
+Enrolled native runners can opt into provider-aware dispatch with
+`client.provider_capacity_file`, an absolute path to a bounded JSON report file.
+The runner reads it on heartbeats and again before starting provider work. See
+[provider capacity reports](hub-api.md#provider-capacity-reports) for its safe
+schema, shared-account declarations and reservation semantics. This setting does
+not change backend credentials, model routes, effort defaults or fallback policy.
+
 ```yaml
 client:
   hub_url: https://hub.example.com

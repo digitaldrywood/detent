@@ -89,7 +89,33 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 			}
 		}
 	}
-	return r, rows.Err()
+	if err := rows.Err(); err != nil {
+		return r, err
+	}
+	if err := rows.Close(); err != nil {
+		return r, err
+	}
+	reports, err := readProviderReports(ctx, db, id)
+	if err != nil {
+		return r, err
+	}
+	for _, report := range reports {
+		view, err := providerView(ctx, db, organization, report, now)
+		if err != nil {
+			return r, err
+		}
+		r.ProviderCapacity = append(r.ProviderCapacity, view)
+	}
+	for i := range r.Leases {
+		reservation, reserved, err := readProviderReservation(ctx, db, r.Leases[i].ID)
+		if err != nil {
+			return r, err
+		}
+		if reserved {
+			r.Leases[i].ProviderReservation = &reservation
+		}
+	}
+	return r, nil
 }
 
 func (s *Service) getRunnerRouting(c echo.Context) error {

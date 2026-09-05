@@ -11,6 +11,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -64,8 +65,15 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
+	var providerReports func() ([]providercapacity.Report, error)
+	if clientConfig.ProviderCapacityFile != "" {
+		providerReports = func() ([]providercapacity.Report, error) {
+			return providercapacity.Load(clientConfig.ProviderCapacityFile)
+		}
+	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		OrganizationID: tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		ProviderReports: providerReports,
+		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),

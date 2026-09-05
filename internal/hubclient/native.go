@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,7 +30,7 @@ func (c *NativeClient) base() string {
 	return "/api/v2/organizations/" + string(c.organization) + "/projects/" + string(c.project)
 }
 
-func (c *NativeClient) Negotiate(ctx context.Context) error {
+func (c *NativeClient) Negotiate(ctx context.Context, required ...string) error {
 	var capabilities struct {
 		ProtocolMajors []int    `json:"protocol_majors"`
 		EventSchemas   []int    `json:"event_schema_versions"`
@@ -43,6 +44,11 @@ func (c *NativeClient) Negotiate(ctx context.Context) error {
 	}
 	if !slices.Contains(capabilities.Features, "repository_policy") {
 		return errors.New("hub does not support approved repository policy; upgrade Hub before dispatch")
+	}
+	for _, feature := range required {
+		if !slices.Contains(capabilities.Features, feature) {
+			return errors.Join(ErrUnavailable, errors.New("Hub does not support the required "+feature+" capability"))
+		}
 	}
 	project, err := c.Project(ctx)
 	if err != nil {
@@ -177,14 +183,15 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
 	request := struct {
-		ID           tracker.MachineID `json:"id"`
-		Hostname     string            `json:"hostname"`
-		DisplayName  string            `json:"display_name"`
-		Capacity     int               `json:"capacity"`
-		Version      string            `json:"version"`
-		OS           string            `json:"os"`
-		Architecture string            `json:"architecture"`
-	}{machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
+		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
+		ID              tracker.MachineID         `json:"id"`
+		Hostname        string                    `json:"hostname"`
+		DisplayName     string                    `json:"display_name"`
+		Capacity        int                       `json:"capacity"`
+		Version         string                    `json:"version"`
+		OS              string                    `json:"os"`
+		Architecture    string                    `json:"architecture"`
+	}{machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 

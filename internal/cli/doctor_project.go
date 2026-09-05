@@ -37,6 +37,9 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
 	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
+	if cfg.Client.ProviderCapacityFile != "" {
+		checks = append(checks, checkDoctorProviderCapacity(ctx, cfg))
+	}
 	for _, project := range cfg.Projects {
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.Identity = cfg.Global.Identity

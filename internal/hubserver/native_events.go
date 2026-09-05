@@ -102,6 +102,13 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				}{true}, nil
 			}
 		} else {
+			_, reserved, err := readProviderReservation(ctx, tx, request.Data.LeaseID)
+			if err != nil {
+				return nil, err
+			}
+			if reserved {
+				return nil, nativeInvalid("Provider reservations require ordered execution events")
+			}
 			var ordered int
 			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE id = ? OR lease_id = ?", request.Data.AttemptID, request.Data.LeaseID).Scan(&ordered); err != nil {
 				return nil, err

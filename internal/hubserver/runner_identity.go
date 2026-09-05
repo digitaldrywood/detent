@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,7 +30,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		return false
 	case c.Request().Method == http.MethodGet:
 		operation = runnerauth.Read
-	case path == nativeBase+"/claims", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate":
+	case path == nativeBase+"/claims", path == nativeBase+"/claims/preview", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate":
 		operation = runnerauth.Claim
 	case path == nativeBase+"/machines/register", path == nativeBase+"/machines/:machine/heartbeat":
 		operation = runnerauth.Heartbeat
@@ -159,11 +160,12 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
-		DisplayName  string `json:"display_name"`
-		Capacity     int    `json:"capacity"`
-		Version      string `json:"version"`
-		OS           string `json:"os,omitempty"`
-		Architecture string `json:"architecture,omitempty"`
+		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
+		DisplayName     string                    `json:"display_name"`
+		Capacity        int                       `json:"capacity"`
+		Version         string                    `json:"version"`
+		OS              string                    `json:"os,omitempty"`
+		Architecture    string                    `json:"architecture,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -177,7 +179,13 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	}
 	return s.runnerTransaction(c, http.StatusNoContent, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
-			return struct{}{}, updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now)
+			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now); err != nil {
+				return nil, err
+			}
+			return struct{}{}, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
+		}
+		if len(request.ProviderReports) != 0 {
+			return nil, nativeInvalid("Provider reports require an enrolled runner")
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE machines SET display_name = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND token_id = ?`, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), c.Param("machine"), scope.organization, scope.credential.ID)
 		return struct{}{}, requireRunnerUpdate(result, err)

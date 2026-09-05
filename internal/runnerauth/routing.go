@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,6 +33,7 @@ type HostChange struct {
 }
 
 type Runner struct {
+	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
 	Binding
 	Routing
 	OrganizationID   tracker.OrganizationID `json:"organization_id"`
@@ -52,13 +54,14 @@ type Runner struct {
 }
 
 type RunnerLease struct {
-	ID         tracker.LeaseID          `json:"lease_id"`
-	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
-	Title      string                   `json:"title"`
-	ProjectID  tracker.ProjectID        `json:"project_id"`
-	Policy     policy.Descriptor        `json:"policy"`
-	ExpiresAt  time.Time                `json:"expires_at"`
-	Exclusions []Exclusion              `json:"exclusions"`
+	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
+	ID                  tracker.LeaseID               `json:"lease_id"`
+	WorkItemID          tracker.NativeWorkItemID      `json:"work_item_id"`
+	Title               string                        `json:"title"`
+	ProjectID           tracker.ProjectID             `json:"project_id"`
+	Policy              policy.Descriptor             `json:"policy"`
+	ExpiresAt           time.Time                     `json:"expires_at"`
+	Exclusions          []Exclusion                   `json:"exclusions"`
 }
 
 type Exclusion struct {
@@ -145,6 +148,14 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	}
 	if !activeLease && r.Used >= min(r.CapacityLimit, r.ReportedCapacity) {
 		add("runner_capacity", "Runner capacity is full or paused")
+	}
+	if !activeLease && len(r.ProviderCapacity) > 0 {
+		available := slices.ContainsFunc(r.ProviderCapacity, func(view providercapacity.View) bool {
+			return view.State != "exhausted" && view.Used < view.MaxConcurrent
+		})
+		if !available {
+			add("provider_capacity", "All reported provider accounts are exhausted or fully reserved; work stays queued")
+		}
 	}
 	return result
 }

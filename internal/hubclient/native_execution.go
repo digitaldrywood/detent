@@ -146,6 +146,21 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 
 func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
 	e.mu.Lock()
+	if e.data.Identity != nil && e.data.Sequence > 0 {
+		defer e.mu.Unlock()
+		if *e.data.Identity != identity {
+			return errors.New("native execution identity changed during an attempt")
+		}
+		return e.flush(ctx)
+	}
+	e.mu.Unlock()
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	if err := e.validateProviderStart(identity); err != nil {
+		return err
+	}
+	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.data.Identity != nil {
 		if *e.data.Identity != identity {

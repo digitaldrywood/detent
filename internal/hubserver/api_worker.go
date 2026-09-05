@@ -35,17 +35,18 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
-	PolicyID       string
-	RequirePolicy  bool
-	NativeScope    *nativeScope
-	RepositoryIDs  []tracker.RepositoryID
-	Repositories   []string
-	WorkflowStates []string
-	Authors        []string
-	Assignees      []string
-	LabelInclude   []string
-	LabelExclude   []string
-	Scope          string
+	ProviderCandidates []tracker.NativeCapacityCandidate
+	PolicyID           string
+	RequirePolicy      bool
+	NativeScope        *nativeScope
+	RepositoryIDs      []tracker.RepositoryID
+	Repositories       []string
+	WorkflowStates     []string
+	Authors            []string
+	Assignees          []string
+	LabelInclude       []string
+	LabelExclude       []string
+	Scope              string
 }
 
 type renewLeaseAPIRequest struct {
@@ -355,6 +356,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	var providerWait error
 	for _, id := range ids {
 		if request.WorkItemID > 0 && id != request.WorkItemID {
 			continue
@@ -368,6 +370,17 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, fmt.Errorf("%w: work item %d is held by lease %s", tracker.ErrLeaseConflict, id, current.session.ID)
 			}
 			continue
+		}
+		reservation, reserved, err := selectProviderCapacity(ctx, tx, query, id, now)
+		if err != nil {
+			if errors.Is(err, ErrNoClaimableWork) {
+				continue
+			}
+			if isProviderWait(err) {
+				providerWait = err
+				continue
+			}
+			return tracker.Lease{}, err
 		}
 		request.WorkItemID = id
 		lease, err = d.claimInTransaction(ctx, tx, request, now)
@@ -384,10 +397,18 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, err
 			}
 		}
+		if reserved && query.NativeScope != nil {
+			if err := writeProviderReservation(ctx, tx, lease.ID, query.NativeScope.organization, reservation); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit hub claim next: %w", err)
 		}
 		return lease, nil
+	}
+	if providerWait != nil {
+		return tracker.Lease{}, providerWait
 	}
 	return tracker.Lease{}, ErrNoClaimableWork
 }
