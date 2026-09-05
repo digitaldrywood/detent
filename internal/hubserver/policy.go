@@ -197,7 +197,20 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	if query.NativeScope != nil {
 		runnerID = query.NativeScope.credential.Runner.RunnerID
 	}
-	if err := approval.Policy.Requirements.Match(runnerID, string(machine), nil); err != nil {
+	var tags []string
+	if runnerID == "" && (approval.Policy.Requirements.RunnerID != "" || approval.Policy.Requirements.MachineID != "" || len(approval.Policy.Requirements.RequiredTags) != 0) {
+		return "", &nativeError{Code: "selector_no_match", Message: "Constrained routing requires an administrator-enrolled runner; legacy registration cannot assert trusted host identity or tags", status: http.StatusConflict}
+	}
+	if runnerID != "" {
+		var raw string
+		if err := tx.QueryRowContext(ctx, "SELECT tags_json FROM runner_identities WHERE id = ? AND machine_id = ? AND organization_id = ?", runnerID, machine, query.NativeScope.organization).Scan(&raw); err != nil {
+			return "", err
+		}
+		if err := json.Unmarshal([]byte(raw), &tags); err != nil {
+			return "", err
+		}
+	}
+	if err := approval.Policy.Requirements.Match(runnerID, string(machine), tags); err != nil {
 		return "", &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
 	}
 	return scope, nil
@@ -227,6 +240,40 @@ LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).
 	}
 	if pinned != approved {
 		return policyMismatch("Pinned policy has been revoked; stop the attempt and obtain administrator approval before restarting")
+	}
+	return requireLeaseRouting(ctx, tx, lease)
+}
+
+func requireLeaseRouting(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID) error {
+	var runner, machine, tags, state, raw string
+	var access bool
+	err := tx.QueryRowContext(ctx, `SELECT r.id, r.machine_id, r.tags_json, r.state, p.metadata_json,
+EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = i.organization_id AND g.project_id = i.project_id)
+FROM lease_runners lr JOIN runner_identities r ON r.id = lr.runner_id JOIN leases l ON l.lease_id = lr.lease_id
+JOIN issues i ON i.id = l.issue_id JOIN lease_policies lp ON lp.lease_id = l.lease_id
+JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHERE lr.lease_id = ?`, lease).Scan(&runner, &machine, &tags, &state, &raw, &access)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !access {
+		return nativeNotFound()
+	}
+	if state == "disabled" {
+		return &nativeError{Code: "runner_disabled", Message: "Runner is disabled", status: http.StatusConflict}
+	}
+	var descriptor policy.Descriptor
+	var authorizedTags []string
+	if err := json.Unmarshal([]byte(raw), &descriptor); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(tags), &authorizedTags); err != nil {
+		return err
+	}
+	if err := descriptor.Requirements.Match(runner, machine, authorizedTags); err != nil {
+		return &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
 	}
 	return nil
 }

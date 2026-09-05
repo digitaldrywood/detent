@@ -11,13 +11,14 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func runnerOperationAllowed(c echo.Context, operations []string) bool {
 	path := c.Path()
-	if path == runnerBase+"/:runner" && c.Request().Method == http.MethodGet || path == runnerBase+"/:runner/renew" || path == runnerBase+"/:runner/rotate" {
+	if (path == runnerBase+"/:runner" || path == runnerBase+"/:runner/routing") && c.Request().Method == http.MethodGet || path == runnerBase+"/:runner/renew" || path == runnerBase+"/:runner/rotate" {
 		return true
 	}
 	operation := ""
@@ -28,7 +29,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		return false
 	case c.Request().Method == http.MethodGet:
 		operation = runnerauth.Read
-	case path == nativeBase+"/claims", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release":
+	case path == nativeBase+"/claims", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate":
 		operation = runnerauth.Claim
 	case path == nativeBase+"/machines/register", path == nativeBase+"/machines/:machine/heartbeat":
 		operation = runnerauth.Heartbeat
@@ -158,9 +159,11 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
-		DisplayName string `json:"display_name"`
-		Capacity    int    `json:"capacity"`
-		Version     string `json:"version"`
+		DisplayName  string `json:"display_name"`
+		Capacity     int    `json:"capacity"`
+		Version      string `json:"version"`
+		OS           string `json:"os,omitempty"`
+		Architecture string `json:"architecture,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -169,11 +172,33 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if scope.credential.Runner.RunnerID != "" && string(scope.credential.Runner.MachineID) != c.Param("machine") {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 {
+	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Display name, version and nonnegative capacity are required"))
 	}
 	return s.runnerTransaction(c, http.StatusNoContent, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+		if scope.credential.Runner.RunnerID != "" {
+			return struct{}{}, updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now)
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE machines SET display_name = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND token_id = ?`, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), c.Param("machine"), scope.organization, scope.credential.ID)
 		return struct{}{}, requireRunnerUpdate(result, err)
 	})
+}
+
+func validRunnerPlatform(os, architecture string) bool {
+	return (os == "" || policy.ValidToken(os)) && (architecture == "" || policy.ValidToken(architecture))
+}
+
+func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, os, architecture string, now time.Time) error {
+	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET reported_capacity = ?, os = ?, architecture = ?, last_heartbeat_at = ? WHERE id = ? AND token_id = ? AND organization_id = ?`, capacity, os, architecture, formatHubTime(now), scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
+	if err != nil {
+		return err
+	}
+	if err := requireRunnerUpdate(result, nil); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE machines SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?", formatHubTime(now), formatHubTime(now), scope.credential.Runner.MachineID)
+	return err
 }

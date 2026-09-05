@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func repositoryPolicyPath(repository string) (string, error) {
@@ -77,9 +79,33 @@ type claimPolicy struct {
 func (s *Scheduler) checkClaimPolicy(ctx context.Context, issueID, pinnedID string) error {
 	s.mu.Lock()
 	pinned, ok := s.claimPolicies[issueID]
+	claim, native := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if !ok || pinnedID != pinned.descriptor.ID {
 		return errors.New("policy_mismatch: claim has no matching pinned repository policy; release it and request a new claim")
 	}
-	return s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor)
+	if err := s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor); err != nil {
+		return err
+	}
+	if native && s.client.runner != nil {
+		r, err := claim.source.client.ValidateLease(ctx, claim.lease)
+		if err != nil {
+			return err
+		}
+		file, err := runnerauth.Load(s.client.runner.path)
+		if err != nil {
+			return err
+		}
+		if r.Binding != file.Identity.Binding || r.MachineID != s.machine.ID || r.OrganizationID != file.Identity.OrganizationID {
+			return errors.New("selector_no_match: Hub lease runner does not match this host's enrolled identity")
+		}
+		return pinned.descriptor.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags)
+	}
+	return nil
+}
+
+func (c *NativeClient) ValidateLease(ctx context.Context, lease tracker.NativeLease) (runnerauth.Runner, error) {
+	var result runnerauth.Runner
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/validate", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}, &result)
+	return result, err
 }

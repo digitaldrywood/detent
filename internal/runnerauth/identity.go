@@ -29,9 +29,10 @@ type Binding struct {
 
 type EnrollmentRequest struct {
 	Binding
-	ProjectIDs []tracker.ProjectID `json:"project_ids"`
-	Operations []string            `json:"operations"`
-	TTLSeconds int64               `json:"ttl_seconds"`
+	SharedMachine bool                `json:"shared_machine,omitempty"`
+	ProjectIDs    []tracker.ProjectID `json:"project_ids"`
+	Operations    []string            `json:"operations"`
+	TTLSeconds    int64               `json:"ttl_seconds"`
 }
 
 type Enrollment struct {
@@ -42,11 +43,13 @@ type Enrollment struct {
 
 type Redemption struct {
 	Binding
-	Credential  string `json:"credential"`
-	Hostname    string `json:"hostname"`
-	DisplayName string `json:"display_name"`
-	Capacity    int    `json:"capacity"`
-	Version     string `json:"version"`
+	Credential   string `json:"credential"`
+	Hostname     string `json:"hostname"`
+	DisplayName  string `json:"display_name"`
+	Capacity     int    `json:"capacity"`
+	Version      string `json:"version"`
+	OS           string `json:"os,omitempty"`
+	Architecture string `json:"architecture,omitempty"`
 }
 
 type Identity struct {

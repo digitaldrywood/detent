@@ -279,6 +279,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err := authorizeClaimScope(ctx, tx, request, query.NativeScope); err != nil {
 		return tracker.Lease{}, err
 	}
+	if query.NativeScope != nil {
+		if err := requireRunnerAuthority(ctx, tx, *query.NativeScope, now); err != nil {
+			return tracker.Lease{}, err
+		}
+	}
 	var policyScope string
 	if query.RequirePolicy {
 		policyScope, err = validateClaimPolicy(ctx, tx, query, request.MachineID)
@@ -289,6 +294,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if existing, found, err := readLeaseBySession(ctx, tx, request.SessionID); err != nil {
 		return tracker.Lease{}, err
 	} else if found {
+		if query.NativeScope != nil {
+			if err := requireLeaseRunner(ctx, tx, existing.session.ID, *query.NativeScope); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
 		if err := authorizeClaimItem(ctx, tx, existing.issueID, query.NativeScope); err != nil {
 			return tracker.Lease{}, err
 		}
@@ -319,7 +329,15 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		return tracker.Lease{}, err
 	}
 	if capacity <= 0 {
+		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
+			return tracker.Lease{}, &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
+		}
 		return tracker.Lease{}, ErrNoClaimableWork
+	}
+	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
+		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
+			return tracker.Lease{}, err
+		}
 	}
 	claimableRepositories := make(map[tracker.RepositoryID]struct{})
 	if query.NativeScope == nil {
@@ -358,6 +376,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		}
 		if query.RequirePolicy {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO lease_policies (lease_id, scope, policy_id) VALUES (?, ?, ?)", lease.ID, policyScope, query.PolicyID); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
+		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO lease_runners (lease_id, runner_id) VALUES (?, ?)", lease.ID, query.NativeScope.credential.Runner.RunnerID); err != nil {
 				return tracker.Lease{}, err
 			}
 		}

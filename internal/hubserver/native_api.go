@@ -213,6 +213,9 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	value, err := operation(ctx, tx, scope, now)
 	if err != nil {
 		return s.nativeAPIError(c, err)

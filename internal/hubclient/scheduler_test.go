@@ -223,3 +223,34 @@ func TestSchedulerHubOutageIsUnavailableBeforeClaim(t *testing.T) {
 		})
 	}
 }
+
+func TestSchedulerRoutingDeferralsRemainQueued(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		code     string
+		deferred bool
+	}{
+		{"selector_no_match", true},
+		{"runner_disabled", true},
+		{"runner_draining", true},
+		{"runner_offline", true},
+		{"runner_capacity", true},
+		{"host_capacity", true},
+		{"project_access_denied", true},
+		{"claim_not_permitted", true},
+		{"invalid_request", false},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			t.Parallel()
+			failure := &APIError{Code: test.code}
+			err := schedulingError(errors.Join(errors.New("claim rejected"), failure))
+			if errors.Is(err, orchestrator.ErrSchedulingUnavailable) != test.deferred {
+				t.Fatalf("scheduling availability for %s: %v", test.code, err)
+			}
+			var got *APIError
+			if !errors.As(err, &got) || got != failure {
+				t.Fatalf("structured exclusion was lost: %v", err)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -165,7 +166,7 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
 			return identity, err
 		}
-		request := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version}
+		request := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
 		if err := client.runnerRequest(ctx, enrollment, http.MethodPost, base+"/runner-enrollments/redeem", request, &identity); err != nil {
 			return identity, err
 		}
@@ -206,9 +207,11 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
 	request := struct {
-		DisplayName string `json:"display_name"`
-		Capacity    int    `json:"capacity"`
-		Version     string `json:"version"`
-	}{machine.DisplayName, machine.Capacity, machine.Version}
+		DisplayName  string `json:"display_name"`
+		Capacity     int    `json:"capacity"`
+		Version      string `json:"version"`
+		OS           string `json:"os"`
+		Architecture string `json:"architecture"`
+	}{machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 }
