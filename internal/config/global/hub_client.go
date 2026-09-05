@@ -3,6 +3,7 @@ package global
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -19,6 +20,7 @@ type HubClient struct {
 	NativeProjects           map[string]string `yaml:"native_projects,omitempty"`
 	URL                      string            `yaml:"hub_url,omitempty"`
 	TokenEnvironment         string            `yaml:"token_env,omitempty"`
+	IdentityFile             string            `yaml:"identity_file,omitempty"`
 	MachineID                string            `yaml:"machine_id,omitempty"`
 	DisplayName              string            `yaml:"display_name,omitempty"`
 	Capacity                 int               `yaml:"capacity,omitempty"`
@@ -28,7 +30,7 @@ type HubClient struct {
 }
 
 func (c HubClient) IsZero() bool {
-	return strings.TrimSpace(c.OrganizationID) == "" && len(c.NativeProjects) == 0 && strings.TrimSpace(c.URL) == "" && strings.TrimSpace(c.TokenEnvironment) == "" &&
+	return strings.TrimSpace(c.IdentityFile) == "" && strings.TrimSpace(c.OrganizationID) == "" && len(c.NativeProjects) == 0 && strings.TrimSpace(c.URL) == "" && strings.TrimSpace(c.TokenEnvironment) == "" &&
 		strings.TrimSpace(c.MachineID) == "" && strings.TrimSpace(c.DisplayName) == "" && c.Capacity == 0 &&
 		c.HeartbeatIntervalSeconds == 0 && c.LeaseTTLSeconds == 0 && c.RequestTimeoutMS == 0
 }
@@ -41,7 +43,8 @@ func (c HubClient) Normalized() HubClient {
 	c.OrganizationID = strings.TrimSpace(c.OrganizationID)
 	c.URL = strings.TrimRight(strings.TrimSpace(c.URL), "/")
 	c.TokenEnvironment = strings.TrimSpace(c.TokenEnvironment)
-	if c.TokenEnvironment == "" {
+	c.IdentityFile = strings.TrimSpace(c.IdentityFile)
+	if c.TokenEnvironment == "" && c.IdentityFile == "" {
 		c.TokenEnvironment = DefaultHubTokenEnvironment
 	}
 	c.MachineID = strings.TrimSpace(c.MachineID)
@@ -78,6 +81,17 @@ func (c HubClient) Validate() []string {
 		return nil
 	}
 	var problems []string
+	if c.IdentityFile != "" {
+		if !filepath.IsAbs(c.IdentityFile) {
+			problems = append(problems, "client.identity_file must be an absolute private path")
+		}
+		if c.TokenEnvironment != "" {
+			problems = append(problems, "client.identity_file and client.token_env are mutually exclusive")
+		}
+		if len(c.NativeProjects) == 0 {
+			problems = append(problems, "client.identity_file requires explicit native_projects")
+		}
+	}
 	if len(c.NativeProjects) > 0 && !strings.HasPrefix(c.OrganizationID, "org_") {
 		problems = append(problems, "client.organization_id is required for native projects")
 	}
@@ -124,7 +138,7 @@ func hubClientRawErrors(value any) []string {
 		return []string{"client: must be a mapping"}
 	}
 	var problems []string
-	for _, name := range []string{"hub_url", "token_env", "machine_id", "display_name", "organization_id"} {
+	for _, name := range []string{"hub_url", "token_env", "identity_file", "machine_id", "display_name", "organization_id"} {
 		problems = append(problems, optionalStringTypeError(attrs, name)...)
 	}
 	for _, field := range []struct{ name, path string }{

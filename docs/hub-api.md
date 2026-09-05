@@ -2,7 +2,7 @@
 
 Detent Hub owns its SQLite database and exposes fleet coordination through an authenticated HTTP API. Clients must never open or copy the live database files.
 
-This page documents implemented behavior, including native collaboration through `/api/v2`. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture; runner enrollment, native Changes, hosted identity, artifact custody, and deployment contracts remain separate deliverables.
+This page documents implemented behavior, including native collaboration and scoped runner enrollment through `/api/v2`. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture; native Changes, hosted human identity, artifact custody, and deployment contracts remain separate deliverables.
 
 ## Start the Hub
 
@@ -41,7 +41,180 @@ POST   /api/v1/tokens/{id}/rotate
 DELETE /api/v1/tokens/{id}
 ```
 
-The GitHub webhook route is the only transport-specific exception to bearer authentication. `/api/v1/webhooks/github` uses GitHub's `X-Hub-Signature-256` HMAC authentication and never accepts a Hub token as a substitute.
+Enrollment redemption accepts its separate one-time bearer token, which cannot call other APIs. `/api/v1/webhooks/github` uses GitHub's `X-Hub-Signature-256` HMAC authentication and never accepts a Hub token as a substitute.
+
+## Scoped runner onboarding
+
+| Credential | Owner and lifetime | Revocation |
+| --- | --- | --- |
+| Enrollment token | Hub issues a grant for one organization, explicit projects, operations and host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
+| Runner credential | Customer host generates a random 256-bit bearer credential; Hub stores its SHA-256 hash; valid for 24 hours from enrollment or renewal | Administrator revokes the runner; no resurrection by renewal, rotation, generic token rotation or ID reuse |
+| Provider/repository/storage credential | Customer login, keychain, workload identity or private host configuration; may outlive many runner sessions | Customer revokes it at its provider; revoking Hub access does not revoke this credential |
+
+This release binds one logical runner credential to one machine registration.
+`runner_` and `machine_` IDs are generated independently of hostname/display name.
+Renaming preserves both IDs. Reinstallation requires new IDs, a new credential
+and explicit enrollment; existing IDs remain reserved after revocation. Another
+enrollment or a legacy registration cannot silently take over an existing ID.
+Copying the private identity file copies bearer authority: never clone it into
+machine images or share it across hosts. Hardware attestation and multiple
+executors sharing a physical-host identity are not implemented here.
+
+1. On the customer host, run `detent hub runner init --hub-url https://hub.example.com`.
+   It prints only runner/machine IDs and stores the credential under the OS user
+   config directory at `detent/runner/identity.json`. An explicit
+   `--identity-file` must be an absolute private path outside repositories and
+   ordinary workspaces. Initialization refuses to overwrite an identity.
+2. Send those public IDs to an instance administrator. The administrator creates
+   an enrollment using `POST /api/v2/organizations/{org}/runner-enrollments`:
+
+   ```json
+   {
+     "runner_id": "runner_0123456789abcdef0123456789abcdef",
+     "machine_id": "machine_fedcba9876543210fedcba9876543210",
+     "project_ids": ["prj_0123456789abcdef0123456789abcdef"],
+     "operations": ["read", "claim", "heartbeat", "events", "collaborate"],
+     "ttl_seconds": 300
+   }
+   ```
+
+   Use the actual IDs from initialization. The response contains `id`, `token`
+   and `expires_at` with `Cache-Control: no-store`. Deliver the token through an
+   approved private channel; never an issue, repository, shell argument or log.
+3. Supply it in `DETENT_RUNNER_ENROLLMENT_TOKEN` for the enrollment command and
+   run `detent hub runner enroll --organization org_example --display-name 'Build host'`.
+   Remove the enrollment variable from the host environment after the command.
+   `--enrollment-token-env` selects another variable name. No provider credential
+   is read or sent. The command sends its separate host-generated credential
+   over HTTPS, and the Hub atomically consumes the enrollment, registers the
+   machine, creates hashed authentication and installs the exact project grants.
+4. Configure the host scheduler using the private identity path:
+
+   ```yaml
+   client:
+     hub_url: https://hub.example.com
+     identity_file: /private/host-config/detent/runner/identity.json
+     organization_id: org_example
+     native_projects:
+       example: prj_example
+     display_name: Build host
+   ```
+
+   Substitute the real private path and organization/project IDs. `identity_file`
+   and `token_env` are mutually exclusive. An optional `machine_id` must exactly
+   match the enrolled ID. Every configured native project must be in the grant.
+   The host retains its existing local model login/API-key configuration.
+
+| Operation grant | Permitted native operations |
+| --- | --- |
+| `read` | Capability negotiation and authorized project/issues/comments/history reads |
+| `claim` | Claim, renew and release fenced work leases in authorized projects |
+| `heartbeat` | Refresh only the authenticated machine's registration/heartbeat |
+| `events` | Submit typed, fenced run events for this runner's own leases |
+| `collaborate` | Create/edit issues and comments, transition workflow and edit dependencies within authorized projects |
+
+Grants must explicitly list at least one project and operation. No empty list
+means “all.” Enrolled runners cannot use v1, global health/outbox APIs, tenant
+administration or token-management endpoints. Grant changes require revocation
+and fresh enrollment; generic token grants cannot widen runner authority.
+All claims, lease mutations and events check token-owned machines, organization,
+project and fencing. A supplied `machine_id` or hostname never changes authority.
+
+## Runner renewal, rotation and revocation
+
+| Endpoint | Authority | Behavior |
+| --- | --- | --- |
+| `POST /api/v2/organizations/{org}/runner-enrollments/redeem` | Enrollment bearer | Strict host identity/credential/machine metadata body; one transactional winner; replay, expired/revoked grant and wrong binding return 401; collisions return 409 |
+| `DELETE /api/v2/organizations/{org}/runner-enrollments/{id}` | Instance admin | Revoke an unconsumed grant |
+| `GET /api/v2/organizations/{org}/runners/{runner}` | That runner | Read its public identity, grants and expiry; no credential value |
+| `POST /api/v2/organizations/{org}/runners/{runner}/renew` | That active runner | Body `{}`; retain credential and extend expiry to 24 hours from Hub time |
+| `POST /api/v2/organizations/{org}/runners/{runner}/rotate` | That active runner | Body `{"credential":"<new host-generated credential>"}`; replace the hash and extend expiry atomically; previous credential stops working immediately |
+| `DELETE /api/v2/organizations/{org}/runners/{runner}` | Instance admin | Revoke all future authenticated access for this identity |
+| `POST /api/v2/organizations/{org}/projects/{project}/machines/{machine}/heartbeat` | Owning runner with `heartbeat` | Strict `display_name`, `capacity`, `version` body; update mutable metadata and liveness |
+
+Hub time decides validity, with an inclusive start and exclusive expiry boundary.
+An invalid clock or time before issuance fails closed. Times are parsed before
+comparison, including fractional-second boundaries. There is no grace period or
+offline renewal of expired credentials: generate and enroll a new host identity.
+Clients renew automatically before requests when fewer than 12 hours remain.
+`detent hub runner renew` forces renewal; `detent hub runner rotate` generates
+and persists a replacement before sending it to the Hub. Credential-management
+operations cannot grant additional projects or operations.
+
+The host file includes a pending credential during rotation. A restart first
+tries that credential, then retries the same rotation with the old credential
+only if the pending one is unauthorized. A lost enrollment response is recovered
+by authenticating the already-persisted credential, without redeeming again.
+File locks serialize local credential maintenance; atomic private-file replacement
+preserves recovery state. Identity responses, audit records and CLI output never
+contain runner credentials. Identity audit rows record enrollment, renewal,
+rotation and revocation using stable actor IDs and Hub timestamps.
+
+Every request checks expiry and revocation against the owner database; there is
+no authentication cache. An already authenticated in-flight operation may finish.
+The enrolled scheduler treats subsequent authentication/authorization failure
+during lease maintenance as lost ownership, invoking its existing stop path.
+Previously granted leases remain fenced and expire through the existing lease
+recovery mechanism; revocation never transfers a running lease to a new host.
+It cannot forcibly erase credentials or stop an offline or hostile customer
+machine. Stop that host and revoke provider/repository access separately if needed.
+
+## Customer credential isolation and cleanup
+
+Keep runner identity in the service account's private config directory (0700)
+with a regular 0600 credential file. On Windows, provision the equivalent private
+service-account/profile ACLs; POSIX permission bits do not enforce Windows ACLs.
+Do not expose the runner identity file, enrollment variable, Hub admin token,
+provider login directory or storage configuration through repository files,
+ordinary workspaces, shared caches, artifacts or verbose shell tracing.
+Back up private identity only into customer-controlled secret storage.
+
+Use existing provider login or API-key facilities on the customer host. A trusted
+backend wrapper should select only the required provider environment variables
+or private credential mounts for the chosen backend. Run untrusted jobs under a
+separate OS account/container/VM with a restricted filesystem and environment;
+mount only that job's credential facilities. Environment variables and file mode
+bits do **not** protect secrets from code running with the same identity and
+execution context. Keep Hub runner authority in the control process's context,
+separate from the job. Neither the Hub nor these enrollment commands fetch,
+relay, store or validate provider/storage credentials.
+
+Use operator-owned wrappers and the existing hooks as this cleanup contract:
+
+- `hooks.before_run`: fail before execution if the approved sandbox, private
+  credential mounts and environment allowlist cannot be established. Hook child
+  process exports do not change the worker environment; perform injection in
+  the trusted backend launcher. Never echo credential values.
+- `hooks.after_run`: stop job processes, unmount credential facilities, remove
+  private job scratch and discard job-only capabilities. Make cleanup idempotent.
+- `hooks.before_remove`: verify teardown before ordinary workspace removal.
+  Both cleanup hooks are best effort and log failures; they are not security
+  boundaries or guaranteed crash cleanup. An operator-owned host janitor must
+  reconcile orphaned sandboxes after worker/host failure before reuse.
+
+Raw prompts, credential fields and artifact content are rejected by native event
+schemas. Explicit user-authored comments remain content and must not contain
+secrets. Encrypted provider-key provisioning through Hub is a future design
+option requiring authenticated recipient keys and a browser/control-plane trust
+model; no such relay is implemented.
+
+## Legacy token migration
+
+Migration 9 adds nullable expiry and separate enrollment/identity tables.
+Existing worker/operator/admin tokens retain their scopes, hashes, grants and
+non-expiring behavior; existing machine IDs and leases are not rewritten. A Hub
+restart or upgrade does not disconnect installations. Generic token creation,
+rotation and revocation still apply to legacy tokens; enrolled runners use the
+dedicated endpoints above. Legacy shared tokens retain their previous trust
+boundary and should only be used by mutually trusted clients.
+
+Migrate deliberately: initialize and enroll a new identity, stop legacy claims,
+allow existing leases to finish/release, switch native project configuration to
+`identity_file`, and verify claims/heartbeats with the new IDs. Then revoke the
+legacy token after every host sharing it has migrated. During overlap the old
+token remains authorized under its old scope. Never convert a shared token in
+place or reuse a legacy machine ID to transfer trust. Compatibility v1 projects
+can continue using their legacy configuration until their native cutover.
 
 ## Work and fleet endpoints
 

@@ -31,7 +31,7 @@ func (s *Service) nativeCapabilities(c echo.Context) error {
 		Features        []string `json:"features"`
 		MaxRequestBytes int      `json:"max_request_bytes"`
 		MaxPageSize     int      `json:"max_page_size"`
-	}{serverID, []int{1, 2}, []int{1}, []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations"}, maxAPIRequestBodyBytes, maxAPIPageLimit})
+	}{serverID, []int{1, 2}, []int{1}, []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity"}, maxAPIRequestBodyBytes, maxAPIPageLimit})
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
@@ -160,6 +160,13 @@ func (s *Service) grantNativeToken(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	defer tx.Rollback()
+	var runnerCount int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM runner_identities WHERE token_id = ?", c.Param("id")).Scan(&runnerCount); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if runnerCount != 0 {
+		return s.nativeAPIError(c, nativeInvalid("Runner grants are fixed at enrollment; revoke and enroll a new identity to change authority"))
+	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants (token_id, organization_id, project_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", c.Param("id"), request.OrganizationID, request.ProjectID); err != nil {
 		return s.nativeAPIError(c, nativeNotFound())
 	}

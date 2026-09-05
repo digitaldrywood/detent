@@ -168,8 +168,13 @@ Configure `client.hub_url` to move candidate discovery and claiming to a Detent
 Hub. The machine registers its identity, project and pool capabilities,
 capacity, operating system, architecture, and binary version. It then
 heartbeats while polling the Hub and renewing fenced work leases. The token is
-read from the environment variable named by `client.token_env`; the token is
-never stored in the configuration file.
+read from the environment variable named by `client.token_env` in legacy mode;
+the token is never stored in the configuration file. For scoped native runners,
+use `client.identity_file` instead: an absolute path to the private host-generated
+identity created by `detent hub runner init` and enrolled with `detent hub runner
+enroll`. The client renews this credential automatically. Its organization,
+machine ID and explicit native projects must match enrollment. See
+[runner onboarding and migration](hub-api.md#scoped-runner-onboarding).
 
 ```yaml
 client:
@@ -183,8 +188,9 @@ client:
   request_timeout_ms: 10000
 ```
 
-`machine_id` defaults to the configured global identity, instance name, or
-hostname. `capacity` defaults to `global.max_concurrent_agents`. The heartbeat
+In legacy mode, `machine_id` defaults to the configured global identity, instance
+name, or hostname. Enrolled mode uses the immutable host-generated machine ID.
+`capacity` defaults to `global.max_concurrent_agents`. The heartbeat
 interval must be shorter than the lease TTL. Hub outages mark project refresh
 health degraded and back off with the normal scheduling loop; they do not
 consume issue retry, no-progress, or work-failure budgets. GitHub remains in

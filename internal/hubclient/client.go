@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -24,12 +25,14 @@ var (
 )
 
 type Config struct {
-	URL         string
-	TokenSource func() string
-	HTTPClient  *http.Client
+	URL          string
+	IdentityFile string
+	TokenSource  func() string
+	HTTPClient   *http.Client
 }
 
 type Client struct {
+	runner      *runnerCredentialSource
 	baseURL     *url.URL
 	tokenSource func() string
 	httpClient  *http.Client
@@ -97,7 +100,7 @@ func New(config Config) (*Client, error) {
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
 		return nil, errors.New("hub URL must be an absolute HTTP or HTTPS URL")
 	}
-	if config.TokenSource == nil {
+	if config.TokenSource == nil && config.IdentityFile == "" {
 		return nil, errors.New("hub token source is required")
 	}
 	httpClient := config.HTTPClient
@@ -105,7 +108,21 @@ func New(config Config) (*Client, error) {
 		httpClient = http.DefaultClient
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
-	return &Client{baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient}, nil
+	client := &Client{baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient}
+	if config.IdentityFile != "" {
+		file, err := runnerauth.Load(config.IdentityFile)
+		if err != nil {
+			return nil, err
+		}
+		if file.HubURL != baseURL.String() {
+			return nil, errors.New("runner identity belongs to a different Hub")
+		}
+		client.runner = &runnerCredentialSource{path: config.IdentityFile}
+		transport := *httpClient
+		transport.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client.httpClient = &transport
+	}
+	return client, nil
 }
 
 func (c *Client) RegisterMachine(ctx context.Context, machine Machine) (Machine, error) {
@@ -172,7 +189,15 @@ func (c *Client) request(ctx context.Context, method string, path string, input 
 	if err != nil {
 		return fmt.Errorf("build Hub request: %w", err)
 	}
-	token := strings.TrimSpace(c.tokenSource())
+	var token string
+	if c.runner != nil {
+		token, err = c.runnerToken(ctx)
+		if err != nil {
+			return err
+		}
+	} else {
+		token = strings.TrimSpace(c.tokenSource())
+	}
 	if token == "" {
 		return errors.New("hub token is unavailable")
 	}

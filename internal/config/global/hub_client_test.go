@@ -1,6 +1,7 @@
 package global
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,34 @@ projects: []
 	}
 	if client.HeartbeatInterval() != 20*time.Second || client.LeaseTTL() != 75*time.Second || client.RequestTimeout() != 2500*time.Millisecond {
 		t.Fatalf("Client durations = heartbeat %s TTL %s timeout %s", client.HeartbeatInterval(), client.LeaseTTL(), client.RequestTimeout())
+	}
+}
+
+func TestHubRunnerIdentityConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change func(*HubClient)
+		valid  bool
+	}{
+		{"enrolled identity", func(*HubClient) {}, true},
+		{"relative path", func(c *HubClient) { c.IdentityFile = "identity.json" }, false},
+		{"ambiguous token source", func(c *HubClient) { c.TokenEnvironment = "LEGACY_TOKEN" }, false},
+		{"no projects", func(c *HubClient) { c.NativeProjects = nil }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := HubClient{URL: "https://hub.example.test", IdentityFile: filepath.Join(t.TempDir(), "private", "identity.json"), OrganizationID: "org_example", NativeProjects: map[string]string{"local": "prj_example"}}
+			test.change(&config)
+			if valid := len(config.Validate()) == 0; valid != test.valid {
+				t.Fatalf("valid=%v, want %v: %v", valid, test.valid, config.Validate())
+			}
+			if config.IsZero() {
+				t.Fatal("configured identity is zero")
+			}
+			if test.valid && config.Normalized().TokenEnvironment != "" {
+				t.Fatal("enrolled mode gained legacy token fallback")
+			}
+		})
 	}
 }
 

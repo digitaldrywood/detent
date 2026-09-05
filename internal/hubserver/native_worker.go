@@ -13,6 +13,9 @@ import (
 )
 
 func authorizeClaimScope(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, scope *nativeScope) error {
+	if scope != nil && scope.credential.Runner.RunnerID != "" && scope.credential.Runner.MachineID != request.MachineID {
+		return tracker.ErrMachineNotFound
+	}
 	var count int
 	query := "SELECT count(*) FROM machines WHERE id = ? AND organization_id IS NULL"
 	args := []any{request.MachineID}
@@ -160,6 +163,9 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	now := formatHubTime(s.config.now())
+	if scope.credential.Runner.RunnerID != "" && request.ID != scope.credential.Runner.MachineID {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, display_name = excluded.display_name, capacity = excluded.capacity, version = excluded.version, last_heartbeat_at = excluded.last_heartbeat_at, updated_at = excluded.updated_at

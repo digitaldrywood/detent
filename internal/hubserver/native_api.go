@@ -125,6 +125,9 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 }
 
 func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {
+	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.OrganizationID != scope.organization {
+		return nativeNotFound()
+	}
 	var count int
 	query := "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?"
 	args := []any{scope.organization, scope.project}

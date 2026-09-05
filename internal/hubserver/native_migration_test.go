@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -28,7 +27,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 	}
 	migrations := fstest.MapFS{}
 	for _, file := range files {
-		if strings.HasPrefix(file.Name(), "00008_") {
+		if file.Name() >= "00008_" {
 			continue
 		}
 		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
