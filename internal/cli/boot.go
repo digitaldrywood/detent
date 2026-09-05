@@ -162,6 +162,7 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 }
 
 type startRunningDependencies struct {
+	snapshotNow           func() time.Time
 	boardSnapshotStore    boardsnapshot.Store
 	boardSnapshotInterval time.Duration
 	backgroundWaitStarted func()
@@ -445,7 +446,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}, time.Now)
 	})
 	resourceWorkers.Go(func() {
-		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, time.Now, updateScheduler)
+		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, updateScheduler)
 	})
 	if healthNotifications.Enabled() {
 		resourceWorkers.Go(func() {
