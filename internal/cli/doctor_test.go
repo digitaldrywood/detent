@@ -5266,7 +5266,6 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 	tests := []struct {
 		name       string
 		host       string
-		listenHost string
 		statusCode int
 		body       string
 		want       doctorStatus
@@ -5275,7 +5274,6 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 		{
 			name:       "healthy running detent on wildcard host",
 			host:       "0.0.0.0",
-			listenHost: "0.0.0.0",
 			statusCode: http.StatusOK,
 			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"},"budgets":[{"project_id":"detent","enabled":true,"per_day_max_usd":250,"per_issue_max_usd":25}]}`,
 			want:       doctorWarn,
@@ -5292,7 +5290,6 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 		{
 			name:       "unhealthy detent service",
 			host:       "127.0.0.1",
-			listenHost: "127.0.0.1",
 			statusCode: http.StatusOK,
 			body:       `{"status":"error","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
 			want:       doctorFail,
@@ -5305,7 +5302,6 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 		{
 			name:       "non-detent service",
 			host:       "127.0.0.1",
-			listenHost: "127.0.0.1",
 			statusCode: http.StatusOK,
 			body:       `{"status":"ok"}`,
 			want:       doctorFail,
@@ -5318,7 +5314,6 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 		{
 			name:       "generic health service",
 			host:       "127.0.0.1",
-			listenHost: "127.0.0.1",
 			statusCode: http.StatusOK,
 			body:       `{"status":"ok","mode":"ready","checks":{}}`,
 			want:       doctorFail,
@@ -5334,14 +5329,78 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			port := occupiedDoctorPort(t, tt.listenHost, tt.statusCode, tt.body)
+			port := occupiedDoctorPort(t, doctorHealthProbeHost(tt.host), tt.statusCode, tt.body)
+			probeAddr := net.JoinHostPort(doctorHealthProbeHost(tt.host), strconv.Itoa(port))
+			var listenConfig net.ListenConfig
+			shadow, err := listenConfig.Listen(t.Context(), "tcp", probeAddr)
+			if err == nil {
+				if closeErr := shadow.Close(); closeErr != nil {
+					t.Errorf("Close() shadow listener error = %v", closeErr)
+				}
+				t.Fatalf("health fixture does not reserve probe address %s", probeAddr)
+			}
+			if !doctorListenErrIndicatesOccupied(err) {
+				t.Fatalf("Listen(%q) error = %v, want occupied address", probeAddr, err)
+			}
 			got := checkDoctorServerPort(context.Background(), BootConfig{Host: tt.host, Port: &port}, doctorDeps{
-				listen: net.Listen,
+				listen: func(network, address string) (net.Listener, error) {
+					wantAddr := net.JoinHostPort(tt.host, strconv.Itoa(port))
+					if network != "tcp" || address != wantAddr {
+						t.Fatalf("listen(%q, %q), want tcp, %q", network, address, wantAddr)
+					}
+					return listenConfig.Listen(t.Context(), network, probeAddr)
+				},
 			})
 			if got.Status != tt.want {
 				t.Fatalf("Status = %s, want %s: %+v", got.Status, tt.want, got)
 			}
 			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorServerPortRejectsHealthProbeEOF(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		handler    http.HandlerFunc
+		wantDetail string
+	}{
+		{
+			name: "connection closes before response",
+			handler: func(http.ResponseWriter, *http.Request) {
+				panic(http.ErrAbortHandler)
+			},
+			wantDetail: "could not be reached",
+		},
+		{
+			name: "incomplete health response",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				if _, err := io.WriteString(w, `{"status":`); err != nil {
+					t.Errorf("WriteString() error = %v", err)
+				}
+			},
+			wantDetail: "did not return Detent health",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(tt.handler)
+			t.Cleanup(server.Close)
+			port := doctorPortFromAddr(t, server.Listener.Addr())
+			got := checkDoctorServerPort(t.Context(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{})
+			if got.Status != doctorFail {
+				t.Fatalf("Status = %s, want %s: %+v", got.Status, doctorFail, got)
+			}
+			for _, want := range []string{tt.wantDetail, "EOF"} {
 				if !strings.Contains(got.Detail, want) {
 					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 				}
@@ -6694,7 +6753,7 @@ func occupiedDoctorPort(t *testing.T, host string, statusCode int, body string) 
 	}
 	port := doctorPortFromAddr(t, listener.Addr())
 
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
 			http.NotFound(w, r)
 			return
@@ -6704,8 +6763,7 @@ func occupiedDoctorPort(t *testing.T, host string, statusCode int, body string) 
 		if _, err := w.Write([]byte(body)); err != nil {
 			t.Errorf("Write() error = %v", err)
 		}
-	}))
-	server.Listener = listener
+	})}}
 	server.Start()
 	t.Cleanup(server.Close)
 
