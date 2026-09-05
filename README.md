@@ -193,6 +193,7 @@ at hand.
 
 ### Reference and contribute
 
+- [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
 - [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
 - [Release process](docs/release.md).
 - [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
