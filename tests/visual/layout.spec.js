@@ -1181,8 +1181,11 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     testInfo,
   );
 
+  await card.focus();
+  await expect(tooltip).toBeHidden();
   await page.setViewportSize(narrowViewport);
   await badge.scrollIntoViewIfNeeded();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await badge.focus();
   await expect(tooltip).toBeVisible();
   await expect.poll(async () => {
