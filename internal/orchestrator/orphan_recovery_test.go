@@ -240,6 +240,11 @@ type orphanRecoveryAttemptStore struct {
 	orphans   []store.OrphanedAgentSession
 	marked    []int64
 	listCalls int
+	metadata  string
+}
+
+func (s *orphanRecoveryAttemptStore) WorkAttempt(context.Context, int64) (store.WorkAttempt, error) {
+	return store.WorkAttempt{WorkerMetadataJSON: s.metadata}, nil
 }
 
 func (s *orphanRecoveryAttemptStore) ListOrphanedAgentSessions(context.Context, string) ([]store.OrphanedAgentSession, error) {

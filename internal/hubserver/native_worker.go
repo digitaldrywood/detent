@@ -81,6 +81,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		}
 	}
 	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
+		PolicyID: request.PolicyID, RequirePolicy: true,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 	}, s.config.ReconcileInterval)
 	if err != nil {
@@ -90,11 +91,15 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 }
 
 func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tracker.Lease) error {
+	policyID, err := s.database.leasePolicyID(c.Request().Context(), lease.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	var id tracker.NativeWorkItemID
 	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+	return c.JSON(http.StatusOK, tracker.NativeLease{PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }
 
 func (s *Service) requireNativeLease(c echo.Context) error {
@@ -123,7 +128,7 @@ func (s *Service) renewNativeLease(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Lease TTL is invalid"))
 	}
-	lease, err := s.database.Renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl})
+	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

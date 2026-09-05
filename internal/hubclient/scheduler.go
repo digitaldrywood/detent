@@ -30,6 +30,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	claimPolicies     map[string]claimPolicy
 	nativeProjects    map[string]*NativeConnector
 	nativeClaims      map[string]nativeClaim
 	nativeHeartbeats  map[tracker.ProjectID]time.Time
@@ -66,7 +67,8 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
-		client: client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
+		claimPolicies: make(map[string]claimPolicy),
+		client:        client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
 	}
@@ -88,6 +90,9 @@ func (s *Scheduler) HeartbeatInterval() time.Duration {
 }
 
 func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
+		return nil, schedulingError(err)
+	}
 	if source := s.nativeProjects[request.ProjectID]; source != nil {
 		return s.fetchNativeCandidate(ctx, request, source)
 	}
@@ -99,6 +104,7 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 		return nil, fmt.Errorf("create Hub claim session: %w", err)
 	}
 	claimRequest := ClaimRequest{
+		PolicyID:  request.Policy.ID,
 		MachineID: s.machine.ID, SessionID: sessionID, TTLSeconds: int64(s.leaseTTL / time.Second),
 		WorkflowState: append([]string(nil), request.WorkflowStates...),
 		Authors:       append([]string(nil), request.Filter.Authors...),
@@ -126,16 +132,20 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	}
 	s.mu.Lock()
 	s.claims[issue.ID] = lease
+	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
 	return []connector.Issue{issue}, nil
 }
 
-func (s *Scheduler) AdoptClaim(_ context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
+func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	lease, ok := s.claims[strings.TrimSpace(issue.ID)]
 	s.mu.Unlock()
 	if !ok {
 		return orchestrator.Claimed{}, errors.New("hub claim was not found for candidate")
+	}
+	if err := s.checkClaimPolicy(ctx, issue.ID, lease.PolicyID); err != nil {
+		return orchestrator.Claimed{}, err
 	}
 	return claimedIssue(issue, lease), nil
 }
@@ -162,6 +172,9 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	s.mu.Unlock()
 	if !ok {
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+	}
+	if err := s.checkClaimPolicy(ctx, issueID, lease.PolicyID); err != nil {
+		return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}
 	renewed, err := s.client.Renew(ctx, lease, s.leaseTTL)
 	if err != nil {
@@ -201,6 +214,7 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	s.mu.Lock()
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
+	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
 	return nil
 }
@@ -311,6 +325,7 @@ func claimedIssue(issue connector.Issue, lease tracker.Lease) orchestrator.Claim
 	issue.Metadata["hub_lease_id"] = string(lease.ID)
 	issue.Metadata["hub_fencing_token"] = strconv.FormatInt(int64(lease.FencingToken), 10)
 	issue.Metadata["hub_session_id"] = lease.SessionID
+	issue.Metadata["hub_policy_id"] = lease.PolicyID
 	return orchestrator.Claimed{
 		Issue: issue, ClaimedAt: lease.AcquiredAt, Owner: string(lease.Machine.ID),
 		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt,

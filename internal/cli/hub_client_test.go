@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -17,9 +19,12 @@ import (
 func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 	t.Setenv("HUB_WORKER_TOKEN", "worker-token")
 	registered := make(chan hubclient.Machine, 1)
+	descriptor := policy.Descriptor{SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")), Gates: policy.Gates{Kind: "human_review", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("stop")), MergeMethod: "squash"}}.WithID()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
+		case "/api/v1/repositories/acme/widgets/policy":
+			_ = json.NewEncoder(response).Encode(policy.Approval{Policy: descriptor})
 		case "/api/v1/machines/register":
 			var machine hubclient.Machine
 			if err := json.NewDecoder(request.Body).Decode(&machine); err != nil {
@@ -44,7 +49,7 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHubScheduling() error = %v", err)
 	}
-	issues, err := source.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Repository: "acme/widgets"})
+	issues, err := source.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Repository: "acme/widgets", Policy: descriptor})
 	if err != nil || len(issues) != 0 {
 		t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
 	}

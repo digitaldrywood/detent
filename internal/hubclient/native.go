@@ -40,6 +40,9 @@ func (c *NativeClient) Negotiate(ctx context.Context) error {
 	if !slices.Contains(capabilities.ProtocolMajors, 2) || !slices.Contains(capabilities.EventSchemas, 1) || !slices.Contains(capabilities.Features, "native_issues") || !slices.Contains(capabilities.Features, "scoped_collaboration") {
 		return errors.New("hub does not support the required native protocol")
 	}
+	if !slices.Contains(capabilities.Features, "repository_policy") {
+		return errors.New("hub does not support approved repository policy; upgrade Hub before dispatch")
+	}
 	project, err := c.Project(ctx)
 	if err != nil {
 		return err

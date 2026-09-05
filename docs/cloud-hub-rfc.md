@@ -346,8 +346,9 @@ The equivalent legacy layout puts the shared mapping without `schema` between
 `---` delimiters in `WORKFLOW.md`, with no `detent.yaml`. The examples do not
 establish all runtime prerequisites or grant permission to weaken a review gate.
 See [configuration](config.md) and [overlay semantics](workflow-overlays.md) for
-the full current field surface. Runner profile/selector syntax is reserved for
-#2183; no unsupported YAML keys are presented here as working configuration.
+the full current field surface, including named runner requirements and the
+explicit repository-policy approval path and scoped runner enrollment. Authorized
+tag placement remains the separate #2185 deliverable.
 
 Configuration merging and security authority are different operations. The
 proposed evaluation order is:

@@ -20,6 +20,7 @@ type onboardingMergePolicyInspectionConfig struct {
 }
 
 type onboardingMergePolicyInspectionResult struct {
+	AllowAutoMerge           bool   `json:"allow_auto_merge"`
 	Repository               string `json:"repository"`
 	SelectedMergeMethod      string `json:"selected_merge_method"`
 	SelectedMethodEnabled    bool   `json:"selected_method_enabled"`
@@ -112,6 +113,7 @@ func inspectOnboardingMergePolicy(
 	}
 	selected := effective.Deliverable.EffectiveMergeMethod()
 	return onboardingMergePolicyInspectionResult{
+		AllowAutoMerge:           settings.AllowAutoMerge,
 		Repository:               repository,
 		SelectedMergeMethod:      selected,
 		SelectedMethodEnabled:    doctorRepositoryMergeMethodEnabled(settings, selected),
@@ -150,7 +152,7 @@ func onboardingAdditionalMergeMethodsEnabled(settings ghconnector.RepositoryMerg
 func writeOnboardingMergePolicyInspectionPretty(w io.Writer, result onboardingMergePolicyInspectionResult) error {
 	_, err := fmt.Fprintf(
 		w,
-		"repository: %s\nselected_merge_method: %s\nselection_source: %s\nselected_method_enabled: %t\nadditional_methods_enabled: %t\nallow_merge_commit: %t\nallow_squash_merge: %t\nallow_rebase_merge: %t\n",
+		"repository: %s\nselected_merge_method: %s\nselection_source: %s\nselected_method_enabled: %t\nadditional_methods_enabled: %t\nallow_merge_commit: %t\nallow_squash_merge: %t\nallow_rebase_merge: %t\nallow_auto_merge: %t\n",
 		result.Repository,
 		result.SelectedMergeMethod,
 		result.SelectionSource,
@@ -159,6 +161,7 @@ func writeOnboardingMergePolicyInspectionPretty(w io.Writer, result onboardingMe
 		result.AllowMergeCommit,
 		result.AllowSquashMerge,
 		result.AllowRebaseMerge,
+		result.AllowAutoMerge,
 	)
 	return err
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -254,6 +255,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
+	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
+		return nil, projectDefinitionError{err: err}
+	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, deps.GitHubToken)
@@ -449,6 +453,11 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if orch == nil {
 		return nil, errors.Join(ErrMissingOrchestrator, closeConnector(retroProductConnector))
 	}
+	if workflow.Config.Policy.ID != "" {
+		if updater, ok := deps.Runner.(workflowUpdater); ok {
+			updater.UpdateWorkflow(workflow)
+		}
+	}
 
 	watcherProject := cfg.Project
 	watcherProject.ID = string(id)
@@ -551,6 +560,10 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 	workflow := p.workflow
 	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
 	workflow.Config.Agent.RateWindowPacing = effectiveRateWindowPacing(cfg, workflow.Config)
+	if workflow.Config.Policy.ID != "" && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || workflow.Config.Agent.RateWindowPacing != p.workflow.Config.Agent.RateWindowPacing) {
+		p.mu.Unlock()
+		return errors.New("policy_mismatch: host execution overrides changed; approve the effective descriptor and restart Detent before applying them")
+	}
 	runtimeConfig := projectOrchestratorConfig(cfg, workflow.Config)
 	projectOrchestrator := p.orchestrator
 	running := p.done != nil
@@ -1437,8 +1450,16 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
+	scheduling := p.orchDeps.Scheduling
+	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
+	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
+		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
+	}
+	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID {
+		return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; finish or cancel active work and restart Detent to load the approved revision"))
+	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)

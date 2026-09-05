@@ -34,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pause"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -1577,6 +1578,7 @@ func (s *Server) workflowSources() []healthWorkflowSource {
 	for _, trackedProject := range projects {
 		status := trackedProject.WorkflowSourceStatus()
 		sources = append(sources, healthWorkflowSource{
+			Policy:           trackedProject.Workflow().Config.Policy,
 			ProjectID:        string(trackedProject.ID()),
 			Path:             status.Path,
 			SourceHash:       status.Hash,
@@ -1843,18 +1845,19 @@ type healthProject struct {
 }
 
 type healthWorkflowSource struct {
-	ProjectID        string    `json:"project_id"`
-	Path             string    `json:"path"`
-	SourceHash       string    `json:"source_hash"`
-	Revision         string    `json:"revision,omitempty"`
-	Layout           string    `json:"layout,omitempty"`
-	ModifiedAt       time.Time `json:"modified_at,omitzero"`
-	LoadedAt         time.Time `json:"loaded_at,omitzero"`
-	LastWatchEventAt time.Time `json:"last_watch_event_at,omitzero"`
-	LastReconcileAt  time.Time `json:"last_reconcile_at,omitzero"`
-	WatcherArmed     bool      `json:"watcher_armed"`
-	LastReloadError  string    `json:"last_reload_error,omitempty"`
-	ReloadFailedAt   time.Time `json:"reload_failed_at,omitzero"`
+	Policy           policy.Descriptor `json:"policy,omitzero"`
+	ProjectID        string            `json:"project_id"`
+	Path             string            `json:"path"`
+	SourceHash       string            `json:"source_hash"`
+	Revision         string            `json:"revision,omitempty"`
+	Layout           string            `json:"layout,omitempty"`
+	ModifiedAt       time.Time         `json:"modified_at,omitzero"`
+	LoadedAt         time.Time         `json:"loaded_at,omitzero"`
+	LastWatchEventAt time.Time         `json:"last_watch_event_at,omitzero"`
+	LastReconcileAt  time.Time         `json:"last_reconcile_at,omitzero"`
+	WatcherArmed     bool              `json:"watcher_armed"`
+	LastReloadError  string            `json:"last_reload_error,omitempty"`
+	ReloadFailedAt   time.Time         `json:"reload_failed_at,omitzero"`
 }
 
 type healthBudget struct {

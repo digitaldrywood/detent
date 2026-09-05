@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"html"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -236,10 +238,17 @@ func workAttemptRecoveryHTML(response orchestrator.WorkAttemptRecoveryResponse, 
 
 func workAttemptReceiptHTML(response orchestrator.WorkAttemptRecoveryResponse) string {
 	attempt := response.Attempt
-	fields := []struct {
+	var metadata struct {
+		Policy policy.Descriptor `json:"policy"`
+	}
+	if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil || metadata.Policy.Validate() != nil {
+		metadata.Policy = policy.Descriptor{}
+	}
+	type receiptField struct {
 		label string
 		value string
-	}{
+	}
+	fields := []receiptField{
 		{label: "Worker", value: attempt.WorkerHost},
 		{label: "Phase", value: attempt.Phase},
 		{label: "Command", value: attempt.CurrentCommand},
@@ -248,6 +257,16 @@ func workAttemptReceiptHTML(response orchestrator.WorkAttemptRecoveryResponse) s
 		{label: "Error", value: attempt.ErrorMessage},
 		{label: "Status", value: attempt.Status},
 		{label: "Next", value: attempt.NextAction},
+	}
+	if metadata.Policy.ID != "" {
+		fields = append(fields,
+			receiptField{label: "Pinned policy", value: metadata.Policy.ID},
+			receiptField{label: "Policy revision", value: metadata.Policy.SourceRevision},
+			receiptField{label: "Configuration digest", value: metadata.Policy.ConfigDigest},
+		)
+	}
+	if response.PolicyMismatch != "" {
+		fields = append(fields, receiptField{label: "Policy mismatch", value: response.PolicyMismatch})
 	}
 	var b strings.Builder
 	b.WriteString(`<div class="rounded-md border border-line bg-surface px-3 py-2 text-xs text-sec">`)
@@ -265,7 +284,7 @@ func workAttemptReceiptHTML(response orchestrator.WorkAttemptRecoveryResponse) s
 		}
 		b.WriteString(`<div class="min-w-0"><dt class="text-2xs font-semibold uppercase text-dim">`)
 		b.WriteString(html.EscapeString(field.label))
-		b.WriteString(`</dt><dd class="truncate font-mono text-text">`)
+		b.WriteString(`</dt><dd class="break-words font-mono text-text [overflow-wrap:anywhere]">`)
 		b.WriteString(html.EscapeString(value))
 		b.WriteString(`</dd></div>`)
 	}

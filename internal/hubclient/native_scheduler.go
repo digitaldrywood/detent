@@ -58,6 +58,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		return nil, err
 	}
 	lease, err := source.client.Claim(ctx, tracker.NativeClaim{
+		PolicyID:  request.Policy.ID,
 		MachineID: s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
 		Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
@@ -77,11 +78,15 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	s.mu.Lock()
 	s.claims[issue.ID] = nativeTrackerLease(lease)
 	s.nativeClaims[issue.ID] = nativeClaim{source: source, lease: lease}
+	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
 	return []connector.Issue{issue}, nil
 }
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim) (orchestrator.Claimed, error) {
+	if err := s.checkClaimPolicy(ctx, issueID, claim.lease.PolicyID); err != nil {
+		return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
+	}
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, err)
 	}
@@ -104,6 +109,7 @@ func (s *Scheduler) nativeClaimError(issueID string, err error) error {
 		s.mu.Lock()
 		delete(s.claims, issueID)
 		delete(s.nativeClaims, issueID)
+		delete(s.claimPolicies, issueID)
 		s.mu.Unlock()
 		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}
@@ -111,6 +117,6 @@ func (s *Scheduler) nativeClaimError(issueID string, err error) error {
 }
 
 func nativeTrackerLease(lease tracker.NativeLease) tracker.Lease {
-	return tracker.Lease{LeaseSummary: tracker.LeaseSummary{ID: lease.ID, FencingToken: lease.FencingToken,
+	return tracker.Lease{LeaseSummary: tracker.LeaseSummary{PolicyID: lease.PolicyID, ID: lease.ID, FencingToken: lease.FencingToken,
 		Machine: tracker.MachineSummary{ID: lease.MachineID}, SessionID: lease.SessionID, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}}
 }

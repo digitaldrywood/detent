@@ -19,6 +19,7 @@ import (
 var ErrNoClaimableWork = errors.New("no compatible work item is claimable")
 
 type claimAPIRequest struct {
+	PolicyID      string                 `json:"policy_id"`
 	WorkItemID    tracker.WorkItemID     `json:"work_item_id,omitempty"`
 	MachineID     tracker.MachineID      `json:"machine_id"`
 	SessionID     string                 `json:"session_id"`
@@ -34,6 +35,8 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
+	PolicyID       string
+	RequirePolicy  bool
 	NativeScope    *nativeScope
 	RepositoryIDs  []tracker.RepositoryID
 	Repositories   []string
@@ -111,6 +114,8 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
 	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
+		PolicyID:       request.PolicyID,
+		RequirePolicy:  true,
 		RepositoryIDs:  request.RepositoryIDs,
 		Repositories:   request.Repositories,
 		WorkflowStates: request.WorkflowState,
@@ -121,7 +126,11 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 		Scope:          request.Scope,
 	}, s.config.ReconcileInterval)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.nativeAPIError(c, err)
+	}
+	lease.PolicyID, err = s.database.leasePolicyID(c.Request().Context(), lease.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusCreated, lease)
 }
@@ -139,9 +148,13 @@ func (s *Service) renewLease(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_lease", Message: err.Error()})
 	}
-	lease, err := s.tracker.Renew(c.Request().Context(), tracker.RenewRequest{LeaseID: leaseID, FencingToken: request.FencingToken, TTL: ttl})
+	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: leaseID, FencingToken: request.FencingToken, TTL: ttl}, true)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.nativeAPIError(c, err)
+	}
+	lease.PolicyID, err = s.database.leasePolicyID(c.Request().Context(), lease.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, lease)
 }
@@ -186,8 +199,8 @@ func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = s.config.now().UTC()
 	}
-	if err := s.tracker.AppendEvent(c.Request().Context(), event); err != nil {
-		return trackerAPIError(c, err)
+	if err := s.database.appendEvent(c.Request().Context(), event, true); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusCreated, event)
 }
@@ -266,6 +279,13 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err := authorizeClaimScope(ctx, tx, request, query.NativeScope); err != nil {
 		return tracker.Lease{}, err
 	}
+	var policyScope string
+	if query.RequirePolicy {
+		policyScope, err = validateClaimPolicy(ctx, tx, query, request.MachineID)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+	}
 	if existing, found, err := readLeaseBySession(ctx, tx, request.SessionID); err != nil {
 		return tracker.Lease{}, err
 	} else if found {
@@ -277,6 +297,12 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		}
 		if request.WorkItemID > 0 && existing.issueID != request.WorkItemID {
 			return tracker.Lease{}, fmt.Errorf("%w: session is already assigned to work item %d", tracker.ErrLeaseConflict, existing.issueID)
+		}
+		if query.RequirePolicy {
+			var pinned string
+			if err := tx.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ? AND scope = ?", existing.session.ID, policyScope).Scan(&pinned); err != nil || pinned != query.PolicyID {
+				return tracker.Lease{}, policyMismatch("Existing claim is pinned to a different policy; release it before requesting a new attempt")
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
@@ -329,6 +355,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		lease, err = d.claimInTransaction(ctx, tx, request, now)
 		if err != nil {
 			return tracker.Lease{}, err
+		}
+		if query.RequirePolicy {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO lease_policies (lease_id, scope, policy_id) VALUES (?, ?, ?)", lease.ID, policyScope, query.PolicyID); err != nil {
+				return tracker.Lease{}, err
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit hub claim next: %w", err)

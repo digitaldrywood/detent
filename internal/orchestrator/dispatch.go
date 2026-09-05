@@ -426,6 +426,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	modelPermitRequired bool,
 	retryState *Retry,
 ) dispatchIssueOutcome {
+	if err := o.checkDispatchPolicy(ctx); err != nil {
+		return dispatchIssueOutcome{reason: "policy_mismatch", waitReason: err.Error()}
+	}
 	if reason := connector.NonExecutableReason(issue); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: reason}
 	}
@@ -732,6 +735,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		Issue:                  issue,
 		Attempt:                attempt,
 		WorkAttemptID:          workAttemptID,
+		Policy:                 o.cfg.Policy,
 		Generation:             generation,
 		Mode:                   runMode,
 		DispatchSourceState:    dispatchStartSourceState,
@@ -766,6 +770,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 
 	reservation := reserveMergeCandidate(state, issue, now)
 	request := RunRequest{
+		Policy:              o.cfg.Policy,
 		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
 		Issue:               issue,
 		Attempt:             attempt,

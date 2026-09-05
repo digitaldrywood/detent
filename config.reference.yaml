@@ -2,6 +2,20 @@
 #
 # Every supported project key is commented out. Copy only the settings you
 # intend to override into detent.yaml or detent.local.yaml.
+# # runners | type: object | default: see child fields | required: No | validation: None
+# runners:
+#   # runners.profile | type: string | default: none | required: No | validation: must name a declared runner profile
+#   profile: null
+#   # runners.profiles | type: mapping<string, mapping> | default: {} | required: No | validation: names must be lowercase ASCII tokens of at most 64 characters
+#   profiles:
+#     # runners.profiles.<name> | type: object | default: see child fields | required: No | validation: None
+#     <name>:
+#       # runners.profiles.<name>.required_tags | type: list<string> | default: [] | required: No | validation: None
+#       required_tags: []
+#       # runners.profiles.<name>.runner_id | type: string | default: none | required: No | validation: None
+#       runner_id: null
+#       # runners.profiles.<name>.machine_id | type: string | default: none | required: No | validation: None
+#       machine_id: null
 # # identity | type: object | default: see child fields | required: No | validation: None
 # identity:
 #   # identity.name | type: string | default: none | required: Conditional | validation: must not be blank

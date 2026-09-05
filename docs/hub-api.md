@@ -4,6 +4,35 @@ Detent Hub owns its SQLite database and exposes fleet coordination through an au
 
 This page documents implemented behavior, including native collaboration and scoped runner enrollment through `/api/v2`. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture; native Changes, hosted human identity, artifact custody, and deployment contracts remain separate deliverables.
 
+## Approved repository policy
+
+Every API claim requires an approved `policy_id`. Compatibility claims also
+supply exactly one `repositories` entry; native claims use their authenticated
+organization/project scope. Policies are resolved on the customer host. See
+[configuration precedence and approval](config.md#repository-policy-with-hub-execution).
+
+| Endpoint suffix | Method | Authority and payload |
+| --- | --- | --- |
+| `/api/v1/repositories/{owner}/{repo}/policy` | `GET` | Read current descriptor and approval provenance with a compatibility credential |
+| `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor and approval provenance within native project grants |
+| Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
+| Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
+
+Descriptors reject unknown JSON fields and validate all metadata, hashes and
+content-derived identities. Worker/operator tokens cannot approve or revoke a
+policy. Native cross-project and cross-organization reads follow existing grant
+checks. Approval is a reviewed authorization of repository files, not a settings
+override. Commands, prose, paths, labels/check names and secrets are not accepted
+as policy fields.
+
+Claim allocation checks approval and requirements in the lease transaction and
+persists the identity with the lease. Responses include `policy_id`; native run
+events must match it. Missing/stale approval returns `409 policy_mismatch` before
+allocation. Unsupported or unmatched requirements return `409 selector_no_match`.
+Current policy cannot be replaced while active leases exist. Revocation denies
+renewals and run events but permits release. Legacy rows migrate without policy
+pins and cannot be reused through the API as approved execution claims.
+
 ## Start the Hub
 
 Set a high-entropy bootstrap administrator token, then start the service on its loopback default:
@@ -296,8 +325,8 @@ token to native-only access. Such tokens cannot use v1 or instance administratio
 including when their stored role is `admin`. Token rotation preserves grants;
 revocation prevents subsequent authenticated requests. The bootstrap administrator
 cannot be converted to a project token. Instance administration is deliberately
-separate from tenant access; hosted membership and enrollment are owned by #2193
-and #2184.
+separate from tenant access; hosted human membership remains owned by #2193.
+Enrolled runners use the scoped host identities described above.
 
 Every native project route requires both its organization and project grant.
 Unknown, guessed and inaccessible resource IDs return 404. Native machine IDs
@@ -334,7 +363,7 @@ events require worker scope. Instance administrators can perform these operation
 | `GET /work-items/{id}/versions/{revision}` | Immutable issue content snapshot |
 | `GET /work-items/{id}/comments/{comment_id}/versions/{revision}` | Immutable comment content snapshot |
 | `POST /machines/register` | `id`, `hostname`, `display_name`, `capacity`, `version`; registration also refreshes heartbeat |
-| `POST /claims` | `machine_id`, unique `session_id`, `ttl_seconds`, protocol negotiation, optional `work_item_id`, workflow and author/assignee/label filters |
+| `POST /claims` | Approved `policy_id`, `machine_id`, unique `session_id`, `ttl_seconds`, protocol negotiation, optional `work_item_id`, workflow and author/assignee/label filters |
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
@@ -401,8 +430,9 @@ transcripts, tool output, local paths, source, diffs and artifact bytes have no
 payload fields. The current lease and machine principal must match the item.
 Idempotent retries return the committed result; new events with an expired fence
 fail. A run outcome records a worker report, not a verified check or merge grant.
-Durable run/policy registration and richer recovery bindings are owned by #2186
-and #2183; these references do not assert those future authorities exist.
+The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
+and must equal the approved descriptor pinned to the lease. Durable Change/run
+registration and richer artifact recovery bindings remain owned by #2186.
 
 ## Worker connector inventory and compatibility
 

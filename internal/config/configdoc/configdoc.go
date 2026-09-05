@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 const (
@@ -191,6 +192,13 @@ func structNodes(
 
 		valueType := indirectType(field.Type)
 		switch {
+		case valueType == reflect.TypeFor[map[string]policy.Requirements]():
+			profilePath := path + ".<name>"
+			children := structNodes(reflect.TypeFor[policy.Requirements](), profilePath, nil, true, stack)
+			for _, child := range children {
+				child.synthetic = true
+			}
+			node.children = []*schemaNode{{key: "<name>", path: profilePath, typ: reflect.TypeFor[policy.Requirements](), synthetic: true, conditional: true, children: children}}
 		case valueType == reflect.TypeFor[config.BackendOptions]():
 			node.children = backendOptionNodes(path)
 		case valueType.Kind() == reflect.Struct && expandable(valueType) && stack[valueType] == 0:
@@ -338,6 +346,9 @@ func yamlType(typ reflect.Type, expanded bool) string {
 }
 
 func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string) {
+	if node.synthetic && strings.HasPrefix(node.path, "runners.profiles.") {
+		return describeValue(reflect.Zero(node.typ))
+	}
 	if node.synthetic {
 		return optionDefault(node.path)
 	}

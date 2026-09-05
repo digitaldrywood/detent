@@ -78,6 +78,20 @@ templ Settings(data SettingsData) {
 							@settingsRow("Project URL", project.TrackerProject, true, false)
 							@settingsRow("Workflow path", project.WorkflowPath, true, false)
 							@settingsRow("Workdir", project.Workdir, true, false)
+							if project.Policy.ID != "" {
+								@settingsRow("Approved policy", project.Policy.ID, true, false)
+								@settingsRow("Policy revision", project.Policy.SourceRevision, true, false)
+								@settingsRow("Runner profile", settingsText(project.Policy.Profile), false, false)
+								@settingsRow("Review gate", project.Policy.Gates.Kind, false, false)
+								@settingsRow("Automatic promotion", settingsBool(project.Policy.Gates.AutoPromote), false, false)
+								@settingsRow("Merge method", project.Policy.Gates.MergeMethod, false, false)
+							}
+							if project.PolicyError != "" {
+								<div class={ settingsRowClass(false) }>
+									<span class="col-span-2 text-xs text-sec md:col-span-1">Definition reload</span>
+									<span class="col-span-2 min-w-0 font-mono text-xs text-text [overflow-wrap:anywhere]">{ project.PolicyError }</span>
+								</div>
+							}
 							@settingsRow("Worktree root", project.WorktreeRoot, true, false)
 							@settingsRow("Weight", settingsInt(project.Weight), false, false)
 							@settingsRow("Priority", settingsInt(project.Priority), false, false)

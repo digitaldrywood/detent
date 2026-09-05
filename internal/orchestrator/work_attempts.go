@@ -244,6 +244,13 @@ func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *
 	}
 	queued := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
+		if session.WorkAttemptID != 0 || o.cfg.Policy.ID != "" {
+			attempt, err := o.workAttempts.WorkAttempt(ctx, session.WorkAttemptID)
+			if err != nil || o.checkAttemptPolicy(attempt) != nil {
+				o.logger.Warn("policy_mismatch: orphaned session requires its approved policy", "work_attempt_id", session.WorkAttemptID)
+				continue
+			}
+		}
 		issue, ok := issuesByID[session.IssueID]
 		if !ok || !o.orphanResumeEligible(issue, session, now) {
 			continue
@@ -318,6 +325,9 @@ func (o *Orchestrator) startDurableWorkAttempt(
 		return 0, true
 	}
 	metadata := map[string]any{"run_mode": strings.TrimSpace(runMode)}
+	if o.cfg.Policy.ID != "" {
+		metadata["policy"] = o.cfg.Policy
+	}
 	if strings.TrimSpace(runMode) == runpkg.RunModeImplement {
 		metadata[dispatchLoopStartMetadataKey] = dispatchLoopStart
 	}
@@ -1070,6 +1080,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 			continue
 		}
 		out[key] = value
+	}
+	if running.Policy.ID != "" {
+		out["policy"] = running.Policy
 	}
 	if pullRequest := running.Issue.PullRequest; pullRequest != nil {
 		if number := workAttemptPRNumber(running.Issue); number != nil {

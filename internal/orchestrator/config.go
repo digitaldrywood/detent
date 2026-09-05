@@ -24,6 +24,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 	}
 
 	return Config{
+		Policy:                     cfg.Policy,
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
 		RefreshFailureThreshold:    cfg.Polling.RefreshFailureThreshold,
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,

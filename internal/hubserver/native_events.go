@@ -15,7 +15,11 @@ import (
 
 func validNativeID(id, prefix string) bool {
 	value, ok := strings.CutPrefix(id, prefix+"_")
-	if !ok || len(value) != 32 {
+	length := 32
+	if prefix == "policy" {
+		length = 64
+	}
+	if !ok || len(value) != length {
 		return false
 	}
 	_, err := hex.DecodeString(value)
@@ -70,6 +74,13 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		}
 		if err := requireCurrentLease(lease, request.Data.FencingToken, now); err != nil {
 			return nil, err
+		}
+		if err := requireApprovedLeasePolicy(ctx, tx, request.Data.LeaseID, true); err != nil {
+			return nil, err
+		}
+		var pinned string
+		if err := tx.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", request.Data.LeaseID).Scan(&pinned); err != nil || pinned != request.Data.PolicyID {
+			return nil, policyMismatch("Run event policy must match the policy pinned to its lease")
 		}
 		var count int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM machines WHERE id = ? AND organization_id = ? AND token_id = ?", lease.session.Machine.ID, scope.organization, scope.credential.ID).Scan(&count); err != nil {

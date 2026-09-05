@@ -15,7 +15,7 @@ func TestConnectorRepositoryMergeSettings(t *testing.T) {
 			t.Fatalf("request = %s %s, want GET /repos/digitaldrywood/detent", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false}`))
+		_, _ = w.Write([]byte(`{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false,"allow_auto_merge":true}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -27,7 +27,7 @@ func TestConnectorRepositoryMergeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepositoryMergeSettings() error = %v", err)
 	}
-	want := RepositoryMergeSettings{AllowSquashMerge: true}
+	want := RepositoryMergeSettings{AllowSquashMerge: true, AllowAutoMerge: true}
 	if got != want {
 		t.Fatalf("RepositoryMergeSettings() = %#v, want %#v", got, want)
 	}

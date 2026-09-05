@@ -61,6 +61,7 @@ type WorkItem struct {
 }
 
 type ClaimRequest struct {
+	PolicyID      string            `json:"policy_id"`
 	MachineID     tracker.MachineID `json:"machine_id"`
 	SessionID     string            `json:"session_id"`
 	TTLSeconds    int64             `json:"ttl_seconds"`
