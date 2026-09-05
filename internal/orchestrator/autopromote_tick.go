@@ -3135,17 +3135,23 @@ func (o *Orchestrator) autoPromoteReworkLimit(
 func autoPromoteReworkLaneEntries(events []store.WorkflowPhaseEvent, reworkState string) []store.WorkflowPhaseEvent {
 	reworkState = normalizeState(reworkState)
 	entries := make([]store.WorkflowPhaseEvent, 0, len(events))
+	currentLane := ""
 	for _, event := range events {
 		if event.PhaseType != store.WorkflowPhaseTypeLane {
-			continue
-		}
-		if normalizeState(event.PhaseName) != reworkState {
 			continue
 		}
 		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
 			continue
 		}
-		entries = append(entries, event)
+		lane := normalizeState(event.PhaseName)
+		previousLane := normalizeState(event.PreviousPhaseName)
+		if previousLane == "" {
+			previousLane = currentLane
+		}
+		if lane == reworkState && previousLane != reworkState {
+			entries = append(entries, event)
+		}
+		currentLane = lane
 	}
 	return entries
 }
