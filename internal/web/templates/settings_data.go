@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -34,6 +35,8 @@ type SettingsGlobal struct {
 }
 
 type SettingsProject struct {
+	Policy                policy.Descriptor
+	PolicyError           string
 	ID                    string
 	WorkflowPath          string
 	WorkflowDetailsURL    string

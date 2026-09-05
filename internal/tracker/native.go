@@ -180,6 +180,7 @@ type NativeProject struct {
 }
 
 type NativeClaim struct {
+	PolicyID       string           `json:"policy_id"`
 	WorkItemID     NativeWorkItemID `json:"work_item_id,omitempty"`
 	MachineID      MachineID        `json:"machine_id"`
 	SessionID      string           `json:"session_id"`
@@ -194,6 +195,7 @@ type NativeClaim struct {
 }
 
 type NativeLease struct {
+	PolicyID     string           `json:"policy_id"`
 	ID           LeaseID          `json:"lease_id"`
 	WorkItemID   NativeWorkItemID `json:"work_item_id"`
 	MachineID    MachineID        `json:"machine_id"`

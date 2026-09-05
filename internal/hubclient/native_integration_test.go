@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -68,6 +69,14 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := client.request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": organization, "project_id": project.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := clientTestPolicy()
+	adminNative, err := client.Native(organization, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminNative.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
 	parsed, err := url.Parse(server.URL)
@@ -154,7 +163,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if !ok || provided.Name() != "hub_native" {
 		t.Fatal("native project did not receive native connector")
 	}
-	candidates, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", WorkflowStates: []string{"Todo"}})
+	candidates, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}})
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("candidates = %#v, error = %v", candidates, err)
 	}

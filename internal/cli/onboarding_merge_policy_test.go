@@ -25,7 +25,7 @@ func TestInspectOnboardingMergePolicy(t *testing.T) {
 	}{
 		{
 			name:                "template default",
-			settings:            ghconnector.RepositoryMergeSettings{AllowSquashMerge: true},
+			settings:            ghconnector.RepositoryMergeSettings{AllowSquashMerge: true, AllowAutoMerge: true},
 			wantMethod:          workflowconfig.MergeMethodSquash,
 			wantSource:          "template_default",
 			wantSelectedEnabled: true,
@@ -88,6 +88,7 @@ func TestInspectOnboardingMergePolicy(t *testing.T) {
 				t.Fatalf("AdditionalMethodsEnabled = %t, want %t", result.AdditionalMethodsEnabled, tt.wantAdditionalEnable)
 			}
 			if result.AllowMergeCommit != tt.settings.AllowMergeCommit ||
+				result.AllowAutoMerge != tt.settings.AllowAutoMerge ||
 				result.AllowSquashMerge != tt.settings.AllowSquashMerge ||
 				result.AllowRebaseMerge != tt.settings.AllowRebaseMerge {
 				t.Fatalf("repository settings = %#v, want %#v", result, tt.settings)

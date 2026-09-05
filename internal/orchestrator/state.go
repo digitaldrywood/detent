@@ -12,6 +12,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
@@ -133,6 +134,7 @@ type StalenessWarning struct {
 }
 
 type Running struct {
+	Policy                      policy.Descriptor
 	Issue                       connector.Issue
 	Attempt                     int
 	WorkAttemptID               int64

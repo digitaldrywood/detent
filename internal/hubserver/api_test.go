@@ -231,6 +231,8 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	now := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
 	repositoryID, issueID := seedProjection(t, service.database.db)
+	descriptor := hubTestPolicy()
+	approveHubTestPolicy(t, service, "/api/v1/repositories/digitaldrywood/detent/policy", descriptor)
 	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
 		t.Fatalf("mark repository fresh: %v", err)
 	}
@@ -249,7 +251,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			payload, _ := json.Marshal(map[string]any{"machine_id": "machine-a", "session_id": fmt.Sprintf("session-%d", index), "ttl_seconds": 90})
+			payload, _ := json.Marshal(map[string]any{"policy_id": descriptor.ID, "repositories": []string{"digitaldrywood/detent"}, "machine_id": "machine-a", "session_id": fmt.Sprintf("session-%d", index), "ttl_seconds": 90})
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/claims", bytes.NewReader(payload))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
@@ -319,7 +321,9 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 		t.Fatalf("other workflow state ID: %v", err)
 	}
 	otherRepositoryIssueID := insertHubTestIssue(t, service, otherRepositoryID, 1, "I_other_repository", "open", &otherWorkflowID)
+	approveHubTestPolicy(t, service, "/api/v1/repositories/acme/other/policy", descriptor)
 	repositoryScoped := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"policy_id":  descriptor.ID,
 		"machine_id": "machine-a", "session_id": "repository-session", "ttl_seconds": 90, "repositories": []string{"acme/other"},
 	})
 	if repositoryScoped.Code != http.StatusCreated {
@@ -343,6 +347,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 		t.Fatalf("heartbeat machine = %#v", machine)
 	}
 	specific := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"policy_id": descriptor.ID, "repositories": []string{"digitaldrywood/detent"},
 		"work_item_id": issueID, "machine_id": "machine-a", "session_id": "specific-session", "ttl_seconds": 90,
 	})
 	if specific.Code != http.StatusCreated {
@@ -354,6 +359,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	}
 	otherID := insertHubTestIssue(t, service, repositoryID, 2, "I_other_claim", "open", &workflowID)
 	mismatched := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"policy_id": descriptor.ID, "repositories": []string{"digitaldrywood/detent"},
 		"work_item_id": otherID, "machine_id": "machine-a", "session_id": "specific-session", "ttl_seconds": 90,
 	})
 	if mismatched.Code != http.StatusConflict {
@@ -367,6 +373,8 @@ func TestClaimNextAPIAppliesAuthorizationFiltersBeforeClaim(t *testing.T) {
 	now := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
 	repositoryID, rejectedID := seedProjection(t, service.database.db)
+	descriptor := hubTestPolicy()
+	approveHubTestPolicy(t, service, "/api/v1/repositories/digitaldrywood/detent/policy", descriptor)
 	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
 		t.Fatalf("mark repository fresh: %v", err)
 	}
@@ -388,6 +396,7 @@ func TestClaimNextAPIAppliesAuthorizationFiltersBeforeClaim(t *testing.T) {
 		t.Fatalf("register machine status = %d body = %s", registered.Code, registered.Body.String())
 	}
 	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+		"policy_id": descriptor.ID, "repositories": []string{"digitaldrywood/detent"},
 		"machine_id": "machine-a", "session_id": "filtered-session", "ttl_seconds": 90,
 		"authors": []string{"alice"}, "assignees": []string{"worker-a"},
 		"label_include": []string{"detent:todo", "backend"}, "label_exclude": []string{"hold"},
@@ -436,6 +445,8 @@ func TestClaimNextAPIRejectsUnsafeRepositorySyncHealth(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
 			repositoryID, _ := seedProjection(t, service.database.db)
+			descriptor := hubTestPolicy()
+			approveHubTestPolicy(t, service, "/api/v1/repositories/digitaldrywood/detent/policy", descriptor)
 			test.setup(t, service, repositoryID)
 			registered := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, map[string]any{
 				"id": "machine-a", "hostname": "worker-a", "capacity": 1, "version": "v1",
@@ -444,6 +455,7 @@ func TestClaimNextAPIRejectsUnsafeRepositorySyncHealth(t *testing.T) {
 				t.Fatalf("register machine status = %d body = %s", registered.Code, registered.Body.String())
 			}
 			claimed := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/claims", testHubAdminToken, map[string]any{
+				"policy_id": descriptor.ID, "repositories": []string{"digitaldrywood/detent"},
 				"machine_id": "machine-a", "session_id": "unsafe-sync-session", "ttl_seconds": 90,
 			})
 			if claimed.Code != http.StatusConflict {

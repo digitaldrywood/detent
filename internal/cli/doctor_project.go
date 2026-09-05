@@ -41,6 +41,9 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.Identity = cfg.Global.Identity
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
+		if cfg.Client.Configured() {
+			checks = append(checks, checkDoctorHubPolicy(ctx, cfg, project, deps))
+		}
 	}
 
 	return checks
@@ -215,7 +218,11 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
 				jobCtx = connector.WithProgressReporter(jobCtx, progress.Pulse)
-				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
+				checks := checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
+				if cfg.Client.Configured() {
+					checks = append(checks, checkDoctorHubPolicy(jobCtx, cfg, project, deps))
+				}
+				return checks
 			},
 		})
 	}

@@ -79,6 +79,8 @@ func settingsProjects(ctx context.Context, registry *project.Registry) []templat
 		workflow := trackedProject.Workflow().Config
 		projectURL := settingsTrackerProjectURL(ctx, trackedProject, workflow)
 		out = append(out, templates.SettingsProject{
+			Policy:                workflow.Policy,
+			PolicyError:           trackedProject.WorkflowSourceStatus().LastReloadError,
 			ID:                    string(trackedProject.ID()),
 			WorkflowPath:          cfg.Workflow,
 			WorkflowDetailsURL:    workflowDetailsURL(projectURL),

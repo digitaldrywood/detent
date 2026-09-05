@@ -58,6 +58,7 @@ type WorkAttemptRecoveryRequest struct {
 }
 
 type WorkAttemptRecoveryResponse struct {
+	PolicyMismatch  string                                `json:"policy_mismatch,omitempty"`
 	Attempt         telemetry.WorkAttempt                 `json:"attempt"`
 	Action          WorkAttemptRecoveryAction             `json:"action,omitempty"`
 	Status          string                                `json:"status,omitempty"`
@@ -222,7 +223,12 @@ func (o *Orchestrator) workAttemptRecoveryReceipt(ctx context.Context, projectID
 	snapshot := telemetryWorkAttempt(attempt, now)
 	resumeState, resumeEligible := o.latestWorkAttemptResumeState(ctx, attempt)
 	available := availableWorkAttemptRecoveryActions(snapshot, resumeEligible, o.reaper != nil)
+	var policyMismatch string
+	if err := o.checkAttemptPolicy(attempt); err != nil {
+		policyMismatch = err.Error()
+	}
 	return WorkAttemptRecoveryResponse{
+		PolicyMismatch:  policyMismatch,
 		Attempt:         snapshot,
 		Available:       available,
 		ResumeEligible:  resumeEligible,
@@ -373,6 +379,9 @@ func (o *Orchestrator) cleanupWorkAttemptWorkspace(
 
 func (o *Orchestrator) latestWorkAttemptResumeState(ctx context.Context, attempt store.WorkAttempt) (*WorkAttemptResumeState, bool) {
 	if o == nil || o.agentResume == nil {
+		return nil, false
+	}
+	if err := o.checkAttemptPolicy(attempt); err != nil {
 		return nil, false
 	}
 	state, err := o.agentResume.LatestIssueAgentResumeState(ctx, store.IssueIdentity{

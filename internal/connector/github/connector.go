@@ -147,6 +147,7 @@ type Connector struct {
 }
 
 type RepositoryMergeSettings struct {
+	AllowAutoMerge   bool `json:"allow_auto_merge"`
 	AllowMergeCommit bool `json:"allow_merge_commit"`
 	AllowSquashMerge bool `json:"allow_squash_merge"`
 	AllowRebaseMerge bool `json:"allow_rebase_merge"`

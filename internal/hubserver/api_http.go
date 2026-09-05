@@ -24,6 +24,9 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	worker := s.requireAPIScope(apiScopeWorker)
 	operator := s.requireAPIScope(apiScopeOperator)
 	admin := s.requireAPIScope(apiScopeAdmin)
+	e.GET("/api/v1/repositories/:owner/:repo/policy", s.getProjectPolicy, read)
+	e.PUT("/api/v1/repositories/:owner/:repo/policy", s.approveProjectPolicy, s.requireInstanceAdmin())
+	e.DELETE("/api/v1/repositories/:owner/:repo/policy", s.revokeProjectPolicy, s.requireInstanceAdmin())
 
 	e.GET("/health", s.health, read)
 	e.GET("/api/v1/work-items", s.listWorkItems, read)

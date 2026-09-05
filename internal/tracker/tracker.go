@@ -123,6 +123,7 @@ type MachineSummary struct {
 }
 
 type LeaseSummary struct {
+	PolicyID     string         `json:"policy_id,omitempty"`
 	ID           LeaseID        `json:"id"`
 	FencingToken FencingToken   `json:"fencing_token"`
 	Machine      MachineSummary `json:"machine"`

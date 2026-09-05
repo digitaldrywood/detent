@@ -525,6 +525,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	if o.scheduling != nil {
 		return o.scheduling.FetchCandidateIssues(ctx, SchedulingRequest{
+			Policy:         o.cfg.Policy,
 			ProjectID:      o.cfg.Project.ID,
 			Repository:     o.cfg.SchedulingRepository,
 			WorkflowStates: states,

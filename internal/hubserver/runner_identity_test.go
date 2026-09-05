@@ -219,11 +219,24 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	other.enroll(t)
 	issue := f.create(t, "work")
-	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	descriptor := hubTestPolicy()
+	descriptor.Requirements.RunnerID = r.binding.RunnerID
+	descriptor.Requirements.MachineID = string(r.binding.MachineID)
+	descriptor = descriptor.WithID()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
+	otherClaim := claim
+	otherClaim.MachineID = other.binding.MachineID
+	otherClaim.SessionID = "other-session"
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, otherClaim)
+	requireNativeStatus(t, response, http.StatusConflict)
+	if !strings.Contains(response.Body.String(), "selector_no_match") {
+		t.Fatal("an enrolled runner widened the approved selector")
+	}
 	for _, test := range []struct {
 		name, method, path string
 		body               any
@@ -244,7 +257,7 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, test.method, test.path, other.redemption.Credential, test.body), test.want)
 		})
 	}
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: newNativeID("policy")}}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: descriptor.ID}}
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", other.redemption.Credential, event), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, event), http.StatusOK)

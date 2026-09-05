@@ -1237,6 +1237,10 @@ func (r *Runner) agentResumeState(
 		}
 		return store.AgentResumeState{}
 	}
+	if err := r.checkResumePolicy(ctx, req, state); err != nil {
+		r.logger.Warn("automatic thread resume rejected", "issue_id", req.Issue.ID, "error", err)
+		return store.AgentResumeState{}
+	}
 	r.logWorkerEvent(req.Issue, "worker_thread_resume_selected",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 		"resumed_from_session_id", state.DetentSessionID,
@@ -1352,6 +1356,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
+	if req.Policy.ID != "" || workflow.Config.Policy.ID != "" {
+		if err := req.Policy.Match(workflow.Config.Policy); err != nil {
+			return RunResult{}, err
+		}
+	}
+	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
+		return RunResult{}, err
+	}
 	forgeHost := forgeavailability.HostFromEndpoint(workflow.Config.Tracker.Endpoint)
 	mode := normalizeRunMode(req.Mode)
 	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {

@@ -135,7 +135,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	}, nil
 }
 
-func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (lease tracker.Lease, resultErr error) {
+func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (tracker.Lease, error) {
+	return d.renew(ctx, request, false)
+}
+
+func (d *database) renew(ctx context.Context, request tracker.RenewRequest, policyRequired bool) (lease tracker.Lease, resultErr error) {
 	request, err := normalizeRenewRequest(request)
 	if err != nil {
 		return tracker.Lease{}, err
@@ -162,6 +166,9 @@ func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (lea
 		return tracker.Lease{}, fmt.Errorf("%w: %s", tracker.ErrLeaseNotFound, request.LeaseID)
 	}
 	if err := requireCurrentLease(record, request.FencingToken, now); err != nil {
+		return tracker.Lease{}, err
+	}
+	if err := requireApprovedLeasePolicy(ctx, tx, request.LeaseID, policyRequired); err != nil {
 		return tracker.Lease{}, err
 	}
 
@@ -262,7 +269,11 @@ WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
 	return nil
 }
 
-func (d *database) AppendEvent(ctx context.Context, event tracker.WorkEvent) (resultErr error) {
+func (d *database) AppendEvent(ctx context.Context, event tracker.WorkEvent) error {
+	return d.appendEvent(ctx, event, false)
+}
+
+func (d *database) appendEvent(ctx context.Context, event tracker.WorkEvent, policyRequired bool) (resultErr error) {
 	event, err := normalizeWorkEvent(event)
 	if err != nil {
 		return err
@@ -294,6 +305,9 @@ func (d *database) AppendEvent(ctx context.Context, event tracker.WorkEvent) (re
 		return fmt.Errorf("%w: work item %d", tracker.ErrStaleFencingToken, event.WorkItemID)
 	}
 	if err := requireCurrentLease(current, event.FencingToken, now); err != nil {
+		return err
+	}
+	if err := requireApprovedLeasePolicy(ctx, tx, current.session.ID, policyRequired); err != nil {
 		return err
 	}
 	if event.MachineID != "" && event.MachineID != current.session.Machine.ID {

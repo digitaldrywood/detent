@@ -14,13 +14,16 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
+	descriptor := clientTestPolicy()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	lease := tracker.Lease{LeaseSummary: tracker.LeaseSummary{
-		ID: "lease-1", FencingToken: 7, Machine: tracker.MachineSummary{ID: "machine-a", Hostname: "host-a"},
+		PolicyID: descriptor.ID,
+		ID:       "lease-1", FencingToken: 7, Machine: tracker.MachineSummary{ID: "machine-a", Hostname: "host-a"},
 		SessionID: "session-1", AcquiredAt: now, RenewedAt: now, ExpiresAt: now.Add(90 * time.Second),
 	}, WorkItemID: 42}
 	machine := Machine{ID: "machine-a", Hostname: "host-a", DisplayName: "Build Mac", Capacity: 2, Version: "v1.2.3"}
@@ -43,6 +46,8 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 		mu.Unlock()
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
+		case "/api/v1/repositories/acme/widgets/policy":
+			_ = json.NewEncoder(response).Encode(policy.Approval{Policy: descriptor})
 		case "/api/v1/machines/register", "/api/v1/machines/machine-a/heartbeat":
 			_ = json.NewEncoder(response).Encode(machine)
 		case "/api/v1/claims":
@@ -80,6 +85,7 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 		t.Fatalf("NewScheduler() error = %v", err)
 	}
 	issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+		Policy:    descriptor,
 		ProjectID: "widgets", Repository: "acme/widgets", WorkflowStates: []string{"Todo"},
 		Filter: connector.IssueFilterHint{
 			Authors: []string{"alice"}, Assignees: []string{"worker-a"},
@@ -107,12 +113,18 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "completed"); err != nil {
 		t.Fatalf("ReleaseClaim() error = %v", err)
 	}
+	if len(scheduler.claimPolicies) != 0 {
+		t.Fatal("released claim retained policy state")
+	}
 
 	wantPaths := []string{
+		"GET /api/v1/repositories/acme/widgets/policy",
 		"POST /api/v1/machines/register",
 		"POST /api/v1/claims",
 		"GET /api/v1/work-items/42",
+		"GET /api/v1/repositories/acme/widgets/policy",
 		"POST /api/v1/machines/machine-a/heartbeat",
+		"GET /api/v1/repositories/acme/widgets/policy",
 		"POST /api/v1/leases/lease-1/renew",
 		"POST /api/v1/leases/lease-1/release",
 	}
@@ -201,7 +213,7 @@ func TestSchedulerHubOutageIsUnavailableBeforeClaim(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewScheduler() error = %v", err)
 			}
-			issues, err := scheduler.FetchCandidateIssues(context.Background(), orchestrator.SchedulingRequest{Repository: "acme/widgets"})
+			issues, err := scheduler.FetchCandidateIssues(context.Background(), orchestrator.SchedulingRequest{Policy: clientTestPolicy(), Repository: "acme/widgets"})
 			if !errors.Is(err, ErrUnavailable) || !errors.Is(err, orchestrator.ErrSchedulingUnavailable) || len(issues) != 0 {
 				t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
 			}

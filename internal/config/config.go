@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/publication"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
@@ -150,6 +151,8 @@ type WorkflowOverlay struct {
 }
 
 type Config struct {
+	Policy            policy.Descriptor    `yaml:"-" json:"-"`
+	Runners           Runners              `yaml:"runners,omitempty"`
 	Identity          Identity             `yaml:"identity,omitempty"`
 	ActiveHours       activehours.Config   `yaml:"active_hours,omitempty"`
 	Tracker           Tracker              `yaml:"tracker"`
@@ -1549,6 +1552,7 @@ func StringValue(value string) StringOrMap {
 
 func (c *Config) Validate() error {
 	var problems []string
+	problems = append(problems, c.Runners.Validate()...)
 
 	problems = append(problems, c.Identity.Validate("identity")...)
 	problems = append(problems, c.ActiveHours.Validate("active_hours")...)

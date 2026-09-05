@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hostpressure"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -75,6 +76,7 @@ var (
 )
 
 type Config struct {
+	Policy                        policy.Descriptor
 	PollInterval                  time.Duration
 	RefreshFailureThreshold       int
 	MaxConcurrentAgents           int
@@ -174,6 +176,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	Policy         policy.Descriptor
 	ProjectID      string
 	Repository     string
 	WorkflowStates []string

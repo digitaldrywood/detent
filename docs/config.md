@@ -10,6 +10,115 @@ Detent has two configuration layers:
 This page is the single reference for both configuration layers. Project
 configuration is documented below after the host-wide settings.
 
+## Repository policy with Hub execution
+
+Connecting a project to Hub preserves its repository definition. The customer
+host resolves the existing files and an administrator explicitly approves the
+resulting descriptor. Hub never supplies replacement workflow prose or rewrites
+repository settings. Use `detent hub policy inspect --config /path/global.yaml
+--project orders` to review the resolved metadata before approval.
+
+Configuration precedence and authorization are applied in this order:
+
+| Order | Layer | Effect |
+| --- | --- | --- |
+| 1 | Parser defaults | Existing defaults and legacy compatibility are unchanged. |
+| 2 | Project definition anchor | `projects[].workflow` selects the definition directory, including an external root. `detent.yaml` plus prompt-only `WORKFLOW.md` use schema 1; legacy frontmatter remains supported. Mixed structured authority is rejected. No competing checkout file is searched. |
+| 3 | Machine overlays | Existing `detent.local.yaml` and `WORKFLOW.local.md` rules apply: mappings merge, explicit scalars/sequences replace, supported empty/false values clear, and local prose appends. |
+| 4 | Host configuration | Existing flags/environment/global precedence, identity, paths, authorization filters, pool/backend limits, budgets and host ceilings remain enforced on customer infrastructure. Repository requirements cannot increase host permissions or capacity. |
+| 5 | Explicit Hub approval | The complete resolved policy must match an administrator-approved descriptor for this repository or native organization/project. Approval authorizes that exact effective definition, including its local overrides; it does not override its gates. Missing, stale or contradictory policy denies dispatch. |
+| 6 | Run pin | Claims atomically pin the approved policy. The customer runner rechecks approval before dispatch, claim adoption and renewal, and checks its loaded workflow before credentials or workspace creation. |
+
+Use an administrator-selected `workflow_ref` to read shared files from a trusted
+Git commit. The loader resolves the ref once and reads shared files at that
+commit; edits to the working branch do not change it. Local overlays still need
+approval. An external definition is authorized by reviewing its resolved content
+digest through the same approval command. Approvals must be performed outside
+the implementation worker; do not give workers the Hub administrator credential.
+
+`hub policy inspect` operates locally and prints schema 1, the source revision,
+source/configuration digests, a content-derived `policy_id`, selected runner
+requirements and bounded gate metadata. The digest covers the effective
+configuration and workflow; it does not expose the content. Workflow prose,
+commands, local paths, credentials, environment values, approval-label text and
+check names remain on customer infrastructure. A plan stop is represented by a
+digest, while required checks are represented by their count. Custom gate and
+validator settings still contribute to the effective configuration digest.
+
+After reviewing the files and descriptor, an administrator runs:
+
+```sh
+detent hub policy approve --config /path/global.yaml --project orders
+```
+
+The command reads `DETENT_HUB_ADMIN_TOKEN` (or `--admin-token-env`) and uploads
+only the descriptor. Replacement requires `--expected-policy-id policy_...` to
+prevent a stale approval from overwriting another administrator's decision.
+Changing effective files, permitted local adjustments, resolved environment
+values or the trusted source revision requires a new reviewed approval. Each
+host must resolve the approved effective definition; another host's descriptor
+is not permission to use different local settings.
+
+Active leases retain their policy, and Hub refuses a replacement while they
+remain active. Finish or cancel those attempts, approve the new descriptor, and
+restart the customer Detent process to adopt it. Invalid or unapproved reloads
+retain the last-known-good configuration and report an actionable error. A
+running process retains its policy even if a new descriptor is approved. Resumed
+provider sessions must match the policy stored with their original attempt;
+missing or mismatched recovery identities are rejected. Automatic thread reuse
+falls back to a fresh attempt under the newly approved policy.
+
+Administrators can revoke the current approval through the policy API. This
+immediately denies claims, lease renewal and new run events. Worker heartbeat
+checks observe the revocation and stop work through existing lease-loss handling;
+release remains available. Historical revisions and lease pins are retained.
+
+Plan-review stops, gate kinds, human approval, automatic-promotion opt-outs,
+CI/check requirements, validators, security audits and merge methods remain
+project-specific. Two repositories sharing a runner retain separate approvals
+and gates. Hub approval is not a human plan/PR approval. GitHub's repository
+automatic-merge setting remains owned by that repository; onboarding inspection
+reports it without changing it. Host restrictions and revoked authority win over
+an approved policy or a Hub allowance. Hub has no browser setting that silently
+relaxes repository policy.
+
+Effective policy appears in project settings, work-attempt receipts, health
+workflow provenance and `detent doctor` output. Policy mismatches leave work
+waiting without creating an execution attempt or consuming execution retries.
+
+### Named runner requirements
+
+Declare profiles in the existing shared or legacy configuration and select one
+with `runners.profile`:
+
+```yaml
+runners:
+  profile: build
+  profiles:
+    build:
+      required_tags: [linux, go]
+      machine_id: machine_0123456789abcdef
+      runner_id: runner_0123456789abcdef
+```
+
+Profiles and tags use ASCII letters/digits with `-`, `_` and `.`, up to 64
+characters. Tags are trimmed, lowercased, sorted and deduplicated; profile names
+must already be lowercase. At most 32 profiles and 32 tags per profile are
+accepted. Selectors are optional stable IDs with `machine_` or `runner_` prefixes;
+display names are not selectors. Every required tag and every explicit selector
+must match. Unknown selectors never widen to another host. An empty profile
+selection has no extra routing requirements. Explicit empty lists and selector
+strings in local overlays retain their existing clearing semantics and require
+approval as part of the effective definition.
+
+Profiles declare requirements, never enrollment or capabilities. Machine
+registration still happens on an authorized physical host. The Hub checks
+machine pins and matches runner IDs only against authenticated enrolled runner
+identities. Legacy worker tokens cannot assert an enrolled runner ID. Required
+tags return `selector_no_match` until the authorized tag-placement deliverable
+#2185 is available. Self-reported machine capabilities never satisfy privileged
+tags. See [runner enrollment](hub-api.md) for the separate host authorization path.
+
 ## Host configuration
 
 At startup, Detent resolves `global.yaml` in this order. The first matching rule wins.
@@ -969,6 +1078,13 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `routines[].prompt` | `string` | `none` | Conditional | is required |
 | `routines[].schedule` | `string` | `none` | Conditional | is required<br>must be a valid five-field cron expression |
 | `routines[].target_state` | `string` | `"Todo" when configured` | No | must name a configured workflow state |
+| `runners` | `object` | `see child fields` | No | None |
+| `runners.profile` | `string` | `none` | No | must name a declared runner profile |
+| `runners.profiles` | `mapping<string, mapping>` | `{}` | No | names must be lowercase ASCII tokens of at most 64 characters |
+| `runners.profiles.<name>` | `object` | `see child fields` | No | None |
+| `runners.profiles.<name>.machine_id` | `string` | `none` | No | None |
+| `runners.profiles.<name>.required_tags` | `list<string>` | `[]` | No | None |
+| `runners.profiles.<name>.runner_id` | `string` | `none` | No | None |
 | `schedule_ownership` | `object` | `see child fields` | No | None |
 | `schedule_ownership.backend` | `string` | `"github_ref"` | No | must be github_ref |
 | `schedule_ownership.branch` | `string` | `"detent-schedule-coordination"` | No | must be a valid branch name |
