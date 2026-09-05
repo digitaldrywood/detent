@@ -3502,7 +3502,15 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 	}{
 		{name: "current green head", want: true},
 		{name: "normalized current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = " CLEAN " }, want: true},
-		{name: "behind green head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "behind" }},
+		{name: "behind green head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "behind" }, want: true},
+		{name: "required failure despite aggregate green", mutate: func(pr *connector.PullRequest) {
+			pr.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Conclusion: "failure"}}
+		}},
+		{name: "native queue entry", mutate: func(pr *connector.PullRequest) {
+			pr.MergeQueueEntry = &connector.PullRequestMergeQueueEntry{ID: "queue"}
+		}},
+		{name: "degraded hydration", mutate: func(pr *connector.PullRequest) { pr.HydrationDegradedReason = "unavailable" }},
+		{name: "conflict", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "dirty" }},
 		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
 		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
 		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},

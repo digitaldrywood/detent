@@ -4973,6 +4973,43 @@ func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T
 	}
 }
 
+func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		status  int
+		message string
+		want    bool
+	}{
+		{"strict protection", 405, "Head branch is out of date. Review and try the merge again.", true},
+		{"base race", 405, "Base branch was modified. Review and try the merge again.", true},
+		{"required failure", 405, "Required status check Test is failing.", false},
+		{"native queue", 405, "Pull request must be merged using the merge queue.", false},
+		{"conflict", 405, "Pull Request is not mergeable", false},
+		{"changed head", 409, "Head branch is out of date.", false},
+		{"permission", 403, "Head branch is out of date.", false},
+		{"transient", 502, "Head branch is out of date.", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body, err := json.Marshal(map[string]string{"message": tt.message})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{method: http.MethodPut, path: "/repos/example/repo/pulls/42/merge", status: tt.status, body: string(body)}})
+			c := newGitHubTestConnector(t, server, Config{})
+			err = c.MergePullRequest(t.Context(), "example/repo", 42, "checked-head", "squash")
+			if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) != tt.want {
+				t.Fatalf("error = %v, want base refusal %t", err, tt.want)
+			}
+			var status *StatusError
+			if !errors.As(err, &status) || status.StatusCode != tt.status {
+				t.Fatalf("lost original status: %v", err)
+			}
+		})
+	}
+}
+
 func TestConnectorMergePullRequestUsesConfiguredMethod(t *testing.T) {
 	t.Parallel()
 

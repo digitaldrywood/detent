@@ -300,9 +300,10 @@ func TestDispatchReadyIssuesMergeFairnessReservation(t *testing.T) {
 			wantReadyReason:  mergeSelectionReasonClean,
 		},
 		{
-			name:            "aged retry reserves lane after invalidation",
-			enteredAt:       now.Add(-threshold),
-			wantReadyReason: dispatchSkipMergeFairnessReserved,
+			name:             "aged retry allows another repository",
+			enteredAt:        now.Add(-threshold),
+			wantReadyRunning: true,
+			wantReadyReason:  mergeSelectionReasonClean,
 		},
 	}
 

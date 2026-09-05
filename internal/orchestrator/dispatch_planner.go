@@ -67,6 +67,7 @@ func (p dispatchPlanner) plan(
 ) DispatchPlan {
 	p.now = now
 	state.ensureInitialized(p.cfg)
+	reconcileMergeReservations(state, candidates, p.cfg, now)
 	p.trackOwnershipAttentionCandidates(state, candidates, now)
 
 	plannedCandidates := cloneIssues(candidates)
@@ -99,7 +100,15 @@ func (p dispatchPlanner) plan(
 		if correctableDispatchEscalated(state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
 			continue
 		}
-		if mergePriority.stickyIssueID != "" && mergeWorkerIssue(issue) && strings.TrimSpace(issue.ID) != mergePriority.stickyIssueID {
+		if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
+			logDecision(dispatchPlanDecision{
+				Issue: issue, QueuePosition: queuePosition,
+				SkipReason: "merge_ci_reservation",
+				SkipDetail: "reserved for " + reservation.IssueID + " head=" + reservation.HeadSHA + " base=" + reservation.BaseSHA + " until=" + reservation.ExpiresAt.Format(time.RFC3339),
+			})
+			continue
+		}
+		if mergeFairnessBlocks(state, mergePriority.stickyIssueID, issue, now) {
 			logDecision(dispatchPlanDecision{
 				Issue:         issue,
 				QueuePosition: queuePosition,
@@ -415,6 +424,7 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
+	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
 		Issue:             issue,
 		Attempt:           action.attempt,

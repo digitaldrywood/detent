@@ -50,6 +50,9 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	stickyIssueID := stickyMergingIssueID(state, out, now, o.cfg.MergeFairnessAge)
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
+		if _, reserved := mergeReservationBlocks(state, candidate, now); reserved {
+			continue
+		}
 		issueID := strings.TrimSpace(candidate.ID)
 		if !nativeMergeQueueCandidate(candidate, o.cfg) || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
@@ -58,7 +61,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
 			continue
 		}
-		if stickyIssueID != "" && issueID != stickyIssueID {
+		if mergeFairnessBlocks(state, stickyIssueID, candidate, now) {
 			continue
 		}
 

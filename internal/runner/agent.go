@@ -746,7 +746,11 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	if !strings.EqualFold(strings.TrimSpace(pullRequest.State), "open") || pullRequest.Draft {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(pullRequest.MergeableState), "clean") {
+	mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
+	if mergeable != "clean" && mergeable != "behind" {
+		return false
+	}
+	if pullRequest.HydrationUnavailableReason != "" || pullRequest.HydrationDegradedReason != "" || len(pullRequest.RequiredCheckFailures) > 0 || pullRequest.MergeQueueEntry != nil {
 		return false
 	}
 	if strings.TrimSpace(pullRequest.HeadSHA) == "" {
@@ -1350,10 +1354,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
 	forgeHost := forgeavailability.HostFromEndpoint(workflow.Config.Tracker.Endpoint)
 	mode := normalizeRunMode(req.Mode)
-	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) {
+	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			"workspace_branch", strings.TrimSpace(req.Issue.BranchName),
+			"head_sha", req.Issue.PullRequest.HeadSHA,
+			"base_sha", req.Issue.PullRequest.BaseSHA,
+			"reason", "preserve_green_head_for_merge_api",
+			"prior_validation_invalidated", false,
 		)
 		return RunResult{
 			FinalState: FinalStateCompleted,

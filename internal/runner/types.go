@@ -595,6 +595,7 @@ type RunRequest struct {
 	AgentToolHandler          AgentToolHandler
 	AcquireModelPermit        ModelPermitAcquirer
 	MergePrecheck             *MergePrecheck
+	MergeRefreshHeadSHA       string
 	ForgeRetry                *ForgeRetry
 	sessionBrake              *sessionBrakeController
 	workerGitHubActor         connector.IssueActor

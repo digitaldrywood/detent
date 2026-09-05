@@ -533,6 +533,13 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	}
 	var response restPullRequestMergeResponse
 	if err := c.client.REST(ctx, http.MethodPut, restPullRequestMergePath(repo, number), body, &response); err != nil {
+		var status *StatusError
+		if errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
+			message := strings.ToLower(status.Body)
+			if strings.Contains(message, "head branch is out of date") || strings.Contains(message, "base branch was modified") {
+				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestBaseOutOfDate, err)
+			}
+		}
 		return fmt.Errorf("merge github pull request: %w", err)
 	}
 	if !response.Merged {

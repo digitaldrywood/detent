@@ -102,20 +102,48 @@ func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
 	})
 
 	tests := []struct {
-		name  string
-		setup func(*State)
+		name           string
+		setup          func(*State)
+		sameRepository bool
+		wantEnqueued   int
 	}{
 		{
-			name: "running aged head",
+			name:         "running aged head allows other repository",
+			wantEnqueued: 1,
 			setup: func(state *State) {
 				state.Running[aged.ID] = Running{Issue: aged, StartedAt: now.Add(-time.Minute)}
 			},
 		},
 		{
-			name: "retrying aged head",
+			name:         "retrying aged head allows other repository",
+			wantEnqueued: 1,
 			setup: func(state *State) {
 				state.Retry[aged.ID] = Retry{Issue: aged, DueAt: now.Add(time.Minute)}
 			},
+		},
+		{
+			name:           "running aged head protects same repository",
+			sameRepository: true,
+			setup: func(state *State) {
+				state.Running[aged.ID] = Running{Issue: aged, StartedAt: now.Add(-time.Minute)}
+			},
+		},
+		{
+			name:           "retrying aged head protects same repository",
+			sameRepository: true,
+			setup: func(state *State) {
+				state.Retry[aged.ID] = Retry{Issue: aged, DueAt: now.Add(time.Minute)}
+			},
+		},
+		{
+			name:           "CI reservation protects same repository",
+			sameRepository: true,
+			setup:          func(state *State) { reserveMergeCandidate(state, aged, now) },
+		},
+		{
+			name:         "CI reservation allows other repository",
+			wantEnqueued: 1,
+			setup:        func(state *State) { reserveMergeCandidate(state, aged, now) },
 		},
 	}
 
@@ -131,15 +159,20 @@ func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
 			tt.setup(&state)
+			recent := cloneIssue(recent)
+			if tt.sameRepository {
+				recent.PRRepository = aged.PRRepository
+			}
 
 			queued := orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{aged, recent}, now)
 
-			if len(tracker.enqueued) != 0 || tracker.inspections != 0 {
-				t.Fatalf("native queue activity = enqueued %#v, inspections %d; want none", tracker.enqueued, tracker.inspections)
+			if len(tracker.enqueued) != tt.wantEnqueued || tracker.inspections != tt.wantEnqueued {
+				t.Fatalf("native queue activity = enqueued %#v, inspections %d; want %d", tracker.enqueued, tracker.inspections, tt.wantEnqueued)
 			}
 			for _, issue := range queued {
-				if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
-					t.Fatalf("issue %q merge queue entry = %#v, want none", issue.ID, issue.PullRequest.MergeQueueEntry)
+				wantEntry := issue.ID == recent.ID && tt.wantEnqueued == 1
+				if gotEntry := issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil; gotEntry != wantEntry {
+					t.Fatalf("issue %q has entry = %t, want %t", issue.ID, gotEntry, wantEntry)
 				}
 			}
 		})

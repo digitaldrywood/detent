@@ -81,6 +81,8 @@ type State struct {
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
 	MergeTimings             map[string]MergeTiming
+	mergeReservations        map[string]mergeReservation
+	mergeRecoveryChecked     map[string]bool
 	mergeSlotAcquisitions    []mergeSlotAcquisition
 	mergeSlotWarnings        map[string]time.Time
 	nativeMergeQueueEntries  map[string]nativeMergeQueueEntry
@@ -482,6 +484,8 @@ func (s State) clone() State {
 		Completed:                make(map[string]Completed, len(s.Completed)),
 		Retry:                    make(map[string]Retry, len(s.Retry)),
 		MergeTimings:             maps.Clone(s.MergeTimings),
+		mergeReservations:        maps.Clone(s.mergeReservations),
+		mergeRecoveryChecked:     maps.Clone(s.mergeRecoveryChecked),
 		mergeSlotAcquisitions:    append([]mergeSlotAcquisition(nil), s.mergeSlotAcquisitions...),
 		mergeSlotWarnings:        maps.Clone(s.mergeSlotWarnings),
 		nativeMergeQueueEntries:  cloneNativeMergeQueueEntries(s.nativeMergeQueueEntries),

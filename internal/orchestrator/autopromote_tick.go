@@ -1477,6 +1477,9 @@ func activeMergeWorkerRepositories(state *State) map[string]struct{} {
 		repositories = consumeActiveMergeWorkerRepository(repositories, claimed.Issue)
 	}
 	for _, retry := range state.Retry {
+		if reservation := state.mergeReservations[mergeWorkerRepositoryKey(retry.Issue)]; reservation.IssueID == retry.Issue.ID && reservation.ReleasedReason != "" {
+			continue
+		}
 		repositories = consumeActiveMergeWorkerRepository(repositories, retry.Issue)
 	}
 	if len(repositories) == 0 {
@@ -1521,9 +1524,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		return nil
 	}
 	o.logMergeWorkerQueueCycle(state, issues, now)
-	if stickyMergingIssueID(state, issues, now, o.cfg.MergeFairnessAge) != "" {
-		return nil
-	}
+	stickyID := stickyMergingIssueID(state, issues, now, o.cfg.MergeFairnessAge)
 	candidates := o.staleMergingQueueDispatchCandidates(state, issues, now)
 	if len(candidates) == 0 {
 		return nil
@@ -1531,6 +1532,9 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	out := make([]connector.Issue, 0, len(candidates))
 	selectedByState := map[string]int{}
 	for _, issue := range candidates {
+		if mergeFairnessBlocks(state, stickyID, issue, now) {
+			continue
+		}
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
@@ -1757,6 +1761,9 @@ func stickyMergingIssueID(state *State, issues []connector.Issue, now time.Time,
 		if refreshed, ok := current[issueID]; ok {
 			issue = refreshed
 		}
+		if reservation := state.mergeReservations[mergeWorkerRepositoryKey(issue)]; reservation.IssueID == issueID {
+			return
+		}
 		if !mergeWorkerIssueAged(issue, now, fairnessAge) {
 			return
 		}
@@ -1813,12 +1820,16 @@ func mergeWorkerHeadReady(issue connector.Issue) bool {
 }
 
 func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	o.reconcileMergeReservations(state, issues, now)
 	candidates := []connector.Issue{}
 	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
 		repository := mergeWorkerRepositoryKey(issue)
 		if staleMergingPullRequestDispatchActive(state, issueID) {
+			if reservation := state.mergeReservations[repository]; reservation.IssueID == issueID && reservation.ReleasedReason != "" {
+				continue
+			}
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
