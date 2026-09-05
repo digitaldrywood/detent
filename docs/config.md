@@ -1023,6 +1023,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].author_association` | `string` | `none` | No | None |
 | `tracker.issues[].author_id` | `string` | `none` | No | None |
 | `tracker.issues[].blocked_by` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].blocked_by[].human_completion_ready` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].blocked_by[].human_owned` | `boolean` | `false when configured` | No | None |
 | `tracker.issues[].blocked_by[].id` | `string` | `none` | No | None |
 | `tracker.issues[].blocked_by[].identifier` | `string` | `none` | No | None |
 | `tracker.issues[].blocked_by[].source` | `string` | `none` | No | None |
@@ -1030,6 +1032,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].blocker_reason` | `string` | `none` | No | None |
 | `tracker.issues[].branch_name` | `string` | `none` | No | None |
 | `tracker.issues[].child_issues` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].child_issues[].human_completion_ready` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].child_issues[].human_owned` | `boolean` | `false when configured` | No | None |
 | `tracker.issues[].child_issues[].id` | `string` | `none` | No | None |
 | `tracker.issues[].child_issues[].identifier` | `string` | `none` | No | None |
 | `tracker.issues[].child_issues[].source` | `string` | `none` | No | None |

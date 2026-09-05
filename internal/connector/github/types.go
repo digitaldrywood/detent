@@ -242,6 +242,8 @@ type restRepository struct {
 }
 
 type restIssueDependency struct {
+	Body          string     `json:"body"`
+	Labels        []label    `json:"labels"`
 	ID            int        `json:"id"`
 	NodeID        string     `json:"node_id"`
 	Number        int        `json:"number"`

@@ -969,6 +969,13 @@ probes.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
+Human-only account setup and publishing approvals should be scoped Backlog
+issues using the [human prerequisite contract](dependency-workflows.md#human-prerequisites).
+They are excluded from admission and dispatch regardless of automation settings.
+Queue executable dependent work in Todo and preserve existing PR phases; keep
+independent breaker parks intact. Completion evidence is not external-action
+authorization.
+
 5. **Automation policy.** Ask the customer-facing policy questions before
    recommending review, auto-promotion, dependency unblock, Kanban mutation, or
    Merging settings. Do not present raw `answers.env` keys as the primary

@@ -109,7 +109,7 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			continue
 		}
 		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
-		if !ok {
+		if !ok || connector.NonExecutableReason(hydrated) != "" {
 			continue
 		}
 		hydrated, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
@@ -257,7 +257,7 @@ func blockerAutoPromoteEligible(
 		return false
 	}
 	issue := blocker.Issue
-	if strings.TrimSpace(issue.ID) == "" {
+	if strings.TrimSpace(issue.ID) == "" || connector.NonExecutableReason(issue) != "" {
 		return false
 	}
 	if !stateIn(issue.State, cfg.BlockerStates) {
@@ -286,6 +286,12 @@ func (o *Orchestrator) applyBlockerAutoPromote(
 	targetState string,
 	now time.Time,
 ) bool {
+	if connector.NonExecutableReason(blocker) != "" || o.issueHasStickyBlockReason(ctx, state, blocker) || o.currentBlockedOperatorStop(ctx, state, blocker) {
+		return false
+	}
+	if park, ok := o.currentBlockedRecoveryPark(ctx, state, blocker); ok && strings.TrimSpace(park.Cause) != "" {
+		return false
+	}
 	issueID := strings.TrimSpace(blocker.ID)
 	if err := o.updateIssueStateByID(ctx, state, issueID, blocker, targetState, now, "blocker_auto_promote", laneMutationPreserveOwnership); err != nil {
 		if o.logger != nil {
@@ -789,6 +795,8 @@ func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue conn
 		if !ok {
 			continue
 		}
+		blockers[index].Ref.HumanOwned = connector.HumanOwned(blocker)
+		blockers[index].Ref.HumanCompletionReady = connector.HumanOwned(blocker) && connector.HumanPrerequisiteReady(blocker)
 		blockers[index].Issue = blocker
 		blockers[index].Resolved = true
 		blockers[index].Ref.ID = firstNonBlank(blocker.ID, blockers[index].Ref.ID)
@@ -869,6 +877,12 @@ func dependencyBlockersTerminal(blockers []dependencyBlocker, terminalStates []s
 }
 
 func dependencyBlockerReady(blocker dependencyBlocker, cfg DependencyAutoUnblockConfig, terminalStates []string) bool {
+	if blocker.Resolved && connector.HumanOwned(blocker.Issue) {
+		return connector.HumanPrerequisiteReady(blocker.Issue)
+	}
+	if blocker.Ref.HumanOwned {
+		return blocker.Ref.HumanCompletionReady
+	}
 	if blocker.Resolved {
 		if blocker.Issue.Closed || stateIn(blocker.Issue.State, terminalStates) {
 			return true

@@ -413,6 +413,10 @@
 #       # tracker.issues[].blocked_by | type: list<object> | default: [] | required: No | validation: None
 #       blocked_by:
 #         -
+#           # tracker.issues[].blocked_by[].human_owned | type: boolean | default: false when configured | required: No | validation: None
+#           human_owned: false
+#           # tracker.issues[].blocked_by[].human_completion_ready | type: boolean | default: false when configured | required: No | validation: None
+#           human_completion_ready: false
 #           # tracker.issues[].blocked_by[].id | type: string | default: none | required: No | validation: None
 #           id: null
 #           # tracker.issues[].blocked_by[].identifier | type: string | default: none | required: No | validation: None
@@ -424,6 +428,10 @@
 #       # tracker.issues[].child_issues | type: list<object> | default: [] | required: No | validation: None
 #       child_issues:
 #         -
+#           # tracker.issues[].child_issues[].human_owned | type: boolean | default: false when configured | required: No | validation: None
+#           human_owned: false
+#           # tracker.issues[].child_issues[].human_completion_ready | type: boolean | default: false when configured | required: No | validation: None
+#           human_completion_ready: false
 #           # tracker.issues[].child_issues[].id | type: string | default: none | required: No | validation: None
 #           id: null
 #           # tracker.issues[].child_issues[].identifier | type: string | default: none | required: No | validation: None

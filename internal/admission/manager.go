@@ -1790,7 +1790,7 @@ func admissionIssueTransition(ctx context.Context, issues IssueStore, issue conn
 }
 
 func admissionSourceEligible(issue connector.Issue, cfg config.BacklogAdmission) bool {
-	return !issue.Closed && containsFold(cfg.Sources.States, issue.State)
+	return !issue.Closed && connector.NonExecutableReason(issue) == "" && containsFold(cfg.Sources.States, issue.State)
 }
 
 func autoAdmitCandidateEligible(issue connector.Issue, cfg config.BacklogAdmission) bool {
@@ -1959,6 +1959,8 @@ func filterCandidates(
 	out := make([]connector.Issue, 0, len(issues))
 	for _, issue := range issues {
 		switch {
+		case connector.NonExecutableReason(issue) != "":
+			skipped[connector.NonExecutableReason(issue)]++
 		case issue.Closed:
 			skipped["closed"]++
 		case labelCandidateInTargetState(issue, cfg):
@@ -2016,7 +2018,7 @@ func labelCandidateStateTerminal(issue connector.Issue, cfg config.BacklogAdmiss
 }
 
 func excludedCandidate(issue connector.Issue, cfg config.BacklogAdmission) bool {
-	return excludedByLabel(issue, cfg.ExcludeLabels) || !allowedAuthor(issue, cfg.Authors)
+	return connector.NonExecutableReason(issue) != "" || excludedByLabel(issue, cfg.ExcludeLabels) || !allowedAuthor(issue, cfg.Authors)
 }
 
 func matchesAnyLabel(issueLabels []string, labels []string) bool {

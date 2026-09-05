@@ -672,6 +672,7 @@ type projectKanbanCard struct {
 	Labels                []string
 	Assignees             []string
 	Comments              []telemetry.IssueComment
+	HumanDependencyWait   string
 	Blockers              []string
 	ClearedBlockers       []string
 	BlockerSummary        string
@@ -3210,6 +3211,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		Labels:                uniqueStrings(issue.Labels),
 		Assignees:             uniqueStrings(issue.Assignees),
 		Comments:              append([]telemetry.IssueComment(nil), issue.Comments...),
+		HumanDependencyWait:   projectKanbanHumanDependencyWait(issue.BlockedBy),
 		Blockers:              blockers,
 		ClearedBlockers:       clearedBlockers,
 		BlockerSummary:        strings.Join(append(append([]string(nil), blockers...), clearedBlockers...), " · "),
@@ -3317,6 +3319,14 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 		if label == "" {
 			continue
 		}
+		if ref.HumanOwned {
+			if ref.HumanCompletionReady {
+				cleared = append(cleared, "human prerequisite "+label+" (completion evidence recorded)")
+			} else {
+				active = append(active, "human prerequisite "+label+" (completion evidence required)")
+			}
+			continue
+		}
 		trackerState := strings.ToLower(strings.TrimSpace(ref.TrackerState))
 		if trackerState != "" {
 			switch trackerState {
@@ -3343,6 +3353,9 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 }
 
 func projectKanbanBlockedRefCleared(ref telemetry.BlockedRef, terminalStates map[string]struct{}) bool {
+	if ref.HumanOwned {
+		return ref.HumanCompletionReady
+	}
 	if strings.EqualFold(strings.TrimSpace(ref.TrackerState), "closed") {
 		return true
 	}

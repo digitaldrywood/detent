@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/store"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -156,6 +159,16 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 				break
 			}
 		}
+		var humanRefs []connector.BlockedRef
+		for _, blocker := range candidate.record.DependencyBlockers {
+			resolvedIssue := byIdentifier[normalizedIssueIdentifier(blocker.Identifier)]
+			if connector.HumanOwned(resolvedIssue) {
+				humanRefs = append(humanRefs, connector.BlockedRef{Identifier: blocker.Identifier, HumanOwned: true, HumanCompletionReady: connector.HumanPrerequisiteReady(resolvedIssue)})
+			}
+		}
+		if reason := humanDependencyWaitReason(humanRefs); reason != "" {
+			o.recordSchedulerDecision(ctx, nil, time.Now(), dispatchPlanDecision{Issue: candidate.issue, SkipDetail: reason}, string(store.SchedulerDecisionResultSkipped), dispatchSkipBlockedByDependency)
+		}
 		if o.logger != nil {
 			o.logger.Debug(
 				"implement dependency deferral evaluated",
@@ -207,6 +220,9 @@ func implementDependencyIdentifiers(blockers []workpad.Blocker) []string {
 }
 
 func implementDependencyTerminal(issue connector.Issue, terminalStates []string) bool {
+	if connector.HumanOwned(issue) {
+		return connector.HumanPrerequisiteReady(issue)
+	}
 	return issue.Closed || stateIn(issue.State, terminalStates) || pullRequestMerged(issue.PullRequest)
 }
 

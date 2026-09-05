@@ -94,6 +94,9 @@ func resolveAdmissionDependencies(ctx context.Context, settings Settings, issue 
 			}
 			entry.Ready = dependency.Closed || containsFold(settings.TerminalStates, dependency.State) ||
 				(rule == config.DependencyReadinessTerminalOrMerged && entry.PullRequestState == "merged")
+			if connector.HumanOwned(dependency) {
+				entry.Ready = connector.HumanPrerequisiteReady(dependency)
+			}
 		}
 		evidence.Ready = evidence.Ready && entry.Ready
 		evidence.References = append(evidence.References, entry)

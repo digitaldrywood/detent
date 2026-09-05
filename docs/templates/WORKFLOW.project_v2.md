@@ -51,6 +51,28 @@ blockers: []
 human_action: null
 ```
 
+Human prerequisites remain in Backlog and never execute. Mark each with a
+`detent-human` block (`schema: 1`, stable `key`, `action`, `owner`,
+`completion_criteria`, and `approval_constraint`); `human-owned` also excludes
+admission and dispatch. Use `ensure_human_prerequisite` when available to reuse
+or create the smallest blocking milestone through the tracker owner and append
+the dependency safely. Reuse existing contracts rather than creating duplicates.
+Never copy credentials or private-project evidence between visibility scopes.
+Finish stub-testable implementation, independent preparation, and authorized
+fallbacks first. Never add dependencies to completed software or execute an epic.
+
+Keep unstarted dependent work in Todo. Preserve Rework/Merging and the existing
+PR for started work. A structured `status: blocked` dependency signal with
+`human_action: null` does not require moving the issue into the Blocked lane.
+Detent restores its resumable phase after persisting the deferral. Blocked keeps
+delivery failures, breaker parks, and unresolved operational problems.
+Dependency completion never acknowledges an independent breaker park.
+
+A human task is ready only after its valid contract contains
+`completion_evidence` and the human closes it. Readiness never grants permission
+to publish, deploy, or perform destructive actions; preserve all action-specific
+approval requirements.
+
 For dependency blockers, use this order:
 
 1. Create GitHub's native `blocked_by` dependency relation.
@@ -73,9 +95,9 @@ blockers:
 human_action: null
 ```
 
-3. Legacy fallback during the deprecation window: if native dependencies are
-   unavailable and the project has not migrated, keep a machine-readable
-   issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123`.
+3. Always preserve a machine-readable issue-body line such as
+   `Depends on: owner/repo#123`, alongside the native relation when supported.
+   Workpad mentions alone are insufficient.
 
 If meaningful out-of-scope work is discovered, file a separate tracker issue in Backlog with a best-guess `detent-agent` effort block instead of expanding the current work item.
 

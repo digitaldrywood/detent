@@ -78,11 +78,13 @@ type Issue struct {
 }
 
 type BlockedRef struct {
-	ID           string `json:"id,omitempty" yaml:"id,omitempty"`
-	Identifier   string `json:"identifier" yaml:"identifier"`
-	State        string `json:"state,omitempty" yaml:"state,omitempty"`
-	TrackerState string `json:"tracker_state,omitempty" yaml:"-"`
-	Source       string `json:"source,omitempty" yaml:"source,omitempty"`
+	HumanOwned           bool   `json:"human_owned,omitempty" yaml:"human_owned,omitempty"`
+	HumanCompletionReady bool   `json:"human_completion_ready,omitempty" yaml:"human_completion_ready,omitempty"`
+	ID                   string `json:"id,omitempty" yaml:"id,omitempty"`
+	Identifier           string `json:"identifier" yaml:"identifier"`
+	State                string `json:"state,omitempty" yaml:"state,omitempty"`
+	TrackerState         string `json:"tracker_state,omitempty" yaml:"-"`
+	Source               string `json:"source,omitempty" yaml:"source,omitempty"`
 }
 
 const (

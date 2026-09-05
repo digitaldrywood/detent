@@ -86,6 +86,8 @@ func (c *Connector) applyBlockedByIssueState(ref *connector.BlockedRef, blocker 
 		state = c.closedIssueState()
 	}
 	ref.State = state
+	ref.HumanOwned = connector.HumanOwned(blocker)
+	ref.HumanCompletionReady = ref.HumanOwned && connector.HumanPrerequisiteReady(blocker)
 }
 
 func (c *Connector) logBlockedByHydrationError(ctx context.Context, identifier string, err error) {

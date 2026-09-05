@@ -234,11 +234,17 @@ func (c *Connector) nativeBlockedRefsFromREST(ref issueRef, dependencies []restI
 			continue
 		}
 		seen[key] = struct{}{}
+		issue := connector.Issue{Description: dependency.Body, Closed: strings.EqualFold(dependency.State, "closed")}
+		for _, label := range dependency.Labels {
+			issue.Labels = append(issue.Labels, label.Name)
+		}
 		refs = append(refs, connector.BlockedRef{
-			ID:         strings.TrimSpace(dependency.NodeID),
-			Identifier: identifier,
-			State:      c.githubIssueStateToDetentState(dependency.State),
-			Source:     connector.BlockedRefSourceNative,
+			HumanOwned:           connector.HumanOwned(issue),
+			HumanCompletionReady: connector.HumanOwned(issue) && connector.HumanPrerequisiteReady(issue),
+			ID:                   strings.TrimSpace(dependency.NodeID),
+			Identifier:           identifier,
+			State:                c.githubIssueStateToDetentState(dependency.State),
+			Source:               connector.BlockedRefSourceNative,
 		})
 	}
 	if len(refs) == 0 {
