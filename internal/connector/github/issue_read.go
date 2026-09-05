@@ -885,6 +885,9 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 	if c.projectID == "" {
 		return nil, ErrMissingProject
 	}
+	if err := c.ensureProjectFieldsCached(ctx, ids); err != nil {
+		return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
+	}
 
 	refs, err := c.issueRefsForIDs(ctx, ids, graphQLQueryRunningStates)
 	if err != nil {
@@ -1253,9 +1256,13 @@ func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connecto
 	}
 	c.cacheIssueRef(issue)
 
-	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.fetchProjectFieldsPage(ctx, issue.ID, nil)
-	if err != nil {
-		return connector.Issue{}, false, err
+	stateName, priorityName, statusUpdatedAt, fields, ok, known := c.cachedIssueProjectFields(issue.ID)
+	if !known {
+		var err error
+		stateName, priorityName, statusUpdatedAt, fields, ok, err = c.fetchProjectFieldsPage(ctx, issue.ID, nil)
+		if err != nil {
+			return connector.Issue{}, false, err
+		}
 	}
 	if ok {
 		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
@@ -1273,9 +1280,13 @@ func (c *Connector) fetchProjectIssueByRef(ctx context.Context, ref issueRef) (c
 	}
 	c.cacheIssueRef(issue)
 
-	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.fetchProjectFieldsPage(ctx, issue.ID, nil)
-	if err != nil {
-		return connector.Issue{}, false, err
+	stateName, priorityName, statusUpdatedAt, fields, ok, known := c.cachedIssueProjectFields(issue.ID)
+	if !known {
+		var err error
+		stateName, priorityName, statusUpdatedAt, fields, ok, err = c.fetchProjectFieldsPage(ctx, issue.ID, nil)
+		if err != nil {
+			return connector.Issue{}, false, err
+		}
 	}
 	if !ok {
 		return connector.Issue{}, false, nil

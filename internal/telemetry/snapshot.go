@@ -1564,9 +1564,11 @@ type RateLimitBucket struct {
 }
 
 type GraphQLCost struct {
-	TotalQueries int64                    `json:"total_queries,omitempty"`
-	TotalCost    int64                    `json:"total_cost,omitempty"`
-	Contributors []GraphQLCostContributor `json:"contributors,omitempty"`
+	TotalQueries    int64                    `json:"total_queries,omitempty"`
+	TotalCost       int64                    `json:"total_cost,omitempty"`
+	LastHourQueries int64                    `json:"last_hour_queries,omitempty"`
+	LastHourCost    int64                    `json:"last_hour_cost,omitempty"`
+	Contributors    []GraphQLCostContributor `json:"contributors,omitempty"`
 }
 
 type GraphQLCostContributor struct {

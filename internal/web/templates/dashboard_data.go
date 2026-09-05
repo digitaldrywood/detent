@@ -8009,6 +8009,14 @@ func graphQLBudgetQueryCount(limits *telemetry.RateLimits) string {
 	return formatInt(limits.GraphQLCost.TotalQueries) + " " + pluralize("query", limits.GraphQLCost.TotalQueries)
 }
 
+func graphQLBudgetLastHourQueryCount(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GraphQLCost == nil {
+		return "0 queries"
+	}
+	count := limits.GraphQLCost.LastHourQueries
+	return formatInt(count) + " " + pluralize("query", count)
+}
+
 func graphQLBudgetContributorRows(limits *telemetry.RateLimits) []graphQLBudgetContributorRow {
 	if limits == nil || limits.GraphQLCost == nil || len(limits.GraphQLCost.Contributors) == 0 {
 		return nil

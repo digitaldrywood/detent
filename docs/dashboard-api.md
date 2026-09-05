@@ -5,8 +5,11 @@
 The web dashboard starts with the main `detent` command. In running mode it
 shows live counts, running issues, retry queue, blocked work, completed
 sessions, token totals, budget status, Codex rate-limit snapshots, and GitHub
-REST and GraphQL rate-limit snapshots with per-cycle query cost contributors
-when the GitHub connector reports them. The shared GitHub API health indicator
+REST and GraphQL rate-limit snapshots. GraphQL also reports rolling one-hour
+request totals and per-cycle query cost contributors. REST request totals
+cover the current cycle. GraphQL hourly totals count requests observed by this
+project's connector, reset on restart, and exclude other tools sharing the token. The remaining quota reflects the
+shared token budget. The shared GitHub API health indicator
 separates primary quota exhaustion from observed secondary REST backoff, so a
 healthy primary budget can still show `backoff` when GitHub returned `429` for
 endpoint families such as pull requests or check runs. Open the indicator to see

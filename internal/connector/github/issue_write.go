@@ -258,7 +258,11 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 	}
 
 	githubState := c.detentToGitHubState(stateName)
-	return c.setProjectItemStatus(ctx, item.ID, githubState)
+	if err := c.setProjectItemStatus(ctx, item.ID, githubState); err != nil {
+		return err
+	}
+	c.projectCache.InvalidateProjectFields(c.projectID, issueID)
+	return nil
 }
 
 func (c *Connector) RemoveIssueFromProject(ctx context.Context, issueID string) error {
@@ -370,13 +374,21 @@ func (c *Connector) SetField(ctx context.Context, issueID string, fieldName stri
 		return err
 	}
 	if projectTextField(field) {
-		return c.updateProjectV2TextFieldValue(ctx, item.ID, field.ID, strings.TrimSpace(value), ErrProjectFieldUpdateFailed)
+		if err := c.updateProjectV2TextFieldValue(ctx, item.ID, field.ID, strings.TrimSpace(value), ErrProjectFieldUpdateFailed); err != nil {
+			return err
+		}
+		c.projectCache.InvalidateProjectFields(c.projectID, issueID)
+		return nil
 	}
 	fieldID, optionID, err := c.resolveSingleSelectFieldOptionFromField(ctx, fieldName, value, field)
 	if err != nil {
 		return err
 	}
-	return c.updateProjectV2SingleSelectFieldValue(ctx, item.ID, fieldID, optionID, ErrProjectFieldUpdateFailed)
+	if err := c.updateProjectV2SingleSelectFieldValue(ctx, item.ID, fieldID, optionID, ErrProjectFieldUpdateFailed); err != nil {
+		return err
+	}
+	c.projectCache.InvalidateProjectFields(c.projectID, issueID)
+	return nil
 }
 
 func (c *Connector) addAssignee(ctx context.Context, ref issueRef, login string) error {

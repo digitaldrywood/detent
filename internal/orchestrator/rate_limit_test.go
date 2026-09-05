@@ -198,6 +198,9 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 	if state.RateLimits.GraphQLCost.TotalCost != 8 || state.RateLimits.GraphQLCost.TotalQueries != 2 {
 		t.Fatalf("GraphQLCost = %#v, want cost 8 queries 2", state.RateLimits.GraphQLCost)
 	}
+	if state.RateLimits.GraphQLCost.LastHourCost != 8 || state.RateLimits.GraphQLCost.LastHourQueries != 2 {
+		t.Fatalf("GraphQLCost = %#v, want last-hour cost 8 queries 2", state.RateLimits.GraphQLCost)
+	}
 	if len(state.RateLimits.GraphQLCost.Contributors) != 2 {
 		t.Fatalf("GraphQLCost.Contributors = %#v, want 2 contributors", state.RateLimits.GraphQLCost.Contributors)
 	}
@@ -214,6 +217,50 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("log output missing %q:\n%s", want, logOutput)
 		}
+	}
+}
+
+func TestRecordGraphQLUsageWindow(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		at          time.Time
+		usage       connector.GraphQLRateLimitUsage
+		wantQueries int64
+		wantCost    int64
+	}{
+		{
+			name:        "records first cycle",
+			at:          start,
+			usage:       connector.GraphQLRateLimitUsage{TotalQueries: 2, TotalCost: 8},
+			wantQueries: 2,
+			wantCost:    8,
+		},
+		{
+			name:        "accumulates cycles within hour",
+			at:          start.Add(30 * time.Minute),
+			usage:       connector.GraphQLRateLimitUsage{TotalQueries: 3, TotalCost: 5},
+			wantQueries: 5,
+			wantCost:    13,
+		},
+		{
+			name:        "retains boundary and expires older samples",
+			at:          start.Add(90 * time.Minute),
+			wantQueries: 3,
+			wantCost:    5,
+		},
+	}
+
+	state := State{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queries, cost := recordGraphQLUsageWindow(&state, tt.usage, tt.at)
+			if queries != tt.wantQueries || cost != tt.wantCost {
+				t.Fatalf("recordGraphQLUsageWindow() = (%d, %d), want (%d, %d)", queries, cost, tt.wantQueries, tt.wantCost)
+			}
+		})
 	}
 }
 

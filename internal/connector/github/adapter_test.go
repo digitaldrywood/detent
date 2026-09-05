@@ -4184,15 +4184,15 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"}},{"__typename":"Issue","id":"I_kw2","number":2,"repository":{"nameWithOwner":"example/repo"}}]}}`,
+			body: projectItemsPageResponseWithTotal(2, false, "", []string{
+				`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","state":"OPEN","url":"https://github.com/example/repo/issues/1","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}}`,
+				`{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":2,"title":"Second","state":"OPEN","url":"https://github.com/example/repo/issues/2","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"},"fieldValues":{"nodes":[]}}`,
+			}),
 		},
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/2",
 			body:   `{"node_id":"I_kw2","number":2,"title":"Second","body":"","state":"open","html_url":"https://github.com/example/repo/issues/2","assignees":[],"labels":[]}`,
-		},
-		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"},"fieldValues":{"nodes":[]}}]}}}}`,
 		},
 		{
 			status: http.StatusNotFound,
@@ -4206,7 +4206,14 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 			body:   `{"node_id":"I_kw1","number":1,"title":"First","body":"","state":"open","html_url":"https://github.com/example/repo/issues/1","assignees":[],"labels":[]}`,
 		},
 		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}}]}}}}`,
+			method: http.MethodGet,
+			path:   "/repos/example/repo/issues/2",
+			body:   `{"node_id":"I_kw2","number":2,"title":"Second","body":"","state":"open","html_url":"https://github.com/example/repo/issues/2","assignees":[],"labels":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"First","body":"","state":"open","html_url":"https://github.com/example/repo/issues/1","assignees":[],"labels":[]}`,
 		},
 	})
 
@@ -4235,6 +4242,30 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	if got[1].PriorityName != "P1" {
 		t.Fatalf("second PriorityName = %q, want P1", got[1].PriorityName)
 	}
+	warm, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw2", "I_kw1"})
+	if err != nil {
+		t.Fatalf("warm FetchIssueStatesByIDs() error = %v", err)
+	}
+	if len(warm) != 2 || warm[0].State != "Human Review" || warm[1].State != "Todo" {
+		t.Fatalf("warm FetchIssueStatesByIDs() = %#v, want cached project states", warm)
+	}
+	requests := server.requests()
+	if len(requests) != 6 {
+		t.Fatalf("request count = %d, want one project scan, four REST issues, and one dependency capability probe", len(requests))
+	}
+	var projectQueries int
+	for _, request := range requests {
+		query, _ := request["query"].(string)
+		if strings.Contains(query, "DetentGitHubProjectItemForIssue") {
+			t.Fatalf("query = %q, want no per-issue project-item lookup", query)
+		}
+		if strings.Contains(query, "query DetentGitHubProjectItems") {
+			projectQueries++
+		}
+	}
+	if projectQueries != 1 {
+		t.Fatalf("project query count = %d, want one query across cold and warm passes", projectQueries)
+	}
 }
 
 func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
@@ -4242,15 +4273,14 @@ func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"}}]}}`,
+			body: projectItemsPageResponseWithTotal(1, false, "", []string{
+				`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","state":"CLOSED","stateReason":"not_planned","url":"https://github.com/example/repo/issues/1","author":{"login":"author-1"},"assignees":{"nodes":[{"login":"worker-1"},{"login":"worker-2"}]},"repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"team-a","field":{"name":"Owner"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":3,"field":{"name":"Weight"}}]}}`,
+			}),
 		},
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/1",
 			body:   `{"node_id":"I_kw1","number":1,"title":"First","body":"","state":"closed","state_reason":"not_planned","html_url":"https://github.com/example/repo/issues/1","user":{"login":"author-1"},"assignees":[{"node_id":"U_1","login":"worker-1"},{"node_id":"U_2","login":"worker-2"}],"labels":[]}`,
-		},
-		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"team-a","field":{"name":"Owner"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":3,"field":{"name":"Weight"}}]}}]}}}}`,
 		},
 		{
 			status: http.StatusNotFound,
@@ -4316,18 +4346,19 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"}}]}}`,
+			body: projectItemsPageResponseWithTotal(2, true, "cursor-1", []string{
+				`{"id":"PVTI_other","content":{"__typename":"Issue","id":"I_other","number":2,"title":"Other","state":"OPEN","url":"https://github.com/example/repo/issues/2","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Open"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}}`,
+			}),
+		},
+		{
+			body: projectItemsPageResponseWithTotal(2, false, "", []string{
+				`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"Later project","state":"OPEN","url":"https://github.com/example/repo/issues/1","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"P2"},"fieldValues":{"nodes":[]}}`,
+			}),
 		},
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/1",
 			body:   `{"node_id":"I_kw1","number":1,"title":"Later project","body":"","state":"open","html_url":"https://github.com/example/repo/issues/1","assignees":[],"labels":[]}`,
-		},
-		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[{"id":"PVTI_other","project":{"id":"PVT_other"},"statusValue":{"name":"Open"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}}]}}}}`,
-		},
-		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"P2"}}]}}}}`,
 		},
 		{
 			status: http.StatusNotFound,
@@ -4360,15 +4391,15 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 5 {
-		t.Fatalf("request count = %d, want identity, REST issue, 2 project item pages, and dependency probe", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 2 project scan pages, REST issue, and dependency probe", len(requests))
 	}
-	variables := requests[3]["variables"].(map[string]any)
+	variables := requests[1]["variables"].(map[string]any)
 	if variables["after"] != "cursor-1" {
 		t.Fatalf("after = %v, want cursor-1", variables["after"])
 	}
-	if variables["issueId"] != "I_kw1" {
-		t.Fatalf("issueId = %v, want I_kw1", variables["issueId"])
+	if variables["projectId"] != "PVT_1" {
+		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
 	}
 }
 
@@ -6955,4 +6986,37 @@ func githubIssueIDs(issues []connector.Issue) []string {
 		ids = append(ids, issue.ID)
 	}
 	return ids
+}
+
+func TestProjectFieldsRefreshUsesTargetedQueryOnlyForChangedCard(t *testing.T) {
+	t.Parallel()
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"fieldValues":{"nodes":[]}}]}}}}`}})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	c.projectCache.ReplaceProjectFields("PVT_1", map[string]projectItemFields{
+		"I_1": {itemID: "PVTI_1", statusName: "Todo"},
+		"I_2": {itemID: "PVTI_2", statusName: "Todo"},
+	}, c.projectCache.Revision("PVT_1"))
+	c.projectCache.SetItemID("PVT_1", "I_1", "PVTI_1")
+	c.projectCache.InvalidateProjectFields("PVT_1", "I_1")
+	for range 2 {
+		if err := c.ensureProjectFieldsCached(t.Context(), []string{"I_1", "I_2"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct{ id, status string }{{"I_1", "Done"}, {"I_2", "Todo"}} {
+		t.Run(tt.id, func(t *testing.T) {
+			fields, present, known := c.projectCache.GetProjectFields("PVT_1", tt.id)
+			if !present || !known || fields.statusName != tt.status {
+				t.Fatalf("fields = %#v, present %t known %t", fields, present, known)
+			}
+		})
+	}
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want one targeted refresh", len(requests))
+	}
+	query, _ := requests[0]["query"].(string)
+	if !strings.Contains(query, "DetentGitHubProjectItemForIssue") {
+		t.Fatalf("query = %q, want targeted refresh", query)
+	}
 }

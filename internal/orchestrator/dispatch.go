@@ -142,7 +142,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	outcomes := make(map[string]dispatchIssueOutcome, len(issues))
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
-			return o.hydrateDispatchIssue(ctx, issue)
+			return o.hydrateDispatchIssue(ctx, state, issue, now)
 		},
 		beforeDispatch: func(_ connector.Issue, continuationIndex int) bool {
 			if continuationIndex < 0 {
@@ -261,9 +261,20 @@ func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
 	return !o.mergeWorkerLocalSlotsAvailable(state)
 }
 
-func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
+func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, state *State, issue connector.Issue, now time.Time) (connector.Issue, bool) {
 	if strings.TrimSpace(issue.ID) == "" || len(issue.Fields) > 0 || o.connector == nil {
 		return issue, true
+	}
+	if retry, ok := state.Retry[issue.ID]; ok {
+		if _, outage, active := matchingBackendOutage(state.BackendOutages, retry.CapacityScope); active {
+			probeAt := outage.NextProbeAt
+			if probeAt.IsZero() {
+				probeAt = outage.ResumeAt
+			}
+			if strings.TrimSpace(outage.ProbeIssueID) != "" || now.Before(probeAt) {
+				return issue, true
+			}
+		}
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
 	if err != nil {
@@ -292,7 +303,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 			return
 		}
-		issue, ok := o.hydrateDispatchIssue(ctx, issue)
+		issue, ok := o.hydrateDispatchIssue(ctx, state, issue, now)
 		if !ok {
 			continue
 		}
