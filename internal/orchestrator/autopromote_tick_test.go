@@ -1758,6 +1758,157 @@ func TestTickAutoPromoteRoutesSuccessfulInvalidStructuredWorkpadToRework(t *test
 	}
 }
 
+func TestAutoPromoteReworkLimitDistinctTransitions(t *testing.T) {
+	t.Parallel()
+
+	type laneEvent struct {
+		lane     string
+		previous string
+		reason   string
+	}
+	for _, tt := range []struct {
+		name      string
+		events    []laneEvent
+		wantCount int
+		wantState string
+	}{
+		{
+			name: "one real rework with duplicate observations",
+			events: []laneEvent{
+				{"Rework", "In Progress", "ci_not_green"},
+				{"Rework", "", "tracker_state_observed"},
+				{"Rework", "", "tracker_state_observed"},
+			},
+			wantCount: 1,
+			wantState: "Rework",
+		},
+		{
+			name: "three genuine reworks",
+			events: []laneEvent{
+				{"Rework", "In Progress", "ci_not_green"},
+				{"In Progress", "Rework", "state_transition"},
+				{"Rework", "In Progress", "ci_not_green"},
+				{"In Progress", "Rework", "state_transition"},
+				{"Rework", "In Progress", "ci_not_green"},
+			},
+			wantCount: 3,
+			wantState: "Blocked",
+		},
+		{
+			name: "reobserved existing lane",
+			events: []laneEvent{
+				{"Rework", "", "tracker_state_observed"},
+				{" reWORK ", "", "tracker_state_observed"},
+				{"Rework", "", "tracker_state_observed"},
+			},
+			wantCount: 1,
+			wantState: "Rework",
+		},
+		{
+			name: "observed genuine lane changes",
+			events: []laneEvent{
+				{"In Progress", "", "tracker_state_observed"},
+				{"Rework", "", "tracker_state_observed"},
+				{"In Progress", "", "tracker_state_observed"},
+				{"Rework", "", "tracker_state_observed"},
+				{"In Progress", "", "tracker_state_observed"},
+				{"Rework", "", "tracker_state_observed"},
+			},
+			wantCount: 3,
+			wantState: "Blocked",
+		},
+		{
+			name: "explicit transitions with missing intervening entries",
+			events: []laneEvent{
+				{"Rework", "In Progress", "ci_not_green"},
+				{"Rework", "In Progress", "ci_not_green"},
+				{"Rework", "In Progress", "ci_not_green"},
+			},
+			wantCount: 3,
+			wantState: "Blocked",
+		},
+		{
+			name: "explicit same lane observation",
+			events: []laneEvent{
+				{"Rework", " reWORK ", "tracker_state_observed"},
+			},
+			wantState: "Rework",
+		},
+		{
+			name: "other lane observations",
+			events: []laneEvent{
+				{"In Progress", "", "tracker_state_observed"},
+				{"In Progress", "", "tracker_state_observed"},
+			},
+			wantState: "Rework",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			issue := autoPromoteTickIssue("issue-rework-observations", nil, &connector.PullRequest{
+				Number:   2149,
+				HeadSHA:  "same-head",
+				State:    "OPEN",
+				CIStatus: "fail",
+			})
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			for i, event := range tt.events {
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					IssueID:           issue.ID,
+					PhaseType:         store.WorkflowPhaseTypeLane,
+					PhaseName:         event.lane,
+					PreviousPhaseName: event.previous,
+					Status:            "entered",
+					Reason:            event.reason,
+					StartedAt:         now.Add(time.Duration(i-len(tt.events)) * time.Minute),
+					MetadataJSON:      autoPromoteReworkEventMetadata(2149, "same-head"),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, event := range []store.WorkflowPhaseEvent{
+				{PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "Rework", Status: "entered"},
+				{PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Rework", Status: "exited"},
+			} {
+				event.IssueID = issue.ID
+				event.StartedAt = now
+				event.MetadataJSON = autoPromoteReworkEventMetadata(2149, "same-head")
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			orch := &Orchestrator{
+				cfg:             normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true, ReworkLimit: 3}}),
+				connector:       tracker,
+				workflowMetrics: metrics,
+			}
+			summary := AutoPromoteSummary{}
+			limit, err := orch.autoPromoteReworkLimit(t.Context(), issue, summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if limit.Count != tt.wantCount {
+				t.Fatalf("rework count = %d, want %d", limit.Count, tt.wantCount)
+			}
+			if tt.name == "one real rework with duplicate observations" {
+				want := []autoPromoteReworkReasonCount{{Reason: "ci_not_green", Count: 1}}
+				if !reflect.DeepEqual(limit.ReasonCounts, want) {
+					t.Fatalf("reason counts = %#v, want %#v", limit.ReasonCounts, want)
+				}
+			}
+			state := newState(orch.cfg)
+			gotState, applied := orch.applyAutoPromoteDecisionWithTarget(t.Context(), &state, issue, summary,
+				AutoPromoteDecision{Action: AutoPromoteActionRework, Reason: AutoPromoteReasonCINotGreen}, "Rework", now)
+			if !applied || gotState != tt.wantState {
+				t.Fatalf("transition = (%q, %t), want (%q, true)", gotState, applied, tt.wantState)
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteBlocksWhenReworkLimitReached(t *testing.T) {
 	t.Parallel()
 
