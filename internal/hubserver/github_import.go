@@ -42,12 +42,13 @@ type GitHubImportRequest struct {
 }
 
 type GitHubImportRecord struct {
-	SourceKey    string             `json:"source_key"`
-	Kind         string             `json:"kind"`
-	Data         json.RawMessage    `json:"data"`
-	Provenance   tracker.Provenance `json:"provenance"`
-	Body         string             `json:"body,omitempty"`
-	DependencyID string             `json:"dependency_id,omitempty"`
+	CurrentDependency *bool              `json:"current_dependency,omitempty"`
+	SourceKey         string             `json:"source_key"`
+	Kind              string             `json:"kind"`
+	Data              json.RawMessage    `json:"data"`
+	Provenance        tracker.Provenance `json:"provenance"`
+	Body              string             `json:"body,omitempty"`
+	DependencyID      string             `json:"dependency_id,omitempty"`
 }
 
 type GitHubImportPage struct {
@@ -227,6 +228,11 @@ func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 			return err
 		}
 	}
+	if current.Stage == "dependencies" && current.Cursor == "" {
+		if _, err := tx.ExecContext(ctx, "UPDATE github_import_records SET current_dependency = 0 WHERE import_id = ? AND kind = 'dependency'", current.ID); err != nil {
+			return err
+		}
+	}
 	for _, record := range page.Records {
 		if record.SourceKey == "" || !json.Valid(record.Data) {
 			return nativeInvalid("GitHub import record is incomplete")
@@ -244,6 +250,11 @@ func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 			return err
 		}
 		if count == 0 {
+			if record.Kind == "dependency" {
+				if _, err := tx.ExecContext(ctx, "UPDATE github_import_records SET current_dependency = 1 WHERE import_id = ? AND source_key = ?", current.ID, record.SourceKey); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if record.Kind == "comment" && record.Body != "" {
@@ -385,13 +396,20 @@ func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 }
 
 func resolveImportedDependencies(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = json_extract(r.record_json, '$.dependency_id') WHERE g.project_id = ? AND g.intake_pending = 1 AND r.kind = 'dependency' ON CONFLICT DO NOTHING`, formatHubTime(now), formatHubTime(now), scope.project)
+	_, err := tx.ExecContext(ctx, `DELETE FROM issue_dependencies WHERE provenance = 'github_import'
+AND dependent_issue_id IN (SELECT i.id FROM issues i JOIN github_imports g ON g.work_item_id = i.native_id WHERE g.project_id = ? AND g.intake_pending = 1)
+AND NOT EXISTS (SELECT 1 FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues b ON b.id = issue_dependencies.blocker_issue_id JOIN issues i ON i.id = issue_dependencies.dependent_issue_id
+WHERE g.work_item_id = i.native_id AND r.kind = 'dependency' AND r.current_dependency = 1 AND b.github_node_id = json_extract(r.record_json, '$.dependency_id'))`, scope.project)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
+SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = json_extract(r.record_json, '$.dependency_id') WHERE g.project_id = ? AND g.intake_pending = 1 AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, formatHubTime(now), formatHubTime(now), scope.project)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE github_imports SET intake_pending = 0 WHERE project_id = ? AND intake_pending = 1 AND stage = 'finished' AND NOT EXISTS (
-SELECT 1 FROM github_import_records r WHERE r.import_id = github_imports.id AND r.kind = 'dependency' AND NOT EXISTS (
+SELECT 1 FROM github_import_records r WHERE r.import_id = github_imports.id AND r.kind = 'dependency' AND r.current_dependency = 1 AND NOT EXISTS (
 SELECT 1 FROM issues i WHERE i.project_id = github_imports.project_id AND i.github_node_id = json_extract(r.record_json, '$.dependency_id')))`, scope.project)
 	return err
 }
@@ -409,7 +427,7 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid import cursor"))
 	}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT sequence, record_json FROM github_import_records WHERE import_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", c.Param("import"), after, limit+1)
+	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT sequence, record_json, current_dependency FROM github_import_records WHERE import_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", c.Param("import"), after, limit+1)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -418,7 +436,8 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	for rows.Next() {
 		var sequence int64
 		var raw string
-		if err := rows.Scan(&sequence, &raw); err != nil {
+		var currentDependency bool
+		if err := rows.Scan(&sequence, &raw, &currentDependency); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if len(result.Items) == limit {
@@ -431,6 +450,9 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 		var record GitHubImportRecord
 		if err := json.Unmarshal([]byte(raw), &record); err != nil {
 			return s.nativeAPIError(c, err)
+		}
+		if record.Kind == "dependency" {
+			record.CurrentDependency = &currentDependency
 		}
 		result.Items = append(result.Items, record)
 		cursor.After = strconv.FormatInt(sequence, 10)

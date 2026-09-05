@@ -64,6 +64,7 @@ CREATE TABLE github_import_records (
   source_key TEXT NOT NULL,
   kind TEXT NOT NULL,
   record_json TEXT NOT NULL CHECK (json_valid(record_json)),
+  current_dependency INTEGER NOT NULL DEFAULT 1 CHECK (current_dependency IN (0, 1)),
   observed_at TEXT NOT NULL,
   UNIQUE (import_id, source_key)
 );

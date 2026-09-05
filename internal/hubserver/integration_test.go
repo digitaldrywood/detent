@@ -16,8 +16,9 @@ import (
 )
 
 type importFixtureBackend struct {
-	failPage bool
-	requests []GitHubImportRequest
+	failPage       bool
+	omitDependency bool
+	requests       []GitHubImportRequest
 }
 
 func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
@@ -51,7 +52,7 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 	case "edits":
 		return GitHubImportPage{}, nil
 	case "dependencies":
-		if request.IssueNumber != 1 {
+		if request.IssueNumber != 1 || b.omitDependency {
 			return GitHubImportPage{}, nil
 		}
 		return GitHubImportPage{Records: []GitHubImportRecord{{SourceKey: "dependency:I_blocker", Kind: "dependency", DependencyID: "I_blocker", Data: json.RawMessage(`{"node_id":"I_blocker"}`)}}}, nil
@@ -63,7 +64,8 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	t.Parallel()
 	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}}}}
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ReconcileBackend: backend, ImportBackend: &importFixtureBackend{}})
+	imports := &importFixtureBackend{}
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ReconcileBackend: backend, ImportBackend: imports})
 	f := newNativeFixture(t, service, "", "native-bind")
 	existing := f.create(t, "existing-native")
 	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "digitaldrywood/detent"})
@@ -108,6 +110,25 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	}
 	if job.IntakePending {
 		t.Fatal("completed intake still prevents scheduling")
+	}
+	finishImportFixture(t, f, startImportFixture(t, f, 2, false, 0))
+	job = startImportFixture(t, f, 1, false, 0)
+	for range 20 {
+		job = advanceImportFixture(t, f, job)
+		if job.Stage == "edits" {
+			break
+		}
+	}
+	if job.Stage != "edits" || !job.IntakePending {
+		t.Fatalf("pending dependency intake = %+v", job)
+	}
+	imports.omitDependency = true
+	job = finishImportFixture(t, f, startImportFixture(t, f, 1, true, job.Revision))
+	r = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+job.WorkItemID, f.token, nil)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, r, &issue)
+	if job.IntakePending || len(issue.Dependencies) != 0 {
+		t.Fatalf("restarted intake kept removed dependency: %+v, %+v", job, issue.Dependencies)
 	}
 }
 
@@ -249,6 +270,60 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 			decodeHubResponse(t, r, &records)
 			if len(records.Items) != 2 || records.NextCursor == "" {
 				t.Fatalf("source export pagination = %+v", records)
+			}
+		})
+	}
+}
+
+func TestGitHubReimportDependencySnapshot(t *testing.T) {
+	t.Parallel()
+	for _, retained := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retained-%t", retained), func(t *testing.T) {
+			backend := &importFixtureBackend{}
+			f := newIntegrationFixture(t, backend)
+			job := finishImportFixture(t, f, startImportFixture(t, f, 1, false, 0))
+			backend.omitDependency = !retained
+			job = finishImportFixture(t, f, startImportFixture(t, f, 1, true, job.Revision))
+			request := CutoverRequest{Mutation: tracker.Mutation{IdempotencyKey: "preview-reimport"}, DryRun: true, InitialState: "Todo", States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}}
+			receipt := cutoverFixture(t, f, request)
+			want := 0
+			if retained {
+				want = 1
+			}
+			if receipt.UnresolvedDependencies != want {
+				t.Fatalf("unresolved dependencies after reimport = %d, want %d", receipt.UnresolvedDependencies, want)
+			}
+			finishImportFixture(t, f, startImportFixture(t, f, 2, false, 0))
+			request.IdempotencyKey = "preview-ready"
+			receipt = cutoverFixture(t, f, request)
+			request.DryRun, request.IdempotencyKey, request.Checkpoint = false, "apply", receipt.Checkpoint
+			receipt = cutoverFixture(t, f, request)
+			r := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+job.WorkItemID, f.token, nil)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, r, &issue)
+			if len(issue.Dependencies) != want {
+				t.Fatalf("cutover dependencies = %+v, want %d", issue.Dependencies, want)
+			}
+			var records int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_import_records WHERE import_id = ? AND kind = 'dependency'", job.ID).Scan(&records); err != nil || records != 1 {
+				t.Fatalf("retained dependency history = %d, %v", records, err)
+			}
+			r = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/imports/"+job.ID+"/records", f.token, nil)
+			var exported tracker.Page[GitHubImportRecord]
+			decodeHubResponse(t, r, &exported)
+			for _, record := range exported.Items {
+				if record.Kind == "dependency" && (record.CurrentDependency == nil || *record.CurrentDependency != retained) {
+					t.Fatalf("dependency export does not identify current membership: %+v", record)
+				}
+			}
+			r = performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, map[string]any{"idempotency_key": "native-reimport", "expected_revision": fmt.Sprint(receipt.Integration.Revision), "intake": "manual", "projection": "disabled", "repository_enabled": false})
+			requireNativeStatus(t, r, http.StatusOK)
+			backend.omitDependency = retained
+			finishImportFixture(t, f, startImportFixture(t, f, 1, true, job.Revision))
+			r = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+job.WorkItemID, f.token, nil)
+			decodeHubResponse(t, r, &issue)
+			if len(issue.Dependencies) != want {
+				t.Fatalf("source reimport changed native dependencies: %+v", issue.Dependencies)
 			}
 		})
 	}

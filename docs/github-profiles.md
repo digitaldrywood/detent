@@ -81,6 +81,11 @@ explicitly re-enable manual intake. Newly imported native issues remain ineligib
 for claims until traversal finishes and imported dependencies resolve; unrelated
 native work continues.
 
+Reimport refreshes the dependency snapshot used by pending intake and cutover.
+Removed source edges remain in exported history with `current_dependency: false`;
+they do not become native graph edges. Reimport leaves already admitted native
+dependencies unchanged, including after source additions or removals.
+
 ## Explicit cutover
 
 Stop new compatibility dispatch and finish active leases. Run a current repository
