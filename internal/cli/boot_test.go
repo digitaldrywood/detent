@@ -1779,8 +1779,9 @@ func waitForDashboard(t *testing.T, url string, done <-chan error) string {
 func waitForDashboardContext(t *testing.T, ctx context.Context, url string, done <-chan error) string {
 	t.Helper()
 
-	client := http.Client{Timeout: time.Second}
-	body, err := awaitDashboard(ctx, &client, url, done)
+	client := newRuntimeHTTPClient()
+	defer client.CloseIdleConnections()
+	body, err := awaitDashboard(ctx, client, url, done)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -422,7 +422,8 @@ func waitForIsolatedRuntimeURL(t *testing.T, output *lockedBuffer, done <-chan e
 func waitForDashboardHeader(t *testing.T, rawURL string, done <-chan error, scenario string) string {
 	t.Helper()
 
-	client := http.Client{Timeout: time.Second}
+	client := newRuntimeHTTPClient()
+	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -465,7 +466,8 @@ func waitForDashboardHeader(t *testing.T, rawURL string, done <-chan error, scen
 func postRuntimeRefresh(t *testing.T, url string, done <-chan error) {
 	t.Helper()
 
-	client := http.Client{Timeout: time.Second}
+	client := newRuntimeHTTPClient()
+	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -529,7 +531,8 @@ func waitForDashboardConditionWithRefresh(
 func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form url.Values) string {
 	t.Helper()
 
-	client := http.Client{Timeout: time.Second}
+	client := newRuntimeHTTPClient()
+	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -587,4 +590,8 @@ func boardStateCountFromBody(t *testing.T, body string, state string) int {
 		}
 	}
 	return 0
+}
+
+func newRuntimeHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{}, Timeout: time.Second}
 }
