@@ -51,20 +51,21 @@
         if (c.x + c.width > p.width || c.y + c.height > p.height) fail('Crop outside parent');
       } else if (a.crop) fail('Crop requires parent_id');
     }
-    const covered = new Set();
+    const covered = new Set(), referencedAssets = new Set();
     for (const c of m.changes) {
       id(c.id, 'change ID'); text(c.title, 'change title'); text(c.description, 'change description');
       list(c.files, 'change files'); list(c.asset_ids, 'change assets'); unique(c.asset_ids, 'change assets');
       if (!c.files.length) fail('Change must identify files');
       c.files.forEach(f => { if (!m.changed_files.includes(f)) fail('Change references unknown file'); covered.add(f); });
       if (!['captured', 'blocked', 'not-ui'].includes(c.status)) fail('Invalid coverage status');
-      c.asset_ids.forEach(a => { if (!assets.has(a)) fail('Unknown asset reference'); });
+      c.asset_ids.forEach(a => { if (!assets.has(a)) fail('Unknown asset reference'); referencedAssets.add(a); });
       if (c.status === 'captured') {
         if (!c.asset_ids.some(a => ['after', 'detail'].includes(assets.get(a).kind))) fail('Captured change requires after screenshot');
         if (c.asset_ids.some(a => !assets.get(a).inspected)) fail('Captured evidence must be inspected');
       } else text(c.reason, 'coverage reason');
     }
     if (m.changed_files.some(f => !covered.has(f))) fail('Changed file missing from inventory');
+    if (m.assets.some(a => !referencedAssets.has(a.id))) fail('Asset missing from change inventory');
     return m;
   }
   function feedback(f, m) {
@@ -113,12 +114,15 @@
   function responses(r, previous, current) {
     if (!r || r.schema_version !== 1 || r.capture_id !== current.capture_id || r.feedback_capture_id !== previous.capture_id) fail('Responses do not match captures');
     list(r.items, 'response items'); unique(r.items.map(i => i.annotation_id), 'response annotation IDs');
-    const ids = previous.annotations.map(a => a.id);
+    const ids = previous.annotations.map(a => a.id), assets = new Map(current.assets.map(a => [a.id, a]));
     for (const item of r.items) {
       if (!ids.includes(item.annotation_id) || !['addressed', 'unresolved'].includes(item.status)) fail('Invalid feedback response');
       text(item.explanation, 'response explanation'); list(item.asset_ids, 'response assets');
-      for (const id of item.asset_ids) if (!current.assets.some(a => a.id === id)) fail('Unknown response evidence');
-      if (item.status === 'addressed' && !item.asset_ids.length) fail('Addressed response needs new evidence');
+      for (const id of item.asset_ids) if (!assets.has(id)) fail('Unknown response evidence');
+      if (item.status === 'addressed' && (!item.asset_ids.length || !item.asset_ids.every(id => {
+        const asset = assets.get(id);
+        return asset.inspected === true && ['after', 'detail', 'video'].includes(asset.kind) && asset.source.commit === current.head_sha;
+      }))) fail('Addressed response needs inspected current-result evidence');
     }
     if (ids.some(id => !r.items.some(i => i.annotation_id === id))) fail('Feedback annotation missing a response');
     return r;

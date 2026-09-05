@@ -71,6 +71,9 @@ func TestValidateManifest(t *testing.T) {
 		{"unknown change asset", func(t *testing.T) []byte {
 			return mutateJSON(t, raw, func(v map[string]any) { v["changes"].([]any)[0].(map[string]any)["asset_ids"] = []any{"missing"} })
 		}},
+		{"asset is not assigned to a change", func(t *testing.T) []byte {
+			return mutateJSON(t, raw, func(v map[string]any) { v["changes"].([]any)[0].(map[string]any)["asset_ids"] = []any{"full"} })
+		}},
 		{"changed file lacks coverage", func(t *testing.T) []byte {
 			return mutateJSON(t, raw, func(v map[string]any) { v["changes"] = v["changes"].([]any)[:1] })
 		}},

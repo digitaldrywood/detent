@@ -94,9 +94,36 @@ func TestVisualReviewHTTPRoundTripAndStaleRound(t *testing.T) {
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("bad hash persisted capture: %d", response.Code)
 	}
+	orphanDir := filepath.Join(mediaDir, visualReviewTestKey("detent"), "round-1")
+	if err := os.MkdirAll(orphanDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanDir, visualReviewTestKey("screenshot")+".png"), png, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	response = visualReviewRequest(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/visual-reviews/import", visualReviewMultipart(t, manifest, png), "review-token")
 	if response.Code != http.StatusCreated {
-		t.Fatalf("import status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("recover matching orphan import status=%d body=%s", response.Code, response.Body.String())
+	}
+	page := visualReviewRequest(t, server.Handler(), http.MethodGet, "/projects/detent/visual-reviews/round-1/", nil, "")
+	if page.Code != http.StatusOK || len(page.Result().Cookies()) == 0 {
+		t.Fatalf("visual review page status=%d cookies=%v", page.Code, page.Result().Cookies())
+	}
+	response = visualReviewUICookieRequest(t, server.Handler(), http.MethodGet, "/api/v1/projects/detent/visual-reviews/round-1", nil, page.Result().Cookies())
+	if response.Code != http.StatusOK {
+		t.Fatalf("UI-cookie review load status=%d body=%s", response.Code, response.Body.String())
+	}
+	conflictManifest := visualReviewManifest(t, "round-orphan-conflict", head, png)
+	conflictDir := filepath.Join(mediaDir, visualReviewTestKey("detent"), "round-orphan-conflict")
+	if err := os.MkdirAll(conflictDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conflictDir, visualReviewTestKey("screenshot")+".png"), []byte("not the expected media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response = visualReviewRequest(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/visual-reviews/import", visualReviewMultipart(t, conflictManifest, png), "review-token")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("mismatching orphan import status=%d body=%s", response.Code, response.Body.String())
 	}
 	response = visualReviewRequest(t, server.Handler(), http.MethodPost, "/api/v1/keys", strings.NewReader(`{"name":"Other project reader","scopes":["read"],"project_ids":["other-project"],"expires_in":"30d"}`), "review-token")
 	if response.Code != http.StatusCreated {
@@ -140,7 +167,7 @@ func TestVisualReviewHTTPRoundTripAndStaleRound(t *testing.T) {
 
 	feedback := map[string]any{"schema_version": 1, "repository": "digitaldrywood/detent", "pr": 42, "capture_id": "round-1", "head_sha": head, "authenticated": false, "author": "Reviewer", "exported_at": "2026-09-04T13:00:00Z", "recommendation": "draft", "asset_approvals": []any{}, "drafts": map[string]any{}, "annotations": []any{}}
 	requestBody, _ := json.Marshal(map[string]any{"capture_id": "round-1", "head_sha": head, "expected_revision": 0, "feedback": feedback})
-	response = visualReviewRequest(t, server.Handler(), http.MethodPut, "/api/v1/projects/detent/visual-reviews/round-1/draft", bytes.NewReader(requestBody), "review-token")
+	response = visualReviewUICookieRequest(t, server.Handler(), http.MethodPut, "/api/v1/projects/detent/visual-reviews/round-1/draft", bytes.NewReader(requestBody), page.Result().Cookies())
 	if response.Code != http.StatusOK {
 		t.Fatalf("save status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -171,15 +198,7 @@ func TestVisualReviewHTTPRoundTripAndStaleRound(t *testing.T) {
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"writable":false`)) {
 		t.Fatalf("changed-head response=%s", response.Body.String())
 	}
-	var mediaPath string
-	if err := filepath.WalkDir(mediaDir, func(path string, entry os.DirEntry, err error) error {
-		if err == nil && !entry.IsDir() && strings.HasSuffix(path, ".png") {
-			mediaPath = path
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
+	mediaPath := filepath.Join(mediaDir, visualReviewTestKey("detent"), "round-2", visualReviewTestKey("screenshot")+".png")
 	data, err := os.ReadFile(mediaPath)
 	if err != nil {
 		t.Fatal(err)
@@ -219,6 +238,11 @@ func visualReviewManifest(t *testing.T, captureID, head string, pngBytes []byte)
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func visualReviewTestKey(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
 }
 
 func visualReviewHarnessPNG(t *testing.T) []byte {
@@ -285,6 +309,22 @@ func visualReviewRequest(t *testing.T, handler http.Handler, method, path string
 		request.Header.Set("Content-Type", "application/json")
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func visualReviewUICookieRequest(t *testing.T, handler http.Handler, method, path string, body io.Reader, cookies []*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequestWithContext(context.Background(), method, path, body)
+	request.Header.Set("HX-Request", "true")
+	request.Header.Set("Origin", "http://"+request.Host)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder

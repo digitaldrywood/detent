@@ -1,1 +1,4 @@
 *.jsonl text eol=lf
+static/visual-review/viewer.js text eol=lf
+static/visual-review/schema.js text eol=lf
+static/visual-review/style.css text eol=lf

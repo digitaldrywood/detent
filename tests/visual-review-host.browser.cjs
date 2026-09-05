@@ -103,12 +103,14 @@ async function startFixture() {
       const state = states.get(project) || { revision: 0, feedback: null, writable: true, mode: 'normal' };
       states.set(project, state);
       if (req.method === 'GET' && !apiMatch[3]) {
+        assert.equal(req.headers['hx-request'], 'true', 'initial API load identifies dashboard UI traffic');
         return json(res, 200, {
           manifest: manifest(captureID), feedback: state.feedback, revision: state.revision,
           writable: state.writable, read_only_reason: state.writable ? '' : 'This is an older capture. Browsing remains available.',
         });
       }
       if (req.method === 'PUT' && apiMatch[3]) {
+        assert.equal(req.headers['hx-request'], 'true', 'draft save identifies dashboard UI traffic');
         const body = JSON.parse(await readBody(req));
         requests.push({ project, body });
         if (state.mode === 'delay-first' && requests.filter(r => r.project === project).length === 1) {

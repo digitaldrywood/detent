@@ -387,7 +387,7 @@ func (s *Server) apiImportVisualReview(c echo.Context) error {
 
 func (s *Server) persistVisualReviewImport(ctx context.Context, projectID, issueID string, manifest visualreview.Manifest, form *multipart.Form) (visualreview.Capture, error) {
 	if existing, err := s.store.VisualReviewCapture(ctx, projectID, manifest.CaptureID); err == nil {
-		if existing.IssueID == issueID && existing.Repository == manifest.Repository && existing.PR == manifest.PR && existing.HeadSHA == manifest.HeadSHA && string(existing.ManifestJSON) == string(manifest.Raw) && visualReviewCaptureMediaIntact(s.reviewMediaDir, existing) {
+		if visualReviewCaptureMatchesImport(existing, issueID, manifest) && visualReviewCaptureMediaIntact(s.reviewMediaDir, existing) {
 			return existing, nil
 		}
 		return visualreview.Capture{}, visualreview.ErrConflict
@@ -425,23 +425,36 @@ func (s *Server) persistVisualReviewImport(ctx context.Context, projectID, issue
 	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
 		return visualreview.Capture{}, err
 	}
-	if _, err := os.Stat(finalDir); err == nil {
-		return visualreview.Capture{}, visualreview.ErrConflict
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return visualreview.Capture{}, err
-	}
-	if err := os.Rename(stage, finalDir); err != nil {
-		return visualreview.Capture{}, fmt.Errorf("publish visual review media: %w", err)
-	}
 	for i := range assets {
 		assets[i].StorageKey = filepath.ToSlash(filepath.Join(finalKey, filepath.Base(assets[i].StorageKey)))
 	}
 	capture := visualreview.Capture{ProjectID: projectID, IssueID: issueID, Repository: manifest.Repository, PR: manifest.PR, CaptureID: manifest.CaptureID, HeadSHA: manifest.HeadSHA, BaseSHA: manifest.BaseSHA, CapturedAt: manifest.CapturedAt, Title: manifest.Title, Summary: manifest.Summary, CoverageNotes: manifest.CoverageNotes, ManifestJSON: manifest.Raw, Assets: assets, CreatedAt: s.now()}
+	if _, err := os.Stat(finalDir); err == nil {
+		if !visualReviewCaptureMediaIntact(s.reviewMediaDir, capture) {
+			return visualreview.Capture{}, visualreview.ErrConflict
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return visualreview.Capture{}, err
+	} else {
+		if err := os.Rename(stage, finalDir); err != nil {
+			return visualreview.Capture{}, fmt.Errorf("publish visual review media: %w", err)
+		}
+	}
 	if err := s.store.CreateVisualReviewCapture(ctx, capture); err != nil {
-		cleanupVisualReviewPath(finalDir)
+		if errors.Is(err, visualreview.ErrConflict) {
+			existing, lookupErr := s.store.VisualReviewCapture(ctx, projectID, manifest.CaptureID)
+			if lookupErr == nil && visualReviewCaptureMatchesImport(existing, issueID, manifest) && visualReviewCaptureMediaIntact(s.reviewMediaDir, existing) {
+				return existing, nil
+			}
+			return visualreview.Capture{}, err
+		}
 		return visualreview.Capture{}, err
 	}
 	return capture, nil
+}
+
+func visualReviewCaptureMatchesImport(capture visualreview.Capture, issueID string, manifest visualreview.Manifest) bool {
+	return capture.IssueID == issueID && capture.Repository == manifest.Repository && capture.PR == manifest.PR && capture.HeadSHA == manifest.HeadSHA && string(capture.ManifestJSON) == string(manifest.Raw)
 }
 
 func stageVisualReviewAsset(stage, projectID, captureID string, expected visualreview.ManifestAsset, header *multipart.FileHeader) (visualreview.Asset, error) {

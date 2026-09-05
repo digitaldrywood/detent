@@ -65,7 +65,7 @@
   function renderMarks() {
     $('stage').querySelectorAll('.mark,.selection,.drawing').forEach(n=>n.remove());
     if(!asset || asset.kind==='video')return;
-    const notes=f.annotations.filter(a=>a.asset_id===asset.id&&['pin','rectangle','ellipse','arrow','pen','text'].includes(a.kind));
+    const notes=f.annotations.filter(a=>a.change_id===change.id&&a.asset_id===asset.id&&['pin','rectangle','ellipse','arrow','pen','text'].includes(a.kind));
     notes.forEach((a,i)=>{
       if(['arrow','pen','text'].includes(a.kind)){draw(a,false);return;}
       const b=el('button',String(i+1),`mark ${a.kind}`);b.type='button';b.setAttribute('aria-label',`Annotation ${i+1}: ${a.text}`);

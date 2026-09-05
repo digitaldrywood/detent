@@ -62,7 +62,7 @@
       const response = await fetch(endpoint('/draft'), {
         method: 'PUT',
         credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'HX-Request': 'true'},
         body: JSON.stringify({
           capture_id: loaded.manifest.capture_id,
           head_sha: loaded.manifest.head_sha,
@@ -92,7 +92,10 @@
 
   globalThis.VisualReviewHost = {
     async load() {
-      const response = await fetch(endpoint(''), {credentials: 'same-origin'});
+      const response = await fetch(endpoint(''), {
+        credentials: 'same-origin',
+        headers: {'HX-Request': 'true'}
+      });
       if (!response.ok) throw new Error(`Detent returned HTTP ${response.status}`);
       loaded = await response.json();
       revision = loaded.revision || 0;

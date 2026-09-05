@@ -151,9 +151,9 @@ func ValidateManifest(raw []byte) (Manifest, error) {
 		m.Assets[i].Crop = &c
 		assets[a.ID] = m.Assets[i]
 	}
-	known, covered, changes := stringSet(m.ChangedFiles), map[string]struct{}{}, map[string]struct{}{}
+	known, covered, coveredAssets, changes := stringSet(m.ChangedFiles), map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	for _, c := range w.Changes {
-		v, e := validateChange(c, known, assets, covered)
+		v, e := validateChange(c, known, assets, covered, coveredAssets)
 		if e != nil {
 			return Manifest{}, e
 		}
@@ -162,6 +162,11 @@ func ValidateManifest(raw []byte) (Manifest, error) {
 		}
 		changes[v.ID] = struct{}{}
 		m.Changes = append(m.Changes, v)
+	}
+	for id := range assets {
+		if _, ok := coveredAssets[id]; !ok {
+			return Manifest{}, fmt.Errorf("asset %q is not assigned to a change", id)
+		}
 	}
 	if len(covered) != len(known) {
 		return Manifest{}, errors.New("changed file missing from inventory")
@@ -220,7 +225,7 @@ func validateCrop(c cropJSON, p ManifestAsset) (Crop, error) {
 	}
 	return Crop{X: *c.X, Y: *c.Y, Width: *c.Width, Height: *c.Height}, nil
 }
-func validateChange(c changeJSON, files map[string]struct{}, assets map[string]ManifestAsset, covered map[string]struct{}) (ManifestChange, error) {
+func validateChange(c changeJSON, files map[string]struct{}, assets map[string]ManifestAsset, covered, coveredAssets map[string]struct{}) (ManifestChange, error) {
 	if !validID(c.ID) || c.Files == nil || len(c.Files) == 0 || len(c.Files) > maxItems || c.AssetIDs == nil || len(c.AssetIDs) > maxItems {
 		return ManifestChange{}, errors.New("invalid change identity or arrays")
 	}
@@ -243,6 +248,7 @@ func validateChange(c changeJSON, files map[string]struct{}, assets map[string]M
 		if _, ok := assets[id]; !ok {
 			return ManifestChange{}, fmt.Errorf("change %q references unknown asset", c.ID)
 		}
+		coveredAssets[id] = struct{}{}
 	}
 	switch c.Status {
 	case "captured":

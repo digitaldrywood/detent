@@ -1,7 +1,7 @@
 # Vendored visual-review viewer
 
 `viewer.js`, `schema.js`, and `style.css` are copied byte-for-byte from
-`michaelhvisser/ai` commit `5db518a4212c7b53c666e6507f5beeccd6289a63`, under
+`michaelhvisser/ai` commit `eb0603070bbdba76d44d1497b9500870a59c4210`, under
 `plugins/workflow/skills/visual-review/assets/`.
 
 Detent owns `host.html`, `host.css`, and `host-adapter.js`. They adapt the unchanged local
