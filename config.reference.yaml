@@ -204,6 +204,10 @@
 #       pr_number: null
 #       # tracker.issues[].pr_repository | type: string | default: none | required: No | validation: None
 #       pr_repository: null
+#       # tracker.issues[].pr_association_source | type: string | default: none | required: No | validation: None
+#       pr_association_source: null
+#       # tracker.issues[].pr_association_checked_at | type: mapping | default: see child fields | required: No | validation: None
+#       pr_association_checked_at: {}
 #       # tracker.issues[].pull_request | type: object | default: none | required: No | validation: None
 #       pull_request:
 #         # tracker.issues[].pull_request.node_id | type: string | default: none | required: No | validation: None

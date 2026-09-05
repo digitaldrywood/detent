@@ -929,7 +929,7 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || issue.PullRequest == nil {
+		if issueID == "" || issue.PullRequest == nil || issue.PullRequest.HydrationUnavailableReason == associationUnavailable {
 			continue
 		}
 		pullRequestState := normalizePullRequestState(issue.PullRequest.State)
@@ -2141,7 +2141,7 @@ func (o *Orchestrator) applyStaleTodoPullRequestDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, string(decision.Reason), laneMutationRevokeWorker); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, string(decision.Reason), workflowLaneMetadata{Reconciliation: "stale_todo_pr"}, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"stale_todo_pr_reconciliation_failed",
@@ -2183,6 +2183,8 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 		return
 	}
 	attrs := []any{
+		"pull_request_association_source", issue.PRSource,
+		"pull_request_association_checked_at", issue.PRVerifiedAt,
 		"issue_id", strings.TrimSpace(issue.ID),
 		"identifier", issue.Identifier,
 		"reason", decision.Reason,

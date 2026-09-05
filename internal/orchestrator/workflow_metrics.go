@@ -37,6 +37,7 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	Reconciliation        string                                     `json:"reconciliation,omitempty"`
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
 	ReworkBreaker         *workflowLaneReworkBreakerMetadata         `json:"rework_breaker,omitempty"`
@@ -49,9 +50,12 @@ type workflowLaneMetadata struct {
 }
 
 type workflowLanePullRequestMetadata struct {
-	Number       int64    `json:"number,omitempty"`
-	HeadSHA      string   `json:"head_sha,omitempty"`
-	FailedChecks []string `json:"failed_checks,omitempty"`
+	Repository           string    `json:"repository,omitempty"`
+	AssociationSource    string    `json:"association_source,omitempty"`
+	AssociationCheckedAt time.Time `json:"association_checked_at,omitzero"`
+	Number               int64     `json:"number,omitempty"`
+	HeadSHA              string    `json:"head_sha,omitempty"`
+	FailedChecks         []string  `json:"failed_checks,omitempty"`
 }
 
 type workflowLaneDependencyAutoUnblockMetadata struct {
@@ -919,6 +923,9 @@ func workflowLaneMetadataHasAction(metadata workflowLaneMetadata, action string)
 
 func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLanePullRequestMetadata {
 	var metadata workflowLanePullRequestMetadata
+	metadata.Repository = issue.PRRepository
+	metadata.AssociationSource = issue.PRSource
+	metadata.AssociationCheckedAt = issue.PRVerifiedAt
 	if number := workflowMetricsPRNumber(issue); number != nil && *number > 0 {
 		metadata.Number = *number
 	}

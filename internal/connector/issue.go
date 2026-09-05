@@ -54,6 +54,8 @@ type Issue struct {
 	ClosedReason      string               `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
 	PRNumber          *int                 `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
 	PRRepository      string               `json:"pr_repository,omitempty" yaml:"pr_repository,omitempty"`
+	PRSource          string               `json:"pr_association_source,omitempty" yaml:"pr_association_source,omitempty"`
+	PRVerifiedAt      time.Time            `json:"pr_association_checked_at,omitzero" yaml:"pr_association_checked_at,omitempty"`
 	PullRequest       *PullRequest         `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
 	AuthorID          string               `json:"author_id,omitempty" yaml:"author_id,omitempty"`
 	AuthorAssociation AuthorAssociation    `json:"author_association,omitempty" yaml:"author_association,omitempty"`

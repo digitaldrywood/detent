@@ -346,6 +346,36 @@ func routeGitHubTestRequests(t *testing.T, server *graphqlTestServer) HTTPClient
 	}}
 }
 
+func TestRefreshPullRequestReferenceReplacesSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		references string
+		want       int
+	}{
+		{name: "removed", references: `[]`},
+		{name: "replaced", references: `[{"number":2242,"state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]`, want: 2242},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{body: fmt.Sprintf(`{"data":{"nodes":[{"__typename":"Issue","id":"I_2238","closedByPullRequestsReferences":{"nodes":%s}}]}}`, tt.references)}})
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent"})
+			issue := connector.Issue{ID: "I_2238", Identifier: "digitaldrywood/detent#2238", PRNumber: new(2239), PRRepository: "digitaldrywood/detent", PullRequest: &connector.PullRequest{Number: 2239, State: "MERGED"}}
+			got, err := c.RefreshPullRequestReference(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == 0 {
+				if got.PRNumber != nil || got.PullRequest != nil || got.PRRepository != "" {
+					t.Fatalf("removed association retained: %#v", got)
+				}
+			} else if got.PRNumber == nil || *got.PRNumber != tt.want || got.PullRequest != nil {
+				t.Fatalf("replacement association = %#v, want PR %d without old status", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConnectorFetchLabelIssuesByStatesAttachesPreExistingLinkedPullRequest(t *testing.T) {
 	t.Parallel()
 
