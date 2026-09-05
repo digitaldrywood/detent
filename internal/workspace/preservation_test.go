@@ -5,9 +5,144 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestLocalGitCleanupChecksEveryWorkspace(t *testing.T) {
+	t.Parallel()
+	for _, record := range []string{"none", "ordinary", "preserved"} {
+		for _, work := range []string{"clean", "tracked", "staged", "untracked", "unpushed", "detached", "missing", "broken", "different branch", "no remote"} {
+			t.Run(record+"/"+work, func(t *testing.T) {
+				t.Parallel()
+				source := initSourceRepo(t)
+				if work != "no remote" {
+					runGit(t, source, "remote", "add", "origin", initBareRemote(t))
+					runGit(t, source, "push", "-u", "origin", "main")
+				}
+				backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := Issue{Identifier: "cleanup-safety"}
+				info, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if record != "none" {
+					if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if record == "preserved" {
+					if _, err := backend.PreserveIssue(t.Context(), issue); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if work == "detached" {
+					runGit(t, info.Path, "checkout", "--detach")
+				}
+				if work != "clean" && work != "no remote" && work != "broken" {
+					name := "README.md"
+					if work == "untracked" {
+						name = "implementation.go"
+					}
+					if err := os.WriteFile(filepath.Join(info.Path, name), []byte("unique work\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if work != "tracked" && work != "untracked" {
+						runGit(t, info.Path, "add", name)
+						if work != "staged" {
+							runGit(t, info.Path, "commit", "-m", "unique work")
+						}
+					}
+				}
+				if work == "different branch" {
+					runGit(t, info.Path, "checkout", "--detach", "origin/main")
+				}
+				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				status := runGit(t, info.Path, "status", "--porcelain")
+				if work == "missing" {
+					if err := os.Rename(info.Path, filepath.Join(t.TempDir(), "moved")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if work == "broken" {
+					if err := os.Rename(filepath.Join(info.Path, ".git"), filepath.Join(info.Path, "saved-git")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				result, err := backend.CleanupIssue(t.Context(), issue)
+				if work == "clean" {
+					if err != nil || result.Worktrees != 1 || result.Branches != 1 {
+						t.Fatalf("cleanup = %+v, %v; want removed workspace and branch", result, err)
+					}
+					return
+				}
+				if !errors.Is(err, ErrWorkspacePreserved) || result.Worktrees != 0 || result.Branches != 0 {
+					t.Fatalf("cleanup = %+v, %v; want retained work", result, err)
+				}
+				if !branchExists(t, source, info.Branch) {
+					t.Fatal("cleanup deleted branch holding retained work")
+				}
+				if work != "missing" && work != "broken" {
+					if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != head {
+						t.Fatalf("head = %q, want %q", got, head)
+					}
+					if got := runGit(t, info.Path, "status", "--porcelain"); got != status {
+						t.Fatalf("status = %q, want %q", got, status)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+	for _, dirty := range []bool{false, true} {
+		t.Run(strconv.FormatBool(dirty), func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			publishCleanupSource(t, source)
+			trace := filepath.Join(t.TempDir(), "hook-ran")
+			backend, err := NewLocalGit(LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+				Hooks: Hooks{BeforeRemove: "touch " + shellQuote(trace) + " && printf 'hook work' > README.md"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "cleanup-hook"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dirty {
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("worker work"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := backend.CleanupIssue(t.Context(), issue)
+			if !errors.Is(err, ErrWorkspacePreserved) || result.Worktrees != 0 {
+				t.Fatalf("cleanup = %+v, %v; want preservation", result, err)
+			}
+			_, err = os.Stat(trace)
+			if dirty != errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("hook trace stat = %v, dirty = %t", err, dirty)
+			}
+			want := "hook work"
+			if dirty {
+				want = "worker work"
+			}
+			if got := readFile(t, filepath.Join(info.Path, "README.md")); got != want {
+				t.Fatalf("retained work = %q, want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestLocalGitPreservesRevokedWorkAcrossCleanupAndRestart(t *testing.T) {
 	t.Parallel()

@@ -369,6 +369,7 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	t.Parallel()
 
 	source := initSourceRepo(t)
+	publishCleanupSource(t, source)
 	root := filepath.Join(t.TempDir(), "workspaces")
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
@@ -2154,6 +2155,7 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 	skipWindows(t)
 
 	source := initSourceRepo(t)
+	publishCleanupSource(t, source)
 	root := filepath.Join(t.TempDir(), "workspaces")
 	tracePath := filepath.Join(t.TempDir(), "cleanup.trace")
 
@@ -2204,6 +2206,7 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 	enclosing := initSourceRepo(t)
 	source := filepath.Join(enclosing, "source")
 	initSourceRepoAt(t, source)
+	publishCleanupSource(t, source)
 	root := filepath.Join(enclosing, "workspaces")
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
@@ -2223,6 +2226,9 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 		restoreWritableTree(t, info.Path)
 	})
 
+	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"tmp/"}); err != nil {
+		t.Fatal(err)
+	}
 	cacheDir := filepath.Join(info.Path, "tmp", "_validation-cache", "go-mod", "modernc.org", "libc@v1.73.4")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("mkdir cache dir: %v", err)

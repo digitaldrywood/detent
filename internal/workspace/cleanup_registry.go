@@ -29,6 +29,7 @@ type cleanupOwnershipRecord struct {
 	Branch          string `json:"branch,omitempty"`
 	SourceCommonDir string `json:"source_common_dir"`
 	Preserve        bool   `json:"preserve,omitempty"`
+	CleanupStarted  bool   `json:"cleanup_started,omitempty"`
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
@@ -213,10 +214,7 @@ func (l *LocalGit) validOwnershipRecord(ctx context.Context, relativePath string
 
 func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue) (ReconcileResult, error) {
 	entries, err := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir))
-	if errors.Is(err, fs.ErrNotExist) {
-		return ReconcileResult{}, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return ReconcileResult{}, fmt.Errorf("read cleanup ownership registry: %w", err)
 	}
 	activeKeys := make(map[string]struct{}, len(activeIssues))
@@ -224,7 +222,8 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 		activeKeys[issueKey(issue)] = struct{}{}
 	}
 	result := ReconcileResult{}
-	var reconcileErrors []error
+	seen := map[string]bool{}
+	var records []cleanupOwnershipRecord
 	for _, entry := range entries {
 		relativePath := filepath.Join(cleanupOwnershipRegistryDir, entry.Name())
 		record, readErr := l.readOwnershipRecord(relativePath)
@@ -232,6 +231,16 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 			result.UnownedSkipped++
 			continue
 		}
+		seen[record.Path] = true
+		records = append(records, record)
+	}
+	unrecorded, err := l.unrecordedWorkspaces(ctx, seen)
+	if err != nil {
+		return result, err
+	}
+	records = append(records, unrecorded...)
+	var reconcileErrors []error
+	for _, record := range records {
 		if _, active := activeKeys[record.Key]; active {
 			result.ActiveSkipped++
 			continue
@@ -240,56 +249,86 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 			result.PreservedSkipped++
 			continue
 		}
-		exists, _, statErr := pathExists(record.Path)
-		if statErr != nil {
-			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: statErr.Error()})
-			reconcileErrors = append(reconcileErrors, statErr)
+		removed, reconcileErr := l.reconcileWorkspace(ctx, record, seen[record.Path], &result)
+		if reconcileErr != nil {
+			if errors.Is(reconcileErr, ErrWorkspacePreserved) {
+				result.PreservedSkipped++
+			}
+			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: reconcileErr.Error()})
+			reconcileErrors = append(reconcileErrors, reconcileErr)
 			continue
 		}
-		if exists {
-			registered, registrationErr := l.sourceWorktreeRegistered(ctx, record.Path)
-			if registrationErr != nil {
-				result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: registrationErr.Error()})
-				reconcileErrors = append(reconcileErrors, registrationErr)
-				continue
-			}
-			if registered {
-				result.RegisteredSkipped++
-				continue
-			}
-			pids, processErr := scanOwnedWorkspaceProcessIDs(ctx, record.Path, l.scanWorkspacePaths)
-			if processErr != nil {
-				result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: processErr.Error()})
-				reconcileErrors = append(reconcileErrors, processErr)
-				continue
-			}
-			if len(pids) > 0 {
-				result.ActiveSkipped++
-				continue
-			}
-			if removeErr := l.removeOwnedPath(l.root, record.Path); removeErr != nil {
-				result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: removeErr.Error()})
-				reconcileErrors = append(reconcileErrors, removeErr)
-				continue
-			}
-			result.Removed++
+		if removed {
+			result.CompletedPaths = append(result.CompletedPaths, record.Path)
 		}
-		if _, pruneErr := l.runGit(ctx, "worktree", "prune"); pruneErr != nil {
-			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: pruneErr.Error()})
-			reconcileErrors = append(reconcileErrors, pruneErr)
-			continue
-		}
-		if _, branchErr := l.deleteBranch(ctx, record.Branch); branchErr != nil {
-			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: branchErr.Error()})
-			reconcileErrors = append(reconcileErrors, branchErr)
-			continue
-		}
-		if removeErr := l.removeOwnershipRecord(record.Path); removeErr != nil {
-			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: removeErr.Error()})
-			reconcileErrors = append(reconcileErrors, removeErr)
-			continue
-		}
-		result.CompletedPaths = append(result.CompletedPaths, record.Path)
 	}
 	return result, errors.Join(reconcileErrors...)
+}
+
+func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnershipRecord, recorded bool, result *ReconcileResult) (bool, error) {
+	exists, _, err := pathExists(record.Path)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		registered, err := l.sourceWorktreeRegistered(ctx, record.Path)
+		if err != nil {
+			return false, err
+		}
+		if recorded && registered {
+			result.RegisteredSkipped++
+			return false, nil
+		}
+		pids, err := scanOwnedWorkspaceProcessIDs(ctx, record.Path, l.scanWorkspacePaths)
+		if err != nil {
+			return false, err
+		}
+		if len(pids) > 0 {
+			result.ActiveSkipped++
+			return false, nil
+		}
+	}
+	info := Info{Path: record.Path, Key: record.Key, Branch: record.Branch}
+	issue := Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier}
+	cleaned, err := l.cleanupWorkspace(ctx, info, issue)
+	result.Removed += cleaned.Worktrees
+	return err == nil, err
+}
+
+func (l *LocalGit) unrecordedWorkspaces(ctx context.Context, recorded map[string]bool) ([]cleanupOwnershipRecord, error) {
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("discover unrecorded workspaces: %w", err)
+	}
+	var records []cleanupOwnershipRecord
+	for index, entry := range strings.Split(output, "\x00\x00") {
+		if index == 0 {
+			continue
+		}
+		var path, branch string
+		for _, field := range strings.Split(entry, "\x00") {
+			if value, ok := strings.CutPrefix(field, "worktree "); ok {
+				path = value
+			}
+			if value, ok := strings.CutPrefix(field, "branch refs/heads/"); ok {
+				branch = value
+			}
+		}
+		if path == "" || recorded[path] || filepath.Dir(path) != l.root {
+			continue
+		}
+		path, err := validateWorkspacePath(l.root, path)
+		if err != nil {
+			return nil, err
+		}
+		exists, _, err := pathExists(path)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		records = append(records, cleanupOwnershipRecord{Path: path, Key: filepath.Base(path), Branch: branch})
+	}
+	return records, nil
 }
