@@ -3976,16 +3976,22 @@ func TestHydrateDispatchIssueSkipsPausedProvider(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name        string
-		outage      bool
-		probeAt     time.Time
-		probeIssue  string
-		wantFetches int
+		name           string
+		outage         bool
+		knownScope     bool
+		unrelatedScope bool
+		resumeAt       time.Time
+		probeAt        time.Time
+		probeIssue     string
+		wantFetches    int
 	}{
 		{name: "healthy", wantFetches: 1},
-		{name: "outage waiting", outage: true, probeAt: now.Add(time.Minute)},
-		{name: "probe already running", outage: true, probeAt: now, probeIssue: "probe"},
-		{name: "recovery probe due", outage: true, probeAt: now, wantFetches: 1},
+		{name: "unrelated recorded scope", outage: true, knownScope: true, unrelatedScope: true, probeAt: now.Add(time.Minute), wantFetches: 1},
+		{name: "waiting for resume without probe time", outage: true, knownScope: true, resumeAt: now.Add(time.Minute)},
+		{name: "unknown route with paused fallback", outage: true, probeAt: now.Add(time.Minute), wantFetches: 1},
+		{name: "outage waiting", outage: true, knownScope: true, probeAt: now.Add(time.Minute)},
+		{name: "probe already running", outage: true, knownScope: true, probeAt: now, probeIssue: "probe"},
+		{name: "recovery probe due", outage: true, knownScope: true, probeAt: now, wantFetches: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3995,8 +4001,15 @@ func TestHydrateDispatchIssueSkipsPausedProvider(t *testing.T) {
 			cfg := normalizeConfig(Config{})
 			orch := Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{issue: issue, fetches: &fetches}, capacityController: backendCapacityTestController{scope: scope}}
 			state := newState(cfg)
+			if tt.knownScope {
+				retryScope := scope
+				if tt.unrelatedScope {
+					retryScope.BackendID = "healthy"
+				}
+				state.Retry[issue.ID] = Retry{Issue: issue, CapacityScope: retryScope}
+			}
 			if tt.outage {
-				state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, NextProbeAt: tt.probeAt, ProbeIssueID: tt.probeIssue}
+				state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, NextProbeAt: tt.probeAt, ResumeAt: tt.resumeAt, ProbeIssueID: tt.probeIssue}
 			}
 			for range 3 {
 				if _, ok := orch.hydrateDispatchIssue(t.Context(), &state, issue, now); !ok {

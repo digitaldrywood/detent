@@ -265,9 +265,16 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, state *State, i
 	if strings.TrimSpace(issue.ID) == "" || len(issue.Fields) > 0 || o.connector == nil {
 		return issue, true
 	}
-	request := runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext()}
-	if _, _, paused := o.backendCapacityDispatch(state, request, now); paused {
-		return issue, true
+	if retry, ok := state.Retry[issue.ID]; ok {
+		if _, outage, active := matchingBackendOutage(state.BackendOutages, retry.CapacityScope); active {
+			probeAt := outage.NextProbeAt
+			if probeAt.IsZero() {
+				probeAt = outage.ResumeAt
+			}
+			if strings.TrimSpace(outage.ProbeIssueID) != "" || now.Before(probeAt) {
+				return issue, true
+			}
+		}
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
 	if err != nil {
