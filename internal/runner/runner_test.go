@@ -1054,17 +1054,19 @@ if "%DETENT_TEST_PUSH_WRAPPER_FAIL%"=="1" (
 exit /b %errorlevel%
 `
 			}
-			if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o700); err != nil {
+			if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o600); err != nil {
 				t.Fatalf("write git wrapper: %v", err)
 			}
 
 			command := "git push origin " + pushRef
 			wrapperCommand := wrapperPath
-			actualCommand := `"$DETENT_TEST_GIT" push origin ` + pushRef
+			actualCommand := `sh "$DETENT_TEST_GIT" push origin ` + pushRef
 			if tt.laterFailure {
 				command += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 				actualCommand += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 			}
+			commandCtx, cancelCommand := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancelCommand()
 			var cmd *exec.Cmd
 			if runtime.GOOS == "windows" {
 				wrapperCommand, err = filepath.Rel(workspacePath, wrapperPath)
@@ -1075,9 +1077,9 @@ exit /b %errorlevel%
 				if tt.laterFailure {
 					actualCommand += " && echo later assertion failed 1>&2 && exit /b 19"
 				}
-				cmd = exec.CommandContext(t.Context(), "cmd.exe", "/d", "/s", "/c", actualCommand)
+				cmd = exec.CommandContext(commandCtx, "cmd.exe", "/d", "/s", "/c", actualCommand)
 			} else {
-				cmd = exec.CommandContext(t.Context(), "sh", "-c", actualCommand)
+				cmd = exec.CommandContext(commandCtx, "sh", "-c", actualCommand)
 			}
 			cmd.Dir = workspacePath
 			wrapperFailure := "0"
