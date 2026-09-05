@@ -977,7 +977,7 @@ type boardCardView struct {
 	Origin            string
 	OriginDetail      string
 	AuthorDetail      string
-	CompactSignal     string
+	Signals           []boardCardSignal
 	ExtraKind         primitives.Kind
 	ExtraText         string
 	ExtraChip         bool
@@ -1477,8 +1477,8 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.MergeLaneStatus = card.MergeLaneStatus
 	view.MergeLaneDetail = card.MergeLaneDetail
 	view.MergeLaneKind = card.MergeLaneKind
-	view.CompactSignal = boardCardCompactSignal(view)
 	view.Work = workItemMetadataFromCard(data, card, view)
+	view.Signals = boardCardSignals(view, card)
 	return view
 }
 
@@ -1582,34 +1582,96 @@ func boardCardAuthorDetail(author string, originActor string) string {
 	return "@" + author
 }
 
-func boardCardCompactSignal(card boardCardView) string {
-	switch {
-	case card.MergeLaneStatus != "":
-		return card.MergeLaneStatus
-	case card.RuntimeBadge && card.ExtraText == "agent working":
-		return card.RuntimeCozyText
-	case card.ExtraText != "":
-		return card.ExtraText
-	case card.AgeFooter != "":
-		return "In lane " + card.AgeFooter
-	case card.RuntimeBadge:
-		return card.RuntimeCozyText
-	case card.Done:
-		return "Done"
-	default:
-		return ""
+type boardCardSignal struct {
+	Text string
+	Kind primitives.Kind
+}
+
+func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSignal {
+	if view.Done || view.Terminal {
+		return nil
 	}
+	signals := make([]boardCardSignal, 0, 2)
+	add := func(text string, kind primitives.Kind) {
+		if text != "" && len(signals) < 2 {
+			for _, signal := range signals {
+				if signal.Text == text {
+					return
+				}
+			}
+			signals = append(signals, boardCardSignal{Text: text, Kind: kind})
+		}
+	}
+	waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
+	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
+	switch {
+	case strings.HasPrefix(view.ExtraText, "Stranded "):
+		add("Stranded · no worker", primitives.KindWarn)
+	case !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold")):
+		add("Needs review", primitives.KindErr)
+	case len(card.Blockers) > 0:
+		add("Blocked · "+strconv.Itoa(len(card.Blockers)), primitives.KindErr)
+	case waiting:
+		add("Waiting", primitives.KindWarn)
+	case card.AttentionLabel != "":
+		add("Needs review", primitives.KindErr)
+	case card.ConflictReason != "":
+		add("Merge conflict", primitives.KindWarn)
+	case strings.EqualFold(view.State, "Blocked"):
+		add("Blocked", primitives.KindErr)
+	}
+	if view.Work.SyncKey == "error" || view.Work.SyncKey == "retrying" || view.Work.SyncKey == "stale" {
+		add("Sync "+strings.ToLower(view.Work.Sync), view.Work.SyncKind)
+	}
+	if view.MoveDisabledLabel == "Stale" {
+		add("Stale", primitives.KindWarn)
+	}
+	if card.CIStatus == "fail" || card.CIStatus == "failure" || card.CIStatus == "error" {
+		add("CI failed", primitives.KindErr)
+	}
+	if view.MergeLaneStatus != "" {
+		add(view.MergeLaneStatus, view.MergeLaneKind)
+	}
+	switch {
+	case card.GatePending:
+		add("Awaiting checks", primitives.KindInfo)
+	case card.WaitDetail != "":
+		add("Waiting", primitives.KindInfo)
+	case view.Retrying:
+		add("Awaiting retry", primitives.KindInfo)
+	case view.Running:
+		add("Running", primitives.KindOK)
+	case view.Waiting:
+		add("No live attempt", primitives.KindNeutral)
+	case strings.EqualFold(view.State, "Human Review"):
+		add("Needs review", primitives.KindInfo)
+	case strings.EqualFold(view.State, "Rework"):
+		add("Rework needed", primitives.KindWarn)
+	case strings.EqualFold(view.State, "Merging"):
+		add("Merging", primitives.KindInfo)
+	}
+	if card.CIStatus != "" {
+		add("CI "+card.CIStatus, primitives.KindInfo)
+	}
+	if view.RuntimeBadge && view.RuntimeCozyText != "agent working" {
+		add(view.RuntimeCozyText, primitives.KindOK)
+	}
+	return signals
 }
 
 func boardCardActivity(snapshot telemetry.Snapshot, card projectKanbanCard) string {
+	return boardCardActivityPreview(boardCardFullActivity(snapshot, card))
+}
+
+func boardCardFullActivity(snapshot telemetry.Snapshot, card projectKanbanCard) string {
 	for _, running := range snapshot.Running {
 		if issueIdentifier(running.Issue) != card.Identifier || !sheetSessionMatchesProject(running.ProjectID, card) {
 			continue
 		}
-		if message := boardCardActivityPreview(running.LastMessage); message != "" {
+		if message := strings.TrimSpace(running.LastMessage); message != "" {
 			return message
 		}
-		return boardCardActivityPreview(running.LastEvent)
+		return running.LastEvent
 	}
 	var latest *telemetry.IssueComment
 	for i := range card.Comments {
@@ -1624,7 +1686,7 @@ func boardCardActivity(snapshot telemetry.Snapshot, card projectKanbanCard) stri
 	if latest == nil {
 		return ""
 	}
-	return boardCardActivityPreview(latest.Body)
+	return latest.Body
 }
 
 func boardCardCommentTime(comment telemetry.IssueComment) time.Time {

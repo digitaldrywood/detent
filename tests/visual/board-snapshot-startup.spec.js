@@ -85,6 +85,7 @@ test("boot renders a seeded last-known board before the live morph", async ({ pa
     await expect(snapshot).toContainText("Cached board card before hydration");
     await expect(page.locator("#board-lanes")).not.toHaveClass(/grayscale/);
 
+    await page.locator('[data-density-choice="comfy"]').click();
     const priorityTrigger = page.locator("[data-board-priority]");
     await priorityTrigger.hover();
     await expect(tooltip).toHaveAttribute("data-open", "true");

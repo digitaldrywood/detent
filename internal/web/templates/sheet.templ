@@ -132,6 +132,7 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 	{{ projectID, issueIdentity, scope := boardCardDetailIdentity(data, card) }}
 	{{ syncLabel, _, syncTitle, syncKind := workItemSync(data, card) }}
 	{{ leaseAge, leaseTitle := workItemLease(card, pipelineNow(data.Snapshot)) }}
+	{{ summary := boardCardViewFromCard(data, projectKanbanLane{Title: card.Stage}, card, projectKanbanTerminalState(card.Stage, projectKanbanTerminalStateSetForProject(data, card.ProjectID)), scope, projectID) }}
 	<div
 		id="detail-sheet-core"
 		class="flex flex-col gap-4"
@@ -151,6 +152,33 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 			}
 			if card.TimeInStage != "" && card.TimeInStage != "n/a" {
 				@sheetRowValue("Time in stage", card.TimeInStage, card.TimeInStageTitle)
+			}
+			if summary.PriorityDetail != "" {
+				@sheetRowValue("Priority", summary.PriorityTitle + ": " + summary.PriorityDetail, "")
+			}
+			if summary.AuthorDetail != "" {
+				@sheetRowValue("Filed by", summary.AuthorDetail, "")
+			}
+			if summary.ExtraText != "" {
+				@sheetRowValue("Current condition", summary.ExtraText, "")
+			}
+			if summary.MoveDisabledText != "" {
+				@sheetRowValue("Move availability", summary.MoveDisabledText, "")
+			}
+			if summary.MergeLaneStatus != "" {
+				@sheetRowValue("Merge progress", summary.MergeLaneStatus + ": " + summary.MergeLaneDetail, "")
+			}
+			if summary.ParkDetail != "" {
+				@sheetRowValue("Park history", summary.ParkDetail, "")
+			}
+			if summary.ProgressDetail != "" {
+				@sheetRowValue("Last turn", summary.ProgressDetail, "")
+			}
+			if activity := boardCardFullActivity(data.Snapshot, card); activity != "" {
+				@sheetRowValue("Latest activity", activity, "")
+			}
+			if summary.Effort != "" {
+				@sheetRowValue("Configured effort", summary.Effort, "")
 			}
 			if card.Origin != "" {
 				@sheetRowValue("Origin", boardCardOriginDetail(card.Origin, card.OriginActor), "Mechanism that placed this issue in its current state")
@@ -191,13 +219,21 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 			<div class="flex flex-col gap-1.5">
 				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Needs attention</h3>
 				if card.AttentionLabel != "" {
-					@primitives.Chip(primitives.KindErr, sheetAttentionLabel(card))
+					<p class="min-w-0 whitespace-pre-wrap break-words text-err [overflow-wrap:anywhere]">{ sheetAttentionLabel(card) }</p>
 				}
 				for _, blocker := range card.Blockers {
-					@primitives.Chip(primitives.KindErr, "blocked — "+blocker)
+					<p class="min-w-0 whitespace-pre-wrap break-words text-err [overflow-wrap:anywhere]" data-detail-blocker>{ "blocked — " + blocker }</p>
 				}
 				if card.ConflictReason != "" {
-					@primitives.Chip(primitives.KindWarn, card.ConflictReason)
+					<p class="min-w-0 whitespace-pre-wrap break-words text-warn [overflow-wrap:anywhere]">{ card.ConflictReason }</p>
+				}
+			</div>
+		}
+		if len(card.ClearedBlockers) > 0 {
+			<div class="flex flex-col gap-1.5">
+				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Dependency history</h3>
+				for _, blocker := range card.ClearedBlockers {
+					@sheetRowValue("Cleared dependency", blocker, "")
 				}
 			</div>
 		}
@@ -349,7 +385,7 @@ templ sheetRowText(label string) {
 templ sheetRowValue(label string, value string, title string) {
 	<div class="flex min-w-0 flex-col items-start gap-1 md:flex-row md:items-center md:justify-between md:gap-3" data-sheet-row={ label }>
 		<span class="flex-none text-sec">{ label }</span>
-		<span class="w-full min-w-0 break-words font-mono text-text tabular-nums [overflow-wrap:anywhere] md:w-auto md:truncate" title={ title } data-sheet-row-value>{ value }</span>
+		<span class="w-full min-w-0 whitespace-pre-wrap break-words font-mono text-text tabular-nums [overflow-wrap:anywhere] md:w-auto" title={ title } data-sheet-row-value>{ value }</span>
 	</div>
 }
 
