@@ -663,3 +663,100 @@ scoped revision retrieval, backup-compatible migration and restart persistence.
 They do not claim that the future privileged purge/restore maintenance command is
 implemented. Until it is, operators must retain backups deliberately and must not
 disable triggers on a running Hub as a substitute for supported deletion.
+
+## Provider capacity reports
+
+Enrolled native runners can report provider capacity with an optional global
+client setting. Existing unconfigured runners retain their scheduling behavior.
+
+```yaml
+client:
+  hub_url: https://hub.example.com
+  identity_file: /absolute/private/runner/identity.json
+  organization_id: org_example
+  native_projects:
+    application: prj_example
+  provider_capacity_file: /absolute/private/runner/provider-capacity.json
+```
+
+The file is a JSON array written by an operator-managed local collector. Detent
+does not log into provider accounts or scrape billing pages to populate it. Use
+atomic file replacement when publishing a new observation. The collector maps
+each backend ID to the credentials already used by that local backend; reporting
+an alias never switches the backend's account. Each backend has exactly one local
+account in a report. Configure separate backend IDs for separately selected
+accounts through the existing agent routing configuration.
+
+```json
+[
+  {
+    "provider": "openai",
+    "backend": "codex",
+    "account_alias": "local-work",
+    "shared_account_alias": "team-subscription-a",
+    "models": ["gpt-5.6-sol", "gpt-6-astra"],
+    "max_concurrent": 2,
+    "availability": "unknown",
+    "observed_at": "2026-09-05T12:00:00Z"
+  }
+]
+```
+
+Only these fields and optional `reset_at` are accepted. Files are bounded to
+256 KiB, 32 backends and 128 model identifiers per backend. Aliases are opaque
+lowercase ASCII tokens, at most 64 characters; use no email addresses, API keys,
+login sessions, billing records or customer prompts. Provider/backend/model
+identifiers are bounded, case-sensitive tokens; use the same provider ID on every
+machine sharing an account. `models` must advertise the identifiers selected
+by local routing. An existing unpinned route uses the explicit `provider_default`
+capability; capacity never picks a different model or rewrites effort.
+
+`max_concurrent` is an operator-declared bound on simultaneous reserved runs,
+between 1 and 10000. It is not a token balance or an estimate of transferable
+credits. `availability` is `available`, `exhausted` or `unknown`. Observations at
+least two minutes old, observations in the future, and reset hints reached at
+equality become `unknown`, never automatically `available`. Unknown quota permits
+dispatch only within the declared concurrency bound and existing local brakes.
+An exhausted fresh observation waits for a refreshed report or its reset hint.
+
+Declare the same `provider` and `shared_account_alias` on every machine using the
+same provider account, even when local aliases or backend IDs differ. Hub scopes
+sharing to the organization, uses the lowest declared limit and honors exhaustion
+from any overlapping report. Distinct explicit aliases declare independent
+accounts. An omitted shared alias means sharing is unknown: its reports and
+reservations overlap every account of that provider in the organization. Separate
+local aliases or reports never imply independent capacity. Drain work before
+changing account mappings; existing leases retain their original reservation.
+
+Registration and heartbeats accept typed `provider_reports` on the native machine
+endpoints. Once a runner advertises reports, requests without selected candidates
+cannot bypass reservations. A missing/invalid configured report file defers
+dispatch; it does not silently disable capacity checks. Omitted heartbeat reports
+retain the last report, including its original observation time.
+
+`POST .../claims/preview` returns authorized candidates in the existing Hub queue
+order, in pages of up to 100 (`after`/`next` are opaque cursor values). The client
+uses the existing local role/model/override resolution, then includes
+`provider_candidates` (work item ID, revision and selected role/backend/model)
+in `POST .../claims`. Hub rechecks current issue revision, approved policy,
+organization/project authority, tags, fixed host, health, host capacity and
+provider compatibility inside the claim transaction. Capacity removes ineligible
+choices from that order; it does not reprioritize work or select a fallback model.
+The negotiated feature is `provider_capacity_reservations`.
+
+The claim response includes `provider_reservation`, pinned to the fenced lease.
+The client rechecks the local account and model immediately before `run.started`;
+Hub rechecks the shared pool while accepting the first ordered start. A changed
+identity or newly exhausted pool defers the start without spending the issue's
+failure budget. Existing local budgets, pools, host pressure and provider backoff
+still apply. Cancellation, failed preparation, hydration failure and normal
+release free capacity through the existing lease. Expiry frees abandoned
+reservations after restart; stale fencing tokens cannot release a successor's
+reservation. Lost acknowledgments remain idempotent. Capacity changes affect new
+starts and preserve active execution identity and history.
+
+These reservations coordinate enrolled Detent runs using reported accounts;
+external provider consumers still require fresh observations and local provider
+error handling. Fleet details show reports, shared usage and waiting reasons;
+run details show the selected role/backend/model/account and reason. `detent
+doctor` reports the same capacity view. There is no additional global banner.

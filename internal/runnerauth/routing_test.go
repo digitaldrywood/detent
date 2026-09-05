@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -67,6 +68,18 @@ func TestRunnerEligibility(t *testing.T) {
 		{"runner full", func(r *Runner) { r.Used = 2 }, policy.Requirements{}, false, "runner_capacity"},
 		{"reported pause", func(r *Runner) { r.ReportedCapacity = 0 }, policy.Requirements{}, false, "runner_capacity"},
 		{"active retains slot", func(r *Runner) { r.Used = 2; r.HostUsed = 2 }, policy.Requirements{}, true, ""},
+		{"provider exhausted", func(r *Runner) {
+			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "exhausted"}}
+		}, policy.Requirements{}, false, "provider_capacity"},
+		{"provider fully reserved", func(r *Runner) {
+			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "available", Used: 2}}
+		}, policy.Requirements{}, false, "provider_capacity"},
+		{"provider unknown", func(r *Runner) {
+			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "unknown"}}
+		}, policy.Requirements{}, false, ""},
+		{"active provider exhaustion", func(r *Runner) {
+			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "exhausted"}}
+		}, policy.Requirements{}, true, ""},
 		{"rename", func(r *Runner) { r.DisplayName = "New name"; r.HostDisplayName = "New host" }, policy.Requirements{RunnerID: "runner_a", MachineID: "machine_a"}, false, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {

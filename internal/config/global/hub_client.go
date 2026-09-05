@@ -16,6 +16,7 @@ const (
 )
 
 type HubClient struct {
+	ProviderCapacityFile     string            `yaml:"provider_capacity_file,omitempty"`
 	OrganizationID           string            `yaml:"organization_id,omitempty"`
 	NativeProjects           map[string]string `yaml:"native_projects,omitempty"`
 	URL                      string            `yaml:"hub_url,omitempty"`
@@ -30,7 +31,7 @@ type HubClient struct {
 }
 
 func (c HubClient) IsZero() bool {
-	return strings.TrimSpace(c.IdentityFile) == "" && strings.TrimSpace(c.OrganizationID) == "" && len(c.NativeProjects) == 0 && strings.TrimSpace(c.URL) == "" && strings.TrimSpace(c.TokenEnvironment) == "" &&
+	return strings.TrimSpace(c.ProviderCapacityFile) == "" && strings.TrimSpace(c.IdentityFile) == "" && strings.TrimSpace(c.OrganizationID) == "" && len(c.NativeProjects) == 0 && strings.TrimSpace(c.URL) == "" && strings.TrimSpace(c.TokenEnvironment) == "" &&
 		strings.TrimSpace(c.MachineID) == "" && strings.TrimSpace(c.DisplayName) == "" && c.Capacity == 0 &&
 		c.HeartbeatIntervalSeconds == 0 && c.LeaseTTLSeconds == 0 && c.RequestTimeoutMS == 0
 }
@@ -40,6 +41,7 @@ func (c HubClient) Configured() bool {
 }
 
 func (c HubClient) Normalized() HubClient {
+	c.ProviderCapacityFile = strings.TrimSpace(c.ProviderCapacityFile)
 	c.OrganizationID = strings.TrimSpace(c.OrganizationID)
 	c.URL = strings.TrimRight(strings.TrimSpace(c.URL), "/")
 	c.TokenEnvironment = strings.TrimSpace(c.TokenEnvironment)
@@ -81,6 +83,9 @@ func (c HubClient) Validate() []string {
 		return nil
 	}
 	var problems []string
+	if c.ProviderCapacityFile != "" && (!filepath.IsAbs(c.ProviderCapacityFile) || c.IdentityFile == "") {
+		problems = append(problems, "client.provider_capacity_file requires an absolute report path and an enrolled identity_file")
+	}
 	if c.IdentityFile != "" {
 		if !filepath.IsAbs(c.IdentityFile) {
 			problems = append(problems, "client.identity_file must be an absolute private path")
@@ -138,7 +143,7 @@ func hubClientRawErrors(value any) []string {
 		return []string{"client: must be a mapping"}
 	}
 	var problems []string
-	for _, name := range []string{"hub_url", "token_env", "identity_file", "machine_id", "display_name", "organization_id"} {
+	for _, name := range []string{"hub_url", "token_env", "identity_file", "provider_capacity_file", "machine_id", "display_name", "organization_id"} {
 		problems = append(problems, optionalStringTypeError(attrs, name)...)
 	}
 	for _, field := range []struct{ name, path string }{

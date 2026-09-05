@@ -1,8 +1,14 @@
 package tracker
 
-import "time"
+import (
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+)
 
 const NativeProtocolMajor = 2
+
+const NativeProviderCapacityCapability = "provider_capacity_reservations"
 
 type OrganizationID string
 type ProjectID string
@@ -182,31 +188,49 @@ type NativeProject struct {
 }
 
 type NativeClaim struct {
-	PolicyID       string           `json:"policy_id"`
-	WorkItemID     NativeWorkItemID `json:"work_item_id,omitempty"`
-	MachineID      MachineID        `json:"machine_id"`
-	SessionID      string           `json:"session_id"`
-	TTLSeconds     int64            `json:"ttl_seconds"`
-	ProtocolMajor  int              `json:"protocol_major"`
-	Capabilities   []string         `json:"capabilities"`
-	WorkflowStates []string         `json:"workflow_states,omitempty"`
-	Authors        []string         `json:"authors,omitempty"`
-	Assignees      []string         `json:"assignees,omitempty"`
-	LabelInclude   []string         `json:"label_include,omitempty"`
-	LabelExclude   []string         `json:"label_exclude,omitempty"`
+	ProviderCandidates []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
+	PolicyID           string                    `json:"policy_id"`
+	WorkItemID         NativeWorkItemID          `json:"work_item_id,omitempty"`
+	MachineID          MachineID                 `json:"machine_id"`
+	SessionID          string                    `json:"session_id"`
+	TTLSeconds         int64                     `json:"ttl_seconds"`
+	ProtocolMajor      int                       `json:"protocol_major"`
+	Capabilities       []string                  `json:"capabilities"`
+	WorkflowStates     []string                  `json:"workflow_states,omitempty"`
+	Authors            []string                  `json:"authors,omitempty"`
+	Assignees          []string                  `json:"assignees,omitempty"`
+	LabelInclude       []string                  `json:"label_include,omitempty"`
+	LabelExclude       []string                  `json:"label_exclude,omitempty"`
 }
 
 type NativeLease struct {
-	ServerTime   time.Time        `json:"server_time"`
-	PolicyID     string           `json:"policy_id"`
-	ID           LeaseID          `json:"lease_id"`
-	WorkItemID   NativeWorkItemID `json:"work_item_id"`
-	MachineID    MachineID        `json:"machine_id"`
-	SessionID    string           `json:"session_id"`
-	FencingToken FencingToken     `json:"fencing_token,string"`
-	AcquiredAt   time.Time        `json:"acquired_at"`
-	RenewedAt    time.Time        `json:"renewed_at"`
-	ExpiresAt    time.Time        `json:"expires_at"`
+	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
+	ServerTime          time.Time                     `json:"server_time"`
+	PolicyID            string                        `json:"policy_id"`
+	ID                  LeaseID                       `json:"lease_id"`
+	WorkItemID          NativeWorkItemID              `json:"work_item_id"`
+	MachineID           MachineID                     `json:"machine_id"`
+	SessionID           string                        `json:"session_id"`
+	FencingToken        FencingToken                  `json:"fencing_token,string"`
+	AcquiredAt          time.Time                     `json:"acquired_at"`
+	RenewedAt           time.Time                     `json:"renewed_at"`
+	ExpiresAt           time.Time                     `json:"expires_at"`
+}
+
+type NativeCapacityCandidate struct {
+	WorkItemID  NativeWorkItemID             `json:"work_item_id"`
+	Revision    Revision                     `json:"revision,string"`
+	Requirement providercapacity.Requirement `json:"requirement"`
+}
+
+type NativeCapacityPreview struct {
+	NativeClaim
+	After WorkItemID `json:"after,omitempty"`
+}
+
+type NativeCapacityPage struct {
+	Items []NativeIssue `json:"items"`
+	Next  WorkItemID    `json:"next,omitempty"`
 }
 
 type NativeLeaseMutation struct {

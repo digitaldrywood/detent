@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hostpressure"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -176,11 +177,12 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
-	Policy         policy.Descriptor
-	ProjectID      string
-	Repository     string
-	WorkflowStates []string
-	Filter         connector.IssueFilterHint
+	ProviderRequirement func(context.Context, connector.Issue) (providercapacity.Requirement, error)
+	Policy              policy.Descriptor
+	ProjectID           string
+	Repository          string
+	WorkflowStates      []string
+	Filter              connector.IssueFilterHint
 }
 
 type SchedulingSource interface {
@@ -297,6 +299,7 @@ type Orchestrator struct {
 	activity                *activity.Broker
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
+	providerCapacity        runpkg.ProviderCapacityResolver
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
@@ -466,6 +469,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		securityAuditor = candidate
 	}
 	var capacityController runpkg.CapacityController
+	var providerCapacity runpkg.ProviderCapacityResolver
+	if candidate, ok := runner.(runpkg.ProviderCapacityResolver); ok {
+		providerCapacity = candidate
+	}
 	if candidate, ok := runner.(runpkg.CapacityController); ok {
 		capacityController = candidate
 	}
@@ -676,6 +683,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		newStalenessNotifier:    newStalenessNotifier,
 		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
+		providerCapacity:        providerCapacity,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,

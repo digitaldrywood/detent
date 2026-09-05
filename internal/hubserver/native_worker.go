@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -61,11 +62,14 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	if err := validateProviderCandidates(request.ProviderCandidates); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	if request.ProtocolMajor != tracker.NativeProtocolMajor || !slices.Contains(request.Capabilities, "scoped_collaboration") || !slices.Contains(request.Capabilities, "native_issues") {
 		return s.nativeAPIError(c, nativeInvalid("Native protocol and required collaboration capabilities must be negotiated"))
 	}
 	for _, capability := range request.Capabilities {
-		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability}, capability) {
+		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, capability) {
 			return s.nativeAPIError(c, nativeInvalid("Unknown required capability"))
 		}
 	}
@@ -85,7 +89,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		}
 	}
 	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
-		PolicyID: request.PolicyID, RequirePolicy: true,
+		PolicyID: request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 	}, s.config.ReconcileInterval)
 	if err != nil {
@@ -103,7 +107,15 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+	reservation, reserved, err := readProviderReservation(c.Request().Context(), s.database.db, lease.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var providerReservation *providercapacity.Reservation
+	if reserved {
+		providerReservation = &reservation
+	}
+	return c.JSON(http.StatusOK, tracker.NativeLease{ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }
 
 func (s *Service) requireNativeLease(c echo.Context) error {
@@ -149,13 +161,14 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 
 func (s *Service) registerNativeMachine(c echo.Context) error {
 	var request struct {
-		ID           tracker.MachineID `json:"id"`
-		Hostname     string            `json:"hostname"`
-		DisplayName  string            `json:"display_name"`
-		Capacity     int               `json:"capacity"`
-		Version      string            `json:"version"`
-		OS           string            `json:"os,omitempty"`
-		Architecture string            `json:"architecture,omitempty"`
+		ID              tracker.MachineID         `json:"id"`
+		Hostname        string                    `json:"hostname"`
+		DisplayName     string                    `json:"display_name"`
+		Capacity        int                       `json:"capacity"`
+		Version         string                    `json:"version"`
+		OS              string                    `json:"os,omitempty"`
+		Architecture    string                    `json:"architecture,omitempty"`
+		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -170,8 +183,14 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	if scope.credential.Runner.RunnerID != "" {
 		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-			return request, updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now)
+			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now); err != nil {
+				return nil, err
+			}
+			return request, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
 		})
+	}
+	if len(request.ProviderReports) != 0 {
+		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))
 	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

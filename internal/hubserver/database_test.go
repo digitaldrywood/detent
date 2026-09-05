@@ -81,6 +81,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"lease_runners",
 		"policy_revisions",
 		"project_policies",
+		"provider_reservations",
 		"machines",
 		"native_attempts",
 		"native_attempt_events",

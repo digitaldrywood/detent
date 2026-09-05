@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -34,9 +35,23 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		return nil
 	}
 	if last.IsZero() {
-		if err := source.client.Negotiate(ctx); err != nil {
+		var required []string
+		if s.providerReports != nil {
+			required = append(required, tracker.NativeProviderCapacityCapability)
+		}
+		if err := source.client.Negotiate(ctx, required...); err != nil {
 			return err
 		}
+	}
+	if s.providerReports != nil {
+		reports, err := s.providerReports()
+		if err != nil {
+			return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+		}
+		if err := providercapacity.Validate(reports); err != nil {
+			return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+		}
+		s.machine.ProviderReports = reports
 	}
 	if s.client.runner != nil && !last.IsZero() {
 		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
@@ -60,12 +75,18 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		return nil, err
 	}
 	claimStarted := s.now()
-	lease, err := source.client.Claim(ctx, tracker.NativeClaim{
+	claimRequest := tracker.NativeClaim{
 		PolicyID:  request.Policy.ID,
 		MachineID: s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
-	})
+	}
+	var lease tracker.NativeLease
+	if s.providerReports != nil {
+		lease, err = s.claimProviderCandidate(ctx, request, source, claimRequest)
+	} else {
+		lease, err = source.client.Claim(ctx, claimRequest)
+	}
 	if errors.Is(err, ErrNoClaimableWork) {
 		return []connector.Issue{}, nil
 	}

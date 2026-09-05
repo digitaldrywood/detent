@@ -54,6 +54,12 @@ func TestHubRunnerIdentityConfiguration(t *testing.T) {
 		{"relative path", func(c *HubClient) { c.IdentityFile = "identity.json" }, false},
 		{"ambiguous token source", func(c *HubClient) { c.TokenEnvironment = "LEGACY_TOKEN" }, false},
 		{"no projects", func(c *HubClient) { c.NativeProjects = nil }, false},
+		{"provider reports", func(c *HubClient) { c.ProviderCapacityFile = filepath.Join(t.TempDir(), "reports.json") }, true},
+		{"relative provider reports", func(c *HubClient) { c.ProviderCapacityFile = "reports.json" }, false},
+		{"unenrolled provider reports", func(c *HubClient) {
+			c.ProviderCapacityFile = filepath.Join(t.TempDir(), "reports.json")
+			c.IdentityFile = ""
+		}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config := HubClient{URL: "https://hub.example.test", IdentityFile: filepath.Join(t.TempDir(), "private", "identity.json"), OrganizationID: "org_example", NativeProjects: map[string]string{"local": "prj_example"}}

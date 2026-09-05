@@ -75,6 +75,17 @@ templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
 			<dt class="text-sec">Stable runner</dt><dd class="break-all font-mono text-sec">{ r.RunnerID }</dd>
 			<dt class="text-sec">Stable host</dt><dd class="break-all font-mono text-sec">{ string(r.MachineID) }</dd>
 		</dl>
+		for _, capacity := range r.ProviderCapacity {
+			<details class="border-t border-line pt-3" data-provider-capacity={ capacity.Backend }>
+				<summary class="cursor-pointer break-words text-xs text-text">{ capacity.Summary() }</summary>
+				<p class="mt-2 break-words text-xs text-sec">Models: { strings.Join(capacity.Models, ", ") }</p>
+				<p class="mt-2 break-words text-xs text-sec">Shared account: { runnerRequirement(capacity.SharedAccountAlias, "Unknown; conservatively shared within this provider") }</p>
+				<p class="mt-2 text-xs text-sec">Observed: { capacity.ObservedAt.UTC().Format("2006-01-02 15:04:05 UTC") }</p>
+				if !capacity.ResetAt.IsZero() {
+					<p class="mt-2 text-xs text-sec">Reset hint: { capacity.ResetAt.UTC().Format("2006-01-02 15:04:05 UTC") }</p>
+				}
+			</details>
+		}
 		if view.Eligibility != nil {
 			if len(view.exclusions(r.RunnerID)) == 0 {
 				<p class="text-xs text-text" data-eligible>Eligible for this project</p>
@@ -120,6 +131,9 @@ templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
 					<dt class="text-sec">Exact host</dt><dd class="break-all font-mono text-text">{ runnerRequirement(lease.Policy.Requirements.MachineID, "Any authorized host") }</dd>
 					<dt class="text-sec">Lease expires</dt><dd class="text-text">{ lease.ExpiresAt.UTC().Format("2006-01-02 15:04:05 UTC") }</dd>
 				</dl>
+				if reservation := lease.ProviderReservation; reservation != nil {
+					<p class="mt-2 break-words text-xs text-text" data-provider-selection>{ reservation.Role } · { reservation.Backend } · { reservation.Model } · account { reservation.Report.AccountAlias }: { reservation.Reason }</p>
+				}
 				if len(lease.Exclusions) == 0 {
 					<p class="mt-2 text-xs text-text">Current authority permits this active run.</p>
 				}

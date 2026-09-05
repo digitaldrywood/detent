@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -134,6 +135,12 @@ func TestRunnerFleetViews(t *testing.T) {
 		}, "?project=repository-a", "runner_offline", true},
 		{"no matching tags", func(p *runnerFleetProbe) { p.requirements.RequiredTags = []string{"linux"} }, "?project=repository-a", "selector_no_match", true},
 		{"read only", func(p *runnerFleetProbe) { p.fleet.Editable = false }, "", "Mac builder", false},
+		{"provider exhaustion", func(p *runnerFleetProbe) {
+			p.fleet.Runners[0].ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "work", Models: []string{"sol"}, MaxConcurrent: 2, ObservedAt: time.Now(), ResetAt: time.Now().Add(time.Hour)}, State: "exhausted", Reason: "Provider account is exhausted"}}
+		}, "", "Provider account is exhausted", true},
+		{"provider selection", func(p *runnerFleetProbe) {
+			p.fleet.Runners[0].Leases = []runnerauth.RunnerLease{{ID: "lease", Title: "Selected work", ProviderReservation: &providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: "code", Backend: "codex", Model: "sol"}, Report: providercapacity.Report{AccountAlias: "work"}, Reason: "Quota is unknown"}}}
+		}, "", "Quota is unknown", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
