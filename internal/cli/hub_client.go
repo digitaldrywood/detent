@@ -75,6 +75,20 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	})
 }
 
+func newHubRunnerFleet(cfg globalconfig.Config) (*hubclient.FleetClient, error) {
+	settings := cfg.Client.Normalized()
+	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile,
+		TokenSource: func() string { return os.Getenv(settings.TokenEnvironment) }, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+	if err != nil {
+		return nil, err
+	}
+	projects := make(map[string]tracker.ProjectID, len(settings.NativeProjects))
+	for name, id := range settings.NativeProjects {
+		projects[name] = tracker.ProjectID(id)
+	}
+	return hubclient.NewFleetClient(client, tracker.OrganizationID(settings.OrganizationID), projects)
+}
+
 func hubMachineCapabilities(cfg globalconfig.Config) map[string]any {
 	projects := make([]map[string]string, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {

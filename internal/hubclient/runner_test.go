@@ -102,8 +102,41 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fleetAdmin, err := NewFleetClient(admin, organization, map[string]tracker.ProjectID{"native": project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}}}
+	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, change); err != nil {
+		t.Fatal(err)
+	}
+	if err := fleetAdmin.UpdateHost(t.Context(), machine.ID, runnerauth.HostChange{ExpectedRevision: 1, DisplayName: "Renamed host", Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+	fleetWorker, err := NewFleetClient(client, organization, map[string]tracker.ProjectID{"native": project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		fleet    *FleetClient
+		editable bool
+	}{{"administrator", fleetAdmin, true}, {"worker", fleetWorker, false}} {
+		t.Run(test.name, func(t *testing.T) {
+			view, err := test.fleet.Fleet(t.Context())
+			if err != nil || view.Editable != test.editable || len(view.Runners) != 1 || view.Runners[0].DisplayName != "Trusted builder" || view.Runners[0].HostDisplayName != "Renamed host" {
+				t.Fatalf("fleet = %#v, %v", view, err)
+			}
+		})
+	}
+	if err := fleetWorker.UpdateRunner(t.Context(), file.Identity.RunnerID, change); err == nil {
+		t.Fatal("worker changed routing")
+	}
+	if err := fleetWorker.UpdateHost(t.Context(), machine.ID, runnerauth.HostChange{}); err == nil {
+		t.Fatal("worker changed host")
+	}
 	descriptor := clientTestPolicy()
-	descriptor.Requirements = policy.Requirements{RunnerID: file.Identity.RunnerID, MachineID: string(file.Identity.MachineID)}
+	descriptor.Requirements = policy.Requirements{RequiredTags: []string{"build"}, RunnerID: file.Identity.RunnerID, MachineID: string(file.Identity.MachineID)}
 	descriptor = descriptor.WithID()
 	if _, err := adminNative.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
@@ -119,6 +152,16 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	candidates, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
 	if err != nil || len(candidates) != 1 || candidates[0].ID != string(issue.WorkItemID) {
 		t.Fatalf("enrolled scheduler: candidates=%d err=%v", len(candidates), err)
+	}
+	if _, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+		t.Fatalf("runner-side validation: %v", err)
+	}
+	eligibility, err := fleetAdmin.ProjectEligibility(t.Context(), "native")
+	if err != nil || len(eligibility.Exclusions) != 1 || len(eligibility.Runners) != 1 {
+		t.Fatalf("occupied project eligibility = %#v, %v", eligibility, err)
+	}
+	if _, err := fleetAdmin.ProjectEligibility(t.Context(), "unknown"); err == nil {
+		t.Fatal("unknown project widened selection")
 	}
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
 		t.Fatal(err)

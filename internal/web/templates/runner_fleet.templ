@@ -1,0 +1,140 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+)
+
+templ RunnerFleetPage(data DashboardData, view RunnerFleetData) {
+	@AppShell(FleetShellDataFromDashboard(data), boardScopeSelect(data)) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-4.5" { apiKeyDashboardRequestAttributes(APIKeysData{DashboardManagementToken:view.ManagementToken})... }>
+			<header class="flex flex-none flex-wrap items-center justify-between gap-3">
+				<div><h1 class="text-lg font-semibold text-text">Runners</h1><p class="text-xs text-sec">Named runners and the hosts available for repository work.</p></div>
+				<a class="text-xs text-accent" href="/fleet">Fleet activity</a>
+			</header>
+			<nav aria-label="Runner eligibility" class="flex flex-none flex-wrap gap-3 text-xs text-accent">
+				<a href="/fleet/runners">All runners</a>
+				for _, name := range view.projectNames() {
+					<a href={ templ.SafeURL("/fleet/runners?project="+url.QueryEscape(name)) }>{ name } eligibility</a>
+				}
+			</nav>
+			<div id="runner-fleet-feedback" role="status"></div>
+			if view.Error != "" {
+				<p role="alert" class="rounded-card border border-line bg-surface p-3 text-sm text-text">{ view.Error }</p>
+			}
+			if view.Eligibility != nil {
+				<section class="flex flex-none flex-col gap-2 rounded-card border border-line bg-surface p-3" aria-label="Project runner requirements">
+					<h2 class="text-sm font-semibold text-text">{ view.Eligibility.Project } eligibility</h2>
+					<p class="text-xs text-sec">All required tags and every exact target must match. Work remains queued while no runner is eligible.</p>
+					<dl class="grid min-w-0 grid-cols-1 gap-1 text-xs sm:grid-cols-[8rem_1fr]">
+						<dt class="text-sec">Required tags</dt><dd class="break-words text-text">{ runnerRequirement(strings.Join(view.Eligibility.Policy.Requirements.RequiredTags, ", "), "None") }</dd>
+						<dt class="text-sec">Exact runner</dt><dd class="break-all font-mono text-text">{ runnerRequirement(view.Eligibility.Policy.Requirements.RunnerID, "Any authorized runner") }</dd>
+						<dt class="text-sec">Exact host</dt><dd class="break-all font-mono text-text">{ runnerRequirement(view.Eligibility.Policy.Requirements.MachineID, "Any authorized host") }</dd>
+						<dt class="text-sec">Policy revision</dt><dd class="break-all font-mono text-text">{ view.Eligibility.Policy.SourceRevision }</dd>
+					</dl>
+					for _, reason := range view.Eligibility.Exclusions {
+						<p data-exclusion={ reason.Code } class="text-xs text-text">{ reason.Message }</p>
+					}
+				</section>
+			}
+			if len(view.Fleet.Runners) == 0 && view.Error == "" {
+				<section class="rounded-card border border-line bg-surface p-5"><h2 class="text-sm font-semibold text-text">No runners enrolled</h2><p class="mt-2 text-xs text-sec">Enroll a runner from its authorized host, then assign tags and project access here. Repository profiles describe requirements; enrollment connects the actual machine.</p></section>
+			}
+			for _, runner := range view.Fleet.Runners {
+				if view.SelectedRunner == "" || view.SelectedRunner == runner.RunnerID {
+					@runnerFleetCard(runner, view)
+				}
+			}
+		</main>
+	}
+}
+
+templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
+	<section class="flex flex-none flex-col gap-3 rounded-card border border-line bg-surface p-3" data-runner={ r.RunnerID }>
+		<header class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+			<a class="min-w-0 break-words text-sm font-semibold text-text" href={ templ.SafeURL("/fleet/runners?runner="+url.QueryEscape(r.RunnerID)) }>{ r.DisplayName }</a>
+			<span class="rounded border border-line px-2 py-1 text-xs text-sec">{ r.Health } · { r.State }</span>
+		</header>
+		<div class="flex flex-wrap gap-1" aria-label="Runner tags">
+			if len(r.Tags) == 0 {
+				<span class="text-xs text-sec">No tags assigned</span>
+			}
+			for _, tag := range r.Tags {
+				<span class="rounded bg-elev px-2 py-1 font-mono text-2xs text-text">{ tag }</span>
+			}
+		</div>
+		<dl class="grid min-w-0 grid-cols-1 gap-1 text-xs sm:grid-cols-[8rem_1fr]">
+			<dt class="text-sec">Host</dt><dd class="break-words text-text">{ r.HostDisplayName } <span class="text-sec">{ r.Hostname }</span></dd>
+			<dt class="text-sec">System</dt><dd class="text-text">{ r.OS } / { r.Architecture }</dd>
+			<dt class="text-sec">Runner capacity</dt><dd class="font-mono text-text">{ fmt.Sprintf("%d / %d", r.Used, min(r.CapacityLimit, r.ReportedCapacity)) }</dd>
+			<dt class="text-sec">Shared host</dt><dd class="font-mono text-text">{ fmt.Sprintf("%d / %d", r.HostUsed, r.HostCapacity) }</dd>
+			<dt class="text-sec">Stable runner</dt><dd class="break-all font-mono text-sec">{ r.RunnerID }</dd>
+			<dt class="text-sec">Stable host</dt><dd class="break-all font-mono text-sec">{ string(r.MachineID) }</dd>
+		</dl>
+		if view.Eligibility != nil {
+			if len(view.exclusions(r.RunnerID)) == 0 {
+				<p class="text-xs text-text" data-eligible>Eligible for this project</p>
+			}
+			for _, reason := range view.exclusions(r.RunnerID) {
+				<p class="text-xs text-text" data-exclusion={ reason.Code }>{ reason.Message }</p>
+			}
+		}
+		if view.Fleet.Editable {
+			<details class="border-t border-line pt-3">
+				<summary class="cursor-pointer text-xs font-semibold text-accent">Edit runner and host</summary>
+				<form class="mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2" hx-post={ "/fleet/runners/"+r.RunnerID } hx-target="#runner-fleet-feedback" hx-swap="innerHTML">
+					<input type="hidden" name="revision" value={ strconv.FormatInt(r.Revision, 10) }/>
+					@runnerTextField("Runner name", "display_name", r.DisplayName)
+					@runnerTextField("Tags, separated by commas", "tags", strings.Join(r.Tags, ", "))
+					<label class="flex min-w-0 flex-col gap-1 text-xs text-sec">State<select name="state" class="rounded border border-line bg-elev p-2 text-text">
+						for _, state := range []string{"active", "draining", "disabled"} {
+							<option value={ state } selected?={ r.State == state }>{ state }</option>
+						}
+					</select></label>
+					<label class="flex min-w-0 flex-col gap-1 text-xs text-sec">Runner capacity limit<input class="rounded border border-line bg-elev p-2 text-text" name="capacity_limit" type="number" min="0" max="10000" required value={ strconv.Itoa(r.CapacityLimit) }/></label>
+					@runnerTextField("Authorized project IDs", "project_ids", runnerProjectIDs(r.ProjectIDs))
+					<div class="flex items-end"><button class="rounded border border-line bg-elev px-3 py-2 text-xs font-semibold text-text" type="submit">Save runner</button></div>
+				</form>
+				<p class="mt-3 text-xs text-sec">Drain allows active runs to finish. Disabling or removing required tags or access stops new work and interrupts affected runs.</p>
+				<form class="mt-3 grid min-w-0 grid-cols-1 gap-3 border-t border-line pt-3 sm:grid-cols-2" hx-post={ "/fleet/hosts/"+string(r.MachineID) } hx-target="#runner-fleet-feedback" hx-swap="innerHTML">
+					<input type="hidden" name="revision" value={ strconv.FormatInt(r.HostRevision, 10) }/>
+					@runnerTextField("Host name", "display_name", r.HostDisplayName)
+					<label class="flex min-w-0 flex-col gap-1 text-xs text-sec">Capacity shared by all runners<input class="rounded border border-line bg-elev p-2 text-text" name="capacity" type="number" min="0" max="10000" required value={ strconv.Itoa(r.HostCapacity) }/></label>
+					<button class="w-fit rounded border border-line bg-elev px-3 py-2 text-xs font-semibold text-text" type="submit">Save host</button>
+				</form>
+			</details>
+		}
+		for _, lease := range r.Leases {
+			<details class="border-t border-line pt-3" data-run-eligibility={ string(lease.ID) }>
+				<summary class="cursor-pointer text-xs font-semibold text-text">Run: { lease.Title }</summary>
+				<dl class="mt-3 grid min-w-0 grid-cols-1 gap-1 text-xs sm:grid-cols-[8rem_1fr]">
+					<dt class="text-sec">Work item</dt><dd class="break-all font-mono text-text">{ string(lease.WorkItemID) }</dd>
+					<dt class="text-sec">Policy</dt><dd class="break-all font-mono text-text">{ lease.Policy.ID }</dd>
+					<dt class="text-sec">Policy revision</dt><dd class="break-all font-mono text-text">{ lease.Policy.SourceRevision }</dd>
+					<dt class="text-sec">Required tags</dt><dd class="break-words text-text">{ runnerRequirement(strings.Join(lease.Policy.Requirements.RequiredTags, ", "), "None") }</dd>
+					<dt class="text-sec">Exact runner</dt><dd class="break-all font-mono text-text">{ runnerRequirement(lease.Policy.Requirements.RunnerID, "Any authorized runner") }</dd>
+					<dt class="text-sec">Exact host</dt><dd class="break-all font-mono text-text">{ runnerRequirement(lease.Policy.Requirements.MachineID, "Any authorized host") }</dd>
+					<dt class="text-sec">Lease expires</dt><dd class="text-text">{ lease.ExpiresAt.UTC().Format("2006-01-02 15:04:05 UTC") }</dd>
+				</dl>
+				if len(lease.Exclusions) == 0 {
+					<p class="mt-2 text-xs text-text">Current authority permits this active run.</p>
+				}
+				for _, reason := range lease.Exclusions {
+					<p class="mt-2 text-xs text-text" data-exclusion={ reason.Code }>{ reason.Message }</p>
+				}
+			</details>
+		}
+	</section>
+}
+
+templ runnerTextField(label, name, value string) {
+	<label class="flex min-w-0 flex-col gap-1 text-xs text-sec">{ label }<input class="min-w-0 rounded border border-line bg-elev p-2 text-text" name={ name } value={ value }/></label>
+}
+
+templ RunnerFleetFeedback(message string) {
+	<p role="alert" class="rounded-card border border-line bg-surface p-3 text-sm text-text">{ message }</p>
+}

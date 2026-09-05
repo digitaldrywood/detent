@@ -183,6 +183,7 @@ func TestPolicyRequirementsNeverEnrollOrGrantCapabilities(t *testing.T) {
 		{"privileged tag", policy.Requirements{RequiredTags: []string{"production"}}},
 		{"runner selector", policy.Requirements{RunnerID: "runner_privileged"}},
 		{"machine selector", policy.Requirements{MachineID: "machine_other"}},
+		{"forged matching machine", policy.Requirements{MachineID: "machine_abc"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "requirements")

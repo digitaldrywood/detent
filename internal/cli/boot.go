@@ -458,6 +458,14 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
 	})
 	startupLifecycle := web.NewStartupLifecycle()
+	var fleetSource web.RunnerFleet
+	if cfg.Global.Client.Configured() && cfg.Global.Client.OrganizationID != "" {
+		configuredFleet, err := newHubRunnerFleet(cfg.Global)
+		if err != nil {
+			return err
+		}
+		fleetSource = configuredFleet
+	}
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
@@ -478,6 +486,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
+		RunnerFleet:         fleetSource,
 		Hub:                 snapshotHub,
 		Store:               runtimeStore,
 		Registry:            manager.Registry(),

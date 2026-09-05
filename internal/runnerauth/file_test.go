@@ -71,6 +71,52 @@ func TestPrivateIdentityLifecycle(t *testing.T) {
 	}
 }
 
+func TestInitializeOnSharedHost(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, hub string
+		enrolled  bool
+		sameFile  bool
+		valid     bool
+	}{
+		{"separate runner", "https://hub.example.test", true, false, true},
+		{"wrong Hub", "https://other.example.test", true, false, false},
+		{"unenrolled host", "https://hub.example.test", false, false, false},
+		{"existing identity", "https://hub.example.test", true, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "private")
+			path := filepath.Join(dir, "host.json")
+			host, err := Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.enrolled {
+				host.Identity.OrganizationID = "org_a"
+				if err := Save(path, host); err != nil {
+					t.Fatal(err)
+				}
+			}
+			target := filepath.Join(dir, "second.json")
+			if test.sameFile {
+				target = path
+			}
+			second, err := InitializeOnHost(target, test.hub, path)
+			if (err == nil) != test.valid {
+				t.Fatalf("InitializeOnHost error = %v", err)
+			}
+			if test.valid && (second.Identity.MachineID != host.Identity.MachineID || second.Identity.RunnerID == host.Identity.RunnerID || second.Credential == host.Credential || second.Identity.OrganizationID != "") {
+				t.Fatal("shared initialization transferred authority or changed host binding")
+			}
+			reloaded, err := Load(path)
+			if err != nil || reloaded.Identity.Binding != host.Identity.Binding || reloaded.Credential != host.Credential {
+				t.Fatal("host identity was changed")
+			}
+		})
+	}
+}
+
 func TestIdentityFilesRejectUnsafeInput(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

@@ -38,6 +38,23 @@ func ValidateHubURL(value string) error {
 }
 
 func Initialize(path, hubURL string) (File, error) {
+	return initializeBinding(path, hubURL, NewBinding())
+}
+
+func InitializeOnHost(path, hubURL, hostIdentityPath string) (File, error) {
+	host, err := Load(hostIdentityPath)
+	if err != nil {
+		return File{}, err
+	}
+	if host.HubURL != strings.TrimRight(hubURL, "/") || host.Identity.OrganizationID == "" {
+		return File{}, errors.New("shared host identity must already be enrolled with the same Hub")
+	}
+	binding := NewBinding()
+	binding.MachineID = host.Identity.MachineID
+	return initializeBinding(path, hubURL, binding)
+}
+
+func initializeBinding(path, hubURL string, binding Binding) (File, error) {
 	if err := ValidateHubURL(hubURL); err != nil {
 		return File{}, err
 	}
@@ -54,7 +71,7 @@ func Initialize(path, hubURL string) (File, error) {
 	if err != nil {
 		return File{}, err
 	}
-	value := File{Schema: 1, HubURL: strings.TrimRight(hubURL, "/"), Identity: Identity{Binding: NewBinding()}, Credential: credential}
+	value := File{Schema: 1, HubURL: strings.TrimRight(hubURL, "/"), Identity: Identity{Binding: binding}, Credential: credential}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return File{}, errors.New("runner identity could not be created; existing identities must not be overwritten")

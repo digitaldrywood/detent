@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -22,6 +23,9 @@ func authorizeClaimScope(ctx context.Context, tx *sql.Tx, request tracker.ClaimR
 	if scope != nil {
 		query = "SELECT count(*) FROM machines WHERE id = ? AND organization_id = ? AND token_id = ?"
 		args = append(args, scope.organization, scope.credential.ID)
+		if scope.credential.Runner.RunnerID != "" {
+			query = "SELECT count(*) FROM runner_identities WHERE machine_id = ? AND organization_id = ? AND token_id = ?"
+		}
 	}
 	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return err
@@ -104,16 +108,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 
 func (s *Service) requireNativeLease(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	var count int
-	err := s.database.db.QueryRowContext(c.Request().Context(), `SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id JOIN machines m ON m.id = l.machine_id
-WHERE l.lease_id = ? AND i.organization_id = ? AND i.project_id = ? AND m.organization_id = ? AND m.token_id = ?`, c.Param("lease"), scope.organization, scope.project, scope.organization, scope.credential.ID).Scan(&count)
-	if err != nil {
-		return err
-	}
-	if count != 1 {
-		return nativeNotFound()
-	}
-	return nil
+	return requireLeaseRunner(c.Request().Context(), s.database.db, tracker.LeaseID(c.Param("lease")), scope)
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {
@@ -128,7 +123,7 @@ func (s *Service) renewNativeLease(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Lease TTL is invalid"))
 	}
-	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true)
+	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -154,22 +149,29 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 
 func (s *Service) registerNativeMachine(c echo.Context) error {
 	var request struct {
-		ID          tracker.MachineID `json:"id"`
-		Hostname    string            `json:"hostname"`
-		DisplayName string            `json:"display_name"`
-		Capacity    int               `json:"capacity"`
-		Version     string            `json:"version"`
+		ID           tracker.MachineID `json:"id"`
+		Hostname     string            `json:"hostname"`
+		DisplayName  string            `json:"display_name"`
+		Capacity     int               `json:"capacity"`
+		Version      string            `json:"version"`
+		OS           string            `json:"os,omitempty"`
+		Architecture string            `json:"architecture,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if strings.TrimSpace(string(request.ID)) == "" || len(request.ID) > 128 || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || request.Capacity < 0 {
+	if strings.TrimSpace(string(request.ID)) == "" || len(request.ID) > 128 || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || request.Capacity < 0 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Machine identity, hostname, version, and nonnegative capacity are required"))
 	}
 	scope := nativeRequestScope(c)
 	now := formatHubTime(s.config.now())
 	if scope.credential.Runner.RunnerID != "" && request.ID != scope.credential.Runner.MachineID {
 		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if scope.credential.Runner.RunnerID != "" {
+		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+			return request, updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now)
+		})
 	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

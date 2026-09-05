@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -16,6 +17,9 @@ templ projectFrame(data DashboardData, activeTab string) {
 				<a href={ templ.SafeURL(tab.Href) } class={ projectTabClass(tab) } { sidebarAriaCurrent(tab.Active)... }>{ tab.Label }</a>
 			}
 			<div class="ml-auto flex flex-none items-center gap-2 py-1.5">
+				if data.RunnerFleetEnabled {
+					<a class="text-xs text-accent" href={ templ.SafeURL("/fleet/runners?project="+url.QueryEscape(data.ProjectID)) }>Runner eligibility</a>
+				}
 				@aiDebugCopyButton(aiDebugProjectPath(data.ProjectID), "inline-flex min-h-9 items-center gap-1.5 rounded-card border border-line px-2.5 text-xs font-medium text-text hover:border-accent hover:text-accent")
 			</div>
 		</nav>
