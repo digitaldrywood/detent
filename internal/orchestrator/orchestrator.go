@@ -1235,6 +1235,7 @@ func (o *Orchestrator) dispatchQuiesced() bool {
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
 	cfg := normalizeConfig(update.Config)
+	previousCfg := o.cfg
 	if o.cfg.Claiming.OwnershipMode != cfg.Claiming.OwnershipMode ||
 		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
 		o.ownershipStartupLogged = false
@@ -1247,7 +1248,8 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	if o.now != nil {
 		now = o.now
 	}
-	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, now())
+	updatedAt := now()
+	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, updatedAt)
 	if update.Connector != nil {
 		o.connector = update.Connector
 	}
@@ -1270,13 +1272,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.RateWindowPacing = cfg.RateWindowPacing
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
-	state.MemoryPressure.SomeAvg60Max = cfg.MemoryPressureSomeAvg60Max
-	state.IOPressure.FullAvg10Max = cfg.IOPressureFullAvg10Max
-	state.IOPressure.DegradedMaxConcurrentAgents = cfg.IOPressureDegradedMaxAgents
-	state.CPUPressure.SomeAvg10Max = cfg.CPUPressureSomeAvg10Max
-	state.CPUPressure.DegradedMaxConcurrentAgents = cfg.CPUPressureDegradedMaxAgents
-	refreshIOPressureCapacity(&state.IOPressure, cfg.IOPressureDegradedMaxAgents)
-	refreshCPUPressureCapacity(&state.CPUPressure, cfg.CPUPressureDegradedMaxAgents)
+	refreshCachedHostPressure(state, previousCfg, cfg, updatedAt)
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

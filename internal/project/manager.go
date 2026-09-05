@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -56,10 +57,20 @@ type ConnectorRetryConfig struct {
 }
 
 type ReconcileResult struct {
-	Added     []ID
-	Removed   []ID
-	Changed   []ID
-	Unchanged []ID
+	Added           []ID
+	Removed         []ID
+	Changed         []ID
+	Unchanged       []ID
+	DrainedSessions []ReconcileSession
+}
+
+type ReconcileSession struct {
+	ProjectID         ID
+	IssueID           string
+	Identifier        string
+	WorkAttemptID     int64
+	DetentSessionID   int64
+	ProviderSessionID string
 }
 
 type startedProject struct {
@@ -436,6 +447,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	if err := validatePauseExitReferences(validationProjects); err != nil {
 		return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 	}
+	result.DrainedSessions = m.reconcileSessionInventory(ctx, result, liveConfigChanges)
 
 	previous := m.cfg
 	previousSpawned := m.spawned
@@ -601,6 +613,52 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		item.project.publishStarted()
 	}
 	return result, closeStoppedProjects(ctx, stopped)
+}
+
+func (m *Manager) reconcileSessionInventory(
+	ctx context.Context,
+	result ReconcileResult,
+	liveConfigChanges map[ID]*Project,
+) []ReconcileSession {
+	projectIDs := append([]ID(nil), result.Removed...)
+	for _, id := range result.Changed {
+		if _, live := liveConfigChanges[id]; !live {
+			projectIDs = append(projectIDs, id)
+		}
+	}
+
+	var sessions []ReconcileSession
+	for _, id := range projectIDs {
+		trackedProject, ok := m.registry.Get(id)
+		if !ok || trackedProject == nil || !trackedProject.Running() || trackedProject.Orchestrator() == nil {
+			continue
+		}
+		state, err := trackedProject.Orchestrator().State(ctx)
+		if err != nil {
+			m.logger.Warn("inventory project reconciliation sessions failed", "project_id", id, "error", err)
+			continue
+		}
+		for issueID, running := range state.Running {
+			sessions = append(sessions, ReconcileSession{
+				ProjectID:         id,
+				IssueID:           issueID,
+				Identifier:        running.Issue.Identifier,
+				WorkAttemptID:     running.WorkAttemptID,
+				DetentSessionID:   running.DetentSessionID,
+				ProviderSessionID: running.SessionID,
+			})
+		}
+	}
+	sort.Slice(sessions, func(left int, right int) bool {
+		if sessions[left].ProjectID != sessions[right].ProjectID {
+			return sessions[left].ProjectID < sessions[right].ProjectID
+		}
+		if sessions[left].Identifier != sessions[right].Identifier {
+			return sessions[left].Identifier < sessions[right].Identifier
+		}
+		return sessions[left].IssueID < sessions[right].IssueID
+	})
+	return sessions
 }
 
 func validatePauseExitReferences(projects []*Project) error {
@@ -1398,6 +1456,10 @@ func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalco
 	left.GlobalActiveHours = right.GlobalActiveHours
 	left.ActiveHoursOverrideUntil = right.ActiveHoursOverrideUntil
 	left.GlobalRateWindowPacing = right.GlobalRateWindowPacing
+	left.GlobalMemory.PressureSomeAvg60Threshold = right.GlobalMemory.PressureSomeAvg60Threshold
+	left.GlobalMemory.PollIntervalMS = right.GlobalMemory.PollIntervalMS
+	left.GlobalIO = right.GlobalIO
+	left.GlobalCPU = right.GlobalCPU
 	return reflect.DeepEqual(left, right)
 }
 

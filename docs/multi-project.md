@@ -306,7 +306,7 @@ can include `--workflow-ref origin/main` during registration or add
 
 | Field | Reload behavior |
 | --- | --- |
-| Project list and project settings, including active hours and overrides | Live reload |
+| Project list and project settings, including active hours and overrides | Live reload; additions start only the new project, while removals and non-runtime definition changes replace only the affected project runtime |
 | Credentials: `github_token`, `trust_loopback_peer_read`, and project credentials | Live reload |
 | `dashboard_access` mode, token, and write access | Live reload; token changes invalidate private dashboard sessions |
 | `auth` | Restart required; persisted sessions remain valid until their configured expiry |
@@ -317,11 +317,24 @@ can include `--workflow-ref origin/main` during registration or add
 | `global.active_hours` | Live reload at the next dispatch decision; running agents drain when a window closes |
 | `global.rate_window_pacing` and `agent.rate_window_pacing` | Live reload at the next dispatch decision without interrupting running agents; the project value wins when explicitly set |
 | `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
+| `global.memory.pressure_some_avg60_threshold`, `global.memory.poll_interval_ms`, `global.io`, and `global.cpu` | Live reload in each project orchestrator without interrupting active attempts or provider sessions; threshold changes immediately re-evaluate the latest supported pressure sample instead of waiting for the next poll |
 | `log_level` | Live reload |
 | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |
 
 When a changed field requires restart, Detent logs
 `global config setting change requires restart` with the field name.
+
+Each reload rereads the configured file before reconciliation and again after
+reconciliation. If the file changes while reconciliation is running, Detent
+continues with the newer snapshot and publishes only the final applied config.
+Periodic source reconciliation also applies a valid change when the filesystem
+watcher misses an event.
+
+Project removal or a definition change that cannot be applied to the live
+runtime inventories the affected project's active sessions before replacing
+it. The `global config reconciliation completed` and `global config reloaded`
+records list those sessions under `drained_sessions`. Unchanged project
+runtimes and their sessions continue without interruption.
 
 ## Running Multiple Instances
 

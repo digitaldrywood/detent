@@ -1314,6 +1314,251 @@ func TestManagerReconcileAddedProjectBeginsPolling(t *testing.T) {
 	}
 }
 
+func TestManagerReconcileHotAppliesGlobalPressureWithoutInterruptingActiveSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*globalconfig.Project)
+		assert func(*testing.T, orchestrator.State)
+	}{
+		{
+			name: "memory",
+			mutate: func(cfg *globalconfig.Project) {
+				cfg.GlobalMemory.PressureSomeAvg60Threshold = 12
+			},
+			assert: func(t *testing.T, state orchestrator.State) {
+				t.Helper()
+				if state.MemoryPressure.SomeAvg60Max != 12 {
+					t.Fatalf("memory pressure threshold = %v, want 12", state.MemoryPressure.SomeAvg60Max)
+				}
+			},
+		},
+		{
+			name: "IO",
+			mutate: func(cfg *globalconfig.Project) {
+				cfg.GlobalIO.PressureFullAvg10Threshold = 7
+			},
+			assert: func(t *testing.T, state orchestrator.State) {
+				t.Helper()
+				if state.IOPressure.FullAvg10Max != 7 {
+					t.Fatalf("IO pressure threshold = %v, want 7", state.IOPressure.FullAvg10Max)
+				}
+			},
+		},
+		{
+			name: "CPU",
+			mutate: func(cfg *globalconfig.Project) {
+				cfg.GlobalCPU.PressureSomeAvg10Threshold = 95
+			},
+			assert: func(t *testing.T, state orchestrator.State) {
+				t.Helper()
+				if state.CPUPressure.SomeAvg10Max != 95 {
+					t.Fatalf("CPU pressure threshold = %v, want 95", state.CPUPressure.SomeAvg10Max)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const issueID = "issue-active"
+			initial := globalconfig.Project{
+				ID:           "alpha",
+				Weight:       1,
+				GlobalMemory: globalconfig.Memory{PressureSomeAvg60Threshold: 1_000_000},
+				GlobalIO:     globalconfig.IO{PressureFullAvg10Threshold: 1_000_000},
+				GlobalCPU:    globalconfig.CPU{PressureSomeAvg10Threshold: 1_000_000},
+			}
+			next := initial
+			tt.mutate(&next)
+			runner := newCancellationTrackingRunner()
+			created := 0
+			manager, err := project.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
+				ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+					created++
+					workflowCfg := workflowConfigWithMemoryIssue(issueID)
+					workflowCfg.Tracker.Issues[0].State = "Todo"
+					workflowCfg.Tracker.Issues[0].Title = "Keep active session running"
+					workflowCfg.Tracker.Issues[0].AssignedToWorker = true
+					return project.New(project.Config{
+						Project:  cfg,
+						Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Keep working."},
+					}, project.Dependencies{Runner: runner})
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			if err := manager.Start(context.Background()); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			before, ok := manager.Registry().Get("alpha")
+			if !ok {
+				t.Fatal("project alpha missing before reconcile")
+			}
+			t.Cleanup(func() {
+				runner.releaseAll()
+				for _, item := range manager.Registry().List() {
+					if err := item.Close(); err != nil {
+						t.Errorf("Close(%s) error = %v", item.ID(), err)
+					}
+				}
+			})
+			receiveRunRequest(t, runner.started)
+			beforeState, err := before.Orchestrator().State(context.Background())
+			if err != nil {
+				t.Fatalf("State() before reload error = %v", err)
+			}
+			beforeRunning, ok := beforeState.Running[issueID]
+			if !ok {
+				t.Fatalf("Running[%q] missing before pressure reload", issueID)
+			}
+
+			result, err := manager.Reconcile(context.Background(), project.ManagerConfig{Projects: []globalconfig.Project{next}})
+			if err != nil {
+				t.Fatalf("Reconcile() error = %v", err)
+			}
+			if want := (project.ReconcileResult{Changed: []project.ID{"alpha"}}); !reflect.DeepEqual(result, want) {
+				t.Fatalf("Reconcile() = %#v, want %#v", result, want)
+			}
+			select {
+			case canceled := <-runner.canceled:
+				t.Fatalf("active session %q was canceled during pressure reload", canceled.Issue.ID)
+			default:
+			}
+			after, ok := manager.Registry().Get("alpha")
+			if !ok {
+				t.Fatal("project alpha missing after reconcile")
+			}
+			if before != after || created != 1 {
+				t.Fatalf("project restarted: before=%p after=%p created=%d", before, after, created)
+			}
+			state, err := after.Orchestrator().State(context.Background())
+			if err != nil {
+				t.Fatalf("State() error = %v", err)
+			}
+			running, ok := state.Running[issueID]
+			if !ok {
+				t.Fatalf("Running[%q] missing after pressure reload", issueID)
+			}
+			if running.Issue.State != beforeRunning.Issue.State {
+				t.Fatalf("running issue state = %q, want preserved %q", running.Issue.State, beforeRunning.Issue.State)
+			}
+			if _, ok := state.Retry[issueID]; ok {
+				t.Fatalf("Retry[%q] present after pressure reload", issueID)
+			}
+			tt.assert(t, state)
+		})
+	}
+}
+
+func TestManagerReconcileInventoriesOnlySessionsDrainedByProjectChanges(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		next        []globalconfig.Project
+		wantRemoved []project.ID
+		wantChanged []project.ID
+	}{
+		{
+			name: "removal",
+			next: []globalconfig.Project{
+				{ID: "bravo", Weight: 1, Workdir: "/repo/bravo"},
+			},
+			wantRemoved: []project.ID{"alpha"},
+		},
+		{
+			name: "definition change",
+			next: []globalconfig.Project{
+				{ID: "alpha", Weight: 1, Workdir: "/repo/alpha-next"},
+				{ID: "bravo", Weight: 1, Workdir: "/repo/bravo"},
+			},
+			wantChanged: []project.ID{"alpha"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runners := map[project.ID]*cancellationTrackingRunner{
+				"alpha": newCancellationTrackingRunner(),
+				"bravo": newCancellationTrackingRunner(),
+			}
+			manager, err := project.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{
+				{ID: "alpha", Weight: 1, Workdir: "/repo/alpha"},
+				{ID: "bravo", Weight: 1, Workdir: "/repo/bravo"},
+			}}, project.ManagerDependencies{
+				ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+					id := project.ID(cfg.ID)
+					workflowCfg := workflowConfigWithMemoryIssue("issue-" + cfg.ID)
+					workflowCfg.Tracker.Issues[0].State = "Todo"
+					workflowCfg.Tracker.Issues[0].Title = "Run " + cfg.ID
+					workflowCfg.Tracker.Issues[0].AssignedToWorker = true
+					return project.New(project.Config{
+						Project:  cfg,
+						Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Keep working."},
+					}, project.Dependencies{Runner: runners[id]})
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			if err := manager.Start(context.Background()); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			t.Cleanup(func() {
+				for _, runner := range runners {
+					runner.releaseAll()
+				}
+				for _, item := range manager.Registry().List() {
+					if err := item.Close(); err != nil {
+						t.Errorf("Close(%s) error = %v", item.ID(), err)
+					}
+				}
+			})
+			receiveRunRequest(t, runners["alpha"].started)
+			receiveRunRequest(t, runners["bravo"].started)
+
+			result, err := manager.Reconcile(context.Background(), project.ManagerConfig{Projects: tt.next})
+			if err != nil {
+				t.Fatalf("Reconcile() error = %v", err)
+			}
+			if !reflect.DeepEqual(result.Removed, tt.wantRemoved) || !reflect.DeepEqual(result.Changed, tt.wantChanged) || !reflect.DeepEqual(result.Unchanged, []project.ID{"bravo"}) {
+				t.Fatalf("Reconcile() project diff = removed %v changed %v unchanged %v", result.Removed, result.Changed, result.Unchanged)
+			}
+			wantSessions := []project.ReconcileSession{{
+				ProjectID:  "alpha",
+				IssueID:    "issue-alpha",
+				Identifier: "issue-alpha",
+			}}
+			if !reflect.DeepEqual(result.DrainedSessions, wantSessions) {
+				t.Fatalf("DrainedSessions = %#v, want %#v", result.DrainedSessions, wantSessions)
+			}
+			select {
+			case canceled := <-runners["bravo"].canceled:
+				t.Fatalf("unchanged project session %q was canceled", canceled.Issue.ID)
+			default:
+			}
+			bravo, ok := manager.Registry().Get("bravo")
+			if !ok {
+				t.Fatal("project bravo missing after reconcile")
+			}
+			state, err := bravo.Orchestrator().State(context.Background())
+			if err != nil {
+				t.Fatalf("State(bravo) error = %v", err)
+			}
+			if _, ok := state.Running["issue-bravo"]; !ok {
+				t.Fatalf("unchanged project running sessions = %#v, want issue-bravo", state.Running)
+			}
+		})
+	}
+}
+
 func TestManagerReconcileRecordsAddedProjectStartFailure(t *testing.T) {
 	t.Parallel()
 
@@ -2650,6 +2895,43 @@ func receiveRunRequest(t *testing.T, requests <-chan orchestrator.RunRequest) or
 		t.Fatal("timed out waiting for runner request")
 	}
 	return orchestrator.RunRequest{}
+}
+
+type cancellationTrackingRunner struct {
+	started     chan orchestrator.RunRequest
+	canceled    chan orchestrator.RunRequest
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func newCancellationTrackingRunner() *cancellationTrackingRunner {
+	return &cancellationTrackingRunner{
+		started:  make(chan orchestrator.RunRequest, 2),
+		canceled: make(chan orchestrator.RunRequest, 2),
+		release:  make(chan struct{}),
+	}
+}
+
+func (r *cancellationTrackingRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	select {
+	case r.started <- request:
+	case <-ctx.Done():
+		return orchestrator.RunResult{}, ctx.Err()
+	}
+
+	select {
+	case <-r.release:
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+	case <-ctx.Done():
+		r.canceled <- request
+		return orchestrator.RunResult{}, ctx.Err()
+	}
+}
+
+func (r *cancellationTrackingRunner) releaseAll() {
+	r.releaseOnce.Do(func() {
+		close(r.release)
+	})
 }
 
 func runningProjects(t *testing.T, manager *project.Manager) int {

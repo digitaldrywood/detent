@@ -15,6 +15,8 @@ import (
 
 var errMissingGlobalConfigManager = errors.New("global config reload manager is required")
 
+const globalConfigReconcileInterval = 30 * time.Second
+
 type globalConfigManager interface {
 	Reconcile(context.Context, project.ManagerConfig) (project.ReconcileResult, error)
 }
@@ -81,10 +83,14 @@ func startGlobalConfigWatcher(
 	syncLatestGlobalConfig(ctx, path, reloader)
 	go func() {
 		defer close(done)
+		reconcile := time.NewTicker(globalConfigReconcileInterval)
+		defer reconcile.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-reconcile.C:
+				syncLatestGlobalConfig(ctx, path, reloader)
 			case update, ok := <-updates:
 				if !ok {
 					return
@@ -130,23 +136,103 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 	}
 
 	previous := r.current
-	result, err := r.apply(ctx, update)
-	if err != nil {
-		logger.Warn("global config reload failed", "path", update.Path, "error", err)
-		return
+	update = latestGlobalConfigUpdate(update)
+	logger.Info("global config reconciliation started",
+		"path", update.Path,
+		"configured_projects", globalProjectIDs(update.Value.Projects),
+	)
+	var result project.ReconcileResult
+	var drainedSessions []project.ReconcileSession
+	applied := false
+	for {
+		var err error
+		result, err = r.applyCandidate(ctx, update)
+		if err != nil {
+			if applied {
+				r.publishReload()
+			}
+			logger.Warn("global config reconciliation failed", "path", update.Path, "error", err)
+			return
+		}
+		applied = true
+		drainedSessions = appendUniqueReconcileSessions(drainedSessions, result.DrainedSessions)
+
+		latest := latestGlobalConfigUpdate(configwatcher.FileUpdate[globalconfig.Config]{
+			Path:  update.Path,
+			Value: r.current,
+			At:    time.Now(),
+		})
+		if reflect.DeepEqual(r.current, latest.Value) {
+			break
+		}
+		logger.Info("global config reconciliation superseded",
+			"path", update.Path,
+			"configured_projects", globalProjectIDs(latest.Value.Projects),
+		)
+		update = latest
 	}
 
+	result.DrainedSessions = drainedSessions
+	r.publishReload()
 	logGlobalConfigChanges(logger, previous, r.current)
+	logger.Info("global config reconciliation completed",
+		"path", update.Path,
+		"added_projects", projectIDs(result.Added),
+		"removed_projects", projectIDs(result.Removed),
+		"changed_projects", projectIDs(result.Changed),
+		"unchanged_projects", projectIDs(result.Unchanged),
+		"drained_sessions", result.DrainedSessions,
+	)
 	logger.Info("global config reloaded",
 		"path", update.Path,
 		"added_projects", projectIDs(result.Added),
 		"removed_projects", projectIDs(result.Removed),
 		"changed_projects", projectIDs(result.Changed),
 		"unchanged_projects", projectIDs(result.Unchanged),
+		"drained_sessions", result.DrainedSessions,
 	)
 }
 
+func appendUniqueReconcileSessions(current []project.ReconcileSession, additions []project.ReconcileSession) []project.ReconcileSession {
+	seen := make(map[project.ReconcileSession]struct{}, len(current)+len(additions))
+	for _, session := range current {
+		seen[session] = struct{}{}
+	}
+	for _, session := range additions {
+		if _, ok := seen[session]; ok {
+			continue
+		}
+		seen[session] = struct{}{}
+		current = append(current, session)
+	}
+	return current
+}
+
+func latestGlobalConfigUpdate(update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
+	if update.WatcherErr || strings.TrimSpace(update.Path) == "" {
+		return update
+	}
+	latest, err := readGlobalConfig(update.Path)
+	if err != nil {
+		return update
+	}
+	update.Value = latest
+	update.Err = nil
+	return update
+}
+
 func (r *globalConfigReloader) apply(
+	ctx context.Context,
+	update configwatcher.FileUpdate[globalconfig.Config],
+) (project.ReconcileResult, error) {
+	result, err := r.applyCandidate(ctx, update)
+	if err == nil {
+		r.publishReload()
+	}
+	return result, err
+}
+
+func (r *globalConfigReloader) applyCandidate(
 	ctx context.Context,
 	update configwatcher.FileUpdate[globalconfig.Config],
 ) (project.ReconcileResult, error) {
@@ -190,10 +276,13 @@ func (r *globalConfigReloader) apply(
 	}
 
 	r.current = update.Value
-	if r.onReload != nil {
-		r.onReload(update.Value)
-	}
 	return result, nil
+}
+
+func (r *globalConfigReloader) publishReload() {
+	if r.onReload != nil {
+		r.onReload(r.current)
+	}
 }
 
 func (r *globalConfigReloader) runtimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
@@ -333,6 +422,33 @@ func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Set
 	}
 	if !reflect.DeepEqual(previous.Startup, next.Startup) {
 		fields = append(fields, globalConfigChange{Field: "global.startup", Old: previous.Startup, New: next.Startup})
+	}
+	if previous.Memory.MaxAgentRSSBytes != next.Memory.MaxAgentRSSBytes {
+		fields = append(fields, globalConfigChange{Field: "global.memory.max_agent_rss_bytes", Old: previous.Memory.MaxAgentRSSBytes, New: next.Memory.MaxAgentRSSBytes})
+	}
+	if previous.Memory.PressureSomeAvg60Threshold != next.Memory.PressureSomeAvg60Threshold {
+		fields = append(fields, globalConfigChange{Field: "global.memory.pressure_some_avg60_threshold", Old: previous.Memory.PressureSomeAvg60Threshold, New: next.Memory.PressureSomeAvg60Threshold})
+	}
+	if previous.Memory.PollIntervalMS != next.Memory.PollIntervalMS {
+		fields = append(fields, globalConfigChange{Field: "global.memory.poll_interval_ms", Old: previous.Memory.PollIntervalMS, New: next.Memory.PollIntervalMS})
+	}
+	if previous.IO.PressureFullAvg10Threshold != next.IO.PressureFullAvg10Threshold {
+		fields = append(fields, globalConfigChange{Field: "global.io.pressure_full_avg10_threshold", Old: previous.IO.PressureFullAvg10Threshold, New: next.IO.PressureFullAvg10Threshold})
+	}
+	if previous.IO.DegradedMaxConcurrentAgents != next.IO.DegradedMaxConcurrentAgents {
+		fields = append(fields, globalConfigChange{Field: "global.io.degraded_max_concurrent_agents", Old: previous.IO.DegradedMaxConcurrentAgents, New: next.IO.DegradedMaxConcurrentAgents})
+	}
+	if previous.IO.PollIntervalMS != next.IO.PollIntervalMS {
+		fields = append(fields, globalConfigChange{Field: "global.io.poll_interval_ms", Old: previous.IO.PollIntervalMS, New: next.IO.PollIntervalMS})
+	}
+	if previous.CPU.PressureSomeAvg10Threshold != next.CPU.PressureSomeAvg10Threshold {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.pressure_some_avg10_threshold", Old: previous.CPU.PressureSomeAvg10Threshold, New: next.CPU.PressureSomeAvg10Threshold})
+	}
+	if previous.CPU.DegradedMaxConcurrentAgents != next.CPU.DegradedMaxConcurrentAgents {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.degraded_max_concurrent_agents", Old: previous.CPU.DegradedMaxConcurrentAgents, New: next.CPU.DegradedMaxConcurrentAgents})
+	}
+	if previous.CPU.PollIntervalMS != next.CPU.PollIntervalMS {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.poll_interval_ms", Old: previous.CPU.PollIntervalMS, New: next.CPU.PollIntervalMS})
 	}
 	return fields
 }
