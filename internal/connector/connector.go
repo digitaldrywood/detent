@@ -32,9 +32,10 @@ func ReportProgress(ctx context.Context) {
 }
 
 var (
-	ErrNotImplemented     = errors.New("connector operation not implemented")
-	ErrResourceExhausted  = errors.New("connector resource exhausted")
-	ErrStateUpdateBlocked = errors.New("issue state update blocked")
+	ErrNotImplemented           = errors.New("connector operation not implemented")
+	ErrResourceExhausted        = errors.New("connector resource exhausted")
+	ErrStateUpdateBlocked       = errors.New("issue state update blocked")
+	ErrPullRequestBaseOutOfDate = errors.New("pull request base is out of date")
 )
 
 type retryableError struct {

@@ -1593,6 +1593,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	if event.Result.PullRequestHeadPushed {
+		o.recordMergeReservationWait(state, issue, event.CompletedAt)
 		triggerPending := false
 		if !event.Result.CITriggerLabelReapplied {
 			triggerPending = o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
@@ -1674,6 +1675,24 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
 	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
+		if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) &&
+			event.Result.Output == runpkg.RunOutputMergeFastPathCheckedHead &&
+			strings.EqualFold(issue.PullRequest.MergeableState, "behind") {
+			reservation := reserveMergeCandidate(state, issue, event.CompletedAt)
+			reservation.RefreshHeadSHA = headSHA
+			state.mergeReservations[reservation.Repository] = reservation
+			running.Issue = issue
+			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,
+				"", "", "waiting", "base refresh required by merge API", map[string]any{mergeReservationMetadataKey: reservation})
+			o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
+			o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "base refresh required by merge API", true, running.WorkerHost)
+			if o.logger != nil {
+				o.logger.Info("merge_base_refresh_required", mergeWorkerLogAttrs(issue,
+					"reason", "merge_api_rejected_out_of_date_base", "error", err,
+					"prior_validation_invalidated", true, "reservation_expires_at", reservation.ExpiresAt)...)
+			}
+			return true
+		}
 		running.Issue = issue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
 		return true
@@ -1740,9 +1759,12 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	}
 	retryError := mergeWorkerCurrentHeadCIWaitReason(issue)
 	exceeded := o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue, event.CompletedAt)
+	reservation := o.recordMergeReservationWait(state, issue, event.CompletedAt)
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError)
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
+		map[string]any{mergeReservationMetadataKey: reservation})
+	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
 	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
 	retry := state.Retry[issue.ID]
 	retry.Wait = RetryWait{
@@ -1951,7 +1973,9 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 ) {
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError)
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
+		map[string]any{mergeReservationMetadataKey: state.mergeReservations[mergeWorkerRepositoryKey(issue)]})
+	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -2067,7 +2091,7 @@ func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
 	default:
 		return false
 	}
-	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) || len(pullRequest.RequiredCheckFailures) > 0 || pullRequest.MergeQueueEntry != nil {
 		return false
 	}
 	return pullRequestRepository(issue) != "" &&

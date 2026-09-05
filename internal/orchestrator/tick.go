@@ -146,6 +146,8 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, terminalRetryTransitions)
 	fetched.status = overlayIssueStateSnapshots(fetched.status, terminalRetryTransitions)
 	o.observePullRequestHydrationSkips(mergeIssueSlices(fetched.candidates, fetched.status))
+	o.restoreDurableMergeReservations(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+	o.reconcileMergeReservations(state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	o.restoreDurableGateWaitCompletions(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileOperatorStopHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileMergeDurationHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))

@@ -20,7 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestMergingFastPathBehindReadyRefreshesThenMerges(t *testing.T) {
+func TestMergingFastPathBehindReadyPreservesCheckedHead(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 26, 13, 20, 0, 0, time.UTC)
@@ -86,6 +86,11 @@ func TestMergingFastPathBehindReadyRefreshesThenMerges(t *testing.T) {
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	state := newState(cfg)
+	previous := cloneIssue(issue)
+	previous.ID = "previous-candidate"
+	reservation := reserveMergeCandidate(&state, previous, now.Add(-mergeWorkerCurrentHeadCIWaitTimeout))
+	reservation.RefreshHeadSHA = issue.PullRequest.HeadSHA
+	state.mergeReservations[reservation.Repository] = reservation
 	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{issue}, now)
 
 	completion := receiveMergeFastPathCompletion(t, orch.runResults)
@@ -97,14 +102,14 @@ func TestMergingFastPathBehindReadyRefreshesThenMerges(t *testing.T) {
 	}
 	orch.handleRunResult(context.Background(), &state, completion)
 
-	if got := workspaceBackend.createCalls.Load(); got != 1 {
-		t.Fatalf("Create() calls = %d, want 1", got)
+	if got := workspaceBackend.createCalls.Load(); got != 0 {
+		t.Fatalf("Create() calls = %d, want 0", got)
 	}
-	if got := workspaceBackend.prepareCalls.Load(); got != 1 {
-		t.Fatalf("PrepareMerge() calls = %d, want 1", got)
+	if got := workspaceBackend.prepareCalls.Load(); got != 0 {
+		t.Fatalf("PrepareMerge() calls = %d, want 0", got)
 	}
-	if got := workspaceBackend.afterRunCalls.Load(); got != 1 {
-		t.Fatalf("AfterRun() calls = %d, want 1", got)
+	if got := workspaceBackend.afterRunCalls.Load(); got != 0 {
+		t.Fatalf("AfterRun() calls = %d, want 0", got)
 	}
 	if got := agentBackend.calls.Load(); got != 0 {
 		t.Fatalf("AgentBackend.RunTurn() calls = %d, want 0", got)
@@ -871,8 +876,8 @@ func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
 	if retry.Wait.Kind != retryWaitCurrentHeadCI || retry.Wait.PollCount != 1 {
 		t.Fatalf("Retry[%q].Wait = %#v, want first current-head CI poll", issue.ID, retry.Wait)
 	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing while waiting for CI", issue.ID)
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] retained while waiting for CI", issue.ID)
 	}
 }
 

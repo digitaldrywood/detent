@@ -764,6 +764,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	delete(state.ReapedWorkspaces, issue.ID)
 	delete(state.Completed, issue.ID)
 
+	reservation := reserveMergeCandidate(state, issue, now)
 	request := RunRequest{
 		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
 		Issue:               issue,
@@ -782,6 +783,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
 		ProgressProbe:       o.sessionProgressProbe(issue),
 		MergePrecheck:       cloneMergePrecheck(queuedRetry.MergePrecheck),
+		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
 	o.attachHumanPrerequisiteTool(&request)
