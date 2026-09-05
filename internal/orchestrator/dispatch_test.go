@@ -3502,6 +3502,76 @@ func TestDispatchReadyIssuesRecordsPostSelectionRefusal(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 19, 1, 6, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+	})
+	globalGate := scheduler.NewGlobalDispatchGate(
+		scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}),
+		cfg.Project,
+	)
+	heldSlot, ok, decision, err := globalGate.TryAcquireWithDecision(
+		t.Context(),
+		cfg.Project,
+		scheduler.SlotRequest{State: "Todo"},
+		now.Add(-time.Minute),
+	)
+	if err != nil || !ok {
+		t.Fatalf("TryAcquireWithDecision() = %#v, %v, want acquired slot; decision = %#v", heldSlot, err, decision)
+	}
+	t.Cleanup(func() {
+		if err := globalGate.Release(heldSlot); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+
+	state := newState(cfg)
+	state.CPUPressure = telemetry.CPUPressure{
+		Supported:                    true,
+		Some:                         telemetry.PressureAverages{Avg10: 84.78},
+		SomeAvg10Max:                 80,
+		CapacityConstrained:          true,
+		EffectiveMaxConcurrentAgents: 1,
+		ConstrainedSince:             now.Add(-time.Minute),
+	}
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{
+		cfg:                cfg,
+		workAttempts:       attempts,
+		globalDispatchGate: globalGate,
+		now:                func() time.Time { return now },
+	}
+	issue := dispatchTestIssue("issue-pressure-capacity", "Todo")
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if len(attempts.starts) != 0 {
+		t.Fatalf("work attempt starts = %#v, want none", attempts.starts)
+	}
+	if len(attempts.decisions) != 3 {
+		t.Fatalf("scheduler decisions = %#v, want selection, gate refusal, and concrete pressure refusal", attempts.decisions)
+	}
+	selected, gateRefusal, pressureRefusal := attempts.decisions[0], attempts.decisions[1], attempts.decisions[2]
+	if selected.Result != store.SchedulerDecisionResultSelected || !selected.Selected {
+		t.Fatalf("selected decision = %#v", selected)
+	}
+	if gateRefusal.Reason != scheduler.DispatchGateReasonPressureCapacityFull {
+		t.Fatalf("gate refusal = %#v, want %q", gateRefusal, scheduler.DispatchGateReasonPressureCapacityFull)
+	}
+	if pressureRefusal.Result != store.SchedulerDecisionResultSkipped || pressureRefusal.Selected || pressureRefusal.Reason != dispatchIssueFailureCPUPressure {
+		t.Fatalf("pressure refusal = %#v, want skipped %q", pressureRefusal, dispatchIssueFailureCPUPressure)
+	}
+	if !selected.DecisionAt.Equal(pressureRefusal.DecisionAt) || selected.AttemptNumber != pressureRefusal.AttemptNumber {
+		t.Fatalf("decision correlation = selected %#v pressure refusal %#v", selected, pressureRefusal)
+	}
+}
+
 func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	t.Parallel()
 
