@@ -193,7 +193,7 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 }
 
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
-	cmd := exec.CommandContext(ctx, "lsof", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
+	cmd := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
 	output, err := cmd.Output()
 	if err != nil && len(output) == 0 {
 		var exitErr *exec.ExitError
