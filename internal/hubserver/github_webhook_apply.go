@@ -159,6 +159,17 @@ func applyWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, now t
 	if err := json.Unmarshal(delivery.Payload, &payload); err != nil {
 		return webhookProcessResult{}, fmt.Errorf("decode GitHub webhook payload: %w", err)
 	}
+	if id, found, err := resolveWebhookRepositoryID(ctx, tx, webhookRepositoryFullName(payload.Repository)); err != nil {
+		return webhookProcessResult{}, err
+	} else if found {
+		profile, enabled, err := repositoryOwnership(ctx, tx, id)
+		if err != nil {
+			return webhookProcessResult{}, err
+		}
+		if (delivery.EventType == "issues" && profile == "native") || (delivery.EventType != "issues" && !enabled) {
+			return webhookProcessResult{Outcome: webhookOutcomeIgnored, RepositoryID: &id}, nil
+		}
+	}
 
 	switch strings.ToLower(strings.TrimSpace(delivery.EventType)) {
 	case "issues":
@@ -425,6 +436,13 @@ func applyWebhookIssue(ctx context.Context, tx *sql.Tx, repositoryID int64, issu
 }
 
 func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, issue normalizedIssue, stamp sourceStamp, now time.Time, authoritative bool) (projectionApplyResult, error) {
+	profile, _, err := repositoryOwnership(ctx, tx, repositoryID)
+	if err != nil {
+		return projectionApplyResult{}, err
+	}
+	if profile == "native" {
+		return projectionApplyResult{Stale: true}, nil
+	}
 	var issueID int64
 	var currentVersion string
 	var currentUpdatedAt string
@@ -546,11 +564,18 @@ func applyWebhookPullRequest(ctx context.Context, tx *sql.Tx, repositoryID int64
 }
 
 func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, pullRequest normalizedPullRequest, stamp sourceStamp, now time.Time, authoritative bool) (projectionApplyResult, error) {
+	_, enabled, err := repositoryOwnership(ctx, tx, repositoryID)
+	if err != nil {
+		return projectionApplyResult{}, err
+	}
+	if !enabled {
+		return projectionApplyResult{Stale: true}, nil
+	}
 	var pullRequestID int64
 	var currentVersion string
 	var currentUpdatedAt string
 	var currentState string
-	err := tx.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		SELECT id, source_version, source_updated_at, github_state
 		FROM pull_requests
 		WHERE github_node_id = ? OR (repository_id = ? AND github_number = ?)
@@ -623,6 +648,15 @@ func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID in
 }
 
 func enqueueHydration(ctx context.Context, tx *sql.Tx, deliveryID string, target hydrationTarget, now time.Time) error {
+	if target.RepositoryID != nil {
+		profile, enabled, err := repositoryOwnership(ctx, tx, *target.RepositoryID)
+		if err != nil {
+			return err
+		}
+		if (target.ObjectKind == "issue" && profile == "native") || (target.ObjectKind != "issue" && !enabled) {
+			return nil
+		}
+	}
 	if target.RepositoryFullName == "" || target.ObjectKind == "" || target.ObjectKey == "" || target.Source.Version == "" {
 		return errors.New("GitHub webhook hydration target is incomplete")
 	}

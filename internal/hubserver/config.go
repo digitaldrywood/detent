@@ -40,6 +40,9 @@ var (
 )
 
 type Config struct {
+	GitHubRequestCounts        func() []GitHubRequestCount
+	GitHubDisabled             bool
+	ImportBackend              ImportBackend
 	DatabasePath               string
 	ListenAddress              string
 	TLSCertFile                string
@@ -73,6 +76,10 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.GitHubDisabled {
+		c.ImportBackend, c.OutboxBackend, c.ReconcileBackend = nil, nil, nil
+		c.GitHubWebhookSecret, c.GitHubRequestCounts = nil, nil
+	}
 	if c.ListenAddress == "" {
 		c.ListenAddress = DefaultListenAddress
 	}

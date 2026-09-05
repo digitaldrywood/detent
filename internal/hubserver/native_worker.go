@@ -41,7 +41,7 @@ func authorizeClaimScope(ctx context.Context, tx *sql.Tx, request tracker.ClaimR
 
 func authorizeClaimItem(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, scope *nativeScope) error {
 	var count int
-	query := "SELECT count(*) FROM issues WHERE id = ? AND github_node_id IS NOT NULL"
+	query := "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND p.profile = 'github_compatible'"
 	args := []any{id}
 	if scope != nil {
 		query = "SELECT count(*) FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?"

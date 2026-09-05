@@ -57,6 +57,9 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 	}
 
 	wantTables := []string{
+		"github_cutovers",
+		"github_import_records",
+		"github_imports",
 		"collaboration_events",
 		"collaboration_versions",
 		"hub_identity",

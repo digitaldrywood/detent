@@ -27,11 +27,12 @@ type Writer struct {
 	client restClient
 }
 
-func NewWriter(client *connectorgithub.Client) *Writer {
+func NewWriter(client restClient) *Writer {
 	return &Writer{client: client}
 }
 
 func (w *Writer) Execute(ctx context.Context, item hubserver.OutboxItem) error {
+	ctx = scopedRequests(ctx, item.Profile, "projection")
 	if w == nil || w.client == nil {
 		return hubserver.Permanent(errors.New("github outbox writer is not configured"))
 	}
@@ -41,6 +42,12 @@ func (w *Writer) Execute(ctx context.Context, item hubserver.OutboxItem) error {
 		err = w.updateWorkflowLabel(ctx, item)
 	case hubserver.MutationWorkpad:
 		err = w.upsertWorkpad(ctx, item)
+		if err == nil {
+			var desired hubserver.WorkpadDesired
+			if err = decodeDesired(item, &desired); err == nil && desired.CloseSource {
+				err = w.client.REST(ctx, http.MethodPatch, issuePath(item), map[string]any{"state": "closed"}, nil)
+			}
+		}
 	case hubserver.MutationMergePullRequest:
 		return hubserver.Permanent(errors.New("irreversible github mutation requires fresh verification"))
 	default:
@@ -50,6 +57,7 @@ func (w *Writer) Execute(ctx context.Context, item hubserver.OutboxItem) error {
 }
 
 func (w *Writer) VerifyAndExecute(ctx context.Context, item hubserver.OutboxItem) error {
+	ctx = scopedRequests(ctx, item.Profile, "merge")
 	if w == nil || w.client == nil {
 		return hubserver.Permanent(errors.New("github outbox writer is not configured"))
 	}
@@ -117,6 +125,15 @@ func (w *Writer) upsertWorkpad(ctx context.Context, item hubserver.OutboxItem) e
 		return fmt.Errorf("list github issue comments for workpad: %w", err)
 	}
 	commentID := workpadCommentID(comments, marker)
+	if desired.Summary {
+		commentID = 0
+		for _, comment := range comments {
+			if comment.ID > 0 && strings.Contains(comment.Body, marker) {
+				commentID = comment.ID
+				break
+			}
+		}
+	}
 	if commentID == 0 {
 		var created restComment
 		if err := w.client.REST(ctx, http.MethodPost, issuePath(item)+"/comments", map[string]any{"body": body}, &created); err != nil {

@@ -118,6 +118,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendBlockedHandoffBlock(rendered, opts)
 	rendered = appendGateBlock(rendered, workflow.Config)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
+	rendered = appendNativeIssueInstructions(rendered, issue)
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return rendered, nil
 	}
@@ -291,6 +292,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	prompt = appendBlockedHandoffBlock(prompt, opts)
 	prompt = appendGateBlock(prompt, workflow.Config)
 	prompt = appendAvailableSkills(prompt, AvailableSkillsBlock(opts.AvailableSkills))
+	prompt = appendNativeIssueInstructions(prompt, issue)
 	if promptDeliverableKind(workflow.Config.Deliverable) == config.DeliverablePullRequest {
 		prompt = appendClosingReferenceInstruction(prompt, issue)
 	}
@@ -691,6 +693,18 @@ func appendGateBlock(prompt string, cfg config.Config) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Validation gate\n\n" + instructions
 }
 
+func appendNativeIssueInstructions(prompt string, issue connector.Issue) string {
+	if issue.Metadata["hub_profile"] != "native" {
+		return prompt
+	}
+	return prompt + "\n\n## Native Detent issue authority\n\n" +
+		"This issue's content, discussion, dependencies and workflow are owned by Detent. Route issue reads and writes through `detent hub issue` using the configured Hub runner identity. " +
+		"Use `get`, `create`, `edit`, `comment`, `edit-comment`, `transition`, `dependency`, `comments`, and `history`; mutation commands accept the v2 JSON request on stdin, including a stable idempotency_key and expected_revision for edits. " +
+		"Use --project " + issue.Metadata["hub_project_id"] + " and work-item " + issue.ID + ". Preserve the persistent Workpad as a native comment. " +
+		"Historical GitHub issue links are provenance; do not use gh issue, GitHub issue labels, or GitHub issue comments for this native work item. " +
+		"GitHub repository, pull request, CI and merge operations remain subject to the configured repository integration and required GitHub protections. Native approval does not satisfy a required GitHub review."
+}
+
 func githubTrackerHostname(tracker config.Tracker) string {
 	if tracker.Kind != config.TrackerGitHub && tracker.Kind != config.TrackerGitHubLocal {
 		return ""
@@ -784,6 +798,9 @@ func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 }
 
 func appendClosingReferenceInstruction(prompt string, issue connector.Issue) string {
+	if issue.Metadata["hub_profile"] == "native" {
+		return strings.TrimRight(prompt, " \t\r\n") + "\n\nReference this native work item in any pull request as `Detent-Work-Item: " + issue.ID + "`. A native issue number is not a GitHub closing reference."
+	}
 	number := githubIssueNumber(issue.Identifier)
 	if number == "" {
 		return prompt

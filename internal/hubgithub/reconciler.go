@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,11 +20,15 @@ type Reconciler struct {
 	client restClient
 }
 
-func NewReconciler(client *connectorgithub.Client) *Reconciler {
+func NewReconciler(client restClient) *Reconciler {
 	return &Reconciler{client: client}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileRequest) (hubserver.ReconcileSnapshot, error) {
+	ctx = scopedRequests(ctx, request.Profile, "reconcile")
+	if request.Profile == "native" {
+		request.SkipIssues = true
+	}
 	if r == nil || r.client == nil {
 		return hubserver.ReconcileSnapshot{}, errors.New("github reconciler is not configured")
 	}
@@ -44,14 +47,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 		issueQuery.Set("since", request.Since.UTC().Format(time.RFC3339Nano))
 	}
 	issuesPath += "?" + issueQuery.Encode()
-	remoteIssues, err := fetchRESTList[reconcileIssue](ctx, r.client, issuesPath)
-	if err != nil {
-		return hubserver.ReconcileSnapshot{}, fmt.Errorf("list github repository issues: %w", err)
+	var remoteIssues []reconcileIssue
+	if !request.SkipIssues {
+		remoteIssues, err = fetchRESTList[reconcileIssue](ctx, r.client, issuesPath)
+		if err != nil {
+			return hubserver.ReconcileSnapshot{}, fmt.Errorf("list github repository issues: %w", err)
+		}
 	}
 	pullsPath := repositoryRESTPath(repository.Owner.Login, repository.Name) + "/pulls?direction=asc&per_page=100&sort=updated&state=all"
-	remotePulls, err := fetchRESTList[reconcilePullRequest](ctx, r.client, pullsPath)
-	if err != nil {
-		return hubserver.ReconcileSnapshot{}, fmt.Errorf("list github repository pull requests: %w", err)
+	var remotePulls []reconcilePullRequest
+	if !request.SkipRepository {
+		remotePulls, err = fetchRESTList[reconcilePullRequest](ctx, r.client, pullsPath)
+		if err != nil {
+			return hubserver.ReconcileSnapshot{}, fmt.Errorf("list github repository pull requests: %w", err)
+		}
 	}
 	snapshot := hubserver.ReconcileSnapshot{
 		Repository: hubserver.RepositorySource{
@@ -81,8 +90,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 		}
 		snapshot.PullRequests = append(snapshot.PullRequests, source)
 	}
-	if err := r.hydratePullRequestDetails(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name), request.Mode, request.Hydrations, &snapshot); err != nil {
-		return hubserver.ReconcileSnapshot{}, err
+	if !request.SkipRepository {
+		if err := r.hydratePullRequestDetails(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name), request.Mode, request.Hydrations, &snapshot); err != nil {
+			return hubserver.ReconcileSnapshot{}, err
+		}
 	}
 	return snapshot, nil
 }

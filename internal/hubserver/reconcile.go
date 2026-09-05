@@ -34,11 +34,14 @@ type RepositoryTarget struct {
 }
 
 type ReconcileRequest struct {
-	Repository RepositoryTarget
-	Mode       ReconcileMode
-	Since      *time.Time
-	Through    time.Time
-	Hydrations []HydrationRequest
+	Profile        string
+	SkipIssues     bool
+	SkipRepository bool
+	Repository     RepositoryTarget
+	Mode           ReconcileMode
+	Since          *time.Time
+	Through        time.Time
+	Hydrations     []HydrationRequest
 }
 
 type HydrationRequest struct {
@@ -111,9 +114,11 @@ type ReconcileBackend interface {
 
 type reconcileTarget struct {
 	RepositoryTarget
-	Cursor         *time.Time
-	HydrationSince *time.Time
-	Hydrations     []HydrationRequest
+	Profile           string
+	RepositoryEnabled bool
+	Cursor            *time.Time
+	HydrationSince    *time.Time
+	Hydrations        []HydrationRequest
 }
 
 func (s *Service) runGitHubReconciliation(ctx context.Context) {
@@ -161,10 +166,13 @@ func (s *Service) reconcileRepository(ctx context.Context, target reconcileTarge
 		return err
 	}
 	request := ReconcileRequest{
-		Repository: target.RepositoryTarget,
-		Mode:       mode,
-		Through:    startedAt,
-		Hydrations: append([]HydrationRequest(nil), target.Hydrations...),
+		Profile:        target.Profile,
+		SkipIssues:     target.Profile == "native",
+		SkipRepository: target.Profile != "" && !target.RepositoryEnabled,
+		Repository:     target.RepositoryTarget,
+		Mode:           mode,
+		Through:        startedAt,
+		Hydrations:     append([]HydrationRequest(nil), target.Hydrations...),
 	}
 	if mode == ReconcileIncremental {
 		request.Since = earliestTime(target.Cursor, target.HydrationSince)
@@ -195,9 +203,10 @@ func (s *Service) stopGitHubReconciliation() error {
 
 func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, github_node_id, github_database_id, github_owner, github_name, reconcile_cursor
-		FROM repositories
-		ORDER BY lower(github_owner), lower(github_name), id
+		SELECT r.id, r.github_node_id, r.github_database_id, r.github_owner, r.github_name, r.reconcile_cursor, p.profile, p.github_repository_enabled
+		FROM repositories r JOIN projects p ON p.repository_id = r.id
+		WHERE p.profile = 'github_compatible' OR p.github_repository_enabled = 1
+		ORDER BY lower(r.github_owner), lower(r.github_name), r.id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list GitHub reconciliation targets: %w", err)
@@ -208,7 +217,7 @@ func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, err
 		var target reconcileTarget
 		var databaseID sql.NullInt64
 		var cursor sql.NullString
-		if err := rows.Scan(&target.ID, &target.NodeID, &databaseID, &target.Owner, &target.Name, &cursor); err != nil {
+		if err := rows.Scan(&target.ID, &target.NodeID, &databaseID, &target.Owner, &target.Name, &cursor, &target.Profile, &target.RepositoryEnabled); err != nil {
 			return nil, fmt.Errorf("scan GitHub reconciliation target: %w", err)
 		}
 		if databaseID.Valid {
@@ -308,6 +317,14 @@ func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileT
 	if err != nil {
 		return err
 	}
+	profile, repositoryEnabled, err := repositoryOwnership(ctx, tx, repositoryID)
+	if err != nil {
+		return err
+	}
+	if !repositoryEnabled {
+		snapshot.PullRequests = nil
+		snapshot.PullRequestDetails = nil
+	}
 	issueNodeIDs := make(map[string]struct{}, len(snapshot.Issues))
 	for _, source := range snapshot.Issues {
 		issue := normalizedIssue(source)
@@ -343,7 +360,7 @@ func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileT
 			return err
 		}
 	}
-	if mode == ReconcileFullRepair {
+	if mode == ReconcileFullRepair && profile == "github_compatible" {
 		if err := markMissingProjectionRows(ctx, tx, "issues", `
 			SELECT id, github_node_id FROM issues
 			WHERE repository_id = ? AND github_state <> 'deleted'
@@ -352,6 +369,8 @@ func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileT
 		`, repositoryID, issueNodeIDs, completedAt); err != nil {
 			return err
 		}
+	}
+	if mode == ReconcileFullRepair && repositoryEnabled {
 		if err := markMissingProjectionRows(ctx, tx, "pull_requests", `
 			SELECT id, github_node_id FROM pull_requests
 			WHERE repository_id = ? AND github_state <> 'deleted'
