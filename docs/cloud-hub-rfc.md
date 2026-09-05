@@ -493,11 +493,13 @@ states and are not review-ready. A runner crash after durable upload but before
 Hub publication requires idempotent manifest reconciliation; a claimed completion
 without verified durable objects must not become available.
 
-#2189 compares customer bucket plus gateway, an existing authenticated artifact
-service, and an optional hosted path. Gateway deployment, browser token issuer
-trust/key rotation, audience/expiry, CORS, revocation bounds, adapter support,
-costs and retention need that reviewed contract before #2190. Browser content
-access must not require Hub to hold storage credentials or the runner to sign
+The [artifact access contract](artifact-access-contract.md) from #2189 compares
+customer bucket plus gateway, an existing authenticated artifact service, and an
+optional hosted path. It proposes the first adapter, browser issuer trust/key
+rotation, audience/expiry, CORS, revocation bounds, and upload lifecycle while
+preserving unresolved deployment, cost, and retention decisions. Review that
+contract before #2190. Browser content access must not require Hub to hold
+storage credentials or the runner to sign
 downloads. A presigned URL is reusable until expiry, not inherently one-time.
 Gateway outages, missing objects, revoked membership, expired retention, partial
 uploads and corrupted digests produce distinct recoverable or terminal states.
