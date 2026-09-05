@@ -31,7 +31,7 @@ func (s *Service) nativeCapabilities(c echo.Context) error {
 		Features        []string `json:"features"`
 		MaxRequestBytes int      `json:"max_request_bytes"`
 		MaxPageSize     int      `json:"max_page_size"`
-	}{serverID, []int{1, 2}, []int{1}, []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, maxAPIRequestBodyBytes, maxAPIPageLimit})
+	}{serverID, []int{1, 2}, []int{1}, []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, maxAPIRequestBodyBytes, maxAPIPageLimit})
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {

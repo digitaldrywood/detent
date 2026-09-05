@@ -3224,7 +3224,11 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		CompletionProgress:    issue.CompletionProgress,
 	}
 	if projectKanbanCardUsesInternalIssueView(data, card) {
-		card.URL = workitem.WorkItemURL(data.DashboardURL, projectKanbanCardProjectID(data, card), card.Identifier)
+		reference := card.Identifier
+		if strings.EqualFold(projectKanbanCardKanbanData(data, card).TrackerKind, "hub_native") {
+			reference = card.IssueID
+		}
+		card.URL = workitem.WorkItemURL(data.DashboardURL, projectKanbanCardProjectID(data, card), reference)
 	}
 	if issue.PullRequest != nil {
 		ciStatus := prPipelineCIStatus(issue, projectKanbanLaneID(state))

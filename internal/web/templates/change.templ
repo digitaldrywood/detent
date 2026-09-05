@@ -1,0 +1,231 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/tracker"
+
+templ ChangePage(data ChangePageData) {
+	@AppShell(changeShellData(data), nil) {
+		<main class="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-6">
+			<div id="change-content" class="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4" hx-get={ data.ContentPath() } hx-trigger="load" hx-swap="innerHTML">
+				@ChangeContent(data)
+			</div>
+		</main>
+	}
+}
+
+templ ChangeContent(data ChangePageData) {
+	<a href={ NativeIssuePath(data.ProjectID, data.IssueID) } class="w-fit text-xs font-medium text-accent hover:underline">← Back to issue</a>
+	if data.Loading {
+		<p role="status" aria-live="polite" class="rounded-card border border-line bg-surface p-4 text-sm text-sec">Loading Change Request…</p>
+	} else if data.Error != "" {
+		<div role="status" class="flex flex-col gap-3 rounded-card border border-line bg-surface p-4 text-sm text-sec">
+			<p>{ data.Error }</p>
+			<a href={ data.Path() } class="w-fit text-accent hover:underline">Retry</a>
+		</div>
+	} else if data.Detail != nil {
+		{{ detail := data.Detail }}
+		<header class="flex min-w-0 flex-col gap-2">
+			<div class="flex flex-wrap items-center gap-2 text-xs text-sec"><span>Change Request</span><span class="rounded-chip bg-elev px-2 py-1">{ changeStatusLabel(detail.Summary.Status) }</span></div>
+			<h1 class="break-words text-xl font-semibold text-text [overflow-wrap:anywhere]">{ detail.Change.Title }</h1>
+			<p class="break-all font-mono text-2xs text-sec">{ detail.Change.ID }</p>
+			if detail.Change.Body != "" {
+				<p class="whitespace-pre-wrap break-words text-sm text-text [overflow-wrap:anywhere]">{ detail.Change.Body }</p>
+			}
+		</header>
+		<div class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+			<div class="flex min-w-0 flex-col gap-4">
+				<section class="flex min-w-0 flex-col gap-3 rounded-card border border-line bg-surface p-4 text-xs" aria-label="Current version review">
+					<h2 class="text-xs font-semibold text-text">Current version review</h2>
+					@issueDetailRow("Native review", changeStatusLabel(detail.Summary.NativeReview))
+					@issueDetailRow("External required review", changeStatusLabel(detail.Summary.ExternalReview))
+					@issueDetailRow("Checks", changeStatusLabel(detail.Summary.Checks))
+					for _, message := range detail.Summary.Messages {
+						<p class="text-xs leading-5 text-sec">{ message }</p>
+					}
+				</section>
+				<section class="flex min-w-0 flex-col gap-3 rounded-card border border-line bg-surface p-4" aria-label="Immutable versions">
+					<h2 class="text-xs font-semibold text-text">Versions</h2>
+					<nav aria-label="Change versions" class="flex flex-wrap gap-2">
+						for _, version := range detail.Versions {
+							<a href={ changeVersionPath(data, version) } aria-current={ changeVersionCurrent(data, version.ID) } class="rounded-chip border border-line px-2 py-1 text-xs text-accent hover:bg-elev">
+								{ "Version " + formatInt(version.Number) }
+								if version.ID == detail.Change.CurrentVersion {
+									<span class="text-sec"> · current</span>
+								}
+							</a>
+						}
+					</nav>
+					if version, ok := data.Version(); ok {
+						if version.ID != detail.Change.CurrentVersion {
+							<p class="text-xs text-sec" role="status">You are viewing an older version. Its reviews and evidence do not approve the current version.</p>
+						}
+						@ChangeVersionDetails(data, version)
+					} else if len(detail.Versions) == 0 {
+						<p class="text-sm text-sec">No version published yet.</p>
+					} else {
+						<p class="text-sm text-sec" role="status">Requested version was not found. Choose a version above.</p>
+					}
+				</section>
+				<section class="flex min-w-0 flex-col gap-3" aria-label="Discussion">
+					<h2 class="text-xs font-semibold text-text">Discussion</h2>
+					if len(detail.Discussion) == 0 {
+						<p class="rounded-card border border-line bg-surface p-4 text-sm text-sec">No discussion yet.</p>
+					}
+					for _, comment := range detail.Discussion {
+						<article class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4">
+							<header class="flex min-w-0 flex-wrap gap-2 text-xs text-sec">
+								if comment.Provenance != nil {
+									<span class="break-all">{ comment.Provenance.AuthorID } · imported from { comment.Provenance.Provider }</span>
+									@LocalTime(comment.Provenance.CreatedAt, LocalTimeOptions{Style: LocalDateTime})
+								} else {
+									<span class="break-all">{ comment.Actor.PrincipalID } · native { comment.Actor.Kind }</span>
+									@LocalTime(comment.CreatedAt, LocalTimeOptions{Style: LocalDateTime})
+								}
+							</header>
+							if comment.VersionID != "" {
+								<span class="break-all font-mono text-2xs text-sec">{ comment.VersionID }</span>
+							}
+							<p class="whitespace-pre-wrap break-words text-sm text-text [overflow-wrap:anywhere]">{ comment.Body }</p>
+						</article>
+					}
+				</section>
+			</div>
+			<aside class="flex min-w-0 flex-col gap-4">
+				<section class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4" aria-label="Linked issues and runs">
+					<h2 class="text-xs font-semibold text-text">Linked issues and runs</h2>
+					for _, issue := range detail.Change.LinkedIssues {
+						<a href={ NativeIssuePath(data.ProjectID, issue) } class="break-all font-mono text-xs text-accent hover:underline">{ string(issue) }</a>
+					}
+					for _, version := range detail.Versions {
+						if version.AttemptID != "" {
+							<a href={ nativeRunPath(data.ProjectID, detail.Change.WorkItemID, version.AttemptID) } class="break-all text-xs text-accent hover:underline">{ "Version " + formatInt(version.Number) + " · run " + version.RunID }</a>
+						}
+					}
+				</section>
+				<section class="flex min-w-0 flex-col gap-3 rounded-card border border-line bg-surface p-4" aria-label="Review history">
+					<h2 class="text-xs font-semibold text-text">Review history</h2>
+					if len(detail.Reviews) == 0 {
+						<p class="text-xs text-sec">No native decisions yet.</p>
+					}
+					for _, review := range detail.Reviews {
+						<article class="flex min-w-0 flex-col gap-1 border-b border-line pb-2 text-xs">
+							<span class="text-text">{ changeStatusLabel(review.Decision) }</span>
+							<span class="break-all text-sec">{ review.Actor.PrincipalID }</span>
+							<span class="break-all font-mono text-2xs text-sec">{ review.VersionID }</span>
+							if review.VersionID != detail.Change.CurrentVersion {
+								<span class="text-sec">Older version</span>
+							}
+							<p class="whitespace-pre-wrap break-words text-sec [overflow-wrap:anywhere]">{ review.Body }</p>
+						</article>
+					}
+				</section>
+			</aside>
+		</div>
+	}
+}
+
+templ ChangeVersionDetails(data ChangePageData, version tracker.ChangeVersion) {
+	<div class="flex min-w-0 flex-col gap-2 text-xs">
+		@issueDetailRow("Version", version.ID)
+		@issueDetailRow("Base", version.BaseSHA)
+		@issueDetailRow("Head", version.HeadSHA)
+		@issueDetailRow("Merge base", version.MergeBaseSHA)
+		@issueDetailRow("Repository policy", version.PolicyID)
+		@issueDetailRow("Configuration", version.Policy.ConfigDigest)
+		@issueDetailRow("Review policy", version.ReviewPolicy.ID)
+		if version.External != nil {
+			<a href={ templ.URL(version.External.URL) } target="_blank" rel="noopener noreferrer" class="w-fit text-accent hover:underline">Open GitHub PR and diff ↗</a>
+		} else {
+			<p class="text-sec">No GitHub PR linked.</p>
+		}
+	</div>
+	<h3 class="text-xs font-semibold text-text">Code and artifacts</h3>
+	@ChangeArtifactReference(version.Code)
+	if len(version.Artifacts) == 0 {
+		<p class="text-xs text-sec">No artifact manifest attached to this version.</p>
+	}
+	for _, artifact := range version.Artifacts {
+		@ChangeArtifactReference(artifact)
+	}
+	<h3 class="text-xs font-semibold text-text">Version checks and evidence</h3>
+	if len(version.Checks) == 0 {
+		if version.ReviewPolicy.ID != "" && len(version.ReviewPolicy.RequiredChecks) == 0 {
+			<p class="text-xs text-sec">The approved policy requires no CI checks for this version.</p>
+		} else {
+			<p class="text-xs text-sec">No expected check set. Validation is missing.</p>
+		}
+	}
+	for _, check := range version.Checks {
+		<div class="flex min-w-0 flex-col gap-1 border-t border-line pt-2 text-xs">
+			<span class="break-words font-medium text-text">{ check.Name } · { check.Source } validation</span>
+			<span class="break-all font-mono text-2xs text-sec">{ check.CheckRunID }</span>
+			<span class="break-all text-sec">{ check.WorkflowID }</span>
+			{{ found := false }}
+			if data.Detail != nil {
+				for _, result := range data.Detail.Checks {
+					if result.VersionID == version.ID && result.CheckRunID == check.CheckRunID {
+						{{ found = true }}
+						<span class="text-text">{ result.Conclusion }</span>
+						for _, evidence := range result.Evidence {
+							@ChangeArtifactReference(evidence)
+						}
+					}
+				}
+			}
+			if !found {
+				<span class="text-sec">Missing evidence for this version.</span>
+			}
+		</div>
+	}
+}
+
+templ ChangeArtifactReference(artifact tracker.ChangeArtifact) {
+	<div class="flex min-w-0 flex-col gap-1 rounded-chip bg-elev p-2 text-xs">
+		<span class="text-text">{ artifact.Kind } · { artifact.Availability }</span>
+		<span class="break-all text-sec">{ artifact.URI }</span>
+		<span class="break-all font-mono text-2xs text-sec">{ "SHA-256 " + artifact.SHA256 }</span>
+	</div>
+}
+
+templ IssueChangeLinks(projectID string, changes []tracker.ChangeRequest, message string) {
+	<section class="flex min-w-0 flex-col gap-3 rounded-card border border-line bg-surface p-4" aria-label="Change Requests">
+		<h2 class="text-xs font-semibold text-text">Change Requests</h2>
+		if message != "" {
+			<p class="text-xs text-sec" role="status">{ message }</p>
+		} else if len(changes) == 0 {
+			<p class="text-xs text-sec">No Change Requests yet.</p>
+		}
+		for _, change := range changes {
+			<a href={ ChangePath(projectID, change.WorkItemID, change.ID) } class="break-words text-sm text-accent hover:underline [overflow-wrap:anywhere]">{ change.Title }</a>
+		}
+	</section>
+}
+
+templ NativeRunPage(data ChangePageData, attempt tracker.NativeAttempt, changes []tracker.ChangeRequest) {
+	@AppShell(changeShellData(data), nil) {
+		<main class="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-6">
+			<div class="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4">
+				<a href={ NativeIssuePath(data.ProjectID, data.IssueID) } class="w-fit text-xs text-accent hover:underline">← Back to issue</a>
+				<h1 class="text-xl font-semibold text-text">Native run</h1>
+				<section class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4 text-xs">
+					@issueDetailRow("Run", attempt.RunID)
+					@issueDetailRow("Attempt", attempt.AttemptID)
+					@issueDetailRow("Status", attempt.Status)
+					@issueDetailRow("Repository policy", attempt.PolicyID)
+					@issueDetailRow("Runner", attempt.RunnerID)
+					@issueDetailRow("Machine", string(attempt.MachineID))
+					if attempt.Identity != nil {
+						@issueDetailRow("Role", attempt.Identity.Role)
+						@issueDetailRow("Backend", attempt.Identity.Backend)
+						@issueDetailRow("Model", attempt.Identity.Model)
+					}
+					@issueDetailTimeRow("Started", attempt.StartedAt)
+					if attempt.Checkpoint != nil {
+						@issueDetailRow("Checkpoint", attempt.Checkpoint.Availability)
+						@issueDetailRow("Recovery", attempt.Checkpoint.Resume)
+					}
+				</section>
+				@IssueChangeLinks(data.ProjectID, changes, "")
+			</div>
+		</main>
+	}
+}

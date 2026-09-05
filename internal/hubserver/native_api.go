@@ -66,6 +66,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerIntegrationRoutes(e)
+	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	admin := s.requireInstanceAdmin()
@@ -218,7 +219,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if scope.credential.Scope == apiScopeWorker && c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") {
+	if scope.credential.Scope == apiScopeWorker && c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks" {
 		if err := requireNativeMutationLease(ctx, tx, scope, c.Param("item"), command, now); err != nil {
 			return s.nativeAPIError(c, err)
 		}

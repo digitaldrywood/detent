@@ -612,7 +612,8 @@ durable attempts rather than assuming the last request failed.
 Unsupported generic fields and absent optional connector capabilities fail
 explicitly. No native connector method delegates to a GitHub issue connector.
 GitHub repository/PR/CI/review/merge capabilities remain separate integrations;
-this issue does not synthesize GitHub identities or implement native Changes.
+native Change Requests link to these integrations through optional external PR
+references and retain their identity when no GitHub PR exists.
 
 Schema migration retains existing issue/repository integer keys, GitHub node IDs,
 issue numbers, queue entries, dependencies, leases/fencing, work events and outbox
@@ -623,6 +624,105 @@ Existing v1 clients keep their compatibility IDs and content authority. Native
 rows have no mandatory repository or GitHub issue reference and cannot be fetched
 by guessing their integer keys through v1. Compatibility event history remains
 in v1; no arbitrary historical payload is automatically copied to v2.
+
+## Native Change Requests
+
+The `change_requests` capability adds stable `change_...` records to a project.
+Each record has a primary issue, additional issue links in the same project,
+title/discussion, and an ordered set of immutable `version_...` records. These
+records work in native and GitHub-compatible projects without changing issue-field
+ownership. Creating a Change Request does not create a PR or authorize a merge.
+
+All paths below follow `/api/v2/organizations/{organization}/projects/{project}`.
+Mutations require the existing `idempotency_key`; workers publishing versions
+also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id`.
+
+| Method and suffix | Authority and result |
+| --- | --- |
+| `GET /work-items/{item}/changes` | Project-scoped linked Change Requests |
+| `POST /work-items/{item}/changes` | Worker/operator; `title`, `body`, optional `linked_issues` |
+| `GET /work-items/{item}/changes/{change}` | Consistent detail with versions, decisions, checks, discussion and current summary |
+| `POST /work-items/{item}/changes/{change}/versions` | Publish through the primary issue with `expected_version_id` |
+| `POST /work-items/{item}/changes/{change}/discussion` | Append `body`, optional `version_id`; only operators can import `provenance` |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/reviews` | Operator decision: `approved`, `changes_requested`, or `commented`, plus optional `body` |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/checks` | Credential pinned in the immutable expected check set |
+| `GET /change-review-policy` | Inspect the approved native review/CI expectations |
+| `PUT /change-review-policy` | Instance administrator; compare `expected_review_policy_id` and approve `policy` |
+
+Before publishing, an administrator approves a review policy tied to the current
+repository `policy_id`. Its `require_review` setting cannot weaken a repository
+human-review gate. `required_checks` cannot fall below the repository check count,
+and a repository validator requires an independent check. Every check pins `name`,
+`principal_id` (an existing token with a project grant), `workflow_id`,
+`workflow_sha256`, `source` (`customer` or `independent`), and `max_age_seconds`
+(60 seconds to 7 days). Independent checks require operator credentials. Use a
+dedicated CI credential, kept outside the implementation runner's environment.
+These settings do not modify repository auto-promotion, opt-out, security audit,
+validator, external required review, or merge-method configuration.
+
+Version requests include lowercase `base_sha`, `head_sha`, `merge_base_sha`, the
+approved `policy_id`, a `repository` reference, a `code` reference, and optional
+`artifacts`. Worker versions identify a real fenced run/attempt. Human-authored
+versions may omit a run. `external`, when present, contains `provider: github`,
+the PR number as string `id`, and its `url`. The server snapshots the approved
+repository descriptor and review policy; workers cannot choose weaker checks.
+`expected_version_id` is empty for the first version and must match the current
+version thereafter. Reusing a command with different content or publishing from
+an old current version returns a conflict. New versions require new approval and
+fresh evidence even when a publisher reports the same head.
+
+Code, manifests, diff bundles, logs and other artifacts remain in customer storage.
+Hub retains only `kind`, `uri`, `sha256`, and `availability`. References support
+`https`, `s3`, or `gs`, without embedded credentials, query tokens or fragments.
+Kinds are `code`, `manifest`, `diff`, `test`, `log`, `checkpoint`, or `artifact`;
+availability is `available`, `missing`, `inaccessible`, or `unverified`. Availability
+is a report by the authenticated publisher, not a Hub download or independent
+verification. A future viewer can resolve these references using the same change
+and version IDs. Raw patches, source and artifact bytes are not API fields.
+
+Every version generates fresh `check_run_id` values. CI submits the expected
+`check_run_id`, `head_sha`, native `run_id` (empty for a human version without a
+run), `policy_id`, `config_digest`, `workflow_id`, `workflow_sha256`, and `source`,
+plus terminal `conclusion`, `completed_at`, and nonempty `evidence` references.
+The submitting credential must match the expectation. Completion cannot predate
+the version or be in the future. Only `success` with available, unexpired evidence
+can pass; skipped, cancelled, missing, inaccessible and stale results do not.
+An approved policy with no required checks reports `not_required`, never a
+synthetic success; its native review requirement still applies.
+Freshness is measured from completion, not delivery. The authenticated CI source
+is responsible for producing truthful results for the pinned workflow and head.
+
+Terminal results are immutable. Exact redelivery is idempotent even with a new
+command key; changing an existing result conflicts. Late callbacks remain attached
+to their original version and cannot move the current pointer. CI callbacks do not
+require a still-running implementation lease. To rerun validation, publish a new
+version with fresh check identities. Customer-run evidence is visibly distinct
+from independent validation and cannot satisfy an independent expectation.
+
+Native approval never becomes a required GitHub review. Detail optionally reuses
+the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies
+a mismatched external head. Existing protected-merge verification and the exact-head
+merge mutation remain authoritative; the native API has no auto-merge switch.
+
+`detent hub issue` exposes `changes`, `create-change`, `change`, `publish-change`,
+`review-change`, `check-change`, `discuss-change`, and `approve-review-policy`.
+The existing `--project`, `--organization`, `--hub-url`, `--identity-file`, and
+`--token-env` flags select the scope and credentials. Mutations read typed JSON
+from stdin. For example:
+
+```sh
+detent hub issue create-change wi_example --project prj_example <<'JSON'
+{"idempotency_key":"propose-work","title":"Proposed work","body":"Review context"}
+JSON
+detent hub issue changes wi_example --project prj_example
+detent hub issue change wi_example change_example --project prj_example
+```
+
+The Work board/list opens native issue detail, which links to Change Request
+detail. Detail provides version selection, stale/missing-evidence messages,
+discussion provenance, artifact availability, and issue/run navigation. Native
+run recovery uses published change references from ordered issue history rather
+than trusting a stale worker checkpoint to identify the current version.
 
 ## Retention, export and deletion design
 

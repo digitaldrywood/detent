@@ -244,7 +244,8 @@ func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bo
 }
 
 func projectKanbanCardUsesInternalIssueView(data DashboardData, card projectKanbanCard) bool {
-	return strings.EqualFold(strings.TrimSpace(projectKanbanCardKanbanData(data, card).TrackerKind), "local_sqlite")
+	kind := strings.TrimSpace(projectKanbanCardKanbanData(data, card).TrackerKind)
+	return strings.EqualFold(kind, "local_sqlite") || strings.EqualFold(kind, "hub_native")
 }
 
 func boardCardSheetClass(expanded bool) string {
