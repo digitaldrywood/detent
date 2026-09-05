@@ -120,6 +120,10 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 				Status:        telemetry.RefreshStatusReady,
 				LastRefreshAt: &now,
 			},
+			RateLimits: &telemetry.RateLimits{
+				GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000},
+				GraphQLCost:   &telemetry.GraphQLCost{TotalQueries: 2, TotalCost: 8, LastHourQueries: 42, LastHourCost: 137},
+			},
 			WorkAttempts: []telemetry.WorkAttempt{
 				{
 					AttemptID:     42,
@@ -212,6 +216,10 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 		"Active work",
 		"Queues &amp; blockers",
 		"GitHub/API",
+		"Last-hour queries",
+		"42 queries",
+		"Cycle queries",
+		"2 queries",
 		"Runtime store",
 		"Raw/Debug",
 		`detent.ui.diagnostics.selectedTab.detent`,

@@ -398,7 +398,7 @@ func (c *Connector) readProjectCandidates(
 		itemsRead += len(pageItems)
 		totalItems = max(totalItems, response.Node.Items.TotalCount)
 		for _, item := range pageItems {
-			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
+			issue, _, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
 				return nil, 0, 0, false, err
 			}

@@ -4450,6 +4450,10 @@ templ graphQLBudgetCard(data DashboardData) {
 					</div>
 				</div>
 				<div class="flex items-center justify-between gap-3 border-t border-line pt-3 text-sm">
+					<span class="text-sec">Last-hour queries</span>
+					<strong class="font-mono font-medium text-text">{ graphQLBudgetLastHourQueryCount(data.Snapshot.RateLimits) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-3 border-t border-line pt-3 text-sm">
 					<span class="text-sec">Cycle queries</span>
 					<strong class="font-mono font-medium text-text">{ graphQLBudgetQueryCount(data.Snapshot.RateLimits) }</strong>
 				</div>

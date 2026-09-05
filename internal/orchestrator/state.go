@@ -110,6 +110,7 @@ type State struct {
 	ReapedWorkspaces         map[string]time.Time
 	TokenTotals              TokenTotals
 	RateLimits               *telemetry.RateLimits
+	graphQLUsageSamples      []graphQLUsageSample
 	laneEntries              map[string]time.Time
 	laneProvenance           map[string]provenance.Attribution
 	planRework               map[string]struct{}
@@ -510,6 +511,7 @@ func (s State) clone() State {
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,
 		RateLimits:               cloneRateLimits(s.RateLimits),
+		graphQLUsageSamples:      append([]graphQLUsageSample(nil), s.graphQLUsageSamples...),
 		laneEntries:              maps.Clone(s.laneEntries),
 		laneProvenance:           maps.Clone(s.laneProvenance),
 		planRework:               make(map[string]struct{}, len(s.planRework)),

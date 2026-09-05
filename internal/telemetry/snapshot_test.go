@@ -166,6 +166,12 @@ func TestSnapshotJSONShape(t *testing.T) {
 				ObservedRequests: 22, DetentRequests: 2, AttributedRequests: 20,
 				WindowStartedAt: &divergenceStartedAt, LastObservedAt: &generatedAt, ResetAt: &divergenceResetAt,
 			}}},
+			GraphQLCost: &telemetry.GraphQLCost{
+				TotalQueries:    2,
+				TotalCost:       8,
+				LastHourQueries: 42,
+				LastHourCost:    137,
+			},
 		},
 		Tokens: telemetry.Tokens{
 			Input:          110,
@@ -238,6 +244,11 @@ func TestSnapshotJSONShape(t *testing.T) {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("snapshot JSON missing %q: %s", key, string(data))
 		}
+	}
+	rateLimitJSON := got["rate_limits"].(map[string]any)
+	graphQLCost := rateLimitJSON["graphql_cost"].(map[string]any)
+	if graphQLCost["last_hour_queries"] != float64(42) || graphQLCost["last_hour_cost"] != float64(137) {
+		t.Fatalf("rate_limits.graphql_cost = %#v, want rolling-hour usage", graphQLCost)
 	}
 
 	project := got["project"].(map[string]any)

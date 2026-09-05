@@ -24,6 +24,12 @@ type graphQLRateLimitCycle struct {
 	HasSummary bool
 }
 
+type graphQLUsageSample struct {
+	observedAt time.Time
+	queries    int64
+	cost       int64
+}
+
 type restRateLimitCycle struct {
 	Bucket     *telemetry.RateLimitBucket
 	Budgets    []telemetry.RESTBudget
@@ -36,6 +42,15 @@ func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) g
 	if reporter, ok := o.connector.(connector.GraphQLRateLimitUsageReporter); ok {
 		usage = reporter.FlushGraphQLRateLimitUsage()
 	}
+	lastHourQueries, lastHourCost := recordGraphQLUsageWindow(state, usage, now)
+	cost := graphQLCostSummary(usage)
+	if cost == nil && (lastHourQueries > 0 || lastHourCost > 0) {
+		cost = &telemetry.GraphQLCost{}
+	}
+	if cost != nil {
+		cost.LastHourQueries = lastHourQueries
+		cost.LastHourCost = lastHourCost
+	}
 
 	var rateLimit connector.GraphQLRateLimit
 	hasRateLimit := usage.HasRateLimit
@@ -45,18 +60,19 @@ func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) g
 	} else if status == "" {
 		reporter, ok := o.connector.(connector.RateLimitReporter)
 		if !ok {
-			return graphQLRateLimitCycle{}
+			setGraphQLCost(state, cost)
+			return graphQLRateLimitCycle{Cost: cost}
 		} else {
 			var okRateLimit bool
 			rateLimit, okRateLimit = reporter.GraphQLRateLimit()
 			if !okRateLimit {
-				return graphQLRateLimitCycle{}
+				setGraphQLCost(state, cost)
+				return graphQLRateLimitCycle{Cost: cost}
 			}
 			hasRateLimit = okRateLimit
 		}
 	}
 
-	cost := graphQLCostSummary(usage)
 	bucket := gitHubGraphQLBucket(rateLimit, now, status)
 	if cost != nil {
 		bucket.Cost = cost.TotalCost
@@ -71,6 +87,41 @@ func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) g
 		Cost:       cost,
 		HasSummary: hasRateLimit,
 	}
+}
+
+func recordGraphQLUsageWindow(state *State, usage connector.GraphQLRateLimitUsage, now time.Time) (int64, int64) {
+	if usage.TotalQueries > 0 || usage.TotalCost > 0 {
+		state.graphQLUsageSamples = append(state.graphQLUsageSamples, graphQLUsageSample{
+			observedAt: now,
+			queries:    usage.TotalQueries,
+			cost:       usage.TotalCost,
+		})
+	}
+
+	cutoff := now.Add(-time.Hour)
+	retained := state.graphQLUsageSamples[:0]
+	var queries int64
+	var cost int64
+	for _, sample := range state.graphQLUsageSamples {
+		if sample.observedAt.Before(cutoff) {
+			continue
+		}
+		retained = append(retained, sample)
+		queries += sample.queries
+		cost += sample.cost
+	}
+	state.graphQLUsageSamples = retained
+	return queries, cost
+}
+
+func setGraphQLCost(state *State, cost *telemetry.GraphQLCost) {
+	if state.RateLimits == nil {
+		if cost == nil {
+			return
+		}
+		state.RateLimits = &telemetry.RateLimits{}
+	}
+	state.RateLimits.GraphQLCost = cost
 }
 
 func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Time) restRateLimitCycle {

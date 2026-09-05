@@ -112,7 +112,11 @@ func (c *Connector) SetIntakeIssueState(ctx context.Context, issueID string, sta
 			}
 			itemID = item.ID
 		}
-		return c.setProjectItemStatus(ctx, itemID, c.detentToGitHubState(state))
+		if err := c.setProjectItemStatus(ctx, itemID, c.detentToGitHubState(state)); err != nil {
+			return err
+		}
+		c.projectCache.InvalidateProjectFields(c.projectID, issueID)
+		return nil
 	}
 	return c.UpdateIssueState(ctx, issueID, state)
 }

@@ -7,16 +7,27 @@ import (
 )
 
 type projectCache struct {
-	mu      sync.RWMutex
-	ttl     time.Duration
-	now     func() time.Time
-	entries map[string]map[string]projectItemCacheEntry
-	refs    map[string]issueRefCacheEntry
+	mu        sync.RWMutex
+	ttl       time.Duration
+	now       func() time.Time
+	entries   map[string]map[string]projectItemCacheEntry
+	scanned   map[string]time.Time
+	revisions map[string]uint64
+	refs      map[string]issueRefCacheEntry
 }
 
 type projectItemCacheEntry struct {
-	itemID   string
-	cachedAt time.Time
+	projectItemFields
+	fieldsKnown bool
+	cachedAt    time.Time
+}
+
+type projectItemFields struct {
+	itemID          string
+	statusName      string
+	priorityName    string
+	statusUpdatedAt *time.Time
+	fields          map[string]string
 }
 
 type issueRefCacheEntry struct {
@@ -36,10 +47,12 @@ func newProjectCache(ttl time.Duration, now func() time.Time) *projectCache {
 	}
 
 	return &projectCache{
-		ttl:     ttl,
-		now:     now,
-		entries: map[string]map[string]projectItemCacheEntry{},
-		refs:    map[string]issueRefCacheEntry{},
+		ttl:       ttl,
+		now:       now,
+		entries:   map[string]map[string]projectItemCacheEntry{},
+		scanned:   map[string]time.Time{},
+		revisions: map[string]uint64{},
+		refs:      map[string]issueRefCacheEntry{},
 	}
 }
 
@@ -58,7 +71,7 @@ func (c *projectCache) GetItemID(projectID string, issueID string) (string, bool
 	}
 	entry, ok := projectEntries[issueID]
 	c.mu.RUnlock()
-	if !ok {
+	if !ok || entry.itemID == "" {
 		return "", false
 	}
 	if c.fresh(entry.cachedAt) {
@@ -98,10 +111,94 @@ func (c *projectCache) SetItemID(projectID string, issueID string, itemID string
 		projectEntries = map[string]projectItemCacheEntry{}
 		c.entries[projectID] = projectEntries
 	}
-	projectEntries[issueID] = projectItemCacheEntry{
-		itemID:   itemID,
-		cachedAt: c.now(),
+	if entry, ok := projectEntries[issueID]; ok && entry.itemID == itemID && c.fresh(entry.cachedAt) {
+		c.mu.Unlock()
+		return
 	}
+	projectEntries[issueID] = projectItemCacheEntry{
+		projectItemFields: projectItemFields{itemID: itemID},
+		cachedAt:          c.now(),
+	}
+	c.revisions[projectID]++
+	delete(c.scanned, projectID)
+	c.mu.Unlock()
+}
+
+func (c *projectCache) GetProjectFields(projectID string, issueID string) (projectItemFields, bool, bool) {
+	projectID = strings.TrimSpace(projectID)
+	issueID = strings.TrimSpace(issueID)
+	if projectID == "" || issueID == "" {
+		return projectItemFields{}, false, false
+	}
+
+	c.mu.RLock()
+	entry, found := c.entries[projectID][issueID]
+	scannedAt, scanned := c.scanned[projectID]
+	c.mu.RUnlock()
+
+	if found && c.fresh(entry.cachedAt) {
+		if !entry.fieldsKnown {
+			return projectItemFields{}, false, false
+		}
+		return cloneProjectItemFields(entry.projectItemFields), true, true
+	}
+	if scanned && c.fresh(scannedAt) {
+		return projectItemFields{}, false, true
+	}
+	return projectItemFields{}, false, false
+}
+
+func (c *projectCache) SetProjectFields(projectID string, issueID string, fields projectItemFields) {
+	projectID = strings.TrimSpace(projectID)
+	issueID = strings.TrimSpace(issueID)
+	fields.itemID = strings.TrimSpace(fields.itemID)
+	if projectID == "" || issueID == "" || fields.itemID == "" {
+		return
+	}
+
+	c.mu.Lock()
+	projectEntries := c.entries[projectID]
+	if projectEntries == nil {
+		projectEntries = map[string]projectItemCacheEntry{}
+		c.entries[projectID] = projectEntries
+	}
+	c.revisions[projectID]++
+	projectEntries[issueID] = projectItemCacheEntry{
+		projectItemFields: cloneProjectItemFields(fields),
+		fieldsKnown:       true,
+		cachedAt:          c.now(),
+	}
+	c.mu.Unlock()
+}
+
+func (c *projectCache) ReplaceProjectFields(projectID string, fieldsByIssue map[string]projectItemFields, revision uint64) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return
+	}
+
+	cachedAt := c.now()
+	next := make(map[string]projectItemCacheEntry, len(fieldsByIssue))
+	for issueID, fields := range fieldsByIssue {
+		issueID = strings.TrimSpace(issueID)
+		fields.itemID = strings.TrimSpace(fields.itemID)
+		if issueID == "" || fields.itemID == "" {
+			continue
+		}
+		next[issueID] = projectItemCacheEntry{
+			projectItemFields: cloneProjectItemFields(fields),
+			fieldsKnown:       true,
+			cachedAt:          cachedAt,
+		}
+	}
+
+	c.mu.Lock()
+	if c.revisions[projectID] != revision {
+		c.mu.Unlock()
+		return
+	}
+	c.entries[projectID] = next
+	c.scanned[projectID] = cachedAt
 	c.mu.Unlock()
 }
 
@@ -165,6 +262,8 @@ func (c *projectCache) ClearItemID(projectID string, issueID string) {
 			delete(c.entries, projectID)
 		}
 	}
+	c.revisions[projectID]++
+	delete(c.scanned, projectID)
 	c.mu.Unlock()
 }
 
@@ -176,9 +275,57 @@ func (c *projectCache) ClearProject(projectID string) {
 
 	c.mu.Lock()
 	delete(c.entries, projectID)
+	c.revisions[projectID]++
+	delete(c.scanned, projectID)
 	c.mu.Unlock()
+}
+
+func (c *projectCache) InvalidateProjectFields(projectID, issueID string) {
+	projectID = strings.TrimSpace(projectID)
+	issueID = strings.TrimSpace(issueID)
+	if projectID == "" || issueID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.revisions[projectID]++
+	if c.entries[projectID] == nil {
+		c.entries[projectID] = map[string]projectItemCacheEntry{}
+	}
+	entry := c.entries[projectID][issueID]
+	entry.fieldsKnown = false
+	entry.cachedAt = c.now()
+	c.entries[projectID][issueID] = entry
+}
+
+func (c *projectCache) ProjectFieldsScanned(projectID string) bool {
+	c.mu.RLock()
+	scannedAt, ok := c.scanned[projectID]
+	c.mu.RUnlock()
+	return ok && c.fresh(scannedAt)
+}
+
+func (c *projectCache) Revision(projectID string) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.revisions[projectID]
 }
 
 func (c *projectCache) fresh(cachedAt time.Time) bool {
 	return c.ttl > 0 && c.now().Sub(cachedAt) < c.ttl
+}
+
+func cloneProjectItemFields(fields projectItemFields) projectItemFields {
+	cloned := fields
+	if fields.statusUpdatedAt != nil {
+		updatedAt := *fields.statusUpdatedAt
+		cloned.statusUpdatedAt = &updatedAt
+	}
+	if fields.fields != nil {
+		cloned.fields = make(map[string]string, len(fields.fields))
+		for name, value := range fields.fields {
+			cloned.fields[name] = value
+		}
+	}
+	return cloned
 }

@@ -56,6 +56,68 @@ query DetentGitHubProjectItems(
   rateLimit { limit used remaining cost resetAt }
 }`
 
+const projectItemsWithFieldsQuery = `
+query DetentGitHubProjectItems(
+  $projectId: ID!
+  $first: Int!
+  $after: String
+) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      items(first: $first, after: $after) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          content {
+            __typename
+            ... on Issue {
+              id
+              number
+              title
+              state
+              stateReason
+              url
+              author { login }
+              authorAssociation
+              assignees(first: 10) { nodes { login } }
+              repository { nameWithOwner }
+              labels(first: 20) { nodes { name } }
+            }
+          }
+          statusValue: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          priorityValue: fieldValueByName(name: "Priority") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          fieldValues(first: 100) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                updatedAt
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldTextValue {
+                text
+                updatedAt
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldNumberValue {
+                number
+                updatedAt
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
 const observedStatusProjectItemsQuery = `
 query DetentGitHubObservedStatusProjectItems(
   $projectId: ID!
@@ -248,6 +310,30 @@ func (c *Connector) fetchProjectItemsWithLimit(
 	return scan.Issues, err
 }
 
+func (c *Connector) ensureProjectFieldsCached(ctx context.Context, issueIDs []string) error {
+	missing := false
+	for _, issueID := range issueIDs {
+		if _, _, known := c.projectCache.GetProjectFields(c.projectID, issueID); !known {
+			if c.projectCache.ProjectFieldsScanned(c.projectID) {
+				if _, _, _, _, _, err := c.fetchProjectFieldsPage(ctx, issueID, nil); err != nil {
+					return err
+				}
+				continue
+			}
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+
+	_, err := c.fetchProjectItemsWithLimit(ctx, projectItemsWithFieldsQuery, graphQLQueryRunningStates, func(connector.Issue) bool {
+		return false
+	}, 0, false)
+	return err
+}
+
 func (c *Connector) fetchProjectItemsScanWithLimit(
 	ctx context.Context,
 	queryDocument string,
@@ -256,8 +342,11 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
+	scanRevision := c.projectCache.Revision(c.projectID)
+	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
 	var after *string
 	blankStatusItemIDs := []string{}
+	projectFieldsByIssue := map[string]projectItemFields{}
 	scan := connector.IssueStateScan{
 		Issues:           []connector.Issue{},
 		BoardCounts:      map[string]int{},
@@ -287,12 +376,15 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 			if state, ok := c.projectItemBoardState(item); ok {
 				scan.BoardCounts[state]++
 			}
-			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
+			issue, cachedFields, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
 				return connector.IssueStateScan{}, err
 			}
 			if !ok {
 				continue
+			}
+			if cacheProjectFields {
+				projectFieldsByIssue[issue.ID] = cachedFields
 			}
 			if blankStatusItemID != "" && repairBlankStatuses {
 				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
@@ -309,6 +401,9 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 		if !response.Node.Items.PageInfo.HasNextPage {
 			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
 				return connector.IssueStateScan{}, err
+			}
+			if cacheProjectFields {
+				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)
 			}
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
 			if err := c.resolveBlockedByProjectState(ctx, scan.Issues); err != nil {
@@ -345,28 +440,38 @@ func (c *Connector) validateProjectItemsComplete(ctx context.Context, fetched in
 }
 
 func projectItemsQueryForType(queryType string) string {
+	if queryType == graphQLQueryCandidateIssues {
+		return projectItemsQuery
+	}
 	if queryType == graphQLQueryObservedStatus {
 		return observedStatusProjectItemsQuery
 	}
-	return projectItemsQuery
+	return projectItemsWithFieldsQuery
 }
 
-func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, bool, string, error) {
+func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, projectItemFields, bool, string, error) {
 	if item.Content == nil || item.Content.TypeName != "Issue" {
-		return connector.Issue{}, false, "", nil
+		return connector.Issue{}, projectItemFields{}, false, "", nil
 	}
 	c.cacheIssueRef(*item.Content)
 	statusName, statusUpdatedAt, blankStatusItemID, err := c.projectItemStatusOrDefault(item)
 	if err != nil {
-		return connector.Issue{}, false, "", err
+		return connector.Issue{}, projectItemFields{}, false, "", err
+	}
+	fields := projectItemFields{
+		itemID:          item.ID,
+		statusName:      statusName,
+		priorityName:    singleSelectName(item.PriorityValue),
+		statusUpdatedAt: statusUpdatedAt,
+		fields:          projectFieldValues(item.FieldValues),
 	}
 	return c.buildIssue(
 		*item.Content,
-		statusName,
-		singleSelectName(item.PriorityValue),
-		statusUpdatedAt,
-		projectFieldValues(item.FieldValues),
-	), true, blankStatusItemID, nil
+		fields.statusName,
+		fields.priorityName,
+		fields.statusUpdatedAt,
+		fields.fields,
+	), fields, true, blankStatusItemID, nil
 }
 
 func (c *Connector) projectItemStatusOrDefault(item projectItemNode) (string, *time.Time, string, error) {
@@ -477,14 +582,29 @@ func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID strin
 	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
+func (c *Connector) cachedIssueProjectFields(issueID string) (string, string, *time.Time, map[string]string, bool, bool) {
+	fields, present, known := c.projectCache.GetProjectFields(c.projectID, issueID)
+	if !present {
+		return "", "", nil, nil, false, known
+	}
+	return fields.statusName, fields.priorityName, fields.statusUpdatedAt, fields.fields, true, true
+}
+
 func (c *Connector) projectFields(issueID string, items *projectItemsConnection) (string, string, *time.Time, map[string]string, bool) {
 	if items == nil {
 		return "", "", nil, nil, false
 	}
 	for _, item := range items.Nodes {
 		if item.Project != nil && item.Project.ID == c.projectID {
-			c.projectCache.SetItemID(c.projectID, issueID, item.ID)
-			return singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue), singleSelectUpdatedAt(item.StatusValue), projectFieldValues(item.FieldValues), true
+			fields := projectItemFields{
+				itemID:          item.ID,
+				statusName:      singleSelectName(item.StatusValue),
+				priorityName:    singleSelectName(item.PriorityValue),
+				statusUpdatedAt: singleSelectUpdatedAt(item.StatusValue),
+				fields:          projectFieldValues(item.FieldValues),
+			}
+			c.projectCache.SetProjectFields(c.projectID, issueID, fields)
+			return fields.statusName, fields.priorityName, fields.statusUpdatedAt, fields.fields, true
 		}
 	}
 	return "", "", nil, nil, false

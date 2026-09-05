@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -3780,6 +3781,7 @@ func (c *budgetRefusalCommentConnector) SetField(context.Context, string, string
 var _ connector.Connector = (*budgetRefusalCommentConnector)(nil)
 
 type hydratingDispatchConnector struct {
+	fetches  *int
 	issue    connector.Issue
 	blockers []connector.Issue
 }
@@ -3797,6 +3799,9 @@ func (c hydratingDispatchConnector) FetchIssuesByStates(context.Context, []strin
 }
 
 func (c hydratingDispatchConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	if c.fetches != nil {
+		*c.fetches++
+	}
 	if slices.Contains(ids, c.issue.ID) {
 		return []connector.Issue{c.issue}, nil
 	}
@@ -3965,4 +3970,42 @@ func (s *recordingWorkAttemptStore) RecordSchedulerDecision(_ context.Context, a
 
 func (s *recordingWorkAttemptStore) ListRecentSchedulerDecisions(context.Context, store.SchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
 	return nil, nil
+}
+
+func TestHydrateDispatchIssueSkipsPausedProvider(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		outage      bool
+		probeAt     time.Time
+		probeIssue  string
+		wantFetches int
+	}{
+		{name: "healthy", wantFetches: 1},
+		{name: "outage waiting", outage: true, probeAt: now.Add(time.Minute)},
+		{name: "probe already running", outage: true, probeAt: now, probeIssue: "probe"},
+		{name: "recovery probe due", outage: true, probeAt: now, wantFetches: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			issue := connector.Issue{ID: "issue", State: "Todo"}
+			fetches := 0
+			cfg := normalizeConfig(Config{})
+			orch := Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{issue: issue, fetches: &fetches}, capacityController: backendCapacityTestController{scope: scope}}
+			state := newState(cfg)
+			if tt.outage {
+				state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, NextProbeAt: tt.probeAt, ProbeIssueID: tt.probeIssue}
+			}
+			for range 3 {
+				if _, ok := orch.hydrateDispatchIssue(t.Context(), &state, issue, now); !ok {
+					t.Fatal("hydration failed")
+				}
+			}
+			if fetches != tt.wantFetches*3 {
+				t.Fatalf("fetches = %d, want %d", fetches, tt.wantFetches*3)
+			}
+		})
+	}
 }
