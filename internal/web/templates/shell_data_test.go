@@ -740,3 +740,34 @@ func TestAppProjectInitials(t *testing.T) {
 		})
 	}
 }
+
+func TestDashboardStreamOwnership(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		component templ.Component
+		wantOwner bool
+	}{
+		{name: "app shell", component: AppShell(DashboardShellData{}, nil), wantOwner: true},
+		{name: "dashboard shell", component: DashboardShell(DashboardShellData{}), wantOwner: true},
+		{name: "sheet activity", component: BoardActivityPanel(BoardActivityData{})},
+		{name: "sheet session", component: BoardLiveSession(BoardSessionData{Active: true})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			if err := tt.component.Render(context.Background(), &buf); err != nil {
+				t.Fatal(err)
+			}
+			html := buf.String()
+			if !strings.Contains(html, `sse-connect="`) {
+				t.Fatal("stream connection missing")
+			}
+			owned := strings.Contains(html, ` data-detent-dashboard-stream`)
+			if owned != tt.wantOwner {
+				t.Fatalf("dashboard stream owner = %v, want %v", owned, tt.wantOwner)
+			}
+		})
+	}
+}

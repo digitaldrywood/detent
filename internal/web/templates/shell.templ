@@ -59,6 +59,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			</div>
 			<div
 				class="flex h-full"
+				data-detent-dashboard-stream
 				sse-connect={ eventsPath(data) }
 			>
 				<button
@@ -302,6 +303,12 @@ templ liveBehaviorScript() {
 				};
 			}
 
+			function isDashboardStreamEvent(event) {
+				var target = event.target instanceof Element ? event.target : null;
+				var owner = target && target.closest("[sse-connect], [data-sse-connect]");
+				return owner && owner.hasAttribute("data-detent-dashboard-stream");
+			}
+
 			function connectionNotice(visible) {
 				var notice = document.querySelector("[data-detent-connection-notice]");
 				if (!notice) return;
@@ -339,6 +346,7 @@ templ liveBehaviorScript() {
 			}
 
 			function applyBuildVersion(event) {
+				if (!isDashboardStreamEvent(event)) return;
 				var target = event.target instanceof Element ? event.target : null;
 				if (!target) return;
 				var detail = event.detail || {};
@@ -389,7 +397,8 @@ templ liveBehaviorScript() {
 					clock: document.getElementById("live-clock"),
 				};
 			}
-			function setDisconnected() {
+			function setDisconnected(event) {
+				if (!isDashboardStreamEvent(event)) return;
 				buildConfirmed = false;
 				setConnectionState("disconnected");
 				var parts = liveParts();
@@ -416,12 +425,14 @@ templ liveBehaviorScript() {
 				parts.indicator.classList.remove("text-warn", "text-err", "text-info", "text-sec");
 				parts.indicator.classList.add(kind === "warn" ? "text-warn" : kind === "err" ? "text-err" : kind === "info" ? "text-info" : "text-sec");
 			}
-			function setConnecting() {
+			function setConnecting(event) {
+				if (!isDashboardStreamEvent(event)) return;
 				if (document.documentElement.getAttribute("data-detent-connection") === "reload-required") return;
 				buildConfirmed = false;
 				setConnectionState("connecting");
 			}
-			function setConnected() {
+			function setConnected(event) {
+				if (!isDashboardStreamEvent(event)) return;
 				if (!buildConfirmed || document.documentElement.getAttribute("data-detent-connection") === "reload-required") return;
 				var parts = liveParts();
 				if (!parts) return;
