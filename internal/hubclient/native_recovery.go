@@ -58,6 +58,11 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 			return result, err
 		}
 		result.History = append(result.History, page.Items...)
+		for _, event := range page.Items {
+			if event.Data.Change != nil && event.Data.Change.VersionID != "" {
+				result.Change = event.Data.Change
+			}
+		}
 		if page.NextCursor == "" {
 			break
 		}

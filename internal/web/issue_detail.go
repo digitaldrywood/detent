@@ -9,6 +9,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -17,15 +18,17 @@ func (s *Server) issueDetail(c echo.Context) error {
 	projectID := strings.TrimSpace(c.Param("project_id"))
 	issueRef := strings.TrimSpace(c.Param("issue_ref"))
 	trackedProject, ok := s.registry.Get(project.ID(projectID))
-	if !ok || trackedProject.Workflow().Config.Tracker.Kind != workflowconfig.TrackerLocalSQLite {
+	if !ok || trackedProject.Workflow().Config.Tracker.Kind != workflowconfig.TrackerLocalSQLite && trackedProject.Workflow().Config.Tracker.Kind != workflowconfig.TrackerHubNative {
 		return echo.NewHTTPError(http.StatusNotFound, "Issue not found")
 	}
 
-	resolver, ok := trackedProject.Connector().(connector.IssueReferenceResolver)
-	if !ok {
-		return echo.NewHTTPError(http.StatusNotFound, "Issue not found")
+	var issues []connector.Issue
+	var err error
+	if trackedProject.Workflow().Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		issues, err = trackedProject.Connector().FetchIssueStatesByIDs(ctx, []string{issueRef})
+	} else if resolver, ok := trackedProject.Connector().(connector.IssueReferenceResolver); ok {
+		issues, err = resolver.FetchIssueStatesByIdentifiers(ctx, []string{issueRef})
 	}
-	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{issueRef})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Issue could not be loaded").SetInternal(err)
 	}
@@ -47,7 +50,15 @@ func (s *Server) issueDetail(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
 	applyDashboardPreferences(c.Request(), &dashboard)
-	return render(c, templates.IssueDetailPage(templates.NewIssueDetailData(dashboard, issue, events)))
+	data := templates.NewIssueDetailData(dashboard, issue, events)
+	if reader, ok := trackedProject.Connector().(tracker.ChangeReader); ok {
+		data.HasChanges = true
+		data.Changes, err = reader.FetchChanges(ctx, tracker.NativeWorkItemID(issue.ID))
+		if err != nil {
+			data.ChangesError = "Change Requests could not be loaded. Reload this issue to retry."
+		}
+	}
+	return render(c, templates.IssueDetailPage(data))
 }
 
 func issueDetailMatch(issues []connector.Issue, issueRef string) (connector.Issue, bool) {

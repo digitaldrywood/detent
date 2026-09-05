@@ -57,6 +57,11 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 	}
 
 	wantTables := []string{
+		"change_evidence",
+		"change_issue_links",
+		"change_requests",
+		"change_review_policies",
+		"change_versions",
 		"github_cutovers",
 		"github_import_records",
 		"github_imports",

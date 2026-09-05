@@ -154,15 +154,16 @@ type CollaborationEvent struct {
 }
 
 type CollaborationData struct {
-	Run               *NativeRunData   `json:"run,omitempty"`
-	Revision          Revision         `json:"revision,string,omitempty"`
-	Fields            []string         `json:"fields,omitempty"`
-	CommentID         string           `json:"comment_id,omitempty"`
-	RelatedWorkItemID NativeWorkItemID `json:"related_work_item_id,omitempty"`
-	Operation         string           `json:"operation,omitempty"`
-	FromState         string           `json:"from_state,omitempty"`
-	ToState           string           `json:"to_state,omitempty"`
-	Reason            string           `json:"reason,omitempty"`
+	Change            *NativeChangeReference `json:"change,omitempty"`
+	Run               *NativeRunData         `json:"run,omitempty"`
+	Revision          Revision               `json:"revision,string,omitempty"`
+	Fields            []string               `json:"fields,omitempty"`
+	CommentID         string                 `json:"comment_id,omitempty"`
+	RelatedWorkItemID NativeWorkItemID       `json:"related_work_item_id,omitempty"`
+	Operation         string                 `json:"operation,omitempty"`
+	FromState         string                 `json:"from_state,omitempty"`
+	ToState           string                 `json:"to_state,omitempty"`
+	Reason            string                 `json:"reason,omitempty"`
 }
 
 type Page[T any] struct {

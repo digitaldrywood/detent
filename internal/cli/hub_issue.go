@@ -24,13 +24,19 @@ func newHubIssueCommand(lookupEnv func(string) string) *cobra.Command {
 	root.PersistentFlags().StringVar(&identityFile, "identity-file", "", "Enrolled runner identity file")
 	root.PersistentFlags().StringVar(&tokenEnv, "token-env", "DETENT_HUB_TOKEN", "Environment variable containing a scoped Hub credential")
 	root.PersistentFlags().StringVar(&cursor, "cursor", "", "Continuation cursor for comments or history")
-	for _, action := range []string{"get", "create", "edit", "comment", "edit-comment", "transition", "dependency", "comments", "history"} {
+	for _, action := range []string{"get", "create", "edit", "comment", "edit-comment", "transition", "dependency", "comments", "history", "changes", "create-change", "change", "publish-change", "review-change", "check-change", "discuss-change", "approve-review-policy"} {
 		args, usage := 1, action+" <work-item>"
-		if action == "create" {
+		if action == "create" || action == "approve-review-policy" {
 			args, usage = 0, action
 		}
 		if action == "edit-comment" {
 			args, usage = 2, action+" <work-item> <comment>"
+		}
+		switch action {
+		case "change", "publish-change", "discuss-change":
+			args, usage = 2, action+" <work-item> <change>"
+		case "review-change", "check-change":
+			args, usage = 3, action+" <work-item> <change> <version>"
 		}
 		command := &cobra.Command{Use: usage, Short: "Native issue " + action + "; mutations read a versioned JSON request from stdin", Example: "detent hub issue " + action + " --project prj_example", Args: cobra.ExactArgs(args), RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := hubclient.Config{URL: hubURL, IdentityFile: identityFile, TokenSource: func() string { return lookupEnv(tokenEnv) }}
@@ -96,7 +102,7 @@ func executeNativeIssueCommand(ctx context.Context, client *hubclient.NativeClie
 	case "dependency":
 		return nativeIssueInput(input, func(request tracker.DependencyMutation) (any, error) { return client.Dependency(ctx, id, request) })
 	default:
-		return nil, errors.New("unsupported native issue action")
+		return executeNativeChangeCommand(ctx, client, action, args, input)
 	}
 }
 

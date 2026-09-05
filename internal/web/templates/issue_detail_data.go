@@ -9,22 +9,26 @@ import (
 	"unicode"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type IssueDetailData struct {
-	Dashboard   DashboardData
-	Identifier  string
-	Number      string
-	Title       string
-	Description string
-	State       string
-	Priority    string
-	Labels      []string
-	Assignees   []string
-	Fields      []IssueDetailField
-	Events      []IssueDetailEvent
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	HasChanges   bool
+	Changes      []tracker.ChangeRequest
+	ChangesError string
+	Dashboard    DashboardData
+	Identifier   string
+	Number       string
+	Title        string
+	Description  string
+	State        string
+	Priority     string
+	Labels       []string
+	Assignees    []string
+	Fields       []IssueDetailField
+	Events       []IssueDetailEvent
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type IssueDetailField struct {
