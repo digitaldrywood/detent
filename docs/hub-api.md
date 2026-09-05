@@ -2,6 +2,8 @@
 
 Detent Hub owns its SQLite database and exposes fleet coordination through an authenticated HTTP API. Clients must never open or copy the live database files.
 
+This page documents implemented behavior. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the proposed native authority, portable deployment, and launch contracts for review; those contracts are not yet this API's behavior.
+
 ## Start the Hub
 
 Set a high-entropy bootstrap administrator token, then start the service on its loopback default:
