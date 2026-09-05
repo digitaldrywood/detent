@@ -226,6 +226,8 @@ type DispatchQueue struct {
 type WorkItem struct {
 	NonExecutableReason string               `json:"non_executable_reason,omitempty"`
 	ID                  WorkItemID           `json:"id"`
+	Native              *NativeReference     `json:"native,omitempty"`
+	Body                string               `json:"body"`
 	Repository          RepositoryReference  `json:"repository"`
 	GitHub              GitHubIssueReference `json:"github"`
 	Title               string               `json:"title"`

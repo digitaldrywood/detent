@@ -20,6 +20,8 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	OrganizationID    tracker.OrganizationID
+	NativeProjects    map[string]tracker.ProjectID
 	Machine           Machine
 	HeartbeatInterval time.Duration
 	LeaseTTL          time.Duration
@@ -28,6 +30,9 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	nativeProjects    map[string]*NativeConnector
+	nativeClaims      map[string]nativeClaim
+	nativeHeartbeats  map[tracker.ProjectID]time.Time
 	client            *Client
 	machine           Machine
 	heartbeatInterval time.Duration
@@ -60,10 +65,19 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 	if sessionID == nil {
 		sessionID = randomSessionID
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		client: client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
-	}, nil
+		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
+	}
+	for project, id := range config.NativeProjects {
+		native, err := client.Native(config.OrganizationID, id)
+		if err != nil {
+			return nil, err
+		}
+		scheduler.nativeProjects[project] = &NativeConnector{client: native}
+	}
+	return scheduler, nil
 }
 
 func (s *Scheduler) HeartbeatInterval() time.Duration {
@@ -74,6 +88,9 @@ func (s *Scheduler) HeartbeatInterval() time.Duration {
 }
 
 func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	if source := s.nativeProjects[request.ProjectID]; source != nil {
+		return s.fetchNativeCandidate(ctx, request, source)
+	}
 	if err := s.ensureMachine(ctx); err != nil {
 		return nil, schedulingError(err)
 	}
@@ -131,6 +148,12 @@ func (s *Scheduler) releaseAfterCandidateFailure(ctx context.Context, lease trac
 }
 
 func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time) (orchestrator.Claimed, error) {
+	s.mu.Lock()
+	native, isNative := s.nativeClaims[issueID]
+	s.mu.Unlock()
+	if isNative {
+		return s.renewNativeClaim(ctx, issueID, native)
+	}
 	if err := s.ensureMachine(ctx); err != nil {
 		return orchestrator.Claimed{}, err
 	}
@@ -160,17 +183,24 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason string) error {
 	issueID = strings.TrimSpace(issueID)
 	s.mu.Lock()
+	native, isNative := s.nativeClaims[issueID]
 	lease, ok := s.claims[issueID]
 	s.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	err := s.client.Release(ctx, lease, reason)
+	var err error
+	if isNative {
+		err = native.source.client.Release(ctx, native.lease, "released")
+	} else {
+		err = s.client.Release(ctx, lease, reason)
+	}
 	if err != nil && !claimLost(err) {
 		return err
 	}
 	s.mu.Lock()
 	delete(s.claims, issueID)
+	delete(s.nativeClaims, issueID)
 	s.mu.Unlock()
 	return nil
 }

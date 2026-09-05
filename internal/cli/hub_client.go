@@ -42,7 +42,12 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	if err != nil {
 		return nil, err
 	}
+	nativeProjects := make(map[string]tracker.ProjectID, len(clientConfig.NativeProjects))
+	for name, id := range clientConfig.NativeProjects {
+		nativeProjects[name] = tracker.ProjectID(id)
+	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		OrganizationID: tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),

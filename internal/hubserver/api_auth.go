@@ -26,9 +26,10 @@ const (
 )
 
 type apiCredential struct {
-	ID    string
-	Name  string
-	Scope apiScope
+	ID         string
+	Name       string
+	Scope      apiScope
+	NativeOnly bool
 }
 
 type apiErrorResponse struct {
@@ -80,6 +81,14 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 			if err != nil {
 				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
+			if strings.HasPrefix(c.Path(), "/api/v1/") {
+				if credential.NativeOnly {
+					return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
+				}
+				if err := s.requireCompatibilityResource(c); err != nil {
+					return err
+				}
+			}
 			for _, scope := range allowed {
 				if credential.Scope == scope || credential.Scope == apiScopeAdmin {
 					c.Set("hub_api_credential", credential)
@@ -113,9 +122,9 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 	var storedHash string
 	var revokedAt sql.NullString
 	err := s.database.db.QueryRowContext(c.Request().Context(), `
-SELECT id, name, scope, token_hash, revoked_at
+SELECT id, name, scope, token_hash, revoked_at, native_only
 FROM api_tokens
-WHERE token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt)
+WHERE token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly)
 	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("token was not found")
 	}

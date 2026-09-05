@@ -76,9 +76,10 @@ type LeaseRequest struct {
 }
 
 type APIError struct {
-	Status  int
-	Code    string
-	Message string
+	Status          int
+	Code            string
+	Message         string
+	CurrentRevision tracker.Revision
 }
 
 func (e *APIError) Error() string {
@@ -164,7 +165,9 @@ func (c *Client) request(ctx context.Context, method string, path string, input 
 		body = bytes.NewReader(encoded)
 	}
 	endpoint := *c.baseURL
-	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
+	requestPath, requestQuery, _ := strings.Cut(path, "?")
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + requestPath
+	endpoint.RawQuery = requestQuery
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return fmt.Errorf("build Hub request: %w", err)
@@ -213,13 +216,15 @@ func (c *Client) request(ctx context.Context, method string, path string, input 
 
 func (e *APIError) UnmarshalJSON(data []byte) error {
 	var value struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code            string           `json:"code"`
+		Message         string           `json:"message"`
+		CurrentRevision tracker.Revision `json:"current_revision,string"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
 	e.Code = value.Code
 	e.Message = value.Message
+	e.CurrentRevision = value.CurrentRevision
 	return nil
 }

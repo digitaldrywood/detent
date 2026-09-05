@@ -13,7 +13,7 @@ import (
 
 const (
 	hubSchemaTable         = "hub_schema_version"
-	supportedSchemaVersion = int64(7)
+	supportedSchemaVersion = int64(8)
 )
 
 //go:embed migrations/*.sql
@@ -45,8 +45,21 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 	if current > target {
 		return 0, fmt.Errorf("%w: database=%d supported=%d", ErrUnsupportedSchema, current, target)
 	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return 0, fmt.Errorf("prepare hub schema rebuild: %w", err)
+	}
 	if _, err := provider.Up(ctx); err != nil {
 		return 0, fmt.Errorf("apply hub migrations: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return 0, fmt.Errorf("restore hub foreign key enforcement: %w", err)
+	}
+	var violations int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
+		return 0, fmt.Errorf("validate hub foreign keys: %w", err)
+	}
+	if violations != 0 {
+		return 0, fmt.Errorf("hub migration has %d foreign key violations", violations)
 	}
 	current, target, err = provider.GetVersions(ctx)
 	if err != nil {

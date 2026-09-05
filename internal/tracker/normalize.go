@@ -12,6 +12,7 @@ const bodyExcerptLimit = 500
 
 type Record struct {
 	ID              WorkItemID
+	Native          *NativeReference
 	Repository      RepositoryReference
 	GitHub          GitHubIssueReference
 	Title           string
@@ -45,6 +46,8 @@ func Normalize(record Record) WorkItem {
 	item := WorkItem{
 		NonExecutableReason: connector.NonExecutableReason(connector.Issue{Title: record.Title, Description: record.Body, Labels: record.Labels}),
 		ID:                  record.ID,
+		Native:              record.Native,
+		Body:                record.Body,
 		Repository:          normalizeRepository(record.Repository),
 		GitHub:              github,
 		Title:               strings.TrimSpace(record.Title),

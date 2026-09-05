@@ -13,6 +13,9 @@ kind: GlobalConfig
 client:
   hub_url: https://hub.example.test/
   token_env: HUB_TOKEN
+  organization_id: org_example
+  native_projects:
+    local: prj_example
   machine_id: machine-a
   display_name: Worker A
   capacity: 3
@@ -28,6 +31,9 @@ projects: []
 		t.Fatalf("Parse() error = %v", err)
 	}
 	client := cfg.Client.Normalized()
+	if client.OrganizationID != "org_example" || client.NativeProjects["local"] != "prj_example" {
+		t.Fatalf("native mapping = %#v", client)
+	}
 	if client.URL != "https://hub.example.test" || client.TokenEnvironment != "HUB_TOKEN" || client.MachineID != "machine-a" || client.DisplayName != "Worker A" || client.Capacity != 3 {
 		t.Fatalf("Client = %#v", client)
 	}
@@ -44,6 +50,8 @@ func TestHubClientValidation(t *testing.T) {
 		want   string
 	}{
 		{name: "mapping", config: "client: enabled", want: "client: must be a mapping"},
+		{name: "native organization", config: "client:\n  hub_url: https://hub.example.test\n  native_projects:\n    local: prj_example", want: "client.organization_id is required"},
+		{name: "native project path", config: "client:\n  hub_url: https://hub.example.test\n  organization_id: org_example\n  native_projects:\n    local: prj_bad/path", want: "client.native_projects must map"},
 		{name: "URL required", config: "client:\n  capacity: 2", want: "client.hub_url is required"},
 		{name: "absolute URL", config: "client:\n  hub_url: hub.internal", want: "client.hub_url must be an absolute"},
 		{name: "token environment", config: "client:\n  hub_url: https://hub.example.test\n  token_env: invalid-name", want: "client.token_env must be an environment variable name"},

@@ -35,6 +35,7 @@ const (
 	TrackerMemory      = "memory"
 	TrackerLocalSQLite = "local_sqlite"
 	TrackerGitHubLocal = "github_local"
+	TrackerHubNative   = "hub_native"
 
 	GitHubStatusSourceProjectV2  = "project_v2"
 	GitHubStatusSourceIssueField = "issue_field"
@@ -1866,10 +1867,11 @@ func (c *Config) validateTracker(problems *[]string) {
 	case TrackerGitHubLocal:
 		c.Tracker.validateGitHubLocal(problems)
 	case TrackerMemory:
+	case TrackerHubNative:
 	case TrackerLocalSQLite:
 		*problems = append(*problems, c.Tracker.LocalSQLite.Validate("tracker.local_sqlite")...)
 	default:
-		*problems = append(*problems, "tracker.kind must be one of github, github_local, linear, memory, local_sqlite")
+		*problems = append(*problems, "tracker.kind must be one of github, github_local, hub_native, linear, memory, local_sqlite")
 	}
 
 	validateStateList("tracker.active_states", c.Tracker.ActiveStates, problems)
