@@ -48,6 +48,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 		Args:    NoArgs,
 	}
 	cmd.AddCommand(newHubServeCommand(version, lookupEnv, run))
+	cmd.AddCommand(newHubRunnerCommand(version, lookupEnv))
 	return cmd
 }
 

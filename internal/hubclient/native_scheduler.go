@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -35,8 +36,14 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 			return err
 		}
 	}
-	if err := source.client.RegisterMachine(ctx, s.machine); err != nil {
-		return err
+	if s.client.runner != nil && !last.IsZero() {
+		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
+			return err
+		}
+	} else {
+		if err := source.client.RegisterMachine(ctx, s.machine); err != nil {
+			return err
+		}
 	}
 	s.nativeHeartbeats[source.client.project] = s.now()
 	return nil
@@ -76,18 +83,11 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim) (orchestrator.Claimed, error) {
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
-		return orchestrator.Claimed{}, err
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, err)
 	}
 	lease, err := claim.source.client.Renew(ctx, claim.lease, int64(s.leaseTTL/time.Second))
 	if err != nil {
-		if claimLost(err) {
-			s.mu.Lock()
-			delete(s.claims, issueID)
-			delete(s.nativeClaims, issueID)
-			s.mu.Unlock()
-			return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
-		}
-		return orchestrator.Claimed{}, err
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, err)
 	}
 	claim.lease = lease
 	s.mu.Lock()
@@ -95,6 +95,19 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
+}
+
+func (s *Scheduler) nativeClaimError(issueID string, err error) error {
+	var apiErr *APIError
+	lostAuthority := s.client.runner != nil && errors.As(err, &apiErr) && apiErr != nil && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
+	if claimLost(err) || lostAuthority {
+		s.mu.Lock()
+		delete(s.claims, issueID)
+		delete(s.nativeClaims, issueID)
+		s.mu.Unlock()
+		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
+	}
+	return err
 }
 
 func nativeTrackerLease(lease tracker.NativeLease) tracker.Lease {

@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
@@ -48,6 +51,40 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 	machine := <-registered
 	if machine.ID != "machine-a" || machine.Capacity != 4 || machine.Version != "dev" || machine.Capabilities["os"] == "" || machine.Capabilities["arch"] == "" {
 		t.Fatalf("registered machine = %#v", machine)
+	}
+}
+
+func TestHubSchedulingUsesEnrolledIdentity(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "private", "identity.json")
+	file, err := runnerauth.Initialize(path, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Identity.OrganizationID = "org_example"
+	file.Identity.ProjectIDs = []tracker.ProjectID{"prj_example"}
+	if err := runnerauth.Save(path, file); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*globalconfig.HubClient)
+		valid  bool
+	}{
+		{"enrolled", func(*globalconfig.HubClient) {}, true},
+		{"hostname identity override", func(c *globalconfig.HubClient) { c.MachineID = "hostname" }, false},
+		{"foreign organization", func(c *globalconfig.HubClient) { c.OrganizationID = "org_other" }, false},
+		{"foreign project", func(c *globalconfig.HubClient) { c.NativeProjects = map[string]string{"native": "prj_other"} }, false},
+		{"no project restriction", func(c *globalconfig.HubClient) { c.NativeProjects = nil }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := globalconfig.Config{Client: globalconfig.HubClient{URL: file.HubURL, IdentityFile: path, OrganizationID: "org_example", NativeProjects: map[string]string{"native": "prj_example"}}, Global: globalconfig.Settings{MaxConcurrentAgents: 1}}
+			test.change(&cfg.Client)
+			_, err := newHubScheduling(cfg, "test")
+			if (err == nil) != test.valid {
+				t.Fatalf("configured=%v, want %v: %v", err == nil, test.valid, err)
+			}
+		})
 	}
 }
 

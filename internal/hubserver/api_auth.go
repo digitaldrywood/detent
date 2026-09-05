@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 type apiScope string
@@ -30,6 +32,7 @@ type apiCredential struct {
 	Name       string
 	Scope      apiScope
 	NativeOnly bool
+	Runner     runnerauth.Identity
 }
 
 type apiErrorResponse struct {
@@ -81,6 +84,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 			if err != nil {
 				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
+			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
+				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
+			}
 			if strings.HasPrefix(c.Path(), "/api/v1/") {
 				if credential.NativeOnly {
 					return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
@@ -101,30 +107,20 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 }
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
-	if c == nil || c.Request() == nil {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("request is required")
-	}
-	authorizations := c.Request().Header.Values(echo.HeaderAuthorization)
-	if len(authorizations) != 1 {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("one authorization header is required")
-	}
-	value := strings.TrimSpace(authorizations[0])
-	scheme, token, ok := strings.Cut(value, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("bearer authorization is required")
-	}
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > maxBearerTokenBytes {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("bearer token is invalid")
+	token, err := apiBearerToken(c)
+	if err != nil {
+		return apiCredential{}, http.StatusUnauthorized, err
 	}
 	hash := apikey.HashToken(token)
 	var credential apiCredential
-	var storedHash string
-	var revokedAt sql.NullString
-	err := s.database.db.QueryRowContext(c.Request().Context(), `
-SELECT id, name, scope, token_hash, revoked_at, native_only
-FROM api_tokens
-WHERE token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly)
+	var storedHash, createdAt, operations string
+	var revokedAt, expiresAt sql.NullString
+	err = s.database.db.QueryRowContext(c.Request().Context(), `
+SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at,
+coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]')
+FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
+WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly, &expiresAt, &createdAt,
+		&credential.Runner.RunnerID, &credential.Runner.MachineID, &credential.Runner.OrganizationID, &operations)
 	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("token was not found")
 	}
@@ -138,10 +134,42 @@ WHERE token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.
 	if err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
+	if expiresAt.Valid {
+		if !runnerTimeValid(now, createdAt, expiresAt.String) {
+			return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
+		}
+		credential.Runner.ExpiresAt, err = parseTimeValue(expiresAt.String)
+		if err != nil {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
+	}
+	if err := json.Unmarshal([]byte(operations), &credential.Runner.Operations); err != nil {
+		return apiCredential{}, http.StatusServiceUnavailable, err
+	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
 	}
 	return credential, http.StatusOK, nil
+}
+
+func apiBearerToken(c echo.Context) (string, error) {
+	if c == nil || c.Request() == nil {
+		return "", errors.New("request is required")
+	}
+	authorizations := c.Request().Header.Values(echo.HeaderAuthorization)
+	if len(authorizations) != 1 {
+		return "", errors.New("one authorization header is required")
+	}
+	value := strings.TrimSpace(authorizations[0])
+	scheme, token, ok := strings.Cut(value, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", errors.New("bearer authorization is required")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" || len(token) > maxBearerTokenBytes {
+		return "", errors.New("bearer token is invalid")
+	}
+	return token, nil
 }
 
 func (s *Service) createAPIToken(c echo.Context) error {
@@ -194,7 +222,7 @@ func (s *Service) rotateAPIToken(c echo.Context) error {
 	result, err := s.database.db.ExecContext(c.Request().Context(), `
 UPDATE api_tokens
 SET token_hash = ?, token_fingerprint = ?, rotated_at = ?, revoked_at = NULL, updated_at = ?
-WHERE id = ?`, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), formatHubTime(now), formatHubTime(now), id)
+WHERE id = ? AND NOT EXISTS (SELECT 1 FROM runner_identities WHERE token_id = api_tokens.id)`, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), formatHubTime(now), formatHubTime(now), id)
 	if err != nil {
 		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
 	}
@@ -227,7 +255,7 @@ func (s *Service) revokeAPIToken(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
 	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL", formatHubTime(now), formatHubTime(now), id)
+	result, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM runner_identities WHERE token_id = api_tokens.id)", formatHubTime(now), formatHubTime(now), id)
 	if err != nil {
 		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
 	}

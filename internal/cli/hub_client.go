@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,7 +22,7 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	}
 	clientConfig = clientConfig.Normalized()
 	token := strings.TrimSpace(os.Getenv(clientConfig.TokenEnvironment))
-	if token == "" {
+	if token == "" && clientConfig.IdentityFile == "" {
 		return nil, errors.New("hub worker token environment variable " + clientConfig.TokenEnvironment + " is empty")
 	}
 	hostname, err := os.Hostname()
@@ -28,6 +30,21 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 		hostname = "unknown"
 	}
 	machineID := firstNonBlankString(clientConfig.MachineID, cfg.Global.Identity.Name, cfg.InstanceName, hostname)
+	if clientConfig.IdentityFile != "" {
+		file, err := runnerauth.Load(clientConfig.IdentityFile)
+		if err != nil {
+			return nil, err
+		}
+		if clientConfig.TokenEnvironment != "" || len(clientConfig.NativeProjects) == 0 || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
+			return nil, errors.New("hub runner configuration does not match the enrolled identity")
+		}
+		for _, id := range clientConfig.NativeProjects {
+			if !slices.Contains(file.Identity.ProjectIDs, tracker.ProjectID(id)) {
+				return nil, errors.New("hub project is outside runner enrollment")
+			}
+		}
+		machineID = string(file.Identity.MachineID)
+	}
 	displayName := firstNonBlankString(clientConfig.DisplayName, cfg.Global.Identity.Name, cfg.InstanceName, machineID)
 	capacity := clientConfig.Capacity
 	if capacity <= 0 {
@@ -35,9 +52,10 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	}
 	version = firstNonBlankString(version, "dev")
 	client, err := hubclient.New(hubclient.Config{
-		URL:         clientConfig.URL,
-		TokenSource: func() string { return os.Getenv(clientConfig.TokenEnvironment) },
-		HTTPClient:  &http.Client{Timeout: clientConfig.RequestTimeout()},
+		URL:          clientConfig.URL,
+		IdentityFile: clientConfig.IdentityFile,
+		TokenSource:  func() string { return os.Getenv(clientConfig.TokenEnvironment) },
+		HTTPClient:   &http.Client{Timeout: clientConfig.RequestTimeout()},
 	})
 	if err != nil {
 		return nil, err
