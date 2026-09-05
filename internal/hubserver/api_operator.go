@@ -199,7 +199,7 @@ func (d *database) changeDependency(ctx context.Context, id tracker.WorkItemID, 
 	if err := requireWorkItem(ctx, tx, id); err != nil {
 		return err
 	}
-	if err := requireWorkItem(ctx, tx, request.BlockerWorkItemID); err != nil {
+	if err := authorizeClaimItem(ctx, tx, request.BlockerWorkItemID, nil); err != nil {
 		return err
 	}
 	now, err := d.currentTime()

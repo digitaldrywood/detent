@@ -265,6 +265,19 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	connectorFactory := resolveConnectorFactory(deps)
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		source, ok := deps.Scheduling.(interface {
+			ConnectorForProject(string) (connector.Connector, bool)
+		})
+		if !ok {
+			return nil, errors.New("native Hub tracker requires configured Hub scheduling")
+		}
+		native, ok := source.ConnectorForProject(string(id))
+		if !ok {
+			return nil, errors.New("native Hub tracker requires a client.native_projects mapping")
+		}
+		connectorFactory = func(workflowconfig.Config) (connector.Connector, error) { return native, nil }
+	}
 	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
 	if err != nil {
 		return nil, err
@@ -1655,6 +1668,9 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {
+	if workflow.Tracker.Kind == workflowconfig.TrackerHubNative {
+		return source
+	}
 	if workflow.Tracker.Kind != workflowconfig.TrackerGitHub || strings.TrimSpace(workflow.Tracker.Repository) == "" {
 		return nil
 	}

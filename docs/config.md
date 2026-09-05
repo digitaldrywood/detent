@@ -191,6 +191,27 @@ consume issue retry, no-progress, or work-failure budgets. GitHub remains in
 use for event ingestion, reconciliation, write-back, and fresh safety checks,
 but the scheduling claim cycle does not depend on a GitHub read.
 
+Native issue projects use `tracker.kind: hub_native` in their existing repository
+workflow configuration. In `global.yaml`, bind each local project ID to its stable
+Hub project ID and organization:
+
+```yaml
+client:
+  hub_url: https://hub.example.com
+  token_env: DETENT_HUB_TOKEN
+  organization_id: org_example
+  native_projects:
+    example: prj_example
+```
+
+Replace the example IDs with IDs returned by the Hub. The token needs explicit
+grants for the mapped projects. Native issue creation, full-body refresh,
+discussion, history and scheduling use the Hub v2 API without GitHub issue
+networking. Native startup requires the mapping and negotiated capabilities;
+there is no fallback scheduler. The [Hub API](hub-api.md#native-collaboration-protocol)
+documents project provisioning, workflow states and the typed operations.
+Repository workflow files and machine-local overrides keep their existing paths.
+
 Health notifications deliver fleet and project needs-attention transitions to
 one generic webhook. They are disabled when
 `notifications.health.webhook.url` is absent, preserving the silent default.
@@ -1188,7 +1209,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].url` | `string` | `none` | No | None |
 | `tracker.issues[].workpad_signal` | `mapping` | `none` | No | None |
-| `tracker.kind` | `string` | `none` | Yes | backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it<br>backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>gate.security_audit.enabled requires tracker.kind github or github_local<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.kind` | `string` | `none` | Yes | backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it<br>backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>gate.security_audit.enabled requires tracker.kind github or github_local<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, hub_native, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |
 | `tracker.local_sqlite.project_id` | `string` | `none` | No | None |

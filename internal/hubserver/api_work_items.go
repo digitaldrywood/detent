@@ -179,7 +179,7 @@ func (s *Service) allWorkItems(ctx context.Context) ([]tracker.WorkItem, error) 
 }
 
 func (d *database) allWorkItemIDs(ctx context.Context) ([]tracker.WorkItemID, error) {
-	rows, err := d.db.QueryContext(ctx, "SELECT id FROM issues ORDER BY id")
+	rows, err := d.db.QueryContext(ctx, "SELECT id FROM issues WHERE github_node_id IS NOT NULL ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("query hub work item IDs: %w", err)
 	}

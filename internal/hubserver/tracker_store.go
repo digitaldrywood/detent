@@ -15,13 +15,13 @@ import (
 const workItemColumns = `
 SELECT
   i.id,
-  r.id,
-  r.github_node_id,
-  r.github_owner,
-  r.github_name,
-  i.github_node_id,
+  COALESCE(r.id, 0),
+  COALESCE(r.github_node_id, ''),
+  COALESCE(r.github_owner, ''),
+  COALESCE(r.github_name, ''),
+  COALESCE(i.github_node_id, ''),
   i.github_database_id,
-  i.github_number,
+  COALESCE(i.github_number, 0),
   i.title,
   i.body,
   i.url,
@@ -41,9 +41,11 @@ SELECT
   i.source_updated_at,
   i.synchronized_at,
   i.created_at,
-  i.updated_at
+  i.updated_at,
+  i.organization_id, i.project_id, i.native_id, i.number, i.revision, p.profile
 FROM issues i
-JOIN repositories r ON r.id = i.repository_id
+LEFT JOIN repositories r ON r.id = i.repository_id
+JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (
   SELECT candidate.id
@@ -179,6 +181,7 @@ func queryWorkItemRecords(ctx context.Context, queryer databaseQueryer, statemen
 
 func scanWorkItemRecord(row interface{ Scan(...any) error }) (tracker.Record, error) {
 	var record tracker.Record
+	var native tracker.NativeReference
 	var githubDatabaseID sql.NullInt64
 	var workflowID sql.NullInt64
 	var workflowSourceName sql.NullString
@@ -225,9 +228,13 @@ func scanWorkItemRecord(row interface{ Scan(...any) error }) (tracker.Record, er
 		&sourceSyncedAt,
 		&createdAt,
 		&updatedAt,
+		&native.OrganizationID, &native.ProjectID, &native.WorkItemID, &native.Number, &native.Revision, &native.Profile,
 	)
 	if err != nil {
 		return tracker.Record{}, fmt.Errorf("scan hub work item: %w", err)
+	}
+	if native.Profile == "native" {
+		record.Native = &native
 	}
 	if githubDatabaseID.Valid {
 		record.GitHub.DatabaseID = &githubDatabaseID.Int64
@@ -301,19 +308,21 @@ func enrichWorkItemRecords(ctx context.Context, queryer databaseQueryer, records
 func loadWorkItemRelations(ctx context.Context, queryer databaseQueryer, index map[tracker.WorkItemID]*tracker.Record, ids []tracker.WorkItemID) error {
 	marks := placeholders(len(ids))
 	statement := `
-SELECT d.dependent_issue_id, 'blocker', related.id, r.github_owner, r.github_name, related.github_number, related.title, related.url, related.github_state, ws.id, ws.source_name, ws.detent_state, ws.terminal, ws.dispatchable
+SELECT d.dependent_issue_id, 'blocker', related.id, COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(related.github_number, related.number), related.title, related.url, related.github_state, ws.id, ws.source_name, ws.detent_state, ws.terminal, ws.dispatchable
 FROM issue_dependencies d
 JOIN issues related ON related.id = d.blocker_issue_id
-JOIN repositories r ON r.id = related.repository_id
+LEFT JOIN repositories r ON r.id = related.repository_id
 LEFT JOIN workflow_states ws ON ws.id = related.workflow_state_id
 WHERE d.dependent_issue_id IN (` + marks + `)
+AND (related.github_node_id IS NOT NULL OR (SELECT github_node_id FROM issues WHERE id = d.dependent_issue_id) IS NULL)
 UNION ALL
-SELECT d.blocker_issue_id, 'dependent', related.id, r.github_owner, r.github_name, related.github_number, related.title, related.url, related.github_state, ws.id, ws.source_name, ws.detent_state, ws.terminal, ws.dispatchable
+SELECT d.blocker_issue_id, 'dependent', related.id, COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(related.github_number, related.number), related.title, related.url, related.github_state, ws.id, ws.source_name, ws.detent_state, ws.terminal, ws.dispatchable
 FROM issue_dependencies d
 JOIN issues related ON related.id = d.dependent_issue_id
-JOIN repositories r ON r.id = related.repository_id
+LEFT JOIN repositories r ON r.id = related.repository_id
 LEFT JOIN workflow_states ws ON ws.id = related.workflow_state_id
 WHERE d.blocker_issue_id IN (` + marks + `)
+AND (related.github_node_id IS NOT NULL OR (SELECT github_node_id FROM issues WHERE id = d.blocker_issue_id) IS NULL)
 ORDER BY 1, 2, 3`
 	args := make([]any, 0, len(ids)*2)
 	for _, id := range ids {

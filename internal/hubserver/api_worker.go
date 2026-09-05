@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
+	NativeScope    *nativeScope
 	RepositoryIDs  []tracker.RepositoryID
 	Repositories   []string
 	WorkflowStates []string
@@ -59,8 +61,12 @@ type workEventAPIRequest struct {
 	SessionID    string               `json:"session_id,omitempty"`
 	RunID        string               `json:"run_id,omitempty"`
 	Kind         string               `json:"kind"`
-	Payload      map[string]any       `json:"payload,omitempty"`
+	Payload      *legacyProgressData  `json:"payload,omitempty"`
 	OccurredAt   time.Time            `json:"occurred_at,omitempty"`
+}
+
+type legacyProgressData struct {
+	Step string `json:"step"`
 }
 
 type machineRequest struct {
@@ -165,10 +171,17 @@ func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	if request.Kind != "progress" || request.Payload != nil && !slices.Contains([]string{"plan", "implement", "test", "review", "complete"}, request.Payload.Step) {
+		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_event", Message: "Legacy progress requires an allowlisted step; use v2 for native events"})
+	}
+	var payload map[string]any
+	if request.Payload != nil {
+		payload = map[string]any{"step": request.Payload.Step}
+	}
 	event := tracker.WorkEvent{
 		WorkItemID: id, FencingToken: request.FencingToken, MachineID: request.MachineID,
 		SessionID: request.SessionID, RunID: request.RunID, Kind: request.Kind,
-		Payload: request.Payload, OccurredAt: request.OccurredAt,
+		Payload: payload, OccurredAt: request.OccurredAt,
 	}
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = s.config.now().UTC()
@@ -250,9 +263,15 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	if err := authorizeClaimScope(ctx, tx, request, query.NativeScope); err != nil {
+		return tracker.Lease{}, err
+	}
 	if existing, found, err := readLeaseBySession(ctx, tx, request.SessionID); err != nil {
 		return tracker.Lease{}, err
 	} else if found {
+		if err := authorizeClaimItem(ctx, tx, existing.issueID, query.NativeScope); err != nil {
+			return tracker.Lease{}, err
+		}
 		if existing.session.Machine.ID != request.MachineID || !existing.session.ExpiresAt.After(now) {
 			return tracker.Lease{}, fmt.Errorf("%w: session is no longer claimable", tracker.ErrLeaseConflict)
 		}
@@ -276,17 +295,19 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if capacity <= 0 {
 		return tracker.Lease{}, ErrNoClaimableWork
 	}
-	freshness, err := queryRepositoryFreshness(ctx, tx, now, reconcileInterval)
-	if err != nil {
-		return tracker.Lease{}, err
-	}
-	claimableRepositories := make(map[tracker.RepositoryID]struct{}, freshness.Summary.Fresh)
-	for _, repository := range freshness.Repositories {
-		if repository.Status == "fresh" {
-			claimableRepositories[tracker.RepositoryID(repository.ID)] = struct{}{}
+	claimableRepositories := make(map[tracker.RepositoryID]struct{})
+	if query.NativeScope == nil {
+		freshness, err := queryRepositoryFreshness(ctx, tx, now, reconcileInterval)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		for _, repository := range freshness.Repositories {
+			if repository.Status == "fresh" {
+				claimableRepositories[tracker.RepositoryID(repository.ID)] = struct{}{}
+			}
 		}
 	}
-	ids, err := claimCandidateIDs(ctx, tx, query.Scope, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
+	ids, err := claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
@@ -359,7 +380,12 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - active, nil
 }
 
-func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
+func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
+	scope := query.Scope
+	organization, project := "", ""
+	if query.NativeScope != nil {
+		organization, project = string(query.NativeScope.organization), string(query.NativeScope.project)
+	}
 	repositoryFilter := make(map[tracker.RepositoryID]struct{}, len(repositoryIDs))
 	for _, id := range repositoryIDs {
 		repositoryFilter[id] = struct{}{}
@@ -374,10 +400,11 @@ func claimCandidateIDs(ctx context.Context, tx *sql.Tx, scope string, repository
 	labelIncludeFilter := stringSet(labelInclude)
 	labelExcludeFilter := stringSet(labelExclude)
 	rows, err := tx.QueryContext(ctx, `
-SELECT i.id, r.id, r.github_owner, r.github_name, lower(trim(ws.detent_state)),
+SELECT i.id, COALESCE(r.id, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), lower(trim(ws.detent_state)),
        lower(trim(i.author_login)), i.labels_json, i.assignees_json
 FROM issues i
-JOIN repositories r ON r.id = i.repository_id
+LEFT JOIN repositories r ON r.id = i.repository_id
+JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (
   SELECT candidate.id
@@ -388,23 +415,24 @@ LEFT JOIN queue_entries q ON q.id = (
   LIMIT 1
 )
 WHERE lower(trim(i.github_state)) = 'open'
+  AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND i.project_id = ? AND p.profile = 'native'))
   AND ws.id IS NOT NULL
   AND ws.terminal = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
   AND (? = '' OR q.id IS NOT NULL)
-  AND NOT EXISTS (
+  AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
     FROM issue_dependencies dependency
     JOIN issues blocker ON blocker.id = dependency.blocker_issue_id
     LEFT JOIN workflow_states blocker_state ON blocker_state.id = blocker.workflow_state_id
     WHERE dependency.dependent_issue_id = i.id
       AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)
-  )
+  ))
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, scope)
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, scope)
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}
@@ -422,7 +450,7 @@ ORDER BY
 		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState, &authorID, &labelsJSON, &assigneesJSON); err != nil {
 			return nil, fmt.Errorf("scan hub claim candidate: %w", err)
 		}
-		if _, ok := claimableRepositories[repositoryID]; !ok {
+		if _, ok := claimableRepositories[repositoryID]; !ok && query.NativeScope == nil {
 			continue
 		}
 		if len(repositoryFilter) > 0 {
@@ -526,7 +554,7 @@ func (s *Service) registerMachine(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `
+	result, err := s.database.db.ExecContext(c.Request().Context(), `
 INSERT INTO machines (id, hostname, display_name, capabilities_json, capacity, version, last_heartbeat_at, registered_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -536,12 +564,16 @@ ON CONFLICT(id) DO UPDATE SET
   capacity = excluded.capacity,
   version = excluded.version,
   last_heartbeat_at = excluded.last_heartbeat_at,
-  updated_at = excluded.updated_at`,
+  updated_at = excluded.updated_at
+WHERE machines.organization_id IS NULL`,
 		request.ID, request.Hostname, request.DisplayName, string(capabilities), request.Capacity, request.Version,
 		formatHubTime(now), formatHubTime(now), formatHubTime(now),
 	)
 	if err != nil {
 		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "machine_not_found", Message: "Machine was not found"})
 	}
 	response, err := s.database.machine(c.Request().Context(), request.ID)
 	if err != nil {

@@ -39,6 +39,7 @@ func TestProjectSchedulingSourceRequiresGitHubRepository(t *testing.T) {
 		want       orchestrator.SchedulingSource
 	}{
 		{name: "GitHub", kind: workflowconfig.TrackerGitHub, repository: "acme/widgets", want: source},
+		{name: "native without repository", kind: workflowconfig.TrackerHubNative, want: source},
 		{name: "GitHub missing repository", kind: workflowconfig.TrackerGitHub},
 		{name: "GitHub local", kind: workflowconfig.TrackerGitHubLocal, repository: "acme/widgets"},
 		{name: "Linear", kind: workflowconfig.TrackerLinear},
