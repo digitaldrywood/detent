@@ -14,11 +14,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const workspacePackageDefaultParallelism = "1"
 
 func TestMain(m *testing.M) {
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
 	if !hasExplicitTestParallelism(os.Args[1:]) {
 		if err := flag.Set("test.parallel", workspacePackageDefaultParallelism); err != nil {
 			fmt.Fprintf(os.Stderr, "configure workspace test parallelism: %v\n", err)

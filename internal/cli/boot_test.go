@@ -32,11 +32,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestMain(m *testing.M) {
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
 	if err := os.Unsetenv("DETENT_API_TOKEN"); err != nil {
 		panic("clear DETENT_API_TOKEN: " + err.Error())
 	}
