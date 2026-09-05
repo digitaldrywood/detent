@@ -174,6 +174,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err != nil || claim.Owner != "machine-native" {
 		t.Fatalf("claim = %#v, error = %v", claim, err)
 	}
+	exerciseNativeExecution(t, scheduler, native, issue.ID)
 	if _, err := scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -184,11 +185,14 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err != nil || len(refreshed) != 1 || refreshed[0].State != "In Progress" {
 		t.Fatalf("refreshed = %#v, error = %v", refreshed, err)
 	}
+	if err := conn.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+		t.Fatal(err)
+	}
 	if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
-		t.Fatal(err)
+	if err := conn.CreateComment(t.Context(), issue.ID, "stale worker comment"); err == nil {
+		t.Fatal("released worker mutated native discussion")
 	}
 	events, err := conn.FetchIssueEvents(t.Context(), issue)
 	if err != nil || len(events) < 30 {

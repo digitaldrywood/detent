@@ -507,8 +507,92 @@ payload fields. The current lease and machine principal must match the item.
 Idempotent retries return the committed result; new events with an expired fence
 fail. A run outcome records a worker report, not a verified check or merge grant.
 The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
-and must equal the approved descriptor pinned to the lease. Durable Change/run
-registration and richer artifact recovery bindings remain owned by #2186.
+and must equal the approved descriptor pinned to the lease.
+
+### Ordered attempts and recovery
+
+The `fenced_run_history` capability extends schema 1 with a positive decimal-string
+`data.sequence` and `identity: {role, backend, model}`. Identity components are
+bounded to 128 identifier characters. The server derives machine, runner and Hub
+session identity from the authenticated lease. The policy digest remains pinned.
+One lease binds one ordered attempt; a run can span successive fenced attempts of
+the same issue. Sequence 1 must be `run.started`; subsequent sequences are
+contiguous. `run.finished` closes the attempt and cannot finish a successor.
+An identical sequence replay returns success without adding history, even when
+the command key changes. Changed content, gaps, identity changes, repeated starts
+and progress after completion conflict. Client occurrence times never order events.
+Legacy schema 1 events without sequence remain readable and writable for legacy
+attempts, but cannot be mixed into an ordered attempt.
+
+`GET /work-items/{item}/attempts` uses the same authorized pagination contract as
+history. Attempts are ordered by the existing monotonic lease fence. The response
+contains effective identity/policy, last accepted sequence, server timestamps,
+terminal outcome and the latest retained checkpoint. A running attempt whose lease
+is released or expired reads as `interrupted`. Hub restart retains both the
+projection and append-only history; expired leases and attempts are not deleted.
+
+The native scheduler hydrates full issue content, paginated discussion, attempts
+and history, including legacy events, before dispatch. Runner prompts receive this
+Hub context without consulting GitHub issue APIs. Checkpoints may carry the last
+reported typed Change/version/head reference; it is not an independently verified
+current Change or a review/merge grant. Native Change registration and authoritative
+version lookup remain the separate #2191 deliverable; absent references are omitted.
+
+Ordered `run.checkpointed` events require a bounded `handoff` object:
+
+| Field | Accepted values or format |
+| --- | --- |
+| `resume` | `resume_session`, `fresh_checkout`, `manual_recovery` |
+| `storage` | `local_only`, `customer_store` |
+| `availability` | `available`, `missing`, `inaccessible`, `unverified` |
+| `worktree_state` | `clean`, `dirty`, `unpushed`, `unknown` |
+| `head_sha`, `expected_head_sha`, `workspace_digest` | Optional hexadecimal Git commit IDs or workspace digest |
+| `external_effect` | `none`, `git_push`, `pr_create`, `provider_turn` |
+| `effect_state` | `none`, `pending`, `confirmed`, `ambiguous` |
+| `effect_id` | Typed opaque `effect_` identity for an external effect |
+| `change` | Optional typed `change_id`, `version_id`, and immutable `head_sha` |
+
+Customer-store checkpoints require artifact IDs and cannot assert `available`:
+independent durable receipt/integrity/access verification belongs to #2190 and the
+[artifact access contract](artifact-access-contract.md). IDs convey neither a
+download capability nor proof of ownership or availability. Hub never receives
+workspace paths, provider session state, manifest contents, source, diffs, raw
+transcripts, storage credentials, signed URLs or artifact bytes through handoffs.
+Runner-local checkpoints remain local even when the metadata survives in Hub.
+
+Resume requires a locally present workspace, matching machine/head/digest and
+policy/runtime identity, plus successful backend session verification. Otherwise
+the runner starts a fresh session while retaining recoverable local work, or
+requires explicit recovery for unavailable dirty/unpushed checkpoints and ambiguous
+Git/PR effects. A clean missing checkpoint permits a fresh checkout/session. This
+does not claim that a local workspace survives machine loss. Before epilogue hooks,
+dirty/unpushed work uses the existing workspace retention mechanism from #2138;
+checkpoint publication is metadata only and does not duplicate #2133's push work.
+
+Native executions revalidate the pinned policy and current lease before startup,
+provider turns and epilogue hooks. Lease responses include `server_time`; the
+local deadline uses the remaining server lifetime minus request elapsed time and
+a safety margin (10% of TTL, capped at five seconds). Replaying an existing claim
+does not incorrectly grant a fresh TTL, and clock skew cannot extend authority.
+Renewal failure does not extend it. Loss of authority cancels the provider context;
+reconnection cannot revive that context. External epilogue hooks are skipped on
+claim loss, and local retention remains allowed. Hub outages use the existing
+scheduler backoff; no independent local scheduler starts and failure retry counts
+are preserved. Once ordered execution exists, worker issue/comment/dependency/
+workflow mutations also require the current `lease_id` and `fencing_token`.
+Off-lease human collaboration uses operator authority. Exact command replays may
+return a previously committed response after expiry, but perform no new mutation.
+
+Database fencing is not an exactly-once guarantee for external effects. An accepted
+Git push, PR creation or provider request can outlive a lost response or race
+cancellation. In-flight provider tool calls are bounded by process cancellation,
+not an atomic transaction with Hub. Reconcile an uncertain push against the exact
+remote ref and expected head, reuse an existing PR only after verifying its head
+branch, and use provider idempotency/session lookup when available. Never blindly
+repeat an ambiguous external write. Existing expected-ref/head and worktree
+preservation paths remain authoritative. The client retains an unacknowledged event
+and replays its exact sequence and command before advancing; a restart retrieves
+durable attempts rather than assuming the last request failed.
 
 ## Worker connector inventory and compatibility
 

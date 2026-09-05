@@ -572,6 +572,7 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
+	Execution                 Execution
 	Policy                    policy.Descriptor
 	ProjectID                 string
 	Issue                     connector.Issue

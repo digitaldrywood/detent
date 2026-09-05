@@ -158,7 +158,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				slog.Any("panic", recovered),
 			)
 		}
-		if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) {
+		if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) || errors.Is(completion.Err, ErrExecutionAuthorityUnavailable) {
 			completion.Retryable = true
 			completion.RetryAttempt = request.Attempt
 			completion.RetryDelay = s.OverloadRetryDelay()
@@ -245,7 +245,8 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 }
 
 func cooperativeStopError(err error) bool {
-	return errors.Is(err, ErrOperatorStopped) ||
+	return errors.Is(err, ErrNativeRecoveryRequired) ||
+		errors.Is(err, ErrOperatorStopped) ||
 		errors.Is(err, ErrMergeRevoked) ||
 		errors.Is(err, ErrLaneRevoked) ||
 		errors.Is(err, ErrCIUnavailable) ||

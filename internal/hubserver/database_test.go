@@ -82,6 +82,8 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"policy_revisions",
 		"project_policies",
 		"machines",
+		"native_attempts",
+		"native_attempt_events",
 		"pull_requests",
 		"queue_entries",
 		"repositories",

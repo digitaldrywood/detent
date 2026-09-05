@@ -81,7 +81,9 @@ type NativeComment struct {
 }
 
 type Mutation struct {
-	IdempotencyKey string `json:"idempotency_key"`
+	IdempotencyKey string       `json:"idempotency_key"`
+	LeaseID        LeaseID      `json:"lease_id,omitempty"`
+	FencingToken   FencingToken `json:"fencing_token,string,omitempty"`
 }
 
 type CreateIssue struct {
@@ -195,6 +197,7 @@ type NativeClaim struct {
 }
 
 type NativeLease struct {
+	ServerTime   time.Time        `json:"server_time"`
 	PolicyID     string           `json:"policy_id"`
 	ID           LeaseID          `json:"lease_id"`
 	WorkItemID   NativeWorkItemID `json:"work_item_id"`
@@ -213,13 +216,19 @@ type NativeLeaseMutation struct {
 }
 
 type NativeRunData struct {
-	LeaseID      LeaseID      `json:"lease_id"`
-	FencingToken FencingToken `json:"fencing_token,string"`
-	RunID        string       `json:"run_id"`
-	AttemptID    string       `json:"attempt_id"`
-	PolicyID     string       `json:"policy_id"`
-	Outcome      string       `json:"outcome,omitempty"`
-	ArtifactIDs  []string     `json:"artifact_ids,omitempty"`
+	Sequence     int64                    `json:"sequence,string,omitempty"`
+	Identity     *NativeExecutionIdentity `json:"identity,omitempty"`
+	MachineID    MachineID                `json:"machine_id,omitempty"`
+	RunnerID     string                   `json:"runner_id,omitempty"`
+	SessionID    string                   `json:"session_id,omitempty"`
+	Handoff      *NativeCheckpoint        `json:"handoff,omitempty"`
+	LeaseID      LeaseID                  `json:"lease_id"`
+	FencingToken FencingToken             `json:"fencing_token,string"`
+	RunID        string                   `json:"run_id"`
+	AttemptID    string                   `json:"attempt_id"`
+	PolicyID     string                   `json:"policy_id"`
+	Outcome      string                   `json:"outcome,omitempty"`
+	ArtifactIDs  []string                 `json:"artifact_ids,omitempty"`
 }
 
 type NativeRunEvent struct {
