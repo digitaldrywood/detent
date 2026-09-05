@@ -67,25 +67,32 @@ func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation
 	return result, nil
 }
 
-func (l *LocalGit) checkPreservedWorkspace(ctx context.Context, info Info, issue Issue) error {
+func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
 	record, err := l.readOwnershipRecord(recordPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w at %s: read workspace retention: %w", ErrWorkspacePreserved, info.Path, err)
 	}
+	if err == nil && !l.validOwnershipRecord(ctx, recordPath, record) {
+		return fmt.Errorf("%w: invalid workspace retention record: %s", ErrWorkspacePreserved, info.Path)
+	}
+	if err := l.checkCleanupBranch(ctx, info.Branch); err != nil {
+		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
+	}
+	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
-		return fmt.Errorf("read workspace retention: %w", err)
+		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
-	if !record.Preserve {
+	if !exists && !record.Preserve {
 		return nil
 	}
-	if !l.validOwnershipRecord(ctx, recordPath, record) {
-		return fmt.Errorf("invalid workspace retention record: %s", info.Path)
+	if !isDir || !l.isSourceWorktree(ctx, info.Path) {
+		if exists && record.CleanupStarted && !record.Preserve && !l.isGitWorkspace(ctx, info.Path) {
+			return nil
+		}
+		return fmt.Errorf("%w at %s: worktree registration is unavailable or not managed by source", ErrWorkspacePreserved, info.Path)
 	}
-	if !l.isSourceWorktree(ctx, info.Path) {
-		return fmt.Errorf("%w at %s: worktree registration is unavailable", ErrWorkspacePreserved, info.Path)
-	}
-	recovery, err := l.RecoveryState(ctx, info, issue)
+	changed, err := l.worktreeHasChanges(ctx, info.Path)
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
@@ -93,10 +100,43 @@ func (l *LocalGit) checkPreservedWorkspace(ctx context.Context, info Info, issue
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
-	if unpushed > 0 || len(recovery.TrackedPaths) > 0 || len(recovery.UntrackedPaths) > 0 {
+	if unpushed > 0 || changed {
 		return fmt.Errorf("%w at %s: unpushed commits or uncommitted files remain", ErrWorkspacePreserved, info.Path)
 	}
 	return nil
+}
+
+func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string) error {
+	if !l.autoBranch || !strings.HasPrefix(branch, "detent/") {
+		return nil
+	}
+	exists, err := l.branchExists(ctx, branch)
+	if err != nil || !exists {
+		return err
+	}
+	output, err := l.runGit(ctx, "rev-list", "--count", "refs/heads/"+branch, "--not", "--remotes")
+	if err != nil {
+		return fmt.Errorf("inspect cleanup branch: %w", err)
+	}
+	if strings.TrimSpace(output) != "0" {
+		return fmt.Errorf("%w: branch %s contains commits absent from remote refs", ErrWorkspacePreserved, branch)
+	}
+	return nil
+}
+
+func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue Issue, isDir bool) error {
+	if err := l.checkWorkspaceCleanup(ctx, info); err != nil {
+		return err
+	}
+	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
+		return err
+	}
+	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
+	if err != nil {
+		return err
+	}
+	record.CleanupStarted = true
+	return l.writeOwnershipRecord(record)
 }
 
 func retainedGitCommitCount(ctx context.Context, path string) (int, error) {

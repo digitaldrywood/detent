@@ -548,8 +548,12 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		return CleanupResult{}, err
 	}
 
+	return l.cleanupWorkspace(ctx, info, issue)
+}
+
+func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue) (CleanupResult, error) {
 	result := CleanupResult{Path: info.Path}
-	if err := l.checkPreservedWorkspace(ctx, info, issue); err != nil {
+	if err := l.checkWorkspaceCleanup(ctx, info); err != nil {
 		return result, err
 	}
 	exists, isDir, err := pathExists(info.Path)
@@ -573,9 +577,6 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		}
 		return result, nil
 	}
-	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
-		return result, err
-	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
 	if isDir && l.isSourceWorktree(ctx, info.Path) {
 		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue); err != nil {
@@ -583,6 +584,9 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		}
 	}
 
+	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
+		return result, err
+	}
 	if err := l.removePath(ctx, info.Path); err != nil {
 		return result, err
 	}
@@ -1423,6 +1427,9 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error
 	}
 	if !exists {
 		return false, nil
+	}
+	if err := l.checkCleanupBranch(ctx, branch); err != nil {
+		return false, err
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)
 	return err == nil, err

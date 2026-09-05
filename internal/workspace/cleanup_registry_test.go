@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,7 @@ func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
 	t.Parallel()
 
 	source := initSourceRepo(t)
+	publishCleanupSource(t, source)
 	root := filepath.Join(t.TempDir(), "workspaces")
 	hookCommand := "mkdir -p node_modules/pkg uploads .local/state && touch node_modules/pkg/index.js uploads/generated.bin .local/state/cache"
 	if runtime.GOOS == "windows" {
@@ -34,6 +36,10 @@ func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
 	info, err := backend.Create(t.Context(), issue)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"node_modules/", "uploads/", ".local/"}); err != nil {
+		t.Fatal(err)
 	}
 
 	artifacts := []struct {
@@ -66,6 +72,7 @@ func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
 	enclosing := initSourceRepo(t)
 	source := filepath.Join(enclosing, "source")
 	initSourceRepoAt(t, source)
+	publishCleanupSource(t, source)
 	root := filepath.Join(enclosing, "workspaces")
 	backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 	if err != nil {
@@ -75,6 +82,9 @@ func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
 	info, err := backend.Create(t.Context(), issue)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"node_modules/"}); err != nil {
+		t.Fatal(err)
 	}
 	locked := filepath.Join(info.Path, "node_modules", "locked")
 	if err := os.MkdirAll(locked, 0o700); err != nil {
@@ -136,12 +146,14 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 		active         bool
 		activeProcess  bool
 		registered     bool
+		unverified     bool
 		wantRemoved    int
 		wantActive     int
 		wantRegistered int
 		wantExists     bool
 	}{
 		{name: "removes owned residual", wantRemoved: 1},
+		{name: "retains unverified residual", unverified: true, wantExists: true},
 		{name: "skips active issue", active: true, wantActive: 1, wantExists: true},
 		{name: "skips active process", activeProcess: true, wantActive: 1, wantExists: true},
 		{name: "skips registered worktree", registered: true, wantRegistered: 1, wantExists: true},
@@ -151,6 +163,7 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 			enclosing := initSourceRepo(t)
 			source := filepath.Join(enclosing, "source")
 			initSourceRepoAt(t, source)
+			publishCleanupSource(t, source)
 			root := filepath.Join(enclosing, "workspaces")
 			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 			if err != nil {
@@ -169,6 +182,16 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 			} else {
 				info = strandCleanupWorkspace(t, backend, source, issue)
 			}
+			if tt.unverified {
+				record, err := backend.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				record.CleanupStarted = false
+				if err := backend.writeOwnershipRecord(record); err != nil {
+					t.Fatal(err)
+				}
+			}
 			t.Cleanup(func() { restoreWritableTree(t, info.Path) })
 			if tt.activeProcess {
 				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) {
@@ -181,7 +204,11 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 			}
 
 			result, err := backend.ReconcileResiduals(t.Context(), active)
-			if err != nil {
+			if tt.unverified {
+				if !errors.Is(err, ErrWorkspacePreserved) || result.PreservedSkipped != 1 {
+					t.Fatalf("reconcile = %+v, %v; want preservation", result, err)
+				}
+			} else if err != nil {
 				t.Fatalf("ReconcileResiduals() error = %v", err)
 			}
 			if result.Removed != tt.wantRemoved || result.ActiveSkipped != tt.wantActive || result.RegisteredSkipped != tt.wantRegistered {
@@ -247,6 +274,9 @@ func strandCleanupWorkspace(t *testing.T, backend *LocalGit, source string, issu
 	if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
 		t.Fatalf("recordCleanupOwnership() error = %v", err)
 	}
+	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"node_modules/"}); err != nil {
+		t.Fatal(err)
+	}
 	locked := filepath.Join(info.Path, "node_modules", "locked")
 	if err := os.MkdirAll(locked, 0o700); err != nil {
 		t.Fatalf("create locked artifact directory: %v", err)
@@ -256,6 +286,9 @@ func strandCleanupWorkspace(t *testing.T, backend *LocalGit, source string, issu
 	}
 	if err := os.Chmod(locked, 0o500); err != nil {
 		t.Fatalf("lock artifact directory: %v", err)
+	}
+	if err := backend.beginWorkspaceCleanup(t.Context(), info, issue, true); err != nil {
+		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), "git", "-C", source, "worktree", "remove", "--force", info.Path)
 	if output, err := cmd.CombinedOutput(); err == nil {
@@ -272,4 +305,115 @@ func strandCleanupWorkspace(t *testing.T, backend *LocalGit, source string, issu
 		t.Fatal("workspace remains registered after partial removal")
 	}
 	return info
+}
+
+func publishCleanupSource(t *testing.T, source string) {
+	t.Helper()
+	runGit(t, source, "remote", "add", "origin", initBareRemote(t))
+	runGit(t, source, "push", "-u", "origin", "main")
+}
+
+func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		work          string
+		active        bool
+		process       bool
+		wantRemoved   int
+		wantPreserved int
+		wantActive    int
+	}{
+		{name: "clean without registry", wantRemoved: 1},
+		{name: "dirty without registry", work: "dirty", wantPreserved: 1},
+		{name: "unpushed without registry", work: "unpushed", wantPreserved: 1},
+		{name: "active issue", active: true, wantActive: 1},
+		{name: "active process", process: true, wantActive: 1},
+		{name: "uninspectable orphan", work: "broken", wantPreserved: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			publishCleanupSource(t, source)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{ProjectID: "detent", Identifier: "detent#2218"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.work == "dirty" || tt.work == "unpushed" {
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("unique work"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if tt.work == "unpushed" {
+					runGit(t, info.Path, "add", "README.md")
+					runGit(t, info.Path, "commit", "-m", "unique work")
+				}
+			}
+			if tt.work == "broken" {
+				if err := os.Rename(filepath.Join(info.Path, ".git"), filepath.Join(info.Path, "saved-git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) {
+				if tt.process {
+					return []int{os.Getpid() + 1000}, nil
+				}
+				return nil, nil
+			}
+			var active []Issue
+			if tt.active {
+				active = []Issue{issue}
+			}
+			result, err := backend.ReconcileResiduals(t.Context(), active)
+			if (err != nil) != (tt.wantPreserved > 0) {
+				t.Fatalf("reconcile error = %v", err)
+			}
+			if result.Removed != tt.wantRemoved || result.PreservedSkipped != tt.wantPreserved || result.ActiveSkipped != tt.wantActive {
+				t.Fatalf("reconcile = %+v, want removed=%d preserved=%d active=%d", result, tt.wantRemoved, tt.wantPreserved, tt.wantActive)
+			}
+			if len(result.Failures) != tt.wantPreserved || len(result.CompletedPaths) != tt.wantRemoved {
+				t.Fatalf("reconcile evidence = %+v", result)
+			}
+			_, statErr := os.Stat(info.Path)
+			if tt.wantRemoved == 1 {
+				if !errors.Is(statErr, fs.ErrNotExist) || branchExists(t, source, info.Branch) {
+					t.Fatalf("clean workspace remains: %v", statErr)
+				}
+			} else if statErr != nil || !branchExists(t, source, info.Branch) {
+				t.Fatalf("retained workspace missing: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestLocalGitOrphanDiscoveryKeepsSourceRepository(t *testing.T) {
+	t.Parallel()
+	for _, nested := range []bool{false, true} {
+		t.Run(strconv.FormatBool(nested), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			source := root
+			if nested {
+				source = filepath.Join(root, "source")
+			}
+			initSourceRepoAt(t, source)
+			publishCleanupSource(t, source)
+			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := backend.ReconcileResiduals(t.Context(), nil)
+			if err != nil || result.Removed != 0 {
+				t.Fatalf("reconcile = %+v, %v", result, err)
+			}
+			if got := strings.TrimSpace(runGit(t, source, "rev-parse", "--is-inside-work-tree")); got != "true" {
+				t.Fatalf("source repository changed: %s", got)
+			}
+		})
+	}
 }
