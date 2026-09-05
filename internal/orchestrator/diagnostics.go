@@ -95,6 +95,50 @@ func correctableDispatchEscalated(state *State, issueID string, reason string) b
 	return ok
 }
 
+func (o *Orchestrator) recordPostSelectionDispatchRefusal(
+	ctx context.Context,
+	state *State,
+	now time.Time,
+	selection dispatchPlanDecision,
+	outcome dispatchIssueOutcome,
+) {
+	reason := strings.TrimSpace(outcome.reason)
+	waitReason := schedulerDecisionWaitReason(reason)
+	if detail := strings.TrimSpace(outcome.waitReason); detail != "" {
+		waitReason = detail
+	}
+	for _, decision := range state.SchedulerDecisions {
+		if decision.IssueID == selection.Issue.ID &&
+			decision.AttemptNumber == selection.Attempt &&
+			decision.DecisionAt.Equal(now) &&
+			!decision.Selected &&
+			decision.Result == string(store.SchedulerDecisionResultSkipped) &&
+			postSelectionDispatchRefusalEquivalent(decision.Reason, decision.WaitReason, reason, waitReason) {
+			return
+		}
+	}
+	selection.Selected = false
+	selection.SelectionReason = ""
+	selection.SkipReason = reason
+	selection.SkipDetail = strings.TrimSpace(outcome.waitReason)
+	o.recordSchedulerDecision(
+		ctx,
+		state,
+		now,
+		selection,
+		string(store.SchedulerDecisionResultSkipped),
+		selection.SkipReason,
+	)
+}
+
+func postSelectionDispatchRefusalEquivalent(recordedReason, recordedWaitReason, outcomeReason, outcomeWaitReason string) bool {
+	if strings.TrimSpace(outcomeReason) == dispatchIssueFailureGlobalSlotUnavailable {
+		return true
+	}
+	return strings.TrimSpace(recordedReason) == strings.TrimSpace(outcomeReason) &&
+		strings.TrimSpace(recordedWaitReason) == strings.TrimSpace(outcomeWaitReason)
+}
+
 func (o *Orchestrator) escalateCorrectableDispatchDecision(state *State, now time.Time, issue connector.Issue, reason string) bool {
 	if state == nil {
 		return false

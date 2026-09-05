@@ -140,6 +140,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	var lastDispatchFailure string
 	decisions := make([]dispatchPlanDecision, 0, len(issues))
 	outcomes := make(map[string]dispatchIssueOutcome, len(issues))
+	selections := make(map[string]dispatchPlanDecision, len(issues))
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
 			return o.hydrateDispatchIssue(ctx, state, issue, now)
@@ -154,6 +155,11 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
 			if identity := workflowIssueIdentityKey(action.issue); identity != "" {
 				outcomes[identity] = outcome
+				if !outcome.dispatched {
+					if selection, ok := selections[identity]; ok {
+						o.recordPostSelectionDispatchRefusal(ctx, state, now, selection, outcome)
+					}
+				}
 			}
 			if !outcome.dispatched {
 				lastDispatchFailure = outcome.reason
@@ -194,6 +200,11 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		decision: func(decision dispatchPlanDecision) {
 			decisions = append(decisions, decision)
 			o.logDispatchPlanDecision(ctx, state, now, decision)
+			if decision.Selected {
+				if identity := workflowIssueIdentityKey(decision.Issue); identity != "" {
+					selections[identity] = decision
+				}
+			}
 		},
 	})
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
