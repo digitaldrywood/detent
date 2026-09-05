@@ -29,8 +29,10 @@ satisfied, then closes the issue. A closed or Done human issue without that
 valid contract and evidence remains an unresolved prerequisite. Reopening it
 restores the wait. Record a safe verification summary, never a credential.
 
-Workers on a writable GitHub tracker receive `ensure_human_prerequisite`, scoped
-to their assigned issue. Pass `title`, `task` (the fields above), and optionally
+Workers with a tool-capable backend and writable GitHub tracker receive
+`ensure_human_prerequisite`, scoped to their assigned issue. The supplemental
+tool preserves the worker's configured coding permissions and instructions.
+Pass `title`, `task` (the fields above), and optionally
 `existing_identifier`. Reuse the existing key and exact milestone contract.
 The tracker owner serializes concurrent requests, discovers existing markers
 from the repository issue listing rather than the eventually indexed search,

@@ -2158,13 +2158,17 @@ func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
 		Routine: &RoutineRequest{
 			Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect configured criteria.",
 		},
-		StartedAt: startedAt,
+		StartedAt:  startedAt,
+		AgentTools: []AgentTool{{Name: "ensure_human_prerequisite"}},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if !agentBackend.request.ReadOnly {
 		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for routine")
+	}
+	if !agentBackend.request.SupplementalTools {
+		t.Fatal("worker tool omitted supplemental mode")
 	}
 	if agentBackend.request.ToolInstructions != routineToolInstructions {
 		t.Fatalf("AgentTurnRequest.ToolInstructions = %q, want routine instructions", agentBackend.request.ToolInstructions)

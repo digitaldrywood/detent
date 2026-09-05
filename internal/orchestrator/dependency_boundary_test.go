@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -360,5 +361,57 @@ func TestWorkerUsageCancellationDuringDependencyHandoff(t *testing.T) {
 	state := newState(normalizeConfig(Config{}))
 	if got := o.dispatchIssueWithOutcome(t.Context(), &state, dispatchTestIssue("child", "Todo"), 0, time.Now(), ""); got.reason != dispatchIssueFailureDraining {
 		t.Fatalf("quiesced dispatch=%+v", got)
+	}
+}
+
+type dependencyResumeStartFailure struct{ recordingWorkAttemptStore }
+
+func (*dependencyResumeStartFailure) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
+	return 0, errors.New("attempt store unavailable")
+}
+
+type dependencyResumeStateFailure struct{ *memory.Connector }
+
+func (*dependencyResumeStateFailure) UpdateIssueState(context.Context, string, string) error {
+	return errors.New("tracker state update unavailable")
+}
+
+func TestDependencyResumeFailureReleasesReservations(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, want string }{
+		{name: "attempt write fails", want: dispatchIssueFailureWorkAttemptStart},
+		{name: "lane write fails", want: dispatchIssueFailureStartStateTransition},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := dispatchTestIssue("released-child", "Todo")
+			issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#10", HumanOwned: true, HumanCompletionReady: true}}
+			tracker := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue}})
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "test", Weight: 1}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}})
+			o := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: gate, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			attempts := &recordingWorkAttemptStore{}
+			if tt.want == dispatchIssueFailureWorkAttemptStart {
+				o.workAttempts = &dependencyResumeStartFailure{}
+			} else {
+				o.workAttempts = attempts
+				o.connector = &dependencyResumeStateFailure{Connector: tracker}
+			}
+			state := newState(cfg)
+			state.FailureBreaker.Class = "test"
+			state.DispatchRecoveries["test"] = DispatchRecovery{Kind: "test", Status: dispatchRecoveryStatusRamping, Limit: 1}
+			got := o.dispatchIssueWithOutcome(t.Context(), &state, issue, 0, time.Now(), "")
+			if got.dispatched || got.reason != tt.want {
+				t.Fatalf("dispatch = %+v, want %s", got, tt.want)
+			}
+			if len(state.Running) != 0 || state.FailureBreaker.CanaryIssueID != "" || len(state.DispatchRecoveries["test"].Admissions) != 0 {
+				t.Fatal("failed resume leaked a worker or recovery reservation")
+			}
+			if snapshot := gate.PoolSnapshot(); snapshot.Available != 1 {
+				t.Fatalf("failed resume leaked global slot: %+v", snapshot)
+			}
+			if tt.want == dispatchIssueFailureStartStateTransition && len(attempts.completions) != 1 {
+				t.Fatal("failed lane write left durable attempt active")
+			}
+		})
 	}
 }
