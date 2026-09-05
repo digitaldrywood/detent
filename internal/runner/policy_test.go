@@ -62,6 +62,9 @@ func TestResumeRequiresPinnedPolicy(t *testing.T) {
 	}{
 		{"fresh", nil, approved, 0, true},
 		{"standalone", nil, policy.Descriptor{}, 1, true},
+		{"legacy standalone session", policySessionStore{}, policy.Descriptor{}, 1, true},
+		{"Hub disabled after pinning", policySessionStore{policy: approved}, policy.Descriptor{}, 1, false},
+		{"legacy session moved to Hub", policySessionStore{}, approved, 1, false},
 		{"same policy", policySessionStore{policy: approved}, approved, 1, true},
 		{"changed policy", policySessionStore{policy: approved}, changed, 1, false},
 		{"missing store", nil, approved, 1, false},
@@ -72,6 +75,27 @@ func TestResumeRequiresPinnedPolicy(t *testing.T) {
 			err := r.checkResumePolicy(t.Context(), RunRequest{ProjectID: "one", Policy: test.request}, store.AgentResumeState{DetentSessionID: test.session})
 			if (err == nil) != test.valid {
 				t.Fatalf("resume error=%v, valid=%t", err, test.valid)
+			}
+		})
+	}
+}
+
+func TestHubResumeRequiresStoredIdentity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		resume store.AgentResumeState
+		valid  bool
+	}{
+		{"fresh", store.AgentResumeState{}, true},
+		{"thread without stored session", store.AgentResumeState{ProviderThreadID: "thread"}, false},
+		{"provider session without stored session", store.AgentResumeState{ProviderSessionID: "session"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := &Runner{}
+			err := r.checkResumePolicy(t.Context(), RunRequest{Policy: runnerTestPolicy()}, test.resume)
+			if (err == nil) != test.valid {
+				t.Fatalf("resume error = %v, valid=%t", err, test.valid)
 			}
 		})
 	}

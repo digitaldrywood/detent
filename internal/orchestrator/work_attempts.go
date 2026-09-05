@@ -244,7 +244,7 @@ func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *
 	}
 	queued := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
-		if o.cfg.Policy.ID != "" {
+		if session.WorkAttemptID != 0 || o.cfg.Policy.ID != "" {
 			attempt, err := o.workAttempts.WorkAttempt(ctx, session.WorkAttemptID)
 			if err != nil || o.checkAttemptPolicy(attempt) != nil {
 				o.logger.Warn("policy_mismatch: orphaned session requires its approved policy", "work_attempt_id", session.WorkAttemptID)

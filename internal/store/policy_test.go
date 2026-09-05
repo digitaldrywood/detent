@@ -21,15 +21,23 @@ func TestSessionPolicyPinsAndScopesRecovery(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	for _, test := range []struct {
-		name, metadata, project string
-		valid                   bool
+		name, metadata, project  string
+		valid, pinned, noAttempt bool
 	}{
-		{"pinned", string(raw), "one", true}, {"wrong project", string(raw), "two", false}, {"legacy missing", "{}", "one", false},
+		{"pinned", string(raw), "one", true, true, false},
+		{"wrong project", string(raw), "two", false, false, false},
+		{"legacy metadata", "{}", "one", true, false, false},
+		{"legacy no attempt", "{}", "one", true, false, true},
+		{"invalid descriptor", `{"policy":{}}`, "one", false, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			id, err := attempts.StartWorkAttempt(t.Context(), WorkAttemptStart{ProjectID: "one", IssueID: test.name, WorkerType: "codex", StartedAt: now, LeaseExpiresAt: now.Add(time.Minute), WorkerMetadataJSON: test.metadata})
-			if err != nil {
-				t.Fatal(err)
+			var id int64
+			if !test.noAttempt {
+				var err error
+				id, err = attempts.StartWorkAttempt(t.Context(), WorkAttemptStart{ProjectID: "one", IssueID: test.name, WorkerType: "codex", StartedAt: now, LeaseExpiresAt: now.Add(time.Minute), WorkerMetadataJSON: test.metadata})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			session, err := backend.StartSession(t.Context(), SessionStart{ProjectID: "one", IssueID: test.name, WorkAttemptID: id, StartedAt: now})
 			if err != nil {
@@ -39,8 +47,11 @@ func TestSessionPolicyPinsAndScopesRecovery(t *testing.T) {
 			if (err == nil) != test.valid {
 				t.Fatalf("SessionPolicy() = %v, valid=%t", err, test.valid)
 			}
-			if test.valid && got.ID != descriptor.ID {
+			if test.pinned && got.ID != descriptor.ID {
 				t.Fatalf("session policy = %s, want %s", got.ID, descriptor.ID)
+			}
+			if test.valid && !test.pinned && got.ID != "" {
+				t.Fatalf("legacy session policy = %s, want no pin", got.ID)
 			}
 		})
 	}

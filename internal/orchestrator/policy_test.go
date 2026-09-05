@@ -9,11 +9,47 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func orchestratorTestPolicy() policy.Descriptor {
 	return policy.Descriptor{SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")), Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("stop")), AutomatedReview: "off", MergeMethod: "squash"}}.WithID()
+}
+
+func TestOrphanRecoveryRetainsPolicyAcrossHubTransition(t *testing.T) {
+	t.Parallel()
+	descriptor := orchestratorTestPolicy()
+	for _, test := range []struct {
+		name            string
+		pinned, current policy.Descriptor
+		resume          bool
+	}{
+		{"same Hub policy", descriptor, descriptor, true},
+		{"Hub disabled", descriptor, policy.Descriptor{}, false},
+		{"Hub enabled", policy.Descriptor{}, descriptor, false},
+		{"legacy standalone", policy.Descriptor{}, policy.Descriptor{}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			issue := orphanRecoveryIssue()
+			attempts := &orphanRecoveryAttemptStore{
+				metadata: runningWorkAttemptMetadataJSON(Running{Policy: test.pinned}, nil),
+			}
+			o, err := New(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, Policy: test.current,
+			}, Dependencies{Connector: hydratingDispatchConnector{issue: issue}, WorkAttempts: attempts})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(o.cfg)
+			o.recoverOrphanedAgentSessions(t.Context(), &state, []store.OrphanedAgentSession{orphanRecoverySession(now)}, now)
+			_, resumed := state.Retry[issue.ID]
+			if resumed != test.resume {
+				t.Fatalf("resumed = %t, want %t", resumed, test.resume)
+			}
+		})
+	}
 }
 
 type checkedPolicyScheduling struct {
@@ -72,5 +108,21 @@ func TestAttemptMetadataRetainsApprovedPolicy(t *testing.T) {
 	o.cfg.Policy = o.cfg.Policy.WithID()
 	if o.checkAttemptPolicy(store.WorkAttempt{WorkerMetadataJSON: string(raw)}) == nil {
 		t.Fatal("resumed attempt under relaxed policy")
+	}
+	for _, test := range []struct {
+		name, raw string
+		valid     bool
+	}{
+		{"Hub disabled after pinning", string(raw), false},
+		{"legacy standalone metadata", "{}", true},
+		{"legacy standalone empty metadata", "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := &Orchestrator{}
+			err := o.checkAttemptPolicy(store.WorkAttempt{WorkerMetadataJSON: test.raw})
+			if (err == nil) != test.valid {
+				t.Fatalf("attempt policy = %v, valid=%t", err, test.valid)
+			}
+		})
 	}
 }

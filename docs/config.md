@@ -64,9 +64,10 @@ remain active. Finish or cancel those attempts, approve the new descriptor, and
 restart the customer Detent process to adopt it. Invalid or unapproved reloads
 retain the last-known-good configuration and report an actionable error. A
 running process retains its policy even if a new descriptor is approved. Resumed
-provider sessions must match the policy stored with their original attempt;
-missing or mismatched recovery identities are rejected. Automatic thread reuse
-falls back to a fresh attempt under the newly approved policy.
+provider sessions must match the policy stored with their original attempt,
+including after Hub is disabled; missing or mismatched recovery identities are
+rejected. Automatic thread reuse falls back to a fresh attempt under the current
+policy. Standalone sessions that never had a Hub policy retain legacy recovery.
 
 Administrators can revoke the current approval through the policy API. This
 immediately denies claims, lease renewal and new run events. Worker heartbeat
