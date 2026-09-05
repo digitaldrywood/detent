@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/visualreview"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -47,6 +48,7 @@ type Config struct {
 }
 
 type Store interface {
+	VisualReviewStore
 	auth.Store
 	StatsStore
 	FairShareStore
@@ -76,6 +78,15 @@ type Store interface {
 	APIKeyStore
 	Queries() *sqlc.Queries
 	Close() error
+}
+
+type VisualReviewStore interface {
+	CreateVisualReviewCapture(context.Context, visualreview.Capture) error
+	VisualReviewCapture(context.Context, string, string) (visualreview.Capture, error)
+	LatestVisualReviewCapture(context.Context, string, string) (visualreview.Capture, error)
+	ListVisualReviewCaptures(context.Context, string, string) ([]visualreview.Capture, error)
+	VisualReviewDraft(context.Context, string, string) (visualreview.Draft, error)
+	SaveVisualReviewDraft(context.Context, string, string, string, int64, []byte, string, time.Time) (visualreview.Draft, error)
 }
 
 type StatsStore interface {

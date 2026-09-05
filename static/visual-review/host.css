@@ -1,0 +1,27 @@
+#detent-save-status {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  padding: .55rem 1rem;
+  background: var(--tint);
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+#detent-save-status.warning {
+  color: #7a4b00;
+}
+
+#detent-save-status.error {
+  color: #9b2c2c;
+}
+
+#detent-review-rounds {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: .8rem;
+}
+
+#detent-review-rounds a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 700;
+}
