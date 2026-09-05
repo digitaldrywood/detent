@@ -90,6 +90,7 @@ func (c *NativeClient) CreateIssue(ctx context.Context, request tracker.CreateIs
 }
 
 func (c *NativeClient) UpdateIssue(ctx context.Context, id tracker.NativeWorkItemID, request tracker.UpdateIssue) (tracker.NativeIssue, error) {
+	request.Mutation = c.fencedMutation(ctx, id, request.Mutation)
 	var result tracker.NativeIssue
 	path, err := nativeItemPath(id)
 	if err != nil {
@@ -100,6 +101,7 @@ func (c *NativeClient) UpdateIssue(ctx context.Context, id tracker.NativeWorkIte
 }
 
 func (c *NativeClient) Transition(ctx context.Context, id tracker.NativeWorkItemID, request tracker.Transition) (tracker.NativeIssue, error) {
+	request.Mutation = c.fencedMutation(ctx, id, request.Mutation)
 	var result tracker.NativeIssue
 	path, err := nativeItemPath(id)
 	if err != nil {
@@ -110,6 +112,7 @@ func (c *NativeClient) Transition(ctx context.Context, id tracker.NativeWorkItem
 }
 
 func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItemID, request tracker.DependencyMutation) (tracker.NativeIssue, error) {
+	request.Mutation = c.fencedMutation(ctx, id, request.Mutation)
 	var result tracker.NativeIssue
 	path, err := nativeItemPath(id)
 	if err != nil {
@@ -130,6 +133,7 @@ func (c *NativeClient) Comments(ctx context.Context, id tracker.NativeWorkItemID
 }
 
 func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkItemID, request tracker.CreateComment) (tracker.NativeComment, error) {
+	request.Mutation = c.fencedMutation(ctx, id, request.Mutation)
 	var result tracker.NativeComment
 	path, err := nativeItemPath(id)
 	if err != nil {
@@ -140,6 +144,7 @@ func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkI
 }
 
 func (c *NativeClient) UpdateComment(ctx context.Context, id tracker.NativeWorkItemID, commentID string, request tracker.UpdateComment) (tracker.NativeComment, error) {
+	request.Mutation = c.fencedMutation(ctx, id, request.Mutation)
 	var result tracker.NativeComment
 	path, err := nativeItemPath(id)
 	if err != nil {
@@ -189,6 +194,9 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "no_claimable_work" {
 		return result, ErrNoClaimableWork
+	}
+	if err == nil {
+		c.client.nativeLeases.Store(c.base()+"/"+string(result.WorkItemID), result)
 	}
 	return result, err
 }

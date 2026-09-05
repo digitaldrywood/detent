@@ -312,6 +312,9 @@ func (s *Service) validateRunnerLease(c echo.Context) error {
 		if err := requireApprovedLeasePolicy(ctx, tx, id, true); err != nil {
 			return nil, err
 		}
+		if scope.credential.Runner.RunnerID == "" {
+			return runnerauth.Runner{Binding: runnerauth.Binding{MachineID: lease.session.Machine.ID}}, nil
+		}
 		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 		if err != nil {
 			return nil, err

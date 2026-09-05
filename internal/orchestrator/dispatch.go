@@ -792,6 +792,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
 	o.attachHumanPrerequisiteTool(&request)
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		request.Execution = source.RunExecution(issue.ID)
+	}
 	if !modelPermitRequired {
 		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)
 	}

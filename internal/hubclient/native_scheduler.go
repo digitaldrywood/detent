@@ -12,8 +12,10 @@ import (
 )
 
 type nativeClaim struct {
-	source *NativeConnector
-	lease  tracker.NativeLease
+	source   *NativeConnector
+	lease    tracker.NativeLease
+	recovery tracker.NativeRecovery
+	deadline time.Time
 }
 
 func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bool) {
@@ -57,10 +59,11 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if err != nil {
 		return nil, err
 	}
+	claimStarted := s.now()
 	lease, err := source.client.Claim(ctx, tracker.NativeClaim{
 		PolicyID:  request.Policy.ID,
 		MachineID: s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
-		Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: request.WorkflowStates,
+		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
 	})
 	if errors.Is(err, ErrNoClaimableWork) {
@@ -69,15 +72,15 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if err != nil {
 		return nil, schedulingError(err)
 	}
-	item, err := source.client.Issue(ctx, lease.WorkItemID)
+	recovery, err := source.client.Recovery(ctx, lease.WorkItemID)
 	if err != nil {
 		return nil, errors.Join(err, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed"))
 	}
-	issue := issueFromNative(item)
+	issue := issueFromNative(recovery.Issue)
 	issue.AssignedToWorker = true
 	s.mu.Lock()
 	s.claims[issue.ID] = nativeTrackerLease(lease)
-	s.nativeClaims[issue.ID] = nativeClaim{source: source, lease: lease}
+	s.nativeClaims[issue.ID] = nativeClaim{source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}
 	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
 	return []connector.Issue{issue}, nil
@@ -88,28 +91,43 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 		return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
+	renewStarted := s.now()
 	lease, err := claim.source.client.Renew(ctx, claim.lease, int64(s.leaseTTL/time.Second))
 	if err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
 	claim.lease = lease
+	claim.deadline = nativeLeaseDeadline(renewStarted, lease)
 	s.mu.Lock()
+	if current, ok := s.nativeClaims[issueID]; !ok || current.lease.FencingToken != lease.FencingToken {
+		s.mu.Unlock()
+		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+	}
 	s.nativeClaims[issueID] = claim
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
 }
 
-func (s *Scheduler) nativeClaimError(issueID string, err error) error {
+func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time {
+	if lease.ServerTime.IsZero() {
+		return started
+	}
+	return started.Add(lease.ExpiresAt.Sub(lease.ServerTime))
+}
+
+func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken, err error) error {
 	var apiErr *APIError
 	lostAuthority := s.client.runner != nil && errors.As(err, &apiErr) && apiErr != nil && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
 	if claimLost(err) || lostAuthority {
 		s.mu.Lock()
-		delete(s.claims, issueID)
-		delete(s.nativeClaims, issueID)
-		delete(s.claimPolicies, issueID)
+		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
+			delete(s.claims, issueID)
+			delete(s.nativeClaims, issueID)
+			delete(s.claimPolicies, issueID)
+		}
 		s.mu.Unlock()
 		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}

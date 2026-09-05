@@ -212,6 +212,10 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		return err
 	}
 	s.mu.Lock()
+	if current, ok := s.claims[issueID]; ok && current.FencingToken != lease.FencingToken {
+		s.mu.Unlock()
+		return nil
+	}
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)

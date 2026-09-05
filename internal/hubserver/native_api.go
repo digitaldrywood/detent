@@ -89,6 +89,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/comments", s.createNativeComment, write)
 	e.PATCH(nativeBase+"/work-items/:item/comments/:comment", s.updateNativeComment, write)
 	e.GET(nativeBase+"/work-items/:item/history", s.listNativeHistory, read)
+	e.GET(nativeBase+"/work-items/:item/attempts", s.listNativeAttempts, read)
 	e.GET(nativeBase+"/work-items/:item/versions/:revision", s.getNativeVersion, read)
 	e.GET(nativeBase+"/work-items/:item/comments/:comment/versions/:revision", s.getNativeVersion, read)
 	e.POST(nativeBase+"/claims", s.claimNativeIssue, worker)
@@ -215,6 +216,11 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 	}
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if scope.credential.Scope == apiScopeWorker && c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") {
+		if err := requireNativeMutationLease(ctx, tx, scope, c.Param("item"), command, now); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	value, err := operation(ctx, tx, scope, now)
 	if err != nil {

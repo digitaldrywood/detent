@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -32,10 +33,11 @@ type Config struct {
 }
 
 type Client struct {
-	runner      *runnerCredentialSource
-	baseURL     *url.URL
-	tokenSource func() string
-	httpClient  *http.Client
+	nativeLeases sync.Map
+	runner       *runnerCredentialSource
+	baseURL      *url.URL
+	tokenSource  func() string
+	httpClient   *http.Client
 }
 
 type Machine struct {

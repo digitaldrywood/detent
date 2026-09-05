@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1058,6 +1059,11 @@ func (r *Runner) runAgentTurn(
 	sessionModel string,
 	backendKind string,
 ) agentTurnExecution {
+	if runRequest.Execution != nil {
+		if err := runRequest.Execution.Validate(ctx); err != nil {
+			return agentTurnExecution{err: err}
+		}
+	}
 	result := RunResult{
 		FinalState:       FinalStateCompleted,
 		RuntimeIdentity:  initialIdentity.Normalize(),
@@ -1351,7 +1357,7 @@ func verifyAgentResume(ctx context.Context, backend AgentBackend, resume AgentRe
 	return verifier.VerifyResume(ctx, resume)
 }
 
-func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1410,6 +1416,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"workspace_branch", info.Branch,
 	)
 
+	if req.Execution != nil {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+	}
 	if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
 	}
@@ -1421,7 +1432,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			r.afterRun(runWorkspace, info, workspaceIssue)
+			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+				r.logger.Warn("native execution epilogue deferred", "issue_id", req.Issue.ID, "error", err)
+			}
 		}
 	}()
 
@@ -1441,8 +1454,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 			mergePrecheck = mergePrecheckFromWorkspace(precheck)
 			if handled {
-				r.afterRun(runWorkspace, info, workspaceIssue)
 				afterRunPending = false
+				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+					return precheckResult, err
+				}
 				r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 					telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 					"workspace_path", info.Path,
@@ -1511,6 +1526,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	role := runRole(req.Mode, req.Issue)
+	recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
+	if err != nil {
+		return RunResult{}, err
+	}
+	prompt += recoveryPrompt
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
@@ -1539,6 +1559,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
+	executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel}
+	if executionIdentity.Model == "" {
+		executionIdentity.Model = "provider_default"
+	}
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, role, sessionModel, startedAt)
 	if effort != "" {
 		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
@@ -1566,6 +1590,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if mode != RunModeRoutine {
 		resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 		if err != nil {
+			return RunResult{}, err
+		}
+	}
+	resumeState, err = r.nativeResume(ctx, req, backend, recoveryState, resumeState, executionIdentity)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if req.Execution != nil {
+		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+			return RunResult{}, err
+		}
+		checkpoint := executionCheckpoint(recoveryState)
+		checkpoint.WorktreeState = "unknown"
+		if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 			return RunResult{}, err
 		}
 	}
@@ -1871,8 +1909,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		failureNoteRecorded = true
 	}
 
-	r.afterRun(runWorkspace, info, workspaceIssue)
 	afterRunPending = false
+	if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+		return result, errors.Join(turnErr, err)
+	}
 	r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 		telemetry.DetentSessionIDKey, sessionID,

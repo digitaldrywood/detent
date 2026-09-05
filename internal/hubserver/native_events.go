@@ -49,7 +49,7 @@ func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 			return nativeInvalid("Artifact references must be typed IDs")
 		}
 	}
-	return nil
+	return validateNativeExecution(data, request.Type)
 }
 
 func (s *Service) appendNativeRunEvent(c echo.Context) error {
@@ -84,6 +84,31 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		}
 		if err := requireLeaseRunner(ctx, tx, request.Data.LeaseID, scope); err != nil {
 			return nil, err
+		}
+		if request.Data.Sequence > 0 {
+			if request.Data.MachineID != "" && request.Data.MachineID != lease.session.Machine.ID || request.Data.SessionID != "" && request.Data.SessionID != lease.session.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {
+				return nil, nativeInvalid("Execution identity must match the authenticated lease owner")
+			}
+			request.Data.MachineID = lease.session.Machine.ID
+			request.Data.SessionID = lease.session.SessionID
+			request.Data.RunnerID = scope.credential.Runner.RunnerID
+			appended, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, request, now)
+			if err != nil {
+				return nil, err
+			}
+			if !appended {
+				return struct {
+					Accepted bool `json:"accepted"`
+				}{true}, nil
+			}
+		} else {
+			var ordered int
+			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE id = ? OR lease_id = ?", request.Data.AttemptID, request.Data.LeaseID).Scan(&ordered); err != nil {
+				return nil, err
+			}
+			if ordered != 0 {
+				return nil, nativeExecutionConflict("Ordered attempts cannot accept legacy events")
+			}
 		}
 		if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
 			return nil, err
