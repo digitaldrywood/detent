@@ -159,7 +159,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			}
 		} else {
 			receiptAccepted := false
-			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshed.State)
+			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshed)
 			if receiptErr != nil {
 				o.rejectWorkerCompletion(ctx, state, event, running, "lane mutation receipt is unavailable", receiptErr)
 				return

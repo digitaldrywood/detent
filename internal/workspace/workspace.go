@@ -181,6 +181,7 @@ type CleanupFailure struct {
 type ReconcileResult struct {
 	Removed           int
 	ActiveSkipped     int
+	PreservedSkipped  int
 	RegisteredSkipped int
 	UnownedSkipped    int
 	CompletedPaths    []string
@@ -548,6 +549,9 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 	}
 
 	result := CleanupResult{Path: info.Path}
+	if err := l.checkPreservedWorkspace(ctx, info, issue); err != nil {
+		return result, err
+	}
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
 		return result, err

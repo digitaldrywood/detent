@@ -301,6 +301,7 @@ type WorkspaceCleanupFailure struct {
 type WorkspaceReconcileResult struct {
 	Removed           int
 	ActiveSkipped     int
+	PreservedSkipped  int
 	RegisteredSkipped int
 	UnownedSkipped    int
 	CompletedPaths    []string

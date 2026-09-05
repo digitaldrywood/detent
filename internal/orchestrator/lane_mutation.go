@@ -146,9 +146,9 @@ func (o *Orchestrator) applyLaneMutationDisposition(
 func (o *Orchestrator) laneMutationReceipt(
 	ctx context.Context,
 	running Running,
-	toState string,
+	observed connector.Issue,
 ) (store.LaneMutationReceipt, bool, error) {
-	if runningLaneMutationMatches(running, connector.Issue{State: toState}) {
+	if runningLaneMutationMatches(running, observed) {
 		return running.laneMutation, true, nil
 	}
 	if o.laneMutations == nil || running.WorkAttemptID <= 0 || running.Generation == 0 || strings.TrimSpace(running.Issue.ID) == "" {
@@ -159,7 +159,7 @@ func (o *Orchestrator) laneMutationReceipt(
 		IssueID:       running.Issue.ID,
 		WorkAttemptID: running.WorkAttemptID,
 		Generation:    running.Generation,
-		ToState:       toState,
+		ToState:       observed.State,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		return store.LaneMutationReceipt{}, false, nil
@@ -170,8 +170,11 @@ func (o *Orchestrator) laneMutationReceipt(
 	if receipt.IssueID != strings.TrimSpace(running.Issue.ID) ||
 		receipt.WorkAttemptID != running.WorkAttemptID ||
 		receipt.Generation != running.Generation ||
-		normalizeState(receipt.ToState) != normalizeState(toState) {
+		normalizeState(receipt.ToState) != normalizeState(observed.State) {
 		return store.LaneMutationReceipt{}, false, errors.New("live worker lane mutation receipt does not match the current owner")
+	}
+	if !laneMutationMatchesObservation(receipt, observed) {
+		return store.LaneMutationReceipt{}, false, nil
 	}
 	return receipt, true, nil
 }
@@ -219,5 +222,13 @@ func runningLaneMutationMatches(running Running, issue connector.Issue) bool {
 		receipt.IssueID == strings.TrimSpace(running.Issue.ID) &&
 		receipt.WorkAttemptID == running.WorkAttemptID &&
 		receipt.Generation == running.Generation &&
-		normalizeState(receipt.ToState) == normalizeState(issue.State)
+		laneMutationMatchesObservation(receipt, issue)
+}
+
+func laneMutationMatchesObservation(receipt store.LaneMutationReceipt, issue connector.Issue) bool {
+	if normalizeState(receipt.ToState) != normalizeState(issue.State) {
+		return false
+	}
+	return receipt.ResolvedAt.IsZero() || issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() ||
+		!issue.StageUpdatedAt.After(receipt.ResolvedAt)
 }

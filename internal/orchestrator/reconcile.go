@@ -304,7 +304,7 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		mergeWorker := running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)
 		refreshedRunning := running
 		refreshedRunning.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
-		receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshedRunning.Issue.State)
+		receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshedRunning.Issue)
 		if receiptErr != nil {
 			if o.logger != nil {
 				o.logger.Warn("running issue lane mutation receipt lookup failed", "issue_id", id, "error", receiptErr)

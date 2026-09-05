@@ -99,7 +99,7 @@ func TestApplyAutoPromoteDecisionUpdatesSnapshotBeforePoll(t *testing.T) {
 				State:          "In Progress",
 				StageUpdatedAt: &previousStageAt,
 			}
-			tracker := &workflowMetricsConnector{name: tt.trackerName}
+			tracker := &workflowMetricsConnector{name: tt.trackerName, stateEnteredAt: transitionAt, stateEnteredAtFound: true}
 			orch := &Orchestrator{connector: tracker}
 			state := newState(Config{})
 			state.BoardIssues = []connector.Issue{cloneIssue(issue)}
@@ -643,6 +643,60 @@ func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
 	}
 }
 
+func TestDetentLaneWriteEchoKeepsWriter(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name            string
+		target          string
+		labelTransition bool
+	}{
+		{"label blocked", "Blocked", true},
+		{"label rework", "Rework", true},
+		{"label merging", "Merging", true},
+		{"project blocked", "Blocked", false},
+		{"project rework", "Rework", false},
+		{"project merging", "Merging", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := tt.target
+			t.Parallel()
+			requestedAt := time.Date(2026, 9, 4, 4, 11, 0, 0, time.UTC)
+			trackerAt := requestedAt.Add(2 * time.Second)
+			issue := laneRevocationIssue("echo", "digitaldrywood/detent#2138", "In Progress")
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			confirmed := cloneIssue(issue)
+			confirmed.State = target
+			confirmed.StageUpdatedAt = &trackerAt
+			tracker := &workflowMetricsConnector{stateEnteredAt: trackerAt, stateEnteredAtFound: tt.labelTransition, stateIssues: []connector.Issue{confirmed}}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker, workflowMetrics: metrics}
+			state := newState(orch.cfg)
+			state.BoardIssues = []connector.Issue{issue}
+			if err := orch.updateIssueState(t.Context(), &state, issue, target, requestedAt, "machine_transition"); err != nil {
+				t.Fatal(err)
+			}
+			issue.State = target
+			issue.StageUpdatedAt = &trackerAt
+			issue.StageUpdatedActor = connector.IssueActor{Login: "shared-token", Kind: "User"}
+			state.BoardIssues = []connector.Issue{issue}
+			orch.refreshCurrentLaneEntries(t.Context(), &state, requestedAt.Add(time.Minute))
+			if got := len(metrics.snapshot()); got != 2 {
+				t.Fatalf("events after write echo = %d, want only the original exit and entry", got)
+			}
+			if got := laneRevocationAttribution(&state, issue); got.Origin != provenance.OriginDetent || got.Basis != provenance.BasisDetentOperation {
+				t.Fatalf("write echo attribution = %#v, want Detent", got)
+			}
+			later := trackerAt.Add(time.Minute)
+			issue.StageUpdatedAt = &later
+			state.BoardIssues = []connector.Issue{issue}
+			orch.refreshCurrentLaneEntries(t.Context(), &state, later)
+			if got := laneRevocationAttribution(&state, issue); got.Origin != provenance.OriginIndeterminate {
+				t.Fatalf("later shared-token reentry attribution = %#v, want indeterminate", got)
+			}
+		})
+	}
+}
+
 func TestUpdateIssueStateByIDCapturesReworkLesson(t *testing.T) {
 	t.Parallel()
 
@@ -872,7 +926,7 @@ func (c *workflowMetricsConnector) FetchIssuesByStates(_ context.Context, states
 
 func (c *workflowMetricsConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
 	c.fetches++
-	return nil, nil
+	return cloneIssues(c.stateIssues), nil
 }
 
 func (c *workflowMetricsConnector) CreateComment(context.Context, string, string) error {
