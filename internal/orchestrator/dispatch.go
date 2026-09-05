@@ -426,6 +426,12 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	modelPermitRequired bool,
 	retryState *Retry,
 ) dispatchIssueOutcome {
+	if reason := connector.NonExecutableReason(issue); reason != "" {
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: reason}
+	}
+	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
+		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
+	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
 	}
@@ -778,6 +784,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		MergePrecheck:       cloneMergePrecheck(queuedRetry.MergePrecheck),
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
+	o.attachHumanPrerequisiteTool(&request)
 	if !modelPermitRequired {
 		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)
 	}
@@ -1201,11 +1208,16 @@ func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {
 }
 
 func todoBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bool {
-	if normalizeState(issue.State) != "todo" {
-		return false
-	}
-
 	for _, blocker := range issue.BlockedBy {
+		if blocker.HumanOwned {
+			if !blocker.HumanCompletionReady {
+				return true
+			}
+			continue
+		}
+		if normalizeState(issue.State) != "todo" {
+			continue
+		}
 		if strings.TrimSpace(blocker.State) == "" {
 			continue
 		}

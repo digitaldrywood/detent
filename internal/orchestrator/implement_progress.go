@@ -346,6 +346,17 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 	decision.Issue = issue
 	decision.TrackerState = strings.TrimSpace(issue.State)
 	decision.WorkspaceDiffStats = implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
+	if workpadCurrent && !pullRequestMerged(issue.PullRequest) && implementProgressDiffStatsClean(decision.WorkspaceDiffStats) && decision.WorkspaceDiffStats.UnpushedCommits == 0 && len(decision.WorkspaceDiffStats.CommitsNotInPullRequest) == 0 {
+		blockers, rejected, deferred := o.evaluateImplementDependencyDeferral(ctx, issue)
+		decision.DependencyBlockers = blockers
+		decision.RejectedBlockerRefs = rejected
+		if deferred {
+			decision.Reason = implementDependencyDeferralReason
+			decision.DependencyDeferral = true
+			decision.WorkpadStatus = workpad.StatusBlocked
+			return decision
+		}
+	}
 	decision.ProgressKinds = implementProgressArtifactKinds(
 		running.DispatchProgress,
 		implementProgressArtifactSnapshotFromIssue(issue, workpadCurrent),
@@ -1079,6 +1090,15 @@ func (o *Orchestrator) finishImplementDependencyDeferral(
 	issue connector.Issue,
 	completedAt time.Time,
 ) {
+	if !o.issueHasStickyBlockReason(ctx, state, issue) {
+		sourceState, _ := o.dispatchTimelineTransitionContext(ctx, issue)
+		target := dependencyWaitTarget(issue, sourceState)
+		if normalizeState(issue.State) != normalizeState(target) {
+			if err := o.updateIssueState(ctx, state, issue, target, completedAt, "dependency_wait", laneMutationPreserveOwnership); err != nil && o.logger != nil {
+				o.logger.Warn("dependency wait lane update failed", "issue_id", issue.ID, "error", err)
+			}
+		}
+	}
 	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
 		o.logger.Warn("implement dependency deferral claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 	}

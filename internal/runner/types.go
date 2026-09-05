@@ -359,6 +359,7 @@ type AgentTurnRequest struct {
 	TempDir                 string
 	Prompt                  string
 	ToolInstructions        string
+	SupplementalTools       bool
 	ReadOnly                bool
 	RequireSubscriptionAuth bool
 	Model                   string

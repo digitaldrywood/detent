@@ -692,6 +692,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	modelPermitRequired bool,
 ) dispatchableDecision {
 	p.now = now
+	if reason := connector.NonExecutableReason(issue); reason != "" {
+		return dispatchableDecision{reason: dispatchSkipInactiveState, detail: reason}
+	}
 	if !validCandidate(issue) {
 		return dispatchableDecision{reason: dispatchSkipInvalidCandidate}
 	}
@@ -745,7 +748,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipOwnershipAssigneeRequired}
 	}
 	if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
-		return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
+		return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: humanDependencyWaitReason(issue.BlockedBy)}
 	}
 	if _, ok := state.Running[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipAlreadyRunning}

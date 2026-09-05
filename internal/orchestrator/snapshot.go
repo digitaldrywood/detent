@@ -1225,11 +1225,13 @@ func telemetryBlockedRefs(refs []connector.BlockedRef) []telemetry.BlockedRef {
 	out := make([]telemetry.BlockedRef, 0, len(refs))
 	for _, ref := range refs {
 		out = append(out, telemetry.BlockedRef{
-			ID:           ref.ID,
-			Identifier:   ref.Identifier,
-			State:        ref.State,
-			TrackerState: ref.TrackerState,
-			Source:       ref.Source,
+			HumanOwned:           ref.HumanOwned,
+			HumanCompletionReady: ref.HumanCompletionReady,
+			ID:                   ref.ID,
+			Identifier:           ref.Identifier,
+			State:                ref.State,
+			TrackerState:         ref.TrackerState,
+			Source:               ref.Source,
 		})
 	}
 	return out

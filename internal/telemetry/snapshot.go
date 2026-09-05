@@ -1183,11 +1183,13 @@ type Deliverable struct {
 }
 
 type BlockedRef struct {
-	ID           string `json:"id,omitempty"`
-	Identifier   string `json:"identifier"`
-	State        string `json:"state,omitempty"`
-	TrackerState string `json:"tracker_state,omitempty"`
-	Source       string `json:"source,omitempty"`
+	HumanOwned           bool   `json:"human_owned,omitempty"`
+	HumanCompletionReady bool   `json:"human_completion_ready,omitempty"`
+	ID                   string `json:"id,omitempty"`
+	Identifier           string `json:"identifier"`
+	State                string `json:"state,omitempty"`
+	TrackerState         string `json:"tracker_state,omitempty"`
+	Source               string `json:"source,omitempty"`
 }
 
 type PullRequest struct {

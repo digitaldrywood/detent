@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const bodyExcerptLimit = 500
@@ -41,26 +43,27 @@ func Normalize(record Record) WorkItem {
 		github.DatabaseID = &databaseID
 	}
 	item := WorkItem{
-		ID:              record.ID,
-		Repository:      normalizeRepository(record.Repository),
-		GitHub:          github,
-		Title:           strings.TrimSpace(record.Title),
-		BodyExcerpt:     bodyExcerpt(record.Body),
-		URL:             strings.TrimSpace(record.URL),
-		SourceState:     normalizeSourceState(record.SourceState),
-		WorkflowState:   normalizeWorkflowState(record.WorkflowState),
-		Queue:           normalizeQueue(record.Queue),
-		AuthorID:        strings.TrimSpace(record.AuthorID),
-		Labels:          normalizeStrings(record.Labels),
-		Assignees:       normalizeStrings(record.Assignees),
-		CreatedAt:       cloneTime(record.CreatedAt),
-		UpdatedAt:       cloneTime(record.UpdatedAt),
-		SourceUpdatedAt: cloneTime(record.SourceUpdatedAt),
-		SourceSyncedAt:  cloneTime(record.SourceSyncedAt),
-		Blockers:        normalizeReferences(record.Blockers),
-		Dependents:      normalizeReferences(record.Dependents),
-		PullRequests:    normalizePullRequests(record.PullRequests),
-		SyncStatus:      normalizeSyncStatus(record.SyncStatus),
+		NonExecutableReason: connector.NonExecutableReason(connector.Issue{Title: record.Title, Description: record.Body, Labels: record.Labels}),
+		ID:                  record.ID,
+		Repository:          normalizeRepository(record.Repository),
+		GitHub:              github,
+		Title:               strings.TrimSpace(record.Title),
+		BodyExcerpt:         bodyExcerpt(record.Body),
+		URL:                 strings.TrimSpace(record.URL),
+		SourceState:         normalizeSourceState(record.SourceState),
+		WorkflowState:       normalizeWorkflowState(record.WorkflowState),
+		Queue:               normalizeQueue(record.Queue),
+		AuthorID:            strings.TrimSpace(record.AuthorID),
+		Labels:              normalizeStrings(record.Labels),
+		Assignees:           normalizeStrings(record.Assignees),
+		CreatedAt:           cloneTime(record.CreatedAt),
+		UpdatedAt:           cloneTime(record.UpdatedAt),
+		SourceUpdatedAt:     cloneTime(record.SourceUpdatedAt),
+		SourceSyncedAt:      cloneTime(record.SourceSyncedAt),
+		Blockers:            normalizeReferences(record.Blockers),
+		Dependents:          normalizeReferences(record.Dependents),
+		PullRequests:        normalizePullRequests(record.PullRequests),
+		SyncStatus:          normalizeSyncStatus(record.SyncStatus),
 	}
 	item.ActiveLease = activeLease(record.Lease, record.ObservedAt)
 	item.Dispatchability = deriveDispatchability(item)
@@ -82,6 +85,13 @@ func deriveDispatchability(item WorkItem) Dispatchability {
 
 func deriveDispatchReasons(item WorkItem, evaluatedAt time.Time, targetMachineID MachineID, targetSessionID string) []DispatchReason {
 	reasons := make([]DispatchReason, 0)
+	reason := item.NonExecutableReason
+	if reason == "" {
+		reason = connector.NonExecutableReason(connector.Issue{Title: item.Title, Description: item.BodyExcerpt, Labels: item.Labels})
+	}
+	if reason != "" {
+		reasons = append(reasons, DispatchReason{Code: DispatchReasonWorkflowStateNotDispatchable, Message: reason})
+	}
 	switch item.SourceState {
 	case SourceStateClosed:
 		reasons = append(reasons, DispatchReason{Code: DispatchReasonIssueClosed, Message: "issue is closed"})

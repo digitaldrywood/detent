@@ -721,7 +721,11 @@ func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Blocked handoff\n\n" +
 		"When writing a Workpad `detent-status` block, `status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid. " +
 		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.\n\n" +
-		"Before moving an issue to Blocked because it is waiting on another tracked GitHub issue or pull request, prefer GitHub's native dependency relation. " +
+		"Ordinary dependency waiting belongs in Todo; preserve Rework or Merging and the existing PR for started work. Reserve Blocked for delivery failures, breaker parks, and operational problems. " +
+		"For a genuine human prerequisite, use ensure_human_prerequisite when available to reuse or create a focused human-owned Backlog milestone and append Depends on: owner/repo#123. Supply the concrete action, owner, completion criteria, and unchanged approval constraint. Finish stub-testable work, independent preparation, and authorized fallbacks before adding a dependency. Do not add dependencies to completed software. " +
+		"If the tool is unavailable, reuse an explicitly marked issue through the authorized tracker path; do not race other workers to create duplicates. Keep credentials and private evidence within their repository boundary. Human tasks use a detent-human block (schema: 1) or human-owned label; tracking epics never execute. " +
+		"A human dependency requires closure plus completion_evidence in its valid detent-human contract. That evidence does not grant publishing, deployment, or destructive-action permission; existing approval requirements still apply. Record dependency waits in the structured Workpad with human_action: null and leave lane restoration to Detent. Never acknowledge independent breaker parks. " +
+		"Prefer GitHub's native dependency relation and always keep a parseable issue-body Depends on: owner/repo#123 line. " +
 		"Resolve the blocker REST id, then create the relation:\n\n" +
 		"```sh\n" +
 		"BLOCKED_NUMBER=<blocked-issue-number>\n" +
@@ -776,7 +780,7 @@ func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 		"Use the operational declaration only when the issue was pre-authorized and the completed work intentionally has no repository change or pull request. " +
 		"Adding authorization at completion time does not qualify. " +
 		"An ordinary no-diff completion continues through the configured pull-request gate.\n\n" +
-		"Narrative Workpad sentences are never read as blockers. Legacy fallback during the deprecation window: keep a machine-readable issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123` only when native dependencies are unavailable and the project has not migrated."
+		"Narrative Workpad sentences are never read as blockers. Keep a machine-readable issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123` alongside the native dependency so the issue retains a durable dependency contract."
 }
 
 func appendClosingReferenceInstruction(prompt string, issue connector.Issue) string {

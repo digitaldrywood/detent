@@ -1610,7 +1610,11 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	case !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold")):
 		add("Needs review", primitives.KindErr)
 	case len(card.Blockers) > 0:
-		add("Blocked · "+strconv.Itoa(len(card.Blockers)), primitives.KindErr)
+		if card.HumanDependencyWait != "" {
+			add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
+		} else {
+			add("Blocked · "+strconv.Itoa(len(card.Blockers)), primitives.KindErr)
+		}
 	case waiting:
 		add("Waiting", primitives.KindWarn)
 	case card.AttentionLabel != "":
@@ -1785,6 +1789,9 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	}
 	if label := strings.TrimSpace(card.AttentionLabel); label != "" {
 		return primitives.KindErr, "blocked — " + label, true
+	}
+	if card.HumanDependencyWait != "" {
+		return primitives.KindWarn, card.HumanDependencyWait, true
 	}
 	if len(card.Blockers) > 0 {
 		return primitives.KindErr, "blocked — " + card.Blockers[0], true

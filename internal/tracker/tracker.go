@@ -224,28 +224,29 @@ type DispatchQueue struct {
 }
 
 type WorkItem struct {
-	ID              WorkItemID           `json:"id"`
-	Repository      RepositoryReference  `json:"repository"`
-	GitHub          GitHubIssueReference `json:"github"`
-	Title           string               `json:"title"`
-	BodyExcerpt     string               `json:"body_excerpt"`
-	URL             string               `json:"url"`
-	SourceState     SourceState          `json:"source_state"`
-	WorkflowState   *WorkflowState       `json:"workflow_state,omitempty"`
-	Queue           *QueueSummary        `json:"queue,omitempty"`
-	AuthorID        string               `json:"author_id,omitempty"`
-	Labels          []string             `json:"labels"`
-	Assignees       []string             `json:"assignees"`
-	CreatedAt       *time.Time           `json:"created_at,omitempty"`
-	UpdatedAt       *time.Time           `json:"updated_at,omitempty"`
-	SourceUpdatedAt *time.Time           `json:"source_updated_at,omitempty"`
-	SourceSyncedAt  *time.Time           `json:"source_synced_at,omitempty"`
-	Blockers        []WorkItemReference  `json:"blockers"`
-	Dependents      []WorkItemReference  `json:"dependents"`
-	Dispatchability Dispatchability      `json:"dispatchability"`
-	ActiveLease     *LeaseSummary        `json:"active_lease,omitempty"`
-	PullRequests    []PullRequestSummary `json:"pull_requests"`
-	SyncStatus      SyncStatus           `json:"github_sync_status"`
+	NonExecutableReason string               `json:"non_executable_reason,omitempty"`
+	ID                  WorkItemID           `json:"id"`
+	Repository          RepositoryReference  `json:"repository"`
+	GitHub              GitHubIssueReference `json:"github"`
+	Title               string               `json:"title"`
+	BodyExcerpt         string               `json:"body_excerpt"`
+	URL                 string               `json:"url"`
+	SourceState         SourceState          `json:"source_state"`
+	WorkflowState       *WorkflowState       `json:"workflow_state,omitempty"`
+	Queue               *QueueSummary        `json:"queue,omitempty"`
+	AuthorID            string               `json:"author_id,omitempty"`
+	Labels              []string             `json:"labels"`
+	Assignees           []string             `json:"assignees"`
+	CreatedAt           *time.Time           `json:"created_at,omitempty"`
+	UpdatedAt           *time.Time           `json:"updated_at,omitempty"`
+	SourceUpdatedAt     *time.Time           `json:"source_updated_at,omitempty"`
+	SourceSyncedAt      *time.Time           `json:"source_synced_at,omitempty"`
+	Blockers            []WorkItemReference  `json:"blockers"`
+	Dependents          []WorkItemReference  `json:"dependents"`
+	Dispatchability     Dispatchability      `json:"dispatchability"`
+	ActiveLease         *LeaseSummary        `json:"active_lease,omitempty"`
+	PullRequests        []PullRequestSummary `json:"pull_requests"`
+	SyncStatus          SyncStatus           `json:"github_sync_status"`
 }
 
 type CandidateQuery struct {

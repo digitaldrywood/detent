@@ -367,6 +367,53 @@ func TestAgentBackendReadOnlyTurnUsesRestrictedSandbox(t *testing.T) {
 	assertJSONOmits(t, sent[3].Params, "sandboxPolicy")
 }
 
+func TestAgentBackendSupplementalToolsPreserveWorkerPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, sandbox, approval, instructions string
+		supplemental, readOnly                bool
+	}{
+		{name: "operator", sandbox: "read-only", approval: "never", instructions: dynamicToolTurnInstructions},
+		{name: "worker", supplemental: true, sandbox: "workspace-write", approval: "on-request", instructions: terminalWaitInstructions},
+		{name: "read-only worker", supplemental: true, readOnly: true, sandbox: "read-only", approval: "never", instructions: terminalWaitInstructions},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex-resolved"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+			})
+			server, err := NewAppServer(&workerTempCapturingTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend, err := NewAgentBackend(server, Options{ApprovalPolicy: "on-request", ThreadSandbox: "workspace-write", TurnSandboxPolicy: map[string]any{"type": "workspaceWrite", "networkAccess": true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = backend.RunTurnWithTools(t.Context(), runner.AgentTurnRequest{Workspace: t.TempDir(), Prompt: "Continue assigned work", SupplementalTools: tt.supplemental, ReadOnly: tt.readOnly}, []runner.AgentTool{{Name: "ensure_human_prerequisite", InputSchema: json.RawMessage(`{"type":"object"}`)}}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent := transport.sentMessages()
+			if len(sent) != 4 {
+				t.Fatalf("sent %d messages", len(sent))
+			}
+			assertJSONContains(t, sent[2].Params, "sandbox", tt.sandbox)
+			assertJSONContains(t, sent[2].Params, "approvalPolicy", tt.approval)
+			assertJSONContains(t, sent[2].Params, "developerInstructions", tt.instructions)
+			assertJSONContains(t, sent[2].Params, "dynamicTools.0.name", "ensure_human_prerequisite")
+			assertJSONContains(t, sent[3].Params, "approvalPolicy", tt.approval)
+			if tt.sandbox == "read-only" {
+				assertJSONOmits(t, sent[3].Params, "sandboxPolicy")
+			} else {
+				assertJSONContains(t, sent[3].Params, "sandboxPolicy.type", "workspaceWrite")
+			}
+		})
+	}
+}
+
 type workerTempCapturingTransportFactory struct {
 	transport Transport
 	tempDir   string

@@ -81,12 +81,16 @@ func (b *AgentBackend) runTurn(
 ) (runner.AgentTurnResult, error) {
 	ctx = withWorkerTempDir(ctx, req.TempDir)
 	ctx = withWorkerEnvironment(ctx, req.Environment)
-	restricted := req.ReadOnly || len(tools) > 0
+	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
+	instructionTools := tools
+	if req.SupplementalTools {
+		instructionTools = nil
+	}
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
 		ResumeThreadID:          req.Resume.ThreadID,
-		DeveloperInstructions:   toolTurnInstructions(tools, req.ToolInstructions),
+		DeveloperInstructions:   toolTurnInstructions(instructionTools, req.ToolInstructions),
 		ApprovalPolicy:          approvalPolicy(b.options.ApprovalPolicy, restricted),
 		MCPElicitationPolicy:    mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
 		ThreadSandbox:           threadSandbox(b.options.ThreadSandbox, restricted),

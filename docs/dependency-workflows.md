@@ -2,8 +2,98 @@
 
 [Back to README](../README.md#documentation)
 
-Detent supports two dependency patterns. Use the one that matches how much of
-the wait should be visible on the board.
+Use Todo for ordinary dependency waiting and preserve the phase of existing PR
+work. Human prerequisites remain non-dispatchable in Backlog.
+
+## Human prerequisites
+
+Human-owned work has a `human-owned` label or an issue-body `detent-human`
+block. Both exclude it from admission and dispatch, including blocker automatic
+promotion. A malformed block still excludes dispatch. Review opt-outs are not
+human ownership markers. Keep human tasks in **Backlog** until the human
+completes them. Tracking epics (`epic` label or `Epic:` title) also never execute;
+only independently scoped children do.
+
+```detent-human
+schema: 1
+key: test-account-authentication
+owner: Account administrator
+action: Enable authentication for the test tenant
+completion_criteria: A test-account sign-in succeeds in the test tenant
+approval_constraint: Production publishing still requires explicit approval
+```
+
+Choose a stable repository-scoped key for the smallest required milestone.
+The human records `completion_evidence` in this block when its criteria are
+satisfied, then closes the issue. A closed or Done human issue without that
+valid contract and evidence remains an unresolved prerequisite. Reopening it
+restores the wait. Record a safe verification summary, never a credential.
+
+Workers with a tool-capable backend and writable GitHub tracker receive
+`ensure_human_prerequisite`, scoped to their assigned issue. The supplemental
+tool preserves the worker's configured coding permissions and instructions.
+Pass `title`, `task` (the fields above), and optionally
+`existing_identifier`. Reuse the existing key and exact milestone contract.
+The tracker owner serializes concurrent requests, discovers existing markers
+from the repository issue listing rather than the eventually indexed search,
+and reuses the durable issue after restart. It creates the human issue through
+the configured tracker status source in Backlog, verifies the dependency graph,
+adds a native relation when supported, and appends an idempotent
+`Depends on: owner/repo#123` line while preserving the remaining body and edges.
+Partial writes are repaired on retry. Conflicting contracts, duplicates,
+self-dependencies, cycles, malformed graph references, and unverifiable graphs
+fail explicitly. Route every worker request through the same tracker owner;
+independent services or direct concurrent `gh issue create` calls do not share
+its serialization. The tool is not offered by read-only trackers.
+
+The mutation stays inside the dependent repository. It neither reads nor copies
+private evidence from another repository. Supply a safe milestone description;
+publication protection also rejects protected cross-project details. For a
+cross-repository prerequisite, have the owning human establish a safe reference
+through the authorized tracker path without copying credentials or private
+project evidence across visibility boundaries.
+
+Keep queued executable children in **Todo**, with a visible dependency wait.
+For an existing PR, retain its deliverable and **Rework** or **Merging** phase.
+A worker can declare a structured dependency wait with `status: blocked` and
+`human_action: null` without moving the issue to the Blocked lane; Detent
+persists the deferral, releases the claim, and restores the resumable lane.
+The structured status describes the wait, not the board lane. **Blocked** is
+reserved for delivery failures, repeated-failure or spend parks, and unresolved
+operational problems. Dependency closure never acknowledges those independent
+parks. The board and scheduler explanation identify a pending human prerequisite
+and retain the requirement for completion evidence even when it is closed.
+
+Do not add a dependency when stub-testable implementation, independent
+preparation, or an authorized fallback can satisfy the remaining scope. Finish
+those tasks first. Do not add dependencies to already completed software. If
+only account activation is required, use that milestone, not an entire release
+or tracking epic.
+
+### Migrate prose-only blockers
+
+1. Inspect the remaining scope, PR, native edges, Workpad, and current breaker
+   evidence. Separate actual human prerequisites from implementation work and
+   independently parked delivery failures.
+2. Reuse a focused human issue or use the worker tool to create one. For an
+   existing issue, pass `existing_identifier` and its exact human milestone to
+   add a marker without replacing its unrelated content. Preserve approval
+   constraints and move the human issue to Backlog through the tracker.
+3. Add each dependent's native relation and issue-body `Depends on:` line.
+   Workpad prose alone is insufficient. Preserve all existing dependencies.
+4. Put unstarted executable children in Todo and restore the prior PR phase
+   for started work. Leave independent breaker parks untouched; migration is
+   not permission to acknowledge a park.
+
+### External-action authorization
+
+Dependency readiness is scheduling evidence only. A human issue's closure,
+completion evidence, or label is never authorization to publish, deploy, spend,
+or perform destructive operations. Existing approval constraints and the
+specific action's authorization gate remain in force. A worker must not assert
+human completion evidence through the prerequisite-creation tool.
+
+## Dependency configuration
 
 Workpad blockers may declare live evidence directly. Each typed blocker names
 an `owner`, a `predicate`, and a `recheck_interval` or `expires_at`. Detent
@@ -37,7 +127,7 @@ orchestrator-owned unverifiable parks are escalated for operator attention.
   issue out of dispatch while any referenced blocker is non-terminal, then
   dispatches it normally after blockers clear. This is the default behavior and
   needs no extra configuration.
-- **Keep the issue in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
+- **Legacy dependency waiting in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
   your team wants dependency-waiting issues to sit in a waiting column. Detent
   only moves issues that have explicit `Depends on:` or `Blocked by:` references.
   When all blockers are terminal, closed, or have a merged linked PR under the
