@@ -67,6 +67,10 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoLongContentSnapshot()
 	case "board-card-identity":
 		snapshot = demoBoardCardIdentitySnapshot()
+	case "board-card-single-blocker":
+		snapshot = demoBoardCardIdentitySnapshot()
+		refs := snapshot.Running[0].BlockedBy
+		snapshot.Running[0].BlockedBy = []telemetry.BlockedRef{refs[0], refs[len(refs)-1]}
 	case "dense", "dense-kanban":
 		snapshot = demoDenseSnapshot()
 	case "hot-path", "model-heavy", "filtered-project":
@@ -876,6 +880,28 @@ func demoBoardCardIdentitySnapshot() telemetry.Snapshot {
 		CIStatus:         "pending",
 		CodexReviewState: "CLEAN",
 	}
+	running.ParkSummary = telemetry.ParkSummary{
+		AttemptCount: 6, ParkCount: 3,
+		Tokens: telemetry.ParkTokenTotals{InputTokens: 123456, OutputTokens: 45678},
+		Causes: []telemetry.ParkCauseSummary{{Cause: "dependency_wait", Count: 3, FirstAt: snapshot.GeneratedAt.Add(-time.Hour), LastAt: snapshot.GeneratedAt}},
+	}
+	running.CompletionProgress = telemetry.CompletionProgress{Outcome: "no_progress", Reason: "artifact_status_wait: required release integration checks are still pending", ConsecutiveNoProgress: 1, NoProgressLimit: 3}
+	running.Metadata = map[string]string{"hub_sync_status": "error"}
+	for i := range 8 {
+		running.BlockedBy = append(running.BlockedBy, telemetry.BlockedRef{
+			Identifier: fmt.Sprintf("digitaldrywood/release-integration-platform-component-%d#%d", i+1, 590+i),
+			State:      "In Progress",
+		})
+	}
+	running.BlockedBy = append(running.BlockedBy, telemetry.BlockedRef{Identifier: "digitaldrywood/release-integration-platform-completed#589", State: "Done"})
+	for i := range snapshot.BoardIssues {
+		issue := &snapshot.BoardIssues[i]
+		if issue.State == "Human Review" {
+			issue.Metadata = map[string]string{"detent.auto_promote_action": "await_review", "detent.auto_promote_reason": "artifact_status_wait: required release integration checks are still pending"}
+			issue.CompletionProgress = running.CompletionProgress
+		}
+	}
+
 	return snapshot
 }
 

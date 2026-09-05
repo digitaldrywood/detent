@@ -201,6 +201,10 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
   });
   await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
 
+  await page.getByRole("button", { name: "More topbar controls" }).click();
+  await page.locator('[data-density-choice="comfy"]').click();
+  await page.getByRole("button", { name: "More topbar controls" }).click();
+
   const tooltip = page.locator("body > #help-tooltip");
   const runtimeBadge = page
     .locator("[data-board-runtime-badge][data-help-trigger]")
@@ -243,7 +247,7 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
       whiteSpace: getComputedStyle(element).whiteSpace,
     }));
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
-    expect(dimensions.whiteSpace).toBe("normal");
+    expect(dimensions.whiteSpace).toBe("pre-wrap");
   }
 
   const commentBodies = dialog.locator("[aria-label='Conversation'] article p");

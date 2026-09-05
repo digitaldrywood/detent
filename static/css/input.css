@@ -358,19 +358,20 @@
 
 }
 
-[data-board-card-content="compact"],
 [data-board-card-content="comfy"],
 [data-ai-debug-card-action] {
   display: none;
 }
 
-[data-density="compact"] [data-board-card-content="compact"] {
-  display: flex;
+[data-density="compact"] [data-board-card-signal]:nth-child(n + 2),
+[data-density="compact"] [data-board-card-age-footer] {
+  display: none;
 }
 
-[data-density="compact"] [data-board-card-content="cozy"],
-[data-density="compact"] [data-board-card-expanded] {
-  display: none;
+[data-density="compact"] [data-work-representation="board"],
+[data-density="cozy"] [data-work-representation="board"] {
+  gap: 0.25rem;
+  padding: 0.625rem;
 }
 
 [data-density="compact"] [data-board-card-title] {

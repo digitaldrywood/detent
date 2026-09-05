@@ -331,11 +331,12 @@ test("board card identity wraps while metadata truncates", async ({
     hasText: "Review deterministic chart colors",
   });
   const identity = card.locator("[data-board-card-identity]");
-  const secondary = card.locator('[data-board-card-content="cozy"]');
+  await page.locator('[data-density-choice="comfy"]').click();
+  const secondary = card.locator('[data-board-card-priority-details]');
   await card.evaluate((article) => {
     const project = article.querySelector("[data-board-card-project]");
     project.textContent = "digitaldrywood-release-train-platform";
-    const row = article.querySelector('[data-board-card-content="cozy"]');
+    const row = article.querySelector('[data-board-card-priority-details]');
     const badge = document.createElement("span");
     badge.className =
       "inline-flex min-w-7 max-w-24 shrink items-center rounded-chip border border-warn/30 bg-warn/15 px-1.5 py-0.5 font-mono text-2xs font-semibold text-warn";
@@ -349,7 +350,7 @@ test("board card identity wraps while metadata truncates", async ({
 
   const assertContained = async () => {
     const layout = await card.evaluate((article) => {
-      const row = article.querySelector('[data-board-card-content="cozy"]');
+      const row = article.querySelector('[data-board-card-priority-details]');
       const identityBlock = article.querySelector("[data-board-card-identity]");
       const project = article.querySelector("[data-board-card-project]");
       const priority = row.querySelector("[data-board-priority]");
@@ -411,8 +412,8 @@ test("board card identity wraps while metadata truncates", async ({
   await expect(secondary).toBeHidden();
   await expect(identity).toBeVisible();
   await page.locator('[data-density-choice="cozy"]').click();
-  await expect(secondary).toBeVisible();
-  await assertContained();
+  await expect(secondary).toBeHidden();
+  await expect(identity).toBeVisible();
   await attachScreenshotEvidence(page, "board-card-header-5-lanes.png", testInfo);
   await page.locator('[data-density-choice="comfy"]').click();
   await expect(secondary).toBeVisible();
@@ -424,7 +425,7 @@ test("board card identity wraps while metadata truncates", async ({
   }
   await page.locator("#board-lane-picker summary").click();
   await expect(page.locator("[data-board-lane-count]")).toHaveText("9/9");
-  await page.locator('[data-density-choice="cozy"]').click();
+  await page.locator('[data-density-choice="comfy"]').click();
   await assertContained();
   await attachScreenshotEvidence(page, "board-card-header-9-lanes.png", testInfo);
 });
@@ -448,7 +449,7 @@ test("board keeps dependency waits on cards without global alerts", async ({
     hasText: "Dependency issue waiting on ledger migration",
   });
   await expect(waitingCard).toBeVisible();
-  await expect(waitingCard).toContainText("waiting -");
+  await expect(waitingCard.locator("[data-board-card-signal]").first()).toHaveText("Waiting");
   await capturePageAndAttach(page, "board-dependency-waits.png", testInfo);
 });
 
@@ -461,6 +462,8 @@ test("boosted card explains its direct downstream count", async ({ page }) => {
     waitUntil: "domcontentloaded",
   });
   await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  await page.locator('[data-density-choice="comfy"]').click();
 
   const card = page.locator("article", {
     hasText: "Add screenshot manifest smoke test",
@@ -1055,7 +1058,7 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     viewport: desktopViewport,
   });
 
-  await page.locator('[data-density-choice="cozy"]').click();
+  await page.locator('[data-density-choice="comfy"]').click();
   const fallbackBadge = page
     .locator('[data-board-runtime-badge]', { hasText: "agent working" })
     .first();
@@ -1119,14 +1122,14 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     "data-help-description",
     "Provider: openai · Provider session: thread-demo-core-5260 · Role: code · Detent session: 5260",
   );
-  await expect(cozyIdentity).toBeVisible();
+  await page.locator('[data-density-choice="cozy"]').click();
+  await expect(badge).toBeHidden();
   await expect(cozyIdentity).toHaveText("gpt-5.6-sol · xhigh");
-  await expect(comfyIdentity).toBeHidden();
   await page.locator('[data-density-choice="comfy"]').click();
   await expect(cozyIdentity).toBeHidden();
   await expect(comfyIdentity).toBeVisible();
   await expect(comfyIdentity).toHaveText("Codex · gpt-5.6-sol · xhigh");
-  await page.locator('[data-density-choice="cozy"]').click();
+  await card.evaluate((element) => element.scrollIntoView({ block: "start", inline: "nearest" }));
   const initialHeight = await card.evaluate((element) =>
     element.getBoundingClientRect().height,
   );

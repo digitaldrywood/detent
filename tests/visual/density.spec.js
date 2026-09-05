@@ -38,15 +38,13 @@ test("card density changes rendered information and persists", async ({
   const aiDebugAction = runningCard.locator("[data-ai-debug-card-action]");
 
   await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
-  await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeHidden();
-  await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeVisible();
+  await expect(runningCard.locator("[data-board-card-signals]")).toBeVisible();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeHidden();
   await expect(aiDebugAction).toBeHidden();
 
   await page.locator('[data-density-choice="compact"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
-  await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeVisible();
-  await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeHidden();
+  await expect(runningCard.locator('[data-board-card-priority-details]')).toBeHidden();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeHidden();
   await expect(aiDebugAction).toBeHidden();
   await expect(
@@ -66,8 +64,7 @@ test("card density changes rendered information and persists", async ({
 
   await page.locator('[data-density-choice="comfy"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-density", "comfy");
-  await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeHidden();
-  await expect(runningCard.locator('[data-board-card-content="cozy"]')).toBeVisible();
+  await expect(runningCard.locator("[data-board-card-signals]")).toBeVisible();
   await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeVisible();
   await expect(aiDebugAction).toBeVisible();
   await expect(runningCard.locator("[data-board-card-labels]")).toContainText("enhancement");
@@ -274,4 +271,124 @@ async function morphSnapshot(page, incoming) {
       }),
     incoming,
   );
+}
+
+for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
+  test(`busy cards enforce density budgets at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": "board-card-identity-maximal" });
+    await page.goto(runtime.url, { waitUntil: "domcontentloaded" });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+    await page.locator("#board-lane-picker summary").click();
+    for (const select of await page.locator("[data-board-lane-visibility]").all()) {
+      await select.selectOption("show");
+    }
+    await page.locator("#board-lane-picker summary").click();
+    await expect(page.locator("[data-board-lane-count]")).toHaveText("9/9");
+    const card = page.locator("article", { hasText: "Keep project, issue, and pull request identity visible with maximal metadata" });
+    const blockers = card.locator("[data-board-card-blockers]");
+    const signals = card.locator("[data-board-card-signal]:visible");
+    const snapshot = await page.locator("#snapshot").evaluate(el => el.innerHTML);
+    let cozyHeight;
+    for (const density of ["compact", "cozy", "comfy"]) {
+      await chooseDensity(page, density);
+      await card.scrollIntoViewIfNeeded();
+      await assertCardIdentity(card);
+      if (density === "comfy") {
+        await expect(blockers).toBeVisible();
+        await expect(blockers).toContainText("component-8#597 (In Progress)");
+        await expect(blockers).toContainText("completed#589 (Done)");
+        await expect(card.locator("[data-board-card-park-summary]")).toBeVisible();
+        const detailsGeometry = await card.evaluate(el => {
+          const box = el.getBoundingClientRect();
+          return [...el.querySelectorAll("[data-board-card-expanded]")].map(row => ({
+            lines: row.getBoundingClientRect().height / parseFloat(getComputedStyle(row).lineHeight),
+            contained: row.getBoundingClientRect().right <= box.right,
+          }));
+        });
+        for (const row of detailsGeometry) {
+          expect(row.lines).toBeLessThanOrEqual(2.05);
+          expect(row.contained).toBe(true);
+        }
+        expect((await card.boundingBox()).height).toBeLessThanOrEqual(680);
+      } else {
+        await expect(blockers).toBeHidden();
+        await expect(card.locator("[data-board-card-details]")).toBeHidden();
+        await expect(signals).toHaveText(density === "compact" ? ["Blocked · 8"] : ["Blocked · 8", "Sync error"]);
+        const geometry = await card.evaluate(el => {
+          const identity = el.querySelector("[data-board-card-identity]");
+          const title = el.querySelector("[data-board-card-title]");
+          const visibleSignals = [...el.querySelectorAll("[data-board-card-signal]")].filter(x => x.getBoundingClientRect().height);
+          return {
+            height: el.getBoundingClientRect().height,
+            supportingHeight: el.getBoundingClientRect().height - identity.getBoundingClientRect().height,
+            titleLines: title.getBoundingClientRect().height / parseFloat(getComputedStyle(title).lineHeight),
+            signalLines: visibleSignals.map(x => x.getBoundingClientRect().height / parseFloat(getComputedStyle(x).lineHeight)),
+          };
+        });
+        expect(geometry.supportingHeight).toBeLessThanOrEqual(density === "compact" ? 76 : 130);
+        expect(geometry.height).toBeLessThanOrEqual(density === "compact" ? 160 : 215);
+        expect(geometry.titleLines).toBeLessThanOrEqual(density === "compact" ? 1.05 : 2.05);
+        for (const lines of geometry.signalLines) expect(lines).toBeLessThanOrEqual(1.05);
+        if (density === "cozy") cozyHeight = geometry.height;
+        const review = page.locator('[data-board-lane="human-review"]');
+        await expect(review.locator("[data-board-card-progress]:visible")).toHaveCount(0);
+        expect(await review.innerText()).not.toContain("artifact_status_wait");
+      }
+      for (const theme of ["dark", "light"]) {
+        await page.evaluate(value => {
+          if (value === "light") document.documentElement.setAttribute("data-theme", "light");
+          else document.documentElement.removeAttribute("data-theme");
+        }, theme);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+        await expect(page).toHaveScreenshot(`board-budget-${density}-${theme}-${viewport.width}.png`);
+      }
+
+    }
+    await chooseDensity(page, "cozy");
+    await expect(blockers).toBeHidden();
+    await morphSnapshot(page, snapshot);
+    await expect(blockers).toBeHidden();
+    await expect(signals).toHaveText(["Blocked · 8", "Sync error"]);
+    expect((await card.boundingBox()).height).toBe(cozyHeight);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
+    await expect(blockers).toBeHidden();
+    expect((await card.boundingBox()).height).toBe(cozyHeight);
+    for (const density of ["compact", "cozy", "comfy"]) {
+      await page.goto(runtime.url, { waitUntil: "domcontentloaded" });
+      await chooseDensity(page, density);
+      await card.focus();
+      await page.keyboard.press("Enter");
+      const sheet = page.locator("[data-detail-sheet-core]");
+      await expect(sheet).toContainText("component-8#597 (In Progress)");
+      await expect(sheet.locator("[data-detail-blocker]")).toHaveCount(8);
+      for (const blocker of await sheet.locator("[data-detail-blocker]").all()) {
+        const layout = await blocker.evaluate(el => ({ contained: el.scrollWidth <= el.clientWidth + 1, whiteSpace: getComputedStyle(el).whiteSpace }));
+        expect(layout.contained).toBe(true);
+        expect(layout.whiteSpace).toBe("pre-wrap");
+      }
+      await expect(sheet).toContainText("completed#589 (Done)");
+      await expect(sheet).toContainText("artifact_status_wait");
+      const fullValue = sheet.locator('[data-sheet-row="Last turn"] [data-sheet-row-value]');
+      expect(await fullValue.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      await page.getByRole("button", { name: "Close details", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "Card details", exact: true })).toBeHidden();
+    }
+    await page.goto(runtime.url, { waitUntil: "domcontentloaded" });
+    await chooseDensity(page, "cozy");
+    await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": "board-card-single-blocker" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(signals).toHaveText(["Blocked · 1", "Sync error"]);
+    expect((await card.boundingBox()).height).toBe(cozyHeight);
+  });
+}
+
+async function chooseDensity(page, density) {
+  const mobile = page.viewportSize().width < 768;
+  const toggle = page.getByRole("button", { name: "More topbar controls" });
+  if (mobile) await toggle.click();
+  await page.locator(`[data-density-choice="${density}"]`).click();
+  if (mobile) await toggle.click();
+  await expect(page.locator("html")).toHaveAttribute("data-density", density);
 }

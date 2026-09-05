@@ -640,8 +640,8 @@ func TestBoardCardViewSurfacesStrandedDuration(t *testing.T) {
 	if view.ExtraKind != primitives.KindWarn || view.ExtraText != "Stranded 31d · no worker" || !view.ExtraChip {
 		t.Fatalf("stranded card signal = %q, %q, %t", view.ExtraKind, view.ExtraText, view.ExtraChip)
 	}
-	if view.CompactSignal != view.ExtraText {
-		t.Fatalf("CompactSignal = %q, want %q", view.CompactSignal, view.ExtraText)
+	if view.Signals[0].Text != "Stranded · no worker" {
+		t.Fatalf("CompactSignal = %q, want %q", view.Signals[0].Text, view.ExtraText)
 	}
 }
 
@@ -661,8 +661,8 @@ func TestBoardCardRendersMergeLaneProgress(t *testing.T) {
 	}
 
 	view := boardCardViewFromCard(DashboardData{}, projectKanbanLane{Title: "Merging"}, card, false, "fleet", "")
-	if view.CompactSignal != card.MergeLaneStatus {
-		t.Fatalf("CompactSignal = %q, want %q", view.CompactSignal, card.MergeLaneStatus)
+	if view.Signals[0].Text != card.MergeLaneStatus {
+		t.Fatalf("CompactSignal = %q, want %q", view.Signals[0].Text, card.MergeLaneStatus)
 	}
 	html := renderBoardComponent(t, boardCardView2(view))
 	for _, want := range []string{`data-board-card-merge-lane`, "Draining #2", card.MergeLaneDetail, "text-ok"} {
@@ -1054,8 +1054,8 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 	}}}}
 	view := boardCardViewFromCard(data, projectKanbanLane{Title: "In Progress"}, card, false, "fleet", "")
 
-	if view.State != "In Progress" || view.CompactSignal != "pass" {
-		t.Fatalf("compact content = %q / %q", view.State, view.CompactSignal)
+	if view.State != "In Progress" || view.Signals[0].Text != "Running" {
+		t.Fatalf("compact content = %q / %q", view.State, view.Signals[0].Text)
 	}
 	if strings.Join(view.Labels, ",") != "detent:todo,ux" || view.Effort != "xhigh" {
 		t.Fatalf("rich labels/effort = %v / %q", view.Labels, view.Effort)
@@ -1072,8 +1072,8 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 
 	html := renderBoardComponent(t, boardCardView2(view))
 	for _, want := range []string{
-		`data-board-card-content="compact"`,
-		`data-board-card-content="cozy"`,
+		`data-board-card-signals`,
+		`data-board-card-priority-details`,
 		`data-board-card-content="comfy"`,
 		`data-board-card-labels`,
 		`data-board-card-author`,
@@ -2645,53 +2645,13 @@ func TestBoardCardRendersStableIdentityForOperationalStates(t *testing.T) {
 				}
 			}
 			identityStart := strings.Index(html, `data-board-card-identity`)
-			identityEnd := strings.Index(html[identityStart:], `data-board-card-content="cozy"`)
+			identityEnd := strings.Index(html[identityStart:], `data-board-card-title`)
 			if identityEnd < 0 {
 				t.Fatalf("card identity has no secondary boundary:\n%s", html)
 			}
 			identityHTML := html[identityStart : identityStart+identityEnd]
 			if strings.Count(identityHTML, `onclick="event.stopPropagation()"`) != 2 {
 				t.Fatalf("issue and PR links must isolate card clicks:\n%s", identityHTML)
-			}
-		})
-	}
-}
-
-func TestBoardCardSurfacesMoveRefusalInEveryDensity(t *testing.T) {
-	t.Parallel()
-
-	reason := "Tracker candidate data for this card is stale; moves are disabled until it refreshes."
-	html := renderBoardComponent(t, boardCardView2(boardCardView{
-		DomID:             "card-1842",
-		Title:             "Scoped stale card",
-		State:             "Todo",
-		DragDrop:          true,
-		MoveDisabledText:  reason,
-		MoveDisabledLabel: "Stale",
-	}))
-	tests := []struct {
-		name   string
-		marker string
-	}{
-		{name: "cozy", marker: `data-board-card-content="cozy"`},
-		{name: "compact", marker: `data-board-card-content="compact"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			start := strings.Index(html, tt.marker)
-			if start < 0 {
-				t.Fatalf("card missing %s density content:\n%s", tt.name, html)
-			}
-			section := html[start:]
-			if next := strings.Index(section[len(tt.marker):], `data-board-card-content=`); next >= 0 {
-				section = section[:len(tt.marker)+next]
-			}
-			for _, want := range []string{`data-kanban-move-disabled-label`, `title="` + reason + `"`, `>Stale</span>`} {
-				if !strings.Contains(section, want) {
-					t.Fatalf("%s density missing %q:\n%s", tt.name, want, section)
-				}
 			}
 		})
 	}
@@ -4549,5 +4509,81 @@ func TestBoardLaneTerminalPerProject(t *testing.T) {
 	}
 	if len(released.Cards) == 1 && !released.Cards[0].Terminal {
 		t.Fatalf("project-b Released card should get terminal treatment: %+v", released.Cards[0])
+	}
+}
+
+func TestBoardCardSignalBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		view boardCardView
+		card projectKanbanCard
+		want string
+	}{
+		{name: "blocked beats running and runtime", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Blocked · 2|Running"},
+		{name: "cleared dependencies do not count", card: projectKanbanCard{Blockers: []string{"repo#1"}, ClearedBlockers: []string{"repo#2 (Done)"}}, want: "Blocked · 1"},
+		{name: "cleared dependencies alone are quiet", card: projectKanbanCard{ClearedBlockers: []string{"repo#2 (Done)"}}, want: ""},
+		{name: "sync error beats merge", view: boardCardView{Work: workItemMetadata{SyncKey: "error", Sync: "Error", SyncKind: primitives.KindErr}, MergeLaneStatus: "CI running"}, want: "Sync error|CI running"},
+		{name: "maximal actionable budget", view: boardCardView{Running: true, MergeLaneStatus: "CI running", Work: workItemMetadata{SyncKey: "error", Sync: "Error"}}, card: projectKanbanCard{Blockers: []string{"repo#1"}, WaitDetail: "artifact_status_wait"}, want: "Blocked · 1|Sync error"},
+		{name: "stranded", view: boardCardView{ExtraText: "Stranded 18m · no worker", Waiting: true}, want: "Stranded · no worker|No live attempt"},
+		{name: "stale", view: boardCardView{MoveDisabledLabel: "Stale", State: "Todo"}, want: "Stale"},
+		{name: "blocked lane", view: boardCardView{State: "Blocked"}, want: "Blocked"},
+		{name: "review", view: boardCardView{State: "Human Review"}, want: "Needs review"},
+		{name: "merging", view: boardCardView{State: "Merging"}, want: "Merging"},
+		{name: "running", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, want: "Running|model · high"},
+		{name: "wait diagnostics stay in details", card: projectKanbanCard{WaitDetail: "auto-promote await_review: artifact_status_wait very long internal explanation"}, want: "Waiting"},
+		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair"}, want: "Needs review"},
+		{name: "gate", card: projectKanbanCard{GatePending: true}, want: "Awaiting checks"},
+		{name: "retry", view: boardCardView{Retrying: true}, want: "Awaiting retry"},
+		{name: "failed checks beat running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "CI failed|Running"},
+		{name: "idle lane does not repeat state", view: boardCardView{State: "Todo", AgeFooter: "12m", OriginDetail: "via human", ProgressSummary: "Last turn", ParkSummary: "2 parks"}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for range 3 {
+				signals := boardCardSignals(tt.view, tt.card)
+				var labels []string
+				for _, signal := range signals {
+					labels = append(labels, signal.Text)
+				}
+				if got := strings.Join(labels, "|"); got != tt.want {
+					t.Fatalf("signals = %q, want %q", got, tt.want)
+				}
+				tt.view.Signals = signals
+				html := renderBoardComponent(t, boardCardView2(tt.view))
+				if got := strings.Count(html, "data-board-card-signal>"); got != len(signals) {
+					t.Fatalf("rendered %d signals, want %d", got, len(signals))
+				}
+			}
+		})
+	}
+}
+
+func TestBoardCardSheetPreservesSupportingValues(t *testing.T) {
+	t.Parallel()
+
+	for _, count := range []int{1, 8} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			t.Parallel()
+			card := projectKanbanCard{ProjectID: "detent", Stage: "Human Review", Title: "Busy card", WaitDetail: "auto-promote await_review: artifact_status_wait", AuthorID: "author", Origin: "human", OriginActor: "operator", ClearedBlockers: []string{"owner/completed-platform#589 (Done)"}, ParkSummary: telemetry.ParkSummary{AttemptCount: 6, ParkCount: 3}, CompletionProgress: telemetry.CompletionProgress{Outcome: "no_progress", Reason: "full progress reason"}}
+			for i := range count {
+				card.Blockers = append(card.Blockers, "owner/long-release-platform-"+strconv.Itoa(i)+"#590 (In Progress)")
+			}
+			card.BlockerSummary = strings.Join(append(append([]string(nil), card.Blockers...), card.ClearedBlockers...), " · ")
+			html := renderBoardComponent(t, BoardCardSheetCore(DashboardData{}, card, false))
+			for _, value := range append(append(card.Blockers, card.ClearedBlockers...), card.WaitDetail, "6 attempts", "3 parks", "full progress reason", "@author", "via human · @operator") {
+				if !strings.Contains(html, value) {
+					t.Fatalf("sheet missing full value %q", value)
+				}
+			}
+			if got := strings.Count(html, "data-detail-blocker>"); got != count {
+				t.Fatalf("sheet has %d readable blocker paragraphs, want %d", got, count)
+			}
+			if strings.Contains(html, "md:truncate") {
+				t.Fatal("sheet core truncates supporting values")
+			}
+		})
 	}
 }

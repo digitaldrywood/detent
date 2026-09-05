@@ -160,6 +160,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "health-tracker-stale", Route: "/health/ui", WaitSelector: "#health-tracker-dogfood", Page: "health", Variant: "tracker-stale", HideFromManifest: true},
 		{ID: "board-recent-completions", Route: "/", WaitSelector: "#lane-done", Page: "fleet-kanban", Variant: "recent-completions", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "board-card-identity-maximal", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-card-identity", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
+		{ID: "board-card-single-blocker", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-card-single-blocker", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "fleet-kanban-external-lane-timer", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "external-lane-timer", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "fleet-kanban-unblocker-boost", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "unblocker-boost", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "stop-run-picker", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "stop-run-picker", HideFromManifest: true},

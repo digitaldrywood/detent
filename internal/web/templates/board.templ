@@ -669,142 +669,142 @@ templ boardCardView2(card boardCardView) {
 				}
 			</div>
 		</div>
-		<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs font-medium text-sec" data-board-card-content="cozy">
-			if card.Running {
-				@primitives.StatusDot(primitives.KindOK, true)
-			}
-			if card.PriorityBadge != "" {
-				<span
-					id={ card.DomID + "-priority" }
-					class={ boardPriorityBadgeClass(card) }
-					tabindex="0"
-					role="img"
-					aria-label={ "Priority: " + card.PriorityBadge }
-					data-board-priority
-					data-board-priority-top={ boardBoolAttr(card.PriorityTop) }
-					data-help-trigger
-					data-help-scope="dispatch-priority"
-					data-help-term={ card.DomID + "-priority" }
-					data-help-title={ card.PriorityTitle }
-					data-help-description={ card.PriorityDetail }
-					onclick="event.stopPropagation()"
-				><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
-			}
-			if card.MoveDisabledText != "" {
-				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
-			} else if card.Done {
-				<span class="text-ok" role="img" aria-label="done">✓</span>
-			}
-		</div>
+		<span class="hidden" data-board-card-state>{ card.State }</span>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
-		<div class="min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-2xs text-sec" data-board-card-content="compact">
-			<span class="flex-none font-medium text-text" data-board-card-state>{ card.State }</span>
-			if card.CompactSignal != "" {
-				<span aria-hidden="true">·</span>
-				<span class="min-w-0 truncate">{ card.CompactSignal }</span>
-			}
-			if card.MoveDisabledText != "" {
-				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
-			}
-		</div>
-		if card.RuntimeBadge {
-			@boardRuntimeBadge(card)
-		}
-		if card.MergeLaneStatus != "" {
-			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.MergeLaneKind) } data-board-card-merge-lane data-board-card-expanded title={ card.MergeLaneDetail }>
-				@primitives.StatusDot(card.MergeLaneKind, false)
-				<span class="font-medium">{ card.MergeLaneStatus }</span>
-				<span class="min-w-0 truncate font-mono">{ card.MergeLaneDetail }</span>
-			</div>
-		}
-		if card.OriginDetail != "" {
-			<div class="flex items-center gap-1.5 text-2xs text-info" data-board-card-origin data-board-card-expanded>
-				@primitives.StatusDot(primitives.KindInfo, false)
-				<span class="min-w-0 truncate font-mono">{ card.OriginDetail }</span>
-			</div>
-		}
-		if card.ExtraText != "" && (!card.RuntimeBadge || card.ExtraText != "agent working") {
-			if card.ExtraChip {
-				<div class="flex" data-board-card-expanded>
-					@primitives.Chip(card.ExtraKind, card.ExtraText)
-				</div>
-			} else {
-				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) } data-board-card-expanded>
-					@primitives.StatusDot(card.ExtraKind, false)
-					{ card.ExtraText }
-				</div>
-			}
-		}
-		if card.Work.SyncKey != "synced" {
-			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.Work.SyncKind) } data-board-card-sync={ card.Work.SyncKey } data-board-card-expanded title={ card.Work.SyncTitle }>
-				@primitives.StatusDot(card.Work.SyncKind, false)
-				<span>{ "GitHub " + card.Work.Sync }</span>
-			</div>
-		}
-		if card.BlockerSummary != "" {
-			<div class="min-w-0 text-2xs text-sec" data-board-card-blockers data-board-card-expanded>
-				<span class="text-dim">Blocker refs</span> { card.BlockerSummary }
-			</div>
-		}
-		if card.ParkSummary != "" {
-			<div
-				id={ card.DomID + "-park-summary" }
-				class="min-w-0 truncate font-mono text-2xs text-sec"
-				tabindex="0"
-				role="img"
-				aria-label={ "Park history: " + card.ParkDetail }
-				data-board-card-park-summary
-				data-board-card-expanded
-				data-help-trigger
-				data-help-scope="park-history"
-				data-help-term={ card.DomID + "-park-summary" }
-				data-help-title="Park history"
-				data-help-description={ card.ParkDetail }
-			>{ card.ParkSummary }</div>
-		}
-		if card.ProgressSummary != "" {
-			<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ProgressKind) } title={ card.ProgressDetail } data-board-card-progress data-board-card-expanded>
-				@primitives.StatusDot(card.ProgressKind, false)
-				<span class="min-w-0 truncate font-mono">{ card.ProgressSummary }</span>
+		if len(card.Signals) > 0 {
+			<div class="grid min-w-0 gap-1" data-board-card-signals>
+				for _, signal := range card.Signals {
+					<div class={ "min-w-0 truncate text-2xs " + boardExtraTextClass(signal.Kind) } data-board-card-signal>{ signal.Text }</div>
+				}
 			</div>
 		}
 		if card.AgeFooter != "" {
-			<div class="mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer data-board-card-expanded>
+			<div class="flex min-w-0 items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer>
 				<span class="min-w-0 truncate">In lane</span>
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.AgeFooter }</span>
 			</div>
 		}
-		if card.AuthorDetail != "" || len(card.Labels) > 0 || card.Effort != "" || card.Activity != "" || card.PRStatus != "" {
-			<div class="gap-1.5 border-t border-line/70 pt-1.5 text-2xs text-sec" data-board-card-content="comfy">
-				if card.AuthorDetail != "" {
-					<div class="flex min-w-0 items-center gap-1.5" data-board-card-author>
-						<span class="flex-none text-dim">Filed by</span>
-						<span class="min-w-0 truncate font-mono text-text">{ card.AuthorDetail }</span>
-					</div>
+		<div class="min-w-0 grid-cols-1 gap-1.5 border-t border-line/70 pt-1.5" data-board-card-content="comfy" data-board-card-details>
+			<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs font-medium text-sec" data-board-card-priority-details>
+				if card.Running {
+					@primitives.StatusDot(primitives.KindOK, true)
 				}
-				if len(card.Labels) > 0 {
-					<div class="flex min-w-0 flex-wrap gap-1" data-board-card-labels>
-						for _, label := range card.Labels {
-							<span class="max-w-full truncate rounded-chip bg-surface px-1.5 py-0.5">{ label }</span>
-						}
-					</div>
+				if card.PriorityBadge != "" {
+					<span
+						id={ card.DomID + "-priority" }
+						class={ boardPriorityBadgeClass(card) }
+						tabindex="0"
+						role="img"
+						aria-label={ "Priority: " + card.PriorityBadge }
+						data-board-priority
+						data-board-priority-top={ boardBoolAttr(card.PriorityTop) }
+						data-help-trigger
+						data-help-scope="dispatch-priority"
+						data-help-term={ card.DomID + "-priority" }
+						data-help-title={ card.PriorityTitle }
+						data-help-description={ card.PriorityDetail }
+						onclick="event.stopPropagation()"
+					><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
 				}
-				if card.Effort != "" {
-					<div class="flex min-w-0 items-center gap-1.5" data-board-card-effort>
-						<span class="text-dim">Effort</span>
-						<span class="truncate font-mono text-text">{ card.Effort }</span>
-					</div>
-				}
-				if card.Activity != "" {
-					<div class="line-clamp-2 min-w-0" data-board-card-activity><span class="text-dim">Activity</span> { card.Activity }</div>
-				}
-				if card.PRStatus != "" {
-					<div class={ "w-fit rounded-chip border px-1.5 py-0.5 font-mono " + card.PRStatusClass } data-board-card-pr-status>{ card.PRStatus }</div>
+				if card.MoveDisabledText != "" {
+					<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+				} else if card.Done {
+					<span class="text-ok" role="img" aria-label="done">✓</span>
 				}
 			</div>
-		}
-		<div class="flex flex-col gap-1.5 border-t border-line/70 pt-1.5" data-ai-debug-card-action>
-			@aiDebugCopyButton(aiDebugIssuePath(card.Project, card.Identity), "inline-flex w-fit items-center gap-1.5 rounded-chip border border-line bg-surface px-2 py-1 text-2xs font-medium text-text hover:border-accent hover:text-accent")
+			if card.RuntimeBadge {
+				@boardRuntimeBadge(card)
+			}
+			if card.MergeLaneStatus != "" {
+				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.MergeLaneKind) } data-board-card-merge-lane data-board-card-expanded title={ card.MergeLaneDetail }>
+					@primitives.StatusDot(card.MergeLaneKind, false)
+					<span class="line-clamp-2 min-w-0 font-medium">{ card.MergeLaneStatus }</span>
+					<span class="min-w-0 truncate font-mono">{ card.MergeLaneDetail }</span>
+				</div>
+			}
+			if card.OriginDetail != "" {
+				<div class="flex items-center gap-1.5 text-2xs text-info" data-board-card-origin data-board-card-expanded>
+					@primitives.StatusDot(primitives.KindInfo, false)
+					<span class="min-w-0 truncate font-mono">{ card.OriginDetail }</span>
+				</div>
+			}
+			if card.ExtraText != "" && (!card.RuntimeBadge || card.ExtraText != "agent working") {
+				if card.ExtraChip {
+					<div class="min-w-0 line-clamp-2" data-board-card-expanded>
+						@primitives.Chip(card.ExtraKind, card.ExtraText)
+					</div>
+				} else {
+					<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) } data-board-card-expanded>
+						@primitives.StatusDot(card.ExtraKind, false)
+						<span class="line-clamp-2 min-w-0">{ card.ExtraText }</span>
+					</div>
+				}
+			}
+			if card.Work.SyncKey != "synced" {
+				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.Work.SyncKind) } data-board-card-sync={ card.Work.SyncKey } data-board-card-expanded title={ card.Work.SyncTitle }>
+					@primitives.StatusDot(card.Work.SyncKind, false)
+					<span>{ "GitHub " + card.Work.Sync }</span>
+				</div>
+			}
+			if card.BlockerSummary != "" {
+				<div class="line-clamp-2 min-w-0 break-words text-2xs text-sec" data-board-card-blockers data-board-card-expanded>
+					<span class="text-dim">Blocker refs</span> { card.BlockerSummary }
+				</div>
+			}
+			if card.ParkSummary != "" {
+				<div
+					id={ card.DomID + "-park-summary" }
+					class="min-w-0 truncate font-mono text-2xs text-sec"
+					tabindex="0"
+					role="img"
+					aria-label={ "Park history: " + card.ParkDetail }
+					data-board-card-park-summary
+					data-board-card-expanded
+					data-help-trigger
+					data-help-scope="park-history"
+					data-help-term={ card.DomID + "-park-summary" }
+					data-help-title="Park history"
+					data-help-description={ card.ParkDetail }
+				>{ card.ParkSummary }</div>
+			}
+			if card.ProgressSummary != "" {
+				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ProgressKind) } title={ card.ProgressDetail } data-board-card-progress data-board-card-expanded>
+					@primitives.StatusDot(card.ProgressKind, false)
+					<span class="min-w-0 truncate font-mono">{ card.ProgressSummary }</span>
+				</div>
+			}
+			if card.AuthorDetail != "" || len(card.Labels) > 0 || card.Effort != "" || card.Activity != "" || card.PRStatus != "" {
+				<div class="grid min-w-0 gap-1.5 text-2xs text-sec">
+					if card.AuthorDetail != "" {
+						<div class="flex min-w-0 items-center gap-1.5" data-board-card-author>
+							<span class="flex-none text-dim">Filed by</span>
+							<span class="min-w-0 truncate font-mono text-text">{ card.AuthorDetail }</span>
+						</div>
+					}
+					if len(card.Labels) > 0 {
+						<div class="line-clamp-2 min-w-0" data-board-card-labels>
+							for _, label := range card.Labels {
+								<span class="max-w-full truncate rounded-chip bg-surface px-1.5 py-0.5">{ label }</span>
+							}
+						</div>
+					}
+					if card.Effort != "" {
+						<div class="flex min-w-0 items-center gap-1.5" data-board-card-effort>
+							<span class="text-dim">Effort</span>
+							<span class="truncate font-mono text-text">{ card.Effort }</span>
+						</div>
+					}
+					if card.Activity != "" {
+						<div class="line-clamp-2 min-w-0" data-board-card-activity><span class="text-dim">Activity</span> { card.Activity }</div>
+					}
+					if card.PRStatus != "" {
+						<div class={ "line-clamp-2 max-w-full rounded-chip border px-1.5 py-0.5 font-mono " + card.PRStatusClass } data-board-card-pr-status>{ card.PRStatus }</div>
+					}
+				</div>
+			}
+			<div class="flex flex-col gap-1.5 border-t border-line/70 pt-1.5" data-ai-debug-card-action>
+				@aiDebugCopyButton(aiDebugIssuePath(card.Project, card.Identity), "inline-flex w-fit items-center gap-1.5 rounded-chip border border-line bg-surface px-2 py-1 text-2xs font-medium text-text hover:border-accent hover:text-accent")
+			</div>
 		</div>
 		if card.CanDrag {
 			@boardKanbanDragMoveForm(card)
