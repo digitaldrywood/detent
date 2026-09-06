@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -44,6 +45,7 @@ type implementCompletionProgressDecision struct {
 	WorkspaceDiffStats     DiffStats
 	ConsecutiveNoProgress  int
 	WorkpadStatus          string
+	SecurityAudit          securityaudit.Evaluation
 	HumanAction            string
 	TrackerState           string
 	ConsecutiveHumanAction int
@@ -346,6 +348,11 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 	decision.Issue = issue
 	decision.TrackerState = strings.TrimSpace(issue.State)
 	decision.WorkspaceDiffStats = implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
+	if workpadCurrent {
+		decision.WorkpadStatus = implementProgressArtifactSnapshotFromIssue(issue, true).WorkpadStatus
+		_, decision.HumanAction = implementProgressBlockedHumanAction(issue)
+	}
+	decision.SecurityAudit = o.securityAuditEvaluation(ctx, issue)
 	if workpadCurrent && !pullRequestMerged(issue.PullRequest) && implementProgressDiffStatsClean(decision.WorkspaceDiffStats) && decision.WorkspaceDiffStats.UnpushedCommits == 0 && len(decision.WorkspaceDiffStats.CommitsNotInPullRequest) == 0 {
 		blockers, rejected, deferred := o.evaluateImplementDependencyDeferral(ctx, issue)
 		decision.DependencyBlockers = blockers
@@ -383,6 +390,24 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		return decision
 	}
 	previous, ok := latestImplementProgressSignature(attempts)
+	if decision.WorkpadStatus == workpad.StatusBlocked {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
+		decision.Reason = "workpad_blocked"
+		decision.ConsecutiveNoProgress = 1 + consecutiveImplementNoProgressAttempts(attempts, signature)
+		decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+		if decision.Block {
+			decision.BlockReason = noProgressLimitReason
+		}
+		if decision.HumanAction != "" {
+			decision.ConsecutiveHumanAction = 1 + consecutiveImplementBlockedHumanActionAttempts(attempts, decision.HumanAction, decision.TrackerState)
+			decision.Block = decision.ConsecutiveHumanAction >= workpadBlockedUnactionedLimit
+			if decision.Block {
+				decision.Reason = workpadBlockedUnactionedReason
+				decision.BlockReason = workpadBlockedUnactionedReason
+			}
+		}
+		return decision
+	}
 	if ok {
 		decision.PreviousSignature = previous
 		decision.PreviousSignatureFound = true
@@ -620,6 +645,16 @@ func implementProgressBlockedHumanAction(issue connector.Issue) (string, string)
 		return "", ""
 	}
 	humanAction := strings.TrimSpace(signal.HumanAction)
+	if humanAction == "" {
+		for _, blocker := range signal.Blockers {
+			if blocker.Owner == workpad.BlockerOwnerHuman {
+				humanAction = firstNonBlank(blocker.Reason, blocker.Ref, blocker.Identifier)
+				if humanAction != "" {
+					break
+				}
+			}
+		}
+	}
 	if humanAction == "" {
 		return "", ""
 	}

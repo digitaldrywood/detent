@@ -1133,6 +1133,9 @@ func TestDispatchableCompletedReworkGateWaitEvidence(t *testing.T) {
 			prepareComplete: func(issue *connector.Issue) {
 				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
 			},
+			prepareCurrent: func(issue *connector.Issue) {
+				issue.PullRequest.RequiredCheckFailures = nil
+			},
 		},
 		{
 			name: "lane movement permits dispatch",

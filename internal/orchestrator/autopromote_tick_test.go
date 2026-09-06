@@ -1196,6 +1196,7 @@ func TestRestoreDurableReworkGateWaitCompletion(t *testing.T) {
 				CIStatus:       "success",
 			})
 			issue.State = "Rework"
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
 			recordedIssue := cloneIssue(issue)
 			if tt.prepareIssue != nil {
 				tt.prepareIssue(&issue)
@@ -1203,7 +1204,7 @@ func TestRestoreDurableReworkGateWaitCompletion(t *testing.T) {
 			signature := autoPromoteReworkSignature{PRNumber: 2030, HeadSHA: "same-head", FailedChecks: tt.recordedFailures}
 			attempt := successfulReworkGateWaitAttempt(now.Add(-2*time.Minute), recordedIssue, signature, tt.includeMarker)
 			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{attempt}}
-			orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
+			orch := &Orchestrator{cfg: cfg, workAttempts: attempts, connector: &implementProgressConnector{refreshed: issue}}
 			state := newState(cfg)
 
 			orch.restoreDurableGateWaitCompletions(t.Context(), &state, []connector.Issue{issue})

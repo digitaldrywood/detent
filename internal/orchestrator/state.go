@@ -71,6 +71,7 @@ type State struct {
 	BoardIssues              []connector.Issue
 	Pipeline                 []connector.Issue
 	AutoPromoteDecisions     map[string]AutoPromoteDecision
+	RequiredGates            map[string]telemetry.RequiredGate
 	Running                  map[string]Running
 	WorkAttempts             []telemetry.WorkAttempt
 	SchedulerDecisions       []telemetry.SchedulerDecision
@@ -475,6 +476,7 @@ func (s State) clone() State {
 		BoardIssues:              cloneIssues(s.BoardIssues),
 		Pipeline:                 cloneIssues(s.Pipeline),
 		AutoPromoteDecisions:     cloneAutoPromoteDecisions(s.AutoPromoteDecisions),
+		RequiredGates:            maps.Clone(s.RequiredGates),
 		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions:       cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
 		DispatchEscalations:      maps.Clone(s.DispatchEscalations),

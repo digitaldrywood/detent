@@ -910,12 +910,42 @@ func gateFromSnapshot(collected collectedEvidence) (Gate, bool) {
 		}
 	}
 	gate.Running = append(gate.Running, pr.RunningChecks...)
+	gate.CIState = pr.CIStatus
+	gate.MergeableState = pr.MergeableState
+	if required := issue.RequiredGate; required != nil && required.PRNumber == pr.Number &&
+		required.HeadSHA == strings.TrimSpace(pr.HeadSHA) && required.BaseSHA == strings.TrimSpace(pr.BaseSHA) {
+		gate.State = GateState(required.State)
+		gate.Reason = required.Reason
+		gate.HeadSHA = required.HeadSHA
+		gate.BaseSHA = required.BaseSHA
+		gate.AuditRunID = required.AuditRunID
+		gate.AuditReason = required.AuditReason
+		gate.HumanAction = required.HumanAction
+		if gate.State == GateFailed {
+			gate.Failures = append(gate.Failures, required.Reason)
+		}
+	} else if issue.RequiredGate != nil {
+		gate.State = GatePending
+		gate.Reason = "gate_evidence_stale"
+	}
 	if strings.TrimSpace(pr.HydrationUnavailableReason) != "" || strings.TrimSpace(pr.HydrationDegradedReason) != "" {
 		gate.State = GateUnavailable
 		return gate, true
 	}
 	if len(gate.Failures) > 0 {
 		gate.State = GateFailed
+		if len(pr.RequiredCheckFailures) > 0 {
+			gate.Reason = "ci_not_green"
+		}
+		return gate, true
+	}
+	if strings.EqualFold(strings.TrimSpace(pr.MergeableState), "dirty") || strings.EqualFold(strings.TrimSpace(pr.MergeableState), "conflicting") {
+		gate.State = GateFailed
+		gate.Reason = "merge_conflicts"
+		gate.Failures = append(gate.Failures, "merge_conflicts")
+		return gate, true
+	}
+	if issue.RequiredGate != nil {
 		return gate, true
 	}
 	gate.State = normalizedGateState(pr.CIStatus)

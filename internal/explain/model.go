@@ -222,13 +222,21 @@ type PullRequest struct {
 }
 
 type Gate struct {
-	State       GateState   `json:"state"`
-	SourceState SourceState `json:"source_state"`
-	EvidenceID  string      `json:"evidence_id,omitempty"`
-	Source      string      `json:"source,omitempty"`
-	ObservedAt  *time.Time  `json:"observed_at,omitempty"`
-	Failures    []string    `json:"failures"`
-	Running     []string    `json:"running"`
+	CIState        string      `json:"ci_state,omitempty"`
+	Reason         string      `json:"reason,omitempty"`
+	MergeableState string      `json:"mergeable_state,omitempty"`
+	HeadSHA        string      `json:"head_sha,omitempty"`
+	BaseSHA        string      `json:"base_sha,omitempty"`
+	AuditRunID     int64       `json:"audit_run_id,omitempty"`
+	AuditReason    string      `json:"audit_reason,omitempty"`
+	HumanAction    string      `json:"human_action,omitempty"`
+	State          GateState   `json:"state"`
+	SourceState    SourceState `json:"source_state"`
+	EvidenceID     string      `json:"evidence_id,omitempty"`
+	Source         string      `json:"source,omitempty"`
+	ObservedAt     *time.Time  `json:"observed_at,omitempty"`
+	Failures       []string    `json:"failures"`
+	Running        []string    `json:"running"`
 }
 
 type SourceStatus struct {

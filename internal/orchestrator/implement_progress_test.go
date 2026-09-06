@@ -1143,6 +1143,7 @@ func TestHandleRunResultDoesNotSupersedeReworkPullRequestUpdates(t *testing.T) {
 	completedIssue.State = "Rework"
 	replacementIssue := cloneIssue(completedIssue)
 	replacementIssue.PullRequest.HeadSHA = "replacement-head"
+	replacementIssue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
 	signature := autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "completed-head"}
 	tests := []struct {
 		name   string
@@ -1161,7 +1162,7 @@ func TestHandleRunResultDoesNotSupersedeReworkPullRequestUpdates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := &implementProgressConnector{hydrated: replacementIssue}
+			tracker := &implementProgressConnector{hydrated: replacementIssue, refreshed: replacementIssue}
 			attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{
 				successfulReworkGateWaitAttempt(base.Add(-2*time.Minute), completedIssue, signature, true),
 			}}
@@ -1261,7 +1262,8 @@ func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
 
 			issue := implementProgressIssue("same-head")
 			issue.State = "Rework"
-			tracker := &implementProgressConnector{hydrated: issue}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			tracker := &implementProgressConnector{hydrated: issue, refreshed: issue}
 			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
@@ -1291,6 +1293,7 @@ func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
 				DispatchSourceState: "Rework",
 				StartedAt:           base.Add(-time.Minute),
 				DiffStats:           DiffStats{Status: "clean"},
+				DispatchProgress:    implementProgressArtifactSnapshotFromIssue(issue, true),
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: base.Add(-time.Minute)}
 
