@@ -469,17 +469,17 @@ test("boosted card explains its direct downstream count", async ({ page }) => {
     hasText: "Add screenshot manifest smoke test",
   });
   const badge = card.locator('[data-board-priority]', {
-    hasText: "unblocker",
+    hasText: "prerequisite",
   });
   await expect(badge).toHaveAttribute(
     "data-help-description",
-    "Unblocks 2 issues.",
+    "Prerequisite for 2 blocked issues.",
   );
   await badge.hover();
   await badge.dispatchEvent("pointerover", { pointerType: "mouse" });
   const tooltip = page.locator("body > #help-tooltip");
   await expect(tooltip).toBeVisible();
-  await expect(tooltip).toContainText("Unblocks 2 issues");
+  await expect(tooltip).toContainText("Prerequisite for 2 blocked issues");
 });
 
 test("board elevated blockers render one compact opt-in alert", async ({

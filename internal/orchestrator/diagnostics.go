@@ -187,9 +187,9 @@ func (o *Orchestrator) escalateCorrectableDispatchDecision(state *State, now tim
 
 func unblockerDecisionReason(count int) string {
 	if count == 1 {
-		return "unblocks_1_issue"
+		return "prerequisite_for_1_blocked_issue"
 	}
-	return fmt.Sprintf("unblocks_%d_issues", count)
+	return fmt.Sprintf("prerequisite_for_%d_blocked_issues", count)
 }
 
 func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome string, decision scheduler.DispatchGateDecision, projectStats projectStateSlotStats) {

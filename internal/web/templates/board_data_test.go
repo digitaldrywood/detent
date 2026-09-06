@@ -724,14 +724,14 @@ func TestBoardCardPriority(t *testing.T) {
 		{
 			name:       "derived unblocker boost",
 			card:       projectKanbanCard{UnblockerCount: 3},
-			wantBadge:  "unblocker",
-			wantDetail: "Unblocks 3 issues.",
+			wantBadge:  "prerequisite",
+			wantDetail: "Prerequisite for 3 blocked issues.",
 		},
 		{
 			name:       "single derived dependent",
 			card:       projectKanbanCard{UnblockerCount: 1},
-			wantBadge:  "unblocker",
-			wantDetail: "Unblocks 1 issue.",
+			wantBadge:  "prerequisite",
+			wantDetail: "Prerequisite for 1 blocked issue.",
 		},
 		{
 			name: "unprioritized",
@@ -3484,8 +3484,8 @@ func TestBoardSnapshotRendersUnblockerPriorityDetail(t *testing.T) {
 	for _, want := range []string{
 		`data-board-priority`,
 		`data-help-scope="dispatch-priority"`,
-		`data-help-description="Unblocks 2 issues."`,
-		`unblocker`,
+		`data-help-description="Prerequisite for 2 blocked issues."`,
+		`prerequisite`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("unblocker board snapshot missing %q:\n%s", want, html)
@@ -4591,6 +4591,18 @@ func TestBoardCardSheetPreservesSupportingValues(t *testing.T) {
 			}
 			if strings.Contains(html, "md:truncate") {
 				t.Fatal("sheet core truncates supporting values")
+			}
+		})
+	}
+}
+
+func TestSchedulerDecisionHistoricalReasonsRemainReadable(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"unblocks_1_issue", "unblocks_3_issues", "prerequisite_for_1_blocked_issue", "prerequisite_for_3_blocked_issues"} {
+		t.Run(reason, func(t *testing.T) {
+			row := telemetry.SchedulerDecision{Reason: reason}
+			if got := schedulerDecisionReasonLabel(row); got != reason {
+				t.Fatalf("reason label = %q, want %q", got, reason)
 			}
 		})
 	}

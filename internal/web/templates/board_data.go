@@ -1746,7 +1746,7 @@ func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
 		badge = card.DispatchPriorityLabel
 	}
 	if badge == "" && card.UnblockerCount > 0 {
-		badge = "unblocker"
+		badge = "prerequisite"
 	}
 	details := make([]string, 0, 3)
 	if card.PriorityRank > 0 {
@@ -1770,9 +1770,9 @@ func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
 
 func unblockerPriorityDetail(count int) string {
 	if count == 1 {
-		return "Unblocks 1 issue."
+		return "Prerequisite for 1 blocked issue."
 	}
-	return "Unblocks " + strconv.Itoa(count) + " issues."
+	return "Prerequisite for " + strconv.Itoa(count) + " blocked issues."
 }
 
 // boardCardExtra picks the single allowed extra signal, most urgent first:
