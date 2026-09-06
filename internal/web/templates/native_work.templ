@@ -1,0 +1,202 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+templ NativeIssueForm(data NativeFormData) {
+	@AppShell(DashboardShellDataFromDashboard(data.Dashboard), nil) {
+		<main class="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-6">
+			<div class="mx-auto flex w-full max-w-3xl flex-col gap-4">
+				<a href={ "/projects/" + url.PathEscape(data.Dashboard.ProjectID) + "/kanban" } class="text-sm text-accent">← Back to Work</a>
+				<h1 class="text-xl font-semibold text-text">{ nativeFormTitle(data.Action) }</h1>
+				if data.Error != "" {
+					<p role="alert" class="rounded-card border border-line bg-surface p-3 text-sm text-text">{ data.Error }</p>
+				}
+				if data.Conflict {
+					<a href={ NativeIssuePath(data.Dashboard.ProjectID, data.Issue.WorkItemID) } target="_blank" rel="noopener noreferrer" class="text-sm text-accent">Open current issue in a new tab</a>
+				}
+				<form method="post" action={ nativeFormPath(data) } class="flex min-w-0 flex-col gap-4 rounded-card border border-line bg-surface p-4">
+					<input type="hidden" name="action" value={ data.Action }/>
+					<input type="hidden" name="key" value={ data.Key }/>
+					<input type="hidden" name="form_token" value={ data.FormToken }/>
+					<input type="hidden" name="revision" value={ data.Revision }/>
+					<input type="hidden" name="comment" value={ data.CommentID }/>
+					if data.Action == "create" || data.Action == "edit" || data.Action == "change" {
+						<label class="flex flex-col gap-2 text-sm text-text">Title
+							<input name="title" value={ data.Title } required maxlength="500" class="rounded-card border border-line bg-page px-3 py-2"/>
+						</label>
+					}
+					if data.Action != "dependency" && data.Action != "transition" {
+						<label class="flex flex-col gap-2 text-sm text-text">{ nativeBodyLabel(data.Action) }
+							<textarea name="body" rows="12" maxlength={ nativeBodyLimit(data.Action) } required?={ data.Action == "comment" || data.Action == "comment_edit" } class="min-h-32 w-full rounded-card border border-line bg-page px-3 py-2">{ data.Body }</textarea>
+						</label>
+						<p class="text-xs text-sec">Content is displayed as plain text. Markdown and HTML are not executed.</p>
+					}
+					if data.Action == "create" || data.Action == "transition" {
+						<label class="flex flex-col gap-2 text-sm text-text">Workflow state
+							<select name="state" required class="rounded-card border border-line bg-page px-3 py-2">
+								for _, state := range nativeAllowedStates(data) {
+									<option value={ state.Name } selected?={ data.State == state.Name }>{ state.Name }</option>
+								}
+								</select>
+						</label>
+					}
+					if data.Action == "create" || data.Action == "edit" {
+						<label class="flex flex-col gap-2 text-sm text-text">Priority
+							<select name="priority" class="rounded-card border border-line bg-page px-3 py-2">
+								<option value="" selected?={ data.Priority == "" }>Unchanged / unset</option>
+								for index, label := range []string{"Urgent", "High", "Normal", "Low"} {
+									<option value={ strconv.Itoa(index) } selected?={ data.Priority == strconv.Itoa(index) }>{ label }</option>
+								}
+							</select>
+						</label>
+					}
+					if data.Action == "dependency" || data.Action == "change" {
+						<label class="flex flex-col gap-2 text-sm text-text">{ nativeRelatedLabel(data.Action) }
+							<input name="related" value={ data.Related } required?={ data.Action == "dependency" } class="rounded-card border border-line bg-page px-3 py-2"/>
+						</label>
+					}
+					if data.Action == "dependency" {
+						<label class="flex flex-col gap-2 text-sm text-text">Operation
+							<select name="operation" class="rounded-card border border-line bg-page px-3 py-2">
+								<option value="add" selected?={ data.Operation != "remove" }>Add blocker</option>
+								<option value="remove" selected?={ data.Operation == "remove" }>Remove blocker</option>
+							</select>
+						</label>
+					}
+					<button type="submit" disabled?={ data.Conflict } class="w-fit rounded-card bg-accent px-4 py-2 text-sm font-semibold text-page disabled:opacity-50">Save</button>
+				</form>
+			</div>
+		</main>
+	}
+}
+
+templ NativeIssueCollaboration(projectID string, data NativeWorkData, cursor string) {
+	<nav aria-label="Issue actions" class="flex flex-wrap gap-3 text-sm text-accent">
+		for _, action := range []string{"edit", "transition", "dependency", "comment", "change"} {
+			<a href={ nativeEditPath(projectID, data.Issue.WorkItemID, action) } class="hover:underline">{ nativeFormTitle(action) }</a>
+		}
+	</nav>
+	<section aria-label="Discussion" class="flex min-w-0 flex-col gap-3">
+		<h2 class="text-sm font-semibold text-text">Discussion</h2>
+		if data.DiscussionError != "" {
+			<p role="alert" class="text-sm text-sec">{ data.DiscussionError }</p>
+		} else if len(data.Comments.Items) == 0 {
+			<p class="text-sm text-sec">No comments yet.</p>
+		}
+		for _, comment := range data.Comments.Items {
+			<article class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4">
+				<header class="flex flex-wrap gap-2 text-xs text-sec">
+					@NativeProvenance(comment.Actor, comment.Provenance)
+					@LocalTime(comment.CreatedAt, LocalTimeOptions{Style: LocalDateTime})
+					if comment.EditedBy != nil {
+						<span>{ "Edited by " + comment.EditedBy.PrincipalID }</span>
+					}
+				</header>
+				<p class="whitespace-pre-wrap break-words text-sm text-text [overflow-wrap:anywhere]">{ comment.Body }</p>
+				<a class="text-xs text-accent" href={ nativeEditPath(projectID, data.Issue.WorkItemID, "comment_edit") + "&comment=" + url.QueryEscape(comment.ID) + "&cursor=" + url.QueryEscape(cursor) }>Edit comment</a>
+			</article>
+		}
+		<nav aria-label="Discussion pages" class="flex gap-4 text-sm text-accent">
+			if cursor != "" || data.DiscussionError != "" {
+				<a href={ NativeIssuePath(projectID, data.Issue.WorkItemID) }>First page</a>
+			}
+			if data.Comments.NextCursor != "" {
+				<a href={ NativeIssuePath(projectID, data.Issue.WorkItemID) + "?cursor=" + url.QueryEscape(data.Comments.NextCursor) }>Next comments</a>
+			}
+		</nav>
+	</section>
+	<section aria-label="Execution summaries" class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4">
+		<h2 class="text-sm font-semibold text-text">Execution summaries</h2>
+		if data.ExecutionError != "" {
+			<p class="text-sm text-sec">{ data.ExecutionError }</p>
+		} else if len(data.Attempts) == 0 {
+			<p class="text-sm text-sec">No runs yet.</p>
+		}
+		for _, attempt := range data.Attempts {
+			<a href={ nativeRunPath(projectID, data.Issue.WorkItemID, attempt.AttemptID) } class="break-all text-sm text-accent">{ attempt.RunID + " · " + attempt.Status + " · " + attempt.RunnerID }</a>
+		}
+	</section>
+}
+
+templ NativeProvenance(actor tracker.Actor, provenance *tracker.Provenance) {
+	if provenance != nil {
+		<span>{ "Imported from " + provenance.Provider + " · " + firstNonBlank(provenance.AuthorDisplayName, provenance.AuthorID) }</span>
+	} else {
+		<span>{ "Native · " + actor.Kind + " · " + actor.PrincipalID }</span>
+	}
+}
+
+templ NativeIssueContext(projectID string, data NativeWorkData) {
+	<section aria-label="Native identity" class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4 text-xs">
+		<h2 class="font-semibold text-text">Native identity</h2>
+		@issueDetailRow("ID", string(data.Issue.WorkItemID))
+		@issueDetailRow("Revision", nativeRevision(data.Issue.Revision))
+		@NativeProvenance(data.Issue.Actor, data.Issue.Provenance)
+		if len(data.Issue.ExternalReferences) == 0 {
+			<p class="text-sec">No external references. This issue lives in Detent.</p>
+		}
+		for _, reference := range data.Issue.ExternalReferences {
+			@issueDetailRow(reference.Provider + " " + reference.Kind, reference.ID)
+		}
+		<a href={ NativeIssuePath(projectID, data.Issue.WorkItemID) + "/export" } class="text-accent">Export issue and references</a>
+	</section>
+	<section aria-label="Dependencies" class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4 text-xs">
+		<h2 class="font-semibold text-text">Dependencies</h2>
+		if len(data.Issue.Blockers) == 0 {
+			<p class="text-sec">No visible blockers.</p>
+		}
+		for _, blocker := range data.Issue.Blockers {
+			if blocker.ProjectID == data.Issue.ProjectID {
+				<a href={ NativeIssuePath(projectID, blocker.ID) } class="break-all text-accent">{ string(blocker.ID) + " · " + blocker.State }</a>
+			} else {
+				<p class="break-all text-sec">{ string(blocker.ID) + " · " + blocker.State }</p>
+			}
+		}
+	</section>
+	<section aria-label="Repository policy" class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4 text-xs">
+		<h2 class="font-semibold text-text">Repository policy</h2>
+		<p class="text-sec">Read-only. Changes require repository policy approval.</p>
+		if data.Policy == nil {
+			<p class="text-sec">{ data.PolicyError }</p>
+		} else {
+			@issueDetailRow("Policy", data.Policy.Policy.ID)
+			@issueDetailRow("Source revision", data.Policy.Policy.SourceRevision)
+			@issueDetailRow("Configuration", data.Policy.Policy.ConfigDigest)
+			@issueDetailRow("Merge method", data.Policy.Policy.Gates.MergeMethod)
+			@issueDetailRow("Auto-promote", strconv.FormatBool(data.Policy.Policy.Gates.AutoPromote))
+			@issueDetailRow("Automated review", data.Policy.Policy.Gates.AutomatedReview)
+			@issueDetailRow("Plan review", data.Policy.Policy.Gates.PlanReview)
+			@issueDetailRow("Required checks", strconv.Itoa(data.Policy.Policy.Gates.RequiredChecks))
+			@issueDetailRow("Validator", strconv.FormatBool(data.Policy.Policy.Gates.Validator))
+			@issueDetailRow("Security audit", strconv.FormatBool(data.Policy.Policy.Gates.SecurityAudit))
+			@issueDetailRow("Required runner", data.Policy.Policy.Requirements.RunnerID)
+			@issueDetailRow("Required machine", data.Policy.Policy.Requirements.MachineID)
+			for _, tag := range data.Policy.Policy.Requirements.RequiredTags {
+				@issueDetailRow("Required tag", tag)
+			}
+		}
+	</section>
+	<section aria-label="Runner eligibility" class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4 text-xs">
+		<h2 class="font-semibold text-text">Runner eligibility</h2>
+		if data.Eligibility == nil {
+			<p class="text-sec">Eligibility is unavailable. No runner eligibility is implied.</p>
+		} else {
+			for _, exclusion := range data.Eligibility.Exclusions {
+				<p class="text-sec">{ exclusion.Message }</p>
+			}
+			for _, runner := range data.Eligibility.Runners {
+				<p class="break-all text-text">{ runner.Runner.RunnerID }</p>
+				if len(runner.Exclusions) == 0 {
+					<p class="text-sec">Eligible under the current project policy</p>
+				}
+				for _, exclusion := range runner.Exclusions {
+					<p class="text-sec">{ exclusion.Message }</p>
+				}
+			}
+		}
+	</section>
+}

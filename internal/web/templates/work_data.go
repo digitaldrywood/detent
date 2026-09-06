@@ -219,6 +219,9 @@ func workItemLease(card projectKanbanCard, now time.Time) (string, string) {
 }
 
 func workItemSync(data DashboardData, card projectKanbanCard) (string, string, string, primitives.Kind) {
+	if projectKanbanCardKanbanData(data, card).TrackerKind == "hub_native" {
+		return "Native", "native", "Authoritative Detent issue", primitives.KindNeutral
+	}
 	key := strings.ToLower(strings.TrimSpace(card.SyncStatus))
 	if key == "" {
 		if data.Snapshot.LastKnown || snapshotDegraded(data.Snapshot) {
@@ -286,6 +289,9 @@ func workProjectFilterOptions(view boardView) []workFilterOption {
 func workNewIssueURL(data DashboardData) string {
 	if !isProjectDashboard(data) {
 		return ""
+	}
+	if data.Kanban.TrackerKind == "hub_native" {
+		return NativeNewIssuePath(data.ProjectID)
 	}
 	base := strings.TrimRight(projectRepoURL(data), "/")
 	base = strings.TrimSuffix(base, "/issues")

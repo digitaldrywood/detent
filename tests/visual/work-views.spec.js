@@ -38,6 +38,40 @@ test.afterAll(async () => {
   await runtime?.stop();
 });
 
+test("Board and List share pagination after filtering and refresh", async ({ page }) => {
+  await openWorkScenario(page, scenarios.healthy, desktopViewport);
+  await page.evaluate(() => {
+    const templates = ["board", "list"].map((representation) => document.querySelector(`[data-work-representation="${representation}"]`));
+    templates.forEach((template) => {
+      for (let index = 0; index < 120; index += 1) {
+        const row = template.cloneNode(true);
+        row.id = `${template.id}-page-${index}`;
+        row.dataset.workKey = `pagination-${index}`;
+        row.dataset.workIdentity = `pagination-${index}`;
+        row.dataset.workSearch = `pagination fixture ${index}`;
+        template.parentNode.appendChild(row);
+      }
+    });
+    document.body.dispatchEvent(new CustomEvent("htmx:afterSettle", { detail: { target: document.getElementById("snapshot") } }));
+  });
+  await page.locator("[data-work-search-input]").fill("pagination fixture");
+  await expect(page.locator("[data-work-page-summary]")).toHaveText("Page 1 of 3");
+  await page.getByRole("button", { name: "Next work page" }).click();
+  await expect(page.locator("[data-work-page-summary]")).toHaveText("Page 2 of 3");
+  expect(new URL(page.url()).searchParams.get("page")).toBe("2");
+  const keys = await unhiddenKeys(page, "board");
+  expect(keys).toHaveLength(50);
+  await page.locator('[data-work-view="list"]').click();
+  expect(await unhiddenKeys(page, "list")).toEqual(keys);
+  await page.getByRole("button", { name: "Next work page" }).click();
+  expect(await unhiddenKeys(page, "list")).toHaveLength(20);
+  await expect(page.getByRole("button", { name: "Next work page" })).toBeDisabled();
+  await page.locator("[data-work-search-input]").fill("pagination fixture 119");
+  await expect(page.locator("[data-work-page-summary]")).toHaveText("Page 1 of 1");
+  expect(await unhiddenKeys(page, "list")).toHaveLength(1);
+  expect(await unhiddenKeys(page, "board")).toEqual(await unhiddenKeys(page, "list"));
+});
+
 test("Board and List share query, selection, detail, and density state", async ({
   page,
 }) => {

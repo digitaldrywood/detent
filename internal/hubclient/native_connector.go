@@ -27,6 +27,8 @@ func NewNativeConnector(client *NativeClient) (*NativeConnector, error) {
 
 func (c *NativeConnector) Name() string { return "hub_native" }
 
+func (c *NativeConnector) NativeClient() *NativeClient { return c.client }
+
 func (c *NativeConnector) Capabilities() connector.Capabilities {
 	return connector.Capabilities{UpdateIssueState: true, SetAssignee: true, SetField: true, CreateComment: true, CreateWorkItems: true, UpdateComments: true}
 }

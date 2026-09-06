@@ -484,6 +484,9 @@ func (s *Server) setUIAPICookie(c echo.Context) {
 	if c == nil || c.Request() == nil || c.Request().Method != http.MethodGet {
 		return
 	}
+	if requestAPICredentialsSupplied(c.Request()) {
+		return
+	}
 	if strings.HasPrefix(c.Request().URL.Path, "/api/") || s.uiAPIToken() == "" {
 		return
 	}

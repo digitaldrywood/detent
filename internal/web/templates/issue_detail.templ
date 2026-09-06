@@ -27,6 +27,9 @@ templ IssueDetailPage(data IssueDetailData) {
 									<p class="text-sm text-sec">No issue description.</p>
 								}
 							</section>
+							if data.Native != nil {
+								@NativeIssueCollaboration(data.Dashboard.ProjectID, *data.Native, data.Cursor)
+							}
 							<section class="flex min-w-0 flex-col gap-3" aria-labelledby="issue-history-heading">
 								<div class="flex items-center justify-between gap-3">
 									<h3 id="issue-history-heading" class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">History</h3>
@@ -56,6 +59,9 @@ templ IssueDetailPage(data IssueDetailData) {
 						<aside class="flex min-w-0 flex-col gap-4 lg:sticky lg:top-0 lg:self-start">
 							if data.HasChanges {
 								@IssueChangeLinks(data.Dashboard.ProjectID, data.Changes, data.ChangesError)
+							}
+							if data.Native != nil {
+								@NativeIssueContext(data.Dashboard.ProjectID, *data.Native)
 							}
 							<section class="flex flex-col gap-3 rounded-card border border-line bg-surface p-4 text-xs">
 								<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Details</h3>

@@ -50,7 +50,15 @@ func (s *Server) issueDetail(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
 	applyDashboardPreferences(c.Request(), &dashboard)
+	nativeScopedDashboard(c, &dashboard)
 	data := templates.NewIssueDetailData(dashboard, issue, events)
+	if source, ok := trackedProject.Connector().(nativeClientSource); ok && source.NativeClient() != nil {
+		data.Native, err = s.loadNativeWork(c, source.NativeClient(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil {
+			return err
+		}
+		data.Cursor = c.QueryParam("cursor")
+	}
 	if reader, ok := trackedProject.Connector().(tracker.ChangeReader); ok {
 		data.HasChanges = true
 		data.Changes, err = reader.FetchChanges(ctx, tracker.NativeWorkItemID(issue.ID))
