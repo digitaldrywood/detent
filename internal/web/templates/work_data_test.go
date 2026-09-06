@@ -29,6 +29,29 @@ func TestBoardViewBuildsOneSharedWorkItemPerCard(t *testing.T) {
 	}
 }
 
+func TestNativeWorkNavigationAndSource(t *testing.T) {
+	for _, tt := range []struct{ kind, want string }{
+		{"hub_native", "/projects/detent/issues/new"},
+		{"github", "https://github.com/digitaldrywood/detent/issues/new"},
+	} {
+		t.Run(tt.kind, func(t *testing.T) {
+			data := boardTestData()
+			data.ProjectID = "detent"
+			data.Snapshot.Project.URL = "https://github.com/digitaldrywood/detent"
+			data.Kanban.TrackerKind = tt.kind
+			if got := workNewIssueURL(data); got != tt.want {
+				t.Fatalf("new issue URL = %q, want %q", got, tt.want)
+			}
+			if tt.kind == "hub_native" {
+				label, key, detail, _ := workItemSync(data, projectKanbanCard{})
+				if label != "Native" || key != "native" || strings.Contains(detail, "GitHub") {
+					t.Fatalf("native source = %q %q %q", label, key, detail)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkItemMetadataStates(t *testing.T) {
 	now := time.Date(2026, 9, 3, 17, 0, 0, 0, time.UTC)
 	leaseRenewedAt := now.Add(-90 * time.Second)

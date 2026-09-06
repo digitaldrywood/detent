@@ -381,7 +381,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	})
 	server.chat = chatpkg.NewService(chatProvider, server.newChatToolExecutor(), server)
 	e.HTTPErrorHandler = server.handleHTTPError
-	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate)
+	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate, server.nativeWorkReadBoundary)
 	server.registerRoutes()
 	server.warnIfAPITokenMissingOnNonLoopback()
 
@@ -462,9 +462,12 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/diagnostics", s.diagnosticsDashboard)
 	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/library", s.library)
-	s.echo.GET("/projects/:project_id/issues/:issue_ref", s.issueDetail)
-	s.echo.GET("/projects/:project_id/issues/:issue_ref/changes/:change", s.changeDetail)
-	s.echo.GET("/projects/:project_id/issues/:issue_ref/runs/:attempt", s.nativeRunDetail)
+	s.echo.GET("/projects/:project_id/issues/new", s.nativeIssueForm, s.nativeReadAccess)
+	s.echo.GET("/projects/:project_id/issues/:issue_ref/edit", s.nativeIssueForm, s.nativeReadAccess)
+	s.echo.GET("/projects/:project_id/issues/:issue_ref/export", s.nativeIssueExport, s.nativeReadAccess)
+	s.echo.GET("/projects/:project_id/issues/:issue_ref", s.issueDetail, s.nativeReadAccess)
+	s.echo.GET("/projects/:project_id/issues/:issue_ref/changes/:change", s.changeDetail, s.nativeReadAccess)
+	s.echo.GET("/projects/:project_id/issues/:issue_ref/runs/:attempt", s.nativeRunDetail, s.nativeReadAccess)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/api-keys", s.apiKeysPage)
@@ -488,6 +491,8 @@ func (s *Server) registerRoutes() {
 	apiWriteScope := s.requireScope(apikey.ScopeWrite)
 	apiAdminScope := s.requireScope(apikey.ScopeAdmin)
 	apiProjectWriteScope := s.requireProjectScope(apikey.ScopeWrite, "project_id")
+	s.echo.POST("/projects/:project_id/issues/new", s.nativeIssueSubmit, s.nativeFormAuth, apiProjectWriteScope)
+	s.echo.POST("/projects/:project_id/issues/:issue_ref/edit", s.nativeIssueSubmit, s.nativeFormAuth, apiProjectWriteScope)
 	s.echo.POST("/fleet/runners/:runner", s.updateFleetRunner, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/fleet/hosts/:machine", s.updateFleetHost, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth, apiReadScope)
@@ -1644,7 +1649,9 @@ func (s *Server) redirectToDashboard(c echo.Context) error {
 
 func render(c echo.Context, component templ.Component) error {
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
-	c.Response().Header().Set(echo.HeaderCacheControl, revalidateCacheControl)
+	if c.Response().Header().Get(echo.HeaderCacheControl) == "" {
+		c.Response().Header().Set(echo.HeaderCacheControl, revalidateCacheControl)
+	}
 	return component.Render(c.Request().Context(), c.Response().Writer)
 }
 

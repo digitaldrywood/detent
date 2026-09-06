@@ -28,6 +28,7 @@ func (s *Server) changePageData(c echo.Context) (templates.ChangePageData, track
 		return templates.ChangePageData{}, nil, echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
 	applyDashboardPreferences(c.Request(), &dashboard)
+	nativeScopedDashboard(c, &dashboard)
 	return templates.ChangePageData{Dashboard: dashboard, ProjectID: projectID, IssueID: tracker.NativeWorkItemID(c.Param("issue_ref")), ChangeID: c.Param("change"), VersionID: c.QueryParam("version")}, reader, nil
 }
 

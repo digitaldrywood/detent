@@ -13,6 +13,8 @@ import (
 )
 
 type IssueDetailData struct {
+	Native       *NativeWorkData
+	Cursor       string
 	HasChanges   bool
 	Changes      []tracker.ChangeRequest
 	ChangesError string
