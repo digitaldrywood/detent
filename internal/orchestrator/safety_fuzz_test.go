@@ -33,6 +33,7 @@ func (s *releaseErrorSafetyScheduler) ReleaseSlot(slot scheduler.Slot) error {
 }
 
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
+	f.Add(0, 0, 0, "", "blocked", int64(1), "same-head", "p2", int64(1), "same-head", "completed_rework_gate_wait", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, true, uint8(17))
 	f.Add(0, 0, 0, "", "```detent-human\nschema: 1\n```", int64(1), "head", "Depends on: owner/repo#1 #2", int64(1), "head", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(0))
 	f.Add(0, 0, 0, "", "```detent-human\nschema: invalid\n", int64(1), "head", "Depends on: #1bad https://github.com/owner/repo/issues/0", int64(1), "head", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(0))
 	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true, false, uint8(0))
@@ -69,6 +70,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		tracked bool,
 		gateScenario uint8,
 	) {
+		assertReworkGateWaitSafety(t, gateScenario%4, gateScenario/4%3, gateScenario/12%4, tracked)
 		assertHumanDependencyBoundary(t, status, leftChecks)
 		diffStats := DiffStats{
 			FilesChanged: filesChanged,

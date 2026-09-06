@@ -537,6 +537,11 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 			return
 		}
 		issueID := strings.TrimSpace(issues[i].ID)
+		if required, ok := s.RequiredGates[issueID]; ok && issues[i].PullRequest != nil &&
+			required.PRNumber == issues[i].PullRequest.Number && required.HeadSHA == strings.TrimSpace(issues[i].PullRequest.HeadSHA) &&
+			required.BaseSHA == strings.TrimSpace(issues[i].PullRequest.BaseSHA) {
+			snapshots[i].RequiredGate = &required
+		}
 		decision, ok := s.AutoPromoteDecisions[issueID]
 		if !ok {
 			if !s.shouldComputeAutoPromoteSnapshotDecision(issues[i]) {

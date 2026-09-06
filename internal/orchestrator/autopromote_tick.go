@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -287,7 +288,11 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 	state *State,
 	issues []connector.Issue,
 ) {
-	if o == nil || state == nil || o.workAttempts == nil {
+	if o == nil || state == nil {
+		return
+	}
+	issues = o.refreshRequiredGateEvidence(ctx, state, issues)
+	if o.workAttempts == nil {
 		return
 	}
 	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
@@ -300,7 +305,11 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		if issueID == "" {
 			continue
 		}
-		if _, ok := state.Completed[issueID]; ok {
+		if completed, ok := state.Completed[issueID]; ok {
+			if completed.GateWaitReason == completedReworkGateWaitReason &&
+				(!completedReworkGateWaitEvidenceCurrent(completed, issue) || !o.reworkGateWaitCurrent(ctx, issue)) {
+				delete(state.Completed, issueID)
+			}
 			continue
 		}
 		completion, operational := operationalCompletionFromIssue(issue)
@@ -342,11 +351,20 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 	if o == nil || o.workAttempts == nil {
 		return store.WorkAttempt{}, false, nil
 	}
+	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) && !o.reworkGateWaitCurrent(ctx, issue) {
+		return store.WorkAttempt{}, false, nil
+	}
 	attempts, err := o.recentAgentTerminalAttempts(ctx, issue)
 	if err != nil {
 		return store.WorkAttempt{}, false, err
 	}
 	for _, attempt := range attempts {
+		if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
+			if record, ok := implementProgressRecordFromAttempt(attempt); ok && normalizeState(record.TrackerState) == normalizeState(issue.State) &&
+				attempt.TerminalState != store.WorkAttemptTerminalSuccess {
+				return store.WorkAttempt{}, false, nil
+			}
+		}
 		if attempt.TerminalState != store.WorkAttemptTerminalSuccess {
 			continue
 		}
@@ -447,23 +465,14 @@ func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connecto
 	gateWaitReason := strings.TrimSpace(gateWaitRecord.Reason)
 	if gateWaitReason == completedReworkGateWaitReason {
 		if normalizeState(issue.State) != normalizeState(reworkState) ||
+			strings.TrimSpace(record.WorkpadStatus) == workpad.StatusBlocked || strings.TrimSpace(record.HumanAction) != "" ||
+			!reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) ||
 			normalizeState(record.TrackerState) != normalizeState(issue.State) ||
 			record.WorkspaceDiffStats.FilesChanged != 0 ||
 			record.WorkspaceDiffStats.AddedLines != 0 ||
 			record.WorkspaceDiffStats.RemovedLines != 0 ||
 			record.WorkspaceDiffStats.UnpushedCommits != 0 ||
 			strings.TrimSpace(record.WorkspaceDiffStats.Status) == "" {
-			return false
-		}
-		currentSummary := AutoPromoteSummaryFromIssue(issue)
-		currentSignature := autoPromoteReworkSignatureFromIssue(issue, currentSummary)
-		if autoPromoteHasNewStrings(record.CurrentSignature.FailedChecks, currentSignature.FailedChecks) {
-			return false
-		}
-		if !autoPromoteMergeConflicts(gateWaitRecord.MergeableState) && autoPromoteMergeConflicts(currentSummary.MergeableState) {
-			return false
-		}
-		if autoPromoteHasNewFinding(gateWaitRecord.P1Findings, currentSummary.P1Findings) {
 			return false
 		}
 		if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(attempt.CompletedAt) {
@@ -511,6 +520,9 @@ func completedReworkGateWaitProgress(
 		normalizeState(dispatchState) != normalizeState(autoCfg.ReworkState) ||
 		!autoPromoteReworkGateWaitTrackedIssue(decision.Issue, cfg, autoCfg) ||
 		decision.Block || decision.DependencyDeferral ||
+		decision.WorkpadStatus != workpad.StatusComplete || decision.HumanAction != "" || decision.Warning != "" ||
+		!reworkGateWaitWorkpadComplete(decision.Issue) || !reworkGateWaitPullRequestReady(decision.Issue) ||
+		!reworkGateWaitAuditReady(cfg.AutoPromote.Gate, decision.SecurityAudit) ||
 		!implementProgressSignatureUsable(decision.CurrentSignature) ||
 		!implementProgressOperationalWorkspaceClean(decision.WorkspaceDiffStats) {
 		return decision, ""
@@ -630,6 +642,9 @@ func autoPromoteCompletedReworkGateWaitCurrent(
 }
 
 func completedReworkGateWaitEvidenceCurrent(completed Completed, issue connector.Issue) bool {
+	if !reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) {
+		return false
+	}
 	previous := completed.gateWaitEvidence
 	if strings.TrimSpace(previous.ID) == "" {
 		previous = completed.Issue
@@ -644,47 +659,40 @@ func completedReworkGateWaitEvidenceCurrent(completed Completed, issue connector
 	if issue.StageUpdatedAt != nil && !completed.CompletedAt.IsZero() && issue.StageUpdatedAt.After(completed.CompletedAt) {
 		return false
 	}
-	previousSummary := AutoPromoteSummaryFromIssue(previous)
-	currentSummary := AutoPromoteSummaryFromIssue(issue)
-	if autoPromoteHasNewStrings(previousSummary.FailedChecks, currentSummary.FailedChecks) {
+	return true
+}
+
+func (o *Orchestrator) reworkGateWaitCurrent(ctx context.Context, issue connector.Issue) bool {
+	if !reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) {
 		return false
 	}
-	if !autoPromoteMergeConflicts(previousSummary.MergeableState) && autoPromoteMergeConflicts(currentSummary.MergeableState) {
+	refreshed, current := o.refreshImplementCompletionIssue(ctx, issue)
+	return current && reworkGateWaitWorkpadComplete(refreshed) &&
+		reworkGateWaitAuditReady(o.cfg.AutoPromote.Gate, o.securityAuditEvaluation(ctx, refreshed))
+}
+
+func reworkGateWaitWorkpadComplete(issue connector.Issue) bool {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	return ok && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
+		strings.TrimSpace(signal.Status) == workpad.StatusComplete && len(signal.Blockers) == 0 && strings.TrimSpace(signal.HumanAction) == ""
+}
+
+func reworkGateWaitWorkpadBlocked(issue connector.Issue) bool {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	return ok && signal != nil && !reworkGateWaitWorkpadComplete(issue)
+}
+
+func reworkGateWaitPullRequestReady(issue connector.Issue) bool {
+	if issue.PullRequest == nil || implementProgressHydrationUnavailableReason(issue.PullRequest) != "" {
 		return false
 	}
-	return !autoPromoteHasNewFinding(previousSummary.P1Findings, currentSummary.P1Findings)
+	summary := AutoPromoteSummaryFromIssue(issue)
+	return !issue.PullRequest.Draft && !autoPromoteMergeConflicts(summary.MergeableState) && len(summary.P1Findings) == 0 &&
+		len(summary.UnresolvedReviewThreads) == 0 && len(summary.FailedChecks) == 0
 }
 
-func autoPromoteHasNewStrings(previous []string, current []string) bool {
-	previous = uniqueStrings(previous)
-	for _, value := range uniqueStrings(current) {
-		if !slices.Contains(previous, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func autoPromoteHasNewFinding(previous []AutoPromoteFinding, current []AutoPromoteFinding) bool {
-	known := make(map[string]struct{}, len(previous))
-	for _, finding := range previous {
-		known[autoPromoteFindingKey(finding)] = struct{}{}
-	}
-	for _, finding := range current {
-		if _, ok := known[autoPromoteFindingKey(finding)]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
-func autoPromoteFindingKey(finding AutoPromoteFinding) string {
-	return strings.Join([]string{
-		strings.TrimSpace(finding.Body),
-		strings.TrimSpace(finding.URL),
-		strings.TrimSpace(finding.Path),
-		strconv.Itoa(finding.Line),
-	}, "\x00")
+func reworkGateWaitAuditReady(cfg gate.Config, evaluation securityaudit.Evaluation) bool {
+	return !gate.Effective(cfg).SecurityAudit.Enabled || evaluation.Allowed || evaluation.Reason == securityaudit.ReasonMissing
 }
 
 func autoPromoteActiveGateEligibleIssue(

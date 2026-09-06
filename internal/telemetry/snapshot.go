@@ -1105,6 +1105,7 @@ type Issue struct {
 	LeaseExpiresAt        *time.Time             `json:"lease_expires_at,omitempty"`
 	LeaseStale            bool                   `json:"lease_stale,omitempty"`
 	GatePending           bool                   `json:"gate_pending,omitempty"`
+	RequiredGate          *RequiredGate          `json:"required_gate,omitempty"`
 	CreatedAt             *time.Time             `json:"created_at,omitempty"`
 	UpdatedAt             *time.Time             `json:"updated_at,omitempty"`
 	StageUpdatedAt        *time.Time             `json:"stage_updated_at,omitempty"`
@@ -1113,6 +1114,19 @@ type Issue struct {
 	RuntimeIdentity       agentidentity.Identity `json:"runtime_identity,omitzero"`
 	ParkSummary           ParkSummary            `json:"park_summary,omitzero"`
 	CompletionProgress    CompletionProgress     `json:"completion_progress,omitzero"`
+}
+
+type RequiredGate struct {
+	State          string `json:"state"`
+	Reason         string `json:"reason,omitempty"`
+	PRNumber       int    `json:"pr_number,omitempty"`
+	HeadSHA        string `json:"head_sha,omitempty"`
+	BaseSHA        string `json:"base_sha,omitempty"`
+	CIState        string `json:"ci_state,omitempty"`
+	MergeableState string `json:"mergeable_state,omitempty"`
+	AuditRunID     int64  `json:"audit_run_id,omitempty"`
+	AuditReason    string `json:"audit_reason,omitempty"`
+	HumanAction    string `json:"human_action,omitempty"`
 }
 
 type CompletionProgress struct {
