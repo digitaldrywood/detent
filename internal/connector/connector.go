@@ -176,6 +176,10 @@ type PullRequestReferenceRefresher interface {
 	RefreshPullRequestReference(context.Context, Issue) (Issue, error)
 }
 
+type PullRequestAssociationRevalidator interface {
+	RevalidatePullRequestAssociation(context.Context, Issue) (Issue, error)
+}
+
 type PullRequestHeadLookup interface {
 	LookupPullRequestByHead(context.Context, string, string, string) (PullRequest, bool, error)
 }

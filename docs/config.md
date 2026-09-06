@@ -1223,6 +1223,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].metadata` | `mapping<string, string>` | `{}` | No | None |
 | `tracker.issues[].model_override` | `string` | `none` | No | None |
 | `tracker.issues[].number` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pr_association_checked_at` | `mapping` | `see child fields` | No | None |
+| `tracker.issues[].pr_association_source` | `string` | `none` | No | None |
 | `tracker.issues[].pr_number` | `integer` | `none` | No | None |
 | `tracker.issues[].pr_repository` | `string` | `none` | No | None |
 | `tracker.issues[].priority` | `integer` | `none` | No | None |

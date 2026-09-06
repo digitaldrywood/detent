@@ -299,6 +299,7 @@ func attachMatchingPullRequestMergeStates(
 			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
 				continue
 			}
+			issues[candidate.Index].PRSource = "detent_branch"
 			issues[candidate.Index].PullRequest = &connector.PullRequest{
 				Number:     pullRequest.Number,
 				URL:        strings.TrimSpace(pullRequest.URL),
@@ -796,6 +797,7 @@ func (c *Connector) attachMatchingPullRequests(
 			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
 				continue
 			}
+			issues[candidate.Index].PRSource = "detent_branch"
 
 			hydratedPullRequest, ok := hydrated[pullRequest.Number]
 			if !ok {

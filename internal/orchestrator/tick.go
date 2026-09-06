@@ -137,7 +137,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
+	fetched = o.revalidateTickPullRequestAssociations(ctx, fetched)
 	if fetched.statusOK {
+		fetched = filterReconciledTickIssues(state, fetched, o.recoverStaleTodoReviews(ctx, state, fetched.status, now))
 		ciIssues := mergeIssueSlices(fetched.candidates, fetched.status)
 		for _, running := range state.Running {
 			ciIssues = mergeIssueSlices(ciIssues, []connector.Issue{running.Issue})

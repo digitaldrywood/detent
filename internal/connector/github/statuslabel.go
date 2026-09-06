@@ -26,6 +26,8 @@ query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
     __typename
     ... on Issue {
       id
+      number
+      repository { nameWithOwner }
       timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
         nodes {
           __typename
@@ -189,6 +191,12 @@ func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues
 
 		for batchIndex, id := range batch {
 			node := nodesByID[id]
+			for _, index := range indexesByID[id] {
+				if repo, number, ok := splitIssueIdentifier(issues[index].Identifier); ok && node.Number > 0 &&
+					(number != node.Number || !strings.EqualFold(repo, node.Repository.NameWithOwner)) {
+					return fmt.Errorf("fetch github issue pull request references: %w: issue identity mismatch for %s", ErrInvalidResponse, id)
+				}
+			}
 			if includeLabelTransition {
 				for _, index := range indexesByID[id] {
 					if transition, ok := currentLabelTransition(node.TimelineItems.Nodes, c.statusLabelForState(issues[index].State)); ok {
@@ -237,6 +245,7 @@ func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues
 				number := ref.Number
 				issues[index].PRNumber = &number
 				issues[index].PRRepository = ref.Repository
+				issues[index].PRSource = "github_closing_reference"
 				if includeState {
 					issues[index].PullRequest = &connector.PullRequest{Number: ref.Number, State: ref.State}
 				}
@@ -250,11 +259,90 @@ func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues
 }
 
 func (c *Connector) RefreshPullRequestReference(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
-	issues := []connector.Issue{issue}
+	issues := []connector.Issue{withoutPullRequestAssociation(issue)}
 	if err := c.attachIssuePullRequestReferences(ctx, issues, false, false); err != nil {
 		return issue, fmt.Errorf("refresh github issue pull request reference: %w", err)
 	}
 	return issues[0], nil
+}
+
+func withoutPullRequestAssociation(issue connector.Issue) connector.Issue {
+	issue.PRNumber = nil
+	issue.PRRepository = ""
+	issue.PullRequest = nil
+	issue.PRSource = ""
+	issue.PRVerifiedAt = time.Time{}
+	return issue
+}
+
+func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	issues := []connector.Issue{withoutPullRequestAssociation(issue)}
+	if _, ok := pullRequestRepoFromIdentifier(issue.Identifier); !ok {
+		return issue, fmt.Errorf("revalidate github pull request association: %w: missing issue repository", ErrInvalidResponse)
+	}
+	if c.usesLabelStatus() {
+		issues[0].StageUpdatedAt = nil
+		issues[0].StageUpdatedActor = connector.IssueActor{}
+	}
+	if strings.TrimSpace(issue.ID) == "" {
+		return issue, fmt.Errorf("revalidate github pull request association: %w: missing issue ID", ErrInvalidResponse)
+	}
+	if err := c.attachIssuePullRequestReferences(ctx, issues, c.usesLabelStatus(), true); err != nil {
+		return issue, err
+	}
+	fresh := issues[0]
+	if fresh.PullRequest != nil && fresh.PullRequest.HydrationUnavailableReason != "" {
+		return fresh, nil
+	}
+	if fresh.PRNumber != nil {
+		if repo, number, ok := hydratedPullRequestRef(issue); ok && issue.PullRequest != nil &&
+			number == *fresh.PRNumber && strings.EqualFold(pullRequestRepoName(repo), fresh.PRRepository) &&
+			strings.EqualFold(issue.PullRequest.State, fresh.PullRequest.State) {
+			fresh.PullRequest = issue.PullRequest
+		} else {
+			var err error
+			fresh, err = c.HydratePullRequest(ctx, fresh)
+			if err != nil {
+				return issue, err
+			}
+		}
+	} else if repo, number, ok := hydratedPullRequestRef(issue); ok {
+		issueRepo, _ := pullRequestRepoFromIdentifier(issue.Identifier)
+		if repo == issueRepo {
+			pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, number)
+			if err != nil {
+				return issue, err
+			}
+			if branchMatchesIssuePrefix(pullRequest.HeadRefName, detentIssueBranchPrefix(issue.Identifier)) {
+				if issue.PullRequest != nil && issue.PullRequest.HeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PullRequest.State, pullRequest.State) {
+					pr := *issue.PullRequest
+					pr.BranchName = pullRequest.HeadRefName
+					fresh.PullRequest = &pr
+				} else {
+					if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
+						return issue, err
+					}
+					attachPullRequestToIssue(&fresh, repo, pullRequest)
+				}
+				fresh.PRNumber, fresh.PRRepository, fresh.PRSource = new(number), pullRequestRepoName(repo), "detent_branch"
+			}
+		}
+	} else if repo, ok := pullRequestRepoFromIdentifier(issue.Identifier); ok {
+		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
+		if err != nil {
+			return issue, err
+		}
+		candidates := []issuePullRequestCandidate{{Index: 0, Identifier: issue.Identifier, BranchPrefix: detentIssueBranchPrefix(issue.Identifier)}}
+		if _, err := c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, false); err != nil {
+			return issue, err
+		}
+		fresh = issues[0]
+		if fresh.PullRequest == nil && len(pullRequests) >= pullRequestsPageLimit*pullRequestsPageSize {
+			return issue, fmt.Errorf("revalidate github pull request association: %w: branch discovery exceeded page limit", ErrInvalidResponse)
+		}
+	}
+	fresh.PRVerifiedAt = c.now().UTC()
+	return fresh, nil
 }
 
 func currentLabelTransition(events []timelineItem, labelName string) (connector.IssueStateTransition, bool) {

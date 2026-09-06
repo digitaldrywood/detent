@@ -1464,7 +1464,9 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 	pullRequestRef, hasPullRequestRef := firstPullRequestReference(issue.ClosedByPullRequestsReferences)
 	var pullRequestNumber *int
 	var pullRequestRepository string
+	var pullRequestAssociationSource string
 	if hasPullRequestRef {
+		pullRequestAssociationSource = "github_closing_reference"
 		number := pullRequestRef.Number
 		pullRequestNumber = &number
 		pullRequestRepository = pullRequestRef.Repository
@@ -1486,6 +1488,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		ClosedReason:      issue.StateReason,
 		PRNumber:          pullRequestNumber,
 		PRRepository:      pullRequestRepository,
+		PRSource:          pullRequestAssociationSource,
 		AuthorID:          actorLogin(issue.Author),
 		AuthorAssociation: connector.NormalizeAuthorAssociation(issue.AuthorAssociation),
 		AssigneeID:        firstAssigneeLogin(issue.Assignees),
