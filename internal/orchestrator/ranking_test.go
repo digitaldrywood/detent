@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -292,38 +293,55 @@ func TestAnnotateUnblockerCountsIsInputOrderIndependent(t *testing.T) {
 func TestDispatchPlannerRecordsUnblockerSelectionReason(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents:  1,
-		ActiveStates:         []string{"Todo", "Blocked"},
-		TerminalStates:       []string{"Done"},
-		PrioritizeUnblockers: true,
-	})
-	blocker := rankingIssue("blocker", "Todo", 0, now.Add(-time.Hour))
-	peer := rankingIssue("older-peer", "Todo", 0, now.Add(-4*time.Hour))
-	blocker.Title = "Dependency blocker"
-	peer.Title = "Older peer"
-	dependent := rankingDependencyIssue("dependent", "Blocked", blocker.ID)
-	state := newState(cfg)
-	state.Blocked[dependent.ID] = Blocked{Issue: dependent, Source: BlockedSourceDependency}
+	for _, tt := range []struct {
+		name              string
+		count             int
+		otherPrerequisite bool
+		wantReason        string
+	}{
+		{name: "single remaining prerequisite", count: 1, wantReason: "prerequisite_for_1_blocked_issue"},
+		{name: "three dependents with unfinished prerequisites", count: 3, otherPrerequisite: true, wantReason: "prerequisite_for_3_blocked_issues"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:  1,
+				ActiveStates:         []string{"Todo", "Blocked"},
+				TerminalStates:       []string{"Done"},
+				PrioritizeUnblockers: true,
+			})
+			blocker := rankingIssue("blocker", "Todo", 0, now.Add(-time.Hour))
+			peer := rankingIssue("older-peer", "Todo", 0, now.Add(-4*time.Hour))
+			blocker.Title = "Dependency blocker"
+			peer.Title = "Older peer"
+			state := newState(cfg)
+			for index := range tt.count {
+				dependent := rankingDependencyIssue(fmt.Sprintf("dependent-%d", index), "Blocked", blocker.ID)
+				if tt.otherPrerequisite {
+					dependent.BlockedBy = append(dependent.BlockedBy, connector.BlockedRef{ID: "other", State: "Blocked"})
+				}
+				state.Blocked[dependent.ID] = Blocked{Issue: dependent, Source: BlockedSourceDependency}
+			}
 
-	var decisions []dispatchPlanDecision
-	newDispatchPlanner(cfg).plan(&state, []connector.Issue{peer, blocker}, now, dispatchPlanHooks{
-		decision: func(decision dispatchPlanDecision) {
-			decisions = append(decisions, decision)
-		},
-	})
+			var decisions []dispatchPlanDecision
+			newDispatchPlanner(cfg).plan(&state, []connector.Issue{peer, blocker}, now, dispatchPlanHooks{
+				decision: func(decision dispatchPlanDecision) {
+					decisions = append(decisions, decision)
+				},
+			})
 
-	if len(decisions) != 2 {
-		t.Fatalf("decisions = %d, want 2", len(decisions))
-	}
-	if !decisions[0].Selected || decisions[0].Issue.ID != blocker.ID || decisions[0].UnblockerCount != 1 {
-		t.Fatalf("first decision = %#v, want selected blocker with one dependent", decisions[0])
-	}
-	orch := Orchestrator{cfg: cfg}
-	orch.logDispatchPlanDecision(context.Background(), &state, now, decisions[0])
-	if len(state.SchedulerDecisions) != 1 || state.SchedulerDecisions[0].Reason != "unblocks_1_issue" {
-		t.Fatalf("scheduler decisions = %#v, want unblocker reason", state.SchedulerDecisions)
+			if len(decisions) != 2 {
+				t.Fatalf("decisions = %d, want 2", len(decisions))
+			}
+			if !decisions[0].Selected || decisions[0].Issue.ID != blocker.ID || decisions[0].UnblockerCount != tt.count {
+				t.Fatalf("first decision = %#v, want selected blocker with expected dependent count", decisions[0])
+			}
+			orch := Orchestrator{cfg: cfg}
+			orch.logDispatchPlanDecision(context.Background(), &state, now, decisions[0])
+			if len(state.SchedulerDecisions) != 1 || state.SchedulerDecisions[0].Reason != tt.wantReason {
+				t.Fatalf("scheduler decisions = %#v, want unblocker reason", state.SchedulerDecisions)
+			}
+		})
 	}
 }
 

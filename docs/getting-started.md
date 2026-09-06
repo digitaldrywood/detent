@@ -396,7 +396,9 @@ Use `tracker.authorization.labels.*`, `projects[].authorization`, and
 `agent.dispatch_priority_by_label` for selecting or ranking work by ordinary
 labels such as `documentation`, `bug`, or `enhancement`.
 `agent.prioritize_unblockers` defaults to `true` and ranks an unlabeled issue
-ahead of otherwise-equal peers when it directly unblocks waiting work. State,
+ahead of otherwise-equal peers based on its number of directly dependent blocked
+issues. These issues may still have other unfinished prerequisites; the count
+does not predict how many issues become runnable. State,
 tracker priority, and every configured dispatch-label tier remain higher.
 
 The fleet `/kanban` board stays read-only, as do observer dashboards and

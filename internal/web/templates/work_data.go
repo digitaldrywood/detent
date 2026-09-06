@@ -186,7 +186,7 @@ func workItemPriority(card projectKanbanCard) (string, string, int) {
 		name = strings.ToLower(strings.TrimSpace(card.DispatchPriorityLabel))
 	}
 	if name == "" && card.UnblockerCount > 0 {
-		name = "unblocker"
+		name = "prerequisite"
 	}
 	if name == "" {
 		return "Unset", "unset", rank
