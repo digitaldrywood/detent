@@ -3,8 +3,17 @@ package activity
 import "strings"
 
 func ValidationPhase(text string) string {
-	latest, phase := -1, ""
-	for _, marker := range []struct {
+	_, phase := validationProgress(text)
+	return phase
+}
+
+func ValidationMessage(text string) string {
+	message, _ := validationProgress(text)
+	return message
+}
+
+func validationProgress(text string) (string, string) {
+	markers := [...]struct {
 		text  string
 		phase string
 	}{
@@ -15,10 +24,16 @@ func ValidationPhase(text string) string {
 		{"validation queue wait ended", ""},
 		{"validation canceled before command start:", ""},
 		{"acquire validation lock:", ""},
-	} {
-		if position := strings.LastIndex(text, marker.text); position > latest {
-			latest, phase = position, marker.phase
+	}
+	message, phase := "", ""
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		for _, marker := range markers {
+			if strings.HasPrefix(line, marker.text) {
+				message, phase = line, marker.phase
+				break
+			}
 		}
 	}
-	return phase
+	return message, phase
 }

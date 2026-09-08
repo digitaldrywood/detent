@@ -103,6 +103,16 @@ that reason after admission. The board shows [Validation queued](queued.png)
 and [Validating](running.png), verified in an isolated seeded browser preview.
 Browser verification did not change the live service or port 4000.
 
+PR review exposed a missing producer link: command output originally never
+became a progress message. A regression reproduced this through real
+`AgentUpdateToolOutput` events and `publishRunUpdate`. The runner now forwards
+only recognized validation diagnostic lines to the bounded progress message
+and recent events, including split/interleaved output and terminal lines.
+Per-tool partial buffers are bounded and cleared on completion/turn changes.
+Ordinary logs, quoted source, command payloads and final assistant prose keep
+their existing handling. The runner-to-usage regression complements the
+heartbeat/board consumer tests and seeded browser screenshots.
+
 An operator restart interrupted the first combined measurement. The
 [failed output](combined.log) records missing scratch executable and coverage
 directories; [gate events](measurement-events.jsonl) record failure after
