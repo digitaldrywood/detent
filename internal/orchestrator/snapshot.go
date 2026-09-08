@@ -102,6 +102,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	s.applyArtifactGateWaitDispatchSnapshots(pipelineIssueSnapshots, pipeline)
 	snapshot := telemetry.Snapshot{
+		Runtime:                 s.RuntimeObservation,
 		GeneratedAt:             now,
 		Instance:                s.Instance,
 		Auth:                    telemetryAuthHealth(s.Auth),

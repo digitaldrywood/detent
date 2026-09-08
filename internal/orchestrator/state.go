@@ -27,6 +27,7 @@ import (
 )
 
 type State struct {
+	RuntimeObservation       telemetry.SnapshotSection
 	PollInterval             time.Duration
 	RefreshFailureThreshold  int
 	MaxConcurrentAgents      int
@@ -436,6 +437,7 @@ func newState(cfg Config) State {
 
 func (s State) clone() State {
 	cloned := State{
+		RuntimeObservation:       s.RuntimeObservation,
 		PollInterval:             s.PollInterval,
 		RefreshFailureThreshold:  s.RefreshFailureThreshold,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,

@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -111,4 +112,107 @@ func (r *startupStalledReaper) ReconcileWorkspaces(ctx context.Context, _ []conn
 	case <-r.release:
 		return orchestrator.WorkspaceReconcileResult{}, nil
 	}
+}
+
+func TestCompletionFenceKeepsStateObservable(t *testing.T) {
+	for _, cancelCompletion := range []bool{false, true} {
+		name := "complete fence"
+		if cancelCompletion {
+			name = "cancel fence"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				issue := testIssue("completion-worker", "digitaldrywood/detent#2361", "In Progress")
+				tracker := &completionStalledConnector{fakeConnector: newFakeConnector(issue), armed: make(chan struct{}), started: make(chan struct{}), release: make(chan struct{})}
+				runner := newBlockingRunner()
+				orch, err := orchestrator.New(orchestrator.Config{
+					PollInterval: time.Hour, MaxConcurrentAgents: 1,
+					ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"},
+				}, orchestrator.Dependencies{Connector: tracker, Runner: runner})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				go func() { done <- orch.Run(ctx) }()
+				defer func() { cancel(); <-done }()
+				request := <-runner.started
+				synctest.Wait()
+				if request.Generation == 0 {
+					t.Fatal("worker lacks completion fence generation")
+				}
+				close(tracker.armed)
+				close(runner.release)
+				<-tracker.started
+				state := startupState(t, orch)
+				if state.RefreshProgress.Stage != "" {
+					t.Fatalf("completion unexpectedly inside refresh: %#v", state.RefreshProgress)
+				}
+				if state.Running[issue.ID].Generation != request.Generation || state.Claimed[issue.ID].Issue.ID != issue.ID {
+					t.Fatal("pending completion lost worker ownership")
+				}
+				observed := state.Snapshot(time.Now()).Runtime
+				if observed.Source != telemetry.SnapshotSourceCached || observed.ObservedAt.IsZero() || !observed.Complete {
+					t.Fatalf("pending runtime observation = %#v", observed)
+				}
+				time.Sleep(time.Second)
+				delete(state.Running, issue.ID)
+				delete(state.Claimed, issue.ID)
+				state = startupState(t, orch)
+				if len(state.Running) != 1 || len(state.Claimed) != 1 {
+					t.Fatal("reader mutated published ownership")
+				}
+				if got := state.Snapshot(time.Now()).Runtime; got != observed {
+					t.Fatalf("cached runtime freshness advanced: %#v, want %#v", got, observed)
+				}
+				readCtx, cancelRead := context.WithCancel(t.Context())
+				cancelRead()
+				if _, err := orch.State(readCtx); !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled State() = %v", err)
+				}
+				if cancelCompletion {
+					cancel()
+					synctest.Wait()
+					if _, err := orch.State(t.Context()); !errors.Is(err, orchestrator.ErrStopped) {
+						t.Fatalf("stopped State() = %v", err)
+					}
+				} else {
+					close(tracker.release)
+					synctest.Wait()
+					state = startupState(t, orch)
+					if len(state.Running) != 0 {
+						t.Fatal("completed worker remains running")
+					}
+					if !state.RuntimeObservation.IsZero() {
+						t.Fatalf("completed fence retained cached observation: %#v", state.RuntimeObservation)
+					}
+				}
+			})
+		})
+	}
+}
+
+type completionStalledConnector struct {
+	*fakeConnector
+	armed   chan struct{}
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *completionStalledConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	select {
+	case <-c.armed:
+		select {
+		case <-c.started:
+		default:
+			close(c.started)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.release:
+		}
+	default:
+	}
+	return c.fakeConnector.FetchIssueStatesByIDs(ctx, ids)
 }

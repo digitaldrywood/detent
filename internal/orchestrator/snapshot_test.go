@@ -19,17 +19,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestStateReadersCrossStartupAndRefreshBoundaries(t *testing.T) {
-	for _, starting := range []bool{false, true} {
-		name := "refresh starts with reader waiting"
-		if starting {
-			name = "reader precedes initial publication"
-		}
-		t.Run(name, func(t *testing.T) {
+func TestStateReadersCrossPublicationBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		starting   bool
+		completion bool
+	}{
+		{name: "refresh starts with reader waiting"},
+		{name: "reader precedes initial publication", starting: true},
+		{name: "completion starts with reader waiting", completion: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				state := newState(normalizeConfig(Config{}))
-				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{}), refreshStarted: make(chan struct{}), stateRequests: make(chan stateRequest)}
-				if !starting {
+				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{}), snapshotAvailable: make(chan struct{}), stateRequests: make(chan stateRequest)}
+				if !tt.starting {
 					orch.publishState(&state)
 				}
 				done := make(chan error, 1)
@@ -38,8 +42,12 @@ func TestStateReadersCrossStartupAndRefreshBoundaries(t *testing.T) {
 					done <- err
 				}()
 				synctest.Wait()
-				orch.startTick(&state, time.Now())
-				orch.publishState(&state)
+				if tt.completion {
+					orch.startCompletion(&state)
+				} else {
+					orch.startTick(&state, time.Now())
+					orch.publishState(&state)
+				}
 				if err := <-done; err != nil {
 					t.Fatal(err)
 				}
@@ -73,6 +81,32 @@ func TestRefreshProgressPreservesTrackerFreshness(t *testing.T) {
 			later := refresh.WithFreshness(now.Add(time.Second))
 			if later.InFlight.ElapsedSeconds != 11 || refresh.InFlight.ElapsedSeconds != 10 {
 				t.Fatal("freshness update failed to advance duration on an independent copy")
+			}
+		})
+	}
+}
+
+func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
+	for _, publishRuntime := range []bool{false, true} {
+		t.Run(fmt.Sprintf("runtime publication=%t", publishRuntime), func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
+			state.Running[issue.ID] = Running{Issue: issue}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			orch := &Orchestrator{done: make(chan struct{})}
+			orch.publishState(&state)
+			orch.startCompletion(&state)
+			delete(state.Running, issue.ID)
+			state.Claimed[issue.ID].Issue.Labels[0] = "partial"
+			if publishRuntime {
+				orch.publishRuntimeState(&state)
+			}
+			got, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Running) != 1 || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
+				t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
 			}
 		})
 	}
