@@ -2277,6 +2277,94 @@ func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
 	}
 }
 
+func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		processErr   error
+		workspaceErr error
+	}{
+		{name: "completed"},
+		{name: "process group still alive", processErr: errors.New("process group still alive")},
+		{name: "workspace descendant still alive", workspaceErr: errors.New("workspace descendant still alive")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			identity := procgroup.Identity{PID: 2354, GroupID: 2354, StartedAt: time.Now()}
+			backend := &fakeCodexClient{
+				updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: identity}},
+				result:  AgentTurnResult{ThreadID: "admission-scratch", TurnID: "turn-1"},
+			}
+			sessionStore := &scratchReapSessionStore{
+				fakeSessionStore: &fakeSessionStore{sessionID: 2354},
+				process:          store.WorkerProcess{SessionID: 2354},
+			}
+			var fixture string
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+				AgentBackend: backend,
+				Store:        sessionStore,
+				ReapWorkerProcess: func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					fixture = filepath.Join(backend.request.TempDir, "descendant-fixture")
+					if err := os.WriteFile(fixture, []byte("still owned"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					return procgroup.TerminationOutcomeTerminated, tt.processErr
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if backend.request.Workspace != "" {
+					if err := workspace.CleanupOwnedPath(os.TempDir(), backend.request.Workspace); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			runner.reapWorkspaceProcesses = func(context.Context, string, time.Duration) (int, error) {
+				if _, err := os.Stat(fixture); err != nil {
+					t.Errorf("fixture removed before descendant reap: %v", err)
+				}
+				return 0, tt.workspaceErr
+			}
+			_, err = runner.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{ID: "admission-detent", Identifier: "detent/admission", State: "Admission"},
+				Mode:  RunModeRoutine,
+				Admission: &AdmissionRequest{
+					TargetState: "Todo", CriteriaSection: "Admission criteria", CriteriaText: "Require evidence.",
+					Dimensions:    []AdmissionDimension{{Name: "Evidence", Text: "Require evidence."}},
+					EffortSection: "Issue effort selection", EffortText: "low", AllowedEfforts: []string{"low"},
+				},
+			})
+			wantRetained := tt.processErr != nil || tt.workspaceErr != nil
+			if errors.Is(err, ErrWorkerProcessReap) != wantRetained {
+				t.Fatalf("Run error = %v, want reap failure %t", err, wantRetained)
+			}
+			if !wantRetained && err != nil {
+				t.Fatal(err)
+			}
+			_, statErr := os.Stat(fixture)
+			if wantRetained {
+				if statErr != nil {
+					t.Fatalf("admission epilogue removed owned fixture: %v", statErr)
+				}
+				if len(sessionStore.reaps) != 0 {
+					t.Fatal("released worker recovery record before descendant exit")
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("completed admission fixture remains: %v", statErr)
+			}
+			if !wantRetained {
+				if _, err := os.Stat(backend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("completed admission workspace remains: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	t.Parallel()
 

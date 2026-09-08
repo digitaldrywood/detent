@@ -21,6 +21,11 @@ before deleting artifacts or releasing the durable recovery record. A stale
 process identity must not authorize a broader workspace reap. Preserve bounded
 termination and retain artifacts when exit cannot be verified.
 
+Follow cleanup through outer epilogues as well: retaining turn scratch is
+ineffective if an admission or audit epilogue still removes its parent workspace.
+Test the full runner with failed group and descendant reaps, then assert the
+fixture and recovery record survive and successful attempts still clean up.
+
 Give each attempt its own path and persist the exact path used by the provider.
 Place new attempt directories outside any legacy cleanup root that a recovered
 record can recursively remove. Preparation must not delete prior scratch, and

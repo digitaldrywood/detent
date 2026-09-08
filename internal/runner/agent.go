@@ -1990,14 +1990,23 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
-	if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
-		return result, errors.Join(turnErr, err)
+	if req.Admission != nil && errors.Is(turnErr, ErrWorkerProcessReap) {
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_admission_workspace_retained",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
+			"workspace_path", info.Path,
+			"error", turnErr,
+		)
+	} else {
+		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+			return result, errors.Join(turnErr, err)
+		}
+		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
+			"workspace_path", info.Path,
+		)
 	}
-	r.logWorkerEvent(req.Issue, "worker_after_run_finished",
-		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
-		telemetry.DetentSessionIDKey, sessionID,
-		"workspace_path", info.Path,
-	)
 	if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
 		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, context.WithoutCancel(ctx), info, workspaceIssue, "final")
 		result.ArtifactEvidence = artifactProgressEvidence(initialArtifactEvidence, finalArtifactEvidence)
