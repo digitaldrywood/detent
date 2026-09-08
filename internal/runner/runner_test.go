@@ -2767,6 +2767,75 @@ func TestRunnerRunPersistsResumedSessionDeltaAndCumulativeCost(t *testing.T) {
 	}
 }
 
+func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name          string
+		workAttemptID int64
+		generation    uint64
+		orphaned      bool
+	}{
+		{name: "initial", workAttemptID: 4898, generation: 17},
+		{name: "resumed", workAttemptID: 4917, generation: 18, orphaned: true},
+		{name: "resumed again", workAttemptID: 4925, generation: 19, orphaned: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: t.TempDir(), Key: "issue-2355", Branch: "detent/issue-2355"},
+				},
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+			req := RunRequest{
+				Issue:         connector.Issue{ID: "issue-2355", Identifier: "digitaldrywood/detent#2355", ModelOverride: "gpt-5.6-codex"},
+				WorkAttemptID: tt.workAttemptID,
+				Generation:    tt.generation,
+			}
+			if tt.orphaned {
+				req.RetryMode = RetryModeResume
+				req.ResumeState = store.AgentResumeState{
+					DetentSessionID: 5811, ProviderThreadID: "original-thread", RequestedModel: "gpt-5.6-codex",
+					AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
+				}
+			}
+			if _, err := runner.Run(context.Background(), req); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			prompt := backend.request.Prompt
+			for _, want := range []string{
+				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
+				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
+				"Detent owns the completion-lane transition",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q", want)
+				}
+			}
+			if tt.orphaned {
+				if backend.request.Resume.ThreadID != "original-thread" {
+					t.Errorf("resume thread = %q, want original-thread", backend.request.Resume.ThreadID)
+				}
+				if !strings.HasPrefix(prompt, orphanResumePrompt) || !strings.Contains(prompt, "supersede any completion lease values in earlier provider history") {
+					t.Error("resume prompt must preserve restart instruction and supersede historical completion leases")
+				}
+				for _, stale := range []string{`completion_work_attempt_id: "4898"`, `completion_generation: "17"`} {
+					if strings.Contains(prompt, stale) {
+						t.Errorf("resume prompt contains stale lease %q", stale)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	t.Parallel()
 

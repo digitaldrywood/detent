@@ -1760,6 +1760,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnPrompt := prompt
 	if req.ForgeRetry == nil && orphanRecovery && !agentResumeStateEmpty(resumeState) {
 		turnPrompt = orphanResumePrompt
+		if req.WorkAttemptID > 0 && req.Generation > 0 {
+			turnPrompt = appendBlockedHandoffBlock(turnPrompt+"\n\nThe current attempt fields below supersede any completion lease values in earlier provider history. Use these values for the completion handshake when this attempt succeeds.", promptOptions)
+		}
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {
