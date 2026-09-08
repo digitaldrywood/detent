@@ -17,13 +17,23 @@ import (
 
 func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 	t.Parallel()
-	for _, cleanup := range []bool{false, true} {
-		t.Run(map[bool]string{false: "requested stop", true: "completion cleanup"}[cleanup], func(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		source  string
+		cleanup bool
+		preempt bool
+	}{
+		{name: "requested stop", source: "test.first"},
+		{name: "completion cleanup", source: "orchestrator.completion_cleanup", cleanup: true},
+		{name: "global preemption", source: "scheduler.global_dispatch_preemption", preempt: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
 			backend := newWorkerHostRunner()
+			dispatchGate := &cancellationDispatchGate{}
 			var logs bytes.Buffer
-			orch := Orchestrator{cfg: cfg, supervisor: newTestSupervisor(t, backend, cfg), runResults: make(chan runpkg.Completion, 1), logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			orch := Orchestrator{cfg: cfg, globalDispatchGate: dispatchGate, supervisor: newTestSupervisor(t, backend, cfg), runResults: make(chan runpkg.Completion, 1), logger: slog.New(slog.NewTextHandler(&logs, nil))}
 			state := newState(cfg)
 			issue := dispatchTestIssue("queued-worker", "Todo")
 			if !orch.dispatchIssue(t.Context(), &state, issue, 0, time.Now(), "") {
@@ -31,7 +41,13 @@ func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 			}
 			receiveWorkerHostRunRequest(t, backend.started)
 			running := state.Running[issue.ID]
-			if cleanup {
+			if tt.preempt {
+				if dispatchGate.preempt == nil {
+					t.Fatal("preemption callback missing")
+				}
+				dispatchGate.preempt()
+				running.cancel()
+			} else if tt.cleanup {
 				running.cancel()
 			} else {
 				running.stop(runpkg.NewCancellationCause(context.Canceled, "test.first"))
@@ -40,15 +56,12 @@ func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 			<-running.done
 			completion := <-orch.runResults
 			var cause *runpkg.CancellationCause
-			wantSource := "test.first"
-			if cleanup {
-				wantSource = "orchestrator.completion_cleanup"
-			}
+			wantSource := tt.source
 			if !errors.As(completion.Err, &cause) || cause.Source != wantSource {
 				t.Fatalf("completion cause = %v, want source %s", completion.Err, wantSource)
 			}
 			count := strings.Count(logs.String(), "worker_cancellation_requested")
-			if cleanup && count != 0 || !cleanup && (count != 1 || !strings.Contains(logs.String(), "test.first") || strings.Contains(logs.String(), "test.second")) {
+			if tt.cleanup && count != 0 || !tt.cleanup && (count != 1 || !strings.Contains(logs.String(), wantSource) || strings.Contains(logs.String(), "test.second")) {
 				t.Fatalf("cancellation log = %s", logs.String())
 			}
 		})
@@ -57,7 +70,7 @@ func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 
 func TestCancellationCompletionPreservesAttributionAndRetry(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"orchestrator.cancel_running", "orchestrator.parent_context", "runner.agent_backend"} {
+	for _, source := range []string{"orchestrator.cancel_running", "orchestrator.parent_context", "runner.agent_backend", "runner.dispatch_pacer", "scheduler.global_dispatch_preemption"} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
@@ -120,4 +133,17 @@ func TestCancelRunningPreservesFirstInitiator(t *testing.T) {
 			}
 		})
 	}
+}
+
+type cancellationDispatchGate struct {
+	countingProjectDispatchGate
+	preempt func()
+}
+
+func (*cancellationDispatchGate) TryAcquire(context.Context, scheduler.ProjectCandidate, scheduler.SlotRequest, time.Time) (scheduler.Slot, bool, error) {
+	return scheduler.Slot{Weight: 1}, true, nil
+}
+
+func (g *cancellationDispatchGate) SetPreempt(_ scheduler.Slot, preempt func()) {
+	g.preempt = preempt
 }

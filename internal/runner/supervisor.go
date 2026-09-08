@@ -203,7 +203,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				err = cause
 			}
 			completion.CompletedAt = s.now()
-			completion.Err = err
+			completion.Err = preserveCancellation(ctx, err, "runner.dispatch_pacer")
 			return completion
 		}
 	}

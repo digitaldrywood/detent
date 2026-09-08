@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -152,4 +153,56 @@ func (s *cancellationSessionStore) FinishSession(ctx context.Context, id int64, 
 	}
 	_, s.bounded = ctx.Deadline()
 	return s.fakeSessionStore.FinishSession(ctx, id, attrs)
+}
+
+func TestCancellationDuringDispatchPacing(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		cause     error
+		source    string
+		retryable bool
+	}{
+		{name: "parent cancellation", cause: context.Canceled, source: "runner.dispatch_pacer", retryable: true},
+		{name: "deadline", cause: context.DeadlineExceeded, source: "runner.dispatch_pacer", retryable: true},
+		{name: "operator", cause: NewCancellationCause(ErrOperatorStopped, "operator.stop_run"), source: "operator.stop_run"},
+		{name: "lane", cause: NewCancellationCause(ErrLaneRevoked, "orchestrator.lane_revocation"), source: "orchestrator.lane_revocation"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{
+				MaxStartsPerSecond: 1,
+				RampStarts:         2,
+				Sleep: func(ctx context.Context, _ time.Duration) error {
+					cancel(tt.cause)
+					return ctx.Err()
+				},
+			})
+			if err := pacer.Wait(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var calls []string
+			var logs bytes.Buffer
+			supervisor, err := NewSupervisor(orderRecordingBackend{order: &calls}, SupervisorConfig{
+				DispatchPacer: pacer,
+				Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion := supervisor.Run(ctx, RunRequest{Issue: connector.Issue{ID: "queued-worker"}})
+			var cause *CancellationCause
+			if !errors.As(completion.Err, &cause) || cause.Source != tt.source || !errors.Is(completion.Err, tt.cause) {
+				t.Fatalf("pacing cancellation = %v, want source %s", completion.Err, tt.source)
+			}
+			if len(calls) != 0 || completion.Retryable != tt.retryable {
+				t.Fatalf("backend calls = %v, retryable = %v", calls, completion.Retryable)
+			}
+			if !strings.Contains(logs.String(), "cancellation_source="+tt.source) {
+				t.Fatalf("completion log lacks pacing attribution: %s", logs.String())
+			}
+		})
+	}
 }

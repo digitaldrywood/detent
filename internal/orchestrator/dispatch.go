@@ -781,7 +781,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		cancel:                 cancel,
 		stop:                   cancelCause,
 	}
-	o.setGlobalDispatchPreempt(globalSlot, cancel)
+	o.setGlobalDispatchPreempt(globalSlot, func() {
+		cancelCause(runpkg.NewCancellationCause(context.Canceled, "scheduler.global_dispatch_preemption"))
+	})
 	state.Claimed[issue.ID] = claim
 	delete(state.Retry, issue.ID)
 	delete(state.Blocked, issue.ID)
