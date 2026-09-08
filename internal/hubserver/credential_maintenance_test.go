@@ -192,3 +192,37 @@ func TestCredentialMaintenanceConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestCredentialMaintenanceAuditOutcomes(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	reopenCredentialFixture(t, f, true)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, tokenRequest{Name: "audit-token", Scope: apiScopeOperator})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var created tokenResponse
+	decodeHubResponse(t, response, &created)
+	for _, test := range []struct {
+		name, method, path string
+		body               any
+		status             int
+	}{
+		{"create", http.MethodPost, "/api/v1/tokens", tokenRequest{Name: "second-token", Scope: apiScopeOperator}, http.StatusCreated},
+		{"rotate", http.MethodPost, "/api/v1/tokens/" + created.ID + "/rotate", nil, http.StatusOK},
+		{"revoke", http.MethodDelete, "/api/v1/tokens/" + created.ID, nil, http.StatusNoContent},
+		{"duplicate", http.MethodPost, "/api/v1/tokens", tokenRequest{Name: "audit-token", Scope: apiScopeOperator}, http.StatusConflict},
+		{"invalid body", http.MethodPost, "/api/v1/tokens", map[string]string{"unknown": "field"}, http.StatusUnprocessableEntity},
+		{"unknown token", http.MethodPost, "/api/v1/tokens/unknown/rotate", nil, http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, test.method, test.path, testHubAdminToken, test.body), test.status)
+			var status int
+			var actor, route string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status, actual_actor, route FROM hosted_audit WHERE event = 'credential_maintenance' ORDER BY id DESC LIMIT 1").Scan(&status, &actor, &route); err != nil {
+				t.Fatal(err)
+			}
+			if status != test.status || actor != bootstrapTokenID || route != test.method+" "+test.path {
+				t.Fatalf("audit status=%d actor=%s route=%s", status, actor, route)
+			}
+		})
+	}
+}

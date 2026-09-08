@@ -45,10 +45,14 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 			return c.NoContent(http.StatusForbidden)
 		}
 		identity := &auth.HostedIdentity{Subject: credential.ID, CreatedAt: s.config.now()}
-		if err := s.hostedAudit(c.Request().Context(), identity, "credential_maintenance", c.Request().Method+" "+c.Request().URL.Path, "", 0); err != nil {
+		route := c.Request().Method + " " + c.Request().URL.Path
+		if err := s.hostedAudit(c.Request().Context(), identity, "credential_maintenance_attempt", route, "", 0); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		c.Set("hub_api_credential", credential)
-		return next(c)
+		if err := next(c); err != nil {
+			c.Error(err)
+		}
+		return s.hostedAudit(c.Request().Context(), identity, "credential_maintenance", route, "", c.Response().Status)
 	}
 }
