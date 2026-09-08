@@ -2634,3 +2634,157 @@ func (s *refreshingTokenTestSource) RefreshToken(ctx context.Context) (string, e
 	s.token = s.refreshToken
 	return s.token, nil
 }
+
+func TestClientRESTSearchReserveAndRateLimits(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		status    int
+		remaining string
+		want      error
+		wantCalls int
+	}{
+		{name: "healthy search", status: http.StatusOK, remaining: "29", wantCalls: 2},
+		{name: "primary exhaustion", status: http.StatusForbidden, remaining: "0", want: ErrRateLimited, wantCalls: 1},
+		{name: "secondary throttle", status: http.StatusTooManyRequests, remaining: "29", want: ErrRateLimited, wantCalls: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var calls int
+			var logs bytes.Buffer
+			client, err := NewClient(ClientConfig{
+				Endpoint:    "https://github-search-reserve.test",
+				TokenSource: StaticTokenSource("test"),
+				RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+				Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
+				HTTPClient: staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+					calls++
+					headers := http.Header{}
+					headers.Set("X-RateLimit-Limit", "30")
+					headers.Set("X-RateLimit-Remaining", tt.remaining)
+					if tt.want == nil && calls == 2 {
+						headers.Set("X-RateLimit-Remaining", "27")
+					}
+					headers.Set("X-RateLimit-Resource", "search")
+					headers.Set("X-RateLimit-Reset", "4070908800")
+					if tt.want != nil {
+						headers.Set("Retry-After", "60")
+					}
+					return jsonResponse(r, tt.status, `{}`, headers), nil
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.restBackoffs = newRESTBackoffRegistry()
+			client.restDivergences = newRESTDivergenceRegistry()
+			for range 2 {
+				err := client.REST(context.Background(), http.MethodGet, "/search/issues", nil, nil)
+				if !errors.Is(err, tt.want) {
+					t.Fatalf("REST error = %v, want %v", err, tt.want)
+				}
+			}
+			if calls != tt.wantCalls {
+				t.Fatalf("HTTP calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if strings.Contains(logs.String(), "report_reason=reserve_threat") {
+				t.Fatalf("search incorrectly threatened core reserve: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestClientRESTResourceReserveAdmission(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		path            string
+		coreRemaining   int64
+		searchRemaining int64
+		conditional     bool
+		expired         bool
+		want            error
+	}{
+		{name: "healthy search with reserved core", path: "/search/issues", coreRemaining: 900, searchRemaining: 29},
+		{name: "last search request", path: "/search/issues", coreRemaining: 4900, searchRemaining: 1},
+		{name: "core at reserve", path: "/repos/o/r/pulls", coreRemaining: 1000, searchRemaining: 29, want: ErrRESTBudgetReserved},
+		{name: "core above reserve with empty search", path: "/repos/o/r/pulls", coreRemaining: 1001, searchRemaining: 0},
+		{name: "conditional core at reserve", path: "/repos/o/r/pulls", coreRemaining: 1000, conditional: true},
+		{name: "expired core reserve", path: "/repos/o/r/pulls", coreRemaining: 900, expired: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reset := now.Add(time.Hour)
+			if tt.expired {
+				reset = now.Add(-time.Hour)
+			}
+			client := &Client{
+				logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+				restPolicy: RESTBudgetPolicy{MinRemainingReserve: 1000},
+				restRateLimits: map[string]connector.RESTRateLimit{
+					"core":   {Resource: "core", Limit: 5000, Remaining: tt.coreRemaining, ResetAt: reset},
+					"search": {Resource: "search", Limit: 30, Remaining: tt.searchRemaining, ResetAt: reset},
+				},
+			}
+			err := client.restBudgetPolicyError(context.Background(), "test", http.MethodGet, tt.path, tt.conditional, now)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("admission error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestConnectorRESTResourceReserveRecovery(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		resource  string
+		remaining int
+		wantHeld  bool
+	}{
+		{name: "healthy search", resource: "search", remaining: 29},
+		{name: "exhausted search", resource: "search", remaining: 0, wantHeld: true},
+		{name: "core at reserve", resource: "core", remaining: 1000, wantHeld: true},
+		{name: "healthy core", resource: "core", remaining: 1001},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				limit := 5000
+				if tt.resource == "search" {
+					limit = 30
+				}
+				w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+				w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(tt.remaining))
+				w.Header().Set("X-RateLimit-Resource", tt.resource)
+				w.Header().Set("X-RateLimit-Reset", "4070908800")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			t.Cleanup(server.Close)
+			conn, err := NewConnector(Config{Endpoint: server.URL, TokenSource: StaticTokenSource("test"), HTTPClient: server.Client(), RESTMinRemainingReserve: 1000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.client.restBackoffs = newRESTBackoffRegistry()
+			conn.client.restBackoffUntil = time.Now().Add(time.Hour)
+			if _, err := conn.ProbeRESTRateLimit(context.Background(), 1000); err != nil {
+				t.Fatal(err)
+			}
+			path := "/repos/o/r/pulls"
+			if tt.resource == "search" {
+				path = "/search/issues"
+			}
+			err = conn.client.REST(context.Background(), http.MethodGet, path, nil, nil)
+			if errors.Is(err, ErrRateLimited) != tt.wantHeld {
+				t.Fatalf("REST after recovery = %v, want held %v", err, tt.wantHeld)
+			}
+			if !tt.wantHeld && err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
