@@ -792,6 +792,41 @@ func TestBoardViewUsesPerProjectDispatchLabelConfig(t *testing.T) {
 	}
 }
 
+func TestBoardValidationProgress(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		message, label, signal string
+	}{
+		{"validation gate waiting: position=3 waited=5m", "waiting for local validation", "Validation queued"},
+		{"validation gate waiting: position=3\nvalidation gate running: owner_pid=10", "running local validation", "Validating"},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			t.Parallel()
+			data := boardTestData()
+			data.Snapshot.Running[0].LastMessage = tt.message
+			view := boardViewFromDashboard(data)
+			found := false
+			for _, lane := range view.Lanes {
+				for _, card := range lane.Cards {
+					if !card.Running {
+						continue
+					}
+					found = true
+					if card.ExtraText != tt.label {
+						t.Fatalf("progress = %q, want %q", card.ExtraText, tt.label)
+					}
+					if len(card.Signals) == 0 || card.Signals[0].Text != tt.signal {
+						t.Fatalf("signals = %+v, want %q", card.Signals, tt.signal)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing running card")
+			}
+		})
+	}
+}
+
 func TestBoardViewUsesTopLevelDispatchLabelConfigForLegacyHomeBoard(t *testing.T) {
 	t.Parallel()
 

@@ -55,6 +55,32 @@ func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 	}
 }
 
+func TestWorkerProgressValidation(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		message, phase, wait, action string
+		pendingCI                    bool
+	}{
+		{"validation gate waiting: position=3 waited=5m", "waiting_validation", "local_validation_queue", "wait for local validation slot", true},
+		{"validation gate running: owner_pid=10", "validating", "", "finish local validation", true},
+		{"editing source", "implementing", "", "continue worker", false},
+	} {
+		t.Run(tt.phase, func(t *testing.T) {
+			t.Parallel()
+			base := store.WorkAttemptHeartbeat{Phase: "implementing", WaitReason: "local_validation_queue"}
+			running := Running{LastMessage: tt.message}
+			if tt.pendingCI {
+				running.Issue.PullRequest = &connector.PullRequest{CIStatus: "pending"}
+			}
+			progress := newWorkerProgress(running, base, nil, 4096)
+			got := progress.heartbeat(base, time.Now())
+			if got.Phase != tt.phase || got.WaitReason != tt.wait || got.NextAction != tt.action {
+				t.Fatalf("heartbeat = %+v", got)
+			}
+		})
+	}
+}
+
 func TestWorkerProgressHeartbeatUsesLatestObservation(t *testing.T) {
 	t.Parallel()
 	now := time.Now()

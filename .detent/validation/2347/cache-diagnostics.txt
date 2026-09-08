@@ -1,0 +1,43 @@
+first
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 4d49494772644132366f4a58713435414b416a46 => 90d0ebd087da1a326973a43879b90140b097987b879b3e917579c5cb32c7e4bd
+testcache: github.com/digitaldrywood/detent/internal/activity: input list not found: cache entry not found: open <worktree>/.detent/tmp/go-build/90/90d0ebd087da1a326973a43879b90140b097987b879b3e917579c5cb32c7e4bd-a: no such file or directory
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 4e41326b2d2d756470527a5a4832445034446230 => 7d62495f5e24b1ccc0bf1b633dec9e6a7865afc946fa7d04e7b949fa5a288422
+testcache: github.com/digitaldrywood/detent/internal/activity: input list not found: cache entry not found: open <worktree>/.detent/tmp/go-build/7d/7d62495f5e24b1ccc0bf1b633dec9e6a7865afc946fa7d04e7b949fa5a288422-a: no such file or directory
+testcache: github.com/digitaldrywood/detent/internal/activity: save test ID 90d0ebd087da1a326973a43879b90140b097987b879b3e917579c5cb32c7e4bd => input ID c4c31c6a01e1a69df113da97a753b73e15b85a20ac8857ebae1d8e7f43cce979 => 0e4ace9c3c31489be36d6cf1752eaf28e7db294596085a9ddef4fe1473adfee8
+testcache: github.com/digitaldrywood/detent/internal/activity: save test ID 7d62495f5e24b1ccc0bf1b633dec9e6a7865afc946fa7d04e7b949fa5a288422 => input ID c4c31c6a01e1a69df113da97a753b73e15b85a20ac8857ebae1d8e7f43cce979 => 4ca35581a74d55298c191df6b26a03876f5d0cd6f1e1f6abb9d32cb580d9d348
+ok  	github.com/digitaldrywood/detent/internal/activity	0.215s
+
+
+repeat
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 4d49494772644132366f4a58713435414b416a46 => 90d0ebd087da1a326973a43879b90140b097987b879b3e917579c5cb32c7e4bd
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 90d0ebd087da1a326973a43879b90140b097987b879b3e917579c5cb32c7e4bd => input ID 61f7297663c92368dcefe8a39ddf99bbd310b42451846fd77ad2030cf56283d5 => ebc9c9ea2b3527a763e15524b97ea329c9f91b9b097368cbee840c59bc7cffd2
+testcache: github.com/digitaldrywood/detent/internal/activity: test output not found: cache entry not found: open <worktree>/.detent/tmp/go-build/eb/ebc9c9ea2b3527a763e15524b97ea329c9f91b9b097368cbee840c59bc7cffd2-a: no such file or directory
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 4e41326b2d2d756470527a5a4832445034446230 => 7d62495f5e24b1ccc0bf1b633dec9e6a7865afc946fa7d04e7b949fa5a288422
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 7d62495f5e24b1ccc0bf1b633dec9e6a7865afc946fa7d04e7b949fa5a288422 => input ID de175cdb13a69b195ee8e959f40fe8af36a30eb1ab7d20d8edf88d989d54acba => 4464f8c8f9a7bd41ec3de75b734378fca83f4d19a68dac2a8cde92e493182968
+testcache: github.com/digitaldrywood/detent/internal/activity: test output not found: cache entry not found: open <worktree>/.detent/tmp/go-build/44/4464f8c8f9a7bd41ec3de75b734378fca83f4d19a68dac2a8cde92e493182968-a: no such file or directory
+testcache: github.com/digitaldrywood/detent/internal/activity: save test ID 90d0ebd087da1a326973a43879b90140b097987b879b3e917579c5cb32c7e4bd => input ID 2e9ceee33ffa818cfac95342e608229c35a8cb124422abee6531a633a7732ccd => bba8ad0f3aad0cd01e062339360cd4e3892b2566b2e628be7919f3c74cb593a5
+testcache: github.com/digitaldrywood/detent/internal/activity: save test ID 7d62495f5e24b1ccc0bf1b633dec9e6a7865afc946fa7d04e7b949fa5a288422 => input ID 2e9ceee33ffa818cfac95342e608229c35a8cb124422abee6531a633a7732ccd => 4d76ddff17b4f40bf6e5ab063db19f9943e0d4843b3f75c37b0e102852ff7739
+ok  	github.com/digitaldrywood/detent/internal/activity	0.229s
+
+
+fresh
+testcache: caching disabled for test argument: -test.count=1
+testcache: caching disabled for test argument: -test.count=1
+ok  	github.com/digitaldrywood/detent/internal/activity	0.199s
+
+
+Observed cache input log (prefix)
+# test log
+getenv GOTMPDIR
+getenv TMPDIR
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions/2026/07/10
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions/2026/07
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions/2026
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001
+open <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions/2026/07/10/rollout-2026-thread-1156.jsonl
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682
+getenv HOME
+stat <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions
+open <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions
+open <worktree>/.detent/tmp/TestRolloutHistoryReaderPagesCodexEvents2915047682/001/sessions/2026

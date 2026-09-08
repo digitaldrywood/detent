@@ -1,0 +1,31 @@
+{
+  "go": "go1.26.6",
+  "source": "1040032d",
+  "cache_strategy": "shared",
+  "build_variants_warmed": true,
+  "samples_per_variant": 1,
+  "measurements": {
+    "race": {
+      "wall_seconds": 165.79,
+      "user_seconds": 340.78,
+      "system_seconds": 30.82,
+      "max_rss_bytes": 648478720
+    },
+    "coverage": {
+      "wall_seconds": 29.33,
+      "user_seconds": 27.43,
+      "system_seconds": 33.76,
+      "max_rss_bytes": 414121984
+    },
+    "combined": {
+      "wall_seconds": 196.39,
+      "user_seconds": 341.37,
+      "system_seconds": 35.6,
+      "max_rss_bytes": 662372352
+    }
+  },
+  "separate_cpu_seconds": 432.78999999999996,
+  "combined_cpu_seconds": 376.97,
+  "cpu_reduction_percent": 12.897710205873505,
+  "wall_improvement_demonstrated": false
+}

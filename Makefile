@@ -48,7 +48,7 @@ GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
 
-.PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -107,9 +107,17 @@ test-race: test-race-hub
 test-race-hub:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -output tmp/hub-race-evidence ./internal/hubserver
 
+test-race-cover:
+	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_TIMEOUT)" "$(COVERPROFILE_RAW)"
+	@$(MAKE) coverage-check
+	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
+
 test-cover:
 	@mkdir -p tmp
 	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./...
+	@$(MAKE) coverage-check
+
+coverage-check:
 	@awk 'NR == 1 || ($$1 !~ /_templ\.go:/ && $$1 !~ /\/internal\/store\/sqlc\// && $$1 !~ /\/internal\/database\/sqlc\//)' "$(COVERPROFILE_RAW)" > "$(COVERPROFILE)"
 	@coverage="$$(go tool cover -func=$(COVERPROFILE) | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
 	awk -v coverage="$$coverage" -v threshold="$(COVERAGE_THRESHOLD)" 'BEGIN { \
@@ -158,10 +166,11 @@ nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
 check: check-migrations
+	@mkdir -p tmp
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
-	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -- $(MAKE) check-unlocked
+	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) check-unlocked
 
-check-unlocked: check-migrations check-generated build lint vet nilaway-audit test-race test-cover test-cover-packages
+check-unlocked: check-migrations check-generated build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
 
 modernize-check:
@@ -205,6 +214,7 @@ help:
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"
 	@echo "  test-race-hub  Run the complete Hub race suite with timing evidence"
+	@echo "  test-race-cover  Run race and coverage gates with shared Hub execution"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  test-cover-packages  Run per-package coverage floor checks"
 	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"

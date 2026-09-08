@@ -1,0 +1,13 @@
+GOTOOLCHAIN=go1.26.6 go test ./tools/checklock ./tools/covermerge ./tools/testgate ./internal/activity . ./internal/orchestrator ./internal/web/templates -run 'Test(Validation|Run|CombinedCoverage|Merge|CoverageLocation|GoTestCoverageArgs|RaceGateDetectsFixtureRace|WorkerProgress|BoardValidationProgress)' -count=1
+
+ok  	github.com/digitaldrywood/detent/tools/checklock	24.445s
+ok  	github.com/digitaldrywood/detent/tools/covermerge	0.264s
+ok  	github.com/digitaldrywood/detent/tools/testgate	32.180s
+ok  	github.com/digitaldrywood/detent/internal/activity	0.805s
+ok  	github.com/digitaldrywood/detent	1.899s
+ok  	github.com/digitaldrywood/detent/internal/orchestrator	7.922s
+ok  	github.com/digitaldrywood/detent/internal/web/templates	0.496s
+
+After adding wait attribution regression:
+GOTOOLCHAIN=go1.26.6 go test ./tools/checklock -run '^TestValidationEventsWaitFailure$' -count=1
+ok github.com/digitaldrywood/detent/tools/checklock 4.062s

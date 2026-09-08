@@ -173,6 +173,7 @@ func (p *workerProgress) heartbeat(base store.WorkAttemptHeartbeat, now time.Tim
 	base.HeartbeatAt = now
 	if base.Phase != "backoff" {
 		base.Phase = runningWorkAttemptPhase(*running, nil)
+		base.WaitReason = runningWorkAttemptWaitReason(*running, nil)
 	}
 	message := firstNonBlank(running.LastMessage, running.LastEvent, "worker running")
 	base.StatusMessage = runtimeoutput.Truncate(strings.TrimSpace(message), p.outputLimit).Value

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -999,6 +1000,9 @@ func runningWorkAttemptPhase(running Running, state *State) string {
 	if len(activeRESTBackoffFamilies(rateLimitsFromState(state))) > 0 {
 		return "backoff"
 	}
+	if phase := activity.ValidationPhase(running.LastMessage); phase != "" {
+		return phase
+	}
 	if mergeWorkerIssue(running.Issue) {
 		return "merging"
 	}
@@ -1024,6 +1028,12 @@ func runningWorkAttemptWaitReason(running Running, state *State) string {
 	if len(activeRESTBackoffFamilies(rateLimitsFromState(state))) > 0 {
 		return "rate_limit"
 	}
+	switch activity.ValidationPhase(running.LastMessage) {
+	case "waiting_validation":
+		return "local_validation_queue"
+	case "validating":
+		return ""
+	}
 	if running.Issue.PullRequest != nil {
 		ci := strings.ToLower(strings.TrimSpace(running.Issue.PullRequest.CIStatus))
 		if ci == "pending" || ci == "running" {
@@ -1035,6 +1045,10 @@ func runningWorkAttemptWaitReason(running Running, state *State) string {
 
 func runningWorkAttemptNextAction(running Running, phase string) string {
 	switch phase {
+	case "waiting_validation":
+		return "wait for local validation slot"
+	case "validating":
+		return "finish local validation"
 	case "backoff":
 		return "wait for endpoint backoff"
 	case "waiting_ci":
