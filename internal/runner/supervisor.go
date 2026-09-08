@@ -179,6 +179,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			"error", completion.Err,
 		}
 		attrs = append(attrs, backendErrorAttrs(completion.Err)...)
+		attrs = append(attrs, cancellationAttrs(completion.Err)...)
 		level := slog.LevelDebug
 		if IsTransientOverload(completion.Err) {
 			attrs = append(attrs, "reason", "transient_overload")
@@ -222,11 +223,9 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	}
 
 	result, err := s.backend.Run(ctx, request)
-	if cause := context.Cause(ctx); errors.Is(cause, ErrMergeWorkerStartupTimeout) ||
-		errors.Is(cause, ErrMergeWorkerDurationExceeded) ||
-		errors.Is(cause, ErrCIUnavailable) ||
-		errors.Is(cause, ErrLaneRevoked) {
-		err = errors.Join(cause, err)
+	err = preserveCancellation(ctx, err, "orchestrator.parent_context")
+	if cause := context.Cause(ctx); cooperativeStopError(cause) {
+		err = errors.Join(err, cause)
 		if errors.Is(cause, ErrMergeWorkerDurationExceeded) {
 			result.FinalState = FinalStateMergeDurationExceeded
 		}

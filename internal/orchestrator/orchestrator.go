@@ -1420,7 +1420,7 @@ func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Tim
 
 	var err error
 	for _, issueID := range sortedKeys(state.Running) {
-		o.cancelRunning(state, issueID)
+		o.cancelRunning(state, issueID, "orchestrator.force_quit")
 		o.heartbeats.remove(issueID)
 		err = errors.Join(err, o.abandonClaim(ctx, issueID))
 		delete(state.Running, issueID)

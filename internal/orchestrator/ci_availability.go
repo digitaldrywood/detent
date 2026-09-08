@@ -163,7 +163,7 @@ func (o *Orchestrator) parkCIUnavailableWaiters(state *State, issues []connector
 		}
 		running.CIStopRequested = true
 		state.Running[issueID] = running
-		running.stop(runpkg.ErrCIUnavailable)
+		running.stop(runpkg.NewCancellationCause(runpkg.ErrCIUnavailable, "orchestrator.ci_availability"))
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now.UTC(),
 			Event:   "ci_unavailable_attempt_parking",
