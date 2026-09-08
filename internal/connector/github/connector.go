@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -298,27 +297,11 @@ func (c *Connector) ProbeGraphQLRateLimit(ctx context.Context) (connector.GraphQ
 }
 
 func (c *Connector) ProbeRESTRateLimit(ctx context.Context, minimumRemaining int64) (connector.RESTRateLimit, error) {
-	result, err := c.client.restProbe(ctx, http.MethodGet, "/rate_limit", nil)
-	if err != nil {
-		return connector.RESTRateLimit{}, err
+	path := "/user"
+	if c.repository.Owner != "" && c.repository.Name != "" {
+		path = "/repos/" + c.repository.Owner + "/" + c.repository.Name + "/issues?per_page=1&state=all"
 	}
-	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
-		return connector.RESTRateLimit{}, classifyStatusAt(result.StatusCode, result.Headers, []byte(result.FullBody), c.now())
-	}
-	if _, ok := int64Header(result.Headers, "X-RateLimit-Limit"); !ok {
-		return connector.RESTRateLimit{}, ErrInvalidResponse
-	}
-	if _, ok := int64Header(result.Headers, "X-RateLimit-Remaining"); !ok {
-		return connector.RESTRateLimit{}, ErrInvalidResponse
-	}
-	usage := c.client.RESTRateLimitStatus()
-	if !usage.HasRateLimit {
-		return connector.RESTRateLimit{}, ErrInvalidResponse
-	}
-	if usage.RateLimit.Remaining > minimumRemaining {
-		c.client.clearRESTBackoff()
-	}
-	return usage.RateLimit, nil
+	return c.client.probeRESTRecovery(ctx, minimumRemaining, path)
 }
 
 func (c *Connector) AuthHealth() (connector.AuthHealth, bool) {
