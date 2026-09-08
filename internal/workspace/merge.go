@@ -320,7 +320,7 @@ func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue
 		return err
 	}
 	defer func() {
-		err = errors.Join(err, CleanupWorkerScratch(info.Path))
+		err = errors.Join(err, CleanupWorkerScratch(info.Path, scratch))
 	}()
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path

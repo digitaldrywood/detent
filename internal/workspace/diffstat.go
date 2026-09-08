@@ -28,6 +28,7 @@ var detentHandoffDiffExcludes = []string{
 	".detent/lessons.md",
 	".detent/notes.md",
 	".detent/tmp/",
+	".detent/worker-tmp/",
 }
 
 type DiffStat struct {

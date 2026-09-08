@@ -2345,7 +2345,7 @@ func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T)
 		t.Fatalf("chmod cache dir: %v", err)
 	}
 
-	if err := CleanupWorkerScratch(workspacePath); err != nil {
+	if err := CleanupWorkerScratch(workspacePath, scratchPath); err != nil {
 		t.Fatalf("CleanupWorkerScratch() error = %v", err)
 	}
 	if _, err := os.Stat(scratchPath); !errors.Is(err, os.ErrNotExist) {
@@ -2410,6 +2410,35 @@ func TestCleanupOwnedPathConfinesRemovalToRegisteredRoot(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkerScratchPreservesPriorAttempt(t *testing.T) {
+	t.Parallel()
+	workspacePath := t.TempDir()
+	prior, err := PrepareWorkerScratch(t.Context(), workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(prior, "fixture")
+	if err := os.WriteFile(fixture, []byte("prior attempt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := PrepareWorkerScratch(t.Context(), workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(fixture); err != nil {
+		t.Fatalf("resumed attempt removed prior fixture: %v", err)
+	}
+	if resumed == prior {
+		t.Fatal("attempts share scratch ownership")
+	}
+	if err := CleanupOwnedPath(workspacePath, prior); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(resumed); err != nil {
+		t.Fatalf("prior cleanup removed resumed scratch: %v", err)
+	}
+}
+
 func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	t.Parallel()
 
@@ -2423,7 +2452,7 @@ func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	}
 
 	status := runCommand(t, workspacePath, "git", "status", "--short", "--untracked-files=all")
-	if strings.Contains(status, ".detent/tmp") {
+	if strings.Contains(status, ".detent/worker-tmp") {
 		t.Fatalf("git status includes worker scratch:\n%s", status)
 	}
 	excludePath := strings.TrimSpace(runCommand(t, workspacePath, "git", "rev-parse", "--git-path", "info/exclude"))
@@ -2434,7 +2463,7 @@ func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read git exclude: %v", err)
 	}
-	if !strings.Contains(string(exclude), ".detent/tmp/") {
+	if !strings.Contains(string(exclude), ".detent/worker-tmp/") {
 		t.Fatalf("git exclude = %q, want worker scratch pattern", exclude)
 	}
 }

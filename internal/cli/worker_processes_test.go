@@ -20,6 +20,31 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func TestReapWorkerProcessesPreservesStaleIdentityArtifacts(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []procgroup.TerminationOutcome{procgroup.TerminationOutcomeStaleIdentity, procgroup.TerminationOutcomeAlreadyExited} {
+		t.Run(string(outcome), func(t *testing.T) {
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{SessionID: 2354}}}
+			cleaned := false
+			err := reapWorkerProcessesWithCleanup(t.Context(), processStore, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Second, time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return outcome, nil
+				},
+				func(store.WorkerProcess) error { cleaned = true; return nil },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cleaned != (outcome == procgroup.TerminationOutcomeAlreadyExited) {
+				t.Fatalf("artifact cleanup = %t after %s", cleaned, outcome)
+			}
+			if len(processStore.reaped) != 1 {
+				t.Fatalf("recorded reaps = %d, want 1", len(processStore.reaped))
+			}
+		})
+	}
+}
+
 func TestReapWorkerProcessesRetriesNonEmptyArtifacts(t *testing.T) {
 	t.Parallel()
 

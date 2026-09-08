@@ -30,7 +30,12 @@ func reapWorkerProcesses(
 	now func() time.Time,
 	reap workerProcessReapFunc,
 ) error {
-	return reapWorkerProcessesWithCleanup(ctx, processStore, logger, reason, grace, now, reap, cleanupWorkerProcessArtifacts)
+	return reapWorkerProcessesWithCleanup(ctx, processStore, logger, reason, grace, now, reap, func(process store.WorkerProcess) error {
+		if _, err := workspace.ReapWorkerArtifactProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
+			return fmt.Errorf("reap worker artifact processes: %w", err)
+		}
+		return cleanupWorkerProcessArtifacts(process)
+	})
 }
 
 func reapWorkerProcessesWithCleanup(
@@ -79,6 +84,7 @@ func reapWorkerProcessesWithCleanup(
 			"issue_identifier", strings.TrimSpace(process.Identifier),
 			"pid", process.PID,
 			"pgid", process.GroupID,
+			"cleanup_path", process.CleanupPath,
 		}
 		if reapErr != nil {
 			attrs = append(attrs, "error", reapErr)
@@ -86,11 +92,13 @@ func reapWorkerProcessesWithCleanup(
 			result = errors.Join(result, reapErr)
 			continue
 		}
-		if cleanupErr := retryWorkerProcessArtifactCleanup(ctx, process, logger.With(attrs...), cleanup); cleanupErr != nil {
-			attrs = append(attrs, "error", cleanupErr)
-			logger.Info("worker process lifecycle decision", attrs...)
-			result = errors.Join(result, cleanupErr)
-			continue
+		if outcome != procgroup.TerminationOutcomeStaleIdentity {
+			if cleanupErr := retryWorkerProcessArtifactCleanup(ctx, process, logger.With(attrs...), cleanup); cleanupErr != nil {
+				attrs = append(attrs, "error", cleanupErr)
+				logger.Info("worker process lifecycle decision", attrs...)
+				result = errors.Join(result, cleanupErr)
+				continue
+			}
 		}
 		logger.Info("worker process lifecycle decision", attrs...)
 		if err := processStore.MarkSessionWorkerProcessReaped(ctx, process.SessionID, store.WorkerProcessReap{

@@ -31,11 +31,15 @@ func TestObserveAgentRSS(t *testing.T) {
 			var updates []AgentUpdate
 			request := AgentTurnRequest{
 				MaxRSSBytes: 512,
+				TempDir:     "attempt-scratch",
 				processRSS: func(context.Context, procgroup.Identity) (uint64, error) {
 					return tt.rssBytes, tt.readErr
 				},
 			}
 			err := observeAgentRSS(t.Context(), request, procgroup.Identity{PID: 1899}, func(_ context.Context, update AgentUpdate) error {
+				if update.workerScratchPath != request.TempDir {
+					t.Fatalf("RSS update lost worker scratch ownership: %q", update.workerScratchPath)
+				}
 				updates = append(updates, update)
 				return nil
 			})

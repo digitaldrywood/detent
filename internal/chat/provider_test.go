@@ -46,7 +46,7 @@ func TestAgentProviderRunsRestrictedToolTurnAndCollectsReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks() error = %v", err)
 	}
-	if backend.request.TempDir != filepath.Join(canonicalWorkspace, ".detent", "tmp") {
+	if filepath.Dir(backend.request.TempDir) != filepath.Join(canonicalWorkspace, ".detent", "worker-tmp") {
 		t.Fatalf("TempDir = %q", backend.request.TempDir)
 	}
 	if len(backend.tools) != 1 || backend.tools[0].Name != "board_state" {
