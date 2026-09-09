@@ -299,7 +299,7 @@ func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
 				t.Fatalf("active worker processes = %#v, error = %v", active, err)
 			}
 			if failures == 5 {
-				if err := reapWorkerProcesses(ctx, backend, logger, "startup", time.Millisecond, time.Now, reap); err != nil {
+				if err := reapWorkerProcessesWithCleanup(ctx, backend, logger, "startup", time.Millisecond, time.Now, reap, cleanupWorkerProcessArtifacts); err != nil {
 					t.Fatalf("later recovery failed: %v", err)
 				}
 			}
@@ -359,7 +359,7 @@ func TestReapWorkerProcessesCleansArtifactsOnlyAfterVerifiedExit(t *testing.T) {
 				CleanupPath: cleanupPath,
 			}}}
 
-			err := reapWorkerProcesses(
+			err := reapWorkerProcessesWithCleanup(
 				context.Background(),
 				processStore,
 				slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
@@ -369,8 +369,9 @@ func TestReapWorkerProcessesCleansArtifactsOnlyAfterVerifiedExit(t *testing.T) {
 				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
 					return procgroup.TerminationOutcomeTerminated, tt.reapErr
 				},
+				cleanupWorkerProcessArtifacts,
 			)
-			if got := errors.Is(err, reapErr); got != (tt.reapErr != nil) {
+			if !errors.Is(err, tt.reapErr) {
 				t.Fatalf("reapWorkerProcesses() error = %v, want reap error %v", err, tt.reapErr != nil)
 			}
 			_, statErr := os.Stat(cleanupPath)
@@ -453,5 +454,75 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs missing %q:\n%s", want, logs.String())
 		}
+	}
+}
+
+func TestReapWorkerProcessesPreservesArtifactsOnFailure(t *testing.T) {
+	t.Parallel()
+
+	livenessErr := errors.New("process group remained alive")
+	scanErr := fmt.Errorf("reap worker artifact processes: scan workspace processes: %w", context.DeadlineExceeded)
+	removalErr := fmt.Errorf("clean worker process artifacts: %w", os.ErrPermission)
+	tests := []struct {
+		name        string
+		reapErr     error
+		cleanupErr  error
+		wantErr     error
+		wantCleanup bool
+	}{
+		{name: "worker liveness", reapErr: livenessErr, wantErr: livenessErr},
+		{name: "artifact process scan deadline", cleanupErr: scanErr, wantErr: context.DeadlineExceeded, wantCleanup: true},
+		{name: "artifact removal", cleanupErr: removalErr, wantErr: os.ErrPermission, wantCleanup: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			scratch := filepath.Join(root, "worker")
+			if err := os.Mkdir(scratch, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			artifact := filepath.Join(scratch, "checkpoint")
+			if err := os.WriteFile(artifact, []byte("resume"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{
+				SessionID: 2418, CleanupRoot: root, CleanupPath: scratch,
+			}}}
+			var logs bytes.Buffer
+			cleanupCalled := false
+			err := reapWorkerProcessesWithCleanup(t.Context(), processStore,
+				slog.New(slog.NewTextHandler(&logs, nil)), "startup", time.Millisecond, time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return procgroup.TerminationOutcomeAlreadyExited, tt.reapErr
+				},
+				func(store.WorkerProcess) error {
+					cleanupCalled = true
+					return tt.cleanupErr
+				})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("recovery error = %v, want %v", err, tt.wantErr)
+			}
+			if cleanupCalled != tt.wantCleanup || len(processStore.reaped) != 0 {
+				t.Fatalf("cleanup called = %t, reaped = %#v", cleanupCalled, processStore.reaped)
+			}
+			if data, err := os.ReadFile(artifact); err != nil || string(data) != "resume" {
+				t.Fatalf("retained checkpoint = %q, error = %v", data, err)
+			}
+			if !strings.Contains(logs.String(), err.Error()) {
+				t.Fatalf("lifecycle log lost failure stage: %s", logs.String())
+			}
+			err = reapWorkerProcessesWithCleanup(t.Context(), processStore,
+				slog.New(slog.NewTextHandler(&logs, nil)), "startup", time.Millisecond, time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return procgroup.TerminationOutcomeAlreadyExited, nil
+				}, cleanupWorkerProcessArtifacts)
+			if err != nil || len(processStore.reaped) != 1 {
+				t.Fatalf("later recovery error = %v, reaped = %#v", err, processStore.reaped)
+			}
+			if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("recovered artifact path stat = %v, want not exist", err)
+			}
+		})
 	}
 }
