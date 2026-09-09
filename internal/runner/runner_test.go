@@ -5743,92 +5743,138 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 func TestRunnerAuditRetainsWorkerScratchUntilLaterProcessReapSucceeds(t *testing.T) {
 	t.Parallel()
 
-	auditRoot := t.TempDir()
-	startedAt := time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC)
-	identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
-	backend := &fakeCodexClient{
-		updates: []AgentUpdate{
-			{Type: AgentUpdateProcessStarted, WorkerProcess: identity},
-			{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No actionable security findings.","findings":[]}`},
-		},
-		result: AgentTurnResult{AuthenticationMode: securityaudit.AuthenticationSubscription},
-	}
-	const sessionID = int64(2011)
-	sessionStore := &scratchReapSessionStore{
-		fakeSessionStore: &fakeSessionStore{sessionID: sessionID},
-		process: store.WorkerProcess{
-			SessionID: sessionID,
-			WorkerProcessIdentity: store.WorkerProcessIdentity{
-				PID:       identity.PID,
-				GroupID:   identity.GroupID,
-				StartedAt: identity.StartedAt,
-			},
-		},
-	}
-	reapErr := errors.New("process group remained alive")
-	scratchPresentDuringReap := false
-	runner, err := NewRunner(Dependencies{
-		SecurityAuditRoot: auditRoot,
-		Workflow: config.Workflow{Config: config.Config{
-			Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{Enabled: true}},
-			Agents: config.Agents{
-				Backends: []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"}},
-				Routes:   []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
-			},
-		}},
-		Workspace:     &fakeWorkspaceBackend{},
-		AgentBackends: map[string]AgentBackend{"codex": backend},
-		Store:         sessionStore,
-		ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
-			if got != identity {
-				t.Fatalf("worker identity = %#v, want %#v", got, identity)
+	for _, tt := range []struct {
+		name      string
+		workerErr error
+		scanErr   error
+	}{
+		{name: "worker remains alive", workerErr: errors.New("process group remained alive")},
+		{name: "artifact scan deadline", scanErr: context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			auditRoot := t.TempDir()
+			startedAt := time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC)
+			identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
+			backend := &fakeCodexClient{
+				updates: []AgentUpdate{
+					{Type: AgentUpdateProcessStarted, WorkerProcess: identity},
+					{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No actionable security findings.","findings":[]}`},
+				},
+				result: AgentTurnResult{AuthenticationMode: securityaudit.AuthenticationSubscription},
 			}
-			_, statErr := os.Stat(backend.request.TempDir)
-			scratchPresentDuringReap = statErr == nil
-			return procgroup.TerminationOutcomeTerminated, reapErr
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
+			const sessionID = int64(2011)
+			sessionStore := &scratchReapSessionStore{
+				fakeSessionStore: &fakeSessionStore{sessionID: sessionID},
+				process: store.WorkerProcess{
+					SessionID: sessionID,
+					WorkerProcessIdentity: store.WorkerProcessIdentity{
+						PID:       identity.PID,
+						GroupID:   identity.GroupID,
+						StartedAt: identity.StartedAt,
+					},
+				},
+			}
+			reapErr := tt.workerErr
+			scanErr := tt.scanErr
+			artifactReaps := 0
+			scratchPresentDuringReap := false
+			runner, err := NewRunner(Dependencies{
+				SecurityAuditRoot: auditRoot,
+				Workflow: config.Workflow{Config: config.Config{
+					Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{Enabled: true}},
+					Agents: config.Agents{
+						Backends: []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"}},
+						Routes:   []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
+					},
+				}},
+				Workspace:     &fakeWorkspaceBackend{},
+				AgentBackends: map[string]AgentBackend{"codex": backend},
+				Store:         sessionStore,
+				ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+					if got != identity {
+						t.Fatalf("worker identity = %#v, want %#v", got, identity)
+					}
+					_, statErr := os.Stat(backend.request.TempDir)
+					scratchPresentDuringReap = statErr == nil
+					return procgroup.TerminationOutcomeTerminated, reapErr
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
 
-	snapshot := securityaudit.Snapshot{
-		ProjectID:        "detent",
-		IssueID:          "issue-2011",
-		Identifier:       "digitaldrywood/detent#2011",
-		IssueURL:         "https://github.test/digitaldrywood/detent/issues/2011",
-		IssueTitle:       "Retain worker scratch through process reaping",
-		IssueDescription: "Worker scratch must outlive provider descendants.",
-		Repository:       "digitaldrywood/detent",
-		PRNumber:         2012,
-		PRTitle:          "Retain worker scratch through process reaping",
-		BaseSHA:          "base-1",
-		HeadSHA:          "head-1",
-		Diff:             "diff --git a/internal/runner/agent.go b/internal/runner/agent.go",
-	}
-	_, err = runner.Audit(t.Context(), SecurityAuditRequest{
-		Issue:    connector.Issue{ID: snapshot.IssueID, Identifier: snapshot.Identifier},
-		Snapshot: snapshot,
-	})
-	if !errors.Is(err, ErrWorkerProcessReap) || !errors.Is(err, reapErr) {
-		t.Fatalf("Audit() error = %v, want worker process reap failure", err)
-	}
-	if !scratchPresentDuringReap {
-		t.Fatal("worker scratch was removed before process reaping")
-	}
-	if _, err := os.Stat(backend.request.TempDir); err != nil {
-		t.Fatalf("worker scratch stat error after reap failure = %v", err)
-	}
+			runner.reapArtifactProcesses = func(ctx context.Context, root, path string, grace time.Duration) (int, error) {
+				artifactReaps++
+				if root != auditRoot || path != backend.request.Workspace {
+					t.Fatalf("artifact reap paths = %q, %q, want %q, %q", root, path, auditRoot, backend.request.Workspace)
+				}
+				if ctx.Err() != nil || grace != runner.workerReapGrace {
+					t.Fatalf("artifact reap context = %v, grace = %v", ctx.Err(), grace)
+				}
+				if _, err := os.Stat(backend.request.TempDir); err != nil {
+					t.Fatalf("scratch missing during artifact reap: %v", err)
+				}
+				return 0, scanErr
+			}
 
-	reapErr = nil
-	if err := runner.reapSessionWorkerProcess(t.Context(), sessionID, connector.Issue{
-		ID:         snapshot.IssueID,
-		Identifier: snapshot.Identifier,
-	}, "startup"); err != nil {
-		t.Fatalf("reapSessionWorkerProcess() later error = %v", err)
-	}
-	if _, err := os.Stat(backend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("audit workspace stat error after later reap = %v, want not exist", err)
+			snapshot := securityaudit.Snapshot{
+				ProjectID:        "detent",
+				IssueID:          "issue-2011",
+				Identifier:       "digitaldrywood/detent#2011",
+				IssueURL:         "https://github.test/digitaldrywood/detent/issues/2011",
+				IssueTitle:       "Retain worker scratch through process reaping",
+				IssueDescription: "Worker scratch must outlive provider descendants.",
+				Repository:       "digitaldrywood/detent",
+				PRNumber:         2012,
+				PRTitle:          "Retain worker scratch through process reaping",
+				BaseSHA:          "base-1",
+				HeadSHA:          "head-1",
+				Diff:             "diff --git a/internal/runner/agent.go b/internal/runner/agent.go",
+			}
+			_, err = runner.Audit(t.Context(), SecurityAuditRequest{
+				Issue:    connector.Issue{ID: snapshot.IssueID, Identifier: snapshot.Identifier},
+				Snapshot: snapshot,
+			})
+			if !errors.Is(err, ErrWorkerProcessReap) || (tt.workerErr != nil && !errors.Is(err, tt.workerErr)) || (tt.scanErr != nil && !errors.Is(err, tt.scanErr)) {
+				t.Fatalf("Audit() error = %v, want worker process reap failure", err)
+			}
+			if !scratchPresentDuringReap {
+				t.Fatal("worker scratch was removed before process reaping")
+			}
+			if _, err := os.Stat(backend.request.TempDir); err != nil {
+				t.Fatalf("worker scratch stat error after reap failure = %v", err)
+			}
+
+			if artifactReaps != 1 || len(sessionStore.reaps) != 0 {
+				t.Fatalf("failed audit artifact reaps = %d, recorded reaps = %v", artifactReaps, sessionStore.reaps)
+			}
+
+			reapErr = nil
+			scanErr = context.DeadlineExceeded
+			issue := connector.Issue{ID: snapshot.IssueID, Identifier: snapshot.Identifier}
+			if err := runner.reapSessionWorkerProcess(t.Context(), sessionID, issue, "startup"); !errors.Is(err, scanErr) {
+				t.Fatalf("later failed scan error = %v, want %v", err, scanErr)
+			}
+			if _, err := os.Stat(backend.request.TempDir); err != nil {
+				t.Fatalf("scratch missing after later failed scan: %v", err)
+			}
+			if artifactReaps != 2 || len(sessionStore.reaps) != 0 {
+				t.Fatalf("failed retry artifact reaps = %d, recorded reaps = %v", artifactReaps, sessionStore.reaps)
+			}
+
+			scanErr = nil
+			if err := runner.reapSessionWorkerProcess(t.Context(), sessionID, issue, "startup"); err != nil {
+				t.Fatalf("reapSessionWorkerProcess() later error = %v", err)
+			}
+			if _, err := os.Stat(backend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("audit workspace stat error after later reap = %v, want not exist", err)
+			}
+			if artifactReaps != 3 || len(sessionStore.reaps) != 1 {
+				t.Fatalf("successful retry artifact reaps = %d, recorded reaps = %v", artifactReaps, sessionStore.reaps)
+			}
+		})
 	}
 }
 
