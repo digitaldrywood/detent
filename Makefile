@@ -166,7 +166,7 @@ security: security-gosec-determinism
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
-check: check-migrations
+check: check-migrations check-generated
 	@mkdir -p tmp
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
 	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) check-unlocked
