@@ -1117,7 +1117,7 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 
 func schedulerDecisionWaitReason(reason string) string {
 	switch strings.TrimSpace(reason) {
-	case dispatchSkipGlobalCapacityFull:
+	case dispatchSkipProjectCapacityFull:
 		return "project_capacity_full"
 	case dispatchSkipLocalSlotUnavailable:
 		return "lane_capacity_full"

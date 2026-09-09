@@ -101,8 +101,8 @@ func TestDispatchReadyIssuesPreservesGlobalCapacityRefusal(t *testing.T) {
 	if !ok {
 		t.Fatalf("Retry[%q] missing after global capacity refusal", retrying.ID)
 	}
-	if retry.Error != dispatchSkipGlobalCapacityFull {
-		t.Fatalf("Retry[%q].Error = %q, want %q", retrying.ID, retry.Error, dispatchSkipGlobalCapacityFull)
+	if retry.Error != scheduler.DispatchGateReasonGlobalCapacityFull {
+		t.Fatalf("Retry[%q].Error = %q, want %q", retrying.ID, retry.Error, scheduler.DispatchGateReasonGlobalCapacityFull)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestDispatchFailureRetryReason(t *testing.T) {
 		{name: "draining", reason: dispatchIssueFailureDraining, want: dispatchIssueFailureDraining},
 		{name: "local slot unavailable", reason: dispatchIssueFailureLocalSlotUnavailable, want: dispatchIssueFailureLocalSlotUnavailable},
 		{name: "worker host unavailable", reason: dispatchIssueFailureWorkerHostUnavailable, want: dispatchIssueFailureWorkerHostUnavailable},
-		{name: "global capacity full", reason: dispatchIssueFailureGlobalSlotUnavailable, want: dispatchSkipGlobalCapacityFull},
+		{name: "global capacity full", reason: dispatchIssueFailureGlobalSlotUnavailable, want: scheduler.DispatchGateReasonGlobalCapacityFull},
 		{name: "claim verification", reason: dispatchIssueFailureClaimFailed, want: "claim verification failed"},
 		{name: "work attempt start", reason: dispatchIssueFailureWorkAttemptStart, want: dispatchIssueFailureWorkAttemptStart},
 		{name: "start state transition", reason: dispatchIssueFailureStartStateTransition, want: dispatchIssueFailureStartStateTransition},

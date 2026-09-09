@@ -75,3 +75,20 @@ repository Go toolchain so analyzer behavior and toolchain provenance stay
 aligned. `GoReleaser Snapshot` runs on pull requests, `main`, release tags,
 nightly schedule, and manual dispatch so packaging signal is available before
 and after merge.
+
+When implementation workers fill project or global capacity, a clean PR with
+passing current-head checks and a known base can complete through the existing
+merge completion handler without starting another worker. Each project dispatch
+pass allows at most one such synchronous control operation, bounded by a
+30-second completion deadline (or the shorter configured merge-worker limit).
+Normal queue age and repository reservations select the candidate; claims and
+durable attempt ownership still fence completion. Fresh tracker, head/base,
+review, approval, and merge checks remain mandatory. A changed head or base
+returns to the existing CI wait, and base refresh or conflict work still needs
+normal worker admission. Global pauses, scheduling restrictions, lane limits,
+provider holds, host pressure, and recovery brakes still apply.
+
+Scheduler decisions report project saturation as `project_capacity_full` and
+shared pool saturation as `global_capacity_full`. A project that already used
+its control operation reports `ready_merge_control_limit` for another ready
+merge when implementation capacity remains full.

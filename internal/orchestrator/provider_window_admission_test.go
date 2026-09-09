@@ -47,7 +47,7 @@ func TestProviderWindowAdmissionDecisions(t *testing.T) {
 			name:       "mechanical work still obeys hard project cap",
 			issue:      providerWindowMergeIssue("hard-cap"),
 			running:    5,
-			wantReason: dispatchSkipGlobalCapacityFull,
+			wantReason: dispatchSkipProjectCapacityFull,
 		},
 	}
 

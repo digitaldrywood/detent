@@ -39,6 +39,7 @@ type dispatchAction struct {
 	workerHost          string
 	retry               bool
 	modelPermitRequired bool
+	allowMergeControl   bool
 	retryState          *Retry
 }
 
@@ -97,6 +98,7 @@ func (p dispatchPlanner) plan(
 
 	plan := DispatchPlan{}
 	continuations := 0
+	mergeControlAvailable := true
 	for index, issue := range plannedCandidates {
 		queuePosition := index + 1
 		if correctableDispatchEscalated(state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
@@ -116,6 +118,10 @@ func (p dispatchPlanner) plan(
 				QueuePosition: queuePosition,
 				SkipReason:    dispatchSkipMergeFairnessReserved,
 			})
+			continue
+		}
+		if !mergeControlAvailable && p.hardAvailableSlots(state) == 0 && p.readyMergeControlCandidate(state, issue) {
+			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipMergeControlLimit})
 			continue
 		}
 		if retry, ok := dueRetries[issue.ID]; ok {
@@ -162,22 +168,18 @@ func (p dispatchPlanner) plan(
 				Retry:         true,
 				Selected:      true,
 			})
+			action.allowMergeControl = action.allowMergeControl && mergeControlAvailable
 			if p.applyDispatchAction(state, action, now, hooks) {
+				mergeControlAvailable = mergeControlAvailable && !action.allowMergeControl
 				plan.Dispatches = append(plan.Dispatches, action.decision())
 			} else if hooks.retryDispatchFailed != nil {
 				hooks.retryDispatchFailed(action.issue, retry)
 			}
 			continue
 		}
-		if p.hardAvailableSlots(state) == 0 {
-			for skipIndex := index; skipIndex < len(plannedCandidates); skipIndex++ {
-				logDecision(dispatchPlanDecision{
-					Issue:         plannedCandidates[skipIndex],
-					QueuePosition: skipIndex + 1,
-					SkipReason:    dispatchSkipGlobalCapacityFull,
-				})
-			}
-			break
+		if p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
+			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
+			continue
 		}
 		if hooks.hydrate != nil {
 			var ok bool
@@ -224,7 +226,9 @@ func (p dispatchPlanner) plan(
 			Retry:         action.retry,
 			Selected:      true,
 		})
+		action.allowMergeControl = action.allowMergeControl && mergeControlAvailable
 		if p.applyDispatchAction(state, action, now, hooks) {
+			mergeControlAvailable = mergeControlAvailable && !action.allowMergeControl
 			plan.Dispatches = append(plan.Dispatches, action.decision())
 		} else if hooks.dispatchFailed != nil && !hooks.dispatchFailed(action.issue) {
 			break
@@ -409,8 +413,9 @@ func (p dispatchPlanner) newDispatchAction(
 	modelPermitRequired bool,
 	retryState *Retry,
 ) (dispatchAction, bool) {
+	allowMergeControl := !modelPermitRequired && p.readyMergeControlCandidate(state, issue)
 	workerHost, ok := p.selectWorkerHost(state, preferredWorkerHost)
-	if !ok {
+	if !ok && !allowMergeControl {
 		return dispatchAction{}, false
 	}
 
@@ -420,6 +425,7 @@ func (p dispatchPlanner) newDispatchAction(
 		workerHost:          workerHost,
 		retry:               retry,
 		modelPermitRequired: modelPermitRequired,
+		allowMergeControl:   allowMergeControl,
 		retryState:          retryState,
 	}, true
 }
@@ -636,7 +642,8 @@ const (
 	dispatchSkipLifetimeLimit             = scheduler.DecisionReasonLifetimeLimit
 	dispatchSkipLocalSlotUnavailable      = scheduler.DecisionReasonLocalSlotUnavailable
 	dispatchSkipWorkerHostUnavailable     = scheduler.DecisionReasonWorkerHostUnavailable
-	dispatchSkipGlobalCapacityFull        = scheduler.DecisionReasonGlobalCapacityFull
+	dispatchSkipProjectCapacityFull       = scheduler.DecisionReasonProjectCapacityFull
+	dispatchSkipMergeControlLimit         = scheduler.DecisionReasonReadyMergeControlLimit
 	dispatchSkipHydrationFailed           = scheduler.DecisionReasonHydrateFailed
 	dispatchSkipDispatchBackoffCancelled  = scheduler.DecisionReasonDispatchBackoffCancelled
 	dispatchSkipMergeFairnessReserved     = scheduler.DecisionReasonMergeFairnessHeadReserved
@@ -784,19 +791,20 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 		return dispatchableDecision{reason: reason}
 	}
-	if p.hardAvailableSlots(state) == 0 {
-		return dispatchableDecision{reason: dispatchSkipGlobalCapacityFull}
+	mergeControl := !modelPermitRequired && p.readyMergeControlCandidate(state, issue)
+	if !mergeControl && p.hardAvailableSlots(state) == 0 {
+		return dispatchableDecision{reason: dispatchSkipProjectCapacityFull}
 	}
 	if modelPermitRequired && p.availableSlots(state) == 0 {
 		if p.rateWindowBackpressureActive(state) {
 			return dispatchableDecision{reason: dispatchSkipRateWindowBackpressure}
 		}
-		return dispatchableDecision{reason: dispatchSkipGlobalCapacityFull}
+		return dispatchableDecision{reason: dispatchSkipProjectCapacityFull}
 	}
 	if !p.stateSlotsAvailable(issue, state) {
 		return dispatchableDecision{reason: dispatchSkipLocalSlotUnavailable}
 	}
-	if !p.workerSlotsAvailable(state, preferredWorkerHost) {
+	if !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) {
@@ -933,6 +941,9 @@ func (p dispatchPlanner) slotsAvailableForModelRequirement(
 	preferredWorkerHost string,
 	modelPermitRequired bool,
 ) bool {
+	if !modelPermitRequired && p.readyMergeControlCandidate(state, issue) {
+		return p.stateSlotsAvailable(issue, state)
+	}
 	if p.hardAvailableSlots(state) == 0 {
 		return false
 	}

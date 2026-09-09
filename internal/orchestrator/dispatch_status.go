@@ -95,6 +95,9 @@ func projectDispatchStatusFromCycle(
 			}
 			if attempted {
 				waitReasonCode = strings.TrimSpace(outcome.reason)
+				if code := strings.TrimSpace(outcome.waitReasonCode); code != "" {
+					waitReasonCode = code
+				}
 				waitReason = strings.TrimSpace(outcome.waitReason)
 				if waitReason == "" {
 					waitReason = schedulerDecisionWaitReason(outcome.reason)

@@ -805,8 +805,8 @@ func TestTickReleasesCompletedArtifactReworkNoopForNextDispatch(t *testing.T) {
 	if len(attempts.decisions) != 1 {
 		t.Fatalf("scheduler decisions after completion tick = %#v, want one", attempts.decisions)
 	}
-	if got := attempts.decisions[0]; got.IssueID != issue.ID || got.Reason != dispatchSkipGlobalCapacityFull {
-		t.Fatalf("scheduler decision = %#v, want issue %q skipped for %q", got, issue.ID, dispatchSkipGlobalCapacityFull)
+	if got := attempts.decisions[0]; got.IssueID != issue.ID || got.Reason != dispatchSkipProjectCapacityFull {
+		t.Fatalf("scheduler decision = %#v, want issue %q skipped for %q", got, issue.ID, dispatchSkipProjectCapacityFull)
 	}
 	for _, fragment := range []string{
 		`level=INFO msg="auto promote decision"`,
@@ -827,8 +827,8 @@ func TestTickReleasesCompletedArtifactReworkNoopForNextDispatch(t *testing.T) {
 	if len(attempts.decisions) != 2 {
 		t.Fatalf("scheduler decisions after next tick = %#v, want two", attempts.decisions)
 	}
-	if got := attempts.decisions[1]; got.IssueID != issue.ID || got.Reason != dispatchSkipGlobalCapacityFull {
-		t.Fatalf("scheduler decision = %#v, want issue %q skipped for %q", got, issue.ID, dispatchSkipGlobalCapacityFull)
+	if got := attempts.decisions[1]; got.IssueID != issue.ID || got.Reason != dispatchSkipProjectCapacityFull {
+		t.Fatalf("scheduler decision = %#v, want issue %q skipped for %q", got, issue.ID, dispatchSkipProjectCapacityFull)
 	}
 	if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 1 {
 		t.Fatalf("Retry[%q] after capacity skip = %#v, want rescheduled attempt 1", issue.ID, retry)
