@@ -64,7 +64,7 @@ func resolveDoctorBinaryEnvironment(ctx context.Context, resolution globalconfig
 	}
 	probe, err := probeDoctorHealth(ctx, boot, deps)
 	orchestratorPath := probe.Health.Environment.Path
-	if probe.Health.Mode != "" && doctorHealthHasDetentChecks(probe.Health.Checks) {
+	if err == nil {
 		if orchestratorPath != "" {
 			return doctorBinaryEnvironment{
 				Source:           doctorBinaryPathSourceOrchestrator,
@@ -75,10 +75,7 @@ func resolveDoctorBinaryEnvironment(ctx context.Context, resolution globalconfig
 		}
 		return fallback("orchestrator PATH is unavailable because the running instance did not report it")
 	}
-	if err != nil {
-		return fallback(fmt.Sprintf("orchestrator PATH is unavailable because no running instance was reachable at %s: %v", probe.URL, err))
-	}
-	return fallback("orchestrator PATH is unavailable because the running instance did not report it")
+	return fallback(fmt.Sprintf("orchestrator PATH is unavailable because no running instance was reachable at %s: %v", probe.URL, err))
 }
 
 func checkDoctorConfigReload(ctx context.Context, cfg globalconfig.Config, run CommandRunner) doctorCheck {
@@ -764,16 +761,20 @@ func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps)
 			Detail: fmt.Sprintf("%s is not available for pre-start bind: %v", addr, err),
 			Hint:   "Stop the process using the port or pass --port with an available value.",
 		}
-		if !doctorListenErrIndicatesOccupied(err) || doctorServerPort(cfg) == 0 {
+		if (!doctorListenErrIndicatesOccupied(err) && !errors.Is(err, syscall.EADDRNOTAVAIL)) || doctorServerPort(cfg) == 0 {
 			return check
 		}
 		probe, probeErr := probeDoctorHealth(ctx, cfg, deps)
 		if probeErr != nil {
-			check.Detail = fmt.Sprintf("%s is occupied for pre-start bind; health probe %s %v", addr, probe.URL, probeErr)
+			check.Detail += fmt.Sprintf("; health probe %s %v", probe.URL, probeErr)
+			return check
+		}
+		if probe.Health.Mode != "running" {
+			check.Detail += "; Detent mode is " + probe.Health.Mode
 			return check
 		}
 		detail := fmt.Sprintf(
-			"%s is occupied for pre-start bind; health probe %s found healthy Detent instance (status %s, mode %s)%s",
+			"%s serves the running Detent instance; health probe %s (status %s, mode %s)%s",
 			addr,
 			probe.URL,
 			probe.Health.Status,
@@ -782,9 +783,8 @@ func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps)
 		)
 		return doctorCheck{
 			Name:   "Server port",
-			Status: doctorWarn,
+			Status: doctorOK,
 			Detail: detail,
-			Hint:   "No action is needed if doctor is checking the live instance; stop Detent before a clean pre-start availability check.",
 		}
 	}
 	if err := listener.Close(); err != nil {
@@ -846,6 +846,11 @@ func checkDoctorDetentService(ctx context.Context, cfg BootConfig, installedBuil
 			check.Status = doctorWarn
 			check.Detail += "; health check: " + err.Error()
 			check.Hint = "Review the running Detent service health, then rerun detent doctor."
+		}
+		if err == nil && probe.Health.Status != "ok" {
+			check.Status = doctorWarn
+			check.Detail += "; operational health: " + probe.Health.Status
+			check.Hint = "Review the live diagnostic findings, then rerun detent doctor."
 		}
 		checks := []doctorCheck{check}
 		if probe.Health.OrphanedAgentProcesses.Count > 0 {
@@ -1001,12 +1006,10 @@ func probeDoctorHealth(ctx context.Context, cfg BootConfig, deps doctorDeps) (do
 	}
 	probe.Health.Status = strings.TrimSpace(probe.Health.Status)
 	probe.Health.Mode = strings.TrimSpace(probe.Health.Mode)
-	if probe.Health.Mode == "" || !doctorHealthHasDetentChecks(probe.Health.Checks) {
+	if probe.Health.Status == "" || probe.Health.Mode == "" || !doctorHealthHasDetentChecks(probe.Health.Checks) {
 		return probe, errors.New("did not return Detent health")
 	}
-	if probe.Health.Status != "ok" {
-		return probe, fmt.Errorf("did not report healthy status: status %s, mode %s", probe.Health.Status, probe.Health.Mode)
-	}
+
 	return probe, nil
 }
 

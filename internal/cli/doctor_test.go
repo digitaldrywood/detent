@@ -5308,10 +5308,9 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			host:       "0.0.0.0",
 			statusCode: http.StatusOK,
 			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"},"budgets":[{"project_id":"detent","enabled":true,"per_day_max_usd":250,"per_issue_max_usd":25}]}`,
-			want:       doctorWarn,
+			want:       doctorOK,
 			wantDetail: []string{
-				"pre-start bind",
-				"healthy Detent instance",
+				"running Detent instance",
 				"http://127.0.0.1:",
 				"/health",
 				"status ok",
@@ -5324,11 +5323,10 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			host:       "127.0.0.1",
 			statusCode: http.StatusOK,
 			body:       `{"status":"error","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
-			want:       doctorFail,
+			want:       doctorOK,
 			wantDetail: []string{
-				"pre-start bind",
-				"health probe",
-				"did not report healthy status",
+				"running Detent instance",
+				"status error",
 			},
 		},
 		{

@@ -2,10 +2,7 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/healthnotify"
@@ -19,7 +16,8 @@ func checkDoctorHealthNotificationDelivery(ctx context.Context, boot BootConfig,
 	}
 	found, err := readDoctorHealthNotificationFailures(ctx, doctorLiveBoot(boot, &boot.Global), deps)
 	if err != nil {
-		check.Detail = "live notification check skipped because no healthy Detent instance was reachable"
+		check.Status = doctorWarn
+		check.Detail = "live notification check unavailable: " + err.Error()
 		return check
 	}
 	projectID = strings.TrimSpace(projectID)
@@ -46,24 +44,9 @@ func checkDoctorHealthNotificationDelivery(ctx context.Context, boot BootConfig,
 }
 
 func readDoctorHealthNotificationFailures(ctx context.Context, boot BootConfig, deps doctorDeps) ([]healthnotify.Failure, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, doctorHealthProbeURL(boot), nil)
+	probe, err := probeDoctorHealth(ctx, boot, deps)
 	if err != nil {
 		return nil, err
 	}
-	response, err := deps.httpDo(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("health returned HTTP %d", response.StatusCode)
-	}
-	var health doctorHealthResponse
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(health.Mode) == "" || !doctorHealthHasDetentChecks(health.Checks) {
-		return nil, errors.New("response was not Detent health")
-	}
-	return health.HealthNotificationFailures, nil
+	return probe.Health.HealthNotificationFailures, nil
 }

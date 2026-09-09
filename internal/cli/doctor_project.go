@@ -59,8 +59,8 @@ func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot
 	if err != nil {
 		return []doctorCheck{{
 			Name:   "Workflow runtime drift",
-			Status: doctorOK,
-			Detail: "runtime comparison skipped because no healthy live Detent instance was reachable",
+			Status: doctorWarn,
+			Detail: "runtime comparison unavailable: " + err.Error(),
 		}}
 	}
 
