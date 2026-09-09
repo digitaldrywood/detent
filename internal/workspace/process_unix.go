@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
 const defaultProcessTerminationGrace = 250 * time.Millisecond
@@ -244,7 +246,21 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	return pids, nil
 }
 
+type workspaceScanStderr struct {
+	*runtimeoutput.Buffer
+}
+
+func (w workspaceScanStderr) Write(data []byte) (int, error) {
+	w.Append(string(data))
+	return len(data), nil
+}
+
 func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
+	stderr := workspaceScanStderr{runtimeoutput.NewBuffer(runtimeoutput.Policy{MaxBytes: 64 << 10})}
+	captureStderr := cmd.Stderr == nil
+	if captureStderr {
+		cmd.Stderr = stderr
+	}
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	started := time.Now()
@@ -264,6 +280,10 @@ func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	waiting := time.Now()
 	err := cmd.Wait()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if captureStderr && errors.As(err, &exitErr) {
+			exitErr.Stderr = []byte(stderr.String())
+		}
 		return output.Bytes(), fmt.Errorf("workspace scan command stage=wait pid=%d start_elapsed=%s wait_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v output_bytes=%d: %w",
 			cmd.Process.Pid, startElapsed, time.Since(waiting), hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), output.Len(), err)
 	}

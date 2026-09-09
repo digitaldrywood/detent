@@ -44,7 +44,7 @@ The final local gate is run as `GOMAXPROCS=2 make check` to reduce host concurre
 
 ## Diagnostic contract
 
-- Errors retain the original command error for `errors.Is`/`errors.As`, including lsof exit-status handling and partial output behavior.
+- Errors retain the original command error for `errors.Is`/`errors.As`, including lsof exit-status handling and partial output behavior. Stderr is retained on the wrapped `exec.ExitError` using the repository head/tail buffer capped at 64 KiB; explicitly configured stderr writers remain untouched.
 - Start duration measures `exec.Cmd.Start`; wait duration includes executable initialization and scanning. Neither proves loader pressure or the time at which lsof begins scanning.
 - Deadline remaining is sampled before Start; context state is sampled before Start and after failure. No raw stdout, environment, or process arguments are added to production errors.
 - The runner fixture records reap elapsed time and both known helpers' exit-channel states before fatal assertions. These are instantaneous observations; a false exit snapshot alone does not prove a surviving descendant. Existing completion and lock assertions remain authoritative.
@@ -52,3 +52,5 @@ The final local gate is run as `GOMAXPROCS=2 make check` to reduce host concurre
 - Stdlib table-driven command tests use pipe readiness before cancellation, with no timing sleeps. They distinguish pre-start cancellation/deadline, missing executable, exit status, partial output, an uncanceled signal, and cancellation after readiness.
 
 `GOMAXPROCS=2 make check` passed all steps and configured coverage floors in 14m20.9s. Runner passed race (22.596s) and coverage (86.4%); workspace passed race (112.342s) and coverage (73.9%). Current-head CI results are recorded in the issue Workpad and `.detent/notes.md`.
+
+Review follow-up: `TestWorkspaceScanOutputStderr` reproduced discarded stderr before the fix (short diagnostic and bounded head/tail cases failed). After restoring capture, ten race repetitions passed for all command diagnostic tests, including caller-supplied stderr writers. `GOMAXPROCS=2 make check` passed again after the review fix in 16m54.706s: total coverage 80.4%, runner 86.4%, workspace 74.1%; all configured floors passed.

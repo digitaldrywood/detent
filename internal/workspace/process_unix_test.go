@@ -3,6 +3,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -258,6 +259,53 @@ func TestWorkspaceScanOutput(t *testing.T) {
 				t.Errorf("deadline identity lost: %v", err)
 			}
 			t.Log(err)
+		})
+	}
+}
+
+func TestWorkspaceScanOutputStderr(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		custom bool
+	}{
+		{name: "exit diagnostic", stderr: "lsof: resource unavailable\n"},
+		{name: "bounded head and tail", stderr: "begin\n" + strings.Repeat("x", 96<<10) + "\nend"},
+		{name: "caller supplied writer", stderr: "caller diagnostic\n", custom: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", "cat >&2; exit 2")
+			cmd.Stdin = strings.NewReader(tt.stderr)
+			var custom bytes.Buffer
+			if tt.custom {
+				cmd.Stderr = &custom
+			}
+			output, err := workspaceScanOutput(ctx, cmd)
+			if len(output) != 0 {
+				t.Fatalf("stdout = %q, want empty", output)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("error = %v, want wrapped exit error", err)
+			}
+			if tt.custom {
+				if custom.String() != tt.stderr || len(exitErr.Stderr) != 0 {
+					t.Fatalf("custom stderr = %q, exit stderr = %q", custom.String(), exitErr.Stderr)
+				}
+				return
+			}
+			if len(tt.stderr) <= 64<<10 {
+				if string(exitErr.Stderr) != tt.stderr {
+					t.Fatalf("stderr = %q, want %q", exitErr.Stderr, tt.stderr)
+				}
+				return
+			}
+			if len(exitErr.Stderr) > 64<<10 || !bytes.HasPrefix(exitErr.Stderr, []byte("begin\n")) || !bytes.HasSuffix(exitErr.Stderr, []byte("\nend")) {
+				t.Fatalf("stderr does not retain bounded head and tail: bytes=%d", len(exitErr.Stderr))
+			}
 		})
 	}
 }
