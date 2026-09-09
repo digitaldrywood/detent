@@ -47,6 +47,7 @@ GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
+CHECK_LOCK_MAX_WAIT ?= 4h
 
 .PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
@@ -168,7 +169,7 @@ nilaway-audit:
 check: check-migrations
 	@mkdir -p tmp
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
-	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) check-unlocked
+	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) check-unlocked
 
 check-unlocked: check-migrations check-generated build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
