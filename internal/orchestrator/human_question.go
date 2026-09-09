@@ -177,7 +177,10 @@ func (o *Orchestrator) completeHumanQuestionWait(ctx context.Context, state *Sta
 	}
 	records, err := questions.HumanQuestions(ctx, o.cfg.Project.ID, running.Issue.ID)
 	if err != nil {
-		return false
+		if o.logger != nil {
+			o.logger.Warn("read human question state before completion failed", "issue_id", running.Issue.ID, "error", err)
+		}
+		return true
 	}
 	for _, q := range records {
 		if q.AnswerCommentID != "" {

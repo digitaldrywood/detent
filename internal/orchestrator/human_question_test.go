@@ -24,6 +24,37 @@ type questionTracker struct {
 	postError bool
 }
 
+type unavailableHumanQuestionStore struct {
+	store.Store
+	store.HumanQuestionStore
+}
+
+func (unavailableHumanQuestionStore) HumanQuestions(context.Context, string, string) ([]store.HumanQuestion, error) {
+	return nil, errors.New("question storage unavailable")
+}
+
+func TestHumanQuestionWaitPreservesAttemptOnStorageFailure(t *testing.T) {
+	t.Parallel()
+	db := openWorkAttemptRecoveryStore(t, t.Context())
+	o := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+	o.workAttempts = unavailableHumanQuestionStore{Store: db, HumanQuestionStore: db.(store.HumanQuestionStore)}
+	issue := recoveryTestIssue()
+	now := time.Now()
+	attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now)
+	state := newState(o.cfg)
+	state.Claimed[issue.ID] = Claimed{Issue: issue}
+	if !o.completeHumanQuestionWait(t.Context(), &state, runner.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Second)}, Running{Issue: issue, WorkAttemptID: attemptID}) {
+		t.Fatal("storage failure fell through to ordinary completion")
+	}
+	receipt, err := db.WorkAttempt(t.Context(), attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != store.WorkAttemptStatusActive || len(state.Claimed) != 1 || len(state.Completed) != 0 {
+		t.Fatal("storage failure released the claim or completed the attempt")
+	}
+}
+
 func (c *questionTracker) CreateComment(_ context.Context, _ string, body string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
