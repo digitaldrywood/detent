@@ -16,6 +16,13 @@ exit behind another pipe. Assert cleanup waits for exit, the lock is released,
 and a resumed attempt's files survive. Use generous failure deadlines and
 handshakes for ordering, with unique subprocess coverage output directories.
 
+Include a child that changes to an unrelated directory before its parent exits.
+Working-directory scans alone lose that owner. Add an inherited attempt marker,
+retain legacy temporary-directory evidence for recovery, and inspect ownership
+without logging process environments. Exercise the native Windows path as well;
+a platform stub returning success cannot prove descendant exit. Check that an
+unrelated marked child survives the same reap.
+
 Verify both registered process-group exit and escaped workspace-process exit
 before deleting artifacts or releasing the durable recovery record. A stale
 process identity must not authorize a broader workspace reap. Preserve bounded

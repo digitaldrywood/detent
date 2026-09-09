@@ -25,14 +25,17 @@ import (
 )
 
 func TestRestartScratchCleanupWaitsForEscapedDescendant(t *testing.T) {
-	for _, legacy := range []bool{true, false} {
-		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+	for _, tt := range []struct {
+		legacy  bool
+		outside bool
+	}{{legacy: true}, {}, {legacy: true, outside: true}, {outside: true}} {
+		t.Run(fmt.Sprintf("legacy=%t/outside=%t", tt.legacy, tt.outside), func(t *testing.T) {
 			root := t.TempDir()
 			scratch, err := workspace.PrepareWorkerScratch(t.Context(), root)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if legacy {
+			if tt.legacy {
 				scratch = filepath.Join(root, ".detent", "tmp")
 				if err := os.MkdirAll(scratch, 0o700); err != nil {
 					t.Fatal(err)
@@ -49,6 +52,10 @@ func TestRestartScratchCleanupWaitsForEscapedDescendant(t *testing.T) {
 			parent := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestScratchDescendantProcess$")
 			parent.Dir = root
 			parent.Env = append(os.Environ(), "DETENT_SCRATCH_HELPER=parent", "DETENT_SCRATCH_PATH="+scratch, "DETENT_SCRATCH_LOCK="+lockPath, "DETENT_SCRATCH_CHILD_COVER="+t.TempDir(), "GOCOVERDIR="+t.TempDir())
+			if tt.outside {
+				parent.Env = append(parent.Env, "DETENT_SCRATCH_CHDIR="+t.TempDir())
+			}
+			procgroup.SetTempDir(parent, scratch)
 			parent.ExtraFiles = []*os.File{readyWrite, commandRead}
 			procgroup.Configure(t.Context(), parent)
 			if err := parent.Start(); err != nil {
@@ -201,6 +208,9 @@ func TestScratchDescendantProcess(t *testing.T) {
 		}
 		child := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestScratchDescendantProcess$")
 		child.Dir = scratch
+		if outside := os.Getenv("DETENT_SCRATCH_CHDIR"); outside != "" {
+			child.Dir = outside
+		}
 		child.Env = append(os.Environ(), "DETENT_SCRATCH_HELPER=child", "GOCOVERDIR="+os.Getenv("DETENT_SCRATCH_CHILD_COVER"))
 		child.ExtraFiles = []*os.File{ready, command}
 		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
