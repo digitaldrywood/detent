@@ -2174,3 +2174,168 @@ func (v *backendCapacityTestValidator) Validate(_ context.Context, request Valid
 	v.requests <- request
 	return gate.ValidatorResult{}, v.err
 }
+
+func TestOperatorCapacityRecoveryModes(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		immediate bool
+		filter    string
+		wantRamp  bool
+	}{
+		{"default ramp", false, "codex", true},
+		{"immediate backend", true, "codex", false},
+		{"immediate provider", true, "openai", false},
+		{"immediate pair", true, "codex/openai", false},
+		{"unmatched scope", true, "missing", true},
+		{"all scopes", true, "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 10})
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			orch.capacityController = backendCapacityTestController{scope: scope}
+			var logs bytes.Buffer
+			orch.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			outage := BackendOutage{Scope: scope, ResumeAt: now.Add(time.Hour)}
+			state.BackendOutages[scope.Key()] = outage
+			state.Running["active"] = Running{Issue: connector.Issue{ID: "active"}, CapacityScope: scope}
+			orch.activateBackendDispatchRecovery(&state, outage, now)
+			for range 2 {
+				orch.clearBackendCapacity(&state, tt.filter, now, tt.immediate)
+				_, first, _ := tryReserveDispatchRecovery(&state, "one", now)
+				_, second, _ := tryReserveDispatchRecovery(&state, "two", now)
+				if !first || second == tt.wantRamp {
+					t.Fatalf("admissions = %v, %v; want ramp %v", first, second, tt.wantRamp)
+				}
+				releaseDispatchRecoveryAdmission(&state, "one")
+				releaseDispatchRecoveryAdmission(&state, "two")
+			}
+			if len(state.Running) != 1 || orch.cfg.MaxConcurrentAgents != 10 {
+				t.Fatal("active workers or configured concurrency changed")
+			}
+			if !tt.wantRamp {
+				orch.recoverBackendCapacity(&state, Running{CapacityScope: scope, CapacityProbe: true}, now)
+				if reason := dispatchRecoveryBlockReason(&state, now); reason != "" {
+					t.Fatalf("active probe reintroduced recovery: %s", reason)
+				}
+				if _, _, blocked := orch.backendCapacityDispatch(&state, runpkg.RunRequest{}, now); blocked {
+					t.Fatal("cleared outage still blocks dispatch")
+				}
+				if !strings.Contains(logs.String(), `"recovery_applied":"immediate"`) {
+					t.Fatalf("application evidence missing: %s", logs.String())
+				}
+				for i := range 10 {
+					if _, allowed, reason := tryReserveDispatchRecovery(&state, strconv.Itoa(i), now); !allowed {
+						t.Fatalf("admission %d refused: %s", i, reason)
+					}
+				}
+			}
+			renewed := orch.registerBackendOutage(&state, &backendcapacity.Error{Scope: scope, Details: backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Reason: "renewed quota limit"}}, now, false)
+			if _, ok := state.BackendOutages[scope.Key()]; !ok || !renewed.ResumeAt.After(now) {
+				t.Fatal("renewed outage did not pause capacity")
+			}
+			if _, _, blocked := orch.backendCapacityDispatch(&state, runpkg.RunRequest{}, now); !blocked {
+				t.Fatal("renewed outage permits dispatch")
+			}
+			orch.completeBackendCapacityRecovery(&state, scope.Key(), renewed, now.Add(time.Hour), "live_status")
+			_, first, _ := tryReserveDispatchRecovery(&state, "new-one", now.Add(time.Hour))
+			_, second, _ := tryReserveDispatchRecovery(&state, "new-two", now.Add(time.Hour))
+			if !first || second {
+				t.Fatal("automatic recovery did not restore cautious ramp")
+			}
+		})
+	}
+}
+
+func TestImmediateCapacityClearPreservesOtherHolds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{dispatchRecoveryGitHubREST, dispatchRecoveryTrackerUnavailable, dispatchRecoveryProjectFailureBreaker, dispatchRecoveryBackendCapacity} {
+		t.Run(kind, func(t *testing.T) {
+			now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 10})
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			codex := BackendOutage{Scope: backendcapacity.Scope{BackendID: "codex", Provider: "openai"}}
+			other := BackendOutage{Scope: backendcapacity.Scope{BackendID: "claude", Provider: "anthropic"}}
+			state.BackendOutages[other.Scope.Key()] = other
+			orch.activateBackendDispatchRecovery(&state, codex, now)
+			if kind == dispatchRecoveryBackendCapacity {
+				orch.activateBackendDispatchRecovery(&state, other, now)
+			} else {
+				orch.activateDispatchRecovery(&state, kind, "unrelated hold", now, "")
+			}
+			state.FailureBreaker.Class = "human hold"
+			orch.clearBackendCapacity(&state, "codex", now, true)
+			if len(state.DispatchRecoveries) != 1 || len(state.BackendOutages) != 1 || state.FailureBreaker.Class != "human hold" {
+				t.Fatalf("unrelated holds changed: %#v", state.DispatchRecoveries)
+			}
+			_, first, _ := tryReserveDispatchRecovery(&state, "one", now)
+			_, second, reason := tryReserveDispatchRecovery(&state, "two", now)
+			if !first || second || reason != kind+"_recovery" {
+				t.Fatalf("other recovery no longer limits admissions: %v %v %s", first, second, reason)
+			}
+		})
+	}
+}
+
+func TestCapacityClearQueueRecoveryMode(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		t.Run(strconv.FormatBool(immediate), func(t *testing.T) {
+			orch := &Orchestrator{capacityClearRequests: make(chan capacityClearRequest, 1), done: make(chan struct{})}
+			if err := orch.RequestBackendCapacityClear(t.Context(), " codex ", immediate); err != nil {
+				t.Fatal(err)
+			}
+			request := <-orch.capacityClearRequests
+			if request.scope != "codex" || request.immediate != immediate {
+				t.Fatalf("request = %#v", request)
+			}
+		})
+	}
+}
+
+func TestCapacityClearRespectsConfiguredDispatchSlots(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		immediate    bool
+		active, want int
+	}{
+		{"cautious", false, 0, 1},
+		{"full", true, 0, 10},
+		{"active workers", true, 3, 7},
+		{"already full", true, 10, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 10, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			orch := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			scope := backendcapacity.Scope{BackendID: "codex", Provider: "openai"}
+			state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope}
+			for i := range tt.active {
+				id := fmt.Sprintf("active-%d", i)
+				state.Running[id] = Running{Issue: dispatchTestIssue(id, "Todo")}
+			}
+			orch.clearBackendCapacity(&state, "codex", now, tt.immediate)
+			issues := make([]connector.Issue, 12)
+			for i := range issues {
+				issues[i] = dispatchTestIssue(fmt.Sprintf("ready-%d", i), "Todo")
+			}
+			admitted := 0
+			orch.dispatchPlanner().plan(&state, issues, now, dispatchPlanHooks{dispatch: func(action dispatchAction) bool {
+				_, allowed, _ := tryReserveDispatchRecovery(&state, action.issue.ID, now)
+				if allowed {
+					admitted++
+					state.Running[action.issue.ID] = Running{Issue: action.issue}
+				}
+				return allowed
+			}})
+			if admitted != tt.want {
+				t.Fatalf("admitted = %d, want %d", admitted, tt.want)
+			}
+		})
+	}
+}

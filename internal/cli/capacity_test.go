@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -229,4 +230,83 @@ func dashboardAddressOptions(cfg globalconfig.Config) options {
 	opts.lookupEnv = func(string) string { return "" }
 	opts.service = serviceFactoryFor(&serviceRunnerStub{status: servicepkg.Status{State: servicepkg.StateStopped}})
 	return opts
+}
+
+func TestCapacityClearRecoveryMode(t *testing.T) {
+	for _, mode := range []string{"ramping", "immediate", "invalid"} {
+		t.Run(mode, func(t *testing.T) {
+			opts := dashboardAddressOptions(globalconfig.Config{})
+			called := false
+			opts.httpDo = func(request *http.Request) (*http.Response, error) {
+				called = true
+				if err := request.ParseForm(); err != nil {
+					t.Fatal(err)
+				}
+				if request.Form.Get("recovery") != mode {
+					t.Fatalf("form = %v", request.Form)
+				}
+				return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(strings.NewReader(`{"status":"requested","recovery_requested":"` + mode + `","recovery_applied":"pending","requested":1}`))}, nil
+			}
+			result, err := runCapacityClear(t.Context(), "/config/global.yaml", "localhost", 4101, true, "detent", "codex", opts, mode)
+			if mode == "invalid" {
+				if err == nil || called {
+					t.Fatal("invalid mode reached server")
+				}
+			} else if err != nil || result.RecoveryRequested != mode || result.RecoveryApplied != "pending" {
+				t.Fatalf("result = %#v, error = %v", result, err)
+			}
+		})
+	}
+}
+
+func TestCapacityClearCommandRecoveryFlag(t *testing.T) {
+	for _, mode := range []string{"", "immediate"} {
+		t.Run(mode, func(t *testing.T) {
+			opts := dashboardAddressOptions(globalconfig.Config{})
+			expected := mode
+			if expected == "" {
+				expected = "ramping"
+			}
+			opts.httpDo = func(request *http.Request) (*http.Response, error) {
+				if err := request.ParseForm(); err != nil {
+					t.Fatal(err)
+				}
+				if request.Form.Get("recovery") != expected {
+					t.Fatalf("form = %v", request.Form)
+				}
+				return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(strings.NewReader(`{"status":"requested","recovery_requested":"` + expected + `","recovery_applied":"pending","requested":1}`))}, nil
+			}
+			configPath, host, port := "/config/global.yaml", "localhost", 4101
+			cmd := newCapacityCommand(&configPath, &host, &port, opts)
+			cmd.SetContext(withCommandOutputOptions(t.Context(), commandOutputOptions{lookupEnv: opts.lookupEnv, stdoutTTY: func() bool { return false }}))
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			args := []string{"clear", "--scope", "codex"}
+			if mode != "" {
+				args = append(args, "--recovery", mode)
+			}
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), expected) || !strings.Contains(output.String(), "pending") {
+				t.Fatalf("output = %s", output.String())
+			}
+		})
+	}
+}
+
+func TestCapacityClearRejectsUnacknowledgedImmediateRecovery(t *testing.T) {
+	for _, reported := range []string{"", "ramping"} {
+		t.Run(reported, func(t *testing.T) {
+			opts := dashboardAddressOptions(globalconfig.Config{})
+			opts.httpDo = func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(strings.NewReader(`{"status":"requested","recovery_requested":"` + reported + `","requested":1}`))}, nil
+			}
+			_, err := runCapacityClear(t.Context(), "/config/global.yaml", "localhost", 4101, true, "detent", "codex", opts, "immediate")
+			if err == nil || !strings.Contains(err.Error(), "did not acknowledge immediate recovery") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
 }

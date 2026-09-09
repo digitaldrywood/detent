@@ -419,9 +419,10 @@ type runUpdate struct {
 }
 
 type capacityClearRequest struct {
-	scope string
-	at    time.Time
-	reply chan capacityClearReply
+	immediate bool
+	scope     string
+	at        time.Time
+	reply     chan capacityClearReply
 }
 
 type capacityClearReply struct {
@@ -825,7 +826,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			state.syncWorkerProgress()
-			cleared := o.clearBackendCapacity(&state, request.scope, request.at)
+			cleared := o.clearBackendCapacity(&state, request.scope, request.at, request.immediate)
 			if request.reply != nil {
 				request.reply <- capacityClearReply{cleared: cleared}
 			}
@@ -971,13 +972,14 @@ func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) (
 	}
 }
 
-func (o *Orchestrator) RequestBackendCapacityClear(ctx context.Context, scope string) error {
+func (o *Orchestrator) RequestBackendCapacityClear(ctx context.Context, scope string, immediate ...bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	request := capacityClearRequest{
-		scope: strings.TrimSpace(scope),
-		at:    o.clockNow(),
+		immediate: len(immediate) > 0 && immediate[0],
+		scope:     strings.TrimSpace(scope),
+		at:        o.clockNow(),
 	}
 	o.capacityClearMu.Lock()
 	defer o.capacityClearMu.Unlock()

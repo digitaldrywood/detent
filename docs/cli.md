@@ -257,3 +257,33 @@ top-level `truncation` object always reports that limit and contains
 The one-MiB shared-client response limit also bounds non-collection content.
 JSON is written to stdout, pretty output is only a human-readable projection,
 and diagnostics remain on stderr.
+
+## Provider capacity recovery
+
+After restoring subscription usage, request full configured dispatch capacity:
+
+```sh
+detent capacity clear --scope codex --recovery immediate
+```
+
+Use `--project detent` to select one project. Scope accepts a backend ID, kind,
+provider, or backend/provider; omitting it selects all backend scopes.
+The default `--recovery ramping` and automatic recovery retain the gradual
+progress-based ramp. Immediate recovery also removes a matching ramp left by an
+earlier clear, making repeated clears safe.
+
+Immediate recovery preserves unrelated backend outages and recovery ramps,
+GitHub and tracker holds, project breakers, human holds, configured global,
+project and provider concurrency, and budget limits. It does not reset provider
+usage. A renewed usage-limit response pauses dispatch normally.
+
+The command queues work asynchronously. JSON output reports
+`recovery_requested` (`ramping` or `immediate`) and `recovery_applied: pending`;
+HTTP 202 means accepted, not yet applied. The orchestrator emits a structured
+`backend capacity clear applied` log with `scope`, `recovery_requested`,
+`recovery_applied`, and the number of outages `cleared` when it processes the
+request. Other holds may still prevent dispatch after immediate recovery.
+
+Immediate mode requires a server that supports this option. If an older server
+accepts the clear but ignores the mode, the CLI reports that immediate recovery
+was not acknowledged; that older server may still apply its default ramp.

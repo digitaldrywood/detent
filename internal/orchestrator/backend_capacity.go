@@ -534,13 +534,7 @@ func (o *Orchestrator) completeBackendCapacityRecovery(
 		state.BackendRecoveries = map[string]BackendRecovery{}
 	}
 	state.BackendRecoveries[key] = BackendRecovery{Outage: outage, RecoveredAt: recoveredAt}
-	o.activateDispatchRecovery(
-		state,
-		dispatchRecoveryBackendCapacity,
-		backendCapacityStatusMessage(outage),
-		recoveredAt,
-		"",
-	)
+	o.activateBackendDispatchRecovery(state, outage, recoveredAt)
 	releaseBackendCapacityRetries(state, outage.Scope, recoveredAt)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      recoveredAt,
@@ -607,7 +601,8 @@ func releaseBackendCapacityRetries(state *State, scope backendcapacity.Scope, re
 	}
 }
 
-func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, clearedAt time.Time) []BackendOutage {
+func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, clearedAt time.Time, immediate ...bool) []BackendOutage {
+	full := len(immediate) > 0 && immediate[0]
 	if clearedAt.IsZero() {
 		clearedAt = o.clockNow()
 	}
@@ -625,13 +620,9 @@ func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, cl
 			state.BackendRecoveries = map[string]BackendRecovery{}
 		}
 		state.BackendRecoveries[key] = BackendRecovery{Outage: outage, RecoveredAt: clearedAt}
-		o.activateDispatchRecovery(
-			state,
-			dispatchRecoveryBackendCapacity,
-			backendCapacityStatusMessage(outage),
-			clearedAt,
-			"",
-		)
+		if !full {
+			o.activateBackendDispatchRecovery(state, outage, clearedAt)
+		}
 		releaseBackendCapacityRetries(state, outage.Scope, clearedAt)
 		cleared = append(cleared, outage)
 		recordStateEvent(state, telemetry.ActivityEvent{
@@ -647,6 +638,20 @@ func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, cl
 				"cleared_at", clearedAt,
 			)
 		}
+	}
+	if full {
+		for key, recovery := range state.DispatchRecoveries {
+			if recovery.Kind == dispatchRecoveryBackendCapacity && backendCapacityScopeMatchesFilter(recovery.BackendScope, scopeFilter) {
+				delete(state.DispatchRecoveries, key)
+			}
+		}
+	}
+	if o.logger != nil {
+		mode := "ramping"
+		if full {
+			mode = "immediate"
+		}
+		o.logger.Info("backend capacity clear applied", "scope", scopeFilter, "recovery_requested", mode, "recovery_applied", mode, "cleared", len(cleared))
 	}
 	return cleared
 }

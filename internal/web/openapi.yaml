@@ -643,6 +643,7 @@ paths:
               properties:
                 project_id: {type: string}
                 scope: {type: string}
+                recovery: {type: string, enum: [ramping, immediate], default: ramping}
       responses:
         "202":
           description: Capacity outage clear requested.
@@ -650,12 +651,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status, requested]
+                required: [status, requested, recovery_requested, recovery_applied]
                 properties:
                   status: {type: string, enum: [requested]}
                   project: {type: string}
                   scope: {type: string}
                   requested: {type: integer}
+                  recovery_requested: {type: string, enum: [ramping, immediate]}
+                  recovery_applied: {type: string, enum: [pending]}
+        "400": {$ref: "#/components/responses/Problem"}
         "404": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/security-audits/dispositions:
