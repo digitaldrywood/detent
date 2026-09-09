@@ -944,6 +944,10 @@ paths:
                 source: {type: string, example: "owner/repo#685"}
                 source_body_sha256: {type: string, pattern: "^[a-f0-9]{64}$"}
                 question: {type: string, minLength: 1}
+                previously_generated_question:
+                  type: boolean
+                  default: false
+                  description: Explicit operator attestation that the selected source was a generated question whose dependency was already removed. Never set for an intentional standalone human task. The original issue may be closed and is not reopened.
       responses:
         "200":
           description: Question migrated; no approval is inferred.

@@ -12,11 +12,14 @@ import (
 func TestHumanQuestionMigrationSelection(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name                   string
-		body                   string
-		linked, badHash, valid bool
+		name                           string
+		body                           string
+		linked, badHash, valid, closed bool
+		previouslyGeneratedQuestion    bool
 	}{
 		{name: "explicit unresolved question", linked: true, valid: true},
+		{name: "closed original issue", linked: true, closed: true, valid: true},
+		{name: "previously detached generated question", closed: true, previouslyGeneratedQuestion: true, valid: true},
 		{name: "standalone human task"},
 		{name: "changed source", linked: true, badHash: true},
 		{name: "software dependency", linked: true, body: "Implement software"},
@@ -31,8 +34,14 @@ func TestHumanQuestionMigrationSelection(t *testing.T) {
 			if tt.linked {
 				tracker.edges[1] = []int{10}
 			}
+			if tt.closed {
+				original := tracker.issues[1]
+				original.State = "closed"
+				tracker.issues[1] = original
+			}
 			hash := sha256.Sum256([]byte(body))
 			request := connector.HumanQuestionMigration{Dependent: "owner/repo#1", Source: "owner/repo#10", SourceBodySHA256: hex.EncodeToString(hash[:]), Question: "Use a manual handoff?"}
+			request.PreviouslyGeneratedQuestion = tt.previouslyGeneratedQuestion
 			if tt.badHash {
 				request.SourceBodySHA256 = "changed"
 			}

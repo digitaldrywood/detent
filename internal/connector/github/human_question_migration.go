@@ -43,8 +43,8 @@ func (c *Connector) PrepareHumanQuestionMigration(ctx context.Context, request c
 	if err != nil {
 		return connector.Issue{}, err
 	}
-	if !found || issue.Closed || connector.NonExecutableReason(issue) != "" {
-		return connector.Issue{}, errors.New("migration dependent must be unfinished software work")
+	if !found || connector.NonExecutableReason(issue) != "" {
+		return connector.Issue{}, errors.New("migration dependent must be software work")
 	}
 	refs, err := dependencyline.References(issue.Description, repository)
 	if err != nil {
@@ -62,7 +62,7 @@ func (c *Connector) PrepareHumanQuestionMigration(ctx context.Context, request c
 	migrated := slices.ContainsFunc(comments, func(comment connector.IssueComment) bool {
 		return strings.Contains(comment.Body, migrationAuditMarker(source))
 	})
-	if !slices.Contains(refs, source) && !slices.ContainsFunc(native, func(ref connector.BlockedRef) bool { return strings.EqualFold(ref.Identifier, source) }) && !migrated {
+	if !slices.Contains(refs, source) && !slices.ContainsFunc(native, func(ref connector.BlockedRef) bool { return strings.EqualFold(ref.Identifier, source) }) && !migrated && !request.PreviouslyGeneratedQuestion {
 		return connector.Issue{}, errors.New("selected question is not a dependency of the original issue")
 	}
 	return issue, nil

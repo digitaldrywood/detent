@@ -40,7 +40,8 @@ After upgrading Detent, use the authenticated project-write endpoint
   "dependent": "digitaldrywood/digitaldrywood#647",
   "source": "digitaldrywood/digitaldrywood#685",
   "source_body_sha256": "e09e09f2c8c2548f9efc44bb4ea8dc8d906f481081fa9da1e4997a8307bbbd90",
-  "question": "Should we implement a human-operated Sender delivery step with final content and consent-checked recipient review immediately before each send, while automated sends stay disabled? The existing investigation found that the ID-only campaign send endpoint cannot pin the approved payload. I recommend the reviewed manual handoff; the alternative is to keep newsletter delivery unavailable until a provider capability can pin content and audience. Choosing the workflow does not authorize any actual send."
+  "previously_generated_question": true,
+  "question": "Newsletter delivery remains deferred and does not block completed #647. For future delivery work, should we use a human-operated Sender step with final content and consent-checked recipient review before each send? The investigation found that the ID-only send endpoint cannot pin the approved payload. I recommend a reviewed manual handoff; the alternative is to keep delivery unavailable until content and audience can be pinned. This decision does not authorize any actual send or reopen #647."
 }
 ```
 
@@ -49,6 +50,12 @@ and obtain its exact current body hash if it changes; do not automatically
 accept drift. Select only generated clarification/approval issues explicitly
 approved for migration, never intentional standalone human work or genuine
 software dependencies. Repeat for every original dependent of a selected source.
+
+The concrete #647 issue was subsequently completed with delivery deferred and
+the #685 dependency removed. `previously_generated_question` explicitly attests
+to that previously generated question when no dependency remains. It defaults
+to false; never use it for intentional standalone human tasks. Migration may
+post on a closed original issue but never reopens it or creates a new dependency.
 
 The endpoint reserves the internal wait and posts the readable question with
 source context before removing the selected body/native dependency and Workpad
