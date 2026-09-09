@@ -88,10 +88,10 @@ func TestValidationQueueDeadlines(t *testing.T) {
 					heldPath += ".queue.lock"
 				}
 				acquireTestLock(t, heldPath)
-				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				var stderr bytes.Buffer
-				lock, _, err := acquireValidationLock(ctx, path, &stderr)
+				lock, _, err := acquireValidationLockWithTimeouts(ctx, path, &stderr, time.Second, time.Minute, validationPosition)
 				if !errors.Is(err, context.DeadlineExceeded) || lock != nil {
 					t.Fatalf("deadline result = %v, %v", lock, err)
 				}
@@ -472,4 +472,192 @@ func TestValidationQueueRejectsInvalidState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidationQueueHealthyHandoffs(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "validation.lock")
+		holder := acquireTestLock(t, path)
+		var older []validationWaiter
+		for range 3 {
+			waiter, err := registerValidationWaiter(t.Context(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { waiter.lock.Close() })
+			older = append(older, waiter)
+		}
+		var stderr bytes.Buffer
+		started := time.Now()
+		calls := 0
+		lock, waited, err := acquireValidationLockWithPosition(t.Context(), path, &stderr, func(ctx context.Context, path, name string) (int, int, error) {
+			if calls > 0 {
+				time.Sleep(6 * time.Minute)
+				if err := holder.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if calls < 4 {
+					if err := older[calls-1].lock.Close(); err != nil {
+						t.Fatal(err)
+					}
+					holder = acquireTestLock(t, path)
+				}
+			}
+			calls++
+			return validationPosition(ctx, path, name)
+		})
+		if err != nil {
+			t.Fatalf("healthy handoffs lost queue progress after %s: %v", time.Since(started), err)
+		}
+		defer lock.Close()
+		if !waited || time.Since(started) < 24*time.Minute || strings.Count(stderr.String(), "reason=owner_handoff") != 3 {
+			t.Fatalf("handoffs: waited=%t elapsed=%s diagnostics=%s", waited, time.Since(started), &stderr)
+		}
+	})
+}
+
+func TestValidationQueueWaitBudgets(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		activity   string
+		maxWait    time.Duration
+		wantWait   time.Duration
+		wantReason string
+	}{
+		{name: "owner starts after queueing", activity: "owner starts", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
+		{name: "live stalled holder", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
+		{name: "queue advancement does not renew stalled holder", activity: "cancel older", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
+		{name: "new arrivals do not renew wait", activity: "new waiter", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
+		{name: "handoffs stop at total bound", activity: "handoff", maxWait: 2 * time.Second, wantWait: 2 * time.Second, wantReason: "total queue wait limit reached"},
+		{name: "cancellation after handoff", activity: "cancel", maxWait: time.Minute, wantWait: time.Second, wantReason: "context canceled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				path := filepath.Join(t.TempDir(), "validation.lock")
+				var holder *instancelock.Lock
+				if tt.activity != "owner starts" {
+					holder = acquireTestLock(t, path)
+				}
+				older, err := registerValidationWaiter(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer older.lock.Close()
+				var stderr bytes.Buffer
+				started := time.Now()
+				calls := 0
+				var ticket string
+				lock, _, err := acquireValidationLockWithTimeouts(ctx, path, &stderr, time.Second, tt.maxWait, func(ctx context.Context, path, name string) (int, int, error) {
+					ticket = name
+					if calls > 0 {
+						time.Sleep(400 * time.Millisecond)
+						switch tt.activity {
+						case "owner starts":
+							if calls == 1 {
+								holder = acquireTestLock(t, path)
+							}
+						case "handoff", "cancel":
+							if err := holder.Close(); err != nil {
+								t.Fatal(err)
+							}
+							holder = acquireTestLock(t, path)
+							if tt.activity == "cancel" && calls == 2 {
+								cancel()
+							}
+						case "cancel older":
+							if err := older.lock.Close(); err != nil {
+								t.Fatal(err)
+							}
+						case "new waiter":
+							waiter, err := registerValidationWaiter(t.Context(), path)
+							if err != nil {
+								t.Fatal(err)
+							}
+							t.Cleanup(func() { waiter.lock.Close() })
+						}
+					}
+					calls++
+					return validationPosition(ctx, path, name)
+				})
+				wantErr := context.DeadlineExceeded
+				if tt.activity == "cancel" {
+					wantErr = context.Canceled
+				}
+				if lock != nil || !errors.Is(err, wantErr) || !strings.Contains(err.Error(), tt.wantReason) || time.Since(started) != tt.wantWait {
+					t.Fatalf("wait result: lock=%v err=%v elapsed=%s; want %s after %s", lock, err, time.Since(started), tt.wantReason, tt.wantWait)
+				}
+				if (tt.activity == "handoff" || tt.activity == "cancel" || tt.activity == "owner starts") && !strings.Contains(stderr.String(), "reason=owner_handoff") {
+					t.Fatalf("missing renewal reason: %s", &stderr)
+				}
+				if tt.activity != "handoff" && tt.activity != "cancel" && tt.activity != "owner starts" && strings.Contains(stderr.String(), "renewing") {
+					t.Fatalf("non-progress renewed wait: %s", &stderr)
+				}
+				inspection, err := instancelock.Inspect(path)
+				if err != nil || inspection.Status != instancelock.StatusHeld {
+					t.Fatalf("wait expiration released holder: %+v, %v", inspection, err)
+				}
+				inspection, err = instancelock.Inspect(filepath.Join(path+".queue", ticket))
+				if err != nil || inspection.Status == instancelock.StatusHeld {
+					t.Fatalf("expired ticket remains live: %+v, %v", inspection, err)
+				}
+				if err := older.lock.Close(); err != nil {
+					t.Fatal(err)
+				}
+				next, err := registerValidationWaiter(t.Context(), path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer next.lock.Close()
+				if _, err := os.Stat(filepath.Join(path+".queue", ticket)); next.name != ticket && !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("retry did not prune expired ticket: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestValidationQueueUnheldAdvancement(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "validation.lock")
+		var older []validationWaiter
+		for range 3 {
+			waiter, err := registerValidationWaiter(t.Context(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { waiter.lock.Close() })
+			older = append(older, waiter)
+		}
+		var stderr bytes.Buffer
+		started := time.Now()
+		calls := 0
+		lock, _, err := acquireValidationLockWithTimeouts(t.Context(), path, &stderr, time.Second, time.Minute, func(ctx context.Context, path, name string) (int, int, error) {
+			if calls > 0 {
+				time.Sleep(500 * time.Millisecond)
+				if err := older[calls-1].lock.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls++
+			return validationPosition(ctx, path, name)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		if time.Since(started) <= time.Second || strings.Count(stderr.String(), "reason=queue_advanced_without_owner") != 2 {
+			t.Fatalf("queue progress: elapsed=%s diagnostics=%s", time.Since(started), &stderr)
+		}
+		time.Sleep(2 * time.Minute)
+		inspection, err := instancelock.Inspect(path)
+		if err != nil || inspection.Status != instancelock.StatusHeld {
+			t.Fatalf("wait budgets affected active gate: %+v, %v", inspection, err)
+		}
+	})
 }

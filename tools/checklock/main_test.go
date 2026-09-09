@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
@@ -35,6 +36,7 @@ func TestRunValidatesArguments(t *testing.T) {
 	}{
 		{name: "missing lock", args: []string{"--", "go", "version"}, wantErr: "-lock is required"},
 		{name: "invalid wait timeout", args: []string{"-lock", "gate.lock", "-wait-timeout", "0s", "--", "go", "version"}, wantErr: "-wait-timeout must be positive"},
+		{name: "invalid total wait timeout", args: []string{"-lock", "gate.lock", "-max-wait-timeout", "0s", "--", "go", "version"}, wantErr: "-max-wait-timeout must be positive"},
 		{name: "missing command", args: []string{"-lock", "gate.lock"}, wantErr: "command is required after --"},
 	}
 
@@ -369,4 +371,53 @@ func TestValidationCancellationHelper(t *testing.T) {
 	if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunRetainsWaitAcrossHandoffs(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		path := filepath.Join(t.TempDir(), "validation.lock")
+		holder := acquireTestLock(t, path)
+		older, err := registerValidationWaiter(t.Context(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { older.lock.Close() })
+		ownersDone := make(chan struct{})
+		go func() {
+			defer close(ownersDone)
+			defer older.lock.Close()
+			for i := range 4 {
+				time.Sleep(400 * time.Millisecond)
+				if err := holder.Close(); err != nil {
+					t.Error(err)
+					return
+				}
+				if i < 3 {
+					var err error
+					for {
+						holder, err = instancelock.Acquire(path)
+						if !errors.Is(err, instancelock.ErrHeld) {
+							break
+						}
+						if err = waitValidationPoll(ctx); err != nil {
+							break
+						}
+					}
+					if err != nil {
+						t.Error(err)
+						return
+					}
+				}
+			}
+		}()
+		var stderr bytes.Buffer
+		code := run(ctx, []string{"-lock", path, "-wait-timeout", "1s", "--", filepath.Join(t.TempDir(), "missing-command")}, nil, io.Discard, &stderr)
+		<-ownersDone
+		if code != 1 || !strings.Contains(stderr.String(), "resolve validation command") || strings.Count(stderr.String(), "reason=owner_handoff") != 3 {
+			t.Fatalf("run failed to reach command after healthy handoffs: code=%d stderr=%s", code, &stderr)
+		}
+	})
 }

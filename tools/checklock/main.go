@@ -31,7 +31,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	flags.SetOutput(stderr)
 
 	lockPath := flags.String("lock", "", "validation lock path")
-	waitTimeout := flags.Duration("wait-timeout", 15*time.Minute, "maximum time to wait for another validation gate")
+	waitTimeout := flags.Duration("wait-timeout", 15*time.Minute, "maximum wait without an owner handoff or unheld queue advancement")
+	maxWaitTimeout := flags.Duration("max-wait-timeout", 4*time.Hour, "maximum total registration and queue wait")
 	eventsPath := flags.String("events", "", "append local gate timing events as JSON lines")
 
 	if err := flags.Parse(args); err != nil {
@@ -43,6 +44,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if *waitTimeout <= 0 {
 		fmt.Fprintln(stderr, "-wait-timeout must be positive")
+		return 2
+	}
+	if *maxWaitTimeout <= 0 {
+		fmt.Fprintln(stderr, "-max-wait-timeout must be positive")
 		return 2
 	}
 	command := flags.Args()
@@ -69,10 +74,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	event := validationEvent{Schema: 1, PID: os.Getpid(), StartedAt: started, CommandHash: fmt.Sprintf("%x", sha256.Sum256(encodedCommand))}
 	event.write(events, stderr, "waiting")
 
-	waitCtx, cancel := context.WithTimeout(ctx, *waitTimeout)
-	defer cancel()
-
-	lock, waited, err := acquireValidationLock(waitCtx, *lockPath, stderr)
+	lock, waited, err := acquireValidationLockWithTimeouts(ctx, *lockPath, stderr, *waitTimeout, *maxWaitTimeout, validationPosition)
 	if err != nil {
 		event.WaitSeconds = time.Since(started).Seconds()
 		event.write(events, stderr, "wait_failed")
