@@ -159,6 +159,7 @@ type Runner struct {
 	workerReapGrace           time.Duration
 	reapWorkerProcess         workerProcessReapFunc
 	reapWorkspaceProcesses    workspaceProcessReapFunc
+	reapArtifactProcesses     func(context.Context, string, string, time.Duration) (int, error)
 	cleanupWorkerArtifacts    func(string, string) error
 	waitWorkerArtifactCleanup func(context.Context, time.Duration) error
 	sessionLimit              durationLimitContextFactory
@@ -3507,7 +3508,11 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	} else {
 		for _, reaped := range processes {
 			process := reaped.process
-			_, err := workspace.ReapWorkerArtifactProcesses(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
+			reap := r.reapArtifactProcesses
+			if reap == nil {
+				reap = workspace.ReapWorkerArtifactProcesses
+			}
+			_, err := reap(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
 			reapErrors = errors.Join(reapErrors, err)
 		}
 	}
