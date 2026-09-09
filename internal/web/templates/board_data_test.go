@@ -4709,3 +4709,31 @@ func TestBoardDispatchWaitingPreservesBlockerCount(t *testing.T) {
 		})
 	}
 }
+
+func TestTodoDispatchEvidencePreservesAttention(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name           string
+		card           projectKanbanCard
+		signal, detail string
+	}{
+		{name: "attention", card: projectKanbanCard{AttentionLabel: "Upstream closed"}, signal: "Needs review", detail: "Upstream closed"},
+		{name: "conflict", card: projectKanbanCard{ConflictReason: "Resolve the merge conflict"}, signal: "Merge conflict", detail: "Resolve the merge conflict"},
+		{name: "operator hold", card: projectKanbanCard{BlockedReason: "Repair credentials"}, signal: "Needs review", detail: "Repair credentials"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := boardTestData()
+			data.Snapshot = telemetry.Snapshot{GeneratedAt: time.Now()}
+			tt.card.IssueID = "todo"
+			tt.card.Stage = "Todo"
+			view := boardCardViewFromCard(data, projectKanbanLane{Title: "Todo"}, tt.card, false, "fleet", "")
+			if !strings.Contains(view.ExtraText, tt.detail) || !strings.Contains(view.ExtraText, "Scheduler evidence unavailable") {
+				t.Fatalf("extra text = %q", view.ExtraText)
+			}
+			signals := boardCardSignals(view, tt.card)
+			if len(signals) == 0 || signals[0].Text != tt.signal {
+				t.Fatalf("signals = %+v, want %q", signals, tt.signal)
+			}
+		})
+	}
+}

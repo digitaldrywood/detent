@@ -1464,17 +1464,29 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		evidence := telemetry.TodoDispatchEvidence(data.Snapshot, issue)
 		view.DispatchStatus = evidence.Status
 		view.Waiting = !evidence.Ready
-		view.ExtraKind = primitives.KindInfo
-		if !evidence.Ready {
-			view.ExtraKind = primitives.KindWarn
-		}
-		if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0 {
-			view.Waiting = true
-			view.DispatchStatus = "Waiting"
+		waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
+		blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
+		attention := card.AttentionLabel != "" || card.ConflictReason != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))
+		if attention {
+			if view.ExtraText == "" {
+				view.ExtraText = "Needs review"
+				view.ExtraKind = primitives.KindErr
+				view.ExtraChip = true
+			}
 			view.ExtraText += " · " + evidence.Detail
 		} else {
-			view.ExtraText = evidence.Detail
-			view.ExtraChip = false
+			view.ExtraKind = primitives.KindInfo
+			if !evidence.Ready {
+				view.ExtraKind = primitives.KindWarn
+			}
+			if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0 {
+				view.Waiting = true
+				view.DispatchStatus = "Waiting"
+				view.ExtraText += " · " + evidence.Detail
+			} else {
+				view.ExtraText = evidence.Detail
+				view.ExtraChip = false
+			}
 		}
 	}
 	if stranded, ok := boardCardStrandedActiveIssue(data.Snapshot, card); ok {
@@ -1645,6 +1657,10 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
 	switch {
+	case view.DispatchStatus != "" && (card.AttentionLabel != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))):
+		add("Needs review", primitives.KindErr)
+	case view.DispatchStatus != "" && card.ConflictReason != "":
+		add("Merge conflict", primitives.KindWarn)
 	case view.DispatchStatus == "Waiting" && len(card.Blockers) > 0:
 		add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
 	case view.DispatchStatus != "":

@@ -11,3 +11,9 @@
 - First `make check` exited before validation started after its 15-minute FIFO admission timeout. Retried with `CHECK_LOCK_WAIT=60m`; all gate checks remain enabled.
 
 - Final `make check CHECK_LOCK_WAIT=60m` passed: build, lint (zero issues), vet, NilAway, full race suite, coverage 80.3% against 70%, and all configured package/file floors. The retry waited approximately 36 minutes for admission; validation itself completed successfully.
+
+- Review regressions reproduced and fixed: sampled unsaved refusals no longer suppress a durable skipped fallback after selection; Todo operator-attention and conflict details retain priority over scheduler status. Focused Go tests pass. `review-browser.json` records visible Needs review / Upstream closed alongside scheduler evidence; the isolated preview passed. Follow-up full gate passed on recovery as recorded below.
+
+- Follow-up admission timed out at 60 minutes while first in line; validation had not started. Retried with `CHECK_LOCK_WAIT=240m`, preserving the complete gate and serialization. Queue-loss evidence was added to existing issue #2347.
+
+- Recovery follow-up: all six retained paths belong to the review fixes. The first recovery gate admitted after about 17 minutes and failed perfsprint on a boolean test-name conversion. Replaced it with `strconv.FormatBool`; both focused review regressions passed. `make check CHECK_LOCK_WAIT=240m` then passed after approximately 54 minutes admission and 7 minutes execution: generation, build, zero lint issues, vet, NilAway, full race suite, 80.3% aggregate coverage, and all configured floors.

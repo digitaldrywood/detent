@@ -108,7 +108,8 @@ func (o *Orchestrator) recordPostSelectionDispatchRefusal(
 		waitReason = detail
 	}
 	for _, decision := range state.SchedulerDecisions {
-		if decision.IssueID == selection.Issue.ID &&
+		if (o.workAttempts == nil || decision.ID != 0) &&
+			decision.IssueID == selection.Issue.ID &&
 			decision.AttemptNumber == selection.Attempt &&
 			decision.DecisionAt.Equal(now) &&
 			!decision.Selected &&
