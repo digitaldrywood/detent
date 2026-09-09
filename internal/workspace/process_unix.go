@@ -154,6 +154,17 @@ func waitForWorkspaceProcesses(
 }
 
 func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
+	canonical, err := canonicalExistingPath(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Dir(canonical) == canonical {
+		return nil, errors.New("workspace path must not resolve to a filesystem root")
+	}
+	path = canonical
 	owned, err := scratchEnvironmentProcessIDs(ctx, path)
 	if err != nil {
 		return nil, err

@@ -2318,6 +2318,9 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				if backend.request.Workspace != "" {
+					if _, err := os.Stat(backend.request.Workspace); errors.Is(err, os.ErrNotExist) {
+						return
+					}
 					if err := workspace.CleanupOwnedPath(os.TempDir(), backend.request.Workspace); err != nil {
 						t.Error(err)
 					}
@@ -5937,7 +5940,7 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 				t.Fatalf("NewRunner() error = %v", err)
 			}
 			runner.cleanupWorkerArtifacts = func(root string, path string) error {
-				if root == "" || filepath.Dir(path) != filepath.Join(root, ".detent", "worker-tmp") {
+				if root != backend.request.Workspace || path != backend.request.TempDir {
 					t.Fatalf("cleanup paths = %q, %q", root, path)
 				}
 				return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.ENOTEMPTY}

@@ -18,6 +18,17 @@ import (
 )
 
 func workspaceProcessIDs(ctx context.Context, root string) ([]int, error) {
+	canonical, err := canonicalExistingPath(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Dir(canonical) == canonical {
+		return nil, errors.New("workspace path must not resolve to a filesystem root")
+	}
+	root = canonical
 	current, err := process.NewProcessWithContext(ctx, int32(os.Getpid()))
 	if err != nil {
 		return nil, err

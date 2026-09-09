@@ -13,16 +13,26 @@ func workerScratchEnvironmentMatches(root string, environment []string) bool {
 		if !ok {
 			continue
 		}
-		matches := filepath.IsAbs(value) && pathWithin(root, value)
 		if runtime.GOOS == "windows" {
 			key = strings.ToUpper(key)
 		}
 		switch key {
 		case "DETENT_WORKER_SCRATCH":
-			return matches
+			return workerScratchPathMatches(root, value)
 		case "TMPDIR", "TMP", "TEMP":
-			legacy = legacy || matches
+			legacy = legacy || workerScratchPathMatches(root, value)
 		}
 	}
 	return legacy
+}
+
+func workerScratchPathMatches(root string, path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	if pathWithin(root, path) {
+		return true
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	return err == nil && pathWithin(root, canonical)
 }

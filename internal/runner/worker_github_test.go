@@ -410,7 +410,7 @@ func TestRunAgentBackendTurnAppliesWorkerGitHubPolicy(t *testing.T) {
 			if variables["GH_ENTERPRISE_TOKEN"] != tt.token || variables["GITHUB_ENTERPRISE_TOKEN"] != tt.token {
 				t.Fatalf("worker enterprise token environment = %#v, want %q", variables, tt.token)
 			}
-			if !strings.Contains(variables["GH_CONFIG_DIR"], filepath.Join(".detent", "tmp")) {
+			if variables["GH_CONFIG_DIR"] != filepath.Join(backend.request.TempDir, "github-cli") {
 				t.Fatalf("GH_CONFIG_DIR = %q, want isolated worker scratch", variables["GH_CONFIG_DIR"])
 			}
 		})

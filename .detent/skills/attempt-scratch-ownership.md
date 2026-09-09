@@ -38,3 +38,9 @@ Place new attempt directories outside any legacy cleanup root that a recovered
 record can recursively remove. Preparation must not delete prior scratch, and
 delayed cleanup must target only its original attempt. Check all API callers,
 Git exclusions, and fixed-path assertions when changing this contract.
+
+Repeat path-sensitive tests with a symlinked temporary root. Compare the exact
+attempt path or canonical directories; substring assertions can accidentally
+match the worker's enclosing scratch path and pass only locally. Exercise a
+process-inspection fixture with an inaccessible unrelated host process before
+a readable owner, while preserving errors for failed ownership inspection.
