@@ -157,10 +157,14 @@ func (o *Orchestrator) probeGitHubRESTLookupBackoff(
 	outage.LastProbeAt = now.UTC()
 	rateLimit, err := prober.ProbeRESTRateLimit(ctx, o.cfg.GitHubRESTMinReserve)
 	if err != nil {
+		resetAt := outage.ResetAt
+		if signal, active := o.currentGitHubLookupSignal(state, now); active && signal.trigger == githubLookupTriggerREST && signal.resetAt.After(resetAt) {
+			resetAt = signal.resetAt
+		}
 		o.advanceGitHubLookupBackoff(state, outage, githubLookupSignal{
 			trigger: githubLookupTriggerREST,
 			reason:  "GitHub REST rate-limit probe failed: " + err.Error(),
-			resetAt: outage.ResetAt,
+			resetAt: resetAt,
 		}, now, time.Time{})
 		return true
 	}
@@ -179,7 +183,7 @@ func (o *Orchestrator) probeGitHubRESTLookupBackoff(
 	}
 
 	outage.LastProbeResult = "capacity_available"
-	outage.LastProbeDetail = fmt.Sprintf("GitHub REST probe reports %d remaining", rateLimit.Remaining)
+	outage.LastProbeDetail = fmt.Sprintf("GitHub REST recovery read confirms %d remaining", rateLimit.Remaining)
 	if signal, active := o.currentGitHubLookupSignal(state, now); active {
 		o.advanceGitHubLookupBackoff(state, outage, signal, now, time.Time{})
 		return true

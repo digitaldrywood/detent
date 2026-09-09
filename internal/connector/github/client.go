@@ -97,10 +97,12 @@ type Client struct {
 }
 
 type restProbeResult struct {
-	StatusCode int
-	Headers    http.Header
-	Body       string
-	FullBody   string
+	backoffKey         string
+	credentialIdentity string
+	StatusCode         int
+	Headers            http.Header
+	Body               string
+	FullBody           string
 }
 
 func NewClient(cfg ClientConfig) (*Client, error) {
@@ -426,10 +428,12 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
 	result := restProbeResult{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header.Clone(),
-		Body:       summarizeBody(raw),
-		FullBody:   string(bytes.TrimSpace(raw)),
+		backoffKey:         backoffKey,
+		credentialIdentity: credentialIdentity,
+		StatusCode:         resp.StatusCode,
+		Headers:            resp.Header.Clone(),
+		Body:               summarizeBody(raw),
+		FullBody:           string(bytes.TrimSpace(raw)),
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
@@ -823,18 +827,6 @@ func (c *Client) RESTRateLimitStatus() connector.RESTRateLimitUsage {
 	return usage
 }
 
-func (c *Client) clearRESTBackoff() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	backoffKey := c.restBackoffKey
-	c.restBackoffUntil = time.Time{}
-	c.restRateLimitStatus = false
-	if c.restBackoffs != nil && backoffKey != "" {
-		c.restBackoffs.clear(backoffKey)
-	}
-}
-
 func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
 	c.mu.RLock()
 	backoffUntil := c.restBackoffUntil
@@ -1006,6 +998,11 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 }
 
 func (c *Client) restSharedBackoffKey(token string) string {
+	if source, ok := c.tokenSource.(CredentialIdentitySource); ok {
+		if identity := strings.TrimSpace(source.CredentialIdentity(token)); identity != "" {
+			return c.restEndpoint + "\x00" + identity
+		}
+	}
 	sum := sha256.Sum256([]byte(c.restEndpoint + "\x00" + token))
 	return c.restEndpoint + "\x00" + string(sum[:])
 }
@@ -1025,6 +1022,14 @@ func (c *Client) rememberRESTBackoffKey(backoffKey string) {
 		return
 	}
 	c.mu.Lock()
+	if c.restBackoffKey != "" && c.restBackoffKey != backoffKey {
+		c.restBackoffUntil = time.Time{}
+		c.restRateLimitStatus = false
+		c.restRateLimit = connector.RESTRateLimit{}
+		c.restRateLimits = nil
+		c.hasRestRateLimit = false
+		c.restReserveHeld = false
+	}
 	c.restBackoffKey = backoffKey
 	c.mu.Unlock()
 }
@@ -1055,10 +1060,10 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if backoffKey != "" {
-		c.restBackoffKey = backoffKey
+	currentCredential := backoffKey == c.restBackoffKey
+	if currentCredential {
+		c.restRateLimitStatus = c.restRateLimitStatus || rateLimited
 	}
-	c.restRateLimitStatus = c.restRateLimitStatus || rateLimited
 	snapshot := c.restRateLimit
 	if resource != "" && c.restRateLimits != nil {
 		snapshot = c.restRateLimits[resource]
@@ -1092,30 +1097,35 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	}
 	if hasSnapshot {
 		snapshot.UpdatedAt = now
-		divergenceKey := restDivergenceKey(c.restEndpoint, credentialIdentity, resource)
-		divergence, report := c.restDivergences.observe(
-			divergenceKey,
-			credentialIdentity,
-			snapshot,
-			status != http.StatusNotModified,
-			restDivergenceAttribution(credentialIdentity),
-			c.restPolicy.MinRemainingReserve,
-		)
-		if divergence.ObservedRequests > 0 {
-			if c.restDivergenceKeys == nil {
-				c.restDivergenceKeys = make(map[string]struct{})
+		if path != "/rate_limit" {
+			divergenceKey := restDivergenceKey(c.restEndpoint, credentialIdentity, resource)
+			divergence, report := c.restDivergences.observe(
+				divergenceKey,
+				credentialIdentity,
+				snapshot,
+				status != http.StatusNotModified,
+				restDivergenceAttribution(credentialIdentity),
+				c.restPolicy.MinRemainingReserve,
+			)
+			if divergence.ObservedRequests > 0 {
+				if c.restDivergenceKeys == nil {
+					c.restDivergenceKeys = make(map[string]struct{})
+				}
+				c.restDivergenceKeys[divergenceKey] = struct{}{}
 			}
-			c.restDivergenceKeys[divergenceKey] = struct{}{}
+			c.logRESTUsageDivergence(ctx, divergence, report)
 		}
-		c.logRESTUsageDivergence(ctx, divergence, report)
-		c.restRateLimit = snapshot
-		if resource != "" {
-			if c.restRateLimits == nil {
-				c.restRateLimits = make(map[string]connector.RESTRateLimit)
+		canUpdateQuota := path != "/rate_limit" || !c.hasRestRateLimit && c.restBackoffs.failure(backoffKey) == nil
+		if currentCredential && canUpdateQuota && (rateLimited || !c.restBackoffUntil.After(now)) {
+			c.restRateLimit = snapshot
+			if resource != "" {
+				if c.restRateLimits == nil {
+					c.restRateLimits = make(map[string]connector.RESTRateLimit)
+				}
+				c.restRateLimits[resource] = snapshot
 			}
-			c.restRateLimits[resource] = snapshot
+			c.hasRestRateLimit = true
 		}
-		c.hasRestRateLimit = true
 		if c.restBudgets == nil {
 			c.restBudgets = make(map[string]connector.RESTRateLimitBudget)
 		}
@@ -1176,11 +1186,11 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 
 	if sharedBackoff {
 		backoffUntil := restBackoffUntil(now, retryAfter, hasRetryAfter, resetAt, hasReset, remaining, hasRemaining)
-		if c.restBackoffUntil.IsZero() || backoffUntil.After(c.restBackoffUntil) {
+		if currentCredential && (c.restBackoffUntil.IsZero() || backoffUntil.After(c.restBackoffUntil)) {
 			c.restBackoffUntil = backoffUntil
 		}
 		if c.restBackoffs != nil && backoffKey != "" {
-			c.restBackoffs.set(backoffKey, backoffUntil)
+			c.restBackoffs.set(backoffKey, backoffUntil, method, path, resource)
 		}
 		c.logger.Warn(
 			"github rest shared backoff recorded",
@@ -2112,12 +2122,13 @@ func (c *Client) logRESTUsageDivergence(ctx context.Context, divergence connecto
 }
 
 type restBackoffRegistry struct {
-	mu     sync.RWMutex
-	untils map[string]time.Time
+	mu       sync.RWMutex
+	untils   map[string]time.Time
+	failures map[string]*restRecoveryEvidence
 }
 
 func newRESTBackoffRegistry() *restBackoffRegistry {
-	return &restBackoffRegistry{untils: map[string]time.Time{}}
+	return &restBackoffRegistry{untils: map[string]time.Time{}, failures: map[string]*restRecoveryEvidence{}}
 }
 
 func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {
@@ -2138,7 +2149,7 @@ func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {
 	return time.Time{}
 }
 
-func (r *restBackoffRegistry) set(key string, until time.Time) {
+func (r *restBackoffRegistry) set(key string, until time.Time, method, path, resource string) {
 	if r == nil || strings.TrimSpace(key) == "" || until.IsZero() {
 		return
 	}
@@ -2147,15 +2158,14 @@ func (r *restBackoffRegistry) set(key string, until time.Time) {
 	if current := r.untils[key]; current.IsZero() || until.After(current) {
 		r.untils[key] = until
 	}
-}
-
-func (r *restBackoffRegistry) clear(key string) {
-	if r == nil || strings.TrimSpace(key) == "" {
-		return
+	evidence := &restRecoveryEvidence{resource: resource}
+	if method == http.MethodGet && path != "/rate_limit" {
+		evidence.path = path
+	} else if previous := r.failures[key]; previous != nil {
+		evidence.path = previous.path
+		evidence.resource = previous.resource
 	}
-	r.mu.Lock()
-	delete(r.untils, key)
-	r.mu.Unlock()
+	r.failures[key] = evidence
 }
 
 func restEndpointFamily(method string, path string) string {

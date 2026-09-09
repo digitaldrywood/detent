@@ -359,7 +359,7 @@ func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
 	}
 }
 
-func TestConnectorProbeRESTRateLimitClearsRecoveredBackoff(t *testing.T) {
+func TestConnectorProbeRESTRateLimitPreservesRetryAfter(t *testing.T) {
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -375,6 +375,7 @@ func TestConnectorProbeRESTRateLimitClearsRecoveredBackoff(t *testing.T) {
 		w.Header().Set("X-RateLimit-Remaining", "2000")
 		w.Header().Set("X-RateLimit-Used", "3000")
 		w.Header().Set("X-RateLimit-Reset", "2082758400")
+		w.Header().Set("X-RateLimit-Resource", "core")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -392,18 +393,14 @@ func TestConnectorProbeRESTRateLimitClearsRecoveredBackoff(t *testing.T) {
 	if err := conn.client.REST(context.Background(), http.MethodGet, "/user", nil, nil); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("REST() error = %v, want ErrRateLimited", err)
 	}
-	rateLimit, err := conn.ProbeRESTRateLimit(context.Background(), 1000)
-	if err != nil {
-		t.Fatalf("ProbeRESTRateLimit() error = %v", err)
+	if _, err := conn.ProbeRESTRateLimit(context.Background(), 1000); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("ProbeRESTRateLimit() error = %v, want ErrRateLimited", err)
 	}
-	if rateLimit.Remaining != 2000 {
-		t.Fatalf("ProbeRESTRateLimit().Remaining = %d, want 2000", rateLimit.Remaining)
+	if err := conn.client.REST(context.Background(), http.MethodGet, "/user", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("REST() during retry-after error = %v, want ErrRateLimited", err)
 	}
-	if err := conn.client.REST(context.Background(), http.MethodGet, "/user", nil, nil); err != nil {
-		t.Fatalf("REST() after recovery error = %v", err)
-	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("HTTP calls = %d, want rate limit, probe, recovered request", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("HTTP calls = %d, want rate limit and quota probe", got)
 	}
 }
 
@@ -1654,12 +1651,16 @@ func TestClientRESTCredentialIdentityStaysStableAcrossInstallationTokenRotation(
 			source := &InstallationTokenSource{installationID: "4242", cachedToken: "first-token"}
 			client := &Client{restEndpoint: "https://api.github.com", tokenSource: test.source(source)}
 			first := client.restCredentialIdentity("first-token")
+			firstBackoffKey := client.restSharedBackoffKey("first-token")
 			source.mu.Lock()
 			source.cachedToken = "second-token"
 			source.mu.Unlock()
 			second := client.restCredentialIdentity("second-token")
 			if first != "github-app-installation:4242" || second != first {
 				t.Fatalf("identities = %q, %q, want stable installation identity", first, second)
+			}
+			if secondBackoffKey := client.restSharedBackoffKey("second-token"); secondBackoffKey != firstBackoffKey {
+				t.Fatal("installation token rotation changed the shared backoff key")
 			}
 		})
 	}
