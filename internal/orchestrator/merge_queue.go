@@ -20,6 +20,7 @@ const (
 
 type nativeMergeQueueEntry struct {
 	Entry     connector.PullRequestMergeQueueEntry
+	HeadSHA   string
 	CheckedAt time.Time
 }
 
@@ -50,6 +51,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	stickyIssueID := stickyMergingIssueID(state, out, now, o.cfg.MergeFairnessAge)
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
+		if ctx.Err() != nil {
+			state.nativeMergeQueueDeferred[strings.TrimSpace(candidate.ID)] = struct{}{}
+			continue
+		}
 		if _, reserved := mergeReservationBlocks(state, candidate, now); reserved {
 			continue
 		}
@@ -57,7 +62,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		if !nativeMergeQueueCandidate(candidate, o.cfg) || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
-		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh {
+		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh && cached.HeadSHA == strings.TrimSpace(candidate.PullRequest.HeadSHA) {
 			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
 			continue
 		}
@@ -81,12 +86,20 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueFailure(candidate, "inspection_failed", err)
 			continue
 		}
+		if strings.TrimSpace(status.HeadSHA) != strings.TrimSpace(candidate.PullRequest.HeadSHA) {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			o.logNativeMergeQueueFailure(candidate, "head_changed", nil)
+			continue
+		}
 		state.nativeMergeQueueRepos[repositoryKey] = nativeMergeQueueRepository{
 			Available: status.Available,
 			CheckedAt: now,
 		}
 		if status.Entry != nil {
 			cacheNativeMergeQueueEntry(state, issueID, *status.Entry, now)
+			cached := state.nativeMergeQueueEntries[issueID]
+			cached.HeadSHA = strings.TrimSpace(candidate.PullRequest.HeadSHA)
+			state.nativeMergeQueueEntries[issueID] = cached
 			applyNativeMergeQueueEntry(out, issueID, *status.Entry)
 			o.logNativeMergeQueueDelegated(candidate, *status.Entry, "observed")
 			continue
@@ -97,6 +110,15 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueFailure(candidate, "entry_missing", nil)
 		}
 		if !status.Available {
+			continue
+		}
+		if status.RemovalObserved && (strings.TrimSpace(status.RemovedHeadSHA) == "" || strings.TrimSpace(status.RemovedHeadSHA) == strings.TrimSpace(status.HeadSHA)) {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", nil)
+			continue
+		}
+		if status.AdmissionLimit <= 0 || status.Depth >= status.AdmissionLimit {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			continue
 		}
 		enqueueIssue := cloneIssue(candidate)
@@ -110,6 +132,9 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			continue
 		}
 		cacheNativeMergeQueueEntry(state, issueID, entry, now)
+		cached := state.nativeMergeQueueEntries[issueID]
+		cached.HeadSHA = strings.TrimSpace(candidate.PullRequest.HeadSHA)
+		state.nativeMergeQueueEntries[issueID] = cached
 		applyNativeMergeQueueEntry(out, issueID, entry)
 		o.logNativeMergeQueueDelegated(candidate, entry, "enqueued")
 		recordStateEvent(state, telemetry.ActivityEvent{
@@ -308,6 +333,7 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	}
 	return normalizePullRequestState(pullRequest.State) == "open" &&
 		!pullRequest.Draft &&
+		strings.TrimSpace(pullRequest.HeadSHA) != "" &&
 		mergeWorkerCIGreen(pullRequest.CIStatus) &&
 		pullRequestRepository(issue) != "" &&
 		pullRequestNumber(issue) > 0
@@ -408,6 +434,9 @@ func (o *Orchestrator) logNativeMergeQueueDelegated(issue connector.Issue, entry
 	}
 	o.logger.Info("merge_worker_native_queue_delegated", mergeWorkerLogAttrs(issue,
 		"source", source,
+		"integration_head_sha", entry.HeadSHA,
+		"integration_base_sha", entry.BaseSHA,
+		"queue_entry_id", entry.ID,
 		"queue_state", entry.State,
 		"queue_position", entry.Position,
 		"queue_depth", entry.Depth,

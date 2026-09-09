@@ -1384,9 +1384,11 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].pull_request.latest_codex_review_state` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.latest_codex_review_submitted_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry` | `object` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.base_sha` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.depth` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.enqueued_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.estimated_time_to_merge_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.head_sha` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.id` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.position` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.state` | `string` | `none` | No | None |

@@ -21,7 +21,7 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 	}{
 		{
 			name:      "detects merge queue policy",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueue":{"url":"https://github.test/example/repo/queue/main"},"mergeQueueEntry":null}}}}`,
+			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueue":{"url":"https://github.test/example/repo/queue/main","entries":{"totalCount":2},"configuration":{"maximumEntriesToBuild":3}},"mergeQueueEntry":null}}}}`,
 			available: true,
 		},
 		{
@@ -31,9 +31,11 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 		},
 		{
 			name:      "recognizes existing queue entry",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"BLOCKED","mergeQueueEntry":{"id":"MQE_42","state":"AWAITING_CHECKS","position":2,"estimatedTimeToMerge":420,"enqueuedAt":"2026-07-13T18:00:00Z","mergeQueue":{"url":"https://github.test/example/repo/queue/main","entries":{"totalCount":5}}}}}}}`,
+			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"BLOCKED","mergeQueueEntry":{"headCommit":{"oid":"group-head"},"baseCommit":{"oid":"group-base"},"id":"MQE_42","state":"AWAITING_CHECKS","position":2,"estimatedTimeToMerge":420,"enqueuedAt":"2026-07-13T18:00:00Z","mergeQueue":{"url":"https://github.test/example/repo/queue/main","entries":{"totalCount":5}}}}}}}`,
 			available: true,
 			wantEntry: &connector.PullRequestMergeQueueEntry{
+				HeadSHA:                     "group-head",
+				BaseSHA:                     "group-base",
 				ID:                          "MQE_42",
 				State:                       "AWAITING_CHECKS",
 				Position:                    2,
@@ -66,9 +68,12 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			if !reflect.DeepEqual(status.Entry, tt.wantEntry) {
 				t.Fatalf("entry = %#v, want %#v", status.Entry, tt.wantEntry)
 			}
+			if tt.name == "detects merge queue policy" && (status.Depth != 2 || status.AdmissionLimit != 3) {
+				t.Fatalf("queue limits = %#v, want depth 2 and admission 3", status)
+			}
 			request := server.requests()[0]
 			query := request["query"].(string)
-			if !strings.Contains(query, "mergeQueue { url }") || strings.Contains(query, "mergeStateStatus") {
+			if !strings.Contains(query, "configuration { maximumEntriesToBuild }") || strings.Contains(query, "mergeStateStatus") {
 				t.Fatalf("query = %q, want mergeQueue capability field without mergeStateStatus", query)
 			}
 			variables := request["variables"].(map[string]any)
@@ -90,8 +95,9 @@ func TestConnectorEnqueuePullRequest(t *testing.T) {
 		Identifier:   "example/repo#1",
 		PRRepository: "example/repo",
 		PullRequest: &connector.PullRequest{
-			NodeID: "PR_42",
-			Number: 42,
+			NodeID:  "PR_42",
+			HeadSHA: "reviewed-head",
+			Number:  42,
 		},
 	})
 	if err != nil {
@@ -101,10 +107,16 @@ func TestConnectorEnqueuePullRequest(t *testing.T) {
 		t.Fatalf("entry = %#v, want queued position 3 of 6 with 300s ETA", entry)
 	}
 	request := server.requests()[0]
+	if !strings.Contains(request["query"].(string), "expectedHeadOid: $expectedHeadOid") {
+		t.Fatalf("query = %q, want expected-head fence", request["query"])
+	}
 	if !strings.Contains(request["query"].(string), "enqueuePullRequest") {
 		t.Fatalf("query = %q, want enqueuePullRequest mutation", request["query"])
 	}
 	variables := request["variables"].(map[string]any)
+	if variables["expectedHeadOid"] != "reviewed-head" {
+		t.Fatalf("expectedHeadOid = %v, want reviewed-head", variables["expectedHeadOid"])
+	}
 	if variables["pullRequestId"] != "PR_42" {
 		t.Fatalf("pullRequestId = %v, want PR_42", variables["pullRequestId"])
 	}
@@ -198,4 +210,54 @@ func mergeQueueTestTime(value string) *time.Time {
 		panic(err)
 	}
 	return &parsed
+}
+
+func TestConnectorMergeQueueHeadFence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		head         string
+		node         string
+		response     string
+		wantError    string
+		wantRequests int
+	}{
+		{name: "missing head", node: "PR_42", wantError: "missing expected head sha"},
+		{name: "changed head on restart", head: "reviewed", response: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"unreviewed","mergeQueueEntry":{"id":"MQE_42"}}}}}`, wantError: "head changed", wantRequests: 1},
+		{name: "same head on restart", head: "reviewed", response: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"reviewed","mergeQueueEntry":{"id":"MQE_42"}}}}}`, wantRequests: 1},
+		{name: "head changes during enqueue", head: "reviewed", node: "PR_42", response: `{"errors":[{"message":"expected head does not match"}]}`, wantError: "expected head does not match", wantRequests: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{body: tt.response}})
+			client := newGitHubTestConnector(t, server, Config{})
+			entry, err := client.EnqueuePullRequest(context.Background(), connector.Issue{
+				PRRepository: "example/repo",
+				PullRequest:  &connector.PullRequest{Number: 42, NodeID: tt.node, HeadSHA: tt.head},
+			})
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want %q", err, tt.wantError)
+				}
+			} else if err != nil || entry.ID != "MQE_42" {
+				t.Fatalf("entry = %#v, error = %v", entry, err)
+			}
+			if got := len(server.requests()); got != tt.wantRequests {
+				t.Fatalf("requests = %d, want %d", got, tt.wantRequests)
+			}
+		})
+	}
+}
+
+func TestConnectorInspectChangedQueueHeadAllowsCleanup(t *testing.T) {
+	t.Parallel()
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"new-head","timelineItems":{"nodes":[{"beforeCommit":{"oid":"removed-head"}}]},"mergeQueueEntry":{"id":"MQE_42"}}}}}`}})
+	client := newGitHubTestConnector(t, server, Config{})
+	status, err := client.InspectPullRequestMergeQueue(context.Background(), connector.Issue{PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42, HeadSHA: "old-head"}})
+	if !status.RemovalObserved || status.RemovedHeadSHA != "removed-head" {
+		t.Fatalf("removal = %#v, want removed-head", status)
+	}
+	if err != nil || status.HeadSHA != "new-head" || status.Entry == nil || status.Entry.ID != "MQE_42" {
+		t.Fatalf("status = %#v, error = %v; want current entry available for revocation", status, err)
+	}
 }

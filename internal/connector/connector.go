@@ -150,12 +150,19 @@ type PullRequestMergeQueue interface {
 }
 
 type PullRequestMergeQueueStatus struct {
+	RemovalObserved   bool
+	RemovedHeadSHA    string
+	Depth             int
+	AdmissionLimit    int
+	HeadSHA           string
 	Available         bool
 	PullRequestNodeID string
 	Entry             *PullRequestMergeQueueEntry
 }
 
 type PullRequestMergeQueueEntry struct {
+	HeadSHA                     string     `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	BaseSHA                     string     `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
 	ID                          string     `json:"id,omitempty" yaml:"id,omitempty"`
 	State                       string     `json:"state,omitempty" yaml:"state,omitempty"`
 	Position                    int        `json:"position,omitempty" yaml:"position,omitempty"`

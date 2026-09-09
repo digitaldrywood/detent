@@ -15,8 +15,14 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id
-      mergeQueue { url }
+      headRefOid
+      timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } } }
+      }
+      mergeQueue { url entries { totalCount } configuration { maximumEntriesToBuild } }
       mergeQueueEntry {
+        headCommit { oid }
+        baseCommit { oid }
         id
         state
         position
@@ -33,9 +39,11 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
 }`
 
 const enqueuePullRequestMutation = `
-mutation DetentEnqueuePullRequest($pullRequestId: ID!) {
-  enqueuePullRequest(input: {pullRequestId: $pullRequestId}) {
+mutation DetentEnqueuePullRequest($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid}) {
     mergeQueueEntry {
+      headCommit { oid }
+      baseCommit { oid }
       id
       state
       position
@@ -59,6 +67,12 @@ mutation DetentDequeuePullRequest($mergeQueueEntryId: ID!) {
 }`
 
 type mergeQueueEntryNode struct {
+	HeadCommit struct {
+		OID string `json:"oid"`
+	} `json:"headCommit"`
+	BaseCommit struct {
+		OID string `json:"oid"`
+	} `json:"baseCommit"`
 	ID                   string     `json:"id"`
 	State                string     `json:"state"`
 	Position             int        `json:"position"`
@@ -80,9 +94,23 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	var response struct {
 		Repository *struct {
 			PullRequest *struct {
-				ID         string `json:"id"`
+				ID            string `json:"id"`
+				HeadRefOid    string `json:"headRefOid"`
+				TimelineItems struct {
+					Nodes []struct {
+						BeforeCommit struct {
+							OID string `json:"oid"`
+						} `json:"beforeCommit"`
+					} `json:"nodes"`
+				} `json:"timelineItems"`
 				MergeQueue *struct {
-					URL string `json:"url"`
+					URL     string `json:"url"`
+					Entries struct {
+						TotalCount int `json:"totalCount"`
+					} `json:"entries"`
+					Configuration struct {
+						MaximumEntriesToBuild int `json:"maximumEntriesToBuild"`
+					} `json:"configuration"`
 				} `json:"mergeQueue"`
 				MergeQueueEntry *mergeQueueEntryNode `json:"mergeQueueEntry"`
 			} `json:"pullRequest"`
@@ -100,8 +128,17 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	}
 	pullRequest := response.Repository.PullRequest
 	status := connector.PullRequestMergeQueueStatus{
+		HeadSHA:           strings.TrimSpace(pullRequest.HeadRefOid),
 		Available:         pullRequest.MergeQueue != nil || pullRequest.MergeQueueEntry != nil,
 		PullRequestNodeID: strings.TrimSpace(pullRequest.ID),
+	}
+	if pullRequest.MergeQueue != nil {
+		status.Depth = pullRequest.MergeQueue.Entries.TotalCount
+		status.AdmissionLimit = pullRequest.MergeQueue.Configuration.MaximumEntriesToBuild
+	}
+	if len(pullRequest.TimelineItems.Nodes) > 0 {
+		status.RemovalObserved = true
+		status.RemovedHeadSHA = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].BeforeCommit.OID)
 	}
 	status.Entry = connectorMergeQueueEntry(pullRequest.MergeQueueEntry)
 	return status, nil
@@ -111,11 +148,18 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 	if issue.PullRequest == nil {
 		return connector.PullRequestMergeQueueEntry{}, errors.New("enqueue github pull request: missing pull request")
 	}
+	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	if headSHA == "" {
+		return connector.PullRequestMergeQueueEntry{}, errors.New("enqueue github pull request: missing expected head sha")
+	}
 	nodeID := strings.TrimSpace(issue.PullRequest.NodeID)
 	if nodeID == "" {
 		status, err := c.InspectPullRequestMergeQueue(ctx, issue)
 		if err != nil {
 			return connector.PullRequestMergeQueueEntry{}, err
+		}
+		if status.HeadSHA != headSHA {
+			return connector.PullRequestMergeQueueEntry{}, errors.New("enqueue github pull request: pull request head changed")
 		}
 		if !status.Available {
 			return connector.PullRequestMergeQueueEntry{}, errors.New("enqueue github pull request: repository does not require a merge queue")
@@ -134,7 +178,8 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 		} `json:"enqueuePullRequest"`
 	}
 	if err := c.client.GraphQLWithType(ctx, graphQLQueryEnqueuePR, enqueuePullRequestMutation, map[string]any{
-		"pullRequestId": nodeID,
+		"pullRequestId":   nodeID,
+		"expectedHeadOid": headSHA,
 	}, &response); err != nil {
 		return connector.PullRequestMergeQueueEntry{}, fmt.Errorf("enqueue github pull request: %w", err)
 	}
@@ -177,6 +222,8 @@ func connectorMergeQueueEntry(entry *mergeQueueEntryNode) *connector.PullRequest
 		return nil
 	}
 	out := &connector.PullRequestMergeQueueEntry{
+		HeadSHA:                     strings.TrimSpace(entry.HeadCommit.OID),
+		BaseSHA:                     strings.TrimSpace(entry.BaseCommit.OID),
 		ID:                          strings.TrimSpace(entry.ID),
 		State:                       strings.ToUpper(strings.TrimSpace(entry.State)),
 		Position:                    entry.Position,

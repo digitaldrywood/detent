@@ -5,6 +5,8 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: '27 9 * * *'
   workflow_dispatch:
