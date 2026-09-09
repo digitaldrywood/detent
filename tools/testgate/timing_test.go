@@ -89,10 +89,12 @@ func TestRaceGateDetectsFixtureRace(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		race    bool
+		cover   bool
 		outcome string
 	}{
 		{name: "ordinary", outcome: "pass"},
 		{name: "race detector", race: true, outcome: "fail"},
+		{name: "race and coverage", race: true, cover: true, outcome: "fail"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -123,6 +125,9 @@ func TestFixture(t *testing.T) {
 			if tt.race {
 				args = append(args, "-race")
 			}
+			if tt.cover {
+				args = append(args, "-coverprofile", filepath.Join(dir, "coverage.out"))
+			}
 			args = append(args, "./...")
 			command := exec.CommandContext(t.Context(), binary, args...)
 			command.Dir = dir
@@ -147,6 +152,28 @@ func TestFixture(t *testing.T) {
 			}
 			if tt.race && !strings.Contains(string(output), "WARNING: DATA RACE") {
 				t.Fatalf("missing race evidence: %s", output)
+			}
+		})
+	}
+}
+
+func TestGoTestCoverageArgs(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		race    bool
+		profile string
+		want    string
+	}{
+		{"race", true, "", "-json -p=1 -parallel=2 -timeout=15m0s -race -count=1 ./internal/hubserver"},
+		{"combined", true, "current.out", "-json -p=1 -parallel=2 -timeout=15m0s -race -count=1 -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"coverage", false, "current.out", "-json -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := strings.Join(goTestArgs([]string{"./internal/hubserver"}, 2, 15*time.Minute, tt.race, tt.profile), " ")
+			if got != tt.want {
+				t.Fatalf("arguments = %q, want %q", got, tt.want)
 			}
 		})
 	}

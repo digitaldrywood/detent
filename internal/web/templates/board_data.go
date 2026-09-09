@@ -10,6 +10,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -1458,6 +1459,14 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	if card.BlockedReason == "" && card.BlockedRecoveryAction == "" && card.BlockedRecoveryReason == "" {
 		view.Activity = boardCardActivity(data.Snapshot, card)
 	}
+	if view.Running {
+		switch activity.ValidationPhase(boardCardFullActivity(data.Snapshot, card)) {
+		case "waiting_validation":
+			view.ExtraKind, view.ExtraText = primitives.KindInfo, "waiting for local validation"
+		case "validating":
+			view.ExtraKind, view.ExtraText = primitives.KindInfo, "running local validation"
+		}
+	}
 	view.PRStatus, view.PRStatusClass = boardCardPRStatus(card)
 	if view.Running {
 		view.RuntimeBadge = true
@@ -1643,6 +1652,10 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add("Waiting", primitives.KindInfo)
 	case view.Retrying:
 		add("Awaiting retry", primitives.KindInfo)
+	case view.Running && view.ExtraText == "waiting for local validation":
+		add("Validation queued", primitives.KindInfo)
+	case view.Running && view.ExtraText == "running local validation":
+		add("Validating", primitives.KindInfo)
 	case view.Running:
 		add("Running", primitives.KindOK)
 	case view.Waiting:

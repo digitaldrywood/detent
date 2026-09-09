@@ -47,6 +47,7 @@ type gateSummary struct {
 	TestParallelism    int             `json:"test_parallelism"`
 	PackageTimeout     string          `json:"package_timeout"`
 	Race               bool            `json:"race"`
+	CoverageProfile    string          `json:"coverage_profile,omitempty"`
 	Packages           []packageResult `json:"packages"`
 }
 
@@ -72,6 +73,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	testParallelism := flags.Int("parallel", 4, "maximum parallel tests within one package")
 	packageTimeout := flags.Duration("timeout", 10*time.Minute, "timeout for each test package")
 	race := flags.Bool("race", false, "enable the race detector")
+	coverProfile := flags.String("coverprofile", "", "collect atomic coverage during the test run")
 
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -105,10 +107,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	collector := newEvidenceCollector(*outputDir, combined, stdout)
-	commandErr := runGoTest(ctx, packages, *testParallelism, *packageTimeout, *race, collector)
+	commandErr := runGoTest(ctx, packages, *testParallelism, *packageTimeout, *race, *coverProfile, collector)
 	closeErr := errors.Join(collector.close(), combined.Close())
 	summary := collector.summary(*testParallelism, *packageTimeout)
 	summary.Race = *race
+	summary.CoverageProfile = *coverProfile
 	summaryErr := writeSummary(*outputDir, summary)
 	if commandErr != nil {
 		fmt.Fprintf(stderr, "Test gate failed: %v\n", commandErr)
@@ -125,9 +128,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runGoTest(ctx context.Context, packages []string, parallel int, timeout time.Duration, race bool, collector *evidenceCollector) error {
+func runGoTest(ctx context.Context, packages []string, parallel int, timeout time.Duration, race bool, coverProfile string, collector *evidenceCollector) error {
 	cmd := exec.CommandContext(ctx, "go", "test")
-	cmd.Args = append(cmd.Args, goTestArgs(packages, parallel, timeout, race)...)
+	cmd.Args = append(cmd.Args, goTestArgs(packages, parallel, timeout, race, coverProfile)...)
 	output, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("capture go test output: %w", err)
@@ -145,7 +148,7 @@ func runGoTest(ctx context.Context, packages []string, parallel int, timeout tim
 	return waitErr
 }
 
-func goTestArgs(packages []string, parallel int, timeout time.Duration, race bool) []string {
+func goTestArgs(packages []string, parallel int, timeout time.Duration, race bool, coverProfile string) []string {
 	args := []string{
 		"-json",
 		"-p=1",
@@ -154,6 +157,9 @@ func goTestArgs(packages []string, parallel int, timeout time.Duration, race boo
 	}
 	if race {
 		args = append(args, "-race", "-count=1")
+	}
+	if coverProfile != "" {
+		args = append(args, "-covermode=atomic", "-coverprofile="+coverProfile)
 	}
 	return append(args, packages...)
 }

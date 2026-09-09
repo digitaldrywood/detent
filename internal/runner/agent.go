@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
@@ -4156,6 +4157,7 @@ type agentRunProgress struct {
 	diffStatsCollected        bool
 	diffStatsCheckedAt        time.Time
 	toolInvocations           map[string]deliverableToolInvocation
+	toolOutputTails           map[string]string
 	deliverableFailures       map[string]error
 	deliverableSuccesses      map[string]bool
 	ciTriggerLabel            string
@@ -4175,6 +4177,7 @@ func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel strin
 		outputPolicy:              outputPolicy,
 		output:                    runtimeoutput.NewBuffer(outputPolicy),
 		toolInvocations:           map[string]deliverableToolInvocation{},
+		toolOutputTails:           map[string]string{},
 		deliverableFailures:       map[string]error{},
 		deliverableSuccesses:      map[string]bool{},
 		ciTriggerLabel:            strings.TrimSpace(ciTriggerLabel),
@@ -4235,10 +4238,16 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		eventMessage = p.lastMessage
 		eventTruncation = runtimeoutput.CloneTruncation(text.Truncation)
 	case AgentUpdateTurnStarted:
+		if !update.AuxiliaryTurn {
+			clear(p.toolOutputTails)
+		}
 		p.lastMessageTruncation = nil
 		p.lastMessage = "turn started"
 		eventMessage = p.lastMessage
 	case AgentUpdateTurnCompleted:
+		if !update.AuxiliaryTurn {
+			clear(p.toolOutputTails)
+		}
 		p.lastMessageTruncation = nil
 		status := update.Status
 		if status == "" {
@@ -4267,8 +4276,10 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		p.recordDeliverableToolStart(update)
 	case AgentUpdateToolOutput:
 		p.recordDeliverableToolOutput(update)
+		eventMessage, eventTruncation = p.recordValidationToolOutput(update)
 	case AgentUpdateToolCompleted:
 		p.recordDeliverableToolCompletion(update)
+		delete(p.toolOutputTails, deliverableToolKey(update))
 	case AgentUpdateMCPElicitation:
 		eventMessage = update.Delta
 	}
@@ -4279,6 +4290,21 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		Message:    eventMessage,
 		Truncation: eventTruncation,
 	})
+}
+
+func (p *agentRunProgress) recordValidationToolOutput(update AgentUpdate) (string, *runtimeoutput.Truncation) {
+	key := deliverableToolKey(update)
+	output := p.toolOutputTails[key] + update.Delta
+	tail := output[strings.LastIndex(output, "\n")+1:]
+	p.toolOutputTails[key] = strings.Clone(tail[max(0, len(tail)-2048):])
+	message := activity.ValidationMessage(output)
+	if message == "" {
+		return "", nil
+	}
+	text := runtimeoutput.Truncate(message, 2048)
+	p.lastMessage = strings.Clone(text.Value)
+	p.lastMessageTruncation = runtimeoutput.CloneTruncation(text.Truncation)
+	return p.lastMessage, runtimeoutput.CloneTruncation(text.Truncation)
 }
 
 type deliverableToolInvocation struct {
