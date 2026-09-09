@@ -2151,3 +2151,95 @@ type rateLimitWorkspaceReaper struct{}
 func (rateLimitWorkspaceReaper) ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error) {
 	return WorkspaceReapResult{}, nil
 }
+
+func TestGitHubRESTResourceReserveLookupAdmission(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		resource    string
+		remaining   int64
+		rateLimited bool
+		backoff     bool
+		priorCore   bool
+		wantHeld    bool
+	}{
+		{name: "healthy search", resource: "search", remaining: 29},
+		{name: "core at reserve", resource: "core", remaining: 1000, wantHeld: true},
+		{name: "unnamed core at reserve", remaining: 1000, wantHeld: true},
+		{name: "healthy core", resource: "core", remaining: 1001},
+		{name: "exhausted search snapshot", resource: "search", wantHeld: true},
+		{name: "primary search throttle", resource: "search", rateLimited: true, wantHeld: true},
+		{name: "secondary search backoff", resource: "search", remaining: 29, backoff: true, wantHeld: true},
+		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true, wantHeld: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
+			usage := connector.RESTRateLimitUsage{HasRateLimit: true, RateLimited: tt.rateLimited,
+				RateLimit: connector.RESTRateLimit{Resource: tt.resource, Limit: 5000, Remaining: tt.remaining, ResetAt: now.Add(time.Hour)},
+			}
+			if tt.resource == "search" {
+				usage.RateLimit.Limit = 30
+			}
+			if tt.backoff {
+				usage.BackoffUntil = now.Add(time.Minute)
+			}
+			tracker := &rateLimitConnector{restStatus: usage, restUsage: usage}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if tt.priorCore {
+				orch.captureGitHubRESTLookupProbe(&state, connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 900, ResetAt: now.Add(time.Hour)}, now)
+			}
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("live lookup held = %v, want %v", held, tt.wantHeld)
+			}
+			orch.captureConnectorRESTRateLimits(&state, now)
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("captured lookup held = %v, want %v", held, tt.wantHeld)
+			}
+		})
+	}
+}
+
+func TestGitHubRESTResourceReserveLookupRecovery(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		resource  string
+		remaining int64
+		priorCore bool
+		wantHeld  bool
+	}{
+		{name: "healthy search", resource: "search", remaining: 29},
+		{name: "exhausted search", resource: "search", wantHeld: true},
+		{name: "core at reserve", resource: "core", remaining: 1000, wantHeld: true},
+		{name: "healthy core", resource: "core", remaining: 1001},
+		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true, wantHeld: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
+			limit := int64(5000)
+			if tt.resource == "search" {
+				limit = 30
+			}
+			tracker := &rateLimitConnector{restProbeRateLimits: []connector.RESTRateLimit{{Resource: tt.resource, Limit: limit, Remaining: tt.remaining, ResetAt: now.Add(time.Hour)}}}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if tt.priorCore {
+				orch.captureGitHubRESTLookupProbe(&state, connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 900, ResetAt: now.Add(time.Hour)}, now)
+			}
+			outage := orch.advanceGitHubLookupBackoff(&state, BackendOutage{}, githubLookupSignal{trigger: githubLookupTriggerREST, reason: "rate limited"}, now, time.Time{})
+			if held := orch.githubLookupBackoffGate(t.Context(), &state, outage.NextProbeAt); held != tt.wantHeld {
+				t.Fatalf("recovery held = %v, want %v", held, tt.wantHeld)
+			}
+			if tracker.restProbeCalls != 1 {
+				t.Fatalf("REST probe calls = %d, want 1", tracker.restProbeCalls)
+			}
+		})
+	}
+}

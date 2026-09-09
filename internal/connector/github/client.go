@@ -866,7 +866,9 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	rateLimit, hasRateLimit := c.restRateLimitForResourceLocked(restEndpointRateLimitResource(family))
+	resource := restEndpointRateLimitResource(family)
+	rateLimit, hasRateLimit := c.restRateLimitForResourceLocked(resource)
+	reserve := RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve)
 	requestCost := restFanoutCostUnitsPerRequest
 	if conditional {
 		requestCost = restConditionalFanoutCostUnits
@@ -905,12 +907,12 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 			}
 		}
 	}
-	if c.restPolicy.MinRemainingReserve > 0 &&
+	if reserve > 0 &&
 		!conditional &&
 		hasRateLimit &&
 		rateLimit.Limit > 0 &&
 		!restRateLimitSnapshotExpired(rateLimit, now) &&
-		rateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
+		rateLimit.Remaining <= reserve {
 		if reservedScoped {
 			budget.Add(-requestCost)
 		}
@@ -925,6 +927,13 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 		c.restFanoutUnits += requestCost
 	}
 	return nil
+}
+
+func RESTResourceReserve(resource string, coreReserve int64) int64 {
+	if resource == "" || resource == "core" {
+		return max(coreReserve, 0)
+	}
+	return 0
 }
 
 func restRateLimitSnapshotExpired(rateLimit connector.RESTRateLimit, now time.Time) bool {
@@ -989,7 +998,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		"credential_identity", credentialIdentity,
 		"resource", rateLimit.Resource,
 		"remaining", rateLimit.Remaining,
-		"reserve", c.restPolicy.MinRemainingReserve,
+		"reserve", RESTResourceReserve(rateLimit.Resource, c.restPolicy.MinRemainingReserve),
 		"gate_branch", branch,
 		"fanout_count", fanoutCount,
 		"fanout_cap", c.restPolicy.FanoutMaxRequests,
@@ -1105,7 +1114,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 				snapshot,
 				status != http.StatusNotModified,
 				restDivergenceAttribution(credentialIdentity),
-				c.restPolicy.MinRemainingReserve,
+				RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve),
 			)
 			if divergence.ObservedRequests > 0 {
 				if c.restDivergenceKeys == nil {
@@ -2117,7 +2126,7 @@ func (c *Client) logRESTUsageDivergence(ctx context.Context, divergence connecto
 		"window_started_at", divergence.WindowStartedAt,
 		"last_observed_at", divergence.LastObservedAt,
 		"reset_at", divergence.ResetAt,
-		"reserve", c.restPolicy.MinRemainingReserve,
+		"reserve", RESTResourceReserve(divergence.Resource, c.restPolicy.MinRemainingReserve),
 	)
 }
 

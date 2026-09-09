@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -169,13 +170,14 @@ func (o *Orchestrator) probeGitHubRESTLookupBackoff(
 		return true
 	}
 	o.captureGitHubRESTLookupProbe(state, rateLimit, now)
-	if rateLimit.Limit <= 0 || rateLimit.Remaining <= o.cfg.GitHubRESTMinReserve {
+	reserve := github.RESTResourceReserve(rateLimit.Resource, o.cfg.GitHubRESTMinReserve)
+	if rateLimit.Limit <= 0 || rateLimit.Remaining <= reserve {
 		o.advanceGitHubLookupBackoff(state, outage, githubLookupSignal{
 			trigger: githubLookupTriggerREST,
 			reason: fmt.Sprintf(
 				"GitHub REST remaining %d is at or below lookup floor %d",
 				rateLimit.Remaining,
-				o.cfg.GitHubRESTMinReserve,
+				reserve,
 			),
 			resetAt: rateLimit.ResetAt,
 		}, now, time.Time{})
@@ -279,7 +281,7 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				reason: fmt.Sprintf(
 					"GitHub REST remaining %d is at or below lookup floor %d",
 					usage.RateLimit.Remaining,
-					o.cfg.GitHubRESTMinReserve,
+					github.RESTResourceReserve(usage.RateLimit.Resource, o.cfg.GitHubRESTMinReserve),
 				),
 				resetAt: usage.RateLimit.ResetAt,
 			}, true
@@ -325,8 +327,8 @@ func graphQLLookupReserveExceeded(rateLimit connector.GraphQLRateLimit, floor in
 }
 
 func restLookupReserveExceeded(rateLimit connector.RESTRateLimit, hasRateLimit bool, floor int64, now time.Time) bool {
-	return floor > 0 &&
-		hasRateLimit &&
+	floor = github.RESTResourceReserve(rateLimit.Resource, floor)
+	return hasRateLimit &&
 		rateLimit.Limit > 0 &&
 		rateLimit.Remaining <= floor &&
 		(rateLimit.ResetAt.IsZero() || !now.After(rateLimit.ResetAt.Add(githubRateLimitResetSkew)))
@@ -431,10 +433,12 @@ func (o *Orchestrator) captureGitHubRESTLookupProbe(state *State, rateLimit conn
 	if state.RateLimits == nil {
 		state.RateLimits = &telemetry.RateLimits{}
 	}
-	state.RateLimits.GitHubREST = gitHubRESTBucket(connector.RESTRateLimitUsage{
+	if bucket := gitHubRESTBucket(connector.RESTRateLimitUsage{
 		RateLimit:    rateLimit,
 		HasRateLimit: true,
-	}, now)
+	}, now); bucket != nil {
+		state.RateLimits.GitHubREST = bucket
+	}
 	state.RateLimits.RESTUsage = nil
 }
 
