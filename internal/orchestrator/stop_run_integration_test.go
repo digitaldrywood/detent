@@ -49,10 +49,9 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 		t.Fatalf("StopRun() result = %#v, want pending Blocked acknowledgement", result)
 	}
 	waitForOperatorStopCompletion(t, completionStore.completed, issue.ID)
-	state, err = orch.State(t.Context())
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
+	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+		return state.RuntimeObservation.IsZero()
+	})
 	if _, stoppedRunning := state.Running[issue.ID]; stoppedRunning {
 		t.Fatalf("stopped issue %q remains active", issue.ID)
 	}
