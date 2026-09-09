@@ -13,7 +13,6 @@ func TestResolveSnapshotIssueReferenceForms(t *testing.T) {
 	issue := telemetry.Issue{
 		ID:         "issue-1640",
 		Identifier: "digitaldrywood/detent#1640",
-		Number:     1640,
 		ProjectID:  "detent",
 		URL:        "https://github.com/digitaldrywood/detent/issues/1640",
 		State:      "Rework",
@@ -130,5 +129,81 @@ func TestResolveSnapshotIssueRejectsProjectCollision(t *testing.T) {
 	var ambiguous *AmbiguousIdentityError
 	if !errors.As(err, &ambiguous) || ambiguous.Field != "project_id" {
 		t.Fatalf("ResolveSnapshotIssue() error = %#v, want project ambiguity", err)
+	}
+}
+
+func TestResolveSnapshotIssueMissingNumberScope(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		issues  []telemetry.Issue
+		project string
+		wantID  string
+		wantErr error
+	}{
+		{name: "selected project", project: "detent", issues: []telemetry.Issue{
+			{ID: "a", Identifier: "owner/a#2337", ProjectID: "detent"},
+			{ID: "b", Identifier: "owner/b#2337", ProjectID: "other"},
+		}, wantID: "a"},
+		{name: "other project only", project: "detent", issues: []telemetry.Issue{
+			{ID: "b", Identifier: "owner/b#2337", ProjectID: "other"},
+		}, wantErr: ErrNotFound},
+		{name: "same project ambiguity", project: "detent", issues: []telemetry.Issue{
+			{ID: "a", Identifier: "owner/a#2337", ProjectID: "detent"},
+			{ID: "b", Identifier: "owner/b#2337", ProjectID: "detent"},
+		}, wantErr: &AmbiguousIdentityError{}},
+		{name: "unscoped project ambiguity", issues: []telemetry.Issue{
+			{ID: "a", Identifier: "owner/a#2337", ProjectID: "detent"},
+			{ID: "b", Identifier: "owner/b#2337", ProjectID: "other"},
+		}, wantErr: &AmbiguousIdentityError{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ResolveSnapshotIssue(telemetry.Snapshot{BoardIssues: tt.issues}, Query{ProjectID: tt.project, Reference: "#2337"}, SnapshotIssueScope{})
+			var ambiguous *AmbiguousIdentityError
+			if errors.As(tt.wantErr, &ambiguous) {
+				var target *AmbiguousIdentityError
+				if !errors.As(err, &target) {
+					t.Fatalf("error = %v, want ambiguity", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if got.Identity.IssueID != tt.wantID {
+				t.Fatalf("identity = %#v, want %q", got.Identity, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestQueryMatchesIssueNumberFallback(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		issue     telemetry.Issue
+		reference string
+		want      bool
+	}{
+		{name: "canonical fallback", issue: telemetry.Issue{Identifier: "owner/repo#2337"}, reference: "#2337", want: true},
+		{name: "explicit number preserved", issue: telemetry.Issue{Identifier: "local/item", Number: 2337}, reference: "2337", want: true},
+		{name: "explicit number takes precedence", issue: telemetry.Issue{Identifier: "owner/repo#2337", Number: 7}, reference: "#2337"},
+		{name: "PR number ignored", issue: telemetry.Issue{Identifier: "owner/repo#7", PullRequest: &telemetry.PullRequest{Number: 2337}}, reference: "#2337"},
+		{name: "PR URL ignored", issue: telemetry.Issue{URL: "https://github.com/owner/repo/pull/2337"}, reference: "2337"},
+		{name: "URL fragment ignored", issue: telemetry.Issue{Identifier: "https://example.com/item#2337"}, reference: "#2337"},
+		{name: "node suffix ignored", issue: telemetry.Issue{ID: "node#2337"}, reference: "#2337"},
+		{name: "noncanonical suffix ignored", issue: telemetry.Issue{Identifier: "item#2337"}, reference: "#2337"},
+		{name: "invalid suffix ignored", issue: telemetry.Issue{Identifier: "owner/repo#2337extra"}, reference: "#2337"},
+		{name: "partial number ignored", issue: telemetry.Issue{Identifier: "owner/repo#23370"}, reference: "#2337"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := queryMatchesIssue(Query{Reference: tt.reference}, tt.issue); got != tt.want {
+				t.Fatalf("match = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

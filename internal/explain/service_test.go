@@ -643,3 +643,33 @@ func findSourceStatus(statuses []SourceStatus, name string) SourceStatus {
 	}
 	return SourceStatus{}
 }
+
+func TestServiceExplainsRetryWithoutNumberDuringDegradedRefresh(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	issue := telemetry.Issue{ID: "I_example", Identifier: "digitaldrywood/detent#2337", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/2337", State: "Merging", PullRequest: &telemetry.PullRequest{Number: 2400}}
+	reader := &evidenceReader{observation: SnapshotObservation{
+		State:    SourceLive,
+		Snapshot: telemetry.Snapshot{GeneratedAt: now, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}, Queue: []telemetry.Queued{{Issue: issue}}},
+	}}
+	service := New(Dependencies{Snapshots: reader, Now: func() time.Time { return now }})
+	want, err := service.Explain(t.Context(), Query{ProjectID: "detent", Reference: issue.Identifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !want.Found || want.CurrentLane.Name != "Merging" || !want.CurrentLane.Degraded {
+		t.Fatalf("canonical explanation = %#v", want)
+	}
+	for _, reference := range []string{"#2337", "2337", issue.ID, issue.URL} {
+		t.Run(reference, func(t *testing.T) {
+			t.Parallel()
+			got, err := service.Explain(t.Context(), Query{ProjectID: "detent", Reference: reference})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("explanation = %#v, want canonical result %#v", got, want)
+			}
+		})
+	}
+}

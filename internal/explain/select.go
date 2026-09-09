@@ -2,6 +2,7 @@ package explain
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -184,7 +185,15 @@ func compareSnapshotIssues(left snapshotIssue, right snapshotIssue) int {
 	return strings.Compare(issueIdentityKey(left.issue), issueIdentityKey(right.issue))
 }
 
+var canonicalIssueNumberPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#([1-9][0-9]*)$`)
+
 func queryMatchesIssue(query Query, issue telemetry.Issue) bool {
+	number := ""
+	if issue.Number > 0 {
+		number = strconv.Itoa(issue.Number)
+	} else if matches := canonicalIssueNumberPattern.FindStringSubmatch(strings.TrimSpace(issue.Identifier)); len(matches) == 2 {
+		number = matches[1]
+	}
 	values := []string{strings.TrimSpace(issue.ID), strings.TrimSpace(issue.Identifier), strings.TrimSpace(issue.URL)}
 	for _, queryValue := range []string{query.IssueID, query.Identifier, query.IssueURL, query.Reference} {
 		queryValue = strings.TrimSpace(queryValue)
@@ -196,8 +205,7 @@ func queryMatchesIssue(query Query, issue telemetry.Issue) bool {
 				return true
 			}
 		}
-		if issue.Number > 0 {
-			number := strconv.Itoa(issue.Number)
+		if number != "" {
 			if queryValue == number || queryValue == "#"+number {
 				return true
 			}
