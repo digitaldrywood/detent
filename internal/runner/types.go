@@ -728,6 +728,7 @@ type RunResult struct {
 	Checkpoint              *workspace.CheckpointRecord
 	FinalState              string
 	Output                  string
+	FinalMessage            string
 	Model                   string
 	TurnStarted             bool
 	RuntimeIdentity         agentidentity.Identity

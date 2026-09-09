@@ -1214,6 +1214,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	result.Output = progress.outputText()
+	result.FinalMessage = progress.finalMessage()
 	result.SkillDraftProposed = skillDraftProposed(result.Output)
 	result.PullRequestUpdated = progress.pullRequestUpdated()
 	result.PullRequestHeadPushed = progress.pullRequestHeadPushed()
