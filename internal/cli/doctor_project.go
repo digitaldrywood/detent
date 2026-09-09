@@ -64,6 +64,14 @@ func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot
 		}}
 	}
 
+	if probe.Health.Status == "draining" {
+		return []doctorCheck{{
+			Name:   "Workflow runtime drift",
+			Status: doctorWarn,
+			Detail: "runtime comparison unavailable while the live Detent instance is draining",
+		}}
+	}
+
 	runtimeByProject := make(map[string]doctorHealthWorkflow, len(probe.Health.Workflows))
 	for _, workflow := range probe.Health.Workflows {
 		runtimeByProject[strings.TrimSpace(workflow.ProjectID)] = workflow

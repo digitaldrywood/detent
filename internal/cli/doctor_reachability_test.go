@@ -23,6 +23,7 @@ func TestDoctorLiveReachability(t *testing.T) {
 		err                                   error
 	}{
 		{name: "healthy", status: "ok", mode: "running"},
+		{name: "draining", status: "draining", mode: "running"},
 		{name: "remote unhealthy", listenErr: syscall.EADDRNOTAVAIL, status: "needs_attention", mode: "running"},
 		{name: "unhealthy", status: "needs_attention", mode: "running"},
 		{name: "stopped", err: syscall.ECONNREFUSED, unavailable: "could not be reached"},
@@ -83,7 +84,11 @@ func TestDoctorLiveReachability(t *testing.T) {
 			if len(stranded.StrandedIssues) != 1 || len(stale.StalenessWarnings) != 1 {
 				t.Errorf("live findings suppressed: stranded=%+v stale=%+v", stranded, stale)
 			}
-			if len(drift) != 1 || drift[0].Name != "Project detent workflow runtime" || drift[0].Status == doctorOK {
+			if tt.status == "draining" {
+				if len(drift) != 1 || drift[0].Status != doctorWarn || !strings.Contains(drift[0].Detail, "unavailable while the live Detent instance is draining") || drift[0].Hint != "" {
+					t.Errorf("draining runtime comparison = %+v, want explicit unavailable evidence without upgrade advice", drift)
+				}
+			} else if len(drift) != 1 || drift[0].Name != "Project detent workflow runtime" || drift[0].Status == doctorOK {
 				t.Errorf("runtime comparison did not execute: %+v", drift)
 			}
 			if port.Status != doctorOK || strings.Contains(port.Detail, "occupied") {
