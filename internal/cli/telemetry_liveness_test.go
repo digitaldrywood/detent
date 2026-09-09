@@ -183,6 +183,128 @@ func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
 	}
 }
 
+func TestTelemetryPublicationDuringCompletionFence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		registry := project.NewRegistry()
+		snapshots := hub.New[telemetry.Snapshot]()
+		tracker := &completionTelemetryConnector{
+			Connector: memory.New(memory.Config{Issues: []connector.Issue{{ID: "alpha", Identifier: "alpha#1", Title: "alpha active worker", State: "In Progress", AssignedToWorker: true}}}),
+			armed:     make(chan struct{}), started: make(chan struct{}), release: make(chan struct{}),
+		}
+		releaseWorker := make(chan struct{})
+		runner := &shutdownBlockingRunner{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: releaseWorker}
+		alpha := newTelemetryProject(t, "alpha", tracker, runner)
+		betaRunner := newRestartRecoveryRunner()
+		beta := newTelemetryProject(t, "beta", memory.New(memory.Config{Issues: []connector.Issue{{ID: "beta", Identifier: "beta#1", Title: "beta active worker", State: "In Progress", AssignedToWorker: true}}}), betaRunner)
+		for _, tracked := range []*project.Project{alpha, beta} {
+			if err := tracked.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			mustSetProject(t, registry, tracked)
+		}
+		select {
+		case <-runner.started:
+		case <-time.After(10 * time.Second):
+			state, err := alpha.Orchestrator().State(ctx)
+			t.Fatalf("alpha worker did not start: dispatch %#v, error %v", state.DispatchStatus, err)
+		}
+		var betaRequest orchestrator.RunRequest
+		select {
+		case betaRequest = <-betaRunner.started:
+		case <-time.After(10 * time.Second):
+			state, err := beta.Orchestrator().State(ctx)
+			t.Fatalf("beta worker did not start: dispatch %#v, error %v", state.DispatchStatus, err)
+		}
+		synctest.Wait()
+		var seq atomic.Uint64
+		var observedAt time.Time
+		for index, tt := range []struct {
+			name   string
+			source telemetry.SnapshotSource
+		}{
+			{name: "before completion", source: telemetry.SnapshotSourceLive},
+			{name: "blocked completion", source: telemetry.SnapshotSourceCached},
+			{name: "still blocked", source: telemetry.SnapshotSourceCached},
+			{name: "completed", source: telemetry.SnapshotSourceLive},
+		} {
+			if index == 1 {
+				close(tracker.armed)
+				close(releaseWorker)
+				<-tracker.started
+			}
+			if index == 3 {
+				close(tracker.release)
+				synctest.Wait()
+			}
+			time.Sleep(time.Second)
+			if err := betaRequest.OnUsageUpdate(orchestrator.UsageUpdate{LastEventAt: time.Now(), LastMessage: tt.name, Tokens: orchestrator.TokenTotals{TotalTokens: int64(index + 1)}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := publishSnapshotOnce(ctx, registry, nil, snapshots, &seq, nil, time.Now(), nil, nil, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, ok := snapshots.Latest()
+			if !ok || len(snapshot.Projects) != 2 || snapshot.Seq != uint64(index+1) {
+				t.Fatalf("%s: snapshot did not advance: %#v", tt.name, snapshot)
+			}
+			alphaSnapshot, betaSnapshot := snapshot.Projects[0], snapshot.Projects[1]
+			if alphaSnapshot.Project.ID != "alpha" || alphaSnapshot.Runtime.Source != tt.source || !alphaSnapshot.Runtime.Complete {
+				t.Fatalf("%s: alpha runtime = %#v", tt.name, alphaSnapshot.Runtime)
+			}
+			if tt.source == telemetry.SnapshotSourceCached {
+				if observedAt.IsZero() {
+					observedAt = alphaSnapshot.Runtime.ObservedAt
+				}
+				if observedAt.IsZero() || alphaSnapshot.Runtime.ObservedAt != observedAt || !observedAt.Before(snapshot.GeneratedAt) {
+					t.Fatalf("%s: cached observation time = %v", tt.name, alphaSnapshot.Runtime.ObservedAt)
+				}
+				if !alphaSnapshot.Refresh.Ready() || snapshot.Runtime.Source != telemetry.SnapshotSourceMixed {
+					t.Fatalf("%s: tracker or fleet provenance incorrect: refresh %#v, runtime %#v", tt.name, alphaSnapshot.Refresh, snapshot.Runtime)
+				}
+			}
+			if betaSnapshot.Runtime.Source != telemetry.SnapshotSourceLive {
+				t.Fatalf("%s: healthy project stopped advancing: %#v", tt.name, betaSnapshot)
+			}
+			var betaRunning []telemetry.Running
+			for _, running := range snapshot.Running {
+				if running.ProjectID == "beta" {
+					betaRunning = append(betaRunning, running)
+				}
+			}
+			if len(betaRunning) != 1 || betaRunning[0].Tokens.Total != int64(index+1) {
+				t.Fatalf("%s: healthy worker stopped advancing: %#v", tt.name, betaRunning)
+			}
+		}
+	})
+}
+
+type completionTelemetryConnector struct {
+	connector.Connector
+	armed   chan struct{}
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *completionTelemetryConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	select {
+	case <-c.armed:
+		select {
+		case <-c.started:
+		default:
+			close(c.started)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.release:
+		}
+	default:
+	}
+	return c.Connector.FetchIssueStatesByIDs(ctx, ids)
+}
+
 func TestReadTelemetrySource(t *testing.T) {
 	sourceErr := errors.New("source unavailable")
 	for _, tt := range []struct {

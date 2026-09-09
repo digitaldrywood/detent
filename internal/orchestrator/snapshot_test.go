@@ -14,22 +14,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestStateReadersCrossStartupAndRefreshBoundaries(t *testing.T) {
-	for _, starting := range []bool{false, true} {
-		name := "refresh starts with reader waiting"
-		if starting {
-			name = "reader precedes initial publication"
-		}
-		t.Run(name, func(t *testing.T) {
+func TestStateReadersCrossPublicationBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		starting   bool
+		completion bool
+	}{
+		{name: "refresh starts with reader waiting"},
+		{name: "reader precedes initial publication", starting: true},
+		{name: "completion starts with reader waiting", completion: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				state := newState(normalizeConfig(Config{}))
-				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{}), refreshStarted: make(chan struct{}), stateRequests: make(chan stateRequest)}
-				if !starting {
+				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{}), snapshotAvailable: make(chan struct{}), stateRequests: make(chan stateRequest)}
+				if !tt.starting {
 					orch.publishState(&state)
 				}
 				done := make(chan error, 1)
@@ -38,8 +43,12 @@ func TestStateReadersCrossStartupAndRefreshBoundaries(t *testing.T) {
 					done <- err
 				}()
 				synctest.Wait()
-				orch.startTick(&state, time.Now())
-				orch.publishState(&state)
+				if tt.completion {
+					orch.startCompletion(&state)
+				} else {
+					orch.startTick(&state, time.Now())
+					orch.publishState(&state)
+				}
 				if err := <-done; err != nil {
 					t.Fatal(err)
 				}
@@ -73,6 +82,89 @@ func TestRefreshProgressPreservesTrackerFreshness(t *testing.T) {
 			later := refresh.WithFreshness(now.Add(time.Second))
 			if later.InFlight.ElapsedSeconds != 11 || refresh.InFlight.ElapsedSeconds != 10 {
 				t.Fatal("freshness update failed to advance duration on an independent copy")
+			}
+		})
+	}
+}
+
+func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
+	for _, publishRuntime := range []bool{false, true} {
+		t.Run(fmt.Sprintf("runtime publication=%t", publishRuntime), func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
+			state.Running[issue.ID] = Running{Issue: issue}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			orch := &Orchestrator{done: make(chan struct{})}
+			orch.publishState(&state)
+			orch.startCompletion(&state)
+			delete(state.Running, issue.ID)
+			state.Claimed[issue.ID].Issue.Labels[0] = "partial"
+			if publishRuntime {
+				orch.publishRuntimeState(&state)
+			}
+			got, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Running) != 1 || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
+				t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
+			}
+		})
+	}
+}
+
+func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
+	t.Parallel()
+	for _, persisted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persisted heartbeat=%t", persisted), func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			running := Running{Issue: connector.Issue{ID: "other-worker"}, WorkAttemptID: 2361}
+			base := store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID}
+			progress := newWorkerProgress(running, base, nil, 4096)
+			running.progress = progress
+			state.Running[running.Issue.ID] = running
+			state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: running.WorkAttemptID}}
+			observe := func(message string) {
+				t.Helper()
+				if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
+					t.Fatal(err)
+				}
+				if persisted {
+					heartbeat := progress.heartbeat(base, time.Now())
+					progress.persisted.Store(&heartbeat)
+				}
+			}
+			read := func(orch *Orchestrator) State {
+				t.Helper()
+				got, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			orch := &Orchestrator{done: make(chan struct{})}
+			orch.publishState(&state)
+			observe("before completion")
+			orch.startCompletion(&state)
+			before := read(orch)
+			if before.Running[running.Issue.ID].LastMessage != "before completion" || (persisted && before.WorkAttempts[0].StatusMessage != "before completion") {
+				t.Fatal("completion snapshot omitted existing worker progress")
+			}
+			observe("during completion")
+			after := read(orch)
+			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
+				t.Fatal("cached completion snapshot changed after worker progress")
+			}
+			after.Running = cloneRunning(after.Running)
+			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage {
+				t.Fatal("cloning cached running state reloaded worker progress")
+			}
+			orch.publishState(&state)
+			orch.completionState.Store(nil)
+			orch.refreshInProgress.Store(true)
+			resumed := read(orch)
+			if resumed.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && resumed.WorkAttempts[0].StatusMessage != "during completion") || !resumed.RuntimeObservation.IsZero() {
+				t.Fatal("live publication did not resume worker progress after completion")
 			}
 		})
 	}

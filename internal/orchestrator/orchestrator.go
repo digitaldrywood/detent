@@ -333,8 +333,8 @@ type Orchestrator struct {
 	ciTriggerLabelMu        sync.Mutex
 	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
 	stateRequests           chan stateRequest
-	refreshSignalMu         sync.Mutex
-	refreshStarted          chan struct{}
+	snapshotSignalMu        sync.Mutex
+	snapshotAvailable       chan struct{}
 	initialStateReady       chan struct{}
 	initialStatePublished   sync.Once
 	drainRequests           chan drainRequest
@@ -363,6 +363,7 @@ type Orchestrator struct {
 	refreshSeq              atomic.Uint64
 	workerGeneration        atomic.Uint64
 	latestState             atomic.Pointer[State]
+	completionState         atomic.Pointer[State]
 	latestRuntimeState      atomic.Pointer[runtimeState]
 	refreshInProgress       atomic.Bool
 	refreshProgress         atomic.Pointer[telemetry.RefreshProgress]
@@ -704,7 +705,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
 		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
 		stateRequests:           make(chan stateRequest),
-		refreshStarted:          make(chan struct{}),
+		snapshotAvailable:       make(chan struct{}),
 		initialStateReady:       make(chan struct{}),
 		drainRequests:           make(chan drainRequest),
 		forceRequests:           make(chan forceRequest),
@@ -863,7 +864,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
+			o.startCompletion(&state)
 			o.handleRunResult(ctx, &state, result)
+			o.publishState(&state)
+			o.completionState.Store(nil)
+			continue
 		case update := <-o.runUpdates:
 			state.syncWorkerProgress()
 			o.handleRunUpdate(&state, update)
@@ -916,12 +921,7 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 	}
 	state.syncWorkerProgress()
 	o.refreshInProgress.Store(true)
-	o.refreshSignalMu.Lock()
-	if o.refreshStarted != nil {
-		close(o.refreshStarted)
-	}
-	o.refreshStarted = make(chan struct{})
-	o.refreshSignalMu.Unlock()
+	o.signalSnapshotAvailable()
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
@@ -946,6 +946,30 @@ func (o *Orchestrator) finishTick(state *State) {
 		return
 	}
 	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
+}
+
+func (o *Orchestrator) signalSnapshotAvailable() {
+	o.snapshotSignalMu.Lock()
+	defer o.snapshotSignalMu.Unlock()
+	if o.snapshotAvailable != nil {
+		close(o.snapshotAvailable)
+	}
+	o.snapshotAvailable = make(chan struct{})
+}
+
+func (o *Orchestrator) startCompletion(state *State) {
+	cloned := o.observableState(state.clone())
+	for id, running := range cloned.Running {
+		running.progress = nil
+		cloned.Running[id] = running
+	}
+	cloned.RuntimeObservation = telemetry.SnapshotSection{
+		Source:     telemetry.SnapshotSourceCached,
+		ObservedAt: time.Now(),
+		Complete:   true,
+	}
+	o.completionState.Store(&cloned)
+	o.signalSnapshotAvailable()
 }
 
 func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {
@@ -1111,10 +1135,10 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		case <-o.initialStateReady:
 		}
 	}
-	o.refreshSignalMu.Lock()
-	refreshStarted := o.refreshStarted
-	o.refreshSignalMu.Unlock()
-	if o.refreshInProgress.Load() {
+	o.snapshotSignalMu.Lock()
+	snapshotAvailable := o.snapshotAvailable
+	o.snapshotSignalMu.Unlock()
+	if o.completionState.Load() != nil || o.refreshInProgress.Load() {
 		return o.publishedState(), nil
 	}
 	request := stateRequest{reply: make(chan State, 1)}
@@ -1123,7 +1147,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		return State{}, ctx.Err()
 	case <-o.done:
 		return State{}, ErrStopped
-	case <-refreshStarted:
+	case <-snapshotAvailable:
 		return o.publishedState(), nil
 	case o.stateRequests <- request:
 	}
@@ -1132,7 +1156,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		return State{}, ctx.Err()
 	case <-o.done:
 		return State{}, ErrStopped
-	case <-refreshStarted:
+	case <-snapshotAvailable:
 		return o.publishedState(), nil
 	case state := <-request.reply:
 		return o.observableState(state), nil
@@ -1140,6 +1164,9 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) publishedState() State {
+	if state := o.completionState.Load(); state != nil {
+		return state.clone()
+	}
 	state := o.latestState.Load().clone()
 	if runtime := o.latestRuntimeState.Load(); runtime != nil {
 		state.Running = cloneRunning(runtime.Running)

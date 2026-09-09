@@ -658,7 +658,9 @@ func publishSnapshotOnce(
 		if !state.LastRefreshAt.IsZero() {
 			snapshot.Tracker = liveSnapshotSection(state.LastRefreshAt)
 		}
-		snapshot.Runtime = liveSnapshotSection(now)
+		if snapshot.Runtime.IsZero() {
+			snapshot.Runtime = liveSnapshotSection(now)
+		}
 		snapshot.DashboardURL = cleanDashboardURL(dashboardURL)
 		merged = mergeSnapshot(merged, snapshot)
 	}
