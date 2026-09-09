@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -550,6 +551,17 @@ func TestGitRefWorkflowWatcherReloadsLocalOverlayLifecycle(t *testing.T) {
 	if deleted.Workflow.Overlay.Path != "" {
 		t.Fatalf("delete Overlay = %#v, want inactive", deleted.Workflow.Overlay)
 	}
+	cancel()
+	for {
+		select {
+		case _, ok := <-updates:
+			if !ok {
+				return
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("watcher did not stop after cancellation")
+		}
+	}
 }
 
 func assertNoWorkflowSourceUpdate(t *testing.T, updates <-chan configwatcher.Update) {
@@ -771,5 +783,160 @@ func waitForWorkflowGitHelperExit(t *testing.T, pid int) {
 			t.Fatalf("helper process %d did not stop after termination", pid)
 		}
 		t.Fatalf("helper process %d did not exit after release", pid)
+	}
+}
+
+func TestReadOptionalWorkflowSourceFileReconcilesPermission(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		settleAfter  time.Duration
+		settledError error
+		initialError error
+		cancelAfter  time.Duration
+		wantError    error
+		wantPresent  bool
+	}{
+		{name: "absent", initialError: os.ErrNotExist},
+		{name: "readable", wantPresent: true},
+		{name: "error changes", settleAfter: time.Millisecond, settledError: os.ErrInvalid, wantError: os.ErrInvalid},
+		{name: "deleted", settleAfter: time.Millisecond, settledError: os.ErrNotExist},
+		{name: "deleted before final read", settleAfter: 149 * time.Millisecond, settledError: os.ErrNotExist},
+		{name: "replacement readable", settleAfter: time.Millisecond, wantPresent: true},
+		{name: "persistent permission", settleAfter: time.Hour, wantError: os.ErrPermission},
+		{name: "other error", initialError: os.ErrInvalid, wantError: os.ErrInvalid},
+		{name: "canceled before read", cancelAfter: -1, wantError: context.Canceled},
+		{name: "canceled during retry", cancelAfter: time.Millisecond, settleAfter: time.Hour, wantError: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if tt.cancelAfter < 0 {
+					cancel()
+				} else if tt.cancelAfter > 0 {
+					done := make(chan struct{})
+					defer func() { <-done }()
+					go func() {
+						defer close(done)
+						time.Sleep(tt.cancelAfter)
+						cancel()
+					}()
+				}
+				start := time.Now()
+				reads := 0
+				readFile := func(path string) ([]byte, error) {
+					reads++
+					if ctx.Err() != nil {
+						t.Error("read after cancellation")
+					}
+					err := tt.initialError
+					if err == nil {
+						err = os.ErrPermission
+						if time.Since(start) >= tt.settleAfter {
+							err = tt.settledError
+						}
+					}
+					if err != nil {
+						return nil, &os.PathError{Op: "open", Path: path, Err: err}
+					}
+					return []byte("replacement"), nil
+				}
+				raw, present, err := readOptionalWorkflowSourceFile(ctx, "WORKFLOW.local.md", readFile)
+				if !errors.Is(err, tt.wantError) || present != tt.wantPresent {
+					t.Fatalf("read = (%q, %v, %v), want present=%v, error=%v", raw, present, err, tt.wantPresent, tt.wantError)
+				}
+				if present && string(raw) != "replacement" {
+					t.Fatalf("content = %q", raw)
+				}
+				if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+					t.Fatalf("retry exceeded bound: %v", elapsed)
+				}
+				if errors.Is(tt.wantError, os.ErrPermission) && time.Since(start) != 150*time.Millisecond {
+					t.Fatalf("persistent permission error returned before final read: %v", time.Since(start))
+				}
+				if tt.initialError != nil && reads != 1 {
+					t.Fatalf("non-permission error retried: %d reads", reads)
+				}
+			})
+		})
+	}
+}
+
+func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
+	t.Parallel()
+
+	for _, operation := range []string{"seed", "poll"} {
+		for _, overlay := range []string{"WORKFLOW.local.md", "detent.local.yaml"} {
+			t.Run(operation+"/"+overlay, func(t *testing.T) {
+				t.Parallel()
+				repo := initWorkflowSourceRepo(t)
+				writeWorkflowSourceFile(t, filepath.Join(repo, "WORKFLOW.md"), "shared")
+				if overlay == "detent.local.yaml" {
+					if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("shared\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runWorkflowSourceGit(t, repo, "add", "detent.yaml")
+				}
+				commitWorkflowSourceRepo(t, repo, "shared workflow")
+				watcher, err := newGitRefWorkflowWatcher(globalconfig.Project{
+					Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: repo,
+				}, time.Hour, slog.New(slog.DiscardHandler))
+				if err != nil {
+					t.Fatal(err)
+				}
+				localPath := filepath.Join(repo, overlay)
+				for _, prompt := range []string{"created", "edited"} {
+					content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
+					if overlay == "detent.local.yaml" {
+						content = "schema: 1\ntracker:\n  kind: memory\n"
+					}
+					if err := os.WriteFile(localPath, []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					loaded, _, err := watcher.source.load(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if overlay == "WORKFLOW.local.md" && !strings.Contains(loaded.Prompt, prompt) {
+						t.Fatalf("overlay prompt = %q, want %q", loaded.Prompt, prompt)
+					}
+				}
+				if err := os.Remove(localPath); err != nil {
+					t.Fatal(err)
+				}
+				denied := false
+				watcher.source.readFile = func(path string) ([]byte, error) {
+					if path == localPath && !denied {
+						denied = true
+						return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
+					}
+					return os.ReadFile(path)
+				}
+				updates := make(chan configwatcher.Update, 1)
+				var revision, lastErr string
+				if operation == "seed" {
+					revision, lastErr = watcher.seed(t.Context(), updates)
+				} else {
+					revision, lastErr = watcher.reload(t.Context(), updates, "", "")
+				}
+				if !denied || lastErr != "" || revision == "" {
+					t.Fatalf("%s after deletion: denied=%v revision=%q error=%q", operation, denied, revision, lastErr)
+				}
+				if operation == "seed" {
+					assertNoWorkflowSourceUpdate(t, updates)
+					return
+				}
+				update := readWorkflowSourceUpdate(t, updates)
+				if update.Err != nil || strings.TrimSpace(update.Workflow.Prompt) != "shared" || update.Workflow.Overlay.Path != "" {
+					t.Fatalf("delete update = %#v", update)
+				}
+			})
+		}
 	}
 }

@@ -29,6 +29,7 @@ type workflowGitRefSource struct {
 	sourceRoot string
 	ref        string
 	path       string
+	readFile   func(string) ([]byte, error)
 }
 
 type gitRefWorkflowWatcher struct {
@@ -131,6 +132,7 @@ func newWorkflowGitRefSource(cfg globalconfig.Project) (workflowGitRefSource, er
 		sourceRoot: sourceRoot,
 		ref:        ref,
 		path:       workflowPath,
+		readFile:   os.ReadFile,
 	}, nil
 }
 
@@ -207,12 +209,12 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 		return workflowconfig.Workflow{}, revision, err
 	}
 	localWorkflowPath := s.localPath()
-	localRaw, hasLocalWorkflow, err := readOptionalWorkflowSourceFile(localWorkflowPath)
+	localRaw, hasLocalWorkflow, err := readOptionalWorkflowSourceFile(ctx, localWorkflowPath, s.readFile)
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", err)
 	}
 	localConfigPath := s.localConfigPath()
-	localConfigRaw, hasLocalConfig, err := readOptionalWorkflowSourceFile(localConfigPath)
+	localConfigRaw, hasLocalConfig, err := readOptionalWorkflowSourceFile(ctx, localConfigPath, s.readFile)
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local project config: %w", err)
 	}
@@ -250,8 +252,34 @@ func (s workflowGitRefSource) loadOptionalRefFile(ctx context.Context, revision 
 	return nil, false, fmt.Errorf("load project config from %s:%s: %w", revision, refPath, err)
 }
 
-func readOptionalWorkflowSourceFile(path string) ([]byte, bool, error) {
-	raw, err := os.ReadFile(path)
+func readOptionalWorkflowSourceFile(ctx context.Context, path string, readFile func(string) ([]byte, error)) ([]byte, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	raw, err := readFile(path)
+	if errors.Is(err, os.ErrPermission) {
+		deadline := time.NewTimer(150 * time.Millisecond)
+		defer deadline.Stop()
+		retry := time.NewTicker(20 * time.Millisecond)
+		defer retry.Stop()
+		for errors.Is(err, os.ErrPermission) {
+			finalAttempt := false
+			select {
+			case <-ctx.Done():
+				return nil, false, ctx.Err()
+			case <-deadline.C:
+				finalAttempt = true
+			case <-retry.C:
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, false, err
+			}
+			raw, err = readFile(path)
+			if finalAttempt {
+				break
+			}
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
