@@ -3457,8 +3457,11 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 }
 
 func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sessionID int64, issue connector.Issue, reason string, reapWorkspace func() error) error {
-	var processes []store.WorkerProcess
-	var outcomes []procgroup.TerminationOutcome
+	type workerProcessReapResult struct {
+		process store.WorkerProcess
+		outcome procgroup.TerminationOutcome
+	}
+	var processes []workerProcessReapResult
 	var reapErrors error
 	staleIdentity := false
 	processStore, ok := r.store.(sessionWorkerProcessReaper)
@@ -3489,8 +3492,7 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 				reapErrors = errors.Join(reapErrors, fmt.Errorf("reap agent session worker process: %w", reapErr))
 			}
 			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
-			processes = append(processes, process)
-			outcomes = append(outcomes, outcome)
+			processes = append(processes, workerProcessReapResult{process: process, outcome: outcome})
 		}
 	}
 	if staleIdentity {
@@ -3499,7 +3501,8 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	if reapWorkspace != nil {
 		reapErrors = errors.Join(reapErrors, reapWorkspace())
 	} else {
-		for _, process := range processes {
+		for _, reaped := range processes {
+			process := reaped.process
 			_, err := workspace.ReapWorkerArtifactProcesses(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
 			reapErrors = errors.Join(reapErrors, err)
 		}
@@ -3510,8 +3513,9 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	if !ok {
 		return nil
 	}
-	for i, process := range processes {
-		outcome := outcomes[i]
+	for _, reaped := range processes {
+		process := reaped.process
+		outcome := reaped.outcome
 		cleanupAttempts, cleanupErr := r.cleanupSessionWorkerArtifacts(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath)
 		if cleanupErr != nil {
 			r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_artifact_cleanup_failed",
