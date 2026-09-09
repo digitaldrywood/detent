@@ -2775,10 +2775,13 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 		workAttemptID int64
 		generation    uint64
 		orphaned      bool
+		native        bool
 	}{
 		{name: "initial", workAttemptID: 4898, generation: 17},
 		{name: "resumed", workAttemptID: 4917, generation: 18, orphaned: true},
 		{name: "resumed again", workAttemptID: 4925, generation: 19, orphaned: true},
+		{name: "native initial", workAttemptID: 4898, generation: 17, native: true},
+		{name: "native resumed", workAttemptID: 4917, generation: 18, orphaned: true, native: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -2799,6 +2802,9 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				WorkAttemptID: tt.workAttemptID,
 				Generation:    tt.generation,
 			}
+			if tt.native {
+				req.Issue.Metadata = map[string]string{"hub_profile": "native", "hub_project_id": "project-2355"}
+			}
 			if tt.orphaned {
 				req.RetryMode = RetryModeResume
 				req.ResumeState = store.AgentResumeState{
@@ -2810,6 +2816,17 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				t.Fatalf("Run() error = %v", err)
 			}
 			prompt := backend.request.Prompt
+			if tt.native {
+				authority := strings.Index(prompt, "## Native Detent issue authority")
+				if authority < 0 || authority < strings.LastIndex(prompt, "gh api --method POST") {
+					t.Error("native authority must follow GitHub dependency instructions")
+				}
+				for _, want := range []string{"detent hub issue", "Use --project project-2355 and work-item issue-2355", "do not use gh issue, GitHub issue labels, or GitHub issue comments"} {
+					if !strings.Contains(prompt, want) {
+						t.Errorf("native prompt missing %q", want)
+					}
+				}
+			}
 			for _, want := range []string{
 				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
 				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
