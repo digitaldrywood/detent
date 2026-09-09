@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
@@ -659,5 +660,70 @@ func TestIssueCommandHelpCoversScopingAndJSON(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, stdout.String())
 		}
+	}
+}
+
+type issueCommandSnapshot struct {
+	observation explain.SnapshotObservation
+}
+
+func (s issueCommandSnapshot) Snapshot(context.Context) (explain.SnapshotObservation, error) {
+	return s.observation, nil
+}
+
+func TestIssueCommandMissingNumberReferences(t *testing.T) {
+	t.Parallel()
+	issue := telemetry.Issue{ID: "I_example", Identifier: "digitaldrywood/detent#2337", ProjectID: "detent", State: "Merging"}
+	service := explain.New(explain.Dependencies{Snapshots: issueCommandSnapshot{observation: explain.SnapshotObservation{
+		State:    explain.SourceLive,
+		Snapshot: telemetry.Snapshot{GeneratedAt: time.Now(), Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}, Queue: []telemetry.Queued{{Issue: issue}}},
+	}}})
+	for _, reference := range []string{"#2337", "2337", issue.Identifier} {
+		t.Run(reference, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodGet {
+					t.Errorf("method = %s, want GET", request.Method)
+				}
+				result, err := service.Explain(request.Context(), explain.Query{ProjectID: strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/v1/projects/"), "/issues/explanation"), Reference: request.URL.Query().Get("reference")})
+				if err != nil {
+					http.Error(writer, err.Error(), http.StatusNotFound)
+					return
+				}
+				if err := json.NewEncoder(writer).Encode(result); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			parsed, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			port, err := strconv.Atoi(parsed.Port())
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := dashboardClientOptions(server.Client().Do, "", "")
+			opts.read = func(string) (globalconfig.Config, error) { return globalconfig.Config{Port: &port}, nil }
+			configPath, host := "/config/global.yaml", parsed.Hostname()
+			cmd := newIssueCommand(&configPath, &host, &port, opts)
+			var format string
+			AddFormatFlag(cmd, &format)
+			cmd.SetContext(withCommandOutputOptions(t.Context(), commandOutputOptions{lookupEnv: opts.lookupEnv, stdoutTTY: func() bool { return false }}))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{reference, "--explain", "--project", "detent", "--format", "json"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var got explain.IssueExplanation
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Schema != explain.SchemaVersion || !got.Found || got.Identity.IssueID != issue.ID || got.Identity.Identifier != issue.Identifier || got.CurrentLane.Name != "Merging" || !got.CurrentLane.Degraded {
+				t.Fatalf("explanation = %#v", got)
+			}
+		})
 	}
 }
