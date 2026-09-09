@@ -104,6 +104,9 @@ func TestRESTRecoveryEvidence(t *testing.T) {
 		value             string
 		credentialChanged bool
 		concurrentFailure bool
+		failedReadStatus  int
+		fallbackStatus    int
+		fallbackResource  string
 		wantErr           error
 	}{
 		{name: "new window with unused bucket"},
@@ -116,6 +119,11 @@ func TestRESTRecoveryEvidence(t *testing.T) {
 		{name: "expired window", omit: "X-RateLimit-Reset", value: "1", wantErr: ErrInvalidResponse},
 		{name: "invalid capacity", omit: "X-RateLimit-Remaining", value: "5001", wantErr: ErrInvalidResponse},
 		{name: "newer shared failure", concurrentFailure: true, wantErr: ErrRateLimited},
+		{name: "deleted recovery resource", failedReadStatus: http.StatusNotFound},
+		{name: "invalid recovery resource", failedReadStatus: http.StatusUnprocessableEntity},
+		{name: "fallback resource mismatch", failedReadStatus: http.StatusNotFound, fallbackResource: "search", wantErr: ErrInvalidResponse},
+		{name: "fallback remains throttled", failedReadStatus: http.StatusNotFound, fallbackStatus: http.StatusForbidden, wantErr: ErrRateLimited},
+		{name: "fallback resource missing", failedReadStatus: http.StatusNotFound, omit: "X-RateLimit-Resource", wantErr: ErrInvalidResponse},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -123,6 +131,7 @@ func TestRESTRecoveryEvidence(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				registry := newRESTBackoffRegistry()
 				seed := true
+				fallbackReads := 0
 				var conn *Connector
 				conn, err := NewConnector(Config{
 					Endpoint:    "https://evidence.test/graphql",
@@ -139,6 +148,18 @@ func TestRESTRecoveryEvidence(t *testing.T) {
 							status = http.StatusForbidden
 							headers.Set("X-RateLimit-Remaining", "0")
 						} else if r.URL.Path != "/rate_limit" {
+							if r.URL.Path == "/user" {
+								fallbackReads++
+								if tt.fallbackStatus != 0 {
+									status = tt.fallbackStatus
+									headers.Set("X-RateLimit-Remaining", "0")
+								}
+								if tt.fallbackResource != "" {
+									headers.Set("X-RateLimit-Resource", tt.fallbackResource)
+								}
+							} else if tt.failedReadStatus != 0 {
+								status = tt.failedReadStatus
+							}
 							if tt.omit != "" {
 								headers.Del(tt.omit)
 								if tt.value != "" {
@@ -156,7 +177,7 @@ func TestRESTRecoveryEvidence(t *testing.T) {
 					t.Fatal(err)
 				}
 				conn.client.restBackoffs = registry
-				if err := conn.client.REST(t.Context(), http.MethodGet, "/user", nil, nil); !errors.Is(err, ErrRateLimited) {
+				if err := conn.client.REST(t.Context(), http.MethodGet, "/repos/example/repo/check-runs/123", nil, nil); !errors.Is(err, ErrRateLimited) {
 					t.Fatal(err)
 				}
 				seed = false
@@ -168,6 +189,9 @@ func TestRESTRecoveryEvidence(t *testing.T) {
 				_, err = conn.ProbeRESTRateLimit(t.Context(), 1000)
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("recovery error = %v, want %v", err, tt.wantErr)
+				}
+				if tt.failedReadStatus != 0 && fallbackReads != 1 {
+					t.Fatalf("fallback reads = %d, want 1", fallbackReads)
 				}
 				if tt.wantErr != nil && registry.failure(conn.client.restSharedBackoffKey("old-token")) == nil {
 					t.Fatal("indeterminate recovery discarded exhaustion evidence")

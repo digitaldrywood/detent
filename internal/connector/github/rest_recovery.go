@@ -37,6 +37,7 @@ func (c *Client) probeRESTRecovery(ctx context.Context, minimumRemaining int64, 
 	if path == "/user" && strings.HasPrefix(result.credentialIdentity, "github-app-installation:") {
 		path = "/installation/repositories?per_page=1"
 	}
+	fallbackPath := path
 	if evidence != nil {
 		resource = evidence.resource
 		if evidence.path != "" {
@@ -46,6 +47,15 @@ func (c *Client) probeRESTRecovery(ctx context.Context, minimumRemaining int64, 
 	result, err = c.restProbe(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return connector.RESTRateLimit{}, err
+	}
+	if path != fallbackPath && (result.StatusCode == http.StatusNotFound || result.StatusCode == http.StatusUnprocessableEntity) {
+		if err := c.restBackoffError(key, time.Now()); err != nil {
+			return connector.RESTRateLimit{}, err
+		}
+		result, err = c.restProbe(ctx, http.MethodGet, fallbackPath, nil)
+		if err != nil {
+			return connector.RESTRateLimit{}, err
+		}
 	}
 	quota, err = restRecoveryQuota(result, resource, time.Now())
 	if err != nil {
