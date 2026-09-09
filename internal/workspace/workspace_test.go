@@ -2899,3 +2899,112 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		})
 	}
 }
+
+func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
+	skipWindows(t)
+
+	for _, tt := range []struct {
+		name        string
+		redirection string
+		exitCode    int
+		wantDelay   bool
+	}{
+		{name: "stdout retained", redirection: "2>/dev/null", wantDelay: true},
+		{name: "stderr retained", redirection: ">/dev/null", wantDelay: true},
+		{name: "failed command", exitCode: 23},
+		{name: "output closed", redirection: ">/dev/null 2>&1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fifoPath := filepath.Join(dir, "release")
+			runCommand(t, dir, "mkfifo", fifoPath)
+			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release.Close()
+			donePath := filepath.Join(dir, "done")
+			script := fmt.Sprintf(`#!/bin/sh
+( read -r release < "$DETENT_PIPE_RELEASE"; printf done > "$DETENT_PIPE_DONE" ) %s &
+printf 'git stdout\n'
+printf 'git stderr\n' >&2
+exit %d
+`, tt.redirection, tt.exitCode)
+			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			type result struct {
+				output string
+				err    error
+			}
+			results := make(chan result, 1)
+			joined := make(chan struct{})
+			go func() {
+				defer close(joined)
+				output, err := runGitAtWithEnv(ctx, dir, []string{
+					"DETENT_PIPE_RELEASE=" + fifoPath,
+					"DETENT_PIPE_DONE=" + donePath,
+				}, "worktree", "prune")
+				results <- result{output: output, err: err}
+			}()
+			defer func() {
+				cancel()
+				if _, err := release.WriteString("release\n"); err != nil {
+					t.Errorf("release descendant: %v", err)
+				}
+				timer := time.NewTimer(10 * time.Second)
+				defer timer.Stop()
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					if _, err := os.Stat(donePath); err == nil {
+						break
+					}
+					select {
+					case <-timer.C:
+						t.Error("descendant did not acknowledge release")
+						return
+					case <-ticker.C:
+					}
+				}
+				select {
+				case <-joined:
+				case <-timer.C:
+					t.Error("Git command did not join after descendant release")
+				}
+			}()
+
+			var got result
+			select {
+			case got = <-results:
+			case <-time.After(10 * time.Second):
+				t.Fatal("Git command did not return while descendant retained output")
+			}
+			if errors.Is(got.err, exec.ErrWaitDelay) != tt.wantDelay {
+				t.Fatalf("runGitAtWithEnv() error = %v, want WaitDelay = %t", got.err, tt.wantDelay)
+			}
+			output := got.output
+			if tt.wantDelay || tt.exitCode != 0 {
+				var commandErr *CommandError
+				if !errors.As(got.err, &commandErr) {
+					t.Fatalf("error = %v, want CommandError", got.err)
+				}
+				if got.output != "" {
+					t.Fatalf("output = %q, want empty on failure", got.output)
+				}
+				output = commandErr.Output
+				if tt.exitCode != 0 && commandErr.ExitCode != tt.exitCode {
+					t.Fatalf("exit code = %d, want %d", commandErr.ExitCode, tt.exitCode)
+				}
+			} else if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if !strings.Contains(output, "git stdout") || !strings.Contains(output, "git stderr") {
+				t.Fatalf("captured output = %q, want stdout and stderr", output)
+			}
+		})
+	}
+}
