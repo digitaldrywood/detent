@@ -233,7 +233,7 @@ func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
 		t.Fatalf("StopRun() = %#v, %v", stopped.result, stopped.err)
 	}
 	waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
-		return len(tracker.operationsSnapshot()) >= 2
+		return slices.Contains(tracker.operationsSnapshot(), "state:Todo")
 	})
 	operations := tracker.operationsSnapshot()
 	priorityAt := slices.Index(operations, "priority:High")
