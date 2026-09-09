@@ -547,6 +547,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/chat/messages", s.apiChatMessage, apiDashboardMutateAuth, apiWriteScope)
 	s.echo.POST("/api/v1/chat/actions/:action_id/confirm", s.apiChatConfirm, apiDashboardMutateAuth, apiWriteScope)
 	s.echo.POST("/api/v1/chat/actions/:action_id/reject", s.apiChatReject, apiDashboardMutateAuth, apiWriteScope)
+	s.echo.POST("/api/v1/projects/:project_id/human-questions/migrate", s.apiMigrateHumanQuestion, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/issues/:issue_id/priority", s.apiIssuePriority, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiDashboardMutateAuth, apiProjectWriteScope)

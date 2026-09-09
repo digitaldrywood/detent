@@ -1,9 +1,6 @@
 package orchestrator
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,7 +9,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -177,55 +173,6 @@ func TestExistingPRHumanDeferralPreservesProgress(t *testing.T) {
 				t.Fatalf("waiting changed deliverable or charged a failure: %+v", decision)
 			}
 		})
-	}
-}
-
-type humanToolTracker struct {
-	*memory.Connector
-	dependent string
-	err       error
-}
-
-func (tracker *humanToolTracker) EnsureHumanPrerequisite(_ context.Context, dependent string, _ connector.HumanPrerequisiteRequest) (connector.HumanPrerequisiteResult, error) {
-	tracker.dependent = dependent
-	return connector.HumanPrerequisiteResult{Issue: connector.Issue{Identifier: "owner/repo#10"}}, tracker.err
-}
-
-func TestHumanPrerequisiteToolScope(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name, tool, input string
-		fail, success     bool
-	}{
-		{name: "scoped", tool: "ensure_human_prerequisite", input: `{}`, success: true},
-		{name: "unknown tool", tool: "other", input: `{}`},
-		{name: "malformed", tool: "ensure_human_prerequisite", input: `{`},
-		{name: "extra field", tool: "ensure_human_prerequisite", input: `{"dependent":"other/repo#1"}`},
-		{name: "extra document", tool: "ensure_human_prerequisite", input: `{} {}`},
-		{name: "tracker error", tool: "ensure_human_prerequisite", input: `{}`, fail: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			tracker := &humanToolTracker{Connector: memory.New(memory.Config{})}
-			if tt.fail {
-				tracker.err = errors.New("tracker unavailable")
-			}
-			o := &Orchestrator{connector: tracker}
-			request := RunRequest{Issue: connector.Issue{Identifier: "owner/repo#20"}}
-			o.attachHumanPrerequisiteTool(&request)
-			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: tt.tool, Arguments: json.RawMessage(tt.input)})
-			if err != nil || result.Success != tt.success {
-				t.Fatalf("tool result = %+v, %v", result, err)
-			}
-			if tracker.dependent != "" && tracker.dependent != request.Issue.Identifier {
-				t.Fatal("tool escaped assigned issue")
-			}
-		})
-	}
-	o := &Orchestrator{connector: memory.New(memory.Config{})}
-	request := RunRequest{}
-	o.attachHumanPrerequisiteTool(&request)
-	if request.AgentToolHandler != nil {
-		t.Fatal("unsupported tracker offered a mutation tool")
 	}
 }
 

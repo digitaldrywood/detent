@@ -969,9 +969,9 @@ probes.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
-Human-only account setup and publishing approvals should be scoped Backlog
-issues using the [human prerequisite contract](dependency-workflows.md#human-prerequisites).
-They are excluded from admission and dispatch regardless of automation settings.
+Ask account setup and publishing approval questions in the
+[original issue thread](dependency-workflows.md#human-questions).
+Finish independent executable work before waiting for the answer.
 Queue executable dependent work in Todo and preserve existing PR phases; keep
 independent breaker parks intact. Completion evidence is not external-action
 authorization.
