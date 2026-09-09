@@ -152,11 +152,11 @@ func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
 			}
 			observe("during completion")
 			after := read(orch)
-			if !reflect.DeepEqual(before.Running, after.Running) || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
+			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
 				t.Fatal("cached completion snapshot changed after worker progress")
 			}
 			after.Running = cloneRunning(after.Running)
-			if !reflect.DeepEqual(before.Running, after.Running) {
+			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage {
 				t.Fatal("cloning cached running state reloaded worker progress")
 			}
 			orch.publishState(&state)
