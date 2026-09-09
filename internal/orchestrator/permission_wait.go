@@ -25,14 +25,21 @@ func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
 	if signal, ok := workpad.SignalFromComment(output, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && strings.TrimSpace(signal.HumanAction) != "" {
 		return permissionWaitRecord{Question: strings.TrimSpace(signal.HumanAction), Kind: "approval_or_input", Source: "terminal_detent_status"}, true
 	}
-	inFence := false
+	fence := ""
 	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "```") {
-			inFence = !inFence
+		if fence != "" {
+			if strings.HasPrefix(line, fence) && strings.Trim(line, string(fence[0])+" \t") == "" {
+				fence = ""
+			}
 			continue
 		}
-		if inFence {
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			length := 0
+			for length < len(line) && line[length] == line[0] {
+				length++
+			}
+			fence = line[:length]
 			continue
 		}
 		lower := strings.ToLower(line)
@@ -80,11 +87,25 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	if wait.Kind == "implementation_permission" {
 		remedy = "The worker requested implementation permission. Check the assigned scope and record direction, preserving explicit approval gates, then move the issue to Rework: " + wait.Question
 	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
 	parkEvent := event
 	parkEvent.Err = errors.New(detail)
 	if !o.blockHumanOwnedWorkerFailure(ctx, state, parkEvent, running, permissionWaitReason, detail, remedy, "worker_permission_wait") {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist permission-wait hold failed"))
 		return true
+	}
+	tokens := event.Result.Tokens
+	if tokens == (TokenTotals{}) {
+		tokens = running.Tokens
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(running.DiffStats) {
+		state.DiffStats[event.IssueID] = running.DiffStats
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, permissionWaitReason, detail)
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, permissionWaitReason, detail, "blocked", wait.Question, map[string]any{permissionWaitReason: wait})

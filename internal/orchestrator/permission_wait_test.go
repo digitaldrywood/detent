@@ -33,10 +33,18 @@ func TestHandleRunResultPermissionWait(t *testing.T) {
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress", "Rework"}, ObservedStates: []string{"Blocked"}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := newState(cfg)
-			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 5112, Generation: 169, SessionID: "session-5898", Mode: runpkg.RunModeImplement, StartedAt: time.Now()}
-			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{WorkAttemptID: 5112, Generation: 169}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, FinalMessage: tt.output, DiffStats: DiffStats{Status: "clean", HeadSHA: "53c6b1c"}}})
+			state.TokenTotals.TotalTokens = 10
+			resultTokens := TokenTotals{TotalTokens: 42}
+			if tt.name == "structured input" {
+				resultTokens = TokenTotals{}
+			}
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 5112, Generation: 169, SessionID: "session-5898", Mode: runpkg.RunModeImplement, Tokens: TokenTotals{TotalTokens: 42}, DiffStats: DiffStats{HeadSHA: "previous"}, StartedAt: time.Now()}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{WorkAttemptID: 5112, Generation: 169}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, FinalMessage: tt.output, Tokens: resultTokens, DiffStats: DiffStats{Status: "clean", HeadSHA: "53c6b1c"}}})
 			if len(attempts.completions) != 1 {
 				t.Fatalf("completions = %d", len(attempts.completions))
+			}
+			if state.TokenTotals.TotalTokens != 52 || state.DiffStats[issue.ID].HeadSHA != "53c6b1c" {
+				t.Fatalf("completion telemetry lost: tokens=%#v diff=%#v", state.TokenTotals, state.DiffStats[issue.ID])
 			}
 			completion := attempts.completions[0]
 			if completion.ErrorClass != "permission_wait" || !strings.Contains(completion.ErrorMessage, tt.question) {
@@ -84,6 +92,10 @@ func TestTerminalPermissionWait(t *testing.T) {
 		{"completed", "Implemented the fix and ran tests.", false},
 		{"quoted example", "> May I deploy to production?", false},
 		{"code example", "```text\nMay I deploy to production?\n```", false},
+		{"tilde example", "~~~text\nMay I deploy to production?\n~~~", false},
+		{"nested shorter fence", "````text\n```\nMay I deploy to production?\n````", false},
+		{"mixed fence", "~~~text\n```\nMay I deploy to production?\n~~~", false},
+		{"after fence", "~~~text\nexample\n~~~\nMay I deploy to production?", true},
 		{"implementation", "Can I edit the assigned files?", true},
 		{"architecture", "Do you approve the storage architecture?", true},
 		{"access", "May I access the production database?", true},
