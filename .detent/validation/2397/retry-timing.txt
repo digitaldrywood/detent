@@ -1,0 +1,13 @@
+2026-09-09T13:39:27.7902400Z Download action repository 'actions/setup-go@v6' (SHA:924ae3a1cded613372ab5595356fb5720e22ba16)
+2026-09-09T13:39:30.9570430Z ##[group]Run actions/setup-go@v6
+2026-09-09T13:39:43.0913370Z Successfully set up Go version 1.26.6
+2026-09-09T13:39:43.5081690Z Cache hit for: setup-go-macOS-arm64-go-1.26.6-2ac58835c1bf9bd4139d8bf21206368466512d8db38d504734be0aed0cc8a9c7
+2026-09-09T13:39:57.8128500Z Cache restored successfully
+2026-09-09T13:39:57.8542720Z ##[group]go env
+2026-09-09T13:39:59.7308770Z ##[endgroup]
+2026-09-09T13:39:59.7632470Z ##[group]Run go mod download
+2026-09-09T13:39:59.9192510Z ##[group]Run go build ./...
+2026-09-09T13:40:13.6280190Z ##[group]Run go vet ./...
+2026-09-09T13:40:29.8835070Z ##[group]Run go test ./...
+2026-09-09T13:41:30.2840180Z Post job cleanup.
+2026-09-09T13:41:30.6855830Z Post job cleanup.

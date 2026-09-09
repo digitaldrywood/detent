@@ -220,10 +220,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v6
+      - name: Set up Go (uncached on macOS)
+        uses: actions/setup-go@v6
+        timeout-minutes: 3
         with:
           go-version: '1.26.6'
-          cache: true
+          cache: ${{ runner.os != 'macOS' }}
 
       - name: Download modules
         run: go mod download
