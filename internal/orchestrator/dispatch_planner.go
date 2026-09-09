@@ -1222,7 +1222,7 @@ func (p dispatchPlanner) retryDelay(attempt int, continuation bool) time.Duratio
 }
 
 func (p dispatchPlanner) releaseIssue(state *State, issueID string) {
-	cancelRunning(state, issueID)
+	cancelRunning(state, issueID, "dispatch_planner.release_issue")
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
 	delete(state.Blocked, issueID)
@@ -1231,14 +1231,14 @@ func (p dispatchPlanner) releaseIssue(state *State, issueID string) {
 }
 
 func (p dispatchPlanner) parkBudgetHardHold(state *State, issueID string) {
-	cancelRunning(state, issueID)
+	cancelRunning(state, issueID, "dispatch_planner.budget_hard_hold")
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 }
 
 func (p dispatchPlanner) releaseClaim(state *State, issueID string) {
-	cancelRunning(state, issueID)
+	cancelRunning(state, issueID, "dispatch_planner.release_claim")
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)

@@ -1071,6 +1071,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
 	}
+	if running.Cancellation != nil {
+		out["cancellation"] = running.Cancellation
+	}
 	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement {
 		out[dispatchLoopStartMetadataKey] = running.DispatchLoopStart
 	}

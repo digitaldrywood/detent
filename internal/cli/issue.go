@@ -163,6 +163,9 @@ func writeIssueExplanationPretty(writer io.Writer, result explain.IssueExplanati
 	}
 	if result.Attempt != nil {
 		lines = append(lines, fmt.Sprintf("Attempt: %d (%s)", result.Attempt.ID, result.Attempt.Status))
+		if detail := strings.TrimSpace(result.Attempt.StatusMessage); detail != "" {
+			lines = append(lines, "Attempt detail: "+detail)
+		}
 	}
 	lines = append(lines,
 		fmt.Sprintf("Lifetime attempts: %d", result.ParkSummary.AttemptCount),

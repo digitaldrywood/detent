@@ -89,6 +89,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	if errors.As(event.Err, &running.Cancellation) {
+		state.Running[event.IssueID] = running
+	}
 	if o.handleLaneRevocationCompletion(ctx, state, event, running) {
 		return
 	}
@@ -364,6 +367,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage := event.Err.Error()
 		phase := "failed"
 		statusMessage := "worker failed"
+		if running.Cancellation != nil {
+			statusMessage = running.Cancellation.Error()
+		}
 		deliverableRecoveryErr = nil
 		credentialFailure := runpkg.IsDeliverableConfigurationError(event.Err)
 		var projectionErr *runpkg.SessionBudgetProjectionError
@@ -2791,7 +2797,7 @@ func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration 
 }
 
 func (o *Orchestrator) releaseClaim(state *State, issueID string) {
-	o.cancelRunning(state, issueID)
+	o.cancelRunning(state, issueID, "orchestrator.release_claim")
 	o.heartbeats.remove(issueID)
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
@@ -2943,7 +2949,7 @@ func terminalCompletedAt(issue connector.Issue, terminalStates []string, fallbac
 	return time.Now().UTC()
 }
 
-func (o *Orchestrator) cancelRunning(state *State, issueID string) {
+func (o *Orchestrator) cancelRunning(state *State, issueID string, source ...string) {
 	running, ok := state.Running[issueID]
 	if !ok {
 		return
@@ -2951,16 +2957,25 @@ func (o *Orchestrator) cancelRunning(state *State, issueID string) {
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	running.globalSlot = scheduler.Slot{}
 	state.Running[issueID] = running
-	cancelRunning(state, issueID)
+	cancelRunning(state, issueID, source...)
 }
 
-func cancelRunning(state *State, issueID string) {
+func cancelRunning(state *State, issueID string, source ...string) {
 	running, ok := state.Running[issueID]
-	if !ok || running.cancel == nil {
+	if !ok || running.cancel == nil && running.stop == nil {
 		return
 	}
-	running.cancel()
+	initiator := "orchestrator.cancel_running"
+	if len(source) > 0 {
+		initiator = source[0]
+	}
+	if running.stop != nil {
+		running.stop(runpkg.NewCancellationCause(context.Canceled, initiator))
+	} else {
+		running.cancel()
+	}
 	running.cancel = nil
+	running.stop = nil
 	state.Running[issueID] = running
 }
 

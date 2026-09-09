@@ -225,7 +225,7 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 	}{
 		{name: "completed", wantReason: "turn_completed"},
 		{name: "failed", turnErr: errors.New("provider failed"), wantReason: "turn_failed"},
-		{name: "cancelled", turnErr: context.Canceled, wantReason: "session_cancelled"},
+		{name: "cancelled", turnErr: context.Canceled, wantReason: "context_cancelled:runner.agent_backend"},
 		{name: "no progress", turnErr: ErrSessionNoProgress, wantReason: SessionBrakeReasonNoProgress},
 	}
 	for _, tt := range tests {

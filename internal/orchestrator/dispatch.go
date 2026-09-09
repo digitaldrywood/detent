@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
@@ -684,9 +686,25 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	claim.Issue = issue
 	runCtx, stop := context.WithCancelCause(runCtx)
 	var startupTimer mergeWorkerStartupTimer
+	var cancelOnce sync.Once
 	cancelRun := func(cause error) {
-		stop(cause)
-		cancelDurationLimit()
+		cancelOnce.Do(func() {
+			requested := cause != nil
+			source := "orchestrator.stop"
+			if !requested {
+				source = "orchestrator.completion_cleanup"
+			}
+			first := runpkg.NewCancellationCause(cause, source)
+			cause = first
+			stop(cause)
+			cancelDurationLimit()
+			if requested && errors.Is(context.Cause(runCtx), cause) && o.logger != nil {
+				o.logger.Info("worker_cancellation_requested", "project_id", o.cfg.Project.ID,
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+					"work_attempt_id", workAttemptID, "cancellation_reason", first.Reason,
+					"cancellation_source", first.Source)
+			}
+		})
 	}
 	if runMode == runpkg.RunModeMerge {
 		timerFactory := o.mergeWorkerStartupTimer
@@ -763,7 +781,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 		cancel:                 cancel,
 		stop:                   cancelCause,
 	}
-	o.setGlobalDispatchPreempt(globalSlot, cancel)
+	o.setGlobalDispatchPreempt(globalSlot, func() {
+		cancelCause(runpkg.NewCancellationCause(context.Canceled, "scheduler.global_dispatch_preemption"))
+	})
 	state.Claimed[issue.ID] = claim
 	delete(state.Retry, issue.ID)
 	delete(state.Blocked, issue.ID)

@@ -213,7 +213,7 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 	recordStateEvent(state, telemetry.ActivityEvent{At: event.at, Event: "operator_stop_requested", Message: "operator requested stop for " + issueLabel(running.Issue)})
 	event.reply <- stopRunReply{result: result}
 	if running.stop != nil {
-		running.stop(runpkg.ErrOperatorStopped)
+		running.stop(runpkg.NewCancellationCause(runpkg.ErrOperatorStopped, "operator.stop_run"))
 	} else if running.cancel != nil {
 		running.cancel()
 	}

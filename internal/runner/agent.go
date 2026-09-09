@@ -967,6 +967,7 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		} else {
 			result, runErr = backend.RunTurn(governedCtx, request, boundedUpdateHandler)
 		}
+		runErr = preserveCancellation(governedCtx, runErr, "runner.agent_backend")
 		cancelTurn(nil)
 		memoryGovernorWG.Wait()
 		runErr = errors.Join(runErr, stopGovernor())
@@ -1202,6 +1203,7 @@ func (r *Runner) runAgentTurn(
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 	}
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
+		cause = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
 		if workerReapErr != nil {
 			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 		} else {
@@ -1972,6 +1974,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	commandFinishedAttrs = append(commandFinishedAttrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
 	commandFinishedAttrs = append(commandFinishedAttrs, backendErrorAttrs(turnErr)...)
+	commandFinishedAttrs = append(commandFinishedAttrs, cancellationAttrs(turnErr)...)
 	if cleanupErr != nil {
 		commandFinishedAttrs = append(commandFinishedAttrs,
 			"cleanup_error", errorString(cleanupErr),
@@ -3054,6 +3057,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 	}
 	if cause := context.Cause(sessionCtx); cooperativeStopError(cause) || durationLimitError(cause) {
+		cause = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
 		if workerReapErr != nil {
 			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 		} else {
@@ -3567,6 +3571,10 @@ func (r *Runner) cleanupSessionWorkerArtifacts(ctx context.Context, root string,
 func workerProcessReapReason(ctx context.Context, turnErr error) string {
 	cause := context.Cause(ctx)
 	combined := errors.Join(cause, turnErr)
+	var cancellation *CancellationCause
+	if errors.As(turnErr, &cancellation) {
+		combined = cancellation
+	}
 	switch {
 	case errors.Is(combined, ErrSessionDurationExceeded), errors.Is(combined, ErrMergeFallbackBudgetExceeded):
 		return "maximum_session_lifetime_exceeded"
@@ -3574,6 +3582,8 @@ func workerProcessReapReason(ctx context.Context, turnErr error) string {
 		return SessionBrakeReasonNoProgress
 	case errors.Is(combined, ErrTurnDurationExceeded):
 		return "maximum_turn_lifetime_exceeded"
+	case errors.As(combined, &cancellation):
+		return cancellation.Reason + ":" + cancellation.Source
 	case errors.Is(combined, context.Canceled):
 		return "session_cancelled"
 	case turnErr != nil:
@@ -3630,6 +3640,8 @@ func (r *Runner) finishSession(
 	if !started {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if result.FinalState == "" {
 		result.FinalState = FinalStateCompleted
 	}

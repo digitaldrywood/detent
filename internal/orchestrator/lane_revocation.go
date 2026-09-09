@@ -172,7 +172,7 @@ func (o *Orchestrator) beginLaneRevocationWithMutation(
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	if running.stop != nil {
-		running.stop(runpkg.ErrLaneRevoked)
+		running.stop(runpkg.NewCancellationCause(runpkg.ErrLaneRevoked, "orchestrator.lane_revocation"))
 	} else if running.cancel != nil {
 		running.cancel()
 	}

@@ -141,6 +141,7 @@ type Running struct {
 	Issue                       connector.Issue
 	Attempt                     int
 	WorkAttemptID               int64
+	Cancellation                *runpkg.CancellationCause
 	Generation                  uint64
 	Mode                        string
 	DispatchSourceState         string

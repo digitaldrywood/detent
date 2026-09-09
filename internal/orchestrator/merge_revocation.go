@@ -210,7 +210,7 @@ func (o *Orchestrator) beginMergeRevocation(state *State, running Running, revoc
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	if running.stop != nil {
-		running.stop(runpkg.ErrMergeRevoked)
+		running.stop(runpkg.NewCancellationCause(runpkg.ErrMergeRevoked, "orchestrator.merge_revocation"))
 	} else if running.cancel != nil {
 		running.cancel()
 	}

@@ -271,6 +271,8 @@ func TestSupervisorPropagatesCancellationCause(t *testing.T) {
 		wantRetryable bool
 	}{
 		{name: "CI unavailable remains cooperative", cause: ErrCIUnavailable, wantCI: true},
+		{name: "operator stop remains cooperative", cause: ErrOperatorStopped},
+		{name: "merge revocation remains cooperative", cause: ErrMergeRevoked},
 		{name: "lane revocation remains cooperative", cause: ErrLaneRevoked, wantLane: true, wantFinal: FinalStateLaneRevoked},
 		{name: "ordinary cancellation remains retryable", cause: context.Canceled, wantRetryable: true},
 	}
