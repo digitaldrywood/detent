@@ -2070,7 +2070,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 		t.Fatalf("state status = %#v, want running", state["status"])
 	}
 	counts := state["counts"].(map[string]any)
-	if counts["running"] != float64(3) || counts["retrying"] != float64(3) || counts["ready"] != float64(5) || counts["waiting"] != float64(1) || counts["blocked"] != float64(1) {
+	if counts["running"] != float64(3) || counts["retrying"] != float64(3) || counts["ready"] != float64(0) || counts["waiting"] != float64(6) || counts["blocked"] != float64(1) {
 		t.Fatalf("state counts = %#v", counts)
 	}
 	if _, ok := boardStateCountOK(t, state, "Cancelled"); ok {
@@ -10244,11 +10244,11 @@ func TestServerAPIRoutes(t *testing.T) {
 	if got := nestedString(t, state, "counts", "retrying"); got != "1" {
 		t.Fatalf("counts.retrying = %s, want 1", got)
 	}
-	if got := nestedString(t, state, "counts", "ready"); got != "1" {
-		t.Fatalf("counts.ready = %s, want 1", got)
+	if got := nestedString(t, state, "counts", "ready"); got != "0" {
+		t.Fatalf("counts.ready = %s, want 0", got)
 	}
-	if got := nestedString(t, state, "counts", "waiting"); got != "1" {
-		t.Fatalf("counts.waiting = %s, want 1", got)
+	if got := nestedString(t, state, "counts", "waiting"); got != "2" {
+		t.Fatalf("counts.waiting = %s, want 2", got)
 	}
 	if got := nestedString(t, state, "counts", "blocked"); got != "0" {
 		t.Fatalf("counts.blocked = %s, want 0", got)
@@ -10490,7 +10490,7 @@ func TestServerAPIStateSeparatesReadyWaitingAndBlocked(t *testing.T) {
 
 			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 			counts := state["counts"].(map[string]any)
-			for key, want := range map[string]float64{"ready": 1, "waiting": 1, "blocked": 1} {
+			for key, want := range map[string]float64{"ready": 0, "waiting": 2, "blocked": 1} {
 				if got := counts[key]; got != want {
 					t.Fatalf("counts[%q] = %#v, want %v; counts = %#v", key, got, want, counts)
 				}

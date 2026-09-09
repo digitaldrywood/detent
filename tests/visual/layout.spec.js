@@ -291,7 +291,7 @@ test("sidebar project badges keep load, activity, blocked tint, and breakdown di
     "1 ready · 3 active · 0 waiting · 1 blocked",
   );
 
-  await expect(page.locator("#fig-waiting")).toContainText("1 waiting");
+  await expect(page.locator("#fig-waiting")).toContainText("6 waiting");
   await expect(page.locator("#fig-blocked")).toContainText("1 blocked");
 });
 

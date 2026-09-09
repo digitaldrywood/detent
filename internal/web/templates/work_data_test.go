@@ -217,6 +217,9 @@ func TestWorkBoardRendersLargeFleetLanes(t *testing.T) {
 			data.Snapshot.BoardIssues = append(data.Snapshot.BoardIssues, telemetry.Issue{
 				ID: "queued", Identifier: "digitaldrywood/detent#3000", ProjectID: "detent", Title: "Queued fixture", State: "Todo",
 			})
+			data.Snapshot.SchedulerDecisions = []telemetry.SchedulerDecision{{
+				IssueID: "queued", ProjectID: "detent", Lane: "Todo", Result: "selected", Selected: true, DecisionAt: data.Snapshot.GeneratedAt,
+			}}
 			view := boardViewFromDashboard(data)
 			if len(view.Items) != backlogCount+2 {
 				t.Fatalf("work items = %d, want %d", len(view.Items), backlogCount+2)

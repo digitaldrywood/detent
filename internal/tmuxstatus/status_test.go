@@ -96,7 +96,7 @@ func TestStatusLifecycle(t *testing.T) {
 
 	want := [][]string{
 		{"display-message", "-t", "%7", "-p", "#{window_id}\t#{window_name}"},
-		{"rename-window", "-t", "@7", "detent 2r/1q/0w/3b"},
+		{"rename-window", "-t", "@7", "detent 2r/0q/1w/3b"},
 		{"display-message", "-t", "@7", "-p", "#{window_name}"},
 		{"rename-window", "-t", "@7", "Detent:2"},
 	}
@@ -125,7 +125,7 @@ func TestStatusCorrectsExternalRenameOnNextUpdate(t *testing.T) {
 		t.Fatalf("second Update() error = %v", err)
 	}
 
-	if got, want := runner.windowName, "detent 2r/3q/0w/0b"; got != want {
+	if got, want := runner.windowName, "detent 2r/0q/3w/0b"; got != want {
 		t.Fatalf("window name = %q, want %q", got, want)
 	}
 }
@@ -151,7 +151,7 @@ func TestStatusUpdateUsesCurrentBoardCounts(t *testing.T) {
 					{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
 				},
 			},
-			want: "detent 1r/1q/1w/1b",
+			want: "detent 1r/0q/2w/1b",
 		},
 		{
 			name: "ignores aggregate blocked count",
@@ -178,7 +178,7 @@ func TestStatusUpdateUsesCurrentBoardCounts(t *testing.T) {
 					{Issue: telemetry.Issue{ID: "stale-1", State: "Blocked"}},
 				},
 			},
-			want: "detent 2r/3q/0w/2b",
+			want: "detent 2r/0q/3w/2b",
 		},
 	}
 

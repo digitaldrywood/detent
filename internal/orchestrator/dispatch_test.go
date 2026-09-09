@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2933,6 +2934,9 @@ func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
 					GlobalCapacity:    5,
 					GlobalUsed:        5,
 					GlobalAvailable:   0,
+					SharedCapacity:    7,
+					SharedUsed:        5,
+					SharedAvailable:   2,
 					SelectedProjectID: "local",
 					SelectedState:     "Merging",
 				},
@@ -2957,6 +2961,9 @@ func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
 				`"global_capacity":5`,
 				`"global_used":5`,
 				`"global_available":0`,
+				`"shared_capacity":7`,
+				`"shared_used":5`,
+				`"shared_available":2`,
 				`"selected_project_id":"local"`,
 			} {
 				if !strings.Contains(got.CapacitySnapshotJSON, fragment) {
@@ -3077,6 +3084,9 @@ func TestRecordDispatchGateRefusalSamplesEquivalentCandidates(t *testing.T) {
 	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-c", "Todo"), 0, "", now.Add(2*time.Minute), changedHolders, projectStats)
 	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-b", "Todo"), 0, "", now.Add(dispatchGateSampleInterval), decision, projectStats)
 
+	if len(state.SchedulerDecisions) != 4 {
+		t.Fatalf("live scheduler evidence = %d, want all four refusals", len(state.SchedulerDecisions))
+	}
 	if len(attempts.decisions) != 3 {
 		t.Fatalf("scheduler decisions = %#v, want one sample per holder set and five-minute condition window", attempts.decisions)
 	}
@@ -4170,6 +4180,35 @@ func TestHydrateDispatchIssueSkipsPausedProvider(t *testing.T) {
 			}
 			if fetches != tt.wantFetches*3 {
 				t.Fatalf("fetches = %d, want %d", fetches, tt.wantFetches*3)
+			}
+		})
+	}
+}
+
+func TestSampledGateRefusalRemainsDurableAfterSelection(t *testing.T) {
+	t.Parallel()
+	for _, sampled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(sampled), func(t *testing.T) {
+			now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+			state := newState(cfg)
+			gate := scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGlobalCapacityFull, GlobalCapacity: 1, GlobalUsed: 1}
+			if sampled {
+				orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("other", "Todo"), 0, "", now, gate, projectStateSlotStats{})
+			}
+			issue := dispatchTestIssue("todo", "Todo")
+			selection := dispatchPlanDecision{Issue: issue, Selected: true}
+			orch.recordSchedulerDecision(t.Context(), &state, now, selection, "selected", "selected")
+			orch.recordDispatchGateRefusal(t.Context(), &state, issue, 0, "", now, gate, projectStateSlotStats{})
+			orch.recordPostSelectionDispatchRefusal(t.Context(), &state, now, selection, dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable})
+			snapshot := telemetry.Snapshot{GeneratedAt: now, Project: telemetry.Project{ID: "detent"}}
+			for i := len(attempts.decisions) - 1; i >= 0; i-- {
+				snapshot.SchedulerDecisions = append(snapshot.SchedulerDecisions, telemetrySchedulerDecision(attempts.decisions[i]))
+			}
+			if evidence := telemetry.TodoDispatchEvidence(snapshot, telemetry.Issue{ID: issue.ID, ProjectID: "detent", State: "Todo"}); evidence.Ready {
+				t.Fatalf("recovered durable evidence is ready: %+v", evidence)
 			}
 		})
 	}
