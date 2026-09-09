@@ -2275,7 +2275,9 @@ func TestDefaultStalenessObservability(t *testing.T) {
 		"github_rest_recovery",
 		"global_capacity_full",
 		"outside_active_window",
+		"project_capacity_full",
 		"provider_rate_window_backpressure",
+		"ready_merge_control_limit",
 		"reserved_for_higher_priority_project",
 	}
 	if got := cfg.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, wantReasons) {

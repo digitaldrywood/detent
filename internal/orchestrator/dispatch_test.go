@@ -2164,7 +2164,7 @@ func TestDispatchableIssueDecisionCapacityReason(t *testing.T) {
 				running := dispatchTestIssue("running", "Todo")
 				state.Running[running.ID] = Running{Issue: running}
 			},
-			want: dispatchSkipGlobalCapacityFull,
+			want: dispatchSkipProjectCapacityFull,
 		},
 		{
 			name: "lane cap",
@@ -3448,7 +3448,7 @@ func TestDispatchReadyIssuesPersistsEveryCapacitySkip(t *testing.T) {
 		t.Fatalf("decisions len = %d, want every skipped candidate: %#v", len(attempts.decisions), attempts.decisions)
 	}
 	for _, decision := range attempts.decisions {
-		if decision.Result != store.SchedulerDecisionResultSkipped || decision.Reason != dispatchSkipGlobalCapacityFull {
+		if decision.Result != store.SchedulerDecisionResultSkipped || decision.Reason != dispatchSkipProjectCapacityFull {
 			t.Fatalf("decision = %#v, want skipped global capacity", decision)
 		}
 	}

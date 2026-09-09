@@ -1567,6 +1567,11 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, "Pull request head changed after deterministic merge-fallback validation.")
 		return true
 	}
+	if event.Result.Output == mergeControlCheckedHeadOutput && !sameMergeControlRevision(event.Request.Issue, issue) {
+		running.Issue = issue
+		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+		return true
+	}
 	missingChecks := mergeWorkerMissingRequiredChecks(issue)
 	streaks := o.evaluateMergeRequiredCheckStreaks(ctx, issue, missingChecks, event.CompletedAt)
 	if persistent := persistentMissingRequiredCheckStreaks(streaks); len(persistent) > 0 {
@@ -2062,7 +2067,7 @@ func mergeFastPathResult(event runpkg.Completion) bool {
 		return false
 	}
 	switch strings.TrimSpace(event.Result.Output) {
-	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead, runpkg.RunOutputMergeFallbackResolved:
+	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead, runpkg.RunOutputMergeFallbackResolved, mergeControlCheckedHeadOutput:
 		return true
 	default:
 		return false

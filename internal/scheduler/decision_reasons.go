@@ -36,11 +36,13 @@ const (
 	DecisionReasonMergeWorkerCurrentHeadCIExceeded = "merge_worker_current_head_ci_wait_exceeded"
 	DecisionReasonMergedPullRequestPending         = "merged_pull_request_reconciliation_pending"
 	DecisionReasonOwnershipAssigneeRequired        = "ownership_assignee_required"
+	DecisionReasonProjectCapacityFull              = "project_capacity_full"
 	DecisionReasonProjectFailureBreakerPaused      = "project_failure_breaker_paused"
 	DecisionReasonProjectFailureBreakerRecovery    = "project_failure_breaker_recovery"
 	DecisionReasonProviderRateWindowBackpressure   = "provider_rate_window_backpressure"
 	DecisionReasonPullRequestHydrationRecovery     = "pull_request_hydration_recovery"
 	DecisionReasonPullRequestHydrationUnavailable  = "pull_request_hydration_unavailable"
+	DecisionReasonReadyMergeControlLimit           = "ready_merge_control_limit"
 	DecisionReasonRetryPending                     = "retry_pending"
 	DecisionReasonTerminalState                    = "terminal_state"
 	DecisionReasonTrackerUnavailable               = "tracker_unavailable"
@@ -79,11 +81,13 @@ var emittedDecisionReasons = []string{
 	DecisionReasonMergeWorkerCurrentHeadCIExceeded,
 	DecisionReasonMergedPullRequestPending,
 	DecisionReasonOwnershipAssigneeRequired,
+	DecisionReasonProjectCapacityFull,
 	DecisionReasonProjectFailureBreakerPaused,
 	DecisionReasonProjectFailureBreakerRecovery,
 	DecisionReasonProviderRateWindowBackpressure,
 	DecisionReasonPullRequestHydrationRecovery,
 	DecisionReasonPullRequestHydrationUnavailable,
+	DecisionReasonReadyMergeControlLimit,
 	DecisionReasonRetryPending,
 	DecisionReasonTerminalState,
 	DecisionReasonTrackerUnavailable,

@@ -212,6 +212,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			}
 		},
 	})
+	o.reconcileMergeControlDemand(decisions, outcomes)
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
 }
@@ -264,7 +265,7 @@ func dispatchFailureRetryReason(reason string) string {
 	case dispatchIssueFailureClaimFailed:
 		return "claim verification failed"
 	case dispatchIssueFailureGlobalSlotUnavailable:
-		return dispatchSkipGlobalCapacityFull
+		return scheduler.DispatchGateReasonGlobalCapacityFull
 	default:
 		return reason
 	}
@@ -367,9 +368,11 @@ const (
 )
 
 type dispatchIssueOutcome struct {
-	dispatched bool
-	reason     string
-	waitReason string
+	mergeControl   bool
+	dispatched     bool
+	reason         string
+	waitReason     string
+	waitReasonCode string
 }
 
 func (o *Orchestrator) dispatchIssue(
@@ -389,7 +392,7 @@ func (o *Orchestrator) dispatchIssueWithAction(
 	action dispatchAction,
 	now time.Time,
 ) dispatchIssueOutcome {
-	return o.dispatchIssueWithAdmission(
+	return o.dispatchIssueWithMergeControl(
 		ctx,
 		state,
 		action.issue,
@@ -397,6 +400,7 @@ func (o *Orchestrator) dispatchIssueWithAction(
 		now,
 		action.workerHost,
 		action.modelPermitRequired,
+		action.allowMergeControl,
 		action.retryState,
 	)
 }
@@ -429,6 +433,20 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	now time.Time,
 	preferredWorkerHost string,
 	modelPermitRequired bool,
+	retryState *Retry,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithMergeControl(ctx, state, issue, attempt, now, preferredWorkerHost, modelPermitRequired, true, retryState)
+}
+
+func (o *Orchestrator) dispatchIssueWithMergeControl(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+	allowMergeControl bool,
 	retryState *Retry,
 ) dispatchIssueOutcome {
 	if err := o.checkDispatchPolicy(ctx); err != nil {
@@ -511,20 +529,30 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 			return dispatchIssueOutcome{reason: dispatchIssueFailureLocalSlotUnavailable}
 		}
 	}
+	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
+	mergeControl := mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0
+	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
+		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
+	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
-	if !ok {
+	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
 		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable}
 	}
 
+	mergeControl = mergeControl || !ok && mergeControlEligible
 	pressureCapacity := 0
 	if pressureConstrained {
 		pressureCapacity = pressureConstraint.capacity
 	}
 	globalSlot, ok, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now, pressureCapacity)
+	if !ok && mergeControlEligible && decision.Reason == scheduler.DispatchGateReasonGlobalCapacityFull {
+		mergeControl = true
+		ok = true
+	}
 	if !ok {
 		o.recordDispatchGateRefusal(ctx, state, issue, attempt, workerHost, now, decision, projectStats)
 		o.logSchedulerSlotDecision(issue, "waiting", decision, projectStats)
@@ -541,7 +569,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 				waitReason: hostPressureWaitReason(state, pressureConstraint.reason),
 			}
 		}
-		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable, waitReason: decision.Reason, waitReasonCode: decision.Reason}
 	}
 	runCtx := ctx
 	cancelDurationLimit := func() {}
@@ -562,6 +590,9 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 			cancelDurationLimit()
 		}
 	}()
+	if mergeControl {
+		decision.Reason = mergeControlCheckedHeadOutput
+	}
 	mergeTiming := o.markMergeWorkerSlotAcquired(state, issue, now)
 	o.logSchedulerSlotDecision(issue, "acquired", decision, projectStats)
 	o.logMergeWorkerSlotAcquired(issue, decision, projectStats, mergeTiming)
@@ -706,7 +737,7 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 			}
 		})
 	}
-	if runMode == runpkg.RunModeMerge {
+	if runMode == runpkg.RunModeMerge && !mergeControl {
 		timerFactory := o.mergeWorkerStartupTimer
 		if timerFactory == nil {
 			timerFactory = newMergeWorkerStartupTimer
@@ -843,6 +874,15 @@ func (o *Orchestrator) dispatchIssueWithAdmission(
 	)
 	o.publishRuntimeState(state)
 	running := state.Running[issue.ID]
+	if mergeControl {
+		completionCtx, cancelCompletion := context.WithTimeout(ctx, min(o.cfg.MergeWorkerMaxDuration, 30*time.Second))
+		defer cancelCompletion()
+		o.handleRunResult(completionCtx, state, runpkg.Completion{
+			IssueID: issue.ID, Request: request, CompletedAt: now,
+			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
+		})
+		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
+	}
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
 	durationLimitTransferred = true

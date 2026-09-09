@@ -18,7 +18,7 @@ func TestSchedulerDecisionWaitReason(t *testing.T) {
 	}{
 		{
 			name:   "planner project capacity wait",
-			reason: dispatchSkipGlobalCapacityFull,
+			reason: dispatchSkipProjectCapacityFull,
 			want:   "project_capacity_full",
 		},
 		{
