@@ -490,8 +490,10 @@ polling integration.
 The tracker setting `github_rest_min_remaining_reserve` is an absolute reserve
 for the REST `core` resource (default `1000`). It does not reserve requests in
 smaller resources such as `search`; those resources still enforce GitHub's
-primary and secondary rate limits and shared backoff. Recovery probes and
-reserve diagnostics use the same resource rule. Responses without a resource
+primary and secondary rate limits and shared backoff. Recovery probes,
+reserve diagnostics, and scheduler lookup gates use the same resource rule.
+The aggregate REST quota snapshot retains core capacity; resource-specific
+budgets continue to report search usage separately. Responses without a resource
 name retain the core reserve for compatibility. No configuration migration or
 new setting is required; the worker's separate core-budget policy is unchanged.
 

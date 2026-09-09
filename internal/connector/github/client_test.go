@@ -2754,13 +2754,16 @@ func TestConnectorRESTResourceReserveRecovery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				limit := 5000
-				if tt.resource == "search" {
+				resource, limit, remaining := tt.resource, 5000, tt.remaining
+				if resource == "search" {
 					limit = 30
 				}
+				if r.URL.Path == "/rate_limit" {
+					resource, limit, remaining = "core", 5000, 4900
+				}
 				w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
-				w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(tt.remaining))
-				w.Header().Set("X-RateLimit-Resource", tt.resource)
+				w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+				w.Header().Set("X-RateLimit-Resource", resource)
 				w.Header().Set("X-RateLimit-Reset", "4070908800")
 				_, _ = w.Write([]byte(`{}`))
 			}))
@@ -2769,21 +2772,24 @@ func TestConnectorRESTResourceReserveRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			conn.client.restBackoffs = newRESTBackoffRegistry()
-			conn.client.restBackoffUntil = time.Now().Add(time.Hour)
-			if _, err := conn.ProbeRESTRateLimit(context.Background(), 1000); err != nil {
-				t.Fatal(err)
-			}
 			path := "/repos/o/r/pulls"
 			if tt.resource == "search" {
 				path = "/search/issues"
 			}
-			err = conn.client.REST(context.Background(), http.MethodGet, path, nil, nil)
-			if errors.Is(err, ErrRateLimited) != tt.wantHeld {
-				t.Fatalf("REST after recovery = %v, want held %v", err, tt.wantHeld)
-			}
-			if !tt.wantHeld && err != nil {
+			key := conn.client.restSharedBackoffKey("test")
+			conn.client.restBackoffs = newRESTBackoffRegistry()
+			conn.client.restBackoffs.set(key, time.Now().Add(-time.Minute), http.MethodGet, path, tt.resource)
+			conn.client.restBackoffKey = key
+			conn.client.restRateLimitStatus = true
+			quota, err := conn.ProbeRESTRateLimit(t.Context(), 1000)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if quota.Resource != tt.resource || quota.Remaining != int64(tt.remaining) {
+				t.Fatalf("recovery quota = %#v, want resource %s remaining %d", quota, tt.resource, tt.remaining)
+			}
+			if held := conn.RESTRateLimitStatus().RateLimited; held != tt.wantHeld {
+				t.Fatalf("REST after recovery held = %v, want %v", held, tt.wantHeld)
 			}
 		})
 	}

@@ -140,7 +140,9 @@ func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Tim
 	if state.RateLimits == nil {
 		state.RateLimits = &telemetry.RateLimits{}
 	}
-	state.RateLimits.GitHubREST = bucket
+	if bucket != nil {
+		state.RateLimits.GitHubREST = bucket
+	}
 	state.RateLimits.GitHubRESTBudgets = replaceRESTConsumerBudgets(state.RateLimits.GitHubRESTBudgets, budgets, telemetry.RESTConsumerOrchestrator)
 	state.RateLimits.RESTUsage = summary
 	return restRateLimitCycle{
@@ -269,6 +271,9 @@ func restBudgetSummaries(budgets []connector.RESTRateLimitBudget) []telemetry.RE
 
 func gitHubRESTBucket(usage connector.RESTRateLimitUsage, now time.Time) *telemetry.RateLimitBucket {
 	rateLimit := usage.RateLimit
+	if rateLimit.Resource != "" && rateLimit.Resource != "core" {
+		return nil
+	}
 	var resetAt *time.Time
 	var observedAt *time.Time
 	var resetInSeconds int64

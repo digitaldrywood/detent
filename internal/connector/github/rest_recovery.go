@@ -28,7 +28,7 @@ func (c *Client) probeRESTRecovery(ctx context.Context, minimumRemaining int64, 
 	if err := c.restBackoffError(key, time.Now()); err != nil {
 		return connector.RESTRateLimit{}, err
 	}
-	if quota.Remaining <= minimumRemaining {
+	if quota.Remaining <= RESTResourceReserve(quota.Resource, minimumRemaining) {
 		return quota, nil
 	}
 
@@ -64,7 +64,7 @@ func (c *Client) probeRESTRecovery(ctx context.Context, minimumRemaining int64, 
 	if result.backoffKey != key {
 		return connector.RESTRateLimit{}, fmt.Errorf("%w: credential changed during REST recovery", ErrInvalidResponse)
 	}
-	if quota.Remaining <= minimumRemaining {
+	if quota.Remaining <= RESTResourceReserve(quota.Resource, minimumRemaining) {
 		return quota, nil
 	}
 	c.mu.Lock()

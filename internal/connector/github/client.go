@@ -868,7 +868,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 
 	resource := restEndpointRateLimitResource(family)
 	rateLimit, hasRateLimit := c.restRateLimitForResourceLocked(resource)
-	reserve := restResourceReserve(resource, c.restPolicy.MinRemainingReserve)
+	reserve := RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve)
 	requestCost := restFanoutCostUnitsPerRequest
 	if conditional {
 		requestCost = restConditionalFanoutCostUnits
@@ -929,7 +929,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 	return nil
 }
 
-func restResourceReserve(resource string, coreReserve int64) int64 {
+func RESTResourceReserve(resource string, coreReserve int64) int64 {
 	if resource == "" || resource == "core" {
 		return max(coreReserve, 0)
 	}
@@ -998,7 +998,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		"credential_identity", credentialIdentity,
 		"resource", rateLimit.Resource,
 		"remaining", rateLimit.Remaining,
-		"reserve", restResourceReserve(rateLimit.Resource, c.restPolicy.MinRemainingReserve),
+		"reserve", RESTResourceReserve(rateLimit.Resource, c.restPolicy.MinRemainingReserve),
 		"gate_branch", branch,
 		"fanout_count", fanoutCount,
 		"fanout_cap", c.restPolicy.FanoutMaxRequests,
@@ -1114,7 +1114,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 				snapshot,
 				status != http.StatusNotModified,
 				restDivergenceAttribution(credentialIdentity),
-				restResourceReserve(resource, c.restPolicy.MinRemainingReserve),
+				RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve),
 			)
 			if divergence.ObservedRequests > 0 {
 				if c.restDivergenceKeys == nil {
@@ -2126,7 +2126,7 @@ func (c *Client) logRESTUsageDivergence(ctx context.Context, divergence connecto
 		"window_started_at", divergence.WindowStartedAt,
 		"last_observed_at", divergence.LastObservedAt,
 		"reset_at", divergence.ResetAt,
-		"reserve", restResourceReserve(divergence.Resource, c.restPolicy.MinRemainingReserve),
+		"reserve", RESTResourceReserve(divergence.Resource, c.restPolicy.MinRemainingReserve),
 	)
 }
 
