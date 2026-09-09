@@ -195,3 +195,71 @@ func TestHumanQuestionIndependentRework(t *testing.T) {
 		t.Fatalf("new rework blocked: %v, %v", waiting, err)
 	}
 }
+
+func TestHumanQuestionWaitCompletesAttemptWithoutCompletingIssue(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		question bool
+		answered bool
+		waiting  bool
+	}{
+		{name: "pending question", question: true, waiting: true},
+		{name: "answered question", question: true, answered: true},
+		{name: "no question"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			o := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+			issue := recoveryTestIssue()
+			issue.State = "Rework"
+			issue.PullRequest = &connector.PullRequest{HeadSHA: "head", MergeableState: "dirty"}
+			now := time.Now()
+			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now)
+			if tt.question {
+				questions := db.(store.HumanQuestionStore)
+				q := store.HumanQuestion{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, Key: "delivery", Body: "Use manual delivery?"}
+				if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
+					t.Fatal(err)
+				}
+				if tt.answered {
+					q.QuestionCommentID = "question"
+					if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
+						t.Fatal(err)
+					}
+					q.AnswerCommentID, q.AnswerBody = "answer", "Keep sends disabled"
+					if err := questions.RecordHumanQuestionAnswer(t.Context(), q); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			state := newState(o.cfg)
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			state.Retry[issue.ID] = Retry{Issue: issue}
+			state.Blocked["unrelated"] = Blocked{}
+			running := Running{Issue: issue, WorkAttemptID: attemptID, StartedAt: now}
+			if handled := o.completeHumanQuestionWait(t.Context(), &state, runner.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Second)}, running); handled != tt.waiting {
+				t.Fatalf("handled = %v, want %v", handled, tt.waiting)
+			}
+			receipt, err := db.WorkAttempt(t.Context(), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.waiting && (receipt.TerminalState != store.WorkAttemptTerminalSuccess || receipt.Phase != "waiting") {
+				t.Fatalf("waiting receipt = %+v", receipt)
+			}
+			if !tt.waiting && receipt.Status != store.WorkAttemptStatusActive {
+				t.Fatalf("ordinary completion intercepted: %+v", receipt)
+			}
+			if _, claimed := state.Claimed[issue.ID]; claimed == tt.waiting {
+				t.Fatalf("claimed = %v, waiting = %v", claimed, tt.waiting)
+			}
+			if _, retry := state.Retry[issue.ID]; retry == tt.waiting {
+				t.Fatalf("retry = %v, waiting = %v", retry, tt.waiting)
+			}
+			if len(state.Completed) != 0 || len(state.Blocked) != 1 || issue.State != "Rework" || issue.PullRequest.HeadSHA != "head" {
+				t.Fatal("question wait changed issue completion, independent park, lane, or PR")
+			}
+		})
+	}
+}
