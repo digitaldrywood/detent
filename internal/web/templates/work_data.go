@@ -153,8 +153,10 @@ func workItemReadiness(card projectKanbanCard, view boardCardView) (string, stri
 		return "Waiting", "waiting", firstNonBlank(view.ExtraText, "Waiting on "+card.Blockers[0]), primitives.KindWarn
 	case view.Retrying:
 		return "Waiting", "waiting", firstNonBlank(view.ExtraText, "Awaiting retry"), primitives.KindInfo
+	case view.DispatchStatus != "" && view.Waiting:
+		return "Waiting", "waiting", view.ExtraText, view.ExtraKind
 	case strings.EqualFold(strings.TrimSpace(card.Stage), "Todo"):
-		return "Ready", "ready", "Dispatchable when capacity is available", primitives.KindInfo
+		return "Ready", "ready", firstNonBlank(view.ExtraText, "Dispatchable when capacity is available"), primitives.KindInfo
 	case strings.EqualFold(strings.TrimSpace(card.Stage), "Backlog"):
 		return "Waiting", "waiting", "Not in a dispatch lane", primitives.KindNeutral
 	default:

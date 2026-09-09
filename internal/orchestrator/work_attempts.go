@@ -582,6 +582,17 @@ func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State
 		reason = result
 	}
 	waitReason := schedulerDecisionWaitReason(reason)
+	if reason == dispatchSkipBlockedByDependency {
+		var identifiers []string
+		for _, ref := range decision.Issue.BlockedBy {
+			if todoBlockedByNonTerminal(connector.Issue{State: decision.Issue.State, BlockedBy: []connector.BlockedRef{ref}}, o.cfg.TerminalStates) && ref.Identifier != "" {
+				identifiers = append(identifiers, ref.Identifier)
+			}
+		}
+		if len(identifiers) > 0 {
+			waitReason = "Waiting on " + strings.Join(identifiers, ", ")
+		}
+	}
 	metadata := map[string]any{}
 	if detail := strings.TrimSpace(decision.SkipDetail); detail != "" {
 		waitReason = detail

@@ -267,9 +267,6 @@ func (o *Orchestrator) recordDispatchGateRefusal(
 		pressureExhausted: decision.PressureCapacity > 0 && decision.PressureAvailable == 0,
 		holders:           strings.Join(decision.Holders, "\x00"),
 	}
-	if !o.reserveDispatchGateSample(key, now) {
-		return
-	}
 
 	waitReason := reason
 	if reason == scheduler.DispatchGateReasonPressureCapacityFull {
@@ -298,6 +295,10 @@ func (o *Orchestrator) recordDispatchGateRefusal(
 		}),
 	}
 	snapshot := telemetrySchedulerDecision(record)
+	if !o.reserveDispatchGateSample(key, now) {
+		appendSchedulerDecisionSnapshot(state, snapshot)
+		return
+	}
 	if o.workAttempts != nil {
 		id, err := o.workAttempts.RecordSchedulerDecision(ctx, record)
 		if err != nil {
@@ -354,6 +355,9 @@ func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
 		"global_capacity":         decision.GlobalCapacity,
 		"global_used":             decision.GlobalUsed,
 		"global_available":        decision.GlobalAvailable,
+		"shared_capacity":         decision.SharedCapacity,
+		"shared_used":             decision.SharedUsed,
+		"shared_available":        decision.SharedAvailable,
 		"project_state_capacity":  projectStats.capacity,
 		"project_state_used":      projectStats.used,
 		"project_state_available": projectStats.available,

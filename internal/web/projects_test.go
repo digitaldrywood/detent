@@ -56,7 +56,7 @@ func TestProjectSmallMultiplesUseBoardWorkloadTaxonomy(t *testing.T) {
 		active  int
 		waiting int
 		blocked int
-	}{3, 1, 1, 1, 1}
+	}{3, 0, 1, 2, 1}
 	if byID["detent"] != wantDetent {
 		t.Fatalf("detent workload = %+v, want %+v", byID["detent"], wantDetent)
 	}

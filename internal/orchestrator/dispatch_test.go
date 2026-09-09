@@ -2933,6 +2933,9 @@ func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
 					GlobalCapacity:    5,
 					GlobalUsed:        5,
 					GlobalAvailable:   0,
+					SharedCapacity:    7,
+					SharedUsed:        5,
+					SharedAvailable:   2,
 					SelectedProjectID: "local",
 					SelectedState:     "Merging",
 				},
@@ -2957,6 +2960,9 @@ func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
 				`"global_capacity":5`,
 				`"global_used":5`,
 				`"global_available":0`,
+				`"shared_capacity":7`,
+				`"shared_used":5`,
+				`"shared_available":2`,
 				`"selected_project_id":"local"`,
 			} {
 				if !strings.Contains(got.CapacitySnapshotJSON, fragment) {
@@ -3077,6 +3083,9 @@ func TestRecordDispatchGateRefusalSamplesEquivalentCandidates(t *testing.T) {
 	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-c", "Todo"), 0, "", now.Add(2*time.Minute), changedHolders, projectStats)
 	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-b", "Todo"), 0, "", now.Add(dispatchGateSampleInterval), decision, projectStats)
 
+	if len(state.SchedulerDecisions) != 4 {
+		t.Fatalf("live scheduler evidence = %d, want all four refusals", len(state.SchedulerDecisions))
+	}
 	if len(attempts.decisions) != 3 {
 		t.Fatalf("scheduler decisions = %#v, want one sample per holder set and five-minute condition window", attempts.decisions)
 	}

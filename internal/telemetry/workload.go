@@ -14,20 +14,20 @@ type BoardWorkloadCounts struct {
 }
 
 func BoardWorkload(snapshot Snapshot) BoardWorkloadCounts {
-	return boardWorkload(snapshot, "", !boardWorkloadUsesCompleteProjection(snapshot, ""))
+	return boardWorkload(snapshot, "", !boardWorkloadUsesCompleteProjection(snapshot, ""), false)
 }
 
 func BoardWorkloadForProject(snapshot Snapshot, projectID string) BoardWorkloadCounts {
 	projectID = strings.TrimSpace(projectID)
-	return boardWorkload(snapshot, projectID, !boardWorkloadUsesCompleteProjection(snapshot, projectID))
+	return boardWorkload(snapshot, projectID, !boardWorkloadUsesCompleteProjection(snapshot, projectID), false)
 }
 
 func CurrentBoardWorkload(snapshot Snapshot) BoardWorkloadCounts {
-	return boardWorkload(snapshot, "", false)
+	return boardWorkload(snapshot, "", false, true)
 }
 
 func CurrentBoardWorkloadForProject(snapshot Snapshot, projectID string) BoardWorkloadCounts {
-	return boardWorkload(snapshot, strings.TrimSpace(projectID), false)
+	return boardWorkload(snapshot, strings.TrimSpace(projectID), false, true)
 }
 
 func BoardWorkloadComplete(snapshot Snapshot) bool {
@@ -44,7 +44,7 @@ type boardWorkloadIssue struct {
 	rank    int
 }
 
-func boardWorkload(snapshot Snapshot, projectID string, includeCompleted bool) BoardWorkloadCounts {
+func boardWorkload(snapshot Snapshot, projectID string, includeCompleted bool, dispatchEvidence bool) BoardWorkloadCounts {
 	issues := map[string]boardWorkloadIssue{}
 	sequence := 0
 	add := func(issue Issue, fallback string, rank int, waiting bool) {
@@ -59,6 +59,16 @@ func boardWorkload(snapshot Snapshot, projectID string, includeCompleted bool) B
 		if state == "" {
 			if rank < 30 || !nonWorkloadBoardState(boardState) {
 				return
+			}
+		}
+		if dispatchEvidence && state == "Todo" {
+			waiting = waiting || !TodoDispatchEvidence(snapshot, issue).Ready
+			for _, running := range snapshot.Running {
+				if dispatchDecisionMatches(snapshot, issue, SchedulerDecision{IssueID: running.ID, Identifier: running.Identifier, ProjectID: running.ProjectID}) {
+					state = "In Progress"
+					waiting = false
+					break
+				}
 			}
 		}
 		key := issueStateKey(issue)

@@ -968,6 +968,7 @@ type boardCardView struct {
 	Running           bool
 	Retrying          bool
 	Waiting           bool
+	DispatchStatus    string
 	Done              bool
 	Terminal          bool
 	MetaRight         string
@@ -1446,6 +1447,36 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	if strings.EqualFold(lane.Title, "Todo") && !running && !retrying {
+		issue := telemetry.Issue{ID: card.IssueID, Identifier: card.Identifier, ProjectID: projectID, State: "Todo", UpdatedAt: card.UpdatedAt}
+		for _, candidate := range data.Snapshot.BoardIssues {
+			if boardCardMatchesIssue(candidate, card) {
+				issue = candidate
+				break
+			}
+		}
+		for _, candidate := range data.Snapshot.Pipeline {
+			if boardCardMatchesIssue(candidate, card) {
+				issue = candidate
+				break
+			}
+		}
+		evidence := telemetry.TodoDispatchEvidence(data.Snapshot, issue)
+		view.DispatchStatus = evidence.Status
+		view.Waiting = !evidence.Ready
+		view.ExtraKind = primitives.KindInfo
+		if !evidence.Ready {
+			view.ExtraKind = primitives.KindWarn
+		}
+		if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0 {
+			view.Waiting = true
+			view.DispatchStatus = "Waiting"
+			view.ExtraText += " · " + evidence.Detail
+		} else {
+			view.ExtraText = evidence.Detail
+			view.ExtraChip = false
+		}
+	}
 	if stranded, ok := boardCardStrandedActiveIssue(data.Snapshot, card); ok {
 		view.ExtraKind = primitives.KindWarn
 		view.ExtraText = "Stranded " + boardCardStrandedAge(stranded.DurationSeconds) + " · no worker"
@@ -1614,6 +1645,10 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
 	switch {
+	case view.DispatchStatus == "Waiting" && len(card.Blockers) > 0:
+		add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
+	case view.DispatchStatus != "":
+		add(view.DispatchStatus, view.ExtraKind)
 	case strings.HasPrefix(view.ExtraText, "Stranded "):
 		add("Stranded · no worker", primitives.KindWarn)
 	case !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold")):
@@ -1658,7 +1693,7 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add("Validating", primitives.KindInfo)
 	case view.Running:
 		add("Running", primitives.KindOK)
-	case view.Waiting:
+	case view.Waiting && view.DispatchStatus == "":
 		add("No live attempt", primitives.KindNeutral)
 	case strings.EqualFold(view.State, "Human Review"):
 		add("Needs review", primitives.KindInfo)

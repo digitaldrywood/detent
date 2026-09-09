@@ -1581,7 +1581,10 @@ func TestBoardFigures(t *testing.T) {
 func TestBoardFiguresSeparateWaitingFromBlockedLane(t *testing.T) {
 	t.Parallel()
 
+	now := time.Now()
 	snapshot := telemetry.Snapshot{
+		GeneratedAt:        now,
+		SchedulerDecisions: []telemetry.SchedulerDecision{{IssueID: "ready", Lane: "Todo", Result: "selected", Selected: true, DecisionAt: now}},
 		BoardIssues: []telemetry.Issue{
 			{ID: "ready", State: "Todo"},
 			{ID: "waiting", State: "Todo"},
@@ -4638,6 +4641,70 @@ func TestSchedulerDecisionHistoricalReasonsRemainReadable(t *testing.T) {
 			row := telemetry.SchedulerDecision{Reason: reason}
 			if got := schedulerDecisionReasonLabel(row); got != reason {
 				t.Fatalf("reason label = %q, want %q", got, reason)
+			}
+		})
+	}
+}
+
+func TestBoardFiguresSchedulerRefusals(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 22, 23, 10, 0, time.UTC)
+	for _, reason := range []string{"blocked_by_dependency", "global_capacity_full"} {
+		t.Run(reason, func(t *testing.T) {
+			snapshot := telemetry.Snapshot{
+				GeneratedAt:        now,
+				BoardIssues:        []telemetry.Issue{{ID: "todo", State: "Todo"}, {ID: "worker", State: "Rework"}},
+				Running:            []telemetry.Running{{Issue: telemetry.Issue{ID: "worker", State: "Rework"}}},
+				SchedulerDecisions: []telemetry.SchedulerDecision{{IssueID: "todo", Lane: "Todo", Result: "skipped", Reason: reason, DecisionAt: now}},
+			}
+			figures := boardFigures(snapshot)
+			if figures[0].Value != "1" || figures[1].Value != "0" || figures[2].Value != "1" {
+				t.Fatalf("running/ready/waiting = %s/%s/%s; want 1/0/1", figures[0].Value, figures[1].Value, figures[2].Value)
+			}
+		})
+	}
+}
+
+func TestBoardTodoDispatchCards(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 22, 23, 10, 0, time.UTC)
+	for _, tt := range []struct{ name, reason, detail, capacity, want string }{
+		{name: "hydrated dependency", reason: "blocked_by_dependency", detail: "Waiting on digitaldrywood/pyroapex#2064", want: "digitaldrywood/pyroapex#2064"},
+		{name: "pool capacity", reason: "global_capacity_full", capacity: `{"pool":"default","global_capacity":1,"global_used":1,"shared_capacity":3,"shared_used":1,"shared_available":2}`, want: "2 idle fleet slots unavailable to this pool"},
+		{name: "missing evidence", want: "Scheduler evidence unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := boardTestData()
+			issue := telemetry.Issue{ID: "todo", Identifier: "digitaldrywood/pyroapex#2063", ProjectID: "pyroapex", State: "Todo", Title: "Waiting issue"}
+			data.Snapshot = telemetry.Snapshot{GeneratedAt: now, BoardIssues: []telemetry.Issue{issue}}
+			if tt.reason != "" {
+				data.Snapshot.SchedulerDecisions = []telemetry.SchedulerDecision{{IssueID: issue.ID, ProjectID: issue.ProjectID, Lane: "Todo", Result: "skipped", Reason: tt.reason, WaitReason: tt.detail, CapacitySnapshotJSON: tt.capacity, DecisionAt: now}}
+			}
+			card := projectKanbanCard{IssueID: issue.ID, Identifier: issue.Identifier, ProjectID: issue.ProjectID, Title: issue.Title, Stage: "Todo"}
+			view := boardCardViewFromCard(data, projectKanbanLane{Title: "Todo"}, card, false, "fleet", "")
+			if !view.Waiting || !strings.Contains(view.ExtraText, tt.want) || view.Work.ReadinessKey == "ready" {
+				t.Fatalf("card = %+v, want waiting and %q", view, tt.want)
+			}
+			if tt.reason != "" && !strings.Contains(view.ExtraText, now.Format(time.RFC3339)) {
+				t.Fatalf("missing observation timestamp: %s", view.ExtraText)
+			}
+			if figures := boardFigures(data.Snapshot); figures[1].Value != "0" || figures[2].Value != "1" {
+				t.Fatalf("figures disagree with waiting card: %+v", figures)
+			}
+		})
+	}
+}
+
+func TestBoardDispatchWaitingPreservesBlockerCount(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{1, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			card := projectKanbanCard{Blockers: make([]string, count)}
+			view := boardCardView{DispatchStatus: "Waiting", Waiting: true}
+			signals := boardCardSignals(view, card)
+			want := "Waiting · " + strconv.Itoa(count)
+			if len(signals) != 1 || signals[0].Text != want {
+				t.Fatalf("signals = %+v, want %q", signals, want)
 			}
 		})
 	}

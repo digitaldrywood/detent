@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
@@ -62,6 +64,29 @@ func TestSchedulerDecisionWaitReason(t *testing.T) {
 
 			if got := schedulerDecisionWaitReason(tt.reason); got != tt.want {
 				t.Fatalf("schedulerDecisionWaitReason(%q) = %q, want %q", tt.reason, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecordSchedulerDependencyReasonNamesHydratedBlockers(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		refs []connector.BlockedRef
+		want string
+	}{
+		{name: "unresolved", refs: []connector.BlockedRef{{Identifier: "digitaldrywood/pyroapex#2064", State: "Todo"}}, want: "Waiting on digitaldrywood/pyroapex#2064"},
+		{name: "ignore resolved", refs: []connector.BlockedRef{{Identifier: "done", State: "Done"}, {Identifier: "waiting", State: "In Progress"}}, want: "Waiting on waiting"},
+		{name: "missing refs", want: "blocked_by_dependency"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			orch := Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			orch.recordSchedulerDecision(t.Context(), &state, time.Now(), dispatchPlanDecision{Issue: connector.Issue{ID: "todo", State: "Todo", BlockedBy: tt.refs}}, "skipped", dispatchSkipBlockedByDependency)
+			if got := state.SchedulerDecisions[0].WaitReason; got != tt.want {
+				t.Fatalf("wait reason = %q, want %q", got, tt.want)
 			}
 		})
 	}
