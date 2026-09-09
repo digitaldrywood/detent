@@ -5,7 +5,11 @@ package workspace
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -145,6 +149,115 @@ func TestReapProcessesRejectsUnsafePaths(t *testing.T) {
 			if err == nil {
 				t.Fatal("ReapProcesses() error = nil, want non-nil")
 			}
+		})
+	}
+}
+
+func TestWorkspaceScanOutput(t *testing.T) {
+	tests := []struct {
+		name         string
+		command      string
+		missing      bool
+		cancelBefore bool
+		expired      bool
+		cancelReady  bool
+		wantStage    string
+		wantContext  string
+		wantOutput   string
+		wantExit     bool
+	}{
+		{name: "success", command: "printf 123", wantOutput: "123"},
+		{name: "missing executable", missing: true, wantStage: "start", wantContext: "<nil>"},
+		{name: "canceled before start", cancelBefore: true, wantStage: "start", wantContext: "context canceled"},
+		{name: "deadline before start", expired: true, wantStage: "start", wantContext: "context deadline exceeded"},
+		{name: "no matches exit", command: "exit 1", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "partial output failure", command: "printf 123; exit 2", wantOutput: "123", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "exit failure", command: "exit 2", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "signal without cancellation", command: "kill -KILL $$", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "canceled after readiness", command: "printf ready >&3; read value", cancelReady: true, wantStage: "wait", wantContext: "context canceled", wantExit: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if tt.expired {
+				var expire context.CancelFunc
+				ctx, expire = context.WithDeadline(ctx, time.Time{})
+				defer expire()
+			}
+			cmd := exec.CommandContext(ctx, "sh", "-c", tt.command)
+			if tt.missing {
+				cmd = exec.CommandContext(ctx, filepath.Join(t.TempDir(), "missing"))
+			}
+			if tt.cancelBefore {
+				cancel()
+			}
+			if tt.cancelReady {
+				readyReader, readyWriter, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer readyReader.Close()
+				defer readyWriter.Close()
+				inputReader, inputWriter, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer inputReader.Close()
+				defer inputWriter.Close()
+				cmd.Stdin = inputReader
+				cmd.ExtraFiles = []*os.File{readyWriter}
+				if err := readyReader.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				ready := make(chan error, 1)
+				go func() {
+					_, err := io.ReadFull(readyReader, make([]byte, 5))
+					cancel()
+					ready <- err
+				}()
+				defer func() {
+					if err := <-ready; err != nil {
+						t.Errorf("readiness: %v", err)
+					}
+				}()
+			}
+			output, err := workspaceScanOutput(ctx, cmd)
+			if string(output) != tt.wantOutput {
+				t.Errorf("output = %q, want %q", output, tt.wantOutput)
+			}
+			if tt.wantStage == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected command error")
+			}
+			for _, field := range []string{"stage=" + tt.wantStage, "start_elapsed=", "deadline_set=true", "deadline_remaining=", "context_error=" + tt.wantContext} {
+				if !strings.Contains(err.Error(), field) {
+					t.Errorf("error %q missing %q", err, field)
+				}
+			}
+			if tt.wantStage == "wait" {
+				for _, field := range []string{"wait_elapsed=", "pid=", "output_bytes=" + strconv.Itoa(len(tt.wantOutput)), "context_at_start=<nil>"} {
+					if !strings.Contains(err.Error(), field) {
+						t.Errorf("error %q missing %q", err, field)
+					}
+				}
+			}
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) != tt.wantExit {
+				t.Errorf("exit error = %v, want %t", err, tt.wantExit)
+			}
+			if tt.cancelBefore && !errors.Is(err, context.Canceled) {
+				t.Errorf("cancellation identity lost: %v", err)
+			}
+			if tt.expired && !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("deadline identity lost: %v", err)
+			}
+			t.Log(err)
 		})
 	}
 }
