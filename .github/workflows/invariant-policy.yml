@@ -1,0 +1,32 @@
+name: Invariant policy protection
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Invariant Policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: false
+      - name: Fetch proposed objects without executing proposed code
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+      - name: Apply trusted base policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: go run ./tools/invariantcheck -mode protect -base "$BASE_SHA" -head "$HEAD_SHA"

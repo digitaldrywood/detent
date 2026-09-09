@@ -177,8 +177,12 @@ check: check-migrations check-generated
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
 	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) check-unlocked
 
-check-unlocked: check-migrations check-generated build lint vet nilaway-audit test-race-cover
+check-unlocked: check-invariants check-migrations check-generated build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
+
+.PHONY: check-invariants
+check-invariants:
+	go run ./tools/invariantcheck
 
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...

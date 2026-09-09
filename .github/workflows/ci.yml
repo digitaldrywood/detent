@@ -20,6 +20,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  invariants:
+    name: Invariant Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - name: Exercise required invariant behaviors
+        run: make check-invariants
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
