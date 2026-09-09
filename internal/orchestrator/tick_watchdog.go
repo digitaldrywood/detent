@@ -77,7 +77,15 @@ func (w *tickWatchdog) Schedule(nextRefreshAt time.Time, interval time.Duration)
 	if interval > 0 {
 		w.interval = interval
 	}
+	recovered := w.status == telemetry.TickLivenessStatusNeedsAttention
+	if !w.lastTickAt.IsZero() {
+		w.status = telemetry.TickLivenessStatusReady
+		w.frozenAt = time.Time{}
+	}
 	w.mu.Unlock()
+	if recovered {
+		w.logger.Info("orchestrator tick loop recovered", "project_id", w.projectID, "next_refresh_at", nextRefreshAt)
+	}
 }
 
 func (w *tickWatchdog) Evaluate(now time.Time) telemetry.TickLiveness {
@@ -87,11 +95,11 @@ func (w *tickWatchdog) Evaluate(now time.Time) telemetry.TickLiveness {
 	now = now.UTC()
 	w.mu.Lock()
 	previous := w.status
-	missed := missedTickIntervals(w.lastTickAt, now, w.interval)
+	missed := missedTickIntervals(w.intervalStartLocked(), now, w.interval)
 	if !w.lastTickAt.IsZero() && missed >= tickWatchdogIntervalCount {
 		w.status = telemetry.TickLivenessStatusNeedsAttention
 		if w.frozenAt.IsZero() {
-			w.frozenAt = w.lastTickAt
+			w.frozenAt = w.intervalStartLocked()
 		}
 	}
 	liveness := w.livenessLocked(now)
@@ -155,9 +163,16 @@ func (w *tickWatchdog) livenessLocked(now time.Time) telemetry.TickLiveness {
 		NextRefreshAt:         watchdogTimePointer(w.nextRefreshAt),
 		NextRefreshOverdue:    !w.nextRefreshAt.IsZero() && !now.IsZero() && now.After(w.nextRefreshAt),
 		FrozenAt:              watchdogTimePointer(w.frozenAt),
-		MissedIntervals:       missedTickIntervals(w.lastTickAt, now, w.interval),
+		MissedIntervals:       missedTickIntervals(w.intervalStartLocked(), now, w.interval),
 		WatchdogIntervalCount: tickWatchdogIntervalCount,
 	}
+}
+
+func (w *tickWatchdog) intervalStartLocked() time.Time {
+	if w.lastTickAt.IsZero() || w.nextRefreshAt.IsZero() || w.interval <= 0 {
+		return w.lastTickAt
+	}
+	return w.nextRefreshAt.Add(-w.interval)
 }
 
 func missedTickIntervals(lastTickAt time.Time, now time.Time, interval time.Duration) int64 {

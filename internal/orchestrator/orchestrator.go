@@ -936,6 +936,9 @@ func (o *Orchestrator) finishTick(state *State) {
 	if o == nil {
 		return
 	}
+	if state != nil && state.PollInterval > 0 {
+		state.NextRefreshAt = o.clockNow().Add(state.PollInterval)
+	}
 	o.publishState(state)
 	o.refreshProgress.Store(nil)
 	o.refreshInProgress.Store(false)
