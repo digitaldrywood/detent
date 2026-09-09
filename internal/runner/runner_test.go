@@ -1477,12 +1477,16 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		runErr  error
-		wantErr error
+		name        string
+		runErr      error
+		wantErr     error
+		reapErr     error
+		wantReap    bool
+		wantScratch bool
 	}{
 		{name: "completed turn"},
-		{name: "cancelled turn", runErr: context.Canceled, wantErr: context.Canceled},
+		{name: "cancelled turn", runErr: context.Canceled, wantErr: context.Canceled, wantReap: true},
+		{name: "cancelled turn reap deadline", runErr: context.Canceled, wantErr: context.Canceled, reapErr: context.DeadlineExceeded, wantReap: true, wantScratch: true},
 	}
 
 	for _, tt := range tests {
@@ -1491,9 +1495,25 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 
 			workspacePath := t.TempDir()
 			backend := &scratchWritingAgentBackend{runErr: tt.runErr}
+			t.Cleanup(func() {
+				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
+					t.Errorf("fixture scratch cleanup: %v", err)
+				}
+			})
+			reaped := false
 			r := &Runner{
 				now:    time.Now,
 				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				reapWorkspaceProcesses: func(ctx context.Context, path string, _ time.Duration) (int, error) {
+					reaped = true
+					if path != workspacePath || ctx.Err() != nil {
+						t.Fatalf("reap workspace = %q, context error = %v", path, ctx.Err())
+					}
+					if _, err := os.Stat(backend.tempDir); err != nil {
+						t.Fatalf("scratch missing before reap: %v", err)
+					}
+					return 0, tt.reapErr
+				},
 			}
 			execution := r.runAgentTurn(
 				context.Background(),
@@ -1517,6 +1537,18 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if !errors.Is(execution.err, tt.wantErr) {
 				t.Fatalf("runAgentTurn() error = %v, want %v", execution.err, tt.wantErr)
 			}
+			if reaped != tt.wantReap {
+				t.Fatalf("workspace reaped = %v, want %v", reaped, tt.wantReap)
+			}
+			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+				t.Fatalf("worker reap failure = %v, want %v: %v", got, tt.wantScratch, execution.err)
+			}
+			if tt.reapErr != nil && !errors.Is(execution.err, tt.reapErr) {
+				t.Fatalf("turn error = %v, want reap cause %v", execution.err, tt.reapErr)
+			}
+			if execution.cleanupErr != nil {
+				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
+			}
 			canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
 			if err != nil {
 				t.Fatalf("EvalSymlinks() error = %v", err)
@@ -1524,8 +1556,13 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, canonicalWorkspace+string(filepath.Separator)) {
 				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, canonicalWorkspace)
 			}
-			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("worker temp directory exists after turn, stat error = %v", err)
+			_, statErr := os.Stat(backend.tempDir)
+			if tt.wantScratch {
+				if statErr != nil {
+					t.Fatalf("scratch not retained after reap failure: %v", statErr)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("worker scratch remains: stat error = %v, turn error = %v, cleanup error = %v", statErr, execution.err, execution.cleanupErr)
 			}
 		})
 	}
