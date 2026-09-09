@@ -1,8 +1,12 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -116,5 +120,92 @@ func TestTickWatchdogRunsOutsideTickLoop(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("watchdog did not stop after cancellation")
+	}
+}
+
+func TestTickWatchdogCompletedSlowRefresh(t *testing.T) {
+	t.Parallel()
+	for _, duration := range []time.Duration{560 * time.Second, 700 * time.Second} {
+		t.Run(duration.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				interval := 300 * time.Second
+				var logs bytes.Buffer
+				watchdog := newTickWatchdog("parable", interval, slog.New(slog.NewTextHandler(&logs, nil)))
+				orch := &Orchestrator{tickWatchdog: watchdog}
+				started := time.Now()
+				state := State{PollInterval: interval, LastRefreshAt: started, NextRefreshAt: started.Add(interval)}
+				recordRefreshSourceSuccess(&state, telemetry.RefreshSourceCandidates, started)
+				orch.startTick(&state, started)
+				time.Sleep(duration)
+				active := watchdog.Evaluate(time.Now())
+				wantActive := telemetry.TickLivenessStatusReady
+				if duration >= 2*interval {
+					wantActive = telemetry.TickLivenessStatusNeedsAttention
+				}
+				if active.Status != wantActive {
+					t.Fatalf("active refresh status = %s", active.Status)
+				}
+				orch.finishTick(&state)
+				completed := time.Now()
+				wantNext := completed.Add(interval)
+				if !state.NextRefreshAt.Equal(wantNext) {
+					t.Fatalf("NextRefreshAt = %v, want completion plus interval %v", state.NextRefreshAt, wantNext)
+				}
+				if duration < 2*interval && strings.Contains(logs.String(), "tick loop") {
+					t.Fatalf("slow refresh caused liveness churn: %s", logs.String())
+				}
+				logs.Reset()
+				ticker := time.NewTicker(interval)
+				defer ticker.Stop()
+				resetTicker(ticker, interval)
+				time.Sleep(interval - time.Second)
+				got := watchdog.Evaluate(time.Now())
+				if got.Status != telemetry.TickLivenessStatusReady || got.NextRefreshOverdue || got.MissedIntervals != 0 || got.FrozenAt != nil {
+					t.Fatalf("legitimate polling wait = %+v", got)
+				}
+				if got.LastTickAt == nil || !got.LastTickAt.Equal(started) || !state.LastRefreshAt.Equal(started) {
+					t.Fatal("completion changed start-time evidence")
+				}
+				source := state.RefreshSources[telemetry.RefreshSourceCandidates]
+				if source.LastSuccessAt == nil || !source.LastSuccessAt.Equal(started) {
+					t.Fatal("completion changed source freshness evidence")
+				}
+				next := <-ticker.C
+				if !next.Equal(wantNext) {
+					t.Fatalf("timer fired at %v, want %v", next, wantNext)
+				}
+				orch.startTick(&state, next)
+				if strings.Contains(logs.String(), "tick loop") {
+					t.Fatalf("completed refresh caused liveness churn: %s", logs.String())
+				}
+			})
+		})
+	}
+}
+
+func TestTickWatchdogMissedScheduledTick(t *testing.T) {
+	t.Parallel()
+	started := time.Date(2026, 9, 9, 0, 14, 34, 0, time.UTC)
+	interval := 5 * time.Minute
+	next := started.Add(560*time.Second + interval)
+	for _, tt := range []struct {
+		name   string
+		offset time.Duration
+		missed int64
+		status telemetry.TickLivenessStatus
+	}{
+		{"waiting", -time.Second, 0, telemetry.TickLivenessStatusReady},
+		{"due", 0, 1, telemetry.TickLivenessStatusReady},
+		{"missed", interval, 2, telemetry.TickLivenessStatusNeedsAttention},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newTickWatchdog("parable", interval, nil)
+			w.Advance(started, started.Add(interval), interval)
+			w.Schedule(next, interval)
+			got := w.Evaluate(next.Add(tt.offset))
+			if got.Status != tt.status || got.MissedIntervals != tt.missed {
+				t.Fatalf("liveness = %+v, want status %s and missed %d", got, tt.status, tt.missed)
+			}
+		})
 	}
 }
