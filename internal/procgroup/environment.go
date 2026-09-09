@@ -30,11 +30,12 @@ func SetTempDir(cmd *exec.Cmd, path string) {
 
 func environmentWithTempDir(environment []string, path string, goos string) []string {
 	tempKeys := map[string]struct{}{
-		environmentKey("TMPDIR", goos): {},
-		environmentKey("TMP", goos):    {},
-		environmentKey("TEMP", goos):   {},
+		environmentKey("DETENT_WORKER_SCRATCH", goos): {},
+		environmentKey("TMPDIR", goos):                {},
+		environmentKey("TMP", goos):                   {},
+		environmentKey("TEMP", goos):                  {},
 	}
-	out := make([]string, 0, len(environment)+3)
+	out := make([]string, 0, len(environment)+4)
 	for _, entry := range environment {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok {
@@ -44,7 +45,7 @@ func environmentWithTempDir(environment []string, path string, goos string) []st
 		}
 		out = append(out, entry)
 	}
-	return append(out, "TMPDIR="+path, "TMP="+path, "TEMP="+path)
+	return append(out, "TMPDIR="+path, "TMP="+path, "TEMP="+path, "DETENT_WORKER_SCRATCH="+path)
 }
 
 func environmentWithOverrides(current []string, configured Environment, goos string) []string {

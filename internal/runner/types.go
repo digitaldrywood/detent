@@ -448,6 +448,7 @@ const (
 )
 
 type AgentUpdate struct {
+	workerScratchPath   string
 	Type                AgentUpdateType
 	Method              string
 	ProcessIdentity     string

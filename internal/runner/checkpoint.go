@@ -166,7 +166,7 @@ func (r *Runner) workerCheckpoint(ctx context.Context, c *workerCheckpoint, reas
 		return execution
 	}
 	defer func() {
-		if err := workspace.CleanupWorkerScratch(c.plan.Info.Path); err != nil {
+		if err := workspace.CleanupWorkerScratch(c.plan.Info.Path, tempDir); err != nil {
 			r.logWorkerEvent(c.request.Issue, "worker_checkpoint_scratch_cleanup_failed", "error", err)
 		}
 	}()

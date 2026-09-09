@@ -41,7 +41,7 @@ func (p *AgentProvider) Reply(ctx context.Context, request TurnRequest) (TurnRes
 		return TurnResponse{}, fmt.Errorf("prepare chat scratch: %w", err)
 	}
 	defer func() {
-		if err := workspace.CleanupWorkerScratch(p.workspace); err != nil {
+		if err := workspace.CleanupWorkerScratch(p.workspace, scratch); err != nil {
 			p.logger.Warn("chat scratch cleanup failed", "error", err)
 		}
 	}()

@@ -912,6 +912,7 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 			boundedUpdateHandler = func(update AgentUpdate) error {
 				updateMu.Lock()
 				defer updateMu.Unlock()
+				update.workerScratchPath = request.TempDir
 				if onUpdate != nil {
 					if err := onUpdate(turnCtx, update); err != nil {
 						return err
@@ -996,7 +997,7 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 	}
 	request.TempDir = tempDir
 	cleanupScratch := func() error {
-		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath); cleanupErr != nil {
+		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath, tempDir); cleanupErr != nil {
 			return fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
 		}
 		return nil
@@ -1040,10 +1041,11 @@ func observeAgentRSS(
 	}
 	if onUpdate != nil {
 		if err := onUpdate(ctx, AgentUpdate{
-			Type:            AgentUpdateResourceUsage,
-			WorkerProcess:   identity,
-			RSSBytes:        rssBytes,
-			RSSCeilingBytes: request.MaxRSSBytes,
+			Type:              AgentUpdateResourceUsage,
+			WorkerProcess:     identity,
+			workerScratchPath: request.TempDir,
+			RSSBytes:          rssBytes,
+			RSSCeilingBytes:   request.MaxRSSBytes,
 		}); err != nil {
 			return err
 		}
@@ -1141,7 +1143,7 @@ func (r *Runner) runAgentTurn(
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, update.workerScratchPath); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, detentSessionID, update); err != nil {
@@ -1183,22 +1185,15 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}, r.turnLimit)
-	processReapErr := r.reapSessionWorkerProcess(
+	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
 		detentSessionID,
 		runRequest.Issue,
 		workerProcessReapReason(ctx, turnErr),
+		func() error {
+			return r.reapWorkspaceProcessesAfterTurn(ctx, info.Path, detentSessionID, runRequest.WorkAttemptID, runRequest.Issue, turnErr, workerProcessObserved)
+		},
 	)
-	workspaceReapErr := r.reapWorkspaceProcessesAfterTurn(
-		ctx,
-		info.Path,
-		detentSessionID,
-		runRequest.WorkAttemptID,
-		runRequest.Issue,
-		turnErr,
-		workerProcessObserved,
-	)
-	workerReapErr := errors.Join(processReapErr, workspaceReapErr)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
 	if workerReapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
@@ -1995,14 +1990,23 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
-	if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
-		return result, errors.Join(turnErr, err)
+	if req.Admission != nil && errors.Is(turnErr, ErrWorkerProcessReap) {
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_admission_workspace_retained",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
+			"workspace_path", info.Path,
+			"error", turnErr,
+		)
+	} else {
+		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+			return result, errors.Join(turnErr, err)
+		}
+		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
+			telemetry.DetentSessionIDKey, sessionID,
+			"workspace_path", info.Path,
+		)
 	}
-	r.logWorkerEvent(req.Issue, "worker_after_run_finished",
-		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
-		telemetry.DetentSessionIDKey, sessionID,
-		"workspace_path", info.Path,
-	)
 	if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
 		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, context.WithoutCancel(ctx), info, workspaceIssue, "final")
 		result.ArtifactEvidence = artifactProgressEvidence(initialArtifactEvidence, finalArtifactEvidence)
@@ -3003,7 +3007,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, filepath.Join(info.Path, ".detent", "tmp")); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, update.workerScratchPath); err != nil {
 			return err
 		}
 		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
@@ -3037,22 +3041,15 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	}, r.turnLimit)
-	processReapErr := r.reapSessionWorkerProcess(
+	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		sessionCtx,
 		sessionID,
 		req.Issue,
 		workerProcessReapReason(sessionCtx, turnErr),
+		func() error {
+			return r.reapWorkspaceProcessesAfterTurn(sessionCtx, info.Path, sessionID, runReq.WorkAttemptID, req.Issue, turnErr, workerProcessObserved)
+		},
 	)
-	workspaceReapErr := r.reapWorkspaceProcessesAfterTurn(
-		sessionCtx,
-		info.Path,
-		sessionID,
-		runReq.WorkAttemptID,
-		req.Issue,
-		turnErr,
-		workerProcessObserved,
-	)
-	workerReapErr := errors.Join(processReapErr, workspaceReapErr)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
 	if workerReapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
@@ -3456,36 +3453,69 @@ func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int6
 }
 
 func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, issue connector.Issue, reason string) error {
-	if sessionID <= 0 {
-		return nil
+	return r.reapSessionWorkerProcessWithWorkspace(ctx, sessionID, issue, reason, nil)
+}
+
+func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sessionID int64, issue connector.Issue, reason string, reapWorkspace func() error) error {
+	type workerProcessReapResult struct {
+		process store.WorkerProcess
+		outcome procgroup.TerminationOutcome
 	}
+	var processes []workerProcessReapResult
+	var reapErrors error
+	staleIdentity := false
 	processStore, ok := r.store.(sessionWorkerProcessReaper)
+	if ok && sessionID > 0 {
+		active, err := processStore.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
+		if err != nil {
+			reapErrors = fmt.Errorf("list agent session worker processes: %w", err)
+		}
+		for _, process := range active {
+			if process.SessionID != sessionID {
+				continue
+			}
+			identity := procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt}
+			outcome, reapErr := r.reapWorkerProcess(context.WithoutCancel(ctx), identity, r.workerReapGrace)
+			if outcome == procgroup.TerminationOutcomeStaleIdentity {
+				staleIdentity = true
+				reapErr = errors.Join(reapErr, errors.New("worker process identity changed; retain artifacts"))
+			}
+			attrs := []any{
+				telemetry.DetentSessionIDKey, sessionID,
+				"pid", process.PID,
+				"pgid", process.GroupID,
+				"reason", strings.TrimSpace(reason),
+				"decision", string(outcome),
+			}
+			if reapErr != nil {
+				attrs = append(attrs, "error", reapErr)
+				reapErrors = errors.Join(reapErrors, fmt.Errorf("reap agent session worker process: %w", reapErr))
+			}
+			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+			processes = append(processes, workerProcessReapResult{process: process, outcome: outcome})
+		}
+	}
+	if staleIdentity {
+		return reapErrors
+	}
+	if reapWorkspace != nil {
+		reapErrors = errors.Join(reapErrors, reapWorkspace())
+	} else {
+		for _, reaped := range processes {
+			process := reaped.process
+			_, err := workspace.ReapWorkerArtifactProcesses(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
+			reapErrors = errors.Join(reapErrors, err)
+		}
+	}
+	if reapErrors != nil {
+		return reapErrors
+	}
 	if !ok {
 		return nil
 	}
-	processes, err := processStore.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
-	if err != nil {
-		return fmt.Errorf("list agent session worker processes: %w", err)
-	}
-	for _, process := range processes {
-		if process.SessionID != sessionID {
-			continue
-		}
-		identity := procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt}
-		outcome, reapErr := r.reapWorkerProcess(context.WithoutCancel(ctx), identity, r.workerReapGrace)
-		attrs := []any{
-			telemetry.DetentSessionIDKey, sessionID,
-			"pid", process.PID,
-			"pgid", process.GroupID,
-			"reason", strings.TrimSpace(reason),
-			"decision", string(outcome),
-		}
-		if reapErr != nil {
-			attrs = append(attrs, "error", reapErr)
-			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
-			return fmt.Errorf("reap agent session worker process: %w", reapErr)
-		}
-		r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_process_reap_decision", attrs...)
+	for _, reaped := range processes {
+		process := reaped.process
+		outcome := reaped.outcome
 		cleanupAttempts, cleanupErr := r.cleanupSessionWorkerArtifacts(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath)
 		if cleanupErr != nil {
 			r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_artifact_cleanup_failed",
@@ -3496,6 +3526,12 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 				"path", strings.TrimSpace(process.CleanupPath),
 				"attempts", cleanupAttempts,
 				"error", cleanupErr,
+			)
+		} else {
+			r.logWorkerEventLevel(slog.LevelInfo, issue, "worker_artifacts_cleaned",
+				telemetry.DetentSessionIDKey, sessionID,
+				"pid", process.PID,
+				"path", strings.TrimSpace(process.CleanupPath),
 			)
 		}
 		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{

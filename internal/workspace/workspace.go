@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -32,7 +34,7 @@ const defaultHookTimeout = time.Minute
 const failedWorkspacePreservationTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
 const hookOutputTailBytes = 16 * 1024
-const workerScratchRelativePath = ".detent/tmp"
+const workerScratchRelativePath = ".detent/worker-tmp"
 const quarantineTimestampFormat = "20060102T150405.000000000Z"
 const quarantineAccumulationWarningThreshold = 5
 
@@ -1579,11 +1581,6 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 	if err := ensureWorkerScratchExcluded(ctx, workspacePath); err != nil {
 		return "", err
 	}
-	scratchPath = filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
-	if err := removeWorkspacePath(workspacePath, scratchPath); err != nil {
-		return "", fmt.Errorf("remove stale worker scratch: %w", err)
-	}
-
 	root, err := os.OpenRoot(workspacePath)
 	if err != nil {
 		return "", fmt.Errorf("open worker workspace: %w", err)
@@ -1592,10 +1589,11 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 		err = errors.Join(err, root.Close())
 	}()
 
-	if err := root.MkdirAll(workerScratchRelativePath, 0o700); err != nil {
+	relativePath := filepath.Join(filepath.FromSlash(workerScratchRelativePath), "attempt-"+uuid.NewString())
+	if err := root.MkdirAll(relativePath, 0o700); err != nil {
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
-	return scratchPath, nil
+	return filepath.Join(workspacePath, relativePath), nil
 }
 
 func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) error {
@@ -1612,7 +1610,7 @@ func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) erro
 	return nil
 }
 
-func CleanupWorkerScratch(workspacePath string) error {
+func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 	workspacePath, err := canonicalExistingPath(workspacePath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -1620,8 +1618,8 @@ func CleanupWorkerScratch(workspacePath string) error {
 	if err != nil {
 		return fmt.Errorf("resolve worker workspace: %w", err)
 	}
-	scratchPath := filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
-	if err := removeWorkspacePath(workspacePath, scratchPath); err != nil {
+	scratchRoot := filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
+	if err := removeWorkspacePath(scratchRoot, scratchPath); err != nil {
 		return fmt.Errorf("remove worker scratch: %w", err)
 	}
 	return nil
@@ -1642,6 +1640,29 @@ func CleanupOwnedPath(root string, path string) error {
 		return fmt.Errorf("remove owned path: %w", err)
 	}
 	return nil
+}
+
+func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, grace time.Duration) (int, error) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return 0, nil
+	}
+	root, err := canonicalExistingPath(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	path, err = validateWorkspacePath(root, path)
+	if err != nil {
+		return 0, err
+	}
+	scratchRoot := filepath.Join(root, filepath.FromSlash(workerScratchRelativePath))
+	legacyScratchRoot := filepath.Join(root, ".detent", "tmp")
+	if path == legacyScratchRoot || path == scratchRoot || pathWithin(scratchRoot, path) {
+		path = root
+	}
+	return ReapProcesses(ctx, path, grace)
 }
 
 func remediateWorkspacePathPermissions(root string, path string) (string, error) {

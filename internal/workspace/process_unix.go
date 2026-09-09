@@ -47,6 +47,8 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	if grace <= 0 {
 		grace = defaultProcessTerminationGrace
 	}
+	ctx, cancel := context.WithTimeout(ctx, max(2*grace, 5*time.Second))
+	defer cancel()
 	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
 }
 
@@ -152,10 +154,28 @@ func waitForWorkspaceProcesses(
 }
 
 func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
-	if runtime.GOOS == "linux" {
-		return linuxWorkspaceProcessIDs(path)
+	canonical, err := canonicalExistingPath(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	return lsofWorkspaceProcessIDs(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Dir(canonical) == canonical {
+		return nil, errors.New("workspace path must not resolve to a filesystem root")
+	}
+	path = canonical
+	owned, err := scratchEnvironmentProcessIDs(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	var cwd []int
+	if runtime.GOOS == "linux" {
+		cwd, err = linuxWorkspaceProcessIDs(path)
+	} else {
+		cwd, err = lsofWorkspaceProcessIDs(ctx, path)
+	}
+	return append(owned, cwd...), err
 }
 
 func linuxWorkspaceProcessIDs(path string) ([]int, error) {

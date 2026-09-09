@@ -17,14 +17,14 @@ func TestEnvironmentWithTempDir(t *testing.T) {
 		{
 			name:        "unix replaces exact temp variables",
 			goos:        "linux",
-			environment: []string{"PATH=/bin", "TMPDIR=/host/tmp", "TMP=/host/tmp", "TEMP=/host/tmp", "tmp=/preserved"},
-			want:        []string{"PATH=/bin", "tmp=/preserved", "TMPDIR=/workspace/.detent/tmp", "TMP=/workspace/.detent/tmp", "TEMP=/workspace/.detent/tmp"},
+			environment: []string{"PATH=/bin", "TMPDIR=/host/tmp", "TMP=/host/tmp", "TEMP=/host/tmp", "tmp=/preserved", "DETENT_WORKER_SCRATCH=/prior/owner"},
+			want:        []string{"PATH=/bin", "tmp=/preserved", "TMPDIR=/workspace/.detent/tmp", "TMP=/workspace/.detent/tmp", "TEMP=/workspace/.detent/tmp", "DETENT_WORKER_SCRATCH=/workspace/.detent/tmp"},
 		},
 		{
 			name:        "windows replaces temp variables case insensitively",
 			goos:        "windows",
-			environment: []string{"Path=C:\\bin", "tmpdir=C:\\host", "Tmp=C:\\host", "temp=C:\\host"},
-			want:        []string{"Path=C:\\bin", "TMPDIR=/workspace/.detent/tmp", "TMP=/workspace/.detent/tmp", "TEMP=/workspace/.detent/tmp"},
+			environment: []string{"Path=C:\\bin", "tmpdir=C:\\host", "Tmp=C:\\host", "temp=C:\\host", "detent_worker_scratch=C:\\prior"},
+			want:        []string{"Path=C:\\bin", "TMPDIR=/workspace/.detent/tmp", "TMP=/workspace/.detent/tmp", "TEMP=/workspace/.detent/tmp", "DETENT_WORKER_SCRATCH=/workspace/.detent/tmp"},
 		},
 	}
 

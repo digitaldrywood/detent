@@ -1535,12 +1535,16 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		reapErr     error
-		wantScratch bool
+		name             string
+		reapErr          error
+		workspaceReapErr error
+		outcome          procgroup.TerminationOutcome
+		wantScratch      bool
 	}{
 		{name: "reaped process group"},
 		{name: "process group exit not verified", reapErr: errors.New("process group remained alive"), wantScratch: true},
+		{name: "workspace descendant exit not verified", workspaceReapErr: errors.New("workspace descendant remained alive"), wantScratch: true},
+		{name: "stale process identity", outcome: procgroup.TerminationOutcomeStaleIdentity, wantScratch: true},
 	}
 
 	for _, tt := range tests {
@@ -1548,15 +1552,15 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 			t.Parallel()
 
 			workspacePath := t.TempDir()
-			t.Cleanup(func() {
-				if err := workspace.CleanupWorkerScratch(workspacePath); err != nil {
-					t.Fatalf("CleanupWorkerScratch() error = %v", err)
-				}
-			})
 			startedAt := time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC)
 			const sessionID = int64(2954)
 			identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
 			backend := &scratchWritingAgentBackend{workerProcess: identity}
+			t.Cleanup(func() {
+				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
+					t.Fatal(err)
+				}
+			})
 			sessionStore := &scratchReapSessionStore{
 				fakeSessionStore: &fakeSessionStore{},
 				process: store.WorkerProcess{
@@ -1577,7 +1581,19 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 				reapWorkerProcess: func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
 					_, err := os.Stat(backend.tempDir)
 					scratchPresentDuringReap = err == nil
+					if tt.outcome != "" {
+						return tt.outcome, tt.reapErr
+					}
 					return procgroup.TerminationOutcomeTerminated, tt.reapErr
+				},
+				reapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
+					if tt.outcome == procgroup.TerminationOutcomeStaleIdentity {
+						t.Error("workspace reaped after stale worker identity")
+					}
+					if _, err := os.Stat(backend.tempDir); err != nil {
+						t.Errorf("scratch disappeared before workspace descendant reap: %v", err)
+					}
+					return 0, tt.workspaceReapErr
 				},
 			}
 
@@ -1603,8 +1619,11 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 			if !scratchPresentDuringReap {
 				t.Fatal("worker scratch was removed before process reaping")
 			}
-			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != (tt.reapErr != nil) {
-				t.Fatalf("runAgentTurn() worker reap error = %v, want %v: %v", got, tt.reapErr != nil, execution.err)
+			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+				t.Fatalf("runAgentTurn() worker reap error = %v, want %v: %v", got, tt.wantScratch, execution.err)
+			}
+			if tt.wantScratch && len(sessionStore.reaps) != 0 {
+				t.Fatal("worker record released before descendant exit was verified")
 			}
 			_, statErr := os.Stat(backend.tempDir)
 			if got := statErr == nil; got != tt.wantScratch {
@@ -2255,6 +2274,97 @@ func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
 	}
 	if !agentResumeEmpty(agentBackend.request.Resume) {
 		t.Fatalf("AgentTurnRequest.Resume = %#v, want fresh routine session", agentBackend.request.Resume)
+	}
+}
+
+func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		processErr   error
+		workspaceErr error
+	}{
+		{name: "completed"},
+		{name: "process group still alive", processErr: errors.New("process group still alive")},
+		{name: "workspace descendant still alive", workspaceErr: errors.New("workspace descendant still alive")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			identity := procgroup.Identity{PID: 2354, GroupID: 2354, StartedAt: time.Now()}
+			backend := &fakeCodexClient{
+				updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: identity}},
+				result:  AgentTurnResult{ThreadID: "admission-scratch", TurnID: "turn-1"},
+			}
+			sessionStore := &scratchReapSessionStore{
+				fakeSessionStore: &fakeSessionStore{sessionID: 2354},
+				process:          store.WorkerProcess{SessionID: 2354},
+			}
+			var fixture string
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+				AgentBackend: backend,
+				Store:        sessionStore,
+				ReapWorkerProcess: func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					fixture = filepath.Join(backend.request.TempDir, "descendant-fixture")
+					if err := os.WriteFile(fixture, []byte("still owned"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					return procgroup.TerminationOutcomeTerminated, tt.processErr
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if backend.request.Workspace != "" {
+					if _, err := os.Stat(backend.request.Workspace); errors.Is(err, os.ErrNotExist) {
+						return
+					}
+					if err := workspace.CleanupOwnedPath(os.TempDir(), backend.request.Workspace); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			runner.reapWorkspaceProcesses = func(context.Context, string, time.Duration) (int, error) {
+				if _, err := os.Stat(fixture); err != nil {
+					t.Errorf("fixture removed before descendant reap: %v", err)
+				}
+				return 0, tt.workspaceErr
+			}
+			_, err = runner.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{ID: "admission-detent", Identifier: "detent/admission", State: "Admission"},
+				Mode:  RunModeRoutine,
+				Admission: &AdmissionRequest{
+					TargetState: "Todo", CriteriaSection: "Admission criteria", CriteriaText: "Require evidence.",
+					Dimensions:    []AdmissionDimension{{Name: "Evidence", Text: "Require evidence."}},
+					EffortSection: "Issue effort selection", EffortText: "low", AllowedEfforts: []string{"low"},
+				},
+			})
+			wantRetained := tt.processErr != nil || tt.workspaceErr != nil
+			if errors.Is(err, ErrWorkerProcessReap) != wantRetained {
+				t.Fatalf("Run error = %v, want reap failure %t", err, wantRetained)
+			}
+			if !wantRetained && err != nil {
+				t.Fatal(err)
+			}
+			_, statErr := os.Stat(fixture)
+			if wantRetained {
+				if statErr != nil {
+					t.Fatalf("admission epilogue removed owned fixture: %v", statErr)
+				}
+				if len(sessionStore.reaps) != 0 {
+					t.Fatal("released worker recovery record before descendant exit")
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("completed admission fixture remains: %v", statErr)
+			}
+			if !wantRetained {
+				if _, err := os.Stat(backend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("completed admission workspace remains: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -5550,7 +5660,7 @@ func TestRunnerAuditRetainsWorkerScratchUntilLaterProcessReapSucceeds(t *testing
 			if got != identity {
 				t.Fatalf("worker identity = %#v, want %#v", got, identity)
 			}
-			_, statErr := os.Stat(filepath.Join(backend.request.Workspace, ".detent", "tmp"))
+			_, statErr := os.Stat(backend.request.TempDir)
 			scratchPresentDuringReap = statErr == nil
 			return procgroup.TerminationOutcomeTerminated, reapErr
 		},
@@ -5583,7 +5693,7 @@ func TestRunnerAuditRetainsWorkerScratchUntilLaterProcessReapSucceeds(t *testing
 	if !scratchPresentDuringReap {
 		t.Fatal("worker scratch was removed before process reaping")
 	}
-	if _, err := os.Stat(filepath.Join(backend.request.Workspace, ".detent", "tmp")); err != nil {
+	if _, err := os.Stat(backend.request.TempDir); err != nil {
 		t.Fatalf("worker scratch stat error after reap failure = %v", err)
 	}
 
@@ -5830,7 +5940,7 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 				t.Fatalf("NewRunner() error = %v", err)
 			}
 			runner.cleanupWorkerArtifacts = func(root string, path string) error {
-				if root == "" || !strings.HasSuffix(path, filepath.Join(".detent", "tmp")) {
+				if root != backend.request.Workspace || path != backend.request.TempDir {
 					t.Fatalf("cleanup paths = %q, %q", root, path)
 				}
 				return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.ENOTEMPTY}
