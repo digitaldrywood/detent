@@ -225,6 +225,9 @@ func removeQuestionWorkpadBlocker(body, repository, source string) (string, erro
 	if err := yaml.Unmarshal([]byte(content), &fields); err != nil {
 		return "", err
 	}
+	if fields == nil {
+		return body, nil
+	}
 	blockers, ok := fields["blockers"].([]any)
 	if !ok {
 		return body, nil
