@@ -25,3 +25,22 @@ func sameMergeControlRevision(checked, current connector.Issue) bool {
 		checked.PullRequest.HeadSHA == current.PullRequest.HeadSHA &&
 		checked.PullRequest.BaseSHA == current.PullRequest.BaseSHA
 }
+
+func (o *Orchestrator) reconcileMergeControlDemand(decisions []dispatchPlanDecision, outcomes map[string]dispatchIssueOutcome) {
+	completedControl := false
+	for _, outcome := range outcomes {
+		if outcome.reason == dispatchIssueFailureGlobalSlotUnavailable {
+			return
+		}
+		completedControl = completedControl || outcome.mergeControl
+	}
+	if !completedControl {
+		return
+	}
+	for _, decision := range decisions {
+		if decision.SkipReason == dispatchSkipMergeControlLimit {
+			return
+		}
+	}
+	o.markGlobalProjectIdle()
+}

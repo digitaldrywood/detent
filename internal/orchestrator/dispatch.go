@@ -212,6 +212,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			}
 		},
 	})
+	o.reconcileMergeControlDemand(decisions, outcomes)
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
 }
@@ -367,6 +368,7 @@ const (
 )
 
 type dispatchIssueOutcome struct {
+	mergeControl   bool
 	dispatched     bool
 	reason         string
 	waitReason     string
@@ -879,7 +881,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 			IssueID: issue.ID, Request: request, CompletedAt: now,
 			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
 		})
-		return dispatchIssueOutcome{dispatched: true}
+		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
 	}
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running

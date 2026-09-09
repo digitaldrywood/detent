@@ -270,3 +270,38 @@ func TestCapacityWaitReasonsMatchDispatchStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestReadyMergeReconcilesGlobalDemand(t *testing.T) {
+	t.Parallel()
+	for _, remaining := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remaining_%t", remaining), func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MergeFastPathEnabled: true, ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}})
+			state := providerWindowState(cfg, 0)
+			issue := readyMergeCapacityIssue("ready", 2371)
+			issues := []connector.Issue{issue}
+			if remaining {
+				issues = append(issues, dispatchTestIssue("queued", "Todo"))
+			}
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: issues}}
+			global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			slot, ok, err := global.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now)
+			if !ok || err != nil {
+				t.Fatalf("fill capacity: ok=%t err=%v", ok, err)
+			}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: global, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			orch.dispatchReadyIssues(t.Context(), &state, issues, now)
+			if len(tracker.merges) != 1 {
+				t.Fatalf("merges=%v, want one", tracker.merges)
+			}
+			if err := global.Release(slot); err != nil {
+				t.Fatal(err)
+			}
+			_, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "In Progress"}, now)
+			if err != nil || acquired == remaining {
+				t.Fatalf("other acquired=%t decision=%+v err=%v, remaining=%t", acquired, decision, err, remaining)
+			}
+		})
+	}
+}
