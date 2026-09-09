@@ -25,6 +25,7 @@ type HumanQuestionStore interface {
 	RecordHumanQuestionComment(context.Context, HumanQuestion) error
 	RecordHumanQuestionAnswer(context.Context, HumanQuestion) error
 	RecordHumanQuestionWork(context.Context, HumanQuestion) error
+	ReleaseHumanQuestionReservation(context.Context, HumanQuestion) error
 }
 
 func (s *sqliteStore) ReserveHumanQuestion(ctx context.Context, q HumanQuestion) (bool, error) {
@@ -74,5 +75,10 @@ func (s *sqliteStore) RecordHumanQuestionAnswer(ctx context.Context, q HumanQues
 
 func (s *sqliteStore) RecordHumanQuestionWork(ctx context.Context, q HumanQuestion) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE human_questions SET work_fingerprint = ? WHERE project_id = ? AND issue_id = ? AND question_key = ? AND answer_comment_id = ''`, q.WorkFingerprint, q.ProjectID, q.IssueID, q.Key)
+	return err
+}
+
+func (s *sqliteStore) ReleaseHumanQuestionReservation(ctx context.Context, q HumanQuestion) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM human_questions WHERE project_id = ? AND issue_id = ? AND question_key = ? AND body = ? AND question_comment_id = '' AND answer_comment_id = ''`, q.ProjectID, q.IssueID, q.Key, q.Body)
 	return err
 }

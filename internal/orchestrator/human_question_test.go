@@ -18,10 +18,12 @@ import (
 
 type questionTracker struct {
 	*memory.Connector
-	mu        sync.Mutex
-	comments  []connector.IssueComment
-	posts     int
-	postError bool
+	mu          sync.Mutex
+	comments    []connector.IssueComment
+	posts       int
+	postError   bool
+	rejectPosts int
+	onReject    func()
 }
 
 type unavailableHumanQuestionStore struct {
@@ -58,6 +60,13 @@ func TestHumanQuestionWaitPreservesAttemptOnStorageFailure(t *testing.T) {
 func (c *questionTracker) CreateComment(_ context.Context, _ string, body string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.rejectPosts > 0 {
+		c.rejectPosts--
+		if c.onReject != nil {
+			c.onReject()
+		}
+		return errors.Join(connector.ErrCommentNotCreated, errors.New("post rejected before creation"))
+	}
 	c.posts++
 	at := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	c.comments = append(c.comments, connector.IssueComment{ID: strconv.Itoa(c.posts), Body: body, AuthorLogin: "worker", CreatedAt: &at})
@@ -75,6 +84,76 @@ func (c *questionTracker) FetchIssueComments(context.Context, connector.Issue) (
 
 func (c *questionTracker) IsIssueCommentAuthorAuthorized(_ context.Context, _ connector.Issue, comment connector.IssueComment) (bool, error) {
 	return comment.AuthorAuthorized, nil
+}
+
+func TestHumanQuestionRejectedPostCanRetry(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name            string
+		restart, cancel bool
+	}{
+		{name: "retry"},
+		{name: "restart", restart: true},
+		{name: "cancelled caller", cancel: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "questions.db")
+			db, err := store.Open(t.Context(), store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			tracker := &questionTracker{Connector: memory.New(memory.Config{}), rejectPosts: 1}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tt.cancel {
+				tracker.onReject = cancel
+			}
+			o := &Orchestrator{connector: tracker, workAttempts: db}
+			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#647"}}
+			o.attachHumanQuestionTool(&request)
+			call := runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"delivery","question":"Use manual delivery?"}`)}
+			result, err := request.AgentToolHandler(ctx, call)
+			if err != nil || result.Success {
+				t.Fatalf("rejected post = %+v, %v", result, err)
+			}
+			records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
+			if err != nil || len(records) != 0 {
+				t.Fatalf("rejected reservation retained: %+v, %v", records, err)
+			}
+			if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || waiting {
+				t.Fatalf("waiting without a question: %v, %v", waiting, err)
+			}
+			if tt.restart {
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db, err = store.Open(t.Context(), store.Config{Path: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				o.workAttempts = db
+				o.attachHumanQuestionTool(&request)
+			}
+			var wg sync.WaitGroup
+			for range 8 {
+				wg.Go(func() {
+					if _, err := request.AgentToolHandler(t.Context(), call); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			wg.Wait()
+			result, err = request.AgentToolHandler(t.Context(), call)
+			if err != nil || !result.Success || tracker.posts != 1 {
+				t.Fatalf("retry = %+v, %v, posts %d", result, err, tracker.posts)
+			}
+		})
+	}
 }
 
 func TestHumanQuestionRestartAndConcurrentRequests(t *testing.T) {

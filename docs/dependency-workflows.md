@@ -26,7 +26,10 @@ live sends, publishing, deployment, charges, and destructive operations.
 
 Only one outstanding question can be reserved per issue. Posting intents are
 persisted before GitHub writes; retries reconcile a stable comment marker. An
-uncertain post is held for reconciliation rather than blindly reposted. Separate
+explicitly rejected post releases its unposted reservation so a retry can ask
+the question, including after restart. Confirmed comments are never released.
+An uncertain post is held for reconciliation rather than blindly reposted and
+is reported as a posting error, not as waiting for a human reply. Separate
 failure and operational parks are never cleared by the question mechanism.
 
 ### Migrate a generated question

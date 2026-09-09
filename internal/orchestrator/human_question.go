@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -67,6 +68,13 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 		}
 		if created {
 			if err := o.connector.CreateComment(ctx, issue.ID, q.Body+"\n\n"+humanQuestionMarker(q)); err != nil {
+				if errors.Is(err, connector.ErrCommentNotCreated) {
+					recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+					defer cancel()
+					if releaseErr := questions.ReleaseHumanQuestionReservation(recoveryCtx, q); releaseErr != nil {
+						return fail(errors.Join(err, releaseErr))
+					}
+				}
 				return fail(err)
 			}
 		}
@@ -144,7 +152,7 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 			}
 		}
 		if questionIndex < 0 {
-			return true, nil
+			return true, errors.New("question posting is unconfirmed; reconcile the original thread before waiting for a reply")
 		}
 		question := comments[questionIndex]
 		for index, comment := range comments {
