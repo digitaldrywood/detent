@@ -14,62 +14,125 @@ import (
 	"time"
 )
 
+const lifecycleWaitTimeout = 10 * time.Second
+
 func TestLocalTransportReapsChildAfterParentExits(t *testing.T) {
 	t.Parallel()
 
-	pidPath := t.TempDir() + "/child.pid"
-	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		return exec.CommandContext(ctx, "sh", "-c", "sleep 3600 >/dev/null 2>&1 & printf '%s\n' \"$!\" > "+shellQuote(pidPath))
-	})
-	if err != nil {
-		t.Fatalf("NewLocalTransportFactory() error = %v", err)
-	}
+	for _, startup := range []struct {
+		name  string
+		delay string
+	}{
+		{name: "immediate", delay: "0"},
+		{name: "delayed readiness", delay: "1.2"},
+	} {
+		t.Run(startup.name, func(t *testing.T) {
+			t.Parallel()
 
-	transport, err := factory.NewTransport(context.Background())
-	if err != nil {
-		t.Fatalf("NewTransport() error = %v", err)
-	}
-	pid := waitForPIDFile(t, pidPath)
+			pidPath := t.TempDir() + "/child.pid"
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return exec.CommandContext(ctx, "sh", "-c", "sleep "+startup.delay+"; sleep 3600 >/dev/null 2>&1 & printf '%s\n' \"$!\" > "+shellQuote(pidPath)+"; read release")
+			})
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := transport.Close(closeCtx); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	if processAlive(pid) {
-		t.Fatalf("Close() returned while child process %d was still alive", pid)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			transport, err := factory.NewTransport(ctx)
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
+			t.Cleanup(func() {
+				cancel()
+				closeCtx, closeCancel := context.WithTimeout(context.Background(), lifecycleWaitTimeout)
+				defer closeCancel()
+				_ = transport.Close(closeCtx)
+				select {
+				case <-transport.(*localTransport).done:
+				case <-closeCtx.Done():
+					t.Error("transport cleanup did not finish")
+				}
+			})
+			pid := waitForPIDFile(t, pidPath)
+
+			if !processAlive(pid) {
+				t.Fatalf("child process %d exited before parent release", pid)
+			}
+			if _, err := transport.(*localTransport).stdin.Write([]byte("release\n")); err != nil {
+				t.Fatal(err)
+			}
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), lifecycleWaitTimeout)
+			defer closeCancel()
+			if err := transport.Close(closeCtx); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			if processAlive(pid) {
+				t.Fatalf("Close() returned while child process %d was still alive", pid)
+			}
+		})
 	}
 }
 
 func TestLocalTransportCloseKillsChildProcessGroup(t *testing.T) {
 	t.Parallel()
 
-	pidPath := t.TempDir() + "/child.pid"
-	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		return exec.CommandContext(ctx, "sh", "-c", "sleep 3600 & printf '%s\n' \"$!\" > "+shellQuote(pidPath)+"; wait")
-	})
-	if err != nil {
-		t.Fatalf("NewLocalTransportFactory() error = %v", err)
-	}
+	for _, startup := range []struct {
+		name  string
+		delay string
+	}{
+		{name: "immediate", delay: "0"},
+		{name: "delayed readiness", delay: "1.2"},
+	} {
+		t.Run(startup.name, func(t *testing.T) {
+			t.Parallel()
 
-	transport, err := factory.NewTransport(context.Background())
-	if err != nil {
-		t.Fatalf("NewTransport() error = %v", err)
-	}
-	pid := waitForPIDFile(t, pidPath)
+			pidPath := t.TempDir() + "/child.pid"
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return exec.CommandContext(ctx, "sh", "-c", "sleep "+startup.delay+"; sleep 3600 & printf '%s\n' \"$!\" > "+shellQuote(pidPath)+"; wait")
+			})
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if err := transport.Close(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Close() error = %v, want context deadline exceeded", err)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			transport, err := factory.NewTransport(ctx)
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
+			t.Cleanup(func() {
+				cancel()
+				closeCtx, closeCancel := context.WithTimeout(context.Background(), lifecycleWaitTimeout)
+				defer closeCancel()
+				_ = transport.Close(closeCtx)
+				select {
+				case <-transport.(*localTransport).done:
+				case <-closeCtx.Done():
+					t.Error("transport cleanup did not finish")
+				}
+			})
+			pid := waitForPIDFile(t, pidPath)
+			if !processAlive(pid) {
+				t.Fatalf("child process %d exited before Close", pid)
+			}
+
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer closeCancel()
+			if err := transport.Close(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Close() error = %v, want context deadline exceeded", err)
+			}
+			waitForProcessExit(t, pid)
+		})
 	}
-	waitForProcessExit(t, pid)
 }
 
 func waitForPIDFile(t *testing.T, path string) int {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(lifecycleWaitTimeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	var lastErr error
 	lastRaw := ""
 	for {
@@ -79,6 +142,16 @@ func waitForPIDFile(t *testing.T, path string) int {
 			pidText := strings.TrimSpace(lastRaw)
 			pid, parseErr := strconv.Atoi(pidText)
 			if parseErr == nil && pid > 0 {
+				t.Cleanup(func() {
+					if !processAlive(pid) {
+						return
+					}
+					if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+						t.Errorf("clean up child process %d: %v", pid, err)
+						return
+					}
+					waitForProcessExit(t, pid)
+				})
 				return pid
 			}
 			if parseErr != nil {
@@ -96,8 +169,7 @@ func waitForPIDFile(t *testing.T, path string) int {
 				t.Fatalf("timed out waiting for parseable pid file, last value %q: %v", lastRaw, lastErr)
 			}
 			t.Fatalf("timed out waiting for pid file: %v", lastErr)
-		default:
-			time.Sleep(time.Millisecond)
+		case <-ticker.C:
 		}
 	}
 }
@@ -105,7 +177,9 @@ func waitForPIDFile(t *testing.T, path string) int {
 func waitForProcessExit(t *testing.T, pid int) {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(lifecycleWaitTimeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		if !processAlive(pid) {
 			return
@@ -114,8 +188,7 @@ func waitForProcessExit(t *testing.T, pid int) {
 		select {
 		case <-deadline:
 			t.Fatalf("process %d is still alive", pid)
-		default:
-			time.Sleep(time.Millisecond)
+		case <-ticker.C:
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,86 +19,177 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
+const lifecycleWaitTimeout = 10 * time.Second
+
 func TestRunTurnCancellationKillsChildProcessGroup(t *testing.T) {
 	t.Parallel()
 
-	pidPath := filepath.Join(t.TempDir(), "child.pid")
-	backend := newTestBackend(t, Options{
-		CommandFactory: func(ctx context.Context) *exec.Cmd {
-			script := "sleep 3600 & printf '%s\n' \"$!\" > " + shellQuote(pidPath) + "; wait"
-			return exec.CommandContext(ctx, "sh", "-c", script)
-		},
-	})
+	for _, startup := range []struct {
+		name  string
+		delay string
+	}{
+		{name: "immediate", delay: "0"},
+		{name: "delayed readiness", delay: "1.2"},
+	} {
+		t.Run(startup.name, func(t *testing.T) {
+			t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	workspace := t.TempDir()
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := backend.RunTurn(ctx, runner.AgentTurnRequest{
-			Workspace: workspace,
-			Prompt:    "cancel",
-			Model:     "fable",
-		}, nil)
-		errCh <- err
-	}()
+			pidPath := filepath.Join(t.TempDir(), "child.pid")
+			backend := newTestBackend(t, Options{
+				CommandFactory: func(ctx context.Context) *exec.Cmd {
+					script := "sleep " + startup.delay + "; sleep 3600 & printf '%s\n' \"$!\" > " + shellQuote(pidPath) + "; wait"
+					return exec.CommandContext(ctx, "sh", "-c", script)
+				},
+			})
 
-	pid := waitForPIDFile(t, pidPath)
-	cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			workspace := t.TempDir()
+			errCh := make(chan error, 1)
+			done := make(chan struct{})
+			started := make(chan struct{})
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(lifecycleWaitTimeout):
+					t.Error("RunTurn cleanup did not finish")
+				}
+			})
+			go func() {
+				defer close(done)
+				_, err := backend.RunTurn(ctx, runner.AgentTurnRequest{
+					Workspace: workspace,
+					Prompt:    "cancel",
+					Model:     "fable",
+				}, func(update runner.AgentUpdate) error {
+					if update.Type == runner.AgentUpdateProcessStarted {
+						close(started)
+					}
+					return nil
+				})
+				errCh <- err
+			}()
 
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("RunTurn() error = %v, want context canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("RunTurn() did not return after context cancellation")
+			pid := waitForPIDFile(t, pidPath)
+			select {
+			case <-started:
+			case err := <-errCh:
+				t.Fatalf("RunTurn exited before startup: %v", err)
+			case <-time.After(lifecycleWaitTimeout):
+				t.Fatal("RunTurn did not report process startup")
+			}
+			if !processAlive(pid) {
+				t.Fatalf("child process %d exited before lifecycle action", pid)
+			}
+			cancel()
+
+			select {
+			case err := <-errCh:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("RunTurn() error = %v, want context canceled", err)
+				}
+			case <-time.After(lifecycleWaitTimeout):
+				t.Fatal("RunTurn() did not return after context cancellation")
+			}
+			waitForProcessExit(t, pid)
+		})
 	}
-	waitForProcessExit(t, pid)
 }
 
 func TestRunTurnDetectsExitedParentWithInheritedStdout(t *testing.T) {
 	t.Parallel()
 
-	pidPath := filepath.Join(t.TempDir(), "child.pid")
-	backend := newTestBackend(t, Options{
-		CommandFactory: func(ctx context.Context) *exec.Cmd {
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeDeadParentHelper", "--")
-			cmd.Env = append(os.Environ(),
-				"CLAUDECODE_DEAD_PARENT_HELPER=1",
-				"CLAUDECODE_CHILD_PID_PATH="+pidPath,
-			)
-			return cmd
-		},
-	})
+	for _, startup := range []struct {
+		name  string
+		delay string
+	}{
+		{name: "immediate", delay: "0"},
+		{name: "delayed readiness", delay: "1.2"},
+	} {
+		t.Run(startup.name, func(t *testing.T) {
+			t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	workspace := t.TempDir()
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := backend.RunTurn(ctx, runner.AgentTurnRequest{
-			Workspace: workspace,
-			Prompt:    "detect dead parent",
-			Model:     "fable",
-		}, nil)
-		errCh <- err
-	}()
+			pidPath := filepath.Join(t.TempDir(), "child.pid")
+			releaseReader, releaseWriter, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := errors.Join(releaseReader.Close(), releaseWriter.Close()); err != nil {
+					t.Error(err)
+				}
+			})
+			coverageDir := t.TempDir()
+			backend := newTestBackend(t, Options{
+				CommandFactory: func(ctx context.Context) *exec.Cmd {
+					cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeDeadParentHelper", "--")
+					cmd.ExtraFiles = []*os.File{releaseReader}
+					cmd.Env = append(os.Environ(),
+						"GOCOVERDIR="+coverageDir,
+						"CLAUDECODE_START_DELAY="+startup.delay,
+						"CLAUDECODE_DEAD_PARENT_HELPER=1",
+						"CLAUDECODE_CHILD_PID_PATH="+pidPath,
+					)
+					return cmd
+				},
+			})
 
-	pid := waitForPIDFile(t, pidPath)
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, ErrMissingResult) {
-			t.Fatalf("RunTurn() error = %v, want ErrMissingResult", err)
-		}
-		if !strings.Contains(err.Error(), "process exited: exit status 9") {
-			t.Fatalf("RunTurn() error = %q, want provider exit status", err)
-		}
-	case <-time.After(time.Second):
-		cancel()
-		<-errCh
-		t.Fatal("RunTurn() did not detect the exited provider parent")
+			ctx, cancel := context.WithCancel(context.Background())
+			workspace := t.TempDir()
+			errCh := make(chan error, 1)
+			done := make(chan struct{})
+			started := make(chan struct{})
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(lifecycleWaitTimeout):
+					t.Error("RunTurn cleanup did not finish")
+				}
+			})
+			go func() {
+				defer close(done)
+				_, err := backend.RunTurn(ctx, runner.AgentTurnRequest{
+					Workspace: workspace,
+					Prompt:    "detect dead parent",
+					Model:     "fable",
+				}, func(update runner.AgentUpdate) error {
+					if update.Type == runner.AgentUpdateProcessStarted {
+						close(started)
+					}
+					return nil
+				})
+				errCh <- err
+			}()
+
+			pid := waitForPIDFile(t, pidPath)
+			select {
+			case <-started:
+			case err := <-errCh:
+				t.Fatalf("RunTurn exited before startup: %v", err)
+			case <-time.After(lifecycleWaitTimeout):
+				t.Fatal("RunTurn did not report process startup")
+			}
+			if !processAlive(pid) {
+				t.Fatalf("child process %d exited before lifecycle action", pid)
+			}
+			if _, err := releaseWriter.Write([]byte{1}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-errCh:
+				if !errors.Is(err, ErrMissingResult) {
+					t.Fatalf("RunTurn() error = %v, want ErrMissingResult", err)
+				}
+				if !strings.Contains(err.Error(), "process exited: exit status 9") {
+					t.Fatalf("RunTurn() error = %q, want provider exit status", err)
+				}
+			case <-time.After(lifecycleWaitTimeout):
+				t.Fatal("RunTurn() did not detect the exited provider parent")
+			}
+			waitForProcessExit(t, pid)
+		})
 	}
-	waitForProcessExit(t, pid)
 }
 
 func TestClaudeCodeDeadParentHelper(t *testing.T) {
@@ -105,6 +197,11 @@ func TestClaudeCodeDeadParentHelper(t *testing.T) {
 		return
 	}
 
+	delay, err := time.ParseDuration(os.Getenv("CLAUDECODE_START_DELAY") + "s")
+	if err != nil {
+		os.Exit(4)
+	}
+	<-time.After(delay)
 	cmd := exec.CommandContext(t.Context(), "sleep", "3600")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -112,16 +209,28 @@ func TestClaudeCodeDeadParentHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	if err := os.WriteFile(os.Getenv("CLAUDECODE_CHILD_PID_PATH"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+		if err := cmd.Process.Kill(); err == nil {
+			_ = cmd.Wait()
+		}
 		os.Exit(3)
 	}
 	fmt.Fprintln(os.Stdout, `{"type":"system","subtype":"init","session_id":"session-dead-parent","model":"fable"}`)
+	release := os.NewFile(3, "release-parent")
+	if _, err := io.ReadFull(release, make([]byte, 1)); err != nil {
+		if err := cmd.Process.Kill(); err == nil {
+			_ = cmd.Wait()
+		}
+		os.Exit(5)
+	}
 	os.Exit(9)
 }
 
 func waitForPIDFile(t *testing.T, path string) int {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(lifecycleWaitTimeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	var lastErr error
 	var lastRaw string
 	for {
@@ -130,6 +239,16 @@ func waitForPIDFile(t *testing.T, path string) int {
 			lastRaw = string(raw)
 			pid, parseErr := strconv.Atoi(strings.TrimSpace(lastRaw))
 			if parseErr == nil && pid > 0 {
+				t.Cleanup(func() {
+					if !processAlive(pid) {
+						return
+					}
+					if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+						t.Errorf("clean up child process %d: %v", pid, err)
+						return
+					}
+					waitForProcessExit(t, pid)
+				})
 				return pid
 			}
 			if parseErr != nil {
@@ -147,8 +266,7 @@ func waitForPIDFile(t *testing.T, path string) int {
 				t.Fatalf("timed out waiting for parseable pid file, last value %q: %v", lastRaw, lastErr)
 			}
 			t.Fatalf("timed out waiting for pid file: %v", lastErr)
-		default:
-			time.Sleep(time.Millisecond)
+		case <-ticker.C:
 		}
 	}
 }
@@ -156,7 +274,9 @@ func waitForPIDFile(t *testing.T, path string) int {
 func waitForProcessExit(t *testing.T, pid int) {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(lifecycleWaitTimeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		if !processAlive(pid) {
 			return
@@ -165,8 +285,7 @@ func waitForProcessExit(t *testing.T, pid int) {
 		select {
 		case <-deadline:
 			t.Fatalf("process %d is still alive", pid)
-		default:
-			time.Sleep(time.Millisecond)
+		case <-ticker.C:
 		}
 	}
 }
