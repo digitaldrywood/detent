@@ -5983,68 +5983,109 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 		},
 	}
 
+	scanErr := errors.New("scan workspace processes: signal: killed")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			workspacePath := t.TempDir()
-			startedAt := time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)
-			identity := procgroup.Identity{PID: 2082, GroupID: 2082, StartedAt: startedAt}
-			const sessionID = int64(2082)
-			sessionStore := &scratchReapSessionStore{
-				fakeSessionStore: &fakeSessionStore{sessionID: sessionID},
-				process: store.WorkerProcess{
-					SessionID: sessionID,
-					WorkerProcessIdentity: store.WorkerProcessIdentity{
-						PID:       identity.PID,
-						GroupID:   identity.GroupID,
-						StartedAt: identity.StartedAt,
-					},
-				},
-			}
-			backend := &fakeCodexClient{
-				updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: identity}},
-				result:  AgentTurnResult{ThreadID: "thread-2082", TurnID: "turn-1", SessionID: "thread-2082-turn-1"},
-			}
-			var logs bytes.Buffer
-			runner, err := NewRunner(Dependencies{
-				Workflow: config.Workflow{Config: config.Config{}},
-				Workspace: &fakeWorkspaceBackend{
-					info: workspace.Info{Path: workspacePath, Key: "issue-2082", Branch: "detent/issue-2082"},
-				},
-				AgentBackend: backend,
-				Store:        sessionStore,
-				Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
-				ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
-					if got != identity {
-						t.Fatalf("worker identity = %#v, want %#v", got, identity)
-					}
-					return procgroup.TerminationOutcomeTerminated, nil
-				},
-			})
-			if err != nil {
-				t.Fatalf("NewRunner() error = %v", err)
-			}
-			runner.cleanupWorkerArtifacts = func(root string, path string) error {
-				if root != backend.request.Workspace || path != backend.request.TempDir {
-					t.Fatalf("cleanup paths = %q, %q", root, path)
-				}
-				return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.ENOTEMPTY}
-			}
-			runner.waitWorkerArtifactCleanup = func(context.Context, time.Duration) error { return nil }
+			for _, reapTest := range []struct {
+				name string
+				err  error
+			}{
+				{name: "successful workspace reap"},
+				{name: "failed workspace scan", err: scanErr},
+			} {
+				t.Run(reapTest.name, func(t *testing.T) {
+					t.Parallel()
 
-			result, err := runner.Run(t.Context(), tt.request())
-			if err != nil {
-				t.Fatalf("Run() error = %v", err)
-			}
-			if result.FinalState != FinalStateCompleted || sessionStore.finished.FinalState != FinalStateCompleted {
-				t.Fatalf("final states = result %q, session %q, want completed", result.FinalState, sessionStore.finished.FinalState)
-			}
-			if len(sessionStore.reaps) != 1 {
-				t.Fatalf("recorded reaps = %v, want one", sessionStore.reaps)
-			}
-			if got := logs.String(); !strings.Contains(got, "event=worker_artifact_cleanup_failed") || !strings.Contains(got, "directory not empty") {
-				t.Fatalf("logs missing artifact cleanup warning:\n%s", got)
+					workspacePath := t.TempDir()
+					startedAt := time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)
+					identity := procgroup.Identity{PID: 2082, GroupID: 2082, StartedAt: startedAt}
+					const sessionID = int64(2082)
+					sessionStore := &scratchReapSessionStore{
+						fakeSessionStore: &fakeSessionStore{sessionID: sessionID},
+						process: store.WorkerProcess{
+							SessionID: sessionID,
+							WorkerProcessIdentity: store.WorkerProcessIdentity{
+								PID:       identity.PID,
+								GroupID:   identity.GroupID,
+								StartedAt: identity.StartedAt,
+							},
+						},
+					}
+					backend := &fakeCodexClient{
+						updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: identity}},
+						result:  AgentTurnResult{ThreadID: "thread-2082", TurnID: "turn-1", SessionID: "thread-2082-turn-1"},
+					}
+					var logs bytes.Buffer
+					workspaceReaps := 0
+					cleanupCalls := 0
+					runner, err := NewRunner(Dependencies{
+						Workflow: config.Workflow{Config: config.Config{}},
+						Workspace: &fakeWorkspaceBackend{
+							info: workspace.Info{Path: workspacePath, Key: "issue-2082", Branch: "detent/issue-2082"},
+						},
+						AgentBackend: backend,
+						Store:        sessionStore,
+						Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+						ReapWorkspaceProcesses: func(ctx context.Context, path string, _ time.Duration) (int, error) {
+							workspaceReaps++
+							if path != backend.request.Workspace {
+								t.Fatalf("reaped workspace = %q, want %q", path, backend.request.Workspace)
+							}
+							if err := ctx.Err(); err != nil {
+								t.Fatalf("workspace reap context error = %v", err)
+							}
+							return 0, reapTest.err
+						},
+						ReapWorkerProcess: func(_ context.Context, got procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+							if got != identity {
+								t.Fatalf("worker identity = %#v, want %#v", got, identity)
+							}
+							return procgroup.TerminationOutcomeTerminated, nil
+						},
+					})
+					if err != nil {
+						t.Fatalf("NewRunner() error = %v", err)
+					}
+					runner.cleanupWorkerArtifacts = func(root string, path string) error {
+						cleanupCalls++
+						if root != backend.request.Workspace || path != backend.request.TempDir {
+							t.Fatalf("cleanup paths = %q, %q", root, path)
+						}
+						return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.ENOTEMPTY}
+					}
+					runner.waitWorkerArtifactCleanup = func(context.Context, time.Duration) error { return nil }
+
+					result, err := runner.Run(t.Context(), tt.request())
+					if workspaceReaps != 1 {
+						t.Fatalf("workspace reaps = %d, want 1", workspaceReaps)
+					}
+					if reapTest.err != nil {
+						if !errors.Is(err, reapTest.err) || !strings.Contains(err.Error(), "worker process reap failed: reap orphaned workspace processes:") {
+							t.Fatalf("Run() error = %v, want wrapped workspace scan error", err)
+						}
+						if result.FinalState == FinalStateCompleted || sessionStore.finished.FinalState == FinalStateCompleted {
+							t.Fatalf("scan failure completed: result %q, session %q", result.FinalState, sessionStore.finished.FinalState)
+						}
+						if cleanupCalls != 0 || len(sessionStore.reaps) != 0 {
+							t.Fatalf("scan failure cleanup calls = %d, reaps = %v, want no cleanup or recorded reaps", cleanupCalls, sessionStore.reaps)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("Run() error = %v", err)
+					}
+					if result.FinalState != FinalStateCompleted || sessionStore.finished.FinalState != FinalStateCompleted {
+						t.Fatalf("final states = result %q, session %q, want completed", result.FinalState, sessionStore.finished.FinalState)
+					}
+					if len(sessionStore.reaps) != 1 {
+						t.Fatalf("recorded reaps = %v, want one", sessionStore.reaps)
+					}
+					if got := logs.String(); !strings.Contains(got, "event=worker_artifact_cleanup_failed") || !strings.Contains(got, "directory not empty") {
+						t.Fatalf("logs missing artifact cleanup warning:\n%s", got)
+					}
+				})
 			}
 		})
 	}
