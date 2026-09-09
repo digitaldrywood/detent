@@ -174,12 +174,12 @@ func (c *Connector) RerunFailedChecks(ctx context.Context, checks []releasepkg.C
 	return backend.RerunFailedChecks(ctx, checks)
 }
 
-func (c *Connector) EnsureFailureIssue(ctx context.Context, failure releasepkg.Failure) (bool, error) {
+func (c *Connector) EnsureReleaseReport(ctx context.Context, failure releasepkg.Report) (bool, error) {
 	backend, err := c.releaseBackend()
 	if err != nil {
 		return false, err
 	}
-	return backend.EnsureFailureIssue(ctx, failure)
+	return backend.EnsureReleaseReport(ctx, failure)
 }
 
 func (c *Connector) releaseBackend() (releasepkg.Backend, error) {

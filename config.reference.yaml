@@ -1198,6 +1198,8 @@
 #   rerun_flaky_once: false
 #   # release.flaky_check_names | type: list<string> | default: [] | required: No | validation: must not be empty when release.rerun_flaky_once is true
 #   flaky_check_names: []
+#   # release.required_check_names | type: list<string> | default: [] | required: No | validation: None
+#   required_check_names: []
 # # hooks | type: object | default: see child fields | required: No | validation: None
 # hooks:
 #   # hooks.shell | type: string | default: platform default shell | required: No | validation: None

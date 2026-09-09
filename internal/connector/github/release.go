@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,11 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 )
 
-var closingIssuePattern = regexp.MustCompile(`(?i)(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+(?:[[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)`)
+var closingIssuePattern = regexp.MustCompile(`(?i)(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+(?:([[:alnum:]_.-]+/[[:alnum:]_.-]+))?#([0-9]+)`)
 
 type releaseRESTRepository struct {
 	DefaultBranch string `json:"default_branch"`
@@ -24,7 +24,8 @@ type releaseRESTRepository struct {
 
 type releaseRESTRef struct {
 	Object struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Type string `json:"type"`
 	} `json:"object"`
 }
 
@@ -52,6 +53,7 @@ type releaseRESTPullRequest struct {
 }
 
 type releaseRESTCheckRun struct {
+	HeadSHA    string `json:"head_sha"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -59,11 +61,14 @@ type releaseRESTCheckRun struct {
 }
 
 type releaseRESTCheckRuns struct {
-	CheckRuns []releaseRESTCheckRun `json:"check_runs"`
+	TotalCount int                   `json:"total_count"`
+	CheckRuns  []releaseRESTCheckRun `json:"check_runs"`
 }
 
 type releaseRESTStatus struct {
-	Statuses []struct {
+	SHA        string `json:"sha"`
+	TotalCount int    `json:"total_count"`
+	Statuses   []struct {
 		Context string `json:"context"`
 		State   string `json:"state"`
 	} `json:"statuses"`
@@ -97,7 +102,7 @@ func (c *Connector) Inspect(ctx context.Context) (releasepkg.Repository, error) 
 	if err := c.client.REST(ctx, http.MethodGet, base+"/git/ref/heads/"+url.PathEscape(branch), nil, &ref); err != nil {
 		return releasepkg.Repository{}, fmt.Errorf("inspect release head: %w", err)
 	}
-	result := releasepkg.Repository{Name: pullRequestRepoName(c.repository), HeadSHA: strings.TrimSpace(ref.Object.SHA)}
+	result := releasepkg.Repository{RequiredCheckNames: append([]string(nil), c.requiredChecks...), Name: pullRequestRepoName(c.repository), HeadSHA: strings.TrimSpace(ref.Object.SHA)}
 	if result.HeadSHA == "" {
 		return releasepkg.Repository{}, errors.New("inspect release head: github returned an empty sha")
 	}
@@ -120,17 +125,47 @@ func (c *Connector) Inspect(ctx context.Context) (releasepkg.Repository, error) 
 		result.TaggedAt = tagged.Commit.Committer.Date
 	}
 
-	commits, err := c.releaseCommits(ctx, base, branch, result.LatestTag)
+	commits, err := c.releaseCommits(ctx, base, result.HeadSHA, result.LatestTag)
 	if err != nil {
 		return releasepkg.Repository{}, err
 	}
 	result.Commits = commits
+	if result.LatestSHA == result.HeadSHA {
+		result.IssueRefs, err = c.releaseTagOrigins(ctx, base, result.LatestTag, result.HeadSHA)
+		if err != nil {
+			return releasepkg.Repository{}, err
+		}
+	}
 	checks, err := c.releaseChecks(ctx, base, result.HeadSHA)
 	if err != nil {
 		return releasepkg.Repository{}, err
 	}
 	result.Checks = checks
 	return result, nil
+}
+
+func (c *Connector) releaseTagOrigins(ctx context.Context, base, tag, sha string) ([]string, error) {
+	var ref releaseRESTRef
+	if err := c.client.REST(ctx, http.MethodGet, base+"/git/ref/tags/"+url.PathEscape(tag), nil, &ref); err != nil {
+		return nil, fmt.Errorf("read release origin reference: %w", err)
+	}
+	if ref.Object.Type == "tag" {
+		var object struct {
+			Message string `json:"message"`
+		}
+		if err := c.client.REST(ctx, http.MethodGet, base+"/git/tags/"+url.PathEscape(ref.Object.SHA), nil, &object); err != nil {
+			return nil, fmt.Errorf("read release origins: %w", err)
+		}
+		if _, suffix, found := strings.Cut(object.Message, "<!-- detent-release-origins:"); found {
+			value, _, closed := strings.Cut(suffix, " -->")
+			var refs []string
+			if err := json.Unmarshal([]byte(value), &refs); err != nil || !closed {
+				return nil, errors.New("invalid release origin metadata")
+			}
+			return refs, nil
+		}
+	}
+	return c.releaseCommitIssueRefs(ctx, base, sha)
 }
 
 func (c *Connector) releaseCommits(ctx context.Context, base string, branch string, latestTag string) ([]releasepkg.Commit, error) {
@@ -174,10 +209,14 @@ func (c *Connector) releaseCommitIssueRefs(ctx context.Context, base string, sha
 	repository := pullRequestRepoName(c.repository)
 	for _, pull := range pulls {
 		for _, match := range closingIssuePattern.FindAllStringSubmatch(pull.Body, -1) {
-			if len(match) != 2 {
+			if len(match) != 3 {
 				continue
 			}
-			ref := repository + "#" + match[1]
+			origin := repository
+			if match[1] != "" {
+				origin = match[1]
+			}
+			ref := origin + "#" + match[2]
 			if _, ok := seen[ref]; ok {
 				continue
 			}
@@ -194,9 +233,13 @@ func (c *Connector) releaseChecks(ctx context.Context, base string, sha string) 
 	if err := c.client.REST(ctx, http.MethodGet, base+"/commits/"+url.PathEscape(sha)+"/check-runs?per_page=100", nil, &runs); err != nil {
 		return nil, fmt.Errorf("inspect release check runs: %w", err)
 	}
+	if runs.TotalCount > len(runs.CheckRuns) {
+		return nil, errors.New("release check evidence is truncated")
+	}
 	checks := make([]releasepkg.Check, 0, len(runs.CheckRuns))
 	for _, run := range runs.CheckRuns {
 		checks = append(checks, releasepkg.Check{
+			SHA:        run.HeadSHA,
 			Name:       run.Name,
 			Status:     run.Status,
 			Conclusion: run.Conclusion,
@@ -207,8 +250,11 @@ func (c *Connector) releaseChecks(ctx context.Context, base string, sha string) 
 	if err := c.client.REST(ctx, http.MethodGet, base+"/commits/"+url.PathEscape(sha)+"/status", nil, &combined); err != nil {
 		return nil, fmt.Errorf("inspect release statuses: %w", err)
 	}
+	if combined.TotalCount > len(combined.Statuses) {
+		return nil, errors.New("release status evidence is truncated")
+	}
 	for _, status := range combined.Statuses {
-		check := releasepkg.Check{Name: status.Context}
+		check := releasepkg.Check{SHA: combined.SHA, Name: status.Context}
 		switch strings.ToLower(strings.TrimSpace(status.State)) {
 		case "pending":
 			check.Status = "in_progress"
@@ -225,6 +271,11 @@ func (c *Connector) releaseChecks(ctx context.Context, base string, sha string) 
 }
 
 func (c *Connector) CreateTag(ctx context.Context, tag releasepkg.Tag) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if found, err := c.releaseTagMatches(ctx, tag); err != nil || found {
+		return err
+	}
 	base := restRepositoryPath(pullRequestRepoName(c.repository))
 	var object struct {
 		SHA string `json:"sha"`
@@ -240,11 +291,28 @@ func (c *Connector) CreateTag(ctx context.Context, tag releasepkg.Tag) error {
 	if err == nil {
 		return nil
 	}
-	var statusErr *StatusError
-	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnprocessableEntity {
-		return releasepkg.ErrTagExists
+	if found, lookupErr := c.releaseTagMatches(ctx, tag); lookupErr != nil {
+		return errors.Join(err, lookupErr)
+	} else if found {
+		return nil
 	}
 	return fmt.Errorf("publish release tag: %w", err)
+}
+
+func (c *Connector) releaseTagMatches(ctx context.Context, tag releasepkg.Tag) (bool, error) {
+	var commit releaseRESTCommit
+	path := restRepositoryPath(pullRequestRepoName(c.repository)) + "/commits/" + url.PathEscape("refs/tags/"+tag.Name)
+	if err := c.client.REST(ctx, http.MethodGet, path, nil, &commit); err != nil {
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("reconcile release tag: %w", err)
+	}
+	if commit.SHA != tag.SHA {
+		return false, fmt.Errorf("release tag %s points to %s, expected %s", tag.Name, commit.SHA, tag.SHA)
+	}
+	return true, nil
 }
 
 func (c *Connector) ReleaseWorkflow(ctx context.Context, tag string) (releasepkg.WorkflowRun, bool, error) {
@@ -274,6 +342,23 @@ func (c *Connector) RerunFailedChecks(ctx context.Context, checks []releasepkg.C
 			continue
 		}
 		seen[check.RunID] = struct{}{}
+		var run struct {
+			HeadSHA string `json:"head_sha"`
+			Attempt int    `json:"run_attempt"`
+			Status  string `json:"status"`
+		}
+		path := restRepositoryPath(pullRequestRepoName(c.repository)) + "/actions/runs/" + strconv.FormatInt(check.RunID, 10)
+		if err := c.client.REST(ctx, http.MethodGet, path, nil, &run); err != nil {
+			errs = append(errs, fmt.Errorf("reconcile workflow %d: %w", check.RunID, err))
+			continue
+		}
+		if run.HeadSHA != check.SHA || run.Attempt < 1 {
+			errs = append(errs, fmt.Errorf("workflow %d has incomplete or stale retry evidence", check.RunID))
+			continue
+		}
+		if run.Status != "completed" {
+			continue
+		}
 		if err := c.client.REST(ctx, http.MethodPost, restWorkflowRunRerunFailedJobsPath(c.repository, check.RunID), nil, nil); err != nil {
 			errs = append(errs, fmt.Errorf("rerun workflow %d: %w", check.RunID, err))
 		}
@@ -281,52 +366,56 @@ func (c *Connector) RerunFailedChecks(ctx context.Context, checks []releasepkg.C
 	return errors.Join(errs...)
 }
 
-func (c *Connector) EnsureFailureIssue(ctx context.Context, failure releasepkg.Failure) (bool, error) {
+func (c *Connector) EnsureReleaseReport(ctx context.Context, failure releasepkg.Report) (bool, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	repository := pullRequestRepoName(c.repository)
-	marker := "detent-auto-release:" + failure.Fingerprint
-	query := "repo:" + repository + " is:issue \"" + marker + "\""
-	var search struct {
-		TotalCount int `json:"total_count"`
-		Items      []struct {
-			NodeID string `json:"node_id"`
-		} `json:"items"`
-	}
-	if err := c.client.REST(ctx, http.MethodGet, "/search/issues?q="+url.QueryEscape(query)+"&per_page=1", nil, &search); err != nil {
-		return false, fmt.Errorf("find auto-release failure issue: %w", err)
-	}
-	if search.TotalCount > 0 {
-		if len(search.Items) > 0 && strings.TrimSpace(search.Items[0].NodeID) != "" {
-			if err := c.moveReleaseIssueToTodo(ctx, search.Items[0].NodeID); err != nil {
-				return false, fmt.Errorf("restore auto-release failure issue to board: %w", err)
-			}
+	refs := append([]string(nil), failure.IssueRefs...)
+	sort.Strings(refs)
+	for _, ref := range refs {
+		repo, number, ok := strings.Cut(ref, "#")
+		n, err := strconv.Atoi(number)
+		if !ok || repo != repository || err != nil || n <= 0 {
+			continue
 		}
-		return false, nil
+		path := restRepositoryPath(repository) + "/issues/" + number + "/comments"
+		marker := "<!-- detent-auto-release:" + failure.Fingerprint + " -->"
+		if found, err := c.releaseReportExists(ctx, path, marker); err != nil || found {
+			return false, err
+		}
+		body := c.protectPublicationText(ctx, repository, failure.Body)
+		if !strings.Contains(body, marker) {
+			body += "\n\n" + marker
+		}
+		if err := c.client.REST(ctx, http.MethodPost, path, map[string]string{"body": body}, nil); err != nil {
+			found, lookupErr := c.releaseReportExists(ctx, path, marker)
+			if found && lookupErr == nil {
+				return false, nil
+			}
+			return false, errors.Join(err, lookupErr)
+		}
+		return true, nil
 	}
-	labels := []string(nil)
-	if c.usesLabelStatus() {
-		labels = []string{c.statusLabelForState("Todo")}
-	}
-	issue, err := c.CreateIssue(ctx, connector.IssueDraft{
-		Title:  failure.Title,
-		Body:   failure.Body,
-		Labels: labels,
-	})
-	if err != nil {
-		return false, err
-	}
-	if err := c.moveReleaseIssueToTodo(ctx, issue.ID); err != nil {
-		return false, fmt.Errorf("add auto-release failure issue to board: %w", err)
-	}
-	return true, nil
+	return false, errors.New("release report has no originating issue in this repository")
 }
 
-func (c *Connector) moveReleaseIssueToTodo(ctx context.Context, issueID string) error {
-	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
-		if err := c.addIntakeIssueToProject(ctx, issueID); err != nil {
-			return err
+func (c *Connector) releaseReportExists(ctx context.Context, path, marker string) (bool, error) {
+	for page := 1; ; page++ {
+		var comments []struct {
+			Body string `json:"body"`
+		}
+		if err := c.client.REST(ctx, http.MethodGet, fmt.Sprintf("%s?per_page=100&page=%d", path, page), nil, &comments); err != nil {
+			return false, fmt.Errorf("read release evidence: %w", err)
+		}
+		for _, comment := range comments {
+			if strings.Contains(comment.Body, marker) {
+				return true, nil
+			}
+		}
+		if len(comments) < 100 {
+			return false, nil
 		}
 	}
-	return c.UpdateIssueState(ctx, issueID, "Todo")
 }
 
 func workflowRunID(detailsURL string) int64 {
