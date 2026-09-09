@@ -3,6 +3,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
 const defaultProcessTerminationGrace = 250 * time.Millisecond
@@ -214,7 +217,7 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	cmd := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
-	output, err := cmd.Output()
+	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -241,6 +244,50 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 		pids = append(pids, pid)
 	}
 	return pids, nil
+}
+
+type workspaceScanStderr struct {
+	*runtimeoutput.Buffer
+}
+
+func (w workspaceScanStderr) Write(data []byte) (int, error) {
+	w.Append(string(data))
+	return len(data), nil
+}
+
+func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
+	stderr := workspaceScanStderr{runtimeoutput.NewBuffer(runtimeoutput.Policy{MaxBytes: 64 << 10})}
+	captureStderr := cmd.Stderr == nil
+	if captureStderr {
+		cmd.Stderr = stderr
+	}
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	started := time.Now()
+	remaining := time.Duration(0)
+	hasDeadline := false
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining = time.Until(deadline)
+		hasDeadline = true
+	}
+	contextAtStart := fmt.Sprint(ctx.Err())
+	startErr := cmd.Start()
+	startElapsed := time.Since(started)
+	if startErr != nil {
+		return nil, fmt.Errorf("workspace scan command stage=start start_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v: %w",
+			startElapsed, hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), startErr)
+	}
+	waiting := time.Now()
+	err := cmd.Wait()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if captureStderr && errors.As(err, &exitErr) {
+			exitErr.Stderr = []byte(stderr.String())
+		}
+		return output.Bytes(), fmt.Errorf("workspace scan command stage=wait pid=%d start_elapsed=%s wait_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v output_bytes=%d: %w",
+			cmd.Process.Pid, startElapsed, time.Since(waiting), hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), output.Len(), err)
+	}
+	return output.Bytes(), nil
 }
 
 func pathInside(root string, path string) bool {

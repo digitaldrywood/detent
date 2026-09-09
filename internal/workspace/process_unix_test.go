@@ -3,9 +3,14 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -144,6 +149,162 @@ func TestReapProcessesRejectsUnsafePaths(t *testing.T) {
 			_, err := ReapProcesses(t.Context(), tt.path, time.Second)
 			if err == nil {
 				t.Fatal("ReapProcesses() error = nil, want non-nil")
+			}
+		})
+	}
+}
+
+func TestWorkspaceScanOutput(t *testing.T) {
+	tests := []struct {
+		name         string
+		command      string
+		missing      bool
+		cancelBefore bool
+		expired      bool
+		cancelReady  bool
+		wantStage    string
+		wantContext  string
+		wantOutput   string
+		wantExit     bool
+	}{
+		{name: "success", command: "printf 123", wantOutput: "123"},
+		{name: "missing executable", missing: true, wantStage: "start", wantContext: "<nil>"},
+		{name: "canceled before start", cancelBefore: true, wantStage: "start", wantContext: "context canceled"},
+		{name: "deadline before start", expired: true, wantStage: "start", wantContext: "context deadline exceeded"},
+		{name: "no matches exit", command: "exit 1", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "partial output failure", command: "printf 123; exit 2", wantOutput: "123", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "exit failure", command: "exit 2", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "signal without cancellation", command: "kill -KILL $$", wantStage: "wait", wantContext: "<nil>", wantExit: true},
+		{name: "canceled after readiness", command: "printf ready >&3; read value", cancelReady: true, wantStage: "wait", wantContext: "context canceled", wantExit: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if tt.expired {
+				var expire context.CancelFunc
+				ctx, expire = context.WithDeadline(ctx, time.Time{})
+				defer expire()
+			}
+			cmd := exec.CommandContext(ctx, "sh", "-c", tt.command)
+			if tt.missing {
+				cmd = exec.CommandContext(ctx, filepath.Join(t.TempDir(), "missing"))
+			}
+			if tt.cancelBefore {
+				cancel()
+			}
+			if tt.cancelReady {
+				readyReader, readyWriter, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer readyReader.Close()
+				defer readyWriter.Close()
+				inputReader, inputWriter, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer inputReader.Close()
+				defer inputWriter.Close()
+				cmd.Stdin = inputReader
+				cmd.ExtraFiles = []*os.File{readyWriter}
+				if err := readyReader.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				ready := make(chan error, 1)
+				go func() {
+					_, err := io.ReadFull(readyReader, make([]byte, 5))
+					cancel()
+					ready <- err
+				}()
+				defer func() {
+					if err := <-ready; err != nil {
+						t.Errorf("readiness: %v", err)
+					}
+				}()
+			}
+			output, err := workspaceScanOutput(ctx, cmd)
+			if string(output) != tt.wantOutput {
+				t.Errorf("output = %q, want %q", output, tt.wantOutput)
+			}
+			if tt.wantStage == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected command error")
+			}
+			for _, field := range []string{"stage=" + tt.wantStage, "start_elapsed=", "deadline_set=true", "deadline_remaining=", "context_error=" + tt.wantContext} {
+				if !strings.Contains(err.Error(), field) {
+					t.Errorf("error %q missing %q", err, field)
+				}
+			}
+			if tt.wantStage == "wait" {
+				for _, field := range []string{"wait_elapsed=", "pid=", "output_bytes=" + strconv.Itoa(len(tt.wantOutput)), "context_at_start=<nil>"} {
+					if !strings.Contains(err.Error(), field) {
+						t.Errorf("error %q missing %q", err, field)
+					}
+				}
+			}
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) != tt.wantExit {
+				t.Errorf("exit error = %v, want %t", err, tt.wantExit)
+			}
+			if tt.cancelBefore && !errors.Is(err, context.Canceled) {
+				t.Errorf("cancellation identity lost: %v", err)
+			}
+			if tt.expired && !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("deadline identity lost: %v", err)
+			}
+			t.Log(err)
+		})
+	}
+}
+
+func TestWorkspaceScanOutputStderr(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		custom bool
+	}{
+		{name: "exit diagnostic", stderr: "lsof: resource unavailable\n"},
+		{name: "bounded head and tail", stderr: "begin\n" + strings.Repeat("x", 96<<10) + "\nend"},
+		{name: "caller supplied writer", stderr: "caller diagnostic\n", custom: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", "cat >&2; exit 2")
+			cmd.Stdin = strings.NewReader(tt.stderr)
+			var custom bytes.Buffer
+			if tt.custom {
+				cmd.Stderr = &custom
+			}
+			output, err := workspaceScanOutput(ctx, cmd)
+			if len(output) != 0 {
+				t.Fatalf("stdout = %q, want empty", output)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("error = %v, want wrapped exit error", err)
+			}
+			if tt.custom {
+				if custom.String() != tt.stderr || len(exitErr.Stderr) != 0 {
+					t.Fatalf("custom stderr = %q, exit stderr = %q", custom.String(), exitErr.Stderr)
+				}
+				return
+			}
+			if len(tt.stderr) <= 64<<10 {
+				if string(exitErr.Stderr) != tt.stderr {
+					t.Fatalf("stderr = %q, want %q", exitErr.Stderr, tt.stderr)
+				}
+				return
+			}
+			if len(exitErr.Stderr) > 64<<10 || !bytes.HasPrefix(exitErr.Stderr, []byte("begin\n")) || !bytes.HasSuffix(exitErr.Stderr, []byte("\nend")) {
+				t.Fatalf("stderr does not retain bounded head and tail: bytes=%d", len(exitErr.Stderr))
 			}
 		})
 	}

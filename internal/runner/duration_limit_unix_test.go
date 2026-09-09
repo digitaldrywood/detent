@@ -70,10 +70,16 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 						backend.command.Process.Pid, backend.command.Dir, lockPath,
 						observer.command.Process.Pid, observer.command.Dir, observerLockPath)
 					if runtime.GOOS != "linux" {
-						output, err := exec.CommandContext(ctx, "lsof", "-FpcRfn", "+D", path).CombinedOutput()
-						t.Logf("workspace file matches before reap: error=%v\n%s", err, output)
+						probeCtx, cancelProbe := context.WithTimeout(ctx, 5*time.Second)
+						probeStarted := time.Now()
+						output, err := exec.CommandContext(probeCtx, "lsof", "-FpcRfn", "+D", path).CombinedOutput()
+						t.Logf("workspace file matches before reap: elapsed=%s context_error=%v error=%v\n%s", time.Since(probeStarted), probeCtx.Err(), err, output)
+						cancelProbe()
 					}
+					reapStarted := time.Now()
 					reaped, reapErr = workspace.ReapProcesses(ctx, path, grace)
+					t.Logf("workspace reap: elapsed=%s count=%d error=%v holder_exited=%t observer_exited=%t",
+						time.Since(reapStarted), reaped, reapErr, processWaitFinished(backend.waitDone), processWaitFinished(observer.waitDone))
 					return reaped, reapErr
 				},
 			})
@@ -233,5 +239,14 @@ func assertLockAvailable(t *testing.T, path string) {
 	}
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatalf("unlock gate file: %v", err)
+	}
+}
+
+func processWaitFinished(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
