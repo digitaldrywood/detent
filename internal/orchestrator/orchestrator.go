@@ -955,7 +955,11 @@ func (o *Orchestrator) signalSnapshotAvailable() {
 }
 
 func (o *Orchestrator) startCompletion(state *State) {
-	cloned := state.clone()
+	cloned := o.observableState(state.clone())
+	for id, running := range cloned.Running {
+		running.progress = nil
+		cloned.Running[id] = running
+	}
 	cloned.RuntimeObservation = telemetry.SnapshotSection{
 		Source:     telemetry.SnapshotSourceCached,
 		ObservedAt: time.Now(),
@@ -1158,7 +1162,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 
 func (o *Orchestrator) publishedState() State {
 	if state := o.completionState.Load(); state != nil {
-		return o.observableState(state.clone())
+		return state.clone()
 	}
 	state := o.latestState.Load().clone()
 	if runtime := o.latestRuntimeState.Load(); runtime != nil {

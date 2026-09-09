@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -107,6 +108,63 @@ func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
 			}
 			if len(got.Running) != 1 || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
 				t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
+			}
+		})
+	}
+}
+
+func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
+	t.Parallel()
+	for _, persisted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persisted heartbeat=%t", persisted), func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			running := Running{Issue: connector.Issue{ID: "other-worker"}, WorkAttemptID: 2361}
+			base := store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID}
+			progress := newWorkerProgress(running, base, nil, 4096)
+			running.progress = progress
+			state.Running[running.Issue.ID] = running
+			state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: running.WorkAttemptID}}
+			observe := func(message string) {
+				t.Helper()
+				if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
+					t.Fatal(err)
+				}
+				if persisted {
+					heartbeat := progress.heartbeat(base, time.Now())
+					progress.persisted.Store(&heartbeat)
+				}
+			}
+			read := func(orch *Orchestrator) State {
+				t.Helper()
+				got, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			orch := &Orchestrator{done: make(chan struct{})}
+			orch.publishState(&state)
+			observe("before completion")
+			orch.startCompletion(&state)
+			before := read(orch)
+			if before.Running[running.Issue.ID].LastMessage != "before completion" || (persisted && before.WorkAttempts[0].StatusMessage != "before completion") {
+				t.Fatal("completion snapshot omitted existing worker progress")
+			}
+			observe("during completion")
+			after := read(orch)
+			if !reflect.DeepEqual(before.Running, after.Running) || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
+				t.Fatal("cached completion snapshot changed after worker progress")
+			}
+			after.Running = cloneRunning(after.Running)
+			if !reflect.DeepEqual(before.Running, after.Running) {
+				t.Fatal("cloning cached running state reloaded worker progress")
+			}
+			orch.publishState(&state)
+			orch.completionState.Store(nil)
+			orch.refreshInProgress.Store(true)
+			resumed := read(orch)
+			if resumed.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && resumed.WorkAttempts[0].StatusMessage != "during completion") || !resumed.RuntimeObservation.IsZero() {
+				t.Fatal("live publication did not resume worker progress after completion")
 			}
 		})
 	}
