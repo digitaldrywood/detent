@@ -10,6 +10,15 @@ September 8 operator observations distinguish three independent costs:
 | [#2345 retry](https://github.com/digitaldrywood/detent/issues/2345#issuecomment-5590883393) | 15m deadline, then about 19m | passed | separate PR checks |
 | [#2340 retry](https://github.com/digitaldrywood/detent/issues/2340#issuecomment-5590809498) | 15m deadline, then about 28m | running when observed | not yet started |
 
+The [#2368 recorded retry](https://github.com/digitaldrywood/detent/issues/2347#issuecomment-5593580150)
+entered at position 7 behind PID 40861 (owner since 23:37:48.784733Z), then
+advanced to position 3 of 9 behind PID 48747 (owner since 23:49:58.521641Z).
+Its default wait expired after 15m3.506s before execution. The controlled
+`CHECK_LOCK_WAIT=2h` retry rejoined at position 8, losing its prior queue
+position. These are queue costs, with no gate execution or CI time included.
+The longer existing wait option preserves FIFO admission; this change does
+not alter the default deadline or retain positions across exited processes.
+
 The unchanged FIFO diagnostics identify the owner PID, ownership start,
 queue position, queue length and elapsed wait. `make check` now also appends
 `tmp/validation-events.jsonl`: schema, process PID, invocation start,
