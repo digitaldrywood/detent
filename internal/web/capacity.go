@@ -12,15 +12,24 @@ import (
 )
 
 type capacityClearResponse struct {
-	Status    string `json:"status"`
-	Project   string `json:"project,omitempty"`
-	Scope     string `json:"scope,omitempty"`
-	Requested int    `json:"requested"`
+	RecoveryRequested string `json:"recovery_requested"`
+	RecoveryApplied   string `json:"recovery_applied"`
+	Status            string `json:"status"`
+	Project           string `json:"project,omitempty"`
+	Scope             string `json:"scope,omitempty"`
+	Requested         int    `json:"requested"`
 }
 
 func (s *Server) apiCapacityClear(c echo.Context) error {
 	projectID := strings.TrimSpace(c.FormValue("project_id"))
 	scope := strings.TrimSpace(c.FormValue("scope"))
+	mode := strings.TrimSpace(c.FormValue("recovery"))
+	if mode == "" {
+		mode = "ramping"
+	}
+	if mode != "ramping" && mode != "immediate" {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_recovery", "recovery must be ramping or immediate"))
+	}
 	projects := s.registry.List()
 	if projectID != "" {
 		selected, ok := s.registry.Get(project.ID(projectID))
@@ -32,7 +41,7 @@ func (s *Server) apiCapacityClear(c echo.Context) error {
 
 	requested := 0
 	for _, candidate := range projects {
-		err := candidate.Orchestrator().RequestBackendCapacityClear(c.Request().Context(), scope)
+		err := candidate.Orchestrator().RequestBackendCapacityClear(c.Request().Context(), scope, mode == "immediate")
 		if err != nil {
 			if errors.Is(err, orchestrator.ErrStopped) {
 				continue
@@ -49,9 +58,11 @@ func (s *Server) apiCapacityClear(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	return c.JSON(http.StatusAccepted, capacityClearResponse{
-		Status:    "requested",
-		Project:   projectID,
-		Scope:     scope,
-		Requested: requested,
+		Status:            "requested",
+		RecoveryRequested: mode,
+		RecoveryApplied:   "pending",
+		Project:           projectID,
+		Scope:             scope,
+		Requested:         requested,
 	})
 }

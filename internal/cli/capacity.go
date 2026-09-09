@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,11 +16,13 @@ import (
 )
 
 type capacityClearResult struct {
-	Status    string `json:"status"`
-	Project   string `json:"project,omitempty"`
-	Scope     string `json:"scope,omitempty"`
-	Cleared   int    `json:"cleared,omitempty"`
-	Requested int    `json:"requested,omitempty"`
+	RecoveryRequested string `json:"recovery_requested,omitempty"`
+	RecoveryApplied   string `json:"recovery_applied,omitempty"`
+	Status            string `json:"status"`
+	Project           string `json:"project,omitempty"`
+	Scope             string `json:"scope,omitempty"`
+	Cleared           int    `json:"cleared,omitempty"`
+	Requested         int    `json:"requested,omitempty"`
 }
 
 type dashboardAddress struct {
@@ -53,13 +56,14 @@ func newCapacityCommand(configPath *string, host *string, port *int, opts option
 func newCapacityClearCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
 	var projectID string
 	var scope string
+	var recovery string
 	cmd := &cobra.Command{
 		Use:     "clear",
 		Short:   "Clear recorded provider capacity outages",
 		Example: "detent capacity clear\n  detent capacity clear --project detent --scope codex",
 		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			result, err := runCapacityClear(cmd.Context(), derefString(configPath), derefString(host), derefInt(port, -1), flagChanged(cmd, "port"), projectID, scope, opts)
+			result, err := runCapacityClear(cmd.Context(), derefString(configPath), derefString(host), derefInt(port, -1), flagChanged(cmd, "port"), projectID, scope, opts, recovery)
 			if err != nil {
 				return err
 			}
@@ -69,7 +73,7 @@ func newCapacityClearCommand(configPath *string, host *string, port *int, opts o
 			}
 			return out.Write(func(writer io.Writer) error {
 				if result.Status == "requested" {
-					_, err := fmt.Fprintf(writer, "requested capacity clear for %d project(s)\n", result.Requested)
+					_, err := fmt.Fprintf(writer, "requested capacity clear for %d project(s); recovery requested: %s, applied: %s\n", result.Requested, result.RecoveryRequested, result.RecoveryApplied)
 					return err
 				}
 				_, err := fmt.Fprintf(writer, "cleared %d capacity outage(s)\n", result.Cleared)
@@ -78,6 +82,7 @@ func newCapacityClearCommand(configPath *string, host *string, port *int, opts o
 		},
 	}
 	cmd.Flags().StringVar(&projectID, "project", "", "limit the clear to one project ID")
+	cmd.Flags().StringVar(&recovery, "recovery", "ramping", "dispatch recovery mode: ramping or immediate")
 	cmd.Flags().StringVar(&scope, "scope", "", "limit the clear to a backend ID, kind, provider, or backend/provider")
 	return cmd
 }
@@ -91,12 +96,21 @@ func runCapacityClear(
 	projectID string,
 	scope string,
 	opts options,
+	recovery ...string,
 ) (capacityClearResult, error) {
+	mode := "ramping"
+	if len(recovery) > 0 {
+		mode = recovery[0]
+	}
+	if mode != "ramping" && mode != "immediate" {
+		return capacityClearResult{}, fmt.Errorf("invalid recovery mode %q: want ramping or immediate", mode)
+	}
 	boot, address, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
 	if err != nil {
 		return capacityClearResult{}, err
 	}
 	form := url.Values{}
+	form.Set("recovery", mode)
 	form.Set("project_id", strings.TrimSpace(projectID))
 	form.Set("scope", strings.TrimSpace(scope))
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+dashboardServerAddr(boot)+"/api/v1/capacity/clear", strings.NewReader(form.Encode()))
@@ -126,6 +140,9 @@ func runCapacityClear(
 	var result capacityClearResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return capacityClearResult{}, fmt.Errorf("decode capacity clear response: %w", err)
+	}
+	if mode == "immediate" && result.RecoveryRequested != mode {
+		return capacityClearResult{}, errors.New("server did not acknowledge immediate recovery; upgrade the running Detent service before retrying")
 	}
 	return result, nil
 }

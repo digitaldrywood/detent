@@ -14197,3 +14197,76 @@ func (p *refreshProbe) RequestRefresh(context.Context) (web.RefreshResponse, err
 func int64Pointer(value int64) *int64 {
 	return &value
 }
+
+func TestCapacityClearEndpointRecoveryMode(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		mode, project string
+		status        int
+	}{
+		{"", "", http.StatusAccepted},
+		{"ramping", "", http.StatusAccepted},
+		{"immediate", "", http.StatusAccepted},
+		{"invalid", "", http.StatusBadRequest},
+		{"immediate", "missing", http.StatusNotFound},
+	} {
+		t.Run(tt.mode+tt.project, func(t *testing.T) {
+			server, err := web.NewServer(web.Config{}, testDeps(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/capacity/clear", strings.NewReader(url.Values{"recovery": {tt.mode}, "project_id": {tt.project}}.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			server.Handler().ServeHTTP(recorder, request)
+			if recorder.Code != tt.status {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			if tt.status == http.StatusAccepted {
+				mode := tt.mode
+				if mode == "" {
+					mode = "ramping"
+				}
+				if body := recorder.Body.String(); !strings.Contains(body, `"recovery_requested":"`+mode+`"`) || !strings.Contains(body, `"recovery_applied":"pending"`) {
+					t.Fatalf("body = %s", body)
+				}
+			}
+		})
+	}
+}
+
+func TestCapacityClearEndpointProjectIsolation(t *testing.T) {
+	t.Parallel()
+	for _, selected := range []string{"first", ""} {
+		t.Run(selected, func(t *testing.T) {
+			deps := testDeps(t)
+			projects := []*project.Project{newBudgetTestProject(t, "first", 100, 10), newBudgetTestProject(t, "second", 100, 10)}
+			for _, candidate := range projects {
+				if err := deps.Registry.Set(candidate); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/capacity/clear", strings.NewReader(url.Values{"recovery": {"immediate"}, "project_id": {selected}, "scope": {"codex"}}.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			server.Handler().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			for _, candidate := range projects {
+				err := candidate.Orchestrator().RequestBackendCapacityClear(t.Context(), "codex")
+				queued := selected == "" || string(candidate.ID()) == selected
+				if queued && !errors.Is(err, orchestrator.ErrCapacityClearQueueFull) {
+					t.Fatalf("project %s did not receive clear: %v", candidate.ID(), err)
+				}
+				if !queued && err != nil {
+					t.Fatalf("unselected project %s received clear: %v", candidate.ID(), err)
+				}
+			}
+		})
+	}
+}

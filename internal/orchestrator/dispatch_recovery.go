@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -21,13 +22,14 @@ const (
 )
 
 type DispatchRecovery struct {
-	Kind       string
-	Reason     string
-	Status     string
-	StartedAt  time.Time
-	ResumeAt   time.Time
-	Limit      int
-	Admissions map[string]bool
+	BackendScope backendcapacity.Scope
+	Kind         string
+	Reason       string
+	Status       string
+	StartedAt    time.Time
+	ResumeAt     time.Time
+	Limit        int
+	Admissions   map[string]bool
 }
 
 func dispatchRecoverySnapshots(
@@ -123,31 +125,40 @@ func (o *Orchestrator) activateDispatchRecovery(
 	now time.Time,
 	progressedIssueID string,
 ) {
+	o.activateScopedDispatchRecovery(state, kind, reason, now, progressedIssueID, backendcapacity.Scope{})
+}
+
+func (o *Orchestrator) activateScopedDispatchRecovery(state *State, kind string, reason string, now time.Time, progressedIssueID string, scope backendcapacity.Scope) {
 	if state == nil || strings.TrimSpace(kind) == "" {
 		return
 	}
+	kind = strings.TrimSpace(kind)
+	key := kind
+	if scope != (backendcapacity.Scope{}) {
+		key += ":" + scope.Key()
+	}
 	if o.cfg.MaxConcurrentAgents <= 1 {
-		delete(state.DispatchRecoveries, strings.TrimSpace(kind))
+		delete(state.DispatchRecoveries, key)
 		return
 	}
 	if state.DispatchRecoveries == nil {
 		state.DispatchRecoveries = map[string]DispatchRecovery{}
 	}
-	kind = strings.TrimSpace(kind)
 	limit := 1
 	admissions := map[string]bool{}
 	if issueID := strings.TrimSpace(progressedIssueID); issueID != "" {
 		admissions[issueID] = true
 		limit = min(2, o.cfg.MaxConcurrentAgents)
 	}
-	state.DispatchRecoveries[kind] = DispatchRecovery{
-		Kind:       kind,
-		Reason:     strings.TrimSpace(reason),
-		Status:     dispatchRecoveryStatusRamping,
-		StartedAt:  now,
-		ResumeAt:   now,
-		Limit:      limit,
-		Admissions: admissions,
+	state.DispatchRecoveries[key] = DispatchRecovery{
+		BackendScope: scope,
+		Kind:         kind,
+		Reason:       strings.TrimSpace(reason),
+		Status:       dispatchRecoveryStatusRamping,
+		StartedAt:    now,
+		ResumeAt:     now,
+		Limit:        limit,
+		Admissions:   admissions,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
@@ -317,4 +328,8 @@ func (o *Orchestrator) backoffDispatchRecovery(state *State, issueID string, fai
 			Message: "dispatch recovery canary failed before progress; retrying after " + recovery.Kind,
 		})
 	}
+}
+
+func (o *Orchestrator) activateBackendDispatchRecovery(state *State, outage BackendOutage, at time.Time) {
+	o.activateScopedDispatchRecovery(state, dispatchRecoveryBackendCapacity, backendCapacityStatusMessage(outage), at, "", outage.Scope)
 }
