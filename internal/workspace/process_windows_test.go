@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -10,7 +11,38 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
+	"golang.org/x/sys/windows"
 )
+
+func TestWindowsScratchProcessAlive(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		alive     bool
+		err       error
+		wantAlive bool
+		wantErr   bool
+	}{
+		{name: "live", alive: true, wantAlive: true},
+		{name: "exited"},
+		{name: "not running", err: process.ErrorProcessNotRunning},
+		{name: "vanished pid", err: windows.ERROR_INVALID_PARAMETER},
+		{name: "wrapped vanished pid", err: fmt.Errorf("creation time: %w", windows.ERROR_INVALID_PARAMETER)},
+		{name: "access denied", err: windows.ERROR_ACCESS_DENIED, wantErr: true},
+		{name: "observation failed", err: errors.New("observation failed"), wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			alive, err := windowsScratchProcessAlive(t.Context(), func(context.Context) (bool, error) {
+				return tt.alive, tt.err
+			})
+			if alive != tt.wantAlive || (err != nil) != tt.wantErr {
+				t.Fatalf("alive = %t, error = %v, want %t, error %t", alive, err, tt.wantAlive, tt.wantErr)
+			}
+			if tt.wantErr && !errors.Is(err, tt.err) {
+				t.Fatalf("observation error lost: %v", err)
+			}
+		})
+	}
+}
 
 func TestWindowsScratchInspectionConfirmsProcessExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -52,7 +84,9 @@ func TestWindowsScratchInspectionConfirmsProcessExit(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		err := scratchProcessInspectionError(ctx, cmd.Process.Pid, "directory", inspectionErr, p.IsRunningWithContext)
+		err := scratchProcessInspectionError(ctx, cmd.Process.Pid, "directory", inspectionErr, func(ctx context.Context) (bool, error) {
+			return windowsScratchProcessAlive(ctx, p.IsRunningWithContext)
+		})
 		if exited && err != nil {
 			t.Fatalf("exited process inspection: %v", err)
 		}
