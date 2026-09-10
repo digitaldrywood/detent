@@ -401,6 +401,7 @@ func checkDoctorProjectWithProgress(
 	if workerGitHubCheck, ok := checkDoctorWorkerGitHubCredential(id, workflow.Config); ok {
 		checks = append(checks, workerGitHubCheck)
 	}
+	checks = append(checks, checkDoctorCodexInstructions(id, workflow.Config, deps.lookupEnv)...)
 	setDoctorCurrentCheck("Project " + id + " progress brake")
 	checks = append(checks, checkDoctorProgressBrake(id, workflow.Config))
 	checks = append(checks, checkDoctorTerminalAttemptRecovery(id, workflow.Config))
