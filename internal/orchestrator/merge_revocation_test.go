@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func TestMergeRevocationCompletionReleasesAttemptAndCapacity(t *testing.T) {
+func TestMergeCompletionAfterHumanMoveReleasesAttemptAndCapacity(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC)
@@ -71,13 +70,13 @@ func TestMergeRevocationCompletionReleasesAttemptAndCapacity(t *testing.T) {
 	state.Retry[issue.ID] = Retry{Issue: cloneIssue(issue), Attempt: 3, DueAt: now.Add(time.Hour)}
 
 	orch.reconcileRunningIssues(t.Context(), &state, now)
-	if !errors.Is(context.Cause(runCtx), runpkg.ErrMergeRevoked) {
+	if context.Cause(runCtx) != nil {
 		t.Fatalf("context cause = %v, want ErrMergeRevoked", context.Cause(runCtx))
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 		IssueID:     issue.ID,
 		CompletedAt: now.Add(time.Second),
-		Err:         runpkg.ErrMergeRevoked,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
 	})
 
 	if _, ok := state.Running[issue.ID]; ok {
@@ -93,7 +92,7 @@ func TestMergeRevocationCompletionReleasesAttemptAndCapacity(t *testing.T) {
 		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
 	}
 	completion := attempts.completions[0]
-	if completion.TerminalState != store.WorkAttemptTerminalMergeRevoked || completion.Phase != "merge_revoked" {
+	if completion.TerminalState != store.WorkAttemptTerminalSuccess || completion.Phase != "completed" {
 		t.Fatalf("work attempt completion = %#v, want merge_revoked terminal state", completion)
 	}
 	if len(tracker.updates) != 0 {

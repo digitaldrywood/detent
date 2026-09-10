@@ -1347,8 +1347,8 @@ func TestReapWorkspacesVerifiesKnownWorkspaceIssueIDsBeforeStateSweep(t *testing
 	if tracker.fetchByStatesCalls != 0 {
 		t.Fatalf("FetchIssuesByStates() calls = %d, want 0 when known workspace IDs are verified", tracker.fetchByStatesCalls)
 	}
-	if _, ok := state.Completed[running.ID]; !ok {
-		t.Fatalf("Completed[%q] missing after terminal known-workspace verification", running.ID)
+	if _, ok := state.Running[running.ID]; !ok {
+		t.Fatalf("Running[%q] removed before worker completion", running.ID)
 	}
 }
 

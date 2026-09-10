@@ -420,6 +420,9 @@ func createDoctorWorkflowImprovementProposalIssues(
 	if len(proposals) == 0 {
 		return nil, nil
 	}
+	if deps.proposalLaneWriter == nil {
+		return nil, errors.New("self-improvement proposals require the orchestrator lane writer")
+	}
 	if err := doctorWorkflowProposalIssueDeliverySupported(cfg); err != nil {
 		return nil, err
 	}
@@ -452,7 +455,7 @@ func createDoctorWorkflowImprovementProposalIssues(
 			if err != nil {
 				return nil, err
 			}
-			if err := projectConnector.UpdateIssueState(ctx, issue.ID, doctorWorkflowProposalBacklogState); errors.Is(err, connector.ErrStateUpdateBlocked) {
+			if err := deps.proposalLaneWriter(ctx, projectID, cfg, projectConnector, issue, doctorWorkflowProposalBacklogState); errors.Is(err, connector.ErrStateUpdateBlocked) {
 				slog.Default().Debug("skip blocked self-improvement proposal state update", "issue_id", issue.ID, "target_state", doctorWorkflowProposalBacklogState, "error", err)
 			} else if err != nil {
 				return nil, err

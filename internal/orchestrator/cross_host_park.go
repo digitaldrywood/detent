@@ -207,6 +207,9 @@ func recoveryParkEventMatchesIssue(event store.WorkflowPhaseEvent, issue connect
 }
 
 func recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata) bool {
+	if event.Reason == "operator_move" && metadata.Provenance.Origin == provenance.OriginHuman {
+		return true
+	}
 	if metadata.Provenance.Initiator == provenance.InitiatorHuman && metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman {
 		return true
 	}

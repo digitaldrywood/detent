@@ -374,7 +374,6 @@ func (o *Orchestrator) parkRepeatedMergeRevocations(
 		now,
 		string(AutoPromoteReasonMergeRevocationLimit),
 		metadata,
-		laneMutationRevokeWorker,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
@@ -540,7 +539,6 @@ func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, r
 		revocation.targetState,
 		at,
 		string(store.WorkAttemptTerminalMergeRevoked)+":"+revocation.reason,
-		laneMutationRevokeWorker,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
@@ -782,7 +780,6 @@ func (o *Orchestrator) escalateMergeRevocationCommentLoss(
 		targetState,
 		at,
 		reason,
-		laneMutationRevokeWorker,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(

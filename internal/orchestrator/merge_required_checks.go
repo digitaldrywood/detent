@@ -99,7 +99,6 @@ func (o *Orchestrator) reconcilePersistentlyMissingRequiredCheckPark(
 		now,
 		workflowActionMergeRequiredCheckParkRecovery,
 		metadata,
-		laneMutationPreserveOwnership,
 	); err != nil {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "required_check_recovery_transition_failed", &park, signature)
 		return true, false
@@ -181,7 +180,6 @@ func (o *Orchestrator) blockPersistentlyMissingRequiredChecks(
 		event.CompletedAt,
 		reason,
 		metadata,
-		laneMutationRevokeWorker,
 	); err != nil {
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_persistent_missing_required_check_block_failed", err)
 		return

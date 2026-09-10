@@ -375,7 +375,7 @@ func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *
 		)
 		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerOperator
 	}
-	err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, result.Destination, result.CompletedAt, string(store.WorkAttemptTerminalOperatorStopped), metadata, laneMutationRevokeWorker)
+	err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, result.Destination, result.CompletedAt, string(store.WorkAttemptTerminalOperatorStopped), metadata)
 	if err != nil {
 		return o.failOperatorStopTransition(ctx, state, issue, result, err)
 	}

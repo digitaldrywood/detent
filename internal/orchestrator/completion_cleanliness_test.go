@@ -256,7 +256,8 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 			t.Parallel()
 
 			issue := connector.Issue{ID: "issue-2147", Identifier: "digitaldrywood/detent#2147", State: "In Progress"}
-			completionLane := "In Progress"
+			completionLane := ""
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"2147\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
 			if tt.intentional {
 				completionLane = ""
 				issue.Comments = []connector.IssueComment{{

@@ -1327,10 +1327,10 @@ func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 	}
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 	orch := &Orchestrator{
-		cfg:           cfg,
-		connector:     tracker,
-		laneMutations: runtimeStore,
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:        cfg,
+		connector:  tracker,
+		laneLedger: runtimeStore,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	result := orch.autoPromoteHumanReviewIssues(ctx, &state, []connector.Issue{issue}, now)
@@ -1986,10 +1986,10 @@ func TestTickAutoPromoteBlocksWhenReworkLimitReached(t *testing.T) {
 		}
 	}
 	events := metrics.snapshot()
-	if len(events) != 3 {
-		t.Fatalf("workflow metric events = %#v, want prior Rework plus exit/Blocked enter", events)
+	if len(events) != 5 {
+		t.Fatalf("workflow metric events = %#v, want prior Rework, confirmed human move, and exit/Blocked enter", events)
 	}
-	blocked := events[2]
+	blocked := events[len(events)-1]
 	if blocked.PhaseName != "Blocked" || blocked.Status != "entered" || blocked.Reason != "rework_limit" {
 		t.Fatalf("blocked metric = %#v, want Blocked entered with rework_limit reason", blocked)
 	}

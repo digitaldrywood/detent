@@ -7,20 +7,28 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 var ErrMissingOperatorMoveIssueID = errors.New("operator move issue id is required")
 
 type OperatorMoveRequest struct {
-	ProjectID  string
-	IssueID    string
-	Identifier string
-	FromState  string
-	ToState    string
+	Tracker         connector.Connector
+	Attribution     provenance.Attribution
+	WriteTracker    bool
+	Reason          string
+	StateFieldID    int
+	StateFieldValue string
+	ProjectID       string
+	IssueID         string
+	Identifier      string
+	FromState       string
+	ToState         string
 }
 
 type OperatorMoveResult struct {
+	err                  error
 	Reconciled           bool
 	BlockedCleared       bool
 	ClaimCleared         bool
@@ -60,8 +68,54 @@ func (o *Orchestrator) ReconcileOperatorMove(ctx context.Context, request Operat
 	case <-o.done:
 		return OperatorMoveResult{}, ErrStopped
 	case result := <-move.reply:
-		return result, nil
+		return result, result.err
 	}
+}
+
+func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, request OperatorMoveRequest, at time.Time) OperatorMoveResult {
+	if request.WriteTracker {
+		owner := o
+		ownerState := state
+		if request.Tracker != nil {
+			owner = &Orchestrator{cfg: o.cfg, connector: request.Tracker, laneLedger: o.laneLedger, laneCoordination: o.laneCoordination, workflowMetrics: o.workflowMetrics, logger: o.logger}
+			ownerState = nil
+		}
+		issue := connector.Issue{ID: request.IssueID, Identifier: request.Identifier, State: request.FromState}
+		if current, found := findRecoveryIssue(ownerState, issue); found {
+			issue = current
+		} else {
+			issues, err := owner.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+			if err != nil {
+				return OperatorMoveResult{err: err}
+			}
+			for _, current := range issues {
+				if current.ID == issue.ID {
+					issue = current
+					break
+				}
+			}
+		}
+		reason := request.Reason
+		if reason == "" {
+			reason = "operator_move"
+		}
+		metadata := workflowLaneMetadata{StateFieldID: request.StateFieldID, StateFieldValue: request.StateFieldValue, Provenance: request.Attribution}
+		if err := owner.updateIssueStateByIDStrictWithMetadata(ctx, ownerState, issue.ID, issue, request.ToState, at, reason, metadata); err != nil {
+			return OperatorMoveResult{err: err}
+		}
+		if request.Tracker != nil {
+			return OperatorMoveResult{Reconciled: true}
+		}
+		if state != nil && normalizeState(issue.State) != normalizeState(request.ToState) {
+			if running, ok := state.Running[issue.ID]; ok {
+				applyIssueStateSnapshot(&running.Issue, request.ToState, at)
+				running.CompletionLane = request.ToState
+				running.CompletionAcceptedAt = at
+				state.Running[issue.ID] = running
+			}
+		}
+	}
+	return o.handleOperatorMove(state, request, at)
 }
 
 func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequest, at time.Time) OperatorMoveResult {
@@ -86,9 +140,14 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 		result.BlockedCleared = true
 	}
 	if result.BlockedCleared {
-		if _, ok := state.Claimed[issueID]; ok {
-			delete(state.Claimed, issueID)
-			result.ClaimCleared = true
+		if claimed, ok := state.Claimed[issueID]; ok {
+			if _, running := state.Running[issueID]; running {
+				applyIssueStateSnapshot(&claimed.Issue, toState, at)
+				state.Claimed[issueID] = claimed
+			} else {
+				delete(state.Claimed, issueID)
+				result.ClaimCleared = true
+			}
 		}
 		if _, ok := state.Retry[issueID]; ok {
 			delete(state.Retry, issueID)

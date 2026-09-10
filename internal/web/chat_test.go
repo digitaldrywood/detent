@@ -39,7 +39,7 @@ func TestChatQuestionUsesLiveBoardToolAndPersistsSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestChatMutationRequiresConfirmationAndUsesKanbanHandler(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -197,7 +197,7 @@ func TestChatPriorityRequiresConfirmationAndUsesPriorityHandler(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -249,7 +249,7 @@ func TestChatConfirmationEnforcesAPIKeyProjectScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() API key error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_admin_token"}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_admin_token"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}

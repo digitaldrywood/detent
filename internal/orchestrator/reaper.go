@@ -351,11 +351,10 @@ func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Cont
 			slog.String("reason", workspaceReapReason(running.Issue, o.cfg.TerminalStates)),
 		)
 	}
-	if running.Generation == 0 {
-		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
-		return true
+	if normalizeState(state.Running[issueID].Issue.State) != normalizeState(running.Issue.State) || !stateIn(running.Issue.State, o.cfg.ActiveStates) {
+		running.CompletionLane = running.Issue.State
 	}
-	o.beginLaneRevocation(ctx, state, running, running.Issue, now, laneRevocationStateChanged)
+	state.Running[issueID] = running
 	return true
 }
 

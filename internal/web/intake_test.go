@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -139,6 +140,16 @@ func newIntakeWebhookServer(t *testing.T, match string) (*web.Server, *memory.Co
 	if err != nil {
 		t.Fatalf("project.New() error = %v", err)
 	}
+
+	runCtx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- trackedProject.Orchestrator().Run(runCtx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("orchestrator.Run(): %v", err)
+		}
+	})
 
 	deps := testDeps(t)
 	if err := deps.Registry.Set(trackedProject); err != nil {

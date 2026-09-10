@@ -25,6 +25,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 const (
@@ -382,6 +385,16 @@ func doctorWorkflowOptimization(
 	runtimeGitHubToken string,
 	options doctorWorkflowOptimizationOptions,
 ) (doctorWorkflowOptimizationReport, error) {
+	if deps.proposalLaneWriter == nil {
+		deps.proposalLaneWriter = func(ctx context.Context, projectID string, cfg workflowconfig.Config, tracker connector.Connector, issue connector.Issue, target string) error {
+			ledger, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: storePath})
+			if err != nil {
+				return err
+			}
+			err = project.InitializeIssueLane(ctx, projectID, cfg, tracker, ledger, ledger, issue, target)
+			return errors.Join(err, ledger.Close())
+		}
+	}
 	options = doctorWorkflowOptimizationOptionsWithDefaults(options)
 	report := doctorWorkflowOptimizationReport{StorePath: storePath}
 	analyzedProjects := make([]doctorWorkflowAnalyzedProject, 0, len(cfg.Projects))

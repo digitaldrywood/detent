@@ -69,7 +69,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if receipt.Status != store.WorkAttemptStatusActive || receipt.Phase != deferredCompletionPhase || receipt.WaitReason != connector.TrackerUnavailableCondition || receipt.NextAction != deferredCompletionNextAction {
 				t.Fatalf("deferred work attempt = %#v, want active tracker wait", receipt)
 			}
-			if strings.Contains(receipt.WorkerMetadataJSON, `"lane_revocation"`) || len(orch.pendingLaneRevocations) != 0 || len(tracker.comments) != 0 {
+			if strings.Contains(receipt.WorkerMetadataJSON, `"lane_revocation"`) || len(tracker.comments) != 0 {
 				t.Fatalf("unreadable fence produced a revocation: %s", receipt.WorkerMetadataJSON)
 			}
 			if !strings.Contains(record.Availability.Message, tt.fenceErr.Error()) {
@@ -113,10 +113,10 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			wantAcceptedTokens: 37,
 		},
 		{
-			name:               "retry after recovery honors lane revocation",
+			name:               "retry after recovery honors observed lane",
 			recoveredState:     "Todo",
 			retryCount:         1,
-			wantTerminal:       store.WorkAttemptTerminalLaneRevoked,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
 			wantAcceptedTokens: 37,
 		},
 		{
@@ -362,7 +362,7 @@ func openCompletionDeferralStoreWithoutCleanup(t *testing.T, path string) store.
 
 func TestCompletionFenceUnchangedOrUnknownLaneDefers(t *testing.T) {
 	t.Parallel()
-	for _, lane := range []string{"Blocked", "Done", ""} {
+	for _, lane := range []string{""} {
 		t.Run(lane, func(t *testing.T) {
 			now := time.Now().UTC()
 			issue := completionDeferralIssue("unchanged", lane)
@@ -373,7 +373,7 @@ func TestCompletionFenceUnchangedOrUnknownLaneDefers(t *testing.T) {
 			state := newState(cfg)
 			state.Running[issue.ID] = completionDeferralRunning(issue, 2297, now)
 			orch.handleRunResult(t.Context(), &state, completionDeferralEvent(issue, 2297, now))
-			if len(state.deferredCompletions) != 1 || len(orch.pendingLaneRevocations) != 0 || len(attempts.completions) != 0 || len(tracker.comments) != 0 {
+			if len(state.deferredCompletions) != 1 || len(attempts.completions) != 0 || len(tracker.comments) != 0 {
 				t.Fatal("unchanged or unknown lane finalized as revoked")
 			}
 		})

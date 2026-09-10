@@ -1056,7 +1056,7 @@ func (o *Orchestrator) blockImplementProgress(
 	if predicate == blockedRecoveryPredicateManaged {
 		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason, metadata, laneMutationRevokeWorker); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"no progress limit state transition failed",
@@ -1126,7 +1126,7 @@ func (o *Orchestrator) finishImplementDependencyDeferral(
 		sourceState, _ := o.dispatchTimelineTransitionContext(ctx, issue)
 		target := dependencyWaitTarget(issue, sourceState)
 		if normalizeState(issue.State) != normalizeState(target) {
-			if err := o.updateIssueState(ctx, state, issue, target, completedAt, "dependency_wait", laneMutationPreserveOwnership); err != nil && o.logger != nil {
+			if err := o.updateIssueState(ctx, state, issue, target, completedAt, "dependency_wait"); err != nil && o.logger != nil {
 				o.logger.Warn("dependency wait lane update failed", "issue_id", issue.ID, "error", err)
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hostpressure"
@@ -200,7 +201,8 @@ type Dependencies struct {
 	Runner               Runner
 	WorkspaceReaper      WorkspaceReaper
 	WorkflowMetrics      WorkflowMetricsRecorder
-	LaneMutations        store.LaneMutationStore
+	LaneLedger           store.LaneLedgerStore
+	LaneCoordination     coordination.Store
 	Efficiency           efficiency.Recorder
 	LifecycleExporter    efficiency.LifecycleExporter
 	WorkAttempts         store.WorkAttemptStore
@@ -267,7 +269,12 @@ type Orchestrator struct {
 	connector               connector.Connector
 	scheduling              SchedulingSource
 	workflowMetrics         WorkflowMetricsRecorder
-	laneMutations           store.LaneMutationStore
+	laneLedger              store.LaneLedgerStore
+	laneCoordination        coordination.Store
+	laneWriteMu             sync.Mutex
+	laneWrites              map[string]coordination.LaneWrite
+	laneWriteResults        map[string]string
+	laneObservations        map[string]store.LaneObservation
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter
 	workAttempts            store.WorkAttemptStore
@@ -356,7 +363,6 @@ type Orchestrator struct {
 	validatorCapacityEvents chan validatorCapacityEvent
 	done                    chan struct{}
 	pendingStops            map[string]*pendingStopRun
-	pendingLaneRevocations  map[string]*pendingLaneRevocation
 	pendingMergeRevocations map[string]mergeRevocation
 	mergeRevocationComments map[string]*mergeRevocationCommentState
 	completedStops          map[string]StopRunResult
@@ -557,15 +563,15 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			agentResume = candidate
 		}
 	}
-	laneMutations := deps.LaneMutations
-	if laneMutations == nil {
-		if candidate, ok := deps.WorkAttempts.(store.LaneMutationStore); ok {
-			laneMutations = candidate
+	laneLedger := deps.LaneLedger
+	if laneLedger == nil {
+		if ledger, ok := deps.WorkflowMetrics.(store.LaneLedgerStore); ok {
+			laneLedger = ledger
 		}
 	}
-	if laneMutations == nil {
-		if candidate, ok := deps.WorkflowMetrics.(store.LaneMutationStore); ok {
-			laneMutations = candidate
+	if laneLedger == nil {
+		if ledger, ok := deps.WorkAttempts.(store.LaneLedgerStore); ok {
+			laneLedger = ledger
 		}
 	}
 	progressSpend := deps.ProgressSpend
@@ -658,7 +664,8 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		connector:               deps.Connector,
 		scheduling:              deps.Scheduling,
 		workflowMetrics:         deps.WorkflowMetrics,
-		laneMutations:           laneMutations,
+		laneLedger:              laneLedger,
+		laneCoordination:        deps.LaneCoordination,
 		efficiency:              deps.Efficiency,
 		lifecycleExporter:       deps.LifecycleExporter,
 		workAttempts:            deps.WorkAttempts,
@@ -727,7 +734,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
 		done:                    make(chan struct{}),
 		pendingStops:            map[string]*pendingStopRun{},
-		pendingLaneRevocations:  map[string]*pendingLaneRevocation{},
 		pendingMergeRevocations: map[string]mergeRevocation{},
 		mergeRevocationComments: map[string]*mergeRevocationCommentState{},
 		completedStops:          map[string]StopRunResult{},
@@ -895,7 +901,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
 		case request := <-o.operatorMoves:
 			state.syncWorkerProgress()
-			request.reply <- o.handleOperatorMove(&state, request.request, request.at)
+			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
 		case update := <-o.configUpdates:
 			state.syncWorkerProgress()
 			o.applyRuntimeUpdate(&state, update.update, ticker)

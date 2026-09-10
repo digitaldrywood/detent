@@ -676,7 +676,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 	dispatchStartTargetState := ""
 	if targetState != "" {
 		sourceState := issue.State
-		if err := o.updateIssueState(runCtx, state, issue, targetState, now, "dispatch_start", laneMutationPreserveOwnership); err != nil {
+		if err := o.updateIssueState(runCtx, state, issue, targetState, now, "dispatch_start"); err != nil {
 			if recovery {
 				releaseDispatchRecoveryAdmission(state, issue.ID)
 			}

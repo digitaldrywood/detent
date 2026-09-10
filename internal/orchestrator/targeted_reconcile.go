@@ -61,7 +61,6 @@ func (o *Orchestrator) applyTargetedReconcile(
 		return
 	}
 
-	priorRunning, hadRunning := state.Running[strings.TrimSpace(result.Issue.ID)]
 	issue := mergeTargetedIssue(state, result.Issue, now)
 	visibleStates := append(append([]string(nil), o.cfg.ActiveStates...), o.cfg.ObservedStates...)
 	state.BoardIssues = reconcileTargetedIssueSlice(state.BoardIssues, issue, stateIn(issue.State, visibleStates))
@@ -75,39 +74,10 @@ func (o *Orchestrator) applyTargetedReconcile(
 		clearBlockedStatusIssue(state, issue.ID)
 	}
 
-	if running, ok := state.Running[issue.ID]; ok &&
-		(!stateIn(running.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates)) {
-		if hadRunning {
-			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, priorRunning, running.Issue)
-			if receiptErr != nil {
-				if o.logger != nil {
-					o.logger.Warn("targeted lane mutation receipt lookup failed", "issue_id", issue.ID, "error", receiptErr)
-				}
-				return
-			}
-			if receiptFound {
-				if receipt.Disposition == laneMutationRevokeWorker {
-					o.beginLaneRevocationForMutation(ctx, state, priorRunning, running.Issue, now, receipt)
-					return
-				}
-				running.laneMutation = receipt
-				state.Running[issue.ID] = running
-				return
-			}
-		}
-		if accepted, acceptedCompletion := o.acceptCurrentAttemptCompletionLane(ctx, state, running, running.Issue, now); acceptedCompletion {
-			state.Running[issue.ID] = accepted
-			return
-		}
-		if running.Generation == 0 && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-			o.completeTerminalRunning(ctx, state, issue.ID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
-			return
-		}
-		if hadRunning {
-			running = priorRunning
-		}
-		o.beginLaneRevocation(ctx, state, running, issue, now, laneRevocationStateChanged)
+	if _, _, err := o.observeLane(ctx, state, issue, now); err != nil && o.logger != nil {
+		o.logger.Warn("targeted lane observation failed", "issue_id", issue.ID, "error", err)
 	}
+
 }
 
 func mergeTargetedIssue(state *State, refreshed connector.Issue, now time.Time) connector.Issue {
@@ -196,6 +166,9 @@ func (o *Orchestrator) updateTargetedIssueEntries(state *State, issue connector.
 		return
 	}
 	if running, ok := state.Running[issueID]; ok {
+		if normalizeState(running.Issue.State) != normalizeState(issue.State) {
+			running.CompletionLane = issue.State
+		}
 		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
 		state.Running[issueID] = running
 	}

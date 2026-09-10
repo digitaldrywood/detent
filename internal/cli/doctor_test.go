@@ -6646,6 +6646,9 @@ func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
 
 func successfulDoctorDeps() doctorDeps {
 	return doctorDeps{
+		proposalLaneWriter: func(ctx context.Context, _ string, _ workflowconfig.Config, tracker connector.Connector, issue connector.Issue, target string) error {
+			return tracker.UpdateIssueState(ctx, issue.ID, target)
+		},
 		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 			return workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")}, nil
 		},

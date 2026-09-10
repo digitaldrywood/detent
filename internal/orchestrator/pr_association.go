@@ -89,7 +89,7 @@ func (o *Orchestrator) recoverStaleTodoReviews(ctx context.Context, state *State
 		if err != nil || fresh.PullRequest != nil || fresh.PRNumber != nil || !staleTodoReviewEntry(fresh, event) {
 			continue
 		}
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, fresh, "Todo", now, staleTodoPRRecovered, recovery, laneMutationRevokeWorker); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, fresh, "Todo", now, staleTodoPRRecovered, recovery); err != nil {
 			continue
 		}
 		transitioned[issue.ID] = struct{}{}
