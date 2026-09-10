@@ -67,7 +67,7 @@ func PublishLaneWrite(ctx context.Context, backend Store, project string, write 
 	return errors.New("coordinated lane write compare-and-swap limit exceeded")
 }
 
-func MatchPeerLaneWrite(ctx context.Context, backend Store, project, instance, issue, to string, observedAt time.Time) (bool, error) {
+func MatchPeerLaneWrite(ctx context.Context, backend Store, project, instance, issue, to string, transitionAfter, observedAt time.Time) (bool, error) {
 	if backend == nil {
 		return false, nil
 	}
@@ -82,6 +82,7 @@ func MatchPeerLaneWrite(ctx context.Context, backend Store, project, instance, i
 	for identity, write := range writes.Writers {
 		if identity != instance && identity != "" && write.InstanceIdentity == identity && write.Issue == issue &&
 			write.FenceToken > 0 && !write.WrittenAt.IsZero() && write.WrittenAt.Before(observedAt) &&
+			(transitionAfter.IsZero() || write.WrittenAt.After(transitionAfter)) &&
 			strings.EqualFold(strings.TrimSpace(write.To), strings.TrimSpace(to)) {
 			return true, nil
 		}

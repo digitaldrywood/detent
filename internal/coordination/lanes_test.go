@@ -36,7 +36,7 @@ func TestPeerLaneWriteAcknowledgement(t *testing.T) {
 			if err := PublishLaneWrite(t.Context(), backend, "project", write); err != nil {
 				t.Fatal(err)
 			}
-			got, err := MatchPeerLaneWrite(t.Context(), backend, tt.project, tt.instance, tt.issue, tt.to, tt.observed)
+			got, err := MatchPeerLaneWrite(t.Context(), backend, tt.project, tt.instance, tt.issue, tt.to, time.Time{}, tt.observed)
 			if err != nil || got != tt.want {
 				t.Fatalf("MatchPeerLaneWrite() = %t, %v; want %t", got, err, tt.want)
 			}
@@ -64,7 +64,7 @@ func TestLaneWriteFencing(t *testing.T) {
 			if (err != nil) != (token <= 2) {
 				t.Fatalf("PublishLaneWrite() = %v, token %d", err, token)
 			}
-			matched, err := MatchPeerLaneWrite(t.Context(), backend, "project", "local", "issue", "In Progress", at.Add(time.Second))
+			matched, err := MatchPeerLaneWrite(t.Context(), backend, "project", "local", "issue", "In Progress", time.Time{}, at.Add(time.Second))
 			if err != nil || matched != (token <= 2) {
 				t.Fatalf("superseded acknowledgement = %t, %v", matched, err)
 			}
@@ -85,7 +85,7 @@ func TestLaneWriteBackendAvailability(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			matched, err := MatchPeerLaneWrite(t.Context(), tt.backend, "project", "local", "issue", "Todo", time.Now())
+			matched, err := MatchPeerLaneWrite(t.Context(), tt.backend, "project", "local", "issue", "Todo", time.Time{}, time.Now())
 			if matched || (err != nil) != tt.wantErr {
 				t.Fatalf("MatchPeerLaneWrite() = %t, %v", matched, err)
 			}

@@ -346,3 +346,63 @@ func TestHumanMoveToMergingDoesNotChangeWorkerMode(t *testing.T) {
 		})
 	}
 }
+
+func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
+	t.Parallel()
+	for _, peer := range []bool{false, true} {
+		t.Run(strconv.FormatBool(peer), func(t *testing.T) {
+			t.Parallel()
+			at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+			issue := laneRevocationIssue("reentry", "example/repo#8", "Todo")
+			cfg := laneMutationTestConfig()
+			backend, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, at)
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)
+			state := newState(cfg)
+			if _, _, err := orch.observeLane(t.Context(), &state, issue, at); err != nil {
+				t.Fatal(err)
+			}
+			var peerStore coordination.Store
+			if peer {
+				write := coordination.LaneWrite{InstanceIdentity: "peer", Issue: issue.ID, From: issue.State, To: "In Progress", Reason: "dispatch", FenceToken: 1, WrittenAt: at.Add(time.Second)}
+				value, err := json.Marshal(map[string]map[string]coordination.LaneWrite{"writers": {"peer": write}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				peerStore = lanePeerReader{value: value}
+				orch.laneCoordination = peerStore
+			} else if err := orch.updateIssueState(t.Context(), &state, issue, "In Progress", at.Add(time.Second), "dispatch"); err != nil {
+				t.Fatal(err)
+			}
+			issue.State = "In Progress"
+			if _, origin, err := orch.observeLane(t.Context(), &state, issue, at.Add(2*time.Second)); err != nil || origin.Origin != provenance.OriginDetent {
+				t.Fatalf("first acknowledgement: origin=%s err=%v", origin.Origin, err)
+			}
+			issue.State = "Blocked"
+			if _, _, err := orch.observeLane(t.Context(), &state, issue, at.Add(3*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus}
+			state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
+			orch = newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)
+			orch.laneCoordination = peerStore
+			issue.State = "In Progress"
+			for range 2 {
+				if _, origin, err := orch.observeLane(t.Context(), &state, issue, at.Add(4*time.Second)); err != nil || origin.Origin != provenance.OriginHuman {
+					t.Fatalf("human reentry: origin=%s err=%v", origin.Origin, err)
+				}
+			}
+			if _, blocked := state.Blocked[issue.ID]; blocked || len(state.InstantFailures) != 0 {
+				t.Fatal("human reentry did not clear failure memory")
+			}
+			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
+			want := 6
+			if peer {
+				want = 4
+			}
+			if err != nil || len(timeline.Events) != want {
+				t.Fatalf("events=%d want=%d err=%v", len(timeline.Events), want, err)
+			}
+		})
+	}
+}

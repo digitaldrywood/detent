@@ -158,6 +158,11 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 	if known && previous.Origin != "" && normalizeState(previous.State) == normalizeState(issue.State) && (issue.StageUpdatedAt == nil || !issue.StageUpdatedAt.After(previous.EnteredAt)) {
 		return previous, laneLedgerAttribution(provenance.Origin(previous.Origin)), nil
 	}
+	same := known && normalizeState(previous.State) == normalizeState(issue.State) && (issue.StageUpdatedAt == nil || !issue.StageUpdatedAt.After(previous.EnteredAt))
+	transitionAfter := time.Time{}
+	if known && !same {
+		transitionAfter = previous.EnteredAt
+	}
 	write := o.laneWrites[issue.ID]
 	result := o.laneWriteResults[issue.ID]
 	if o.laneLedger != nil {
@@ -168,11 +173,12 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 		}
 	}
 	local := write.FenceToken > 0 && result != "blocked" && result != "failed" &&
-		normalizeState(write.To) == normalizeState(issue.State) && !write.WrittenAt.After(at)
+		normalizeState(write.To) == normalizeState(issue.State) && !write.WrittenAt.After(at) &&
+		(transitionAfter.IsZero() || write.WrittenAt.After(transitionAfter))
 	peer := false
 	if !local {
 		var err error
-		peer, err = coordination.MatchPeerLaneWrite(ctx, o.laneCoordination, identity.ProjectID, write.InstanceIdentity, issue.ID, issue.State, at)
+		peer, err = coordination.MatchPeerLaneWrite(ctx, o.laneCoordination, identity.ProjectID, write.InstanceIdentity, issue.ID, issue.State, transitionAfter, at)
 		if err != nil && o.logger != nil {
 			o.logger.Warn("peer lane lookup unavailable; using local ledger", "issue_id", issue.ID, "error", err)
 		}
@@ -181,7 +187,6 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 	if !local && !peer {
 		attribution = provenance.Prepare(provenance.Attribution{Origin: provenance.OriginHuman})
 	}
-	same := known && normalizeState(previous.State) == normalizeState(issue.State) && (issue.StageUpdatedAt == nil || !issue.StageUpdatedAt.After(previous.EnteredAt))
 	enteredAt := at
 	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
 		enteredAt = issue.StageUpdatedAt.UTC()

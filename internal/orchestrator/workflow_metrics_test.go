@@ -675,8 +675,8 @@ func TestDetentLaneWriteEchoKeepsWriter(t *testing.T) {
 			issue.StageUpdatedAt = &later
 			state.BoardIssues = []connector.Issue{issue}
 			orch.refreshCurrentLaneEntries(t.Context(), &state, later)
-			if got := state.laneProvenance[workflowLaneEntryKey(issue)]; got.Origin != provenance.OriginDetent {
-				t.Fatalf("later shared-token reentry attribution = %#v, want indeterminate", got)
+			if got := state.laneProvenance[workflowLaneEntryKey(issue)]; got.Origin != provenance.OriginHuman {
+				t.Fatalf("later shared-token reentry attribution = %#v, want human", got)
 			}
 		})
 	}

@@ -312,7 +312,7 @@ func TestRecoveryParkAcknowledgementRearmsForNextPark(t *testing.T) {
 		candidate.State = "Todo"
 		observedAt := at.Add(time.Minute)
 		candidate.StageUpdatedAt = &observedAt
-		value, err := json.Marshal(map[string]map[string]coordination.LaneWrite{"writers": {"peer": {InstanceIdentity: "peer", Issue: candidate.ID, To: candidate.State, FenceToken: uint64(cycle + 1), WrittenAt: at}}})
+		value, err := json.Marshal(map[string]map[string]coordination.LaneWrite{"writers": {"peer": {InstanceIdentity: "peer", Issue: candidate.ID, To: candidate.State, FenceToken: uint64(cycle + 1), WrittenAt: at.Add(time.Second)}}})
 		if err != nil {
 			t.Fatal(err)
 		}
