@@ -4539,3 +4539,90 @@ func TestCheckpointIntervalConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWorkflowSandboxPolicy(t *testing.T) {
+	t.Parallel()
+	for _, layout := range []string{"legacy", "split"} {
+		for _, overlay := range []bool{false, true} {
+			for _, tt := range []struct{ name, policy, kind, wantError string }{
+				{"partial", "{networkAccess: false}", "dangerFullAccess", ""},
+				{"explicit", "{type: readOnly}", "readOnly", ""},
+				{"external", "{type: externalSandbox}", "externalSandbox", ""},
+				{"invalid", "{type: workspace-write}", "", "turn_sandbox_policy.type"},
+				{"empty type", "{type: ''}", "", "turn_sandbox_policy.type"},
+				{"null type", "{type: null}", "", "turn_sandbox_policy.type"},
+				{"numeric type", "{type: 42}", "", "turn_sandbox_policy.type"},
+				{"list type", "{type: []}", "", "turn_sandbox_policy.type"},
+				{"string", "workspace-write", "", "must be an object"},
+			} {
+				t.Run(fmt.Sprintf("%s/overlay=%t/%s", layout, overlay, tt.name), func(t *testing.T) {
+					t.Parallel()
+					dir := t.TempDir()
+					workflowPath := filepath.Join(dir, "WORKFLOW.md")
+					basePath, localPath := workflowPath, LocalWorkflowPath(workflowPath)
+					wrap := func(body string) string { return "---\n" + body + "---\nInstructions.\n" }
+					if layout == "split" {
+						basePath, localPath = DefinitionPath(workflowPath), LocalDefinitionPath(workflowPath)
+						wrap = func(body string) string { return "schema: 1\n" + body }
+						if err := os.WriteFile(workflowPath, []byte("Instructions.\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					base := "tracker:\n  kind: memory\ncodex:\n  thread_sandbox: danger-full-access\n"
+					policy := "  turn_sandbox_policy: " + tt.policy + "\n"
+					offendingPath := basePath
+					if overlay {
+						offendingPath = localPath
+						if err := os.WriteFile(localPath, []byte(wrap("codex:\n"+policy)), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						base += policy
+					}
+					if err := os.WriteFile(basePath, []byte(wrap(base)), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					workflow, err := LoadWorkflow(workflowPath)
+					if tt.wantError != "" {
+						if err == nil || !strings.Contains(err.Error(), tt.wantError) || !strings.Contains(err.Error(), offendingPath) {
+							t.Fatalf("LoadWorkflow() error = %v, want %q and %q", err, tt.wantError, offendingPath)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := workflow.Config.Codex.TurnSandboxPolicy["type"]; got != tt.kind {
+						t.Fatalf("type = %v, want %s", got, tt.kind)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestBackendSandboxPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, policy, wantError string }{
+		{"partial", "{networkAccess: false}", ""},
+		{"invalid", "{type: invalid}", "turn_sandbox_policy.type"},
+		{"string", "workspace-write", "must be an object"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte("---\ncodex:\n  thread_sandbox: danger-full-access\nagents:\n  backends:\n    - id: primary\n      kind: codex\n      options:\n        turn_sandbox_policy: " + tt.policy + "\n---\nInstructions.\n"))
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want %s", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := workflow.Config.AgentBackendConfigs()[0].CodexOptions().TurnSandboxPolicy["type"]; got != "dangerFullAccess" {
+				t.Fatalf("type = %v, want dangerFullAccess", got)
+			}
+		})
+	}
+}
