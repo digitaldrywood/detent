@@ -3,9 +3,12 @@ package project
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
@@ -44,5 +47,28 @@ func TestBuildConnectorRefreshesMergeQueuePolicy(t *testing.T) {
 				t.Fatalf("refreshes=%d, want load and reload", c.refreshes)
 			}
 		})
+	}
+}
+
+func TestUnchangedWorkflowReconciliationDoesNotRefreshMergePolicy(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: memory\n---\nWork.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := globalconfig.Project{Workflow: path}
+	workflow, err := LoadWorkflowContext(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &mergeQueuePolicyConnector{Connector: memory.New(memory.Config{})}
+	p := &Project{cfg: cfg, connector: c, workflowSource: WorkflowSourceStatus{Hash: workflow.SourceHash}}
+	for range 2 {
+		if err := p.reconcileWorkflow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.refreshes != 0 {
+		t.Fatalf("refreshes=%d, want no reads for unchanged workflow", c.refreshes)
 	}
 }

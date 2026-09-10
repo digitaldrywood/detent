@@ -18,9 +18,8 @@ type BranchMergePolicy struct {
 }
 
 type branchMergePolicySnapshot struct {
-	Repository string
-	Policy     BranchMergePolicy
-	CheckedAt  time.Time
+	Policy    BranchMergePolicy
+	CheckedAt time.Time
 }
 
 func (c *Connector) RepositoryBranchMergePolicy(ctx context.Context, repository, branch string) (BranchMergePolicy, error) {
@@ -95,8 +94,32 @@ func (c *Connector) RefreshMergeQueuePolicy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	c.branchMergePolicy = branchMergePolicySnapshot{Repository: repository, Policy: policy, CheckedAt: c.now()}
-	c.mu.Unlock()
+	c.cacheBranchMergePolicy(repository, policy)
 	return nil
+}
+
+func (c *Connector) branchMergePolicy(ctx context.Context, repository, branch string) (BranchMergePolicy, error) {
+	key := strings.ToLower(repository) + "@" + branch
+	c.mu.RLock()
+	cached, ok := c.branchMergePolicies[key]
+	c.mu.RUnlock()
+	if ok && c.now().Sub(cached.CheckedAt) < 5*time.Minute {
+		return cached.Policy, nil
+	}
+	policy, err := c.RepositoryBranchMergePolicy(ctx, repository, branch)
+	if err != nil {
+		return BranchMergePolicy{}, err
+	}
+	c.cacheBranchMergePolicy(repository, policy)
+	return policy, nil
+}
+
+func (c *Connector) cacheBranchMergePolicy(repository string, policy BranchMergePolicy) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.branchMergePolicies == nil {
+		c.branchMergePolicies = make(map[string]branchMergePolicySnapshot)
+	}
+	key := strings.ToLower(repository) + "@" + policy.Branch
+	c.branchMergePolicies[key] = branchMergePolicySnapshot{Policy: policy, CheckedAt: c.now()}
 }

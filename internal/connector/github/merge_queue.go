@@ -135,12 +135,13 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 		Available:         pullRequest.MergeQueue != nil || pullRequest.MergeQueueEntry != nil,
 		PullRequestNodeID: strings.TrimSpace(pullRequest.ID),
 	}
-	c.mu.RLock()
-	policy := c.branchMergePolicy
-	c.mu.RUnlock()
-	if policy.Repository == pullRequestRepoName(repo) && policy.Policy.Branch == pullRequest.BaseRefName && c.now().Sub(policy.CheckedAt) < 5*time.Minute && policy.Policy.MergeQueue {
-		status.Available = true
-		status.AdmissionLimit = policy.Policy.AdmissionLimit
+	if !status.Available && strings.TrimSpace(pullRequest.BaseRefName) != "" {
+		policy, err := c.branchMergePolicy(ctx, pullRequestRepoName(repo), pullRequest.BaseRefName)
+		if err != nil {
+			return connector.PullRequestMergeQueueStatus{}, fmt.Errorf("inspect github branch merge policy: %w", err)
+		}
+		status.Available = policy.MergeQueue
+		status.AdmissionLimit = policy.AdmissionLimit
 	}
 	if pullRequest.MergeQueue != nil {
 		status.Depth = pullRequest.MergeQueue.Entries.TotalCount

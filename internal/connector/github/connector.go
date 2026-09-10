@@ -109,37 +109,37 @@ type Config struct {
 }
 
 type Connector struct {
-	branchMergePolicy  branchMergePolicySnapshot
-	client             *Client
-	statusSource       string
-	projectID          string
-	repository         pullRequestRepo
-	statusField        string
-	statusLabelPrefix  string
-	activeStates       []string
-	observedStates     []string
-	terminalStates     []string
-	stateMap           map[string]string
-	priorityMap        map[string]*int
-	requiredChecks     []string
-	unstartedThreshold time.Duration
-	dependencySource   string
-	dependencyCaps     map[string]nativeDependencyCapability
-	statusCache        *statusCache
-	issueFields        *issueFieldCache
-	projectCache       *projectCache
-	pullRequests       *pullRequestStatusCache
-	prHydration        *pullRequestHydrationCircuitBreaker
-	prHydrationCursor  map[string]string
-	prDiffFingerprints map[pullRequestDiffFingerprintCacheKey]string
-	triggerLabelDir    string
-	logger             *slog.Logger
-	now                func() time.Time
-	mu                 sync.RWMutex
-	writeMu            sync.Mutex
-	prerequisiteMu     sync.Mutex
-	instanceLogin      string
-	projectURL         string
+	branchMergePolicies map[string]branchMergePolicySnapshot
+	client              *Client
+	statusSource        string
+	projectID           string
+	repository          pullRequestRepo
+	statusField         string
+	statusLabelPrefix   string
+	activeStates        []string
+	observedStates      []string
+	terminalStates      []string
+	stateMap            map[string]string
+	priorityMap         map[string]*int
+	requiredChecks      []string
+	unstartedThreshold  time.Duration
+	dependencySource    string
+	dependencyCaps      map[string]nativeDependencyCapability
+	statusCache         *statusCache
+	issueFields         *issueFieldCache
+	projectCache        *projectCache
+	pullRequests        *pullRequestStatusCache
+	prHydration         *pullRequestHydrationCircuitBreaker
+	prHydrationCursor   map[string]string
+	prDiffFingerprints  map[pullRequestDiffFingerprintCacheKey]string
+	triggerLabelDir     string
+	logger              *slog.Logger
+	now                 func() time.Time
+	mu                  sync.RWMutex
+	writeMu             sync.Mutex
+	prerequisiteMu      sync.Mutex
+	instanceLogin       string
+	projectURL          string
 
 	publication             publication.Policy
 	publicationMu           sync.Mutex

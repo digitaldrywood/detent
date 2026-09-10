@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -112,5 +113,64 @@ func TestRefreshMergeQueuePolicyTracksRuleChanges(t *testing.T) {
 		if err != nil || got.Available != want {
 			t.Fatalf("status=%+v error=%v", got, err)
 		}
+	}
+}
+
+func TestInspectMergeQueueScopesPolicyToPullRequestTarget(t *testing.T) {
+	t.Parallel()
+	targets := []struct {
+		repository, branch string
+		queued             bool
+	}{
+		{repository: "example/delivery", branch: "release", queued: true},
+		{repository: "example/delivery", branch: "main"},
+		{repository: "example/other", branch: "release"},
+	}
+	var reads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/graphql" {
+			var request struct {
+				Variables struct {
+					Number int `json:"number"`
+				} `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+				return
+			}
+			target := targets[request.Variables.Number-1]
+			fmt.Fprintf(w, `{"data":{"repository":{"pullRequest":{"id":"PR","headRefOid":"head","baseRefName":%q,"mergeQueue":null,"mergeQueueEntry":null}}}}`, target.branch)
+			return
+		}
+		reads.Add(1)
+		switch r.URL.Path {
+		case "/repos/example/delivery/rules/branches/release":
+			fmt.Fprint(w, `[{"type":"merge_queue","parameters":{"max_entries_to_build":4}}]`)
+		case "/repos/example/delivery/rules/branches/main", "/repos/example/other/rules/branches/release":
+			fmt.Fprint(w, `[]`)
+		default:
+			t.Errorf("unexpected policy read %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/tracker", GitHubStatusSource: GitHubStatusSourceLabel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, target := range targets {
+		t.Run(target.repository+"@"+target.branch, func(t *testing.T) {
+			number := index + 1
+			for range 2 {
+				got, err := c.InspectPullRequestMergeQueue(t.Context(), connector.Issue{PRRepository: target.repository, PRNumber: &number})
+				if err != nil || got.Available != target.queued {
+					t.Fatalf("status=%+v error=%v", got, err)
+				}
+			}
+		})
+	}
+	if reads.Load() != int64(len(targets)) {
+		t.Fatalf("policy reads=%d, want one per repository/branch", reads.Load())
 	}
 }

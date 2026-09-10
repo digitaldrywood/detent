@@ -1414,9 +1414,7 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	p.mu.Lock()
 	projectConfig := p.cfg
 	loadedHash := p.workflowSource.Hash
-	projectConnector := p.connector
 	p.mu.Unlock()
-	refreshMergeQueuePolicy(ctx, projectConnector)
 
 	workflow, err := LoadWorkflowContext(ctx, projectConfig)
 	now := time.Now().UTC()

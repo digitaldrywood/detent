@@ -214,9 +214,14 @@ must support `merge_group: checks_requested`. Repositories without a queue
 retain Detent's classic merge path.
 
 Detent reads the default branch's effective rulesets at project load and on
-workflow reconciliation/reload. A `merge_queue` rule enables native queue
-admission; PR inspection verifies the current target and queue entry. Discovery
-failures retain PR inspection and do not change repository settings.
+actual workflow reload. Unchanged workflow reconciliation does not read policy.
+When PR inspection has no queue entry or GraphQL queue capability, it reads the
+PR repository and target branch's effective rules; policies are cached by that
+repository/branch pair for five minutes. This also supports delivery repositories
+that differ from the issue tracker. A `merge_queue` rule enables native queue
+admission. A failed initial discovery retains PR inspection; failed PR-level
+discovery defers admission until inspection succeeds. No repository settings
+are changed.
 
 In GitHub repository **Settings → Rules → Rulesets**, create or edit an active
 branch ruleset targeting the merge branch and enable **Require merge queue**.
