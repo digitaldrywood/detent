@@ -92,13 +92,36 @@ func Generate(root string, check bool) error {
 		return nil
 	}
 
-	if err := os.WriteFile(docsPath, renderedDocs, 0o644); err != nil {
+	if err := writeGeneratedFile(docsPath, renderedDocs); err != nil {
 		return fmt.Errorf("write %s: %w", docsPath, err)
 	}
-	if err := os.WriteFile(referencePath, renderedReference, 0o644); err != nil {
+	if err := writeGeneratedFile(referencePath, renderedReference); err != nil {
 		return fmt.Errorf("write %s: %w", referencePath, err)
 	}
 	return nil
+}
+
+func writeGeneratedFile(path string, content []byte) (returnErr error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".configdoc-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if cleanupErr := os.Remove(temporaryPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove temporary file: %w", cleanupErr))
+		}
+	}()
+	if err := temporary.Chmod(0o644); err != nil {
+		return errors.Join(err, temporary.Close())
+	}
+	if _, err := temporary.Write(content); err != nil {
+		return errors.Join(err, temporary.Close())
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func Fields() ([]Field, error) {

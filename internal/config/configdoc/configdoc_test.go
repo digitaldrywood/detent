@@ -132,12 +132,93 @@ func TestConfigDocumentation(t *testing.T) {
 		}
 	})
 
+	t.Run("generation replaces complete artifacts", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		tests := []struct {
+			name string
+			path string
+			old  string
+			info os.FileInfo
+		}{
+			{name: "Markdown", path: filepath.Join(root, "docs", "config.md"), old: "prose\n" + beginMarker + "\nstale\n" + endMarker + "\n"},
+			{name: "YAML", path: filepath.Join(root, "config.reference.yaml"), old: "stale\n"},
+		}
+		for index := range tests {
+			test := &tests[index]
+			if err := os.WriteFile(test.path, []byte(test.old), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.info = info
+		}
+		if err := Generate(root, false); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				info, err := os.Stat(test.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if os.SameFile(test.info, info) {
+					t.Error("generation rewrote the existing file instead of replacing it")
+				}
+				content, err := os.ReadFile(test.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(content) == test.old || len(content) == 0 {
+					t.Error("generation did not publish the new content")
+				}
+			})
+		}
+		if err := Generate(root, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("generated artifacts are current", func(t *testing.T) {
 		root := filepath.Clean(filepath.Join("..", "..", ".."))
 		if err := Generate(root, true); err != nil {
 			t.Fatalf("Generate(check) error = %v", err)
 		}
 	})
+}
+
+func TestWriteGeneratedFileFailure(t *testing.T) {
+	for _, name := range []string{"missing parent", "directory destination"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "missing", "target")
+			wantEntries := 0
+			if name == "directory destination" {
+				path = filepath.Join(root, "target")
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				wantEntries = 1
+			}
+			if err := writeGeneratedFile(path, []byte("generated")); err == nil {
+				t.Fatal("writeGeneratedFile succeeded for an invalid destination")
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != wantEntries {
+				t.Fatalf("directory entries = %v, want %d entries without staging files", entries, wantEntries)
+			}
+			if wantEntries == 1 && (!entries[0].IsDir() || entries[0].Name() != "target") {
+				t.Fatal("failed replacement changed the existing destination")
+			}
+		})
+	}
 }
 
 func configSourceYAMLKeys(t *testing.T) map[string]struct{} {
