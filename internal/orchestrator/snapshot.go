@@ -1285,6 +1285,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 	}
 	if pullRequest.MergeQueueEntry != nil {
 		out.MergeQueueEntry = &telemetry.PullRequestMergeQueueEntry{
+			HeadSHA:                     pullRequest.MergeQueueEntry.HeadSHA,
+			BaseSHA:                     pullRequest.MergeQueueEntry.BaseSHA,
 			ID:                          pullRequest.MergeQueueEntry.ID,
 			State:                       pullRequest.MergeQueueEntry.State,
 			Position:                    pullRequest.MergeQueueEntry.Position,

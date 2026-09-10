@@ -420,6 +420,10 @@
 #         latest_codex_review_submitted_at: null
 #         # tracker.issues[].pull_request.merge_queue_entry | type: object | default: none | required: No | validation: None
 #         merge_queue_entry:
+#           # tracker.issues[].pull_request.merge_queue_entry.head_sha | type: string | default: none | required: No | validation: None
+#           head_sha: null
+#           # tracker.issues[].pull_request.merge_queue_entry.base_sha | type: string | default: none | required: No | validation: None
+#           base_sha: null
 #           # tracker.issues[].pull_request.merge_queue_entry.id | type: string | default: none | required: No | validation: None
 #           id: null
 #           # tracker.issues[].pull_request.merge_queue_entry.state | type: string | default: none | required: No | validation: None

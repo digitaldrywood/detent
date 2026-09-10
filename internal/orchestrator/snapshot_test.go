@@ -1844,3 +1844,31 @@ func completedTelemetryIssues(rows []telemetry.Completed) []telemetry.Issue {
 	}
 	return issues
 }
+
+func TestTelemetryPullRequestMergeQueueIdentities(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		entry *connector.PullRequestMergeQueueEntry
+	}{
+		{name: "not queued"},
+		{name: "awaiting integration", entry: &connector.PullRequestMergeQueueEntry{ID: "entry"}},
+		{name: "integrated", entry: &connector.PullRequestMergeQueueEntry{ID: "entry", HeadSHA: "group-head", BaseSHA: "group-base"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := telemetryPullRequest(connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: "pr-head", BaseSHA: "pr-base", MergeQueueEntry: tt.entry}}, 0, 0)
+			if tt.entry == nil {
+				if got.MergeQueueEntry != nil {
+					t.Fatalf("unexpected queue entry: %#v", got.MergeQueueEntry)
+				}
+				return
+			}
+			if got.MergeQueueEntry == nil || got.MergeQueueEntry.HeadSHA != tt.entry.HeadSHA || got.MergeQueueEntry.BaseSHA != tt.entry.BaseSHA {
+				t.Fatalf("queue identities = %#v, want %#v", got.MergeQueueEntry, tt.entry)
+			}
+			if got.HeadSHA != "pr-head" || got.BaseSHA != "pr-base" {
+				t.Fatalf("PR identities changed: %#v", got)
+			}
+		})
+	}
+}
