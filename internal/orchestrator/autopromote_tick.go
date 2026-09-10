@@ -1036,7 +1036,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
 			continue
 		}
-		if nativeMergeQueueOwnsIssue(state, issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
+		if nativeMergeQueueHasEntry(state, issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
 			continue
 		}
 		repository := mergeWorkerRepositoryKey(issue)

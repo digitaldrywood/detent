@@ -132,7 +132,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			continue
 		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) {
-			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			continue
 		}
 		if status.AdmissionLimit <= 0 || status.Depth >= status.AdmissionLimit {
@@ -312,14 +311,16 @@ func (o *Orchestrator) logNativeMergeQueueFailure(issue connector.Issue, reason 
 // including snapshots that omit the queue entry. Availability expires only when
 // a fresh provider inspection confirms the queue is unavailable.
 func nativeMergeQueueOwnsIssue(state *State, issue connector.Issue) bool {
+	return nativeMergeQueueHasEntry(state, issue) || state != nil && state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available
+}
+
+func nativeMergeQueueHasEntry(state *State, issue connector.Issue) bool {
 	if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
 		return true
 	}
 	if state == nil {
 		return false
 	}
-	if _, ok := state.nativeMergeQueueEntries[strings.TrimSpace(issue.ID)]; ok {
-		return true
-	}
-	return state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available
+	_, ok := state.nativeMergeQueueEntries[strings.TrimSpace(issue.ID)]
+	return ok
 }
