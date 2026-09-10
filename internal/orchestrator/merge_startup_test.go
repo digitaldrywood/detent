@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -90,12 +91,15 @@ func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after startup timeout", issue.ID)
 	}
-	retry, ok := state.Retry[issue.ID]
-	if !ok || retry.Attempt != 1 {
-		t.Fatalf("Retry[%q] = %#v, want attempt 1", issue.ID, retry)
+	if len(state.Retry) != 0 || len(state.Blocked) != 0 {
+		t.Fatal("startup timer failure was attributed to issue")
 	}
-	if !strings.Contains(retry.Error, "did not report startup progress within 4m0s") {
-		t.Fatalf("Retry[%q].Error = %q, want configured startup timeout", issue.ID, retry.Error)
+	if !state.FailureBreaker.PreTurn || len(state.FailureBreaker.Failures[backendcapacity.StartupTimeoutErrorClass]) != 1 {
+		t.Fatalf("FailureBreaker = %#v, want instance startup timeout", state.FailureBreaker)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Merging" {
+		t.Fatalf("issues = %#v, err = %v; want preserved Merging lane", issues, err)
 	}
 }
 

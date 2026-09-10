@@ -19,6 +19,8 @@ func TestPreTurnFailuresDrainInstance(t *testing.T) {
 	startup := backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupTimeoutKind}, context.DeadlineExceeded)
 	protocol := errors.New("codex turn/start: JSON-RPC -32600 invalid request")
 	workspace := fmt.Errorf("%w: after_create exited 1", runpkg.ErrWorkspacePreparation)
+	wrappedStartup := errors.Join(runpkg.NewCancellationCause(startup, "orchestrator.parent_context"), startup)
+	wrappedMergeStartup := errors.Join(runpkg.NewCancellationCause(runpkg.ErrMergeWorkerStartupTimeout, "orchestrator.parent_context"), context.Canceled)
 	for _, tt := range []struct {
 		name     string
 		failures []error
@@ -27,6 +29,8 @@ func TestPreTurnFailuresDrainInstance(t *testing.T) {
 		{"workspace", []error{workspace, workspace, workspace}},
 		{"startup", []error{startup, startup, startup}},
 		{"mixed", []error{protocol, startup, workspace}},
+		{"supervisor startup deadline", []error{wrappedStartup, wrappedStartup, wrappedStartup}},
+		{"supervisor merge startup timer", []error{wrappedMergeStartup, wrappedMergeStartup, wrappedMergeStartup}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

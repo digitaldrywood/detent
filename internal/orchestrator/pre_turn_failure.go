@@ -15,7 +15,7 @@ import (
 )
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
-	if event.Err == nil || errors.Is(event.Err, context.Canceled) || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 || running.Cancellation != nil {
+	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
 		return ""
 	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
@@ -28,11 +28,14 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 			return ""
 		}
 	}
-	if errors.Is(event.Err, runpkg.ErrWorkspacePreparation) {
-		return workAttemptErrorWorkspace
-	}
 	if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) {
 		return backendcapacity.StartupTimeoutErrorClass
+	}
+	if errors.Is(event.Err, context.Canceled) || running.Cancellation != nil {
+		return ""
+	}
+	if errors.Is(event.Err, runpkg.ErrWorkspacePreparation) {
+		return workAttemptErrorWorkspace
 	}
 	var deliverableErr *runpkg.DeliverableCommandError
 	var recoveryErr *runpkg.DeliverableRecoveryError
