@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,24 +16,31 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		response  string
-		available bool
-		wantEntry *connector.PullRequestMergeQueueEntry
+		name        string
+		response    string
+		available   bool
+		wantRemoval string
+		wantEntry   *connector.PullRequestMergeQueueEntry
 	}{
 		{
 			name:      "detects merge queue policy",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueue":{"url":"https://github.test/example/repo/queue/main","entries":{"totalCount":2},"configuration":{"maximumEntriesToBuild":3}},"mergeQueueEntry":null}}}}`,
+			response:  mergeQueueFixture(t, "queue_present.json"),
 			available: true,
 		},
 		{
 			name:      "falls back without merge queue policy",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueue":null,"mergeQueueEntry":null}}}}`,
+			response:  mergeQueueFixture(t, "queue_absent.json"),
 			available: false,
 		},
 		{
+			name:        "rejected queue entry",
+			response:    mergeQueueFixture(t, "rejected_entry.json"),
+			available:   true,
+			wantRemoval: "Required check build failed",
+		},
+		{
 			name:      "recognizes existing queue entry",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"BLOCKED","mergeQueueEntry":{"headCommit":{"oid":"group-head"},"baseCommit":{"oid":"group-base"},"id":"MQE_42","state":"AWAITING_CHECKS","position":2,"estimatedTimeToMerge":420,"enqueuedAt":"2026-07-13T18:00:00Z","mergeQueue":{"url":"https://github.test/example/repo/queue/main","entries":{"totalCount":5}}}}}}}`,
+			response:  mergeQueueFixture(t, "queued_entry.json"),
 			available: true,
 			wantEntry: &connector.PullRequestMergeQueueEntry{
 				HeadSHA:                     "group-head",
@@ -64,6 +73,9 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			}
 			if status.Available != tt.available || status.PullRequestNodeID != "PR_42" {
 				t.Fatalf("status = %#v, want available %t and node PR_42", status, tt.available)
+			}
+			if status.RemovalReason != tt.wantRemoval {
+				t.Fatalf("removal reason = %q, want %q", status.RemovalReason, tt.wantRemoval)
 			}
 			if !reflect.DeepEqual(status.Entry, tt.wantEntry) {
 				t.Fatalf("entry = %#v, want %#v", status.Entry, tt.wantEntry)
@@ -251,13 +263,22 @@ func TestConnectorMergeQueueHeadFence(t *testing.T) {
 
 func TestConnectorInspectChangedQueueHeadAllowsCleanup(t *testing.T) {
 	t.Parallel()
-	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"new-head","timelineItems":{"nodes":[{"beforeCommit":{"oid":"removed-head"}}]},"mergeQueueEntry":{"id":"MQE_42"}}}}}`}})
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: mergeQueueFixture(t, "removed_entry.json")}})
 	client := newGitHubTestConnector(t, server, Config{})
 	status, err := client.InspectPullRequestMergeQueue(context.Background(), connector.Issue{PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42, HeadSHA: "old-head"}})
-	if !status.RemovalObserved || status.RemovedHeadSHA != "removed-head" {
+	if !status.RemovalObserved || status.RemovedHeadSHA != "removed-head" || status.RemovalReason != "Required check build failed" {
 		t.Fatalf("removal = %#v, want removed-head", status)
 	}
 	if err != nil || status.HeadSHA != "new-head" || status.Entry == nil || status.Entry.ID != "MQE_42" {
 		t.Fatalf("status = %#v, error = %v; want current entry available for revocation", status, err)
 	}
+}
+
+func mergeQueueFixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "merge_queue", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

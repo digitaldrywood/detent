@@ -160,7 +160,7 @@ func TestBuildRetroIssueStoresRoutesProductRepository(t *testing.T) {
 	var repositories []string
 	var productPolicy publication.Policy
 
-	projectIssues, productIssues, created, err := buildRetroIssueStores(cfg, projectConnector, func(candidate workflowconfig.Config) (connector.Connector, error) {
+	projectIssues, productIssues, created, err := buildRetroIssueStores(t.Context(), cfg, projectConnector, func(candidate workflowconfig.Config) (connector.Connector, error) {
 		repositories = append(repositories, candidate.Tracker.Repository)
 		productPolicy = candidate.Tracker.Publication
 		return productConnector, nil

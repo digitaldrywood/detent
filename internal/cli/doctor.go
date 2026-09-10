@@ -252,6 +252,7 @@ type doctorDeps struct {
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
+	githubBranchPolicy   func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error)
 	githubMergeSettings  func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error)
 	githubRepositoryInfo func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error)
 	githubLabels         func(context.Context, workflowconfig.Config, string) ([]string, error)
@@ -1158,6 +1159,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubReadiness == nil {
 		d.githubReadiness = defaults.githubReadiness
 	}
+	if d.githubBranchPolicy == nil {
+		d.githubBranchPolicy = defaults.githubBranchPolicy
+	}
 	if d.githubMergeSettings == nil {
 		d.githubMergeSettings = defaults.githubMergeSettings
 	}
@@ -1234,6 +1238,7 @@ func defaultDoctorDeps() doctorDeps {
 		githubScopes:         defaultGitHubScopes,
 		githubReadiness:      ghconnector.CheckReadiness,
 		githubMergeSettings:  defaultDoctorGitHubMergeSettings,
+		githubBranchPolicy:   defaultDoctorGitHubBranchMergePolicy,
 		githubRepositoryInfo: defaultDoctorGitHubRepositoryInfo,
 		githubLabels:         defaultDoctorGitHubRepositoryLabels,
 		ghAuthToken:          defaultGHAuthToken,

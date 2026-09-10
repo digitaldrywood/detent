@@ -283,7 +283,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		}
 		connectorFactory = func(workflowconfig.Config) (connector.Connector, error) { return native, nil }
 	}
-	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
+	projectConnector, err := buildConnector(context.Background(), workflow.Config, connectorFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +345,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, err
 	}
 	releaseCoordinator := releaseBuild.coordinator
-	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(workflow.Config, projectConnector, connectorFactory)
+	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(context.Background(), workflow.Config, projectConnector, connectorFactory)
 	if err != nil {
 		return nil, fmt.Errorf("create project retro: %w", err)
 	}
@@ -1414,7 +1414,9 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	p.mu.Lock()
 	projectConfig := p.cfg
 	loadedHash := p.workflowSource.Hash
+	projectConnector := p.connector
 	p.mu.Unlock()
+	refreshMergeQueuePolicy(ctx, projectConnector)
 
 	workflow, err := LoadWorkflowContext(ctx, projectConfig)
 	now := time.Now().UTC()
@@ -1504,7 +1506,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		}
 	}
 
-	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
+	projectConnector, err := buildConnector(ctx, workflow.Config, connectorFactory)
 	if err != nil {
 		return p.workflowReloadError("workflow reload connector failed", update.Path, err)
 	}
@@ -1519,7 +1521,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	}
 	releaseCoordinator := releaseBuild.coordinator
 
-	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(workflow.Config, projectConnector, connectorFactory)
+	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(ctx, workflow.Config, projectConnector, connectorFactory)
 	if err != nil {
 		return p.workflowReloadError("workflow reload retro connector failed", update.Path, err)
 	}
@@ -1982,6 +1984,7 @@ func projectSchedulerCandidate(project globalconfig.Project, workflow workflowco
 }
 
 func buildRetroIssueStores(
+	ctx context.Context,
 	cfg workflowconfig.Config,
 	projectConnector connector.Connector,
 	connectorFactory ConnectorFactory,
@@ -2007,7 +2010,7 @@ func buildRetroIssueStores(
 		}},
 		AllowPublicCrossProjectDetails: cfg.Retro.AllowPublicCrossProjectDetails,
 	}
-	productConnector, err := buildConnector(productConfig, connectorFactory)
+	productConnector, err := buildConnector(ctx, productConfig, connectorFactory)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -2176,7 +2179,7 @@ func resolveConnectorFactory(deps Dependencies) ConnectorFactory {
 	}
 }
 
-func buildConnector(cfg workflowconfig.Config, connectorFactory ConnectorFactory) (connector.Connector, error) {
+func buildConnector(ctx context.Context, cfg workflowconfig.Config, connectorFactory ConnectorFactory) (connector.Connector, error) {
 	projectConnector, err := connectorFactory(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create project connector: %w", ErrConnectorCreation, err)
@@ -2185,7 +2188,20 @@ func buildConnector(cfg workflowconfig.Config, connectorFactory ConnectorFactory
 		return nil, ErrMissingConnector
 	}
 
+	refreshMergeQueuePolicy(ctx, projectConnector)
 	return projectConnector, nil
+}
+
+func refreshMergeQueuePolicy(ctx context.Context, projectConnector connector.Connector) {
+	refresher, ok := projectConnector.(interface{ RefreshMergeQueuePolicy(context.Context) error })
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := refresher.RefreshMergeQueuePolicy(ctx); err != nil {
+		slog.Warn("refresh github branch merge policy failed; retaining pull request inspection", "error", err)
+	}
 }
 
 func closeConnector(projectConnector connector.Connector) error {

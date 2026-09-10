@@ -101,9 +101,9 @@ The queue path requires a nonempty checked PR head. Enqueue sends GitHub's
 the current PR head before adopting an existing entry, including after restart.
 The entry cache is scoped to that head, so a head change forces inspection.
 GitHub removal history also survives restart: an absent entry removed on the
-same head is deferred, not automatically re-enqueued after integration failure
-or cancellation. A newly checked head can retry. Missing removal identity
-fails closed; an operator can explicitly re-enqueue in GitHub, which Detent
+same head is routed to `Rework` with GitHub's removal reason, rather than
+automatically re-enqueued after integration failure or cancellation. A newly
+checked head can retry. Missing removal identity also routes to `Rework`; an operator can explicitly re-enqueue in GitHub, which Detent
 then observes. This preserves removal decisions without a local-only tombstone.
 Admission uses the repository queue's `maximumEntriesToBuild` as its window:
 when queue depth reaches that limit, further candidates wait without worker
@@ -203,3 +203,34 @@ Source-changing repairs and changed-base integrations are legitimate validation;
 the opportunity is avoiding PR-head refresh cycles through provider-owned
 integration, not accepting old-base green checks. The available evidence does
 not establish any duplicate CI rerun of identical integrated inputs.
+
+
+## Choosing and enabling a GitHub merge queue
+
+A merge queue validates integration groups against the latest target branch,
+reducing repeated PR head refreshes under strict up-to-date protection. The
+trade-off is additional merge-group CI and queue latency; required workflows
+must support `merge_group: checks_requested`. Repositories without a queue
+retain Detent's classic merge path.
+
+Detent reads the default branch's effective rulesets at project load and on
+workflow reconciliation/reload. A `merge_queue` rule enables native queue
+admission; PR inspection verifies the current target and queue entry. Discovery
+failures retain PR inspection and do not change repository settings.
+
+In GitHub repository **Settings → Rules → Rulesets**, create or edit an active
+branch ruleset targeting the merge branch and enable **Require merge queue**.
+Choose squash merging for this project and ensure every required check runs on
+the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
+The PR-required and security-audit exclusions above still apply.
+
+`detent doctor` recommends considering a queue when strict protection is enabled,
+no queue exists, and recorded merge cadence multiplied by median CI duration is
+at least 0.25 merges per CI run. It reads the last seven days of lane history,
+deduplicates PRs for the repository and target branch, and requires at least
+three merges and three measured CI durations. Cadence uses the interval between
+the first and last recorded merge. The recommendation reports the sample count,
+observed interval, merges/day, median CI minutes, and estimated overlap. CI
+durations and target branches are recorded with PR lane transitions; older
+history without these fields does not justify a recommendation. Doctor never
+mutates branch protection or rulesets.

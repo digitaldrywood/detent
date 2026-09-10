@@ -1013,6 +1013,7 @@ type nativeMergeQueueConnector struct {
 	inspectedHead  string
 	admissionLimit *int
 	removedHeads   map[string]string
+	removalReason  string
 	dequeueErr     error
 	statusErr      error
 	inspections    int
@@ -1043,6 +1044,7 @@ func (c *nativeMergeQueueConnector) InspectPullRequestMergeQueue(_ context.Conte
 	}
 	status := connector.PullRequestMergeQueueStatus{Available: available, AdmissionLimit: limit, Depth: len(c.enqueued)}
 	status.RemovedHeadSHA, status.RemovalObserved = c.removedHeads[issue.ID]
+	status.RemovalReason = c.removalReason
 	if issue.PullRequest != nil {
 		status.HeadSHA = issue.PullRequest.HeadSHA
 	}
@@ -1237,6 +1239,9 @@ func TestNativeMergeQueueRemovalSurvivesRestart(t *testing.T) {
 				state := newState(cfg)
 				tracker.enqueued = nil
 				queued := orch.delegateNativeMergeQueueIssues(context.Background(), &state, issues, time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC))
+				if !tt.manualReenqueue && !tt.wantReenqueue && queued[1].State != autoPromoteReworkState {
+					t.Fatalf("removed queue issue state = %q, want Rework", queued[1].State)
+				}
 				if tt.manualReenqueue && (queued[1].PullRequest.MergeQueueEntry == nil || queued[1].PullRequest.MergeQueueEntry.ID != "operator-entry") {
 					t.Fatal("explicit provider entry not observed")
 				}
@@ -1269,6 +1274,45 @@ func TestNativeMergeQueueUnknownAdmissionLimit(t *testing.T) {
 			}
 			if candidates := orch.mergeWorkerDispatchCandidates(&state, queued, now); len(candidates) != 0 {
 				t.Fatalf("candidates = %v, want no worker fallback", candidates)
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueRejectionRecordsProviderReason(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"Required check build failed", ""} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			issue := nativeMergeQueueTestIssue(990, "success")
+			issue.PullRequest.CIDurationSeconds = 1320
+			issue.PullRequest.BaseRef = "main"
+			tracker := &nativeMergeQueueConnector{removedHeads: map[string]string{issue.ID: issue.PullRequest.HeadSHA}, removalReason: reason, autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			recorder := &workflowMetricsRecorderSpy{}
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: recorder}
+			state := newState(cfg)
+			now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+			got := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if got[0].State != "Rework" || len(tracker.enqueued) != 0 {
+				t.Fatalf("issues=%+v enqueue=%v", got, tracker.enqueued)
+			}
+			if len(recorder.events) != 2 {
+				t.Fatalf("events=%+v", recorder.events)
+			}
+			event := recorder.events[1]
+			if reason != "" && event.Reason != reason {
+				t.Fatalf("reason=%q", event.Reason)
+			}
+			if event.Reason == "" {
+				t.Fatal("missing rejection reason")
+			}
+			metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+			if !ok || metadata.PullRequest == nil || metadata.PullRequest.CIDurationSeconds != 1320 || metadata.PullRequest.BaseRef != "main" {
+				t.Fatalf("metadata=%s", event.MetadataJSON)
+			}
+			if len(orch.mergeWorkerDispatchCandidates(&state, got, now)) != 0 {
+				t.Fatal("rejection entered merge worker CI loop")
 			}
 		})
 	}

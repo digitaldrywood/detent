@@ -114,6 +114,19 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		}
 		if status.RemovalObserved && (strings.TrimSpace(status.RemovedHeadSHA) == "" || strings.TrimSpace(status.RemovedHeadSHA) == strings.TrimSpace(status.HeadSHA)) {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			reason := strings.TrimSpace(status.RemovalReason)
+			if reason == "" {
+				reason = "GitHub removed the pull request from the merge queue without a reason"
+			}
+			if err := o.updateIssueState(ctx, state, candidate, autoPromoteReworkState, now, reason); err != nil {
+				o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", err)
+				continue
+			}
+			for index := range out {
+				if out[index].ID == issueID {
+					out[index].State = autoPromoteReworkState
+				}
+			}
 			o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", nil)
 			continue
 		}

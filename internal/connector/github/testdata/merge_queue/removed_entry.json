@@ -1,0 +1,23 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_42",
+        "headRefOid": "new-head",
+        "timelineItems": {
+          "nodes": [
+            {
+              "beforeCommit": {
+                "oid": "removed-head"
+              },
+              "reason": "Required check build failed"
+            }
+          ]
+        },
+        "mergeQueueEntry": {
+          "id": "MQE_42"
+        }
+      }
+    }
+  }
+}

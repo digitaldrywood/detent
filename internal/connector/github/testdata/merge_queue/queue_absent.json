@@ -1,0 +1,12 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_42",
+        "mergeStateStatus": "CLEAN",
+        "mergeQueue": null,
+        "mergeQueueEntry": null
+      }
+    }
+  }
+}

@@ -109,6 +109,7 @@ type Config struct {
 }
 
 type Connector struct {
+	branchMergePolicy  branchMergePolicySnapshot
 	client             *Client
 	statusSource       string
 	projectID          string

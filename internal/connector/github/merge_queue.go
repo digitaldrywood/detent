@@ -16,8 +16,9 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
     pullRequest(number: $number) {
       id
       headRefOid
+      baseRefName
       timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-        nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } } }
+        nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } reason } }
       }
       mergeQueue { url entries { totalCount } configuration { maximumEntriesToBuild } }
       mergeQueueEntry {
@@ -96,8 +97,10 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 			PullRequest *struct {
 				ID            string `json:"id"`
 				HeadRefOid    string `json:"headRefOid"`
+				BaseRefName   string `json:"baseRefName"`
 				TimelineItems struct {
 					Nodes []struct {
+						Reason       string `json:"reason"`
 						BeforeCommit struct {
 							OID string `json:"oid"`
 						} `json:"beforeCommit"`
@@ -132,12 +135,20 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 		Available:         pullRequest.MergeQueue != nil || pullRequest.MergeQueueEntry != nil,
 		PullRequestNodeID: strings.TrimSpace(pullRequest.ID),
 	}
+	c.mu.RLock()
+	policy := c.branchMergePolicy
+	c.mu.RUnlock()
+	if policy.Repository == pullRequestRepoName(repo) && policy.Policy.Branch == pullRequest.BaseRefName && c.now().Sub(policy.CheckedAt) < 5*time.Minute && policy.Policy.MergeQueue {
+		status.Available = true
+		status.AdmissionLimit = policy.Policy.AdmissionLimit
+	}
 	if pullRequest.MergeQueue != nil {
 		status.Depth = pullRequest.MergeQueue.Entries.TotalCount
 		status.AdmissionLimit = pullRequest.MergeQueue.Configuration.MaximumEntriesToBuild
 	}
 	if len(pullRequest.TimelineItems.Nodes) > 0 {
 		status.RemovalObserved = true
+		status.RemovalReason = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].Reason)
 		status.RemovedHeadSHA = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].BeforeCommit.OID)
 	}
 	status.Entry = connectorMergeQueueEntry(pullRequest.MergeQueueEntry)
