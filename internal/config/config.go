@@ -635,6 +635,7 @@ type Codex struct {
 	TurnTimeoutMS                   int                          `yaml:"turn_timeout_ms"`
 	ReadTimeoutMS                   int                          `yaml:"read_timeout_ms"`
 	StallTimeoutMS                  int                          `yaml:"stall_timeout_ms"`
+	turnSandboxPolicyTypeInferred   bool
 }
 
 func (c Config) AgentBackendConfigs() []AgentBackend {
@@ -698,6 +699,10 @@ func CodexAgentBackend(codex Codex) AgentBackend {
 
 func mergedCodexAgentBackend(fallback Codex, backend AgentBackend) AgentBackend {
 	cfg := fallback
+	if fallback.turnSandboxPolicyTypeInferred {
+		cfg.TurnSandboxPolicy = maps.Clone(fallback.TurnSandboxPolicy)
+		delete(cfg.TurnSandboxPolicy, "type")
+	}
 	if strings.TrimSpace(backend.Command) != "" {
 		cfg.Command = strings.TrimSpace(backend.Command)
 	}
@@ -1853,6 +1858,9 @@ func (c *Config) normalize() {
 	}
 	c.Agent.Knowledge.Normalize()
 	c.Agents.normalize()
+	if _, explicit := c.Codex.TurnSandboxPolicy["type"]; !explicit && c.Codex.TurnSandboxPolicy != nil {
+		c.Codex.turnSandboxPolicyTypeInferred = true
+	}
 	c.Codex.TurnSandboxPolicy = NormalizeTurnSandboxPolicy(c.Codex.ThreadSandbox, c.Codex.TurnSandboxPolicy)
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Codex.ModelProvider = strings.TrimSpace(c.Codex.ModelProvider)
@@ -2565,7 +2573,8 @@ func validateSandboxPolicyNodes(node *yaml.Node) error {
 		return err
 	}
 	for i, backend := range source.Agents.Backends {
-		if backend.Kind != "" && backend.Kind != AgentBackendCodex {
+		kind := strings.ToLower(strings.TrimSpace(backend.Kind))
+		if kind != "" && kind != AgentBackendCodex {
 			continue
 		}
 		if err := validate(fmt.Sprintf("agents.backends[%d].options", i), backend.Options.Policy); err != nil {
