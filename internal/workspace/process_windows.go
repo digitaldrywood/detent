@@ -3,7 +3,6 @@ package workspace
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -78,26 +77,29 @@ func windowsScratchProcessMatches(ctx context.Context, pid int, root string, own
 	if owner != "" && !strings.EqualFold(username, owner) {
 		return false, nil
 	}
+	alive := func(ctx context.Context) (bool, error) {
+		return windowsScratchProcessAlive(ctx, p.IsRunningWithContext)
+	}
 	environment, err := p.EnvironWithContext(ctx)
 	if err != nil {
-		alive, aliveErr := p.IsRunningWithContext(ctx)
-		if aliveErr == nil && !alive {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect worker scratch ownership for process %d: %w", pid, err)
+		return false, scratchProcessInspectionError(ctx, pid, "scratch ownership", err, alive)
 	}
 	if workerScratchEnvironmentMatches(root, environment) {
 		return true, nil
 	}
 	cwd, err := p.CwdWithContext(ctx)
 	if err != nil {
-		alive, aliveErr := p.IsRunningWithContext(ctx)
-		if aliveErr == nil && !alive {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect worker directory for process %d: %w", pid, err)
+		return false, scratchProcessInspectionError(ctx, pid, "directory", err, alive)
 	}
 	return filepath.IsAbs(cwd) && pathWithin(root, cwd), nil
+}
+
+func windowsScratchProcessAlive(ctx context.Context, observe func(context.Context) (bool, error)) (bool, error) {
+	alive, err := observe(ctx)
+	if errors.Is(err, process.ErrorProcessNotRunning) || errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+		return false, nil
+	}
+	return alive, err
 }
 
 func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
