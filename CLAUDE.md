@@ -46,6 +46,26 @@ justify higher effort. Preserve intentional operator exceptions. Configured
 complexity levels default to low; verify any approved exception against the
 runtime effort ceiling rather than raising broad defaults.
 
+## Mechanism moratorium
+
+Effective 2026-09-10 until the operator lifts it. Detent has grown a large set
+of interacting self-protection mechanisms (brakes, breakers, leases, parks,
+recovery sweeps, revocations, reconcilers). Their interactions are now the main
+source of incidents.
+
+- Do not add a new brake, breaker, lease, park, recovery path, revocation,
+  reason code, or reconciliation loop.
+- A fix for a misbehaving mechanism must remove or consolidate a mechanism, or
+  state in the PR why it cannot. "Add a guard for the new case" is not a fix.
+- Infrastructure failures (backend startup, protocol errors, workspace hooks)
+  are attributed to the instance, never to the issue.
+- The orchestrator is the only writer of tracker lane state; workers report
+  outcomes and never write lane labels.
+- Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
+  around a mechanism. Fix the mechanism.
+- Machine-filed issues carry an origin stamp and a fingerprint; never file a
+  duplicate of an open issue, comment on it instead.
+
 ## Validation
 
 - `make check` is the local pre-review gate.
