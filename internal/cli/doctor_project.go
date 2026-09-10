@@ -457,6 +457,8 @@ func checkDoctorProjectWithProgress(
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) && workflow.Config.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
 		setDoctorCurrentCheck("Project " + id + " repository merge policy")
 		checks = append(checks, checkDoctorRepositoryMergePolicy(ctx, id, project, workflow.Config, deps))
+		setDoctorCurrentCheck("Project " + id + " merge queue recommendation")
+		checks = append(checks, checkDoctorMergeQueue(ctx, id, project, workflow.Config, storePath, deps))
 	}
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel {

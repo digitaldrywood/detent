@@ -583,6 +583,14 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	return c.github.MergePullRequest(ctx, repository, number, headSHA, mergeMethod)
 }
 
+func (c *Connector) RefreshMergeQueuePolicy(ctx context.Context) error {
+	refresher, ok := c.github.(interface{ RefreshMergeQueuePolicy(context.Context) error })
+	if !ok {
+		return nil
+	}
+	return refresher.RefreshMergeQueuePolicy(ctx)
+}
+
 func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
 	return c.github.InspectPullRequestMergeQueue(ctx, issue)
 }

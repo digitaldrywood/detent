@@ -152,6 +152,7 @@ type PullRequestMergeQueue interface {
 type PullRequestMergeQueueStatus struct {
 	RemovalObserved   bool
 	RemovedHeadSHA    string
+	RemovalReason     string
 	Depth             int
 	AdmissionLimit    int
 	HeadSHA           string

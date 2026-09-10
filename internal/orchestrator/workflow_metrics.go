@@ -51,6 +51,8 @@ type workflowLaneMetadata struct {
 }
 
 type workflowLanePullRequestMetadata struct {
+	CIDurationSeconds    int64     `json:"ci_duration_seconds,omitempty"`
+	BaseRef              string    `json:"base_ref,omitempty"`
 	Repository           string    `json:"repository,omitempty"`
 	AssociationSource    string    `json:"association_source,omitempty"`
 	AssociationCheckedAt time.Time `json:"association_checked_at,omitzero"`
@@ -933,13 +935,15 @@ func workflowLaneMetadataHasAction(metadata workflowLaneMetadata, action string)
 
 func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLanePullRequestMetadata {
 	var metadata workflowLanePullRequestMetadata
-	metadata.Repository = issue.PRRepository
+	metadata.Repository = pullRequestRepository(issue)
 	metadata.AssociationSource = issue.PRSource
 	metadata.AssociationCheckedAt = issue.PRVerifiedAt
 	if number := workflowMetricsPRNumber(issue); number != nil && *number > 0 {
 		metadata.Number = *number
 	}
 	if issue.PullRequest != nil {
+		metadata.CIDurationSeconds = issue.PullRequest.CIDurationSeconds
+		metadata.BaseRef = issue.PullRequest.BaseRef
 		metadata.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
 		metadata.FailedChecks = autoPromoteCanonicalChecks(autoPromoteFailedChecksFromPullRequest(issue.PullRequest))
 	}

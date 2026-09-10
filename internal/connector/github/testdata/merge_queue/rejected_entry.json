@@ -1,0 +1,31 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_42",
+        "mergeStateStatus": "CLEAN",
+        "mergeQueue": {
+          "url": "https://github.test/example/repo/queue/main",
+          "entries": {
+            "totalCount": 2
+          },
+          "configuration": {
+            "maximumEntriesToBuild": 3
+          }
+        },
+        "mergeQueueEntry": null,
+        "headRefOid": "removed-head",
+        "timelineItems": {
+          "nodes": [
+            {
+              "beforeCommit": {
+                "oid": "removed-head"
+              },
+              "reason": "Required check build failed"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
