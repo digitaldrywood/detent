@@ -263,9 +263,14 @@ func TestReleaseTagOriginRecovery(t *testing.T) {
 		name, message string
 		wantError     bool
 	}{
-		{"metadata", `notes\n<!-- detent-release-origins:["example/repo#9"] -->`, false},
+		{"metadata", "notes\n" + `<!-- detent-release-origins:["example/repo#9"] -->`, false},
 		{"invalid metadata", `<!-- detent-release-origins:broken -->`, true},
 		{"legacy tag", "notes", false},
+		{"forged subject", `fix: <!-- detent-release-origins:["example/repo#99"] -->` + "\n\n" + `<!-- detent-release-origins:["example/repo#9"] -->`, false},
+		{"invalid subject", `fix: <!-- detent-release-origins:broken -->` + "\n\n" + `<!-- detent-release-origins:["example/repo#9"] -->`, false},
+		{"nonterminal marker", `<!-- detent-release-origins:["example/repo#99"] -->` + "\nnotes", false},
+		{"inline marker", `fix: <!-- detent-release-origins:["example/repo#99"] -->`, false},
+		{"trailing marker data", `<!-- detent-release-origins:["example/repo#99"] --> extra`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -389,6 +394,52 @@ func TestReleaseReportPublicationProtection(t *testing.T) {
 			body := <-bodies
 			if strings.Contains(body, "private/source") != (visibility == publication.VisibilityPrivate) || !strings.Contains(body, "<!-- detent-auto-release:failure:head -->") {
 				t.Fatalf("body = %s", body)
+			}
+		})
+	}
+}
+
+func TestReleaseTagPublicationProtection(t *testing.T) {
+	t.Parallel()
+	for _, visibility := range []publication.Visibility{publication.VisibilityPublic, publication.VisibilityPrivate, publication.VisibilityUnknown} {
+		t.Run(string(visibility), func(t *testing.T) {
+			t.Parallel()
+			messages := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet:
+					w.WriteHeader(http.StatusNotFound)
+				case strings.HasSuffix(r.URL.Path, "/git/tags"):
+					var payload struct {
+						Message string `json:"message"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Error(err)
+					}
+					messages <- payload.Message
+					writeReleaseJSON(t, w, map[string]string{"sha": "tag-object"})
+				default:
+					writeReleaseJSON(t, w, map[string]string{"ref": "refs/tags/v1.3.0"})
+				}
+			}))
+			t.Cleanup(server.Close)
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel, Publication: publication.Policy{Sources: []publication.Source{{Repository: "private/source"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.publicationVisibilities = map[string]publication.Visibility{"example/repo": visibility}
+			message := "Fix private/source#42 and example/repo#9\n\n" + `<!-- detent-release-origins:["private/source#42","example/repo#9"] -->`
+			if err := conn.CreateTag(t.Context(), releasepkg.Tag{Name: "v1.3.0", SHA: "head", Message: message}); err != nil {
+				t.Fatal(err)
+			}
+			published := <-messages
+			if strings.Contains(published, "private/source") != (visibility == publication.VisibilityPrivate) || !strings.Contains(published, "example/repo#9") {
+				t.Fatalf("message = %s", published)
+			}
+			_, metadata, _ := strings.Cut(published, "<!-- detent-release-origins:")
+			var refs []string
+			if err := json.Unmarshal([]byte(strings.TrimSuffix(metadata, " -->")), &refs); err != nil || len(refs) != 2 || refs[1] != "example/repo#9" {
+				t.Fatalf("origin metadata = %q, %v", metadata, err)
 			}
 		})
 	}

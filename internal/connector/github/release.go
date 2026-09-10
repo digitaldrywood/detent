@@ -156,8 +156,10 @@ func (c *Connector) releaseTagOrigins(ctx context.Context, base, tag, sha string
 		if err := c.client.REST(ctx, http.MethodGet, base+"/git/tags/"+url.PathEscape(ref.Object.SHA), nil, &object); err != nil {
 			return nil, fmt.Errorf("read release origins: %w", err)
 		}
-		if _, suffix, found := strings.Cut(object.Message, "<!-- detent-release-origins:"); found {
-			value, _, closed := strings.Cut(suffix, " -->")
+		message := strings.TrimSpace(object.Message)
+		line := message[strings.LastIndex(message, "\n")+1:]
+		if suffix, found := strings.CutPrefix(line, "<!-- detent-release-origins:"); found {
+			value, closed := strings.CutSuffix(suffix, " -->")
 			var refs []string
 			if err := json.Unmarshal([]byte(value), &refs); err != nil || !closed {
 				return nil, errors.New("invalid release origin metadata")
@@ -280,7 +282,8 @@ func (c *Connector) CreateTag(ctx context.Context, tag releasepkg.Tag) error {
 	var object struct {
 		SHA string `json:"sha"`
 	}
-	payload := map[string]any{"tag": tag.Name, "message": tag.Message, "object": tag.SHA, "type": "commit"}
+	message := c.protectPublicationText(ctx, pullRequestRepoName(c.repository), tag.Message)
+	payload := map[string]any{"tag": tag.Name, "message": message, "object": tag.SHA, "type": "commit"}
 	if err := c.client.REST(ctx, http.MethodPost, base+"/git/tags", payload, &object); err != nil {
 		return fmt.Errorf("create annotated release tag: %w", err)
 	}
