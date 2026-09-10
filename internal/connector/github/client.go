@@ -534,6 +534,15 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
+	if repository := branchRulesRepository(method, path); repository != "" {
+		if branchRulesUnavailableOnPlan(resp.StatusCode, raw) {
+			c.recordBranchRulesAvailability(ctx, repository, true)
+			return nil, errBranchRulesUnavailableOnPlan
+		}
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			c.recordBranchRulesAvailability(ctx, repository, false)
+		}
+	}
 	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
 	if resp.StatusCode == http.StatusNotModified {
 		if !conditional {

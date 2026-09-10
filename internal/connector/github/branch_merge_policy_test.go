@@ -1,12 +1,16 @@
 package github
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -14,19 +18,21 @@ import (
 func TestRepositoryBranchMergePolicy(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name       string
-		rules      string
-		protection string
-		wantQueue  bool
-		wantStrict bool
-		wantLimit  int
-		status     int
-		wantError  bool
+		name            string
+		rules           string
+		protection      string
+		wantQueue       bool
+		wantStrict      bool
+		wantLimit       int
+		status          int
+		wantError       bool
+		wantUnavailable bool
 	}{
 		{name: "queue", rules: `[{"type":"merge_queue","parameters":{"max_entries_to_build":5}}]`, wantQueue: true, wantLimit: 5},
 		{name: "classic strict", rules: `[]`, protection: `{"strict":true}`, wantStrict: true},
 		{name: "ruleset strict", rules: `[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]`, wantStrict: true},
 		{name: "unprotected", rules: `[]`},
+		{name: "plan unavailable", status: 403, rules: `{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}`, wantUnavailable: true},
 		{name: "unavailable rules", status: 500, wantError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -42,6 +48,7 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 				case "/repos/example/repo/rules/branches/release/stable":
 					if tt.status != 0 {
 						w.WriteHeader(tt.status)
+						fmt.Fprint(w, tt.rules)
 						return
 					}
 					fmt.Fprint(w, tt.rules)
@@ -69,7 +76,7 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 			if tt.wantError {
 				return
 			}
-			if got.Branch != "release/stable" || got.MergeQueue != tt.wantQueue || got.Strict != tt.wantStrict || got.AdmissionLimit != tt.wantLimit {
+			if got.Branch != "release/stable" || got.MergeQueue != tt.wantQueue || got.Strict != tt.wantStrict || got.AdmissionLimit != tt.wantLimit || got.RulesUnavailableOnPlan != tt.wantUnavailable {
 				t.Fatalf("policy = %+v", got)
 			}
 		})
@@ -172,5 +179,75 @@ func TestInspectMergeQueueScopesPolicyToPullRequestTarget(t *testing.T) {
 	}
 	if reads.Load() != int64(len(targets)) {
 		t.Fatalf("policy reads=%d, want one per repository/branch", reads.Load())
+	}
+}
+
+func TestBranchRulesPlanAvailability(t *testing.T) {
+	for _, tt := range []struct {
+		name, body      string
+		status          int
+		wantUnavailable bool
+	}{
+		{"plan", `{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}`, 403, true},
+		{"permission", `{"message":"Resource not accessible by integration"}`, 403, false},
+		{"wrong status", `{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}`, 401, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			status := tt.status
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/example/repo" {
+					fmt.Fprint(w, `{"default_branch":"main"}`)
+					return
+				}
+				w.WriteHeader(status)
+				if status == 200 {
+					fmt.Fprint(w, "[]")
+				} else {
+					fmt.Fprint(w, tt.body)
+				}
+			}))
+			defer server.Close()
+			c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: t.Name(), Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				err := c.RefreshMergeQueuePolicy(t.Context())
+				if tt.wantUnavailable {
+					if err != nil {
+						t.Fatal(err)
+					}
+					policy, err := c.branchMergePolicy(t.Context(), "example/repo", "main")
+					if err != nil || policy.MergeQueue || !policy.RulesUnavailableOnPlan {
+						t.Fatalf("policy=%+v error=%v", policy, err)
+					}
+					if c.client.hasAuthHealth {
+						t.Fatal("plan response affected auth health")
+					}
+					if err := c.client.restBackoffError(c.client.restBackoffKey, time.Now()); err != nil {
+						t.Fatalf("backoff: %v", err)
+					}
+				} else if err == nil {
+					t.Fatal("expected authentication error")
+				}
+			}
+			if tt.wantUnavailable {
+				if strings.Contains(logs.String(), "WARN") || strings.Count(logs.String(), "level=INFO") != 1 {
+					t.Fatalf("logs: %s", &logs)
+				}
+				status = 200
+				if err := c.RefreshMergeQueuePolicy(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				status = 403
+				if err := c.RefreshMergeQueuePolicy(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(logs.String(), "level=INFO") != 2 {
+					t.Fatalf("logs after plan change: %s", &logs)
+				}
+			}
+		})
 	}
 }
