@@ -217,8 +217,8 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	// Detent owns the scan deadline through CommandContext. Disable lsof's
-	// per-operation fork timeout machinery: on macOS its overhead grows with
-	// the host process count and can exhaust that deadline before any output.
+	// per-operation fork timeout machinery: on macOS its global filesystem
+	// lookup overhead can exhaust that deadline before any output.
 	cmd := exec.CommandContext(ctx, "lsof", "-O", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
 	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
@@ -281,16 +281,38 @@ func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 			startElapsed, hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), startErr)
 	}
 	waiting := time.Now()
-	err := cmd.Wait()
-	if err != nil {
+	// Keep the existing context deadline authoritative even if Wait is stuck
+	// in an uninterruptible kernel operation or draining inherited pipes.
+	// The waiter still owns and eventually reaps the command. Only it reads
+	// the buffers, so cancellation can return without racing output writers.
+	type result struct {
+		output []byte
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		err := cmd.Wait()
 		var exitErr *exec.ExitError
 		if captureStderr && errors.As(err, &exitErr) {
 			exitErr.Stderr = []byte(stderr.String())
 		}
-		return output.Bytes(), fmt.Errorf("workspace scan command stage=wait pid=%d start_elapsed=%s wait_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v output_bytes=%d: %w",
-			cmd.Process.Pid, startElapsed, time.Since(waiting), hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), output.Len(), err)
+		done <- result{output: output.Bytes(), err: err}
+	}()
+	var completed result
+	select {
+	case completed = <-done:
+	case <-ctx.Done():
+		completed.err = ctx.Err()
 	}
-	return output.Bytes(), nil
+	err := completed.err
+	if ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	}
+	if err != nil {
+		return completed.output, fmt.Errorf("workspace scan command stage=wait pid=%d start_elapsed=%s wait_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v output_bytes=%d: %w",
+			cmd.Process.Pid, startElapsed, time.Since(waiting), hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), len(completed.output), err)
+	}
+	return completed.output, nil
 }
 
 func pathInside(root string, path string) bool {

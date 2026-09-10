@@ -3,6 +3,7 @@
 package workspace
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -249,10 +250,10 @@ func TestWorkspaceScanOutput(t *testing.T) {
 				}
 			}
 			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) != tt.wantExit {
+			if !tt.cancelReady && errors.As(err, &exitErr) != tt.wantExit {
 				t.Errorf("exit error = %v, want %t", err, tt.wantExit)
 			}
-			if tt.cancelBefore && !errors.Is(err, context.Canceled) {
+			if (tt.cancelBefore || tt.cancelReady) && !errors.Is(err, context.Canceled) {
 				t.Errorf("cancellation identity lost: %v", err)
 			}
 			if tt.expired && !errors.Is(err, context.DeadlineExceeded) {
@@ -357,6 +358,62 @@ func TestLsofWorkspaceProcessIDs(t *testing.T) {
 			}
 			if found != tt.want {
 				t.Fatalf("scanner includes process %d = %t, want %t (pids=%v)", cmd.Process.Pid, found, tt.want, pids)
+			}
+		})
+	}
+}
+
+func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
+	for _, command := range []string{
+		"sleep 60 & echo $! >&3; wait",
+		"sleep 60 & echo $! >&3; exit 0",
+	} {
+		t.Run(command, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			defer writer.Close()
+			if err := reader.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(ctx, "sh", "-c", command)
+			cmd.ExtraFiles = []*os.File{writer}
+			done := make(chan error, 1)
+			go func() {
+				_, err := workspaceScanOutput(ctx, cmd)
+				done <- err
+			}()
+			line, err := bufio.NewReader(reader).ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil {
+				t.Fatal(err)
+			}
+			received := false
+			defer func() {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+				if !received {
+					<-done // Join before closing descriptors even on the regression failure.
+				}
+			}()
+			cancel()
+			select {
+			case err := <-done:
+				received = true
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("scan error = %v, want context cancellation", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("scan cancellation waited for inherited pipes to close")
+			}
+			if err := syscall.Kill(pid, 0); err != nil {
+				t.Fatalf("pipe holder exited before test released it: %v", err)
 			}
 		})
 	}

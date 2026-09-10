@@ -1,25 +1,32 @@
 ---
 name: supervised-lsof-scan-overhead
-description: Diagnose macOS lsof scan deadlines caused by per-operation fork overhead on hosts with many processes.
+description: Diagnose macOS lsof deadlines caused by global filesystem lookup and fork overhead, then consolidate timeout ownership at the command boundary.
 when_to_use: Use when workspace scans return zero output at their deadline while lsof starts normally and focused cleanup tests are slow or fail under concurrent validation.
 ---
 
 Compare the exact scanner command alone and under bounded concurrency. Record
-elapsed time, exit status, output bytes, and process count. Keep probes read-only
-and their samples in the attempt temporary directory.
+elapsed time, exit status, output bytes, and host process/mount counts. Keep probes
+read-only and samples in the attempt temporary directory.
 
-Sample a running lsof process. Repeated fork/read/wait stacks indicate a different
-failure from a binary stuck in dyld startup. Compare one variable at a time:
-name resolution, recursive directory traversal, then lsof's internal timeout
-machinery. Do not attribute zero output alone to any of these causes.
+Sample a running lsof process. Repeated fork/read/wait stacks differ from a binary
+stuck in dyld startup. Compare name resolution, recursive traversal, PID selection,
+and internal timeout machinery separately. A single-PID scan that remains slow
+rules out attributing the overhead solely to process enumeration.
 
-When fork-based timeout overhead is established and the caller already owns a
-bounded command context, evaluate lsof `-O` to remove the duplicate timeout layer.
-This option disables lsof's protection against blocking kernel operations; retain
-the caller's cancellation and deadline, and do not apply it to unsupervised scans.
-Do not increase deadlines or broaden process selection to compensate for overhead.
+Do not apply `-O` alone: it removes lsof's protection from blocking operations,
+and CommandContext's kill does not guarantee Wait returns. A replacement timeout
+owner must return on cancellation independently of Wait, while retaining an
+asynchronous waiter to reap the command. Give the waiter sole ownership of output
+buffers; cancellation must not inspect buffers while output goroutines write.
+Use a buffered result channel so a late completion cannot block after return.
 
-Verify root and nested working directories are selected, sibling-prefix paths are
-excluded, and a process outside the workspace holding an open workspace file
-survives cleanup. Retain lock-release and command-cancellation assertions. Run the
-focused race tables and the full repository gate on the final contents.
+Avoid apparently simpler alternatives without checking their call paths. `-b`
+prints ambiguous filenames (control-byte caret notation can collide with literal
+characters). Native PROC_PIDVNODEPATHINFO also calls filesystem stat internally,
+so it does not by itself establish an interruptible deadline.
+
+Reproduce blocked Wait deterministically with a descendant that retains stdout
+and stderr after its parent exits. Cancel while those pipes remain open and prove
+the scanner returns before releasing the descendant. Retain ownership, observer
+survival, lock-release, error and output tests; run focused race tables and the
+full repository gate after the final change.
