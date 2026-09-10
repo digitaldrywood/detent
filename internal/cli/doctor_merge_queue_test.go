@@ -19,10 +19,12 @@ func TestDoctorMergeQueueRecordedHistory(t *testing.T) {
 	for _, tt := range []struct {
 		name               string
 		strict, queue      bool
+		unavailable        bool
 		minutes            int
 		branch             string
 		wantRecommendation bool
 	}{
+		{name: "plan unavailable", strict: true, unavailable: true, minutes: 22, branch: "main"},
 		{name: "strict busy branch", strict: true, minutes: 22, branch: "main", wantRecommendation: true},
 		{name: "non strict busy branch", minutes: 22, branch: "main"},
 		{name: "existing queue", strict: true, queue: true, minutes: 22, branch: "main"},
@@ -57,10 +59,13 @@ func TestDoctorMergeQueueRecordedHistory(t *testing.T) {
 				now:                func() time.Time { return now },
 				openSQLiteReadOnly: openDoctorSQLiteReadOnly,
 				githubBranchPolicy: func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
-					return ghconnector.BranchMergePolicy{Branch: "main", Strict: tt.strict, MergeQueue: tt.queue}, nil
+					return ghconnector.BranchMergePolicy{Branch: "main", Strict: tt.strict, MergeQueue: tt.queue, RulesUnavailableOnPlan: tt.unavailable}, nil
 				},
 			})
 			if (got.Status == doctorWarn) != tt.wantRecommendation {
+				t.Fatalf("check = %+v", got)
+			}
+			if tt.unavailable && !strings.Contains(got.Detail, "not available on this plan") {
 				t.Fatalf("check = %+v", got)
 			}
 			if tt.wantRecommendation {

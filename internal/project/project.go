@@ -283,7 +283,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		}
 		connectorFactory = func(workflowconfig.Config) (connector.Connector, error) { return native, nil }
 	}
-	projectConnector, err := buildConnector(context.Background(), workflow.Config, connectorFactory)
+	projectConnector, err := buildConnector(context.Background(), workflow.Config, connectorFactory, cfg.Project.Paused)
 	if err != nil {
 		return nil, err
 	}
@@ -1522,7 +1522,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		}
 	}
 
-	projectConnector, err := buildConnector(ctx, workflow.Config, connectorFactory)
+	projectConnector, err := buildConnector(ctx, workflow.Config, connectorFactory, projectConfig.Paused)
 	if err != nil {
 		return p.workflowReloadError("workflow reload connector failed", update.Path, err)
 	}
@@ -2076,7 +2076,7 @@ func buildRetroIssueStores(
 		}},
 		AllowPublicCrossProjectDetails: cfg.Retro.AllowPublicCrossProjectDetails,
 	}
-	productConnector, err := buildConnector(ctx, productConfig, connectorFactory)
+	productConnector, err := buildConnector(ctx, productConfig, connectorFactory, true)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -2245,7 +2245,7 @@ func resolveConnectorFactory(deps Dependencies) ConnectorFactory {
 	}
 }
 
-func buildConnector(ctx context.Context, cfg workflowconfig.Config, connectorFactory ConnectorFactory) (connector.Connector, error) {
+func buildConnector(ctx context.Context, cfg workflowconfig.Config, connectorFactory ConnectorFactory, paused bool) (connector.Connector, error) {
 	projectConnector, err := connectorFactory(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create project connector: %w", ErrConnectorCreation, err)
@@ -2254,7 +2254,9 @@ func buildConnector(ctx context.Context, cfg workflowconfig.Config, connectorFac
 		return nil, ErrMissingConnector
 	}
 
-	refreshMergeQueuePolicy(ctx, projectConnector)
+	if !paused {
+		refreshMergeQueuePolicy(ctx, projectConnector)
+	}
 	return projectConnector, nil
 }
 

@@ -46,6 +46,10 @@ func checkDoctorMergeQueue(ctx context.Context, id string, project globalconfig.
 			check.Detail = "branch protection could not be read: " + err.Error()
 			return check
 		}
+		if policy.RulesUnavailableOnPlan {
+			check.Detail = repository + ": merge queue not available on this plan"
+			continue
+		}
 		if !policy.Strict || policy.MergeQueue {
 			continue
 		}

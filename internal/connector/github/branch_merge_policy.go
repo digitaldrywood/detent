@@ -2,19 +2,22 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 type BranchMergePolicy struct {
-	Branch         string
-	MergeQueue     bool
-	Strict         bool
-	AdmissionLimit int
+	RulesUnavailableOnPlan bool
+	Branch                 string
+	MergeQueue             bool
+	Strict                 bool
+	AdmissionLimit         int
 }
 
 type branchMergePolicySnapshot struct {
@@ -51,6 +54,9 @@ func (c *Connector) RepositoryBranchMergePolicy(ctx context.Context, repository,
 		}
 		path := fmt.Sprintf("%s/rules/branches/%s?per_page=100&page=%d", base, url.PathEscape(branch), page)
 		if err := c.client.REST(ctx, http.MethodGet, path, nil, &rules); err != nil {
+			if errors.Is(err, errBranchRulesUnavailableOnPlan) {
+				return BranchMergePolicy{Branch: branch, RulesUnavailableOnPlan: true}, nil
+			}
 			return BranchMergePolicy{}, fmt.Errorf("read branch rules: %w", err)
 		}
 		for _, rule := range rules {
@@ -71,7 +77,7 @@ func (c *Connector) RepositoryBranchMergePolicy(ctx context.Context, repository,
 
 func (c *Connector) RepositoryStrictMergePolicy(ctx context.Context, repository string) (BranchMergePolicy, error) {
 	policy, err := c.RepositoryBranchMergePolicy(ctx, repository, "")
-	if err != nil {
+	if err != nil || policy.RulesUnavailableOnPlan {
 		return policy, err
 	}
 	var checks struct {
@@ -122,4 +128,44 @@ func (c *Connector) cacheBranchMergePolicy(repository string, policy BranchMerge
 	}
 	key := strings.ToLower(repository) + "@" + policy.Branch
 	c.branchMergePolicies[key] = branchMergePolicySnapshot{Policy: policy, CheckedAt: c.now()}
+}
+
+// The plan response is endpoint-specific: other 403s retain their normal
+// authentication and rate-limit handling.
+var errBranchRulesUnavailableOnPlan = errors.New("branch rules unavailable on this plan")
+
+func branchRulesRepository(method, path string) string {
+	if method != http.MethodGet {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 6)
+	if len(parts) != 6 || parts[0] != "repos" || parts[3] != "rules" || parts[4] != "branches" {
+		return ""
+	}
+	return strings.ToLower(parts[1] + "/" + parts[2])
+}
+
+func branchRulesUnavailableOnPlan(status int, raw []byte) bool {
+	if status != http.StatusForbidden {
+		return false
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	return json.Unmarshal(raw, &body) == nil && body.Message == "Upgrade to GitHub Pro or make this repository public to enable this feature."
+}
+
+// Keep informational deduplication across connector recreation on workflow reload.
+// Successful probes clear the entry so a later plan change is reported again.
+var unavailableBranchRules sync.Map
+
+func (c *Client) recordBranchRulesAvailability(ctx context.Context, repository string, unavailable bool) {
+	key := c.restEndpoint + "/" + repository
+	if !unavailable {
+		unavailableBranchRules.Delete(key)
+		return
+	}
+	if _, loaded := unavailableBranchRules.LoadOrStore(key, http.StatusForbidden); !loaded {
+		c.logger.InfoContext(ctx, "github branch rules not available on this plan", "repository", repository, "status", http.StatusForbidden)
+	}
 }
