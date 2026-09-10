@@ -17,9 +17,10 @@ package-manager manifests. Scoop publishing targets
 skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
 not configured.
 
-CI runs `GoReleaser Snapshot` after merges to `main`, on `v*` release tags, on
-pull requests, on the nightly schedule, and from manual workflow dispatch so
-release packaging is validated before the PR merge lane and after it lands.
+CI runs `GoReleaser Snapshot` on pushes to `main` and manual workflow dispatch
+to validate packaging after merge. It is not a PR-required check and does not
+run on tag pushes or the nightly CI schedule. See [Merge Train](merge-train.md)
+for the required-check split and main failure tracking.
 Required branch checks must not pass as path- or event-dependent no-ops on pull
 requests when the same check name runs real validation on `main`.
 

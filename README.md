@@ -451,8 +451,8 @@ updates to release-binary management. Source builds still print the recommended
 command instead of overwriting the binary.
 
 CI runs the `Installer Smoke` confidence job on Ubuntu and Windows against the
-current GitHub Release assets after merges to `main`, on release tags, on the
-nightly schedule, and from manual workflow dispatch. The job runs `install.sh`
+current GitHub Release assets on pushes to `main` and manual workflow dispatch.
+It does not run on pull requests, tag pushes, or the nightly CI schedule. The job runs `install.sh`
 and `install.ps1` in release mode, checks checksum output, confirms the
 requested install directory and installer lock metadata, then runs
 `detent update --check` and `detent update --yes` from the release-installer
