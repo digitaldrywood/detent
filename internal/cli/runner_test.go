@@ -178,8 +178,6 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 }
 
 func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
-	t.Parallel()
-
 	source := initRunnerSourceRepo(t)
 	claudeCommand, argsPath, stdinPath := writeRunnerClaudeStub(t)
 	sessionStore := &runnerSessionStore{sessionID: 833}
