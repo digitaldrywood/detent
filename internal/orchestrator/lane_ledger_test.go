@@ -292,3 +292,27 @@ func TestObservedLaneCompletionRetainsResultOnPersistenceFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestObservedLanePreTurnFailureRemainsInstanceOwned(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"Todo", "Rework", "Blocked", "Done"} {
+		t.Run(lane, func(t *testing.T) {
+			t.Parallel()
+			at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+			issue := laneRevocationIssue("startup", "example/repo#6", lane)
+			tracker := &runningStateConnector{issues: []connector.Issue{issue}}
+			attempts := &recordingWorkAttemptStore{}
+			cfg := laneMutationTestConfig()
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+			running := Running{Issue: issue, WorkAttemptID: 1, CompletionLane: lane, DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}
+			orch.finishObservedLaneRun(t.Context(), &state, running, runpkg.Completion{IssueID: issue.ID, CompletedAt: at, Err: errors.New("backend failed before turn")})
+			if !state.FailureBreaker.PreTurn || len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorRunner {
+				t.Fatalf("pre-turn failure lost instance attribution: breaker=%#v completions=%#v", state.FailureBreaker, attempts.completions)
+			}
+			if len(tracker.updates) != 0 || len(state.Retry) != 0 {
+				t.Fatalf("pre-turn failure overwrote observed lane: writes=%v retry=%v", tracker.updates, state.Retry)
+			}
+		})
+	}
+}

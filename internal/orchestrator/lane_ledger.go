@@ -30,7 +30,7 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 	}
 	running.Tokens = tokens
 	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed after lane transition", event.CompletedAt)
-	if event.Err == nil || event.Result.TurnStarted {
+	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	} else {
 		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
@@ -40,6 +40,9 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 		state.DiffStats[event.IssueID] = running.DiffStats
+	}
+	if o.handlePreTurnFailure(ctx, state, event, running) {
+		return
 	}
 	if event.Err == nil && stateIn(running.Issue.State, o.cfg.TerminalStates) {
 		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
